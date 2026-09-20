@@ -464,8 +464,7 @@ fn schema_shape_immutable_mode_snapshot_validation_and_retained_quota() {
     let recovered = engine(Limits::default());
     recovered.fixture_restore(&bytes).unwrap();
     assert_eq!(bytes, recovered.fixture_snapshot().unwrap());
-    let mut state: TenantState =
-        kasumi_engine::test_utils::decode_snapshot_candidate(&bytes).unwrap();
+    let mut state = kasumi_engine::test_utils::decode_snapshot_candidate(&bytes).unwrap();
     state.schema_activation_bytes += 1;
     assert_eq!(
         recovered
@@ -609,22 +608,56 @@ fn text_and_structured_indexes_publish_together_after_existing_documents_validat
     );
 }
 
-async fn open(path: &std::path::Path) -> (Arc<Database>, Arc<SecurityAudit>) {
-    let node = NodeStore::open(path, kasumi_store::ScratchDisk::fixture()).unwrap();
-    let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open_fixture(
-        node,
-        "schema".into(),
-        Arc::new(LocalKeyProvider::new([0xF1; 32])),
-    )
-    .await
+async fn open(path: &std::path::Path, create: bool) -> (Arc<Database>, Arc<SecurityAudit>) {
+    let node = (if create {
+        NodeStore::create_new(
+            path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+    } else {
+        NodeStore::open_existing(
+            path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+    })
     .unwrap();
-    let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
-            store,
-            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([242; 32])),
+    let audit = if create {
+        common::security_audit(node.clone()).await
+    } else {
+        common::existing_security_audit(node.clone()).await
+    };
+    let store = (if create {
+        TenantStore::initialize_catalog_fixture(
+            node,
+            "schema".into(),
+            Arc::new(LocalKeyProvider::new([0xF1; 32])),
         )
         .await
+    } else {
+        TenantStore::open_existing_fixture(
+            node,
+            "schema".into(),
+            Arc::new(LocalKeyProvider::new([0xF1; 32])),
+        )
+        .await
+    })
+    .unwrap();
+    let db = kasumi_engine::test_utils::open_fixture(
+        (if create {
+            kasumi_store::test_utils::initialize_custody_fixture(
+                store,
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([242; 32])),
+            )
+            .await
+        } else {
+            kasumi_store::test_utils::open_existing_custody_fixture(
+                store,
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([242; 32])),
+            )
+            .await
+        })
         .unwrap(),
         policy(),
         Limits::default(),
@@ -639,7 +672,7 @@ async fn open(path: &std::path::Path) -> (Arc<Database>, Arc<SecurityAudit>) {
 async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receipts() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("node.redb");
-    let (db, audit) = open(&path).await;
+    let (db, audit) = open(&path, true).await;
     let names: Vec<_> = (0..32).map(|n| format!("financial_{n}")).collect();
     let refs: Vec<_> = names.iter().map(String::as_str).collect();
     let schema_read = ReadSchema {
@@ -701,10 +734,10 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
         .await
         .unwrap();
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
-    let (db, audit) = open(&path).await;
+    let (db, audit) = open(&path, false).await;
     assert_eq!(
         db.activate_schema(context("owner"), install.clone())
             .await
@@ -726,18 +759,19 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
         receipt
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
 
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         root.path().join("restored.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let provider = Arc::new(LocalKeyProvider::new([0xF1; 32]));
-    let target = TenantStore::open_fixture(node, "schema".into(), provider.clone())
+    let target = TenantStore::initialize_catalog_fixture(node, "schema".into(), provider.clone())
         .await
         .unwrap();
     let source = kasumi_engine::RestoreSource {
@@ -748,7 +782,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
     };
     let restored = kasumi_engine::restore_local(
         &source,
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             target,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([242; 32])),
         )
@@ -788,13 +822,13 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
         receipt
     );
     restored.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
 async fn cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_authority() {
     let root = tempfile::tempdir().unwrap();
-    let (db, audit) = open(&root.path().join("node.redb")).await;
+    let (db, audit) = open(&root.path().join("node.redb"), true).await;
     let mut history = definition("history");
     history.write_mode = CollectionWriteMode::AppendOnly;
     history.retention_class = CollectionRetentionClass::ArchivableHistory;
@@ -953,7 +987,7 @@ async fn cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_auth
         ErrorCode::Forbidden
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 fn guard_assertions(db: &TenantEngine) -> Vec<ReadAssertion> {
@@ -1097,7 +1131,7 @@ fn schema_effect_digest_binds_dependencies_and_current_read_permission_is_requir
 async fn encrypted_schema_lookup_checks_current_fences_without_rewriting_original_effect() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("schema-fences.redb");
-    let (db, audit) = open(&path).await;
+    let (db, audit) = open(&path, true).await;
     let mut install = creates(db.engine(), "fenced-initial", &["guards", "journal"]);
     let before = db.engine().generation().unwrap();
     install.read_set = vec![
@@ -1135,10 +1169,10 @@ async fn encrypted_schema_lookup_checks_current_fences_without_rewriting_origina
         ErrorCode::Conflict
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
-    let (db, audit) = open(&path).await;
+    let (db, audit) = open(&path, false).await;
     let current = db.engine().generation().unwrap();
     let lookup = ReadSchemaActivation {
         reference: reference.clone(),
@@ -1181,7 +1215,7 @@ async fn encrypted_schema_lookup_checks_current_fences_without_rewriting_origina
     );
     drop(release);
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[test]

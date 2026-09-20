@@ -1,0 +1,24 @@
+{
+  "status": "SOURCE_ONLY_UNRUN_UNINSTALLED",
+  "upstream": "8815cdba2826f74e848acef361ad03f93bb1c3f8",
+  "head": "707e82ea457e93d197dd4b98a70916c958a86420",
+  "tree": "31a700dff2a78e0e11d14ae7587bbbb77272956c",
+  "predecessor": "bed7bada75bfdb7d5c4de92cc628951a9a23da8a",
+  "published_crate_sha256": "a97014fb78acb77be3a40ac2da305f6dd3a6b243f3a908ace87d29b3972eaafd",
+  "files": {
+    "patch.diff": "08a41e065b0b2a63eed760f4b800fdd18cd3e6a96a7c9b391cfdc2208232d151",
+    "source-review.md": "77386d44a32d0a6ec7fcccbe802c739abbf2d42deb46baee85e81279eecc7d8e"
+  },
+  "execution": [
+    "Rust 1.97.1 direct rustfmt parsed the changed files, with unsupported nightly formatting warnings",
+    "git diff --check passed"
+  ],
+  "unrun": [
+    "compilation",
+    "all Rust tests",
+    "upstream feature/format/lint/docs gates",
+    "Kasumi dependency integration",
+    "storage worker drain qualification",
+    "production and platform gates"
+  ]
+}

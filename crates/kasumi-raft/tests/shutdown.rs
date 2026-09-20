@@ -48,8 +48,12 @@ impl StateMachineBackend for PausedSnapshot {
         self.inner.validate_snapshot(bytes)
     }
 
-    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
-        self.inner.restore(bytes)
+    fn prepare_restore<'a>(
+        &'a self,
+        context: &kasumi_raft::SnapshotRestoreContext,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
+        self.inner.prepare_restore(context, bytes)
     }
 }
 
@@ -59,8 +63,12 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
     let path = directory.path().join("shutdown.redb");
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, wait) = mpsc::channel();
-    let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open(&path, kasumi_store::ScratchDisk::fixture())?,
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
+        NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )?,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([19; 32])),
         Arc::new(ManualClock::new()),
@@ -69,7 +77,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
     let group = RaftGroup::local(
         1,
         "tenant-a".into(),
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
@@ -95,7 +103,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
         RaftGroup::local(
             1,
             "tenant-a".into(),
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::open_existing_custody_fixture(
                 store.clone(),
                 Arc::new(LocalKeyProvider::new([241; 32]))
             )
@@ -119,7 +127,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
     let group = RaftGroup::local(
         1,
         "tenant-a".into(),
-        common::store(&path).await?,
+        common::store(&path, false).await?,
         recovered.clone(),
     )
     .await?;

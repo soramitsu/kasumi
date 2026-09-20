@@ -2,9 +2,20 @@
 //! publication. Cleanup never accepts a destination key from a caller or response.
 use super::*;
 use crate::{
-    BackupSessionObjectPage, BackupSessionSlot, MAX_SESSION_GC_OBJECTS, MAX_SESSION_RECORD_BYTES,
-    VerifiedBackupAbort,
+    BackupSessionObject, BackupSessionObjectPage, BackupSessionSlot, MAX_SESSION_GC_OBJECTS,
+    MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort,
 };
+
+const MAX_VERSION_ID_BYTES: usize = 1024;
+const MAX_VERSION_RECORD_BYTES: usize = 16 << 10;
+
+fn validate_version_id(version_id: &str) -> Result<()> {
+    ensure!(
+        !version_id.is_empty() && version_id.len() <= MAX_VERSION_ID_BYTES,
+        "invalid S3 object version ID"
+    );
+    Ok(())
+}
 
 pub(super) fn canonical_query(url: &Url) -> String {
     fn encode(value: &str) -> String {
@@ -154,7 +165,7 @@ impl S3BackupDestination {
         {
             let mut pairs = url.query_pairs_mut();
             pairs
-                .append_pair("list-type", "2")
+                .append_pair("versions", "")
                 .append_pair("max-keys", &limit.to_string())
                 .append_pair("prefix", &prefix);
         }
@@ -171,7 +182,7 @@ impl S3BackupDestination {
             "S3 rejected session enumeration (HTTP {})",
             response.status().as_u16()
         );
-        let bytes = bounded(response, 64 * 1024 + limit * 4096).await?;
+        let bytes = bounded(response, 64 * 1024 + limit * MAX_VERSION_RECORD_BYTES).await?;
         let page = parse_page(&bytes, &prefix, limit)?;
         self.check_aborted(proof).await?;
         Ok(page)
@@ -179,16 +190,33 @@ impl S3BackupDestination {
     pub(super) async fn managed_delete(
         &self,
         proof: &VerifiedBackupAbort,
-        ids: &[Uuid],
+        objects: &[BackupSessionObject],
     ) -> Result<()> {
         ensure!(
-            ids.len() <= MAX_SESSION_GC_OBJECTS,
+            objects.len() <= MAX_SESSION_GC_OBJECTS,
             "backup cleanup deletion exceeds page limit"
         );
+        // Validate all selectors before any mutation. A bare object key is never
+        // a deletion request: it would create a marker and retain the data.
+        let mut seen = std::collections::BTreeSet::new();
+        for object in objects {
+            let BackupSessionObject::S3Version { id, version_id } = object else {
+                anyhow::bail!("S3 cleanup requires exact version selectors");
+            };
+            validate_version_id(version_id)?;
+            ensure!(
+                !id.is_nil() && seen.insert((*id, version_id.as_str())),
+                "invalid or duplicate S3 cleanup selector"
+            );
+        }
         self.check_aborted(proof).await?;
-        for id in ids {
+        for object in objects {
+            let BackupSessionObject::S3Version { id, version_id } = object else {
+                unreachable!("validated version selector")
+            };
             proof.check()?;
-            let url = self.managed_url(proof.session_id(), BackupSessionSlot::Object(*id))?;
+            let mut url = self.managed_url(proof.session_id(), BackupSessionSlot::Object(*id))?;
+            url.query_pairs_mut().append_pair("versionId", version_id);
             let headers =
                 self.signed_headers("DELETE", &url, &[], time::OffsetDateTime::now_utc())?;
             let response = self
@@ -211,40 +239,77 @@ impl S3BackupDestination {
 }
 fn parse_page(bytes: &[u8], prefix: &str, limit: usize) -> Result<BackupSessionObjectPage> {
     use quick_xml::{Reader, events::Event};
+    ensure!(
+        (1..=MAX_SESSION_GC_OBJECTS).contains(&limit),
+        "invalid S3 page limit"
+    );
     let mut reader = Reader::from_reader(bytes);
-    reader.config_mut().trim_text(true);
+    // Version IDs are opaque. Do not trim or normalize them, including when a
+    // service encodes their characters as XML references.
     let mut stack: Vec<String> = Vec::new();
     let mut root = false;
     let mut root_closed = false;
-    let mut keys = Vec::new();
+    let mut objects = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut previous_id = None;
     let mut truncated = None;
     let mut actual_prefix = None;
     let mut current_key = None;
+    let mut current_version = None;
+    let mut record_start = None;
     let mut text = String::new();
     loop {
-        match reader.read_event()? {
+        let position = reader.buffer_position();
+        let event = reader.read_event()?;
+        if let Some(start) = record_start {
+            ensure!(
+                reader.buffer_position() - start <= MAX_VERSION_RECORD_BYTES as u64,
+                "S3 object version record exceeds limit"
+            );
+        }
+        match event {
             Event::Start(event) => {
                 ensure!(
                     !root_closed && stack.len() < 8,
                     "invalid S3 session XML nesting"
                 );
+                ensure!(
+                    stack.last().is_none_or(|tag| !matches!(
+                        tag.as_str(),
+                        "Key" | "VersionId" | "Prefix" | "IsTruncated"
+                    )),
+                    "nested S3 selector text"
+                );
                 let tag = event.name().as_ref().to_owned();
                 if stack.is_empty() {
                     ensure!(
-                        !root && tag == "ListBucketResult",
+                        !root && tag == "ListVersionsResult",
                         "invalid S3 session XML root"
                     );
                     root = true;
                 }
-                if tag == "Contents" {
-                    ensure!(stack.len() == 1, "invalid S3 Contents nesting");
-                    current_key = None;
-                }
-                if tag == "Key" {
-                    ensure!(
-                        stack.len() == 2 && stack[1] == "Contents" && current_key.is_none(),
-                        "invalid or duplicate S3 object key"
-                    );
+                match tag.as_str() {
+                    "Version" | "DeleteMarker" => {
+                        ensure!(
+                            stack.len() == 1 && record_start.is_none(),
+                            "invalid S3 version nesting"
+                        );
+                        current_key = None;
+                        current_version = None;
+                        record_start = Some(position);
+                    }
+                    "Key" | "VersionId" => {
+                        ensure!(
+                            stack.len() == 2
+                                && matches!(stack[1].as_str(), "Version" | "DeleteMarker"),
+                            "invalid S3 version selector nesting"
+                        );
+                    }
+                    "Prefix" | "IsTruncated" => ensure!(stack.len() == 1, "nested S3 page state"),
+                    "CommonPrefixes" | "Contents" => {
+                        anyhow::bail!("unexpected grouped S3 enumeration")
+                    }
+                    _ => {}
                 }
                 stack.push(tag);
                 text.clear();
@@ -254,21 +319,42 @@ fn parse_page(bytes: &[u8], prefix: &str, limit: usize) -> Result<BackupSessionO
                     text.len() + value.len() <= 4096,
                     "S3 session XML text exceeds limit"
                 );
-                ensure!(!stack.is_empty(), "text outside S3 XML root");
+                ensure!(
+                    !stack.is_empty() || value.trim().is_empty(),
+                    "text outside S3 XML root"
+                );
                 text.push_str(&value);
+            }
+            Event::GeneralRef(value) => {
+                ensure!(!stack.is_empty(), "reference outside S3 XML root");
+                if let Some(character) = value.resolve_char_ref()? {
+                    text.push(character);
+                } else {
+                    text.push_str(
+                        quick_xml::escape::resolve_predefined_entity(&value)
+                            .context("unsupported S3 XML entity")?,
+                    );
+                }
+                ensure!(text.len() <= 4096, "S3 session XML text exceeds limit");
             }
             Event::End(event) => {
                 let tag = stack.pop().context("unexpected S3 XML close")?;
                 ensure!(tag == event.name().as_ref(), "S3 XML close differs");
                 match tag.as_str() {
-                    "Key" => {
+                    "Key" => ensure!(
+                        current_key.replace(text.clone()).is_none(),
+                        "duplicate S3 object key"
+                    ),
+                    "VersionId" => {
+                        validate_version_id(&text)?;
                         ensure!(
-                            current_key.replace(text.clone()).is_none(),
-                            "duplicate S3 object key"
+                            current_version.replace(text.clone()).is_none(),
+                            "duplicate S3 version ID"
                         );
                     }
-                    "Contents" => {
+                    "Version" | "DeleteMarker" => {
                         let key = current_key.take().context("S3 object key absent")?;
+                        let version_id = current_version.take().context("S3 version ID absent")?;
                         let value = key
                             .strip_prefix(prefix)
                             .and_then(|key| key.strip_suffix(".kasumi"))
@@ -277,33 +363,34 @@ fn parse_page(bytes: &[u8], prefix: &str, limit: usize) -> Result<BackupSessionO
                         ensure!(
                             !id.is_nil()
                                 && key == format!("{prefix}{id}.kasumi")
-                                && keys.last().is_none_or(|previous| previous < &id),
+                                && previous_id.is_none_or(|previous| previous <= id),
                             "S3 object order or scope differs"
                         );
-                        keys.push(id);
                         ensure!(
-                            keys.len() <= limit,
+                            seen.insert((id, version_id.clone())),
+                            "duplicate S3 version selector"
+                        );
+                        previous_id = Some(id);
+                        objects.push(BackupSessionObject::S3Version { id, version_id });
+                        ensure!(
+                            objects.len() <= limit,
                             "S3 enumeration exceeds requested page limit"
                         );
+                        record_start = None;
                     }
                     "IsTruncated" => {
-                        ensure!(
-                            stack.len() == 1 && truncated.is_none(),
-                            "duplicate or nested S3 page state"
-                        );
+                        ensure!(truncated.is_none(), "duplicate S3 page state");
                         truncated = Some(match text.as_str() {
                             "true" => true,
                             "false" => false,
                             _ => anyhow::bail!("invalid S3 page state"),
                         });
                     }
-                    "Prefix" => {
-                        ensure!(
-                            stack.len() == 1 && actual_prefix.replace(text.clone()).is_none(),
-                            "duplicate or nested S3 prefix"
-                        );
-                    }
-                    "ListBucketResult" => {
+                    "Prefix" => ensure!(
+                        actual_prefix.replace(text.clone()).is_none(),
+                        "duplicate S3 prefix"
+                    ),
+                    "ListVersionsResult" => {
                         root_closed = true;
                     }
                     _ => {}
@@ -314,9 +401,25 @@ fn parse_page(bytes: &[u8], prefix: &str, limit: usize) -> Result<BackupSessionO
                 ensure!(
                     !stack.is_empty()
                         && !root_closed
-                        && event.name().as_ref() != "Contents"
-                        && event.name().as_ref() != "Key",
+                        && !matches!(
+                            event.name().as_ref(),
+                            "Version"
+                                | "DeleteMarker"
+                                | "Key"
+                                | "VersionId"
+                                | "Prefix"
+                                | "IsTruncated"
+                                | "CommonPrefixes"
+                                | "Contents"
+                        ),
                     "invalid empty S3 XML record"
+                );
+                ensure!(
+                    stack.last().is_none_or(|tag| !matches!(
+                        tag.as_str(),
+                        "Key" | "VersionId" | "Prefix" | "IsTruncated"
+                    )),
+                    "nested S3 selector text"
                 );
             }
             Event::Decl(_) if !root => {}
@@ -330,11 +433,8 @@ fn parse_page(bytes: &[u8], prefix: &str, limit: usize) -> Result<BackupSessionO
         "S3 enumeration scope or framing differs"
     );
     let more = truncated.context("S3 page completion missing")?;
-    ensure!(!more || !keys.is_empty(), "truncated S3 page is empty");
-    Ok(BackupSessionObjectPage {
-        objects: keys,
-        more,
-    })
+    ensure!(!more || !objects.is_empty(), "truncated S3 page is empty");
+    Ok(BackupSessionObjectPage { objects, more })
 }
 
 #[cfg(test)]
@@ -350,43 +450,80 @@ mod tests {
             "a=%2B&a=~&list-type=2&prefix=a%2Fb&z=two%20words"
         );
     }
+    fn version(id: u128, version_id: &str) -> BackupSessionObject {
+        BackupSessionObject::S3Version {
+            id: Uuid::from_u128(id),
+            version_id: version_id.into(),
+        }
+    }
     #[test]
-    fn bounded_s3_xml_rejects_wrong_scope_order_truncation_and_entities() {
+    fn bounded_s3_versions_preserve_exact_ids_and_service_order() {
+        let prefix = "backup/sessions/session/objects/";
+        let bytes = format!("<ListVersionsResult><Prefix>{prefix}</Prefix><KeyMarker/><VersionIdMarker/>
+            <DeleteMarker><Key>{prefix}{}.kasumi</Key><VersionId>z/+&amp;&#61;</VersionId></DeleteMarker>
+            <Version><Key>{prefix}{}.kasumi</Key><VersionId>a</VersionId><Owner><ID>owner</ID></Owner></Version>
+            <Version><Key>{prefix}{}.kasumi</Key><VersionId>null</VersionId></Version>
+            <IsTruncated>true</IsTruncated></ListVersionsResult>",
+            Uuid::from_u128(1), Uuid::from_u128(1), Uuid::from_u128(2));
+        let page = parse_page(bytes.as_bytes(), prefix, 3).unwrap();
+        assert_eq!(
+            page.objects,
+            vec![version(1, "z/+&="), version(1, "a"), version(2, "null")]
+        );
+        assert!(page.more);
+        assert!(parse_page(bytes.as_bytes(), prefix, 2).is_err());
+    }
+    #[test]
+    fn bounded_s3_versions_reject_malformed_scope_duplicates_and_oversized_records() {
         let prefix = "backup/sessions/session/objects/";
         let make = |body: &str| {
-            format!("<ListBucketResult><Prefix>{prefix}</Prefix>{body}</ListBucketResult>")
+            format!("<ListVersionsResult><Prefix>{prefix}</Prefix>{body}</ListVersionsResult>")
         };
-        let key = |id| {
+        let key = |id| format!("<Key>{prefix}{}.kasumi</Key>", Uuid::from_u128(id));
+        let record = |id, version: &str| {
             format!(
-                "<Contents><Key>{prefix}{}.kasumi</Key></Contents>",
-                Uuid::from_u128(id)
+                "<Version>{}<VersionId>{version}</VersionId></Version>",
+                key(id)
             )
         };
         let valid = make(&format!(
-            "{}{}<IsTruncated>true</IsTruncated>",
-            key(1),
-            key(2)
+            "{}<IsTruncated>false</IsTruncated>",
+            record(1, "null")
         ));
-        let page = parse_page(valid.as_bytes(), prefix, 2).unwrap();
-        assert_eq!(page.objects, vec![Uuid::from_u128(1), Uuid::from_u128(2)]);
-        assert!(page.more);
-        assert!(parse_page(valid.as_bytes(), prefix, 1).is_err());
+        assert_eq!(
+            parse_page(valid.as_bytes(), prefix, 2).unwrap().objects,
+            vec![version(1, "null")]
+        );
         for body in [
-            format!("{}{}<IsTruncated>false</IsTruncated>", key(2), key(1)),
-            "<Contents><Key>outside/key.kasumi</Key></Contents><IsTruncated>false</IsTruncated>"
-                .into(),
+            format!("{}{}<IsTruncated>false</IsTruncated>", record(2, "v"), record(1, "v")),
+            format!("{}<DeleteMarker>{}<VersionId>v</VersionId></DeleteMarker><IsTruncated>false</IsTruncated>", record(1, "v"), key(1)),
+            "<Version><Key>outside/key.kasumi</Key><VersionId>v</VersionId></Version><IsTruncated>false</IsTruncated>".into(),
+            format!("{}<IsTruncated>false</IsTruncated>", record(0, "v")),
             "<IsTruncated>true</IsTruncated>".into(),
-            format!(
-                "{}<IsTruncated>false</IsTruncated><IsTruncated>false</IsTruncated>",
-                key(1)
-            ),
-            "<Contents><Key>&secret;</Key></Contents><IsTruncated>false</IsTruncated>".into(),
+            format!("{}<IsTruncated>false</IsTruncated><IsTruncated>false</IsTruncated>", record(1, "v")),
+            format!("{}<IsTruncated>false</IsTruncated>", record(1, "&secret;")),
+            format!("{}<IsTruncated>false</IsTruncated>", record(1, "<Bad/>v")),
+            format!("{}<IsTruncated>false</IsTruncated>", record(1, "")),
+            format!("{}<IsTruncated>false</IsTruncated>", record(1, &"x".repeat(1025))),
+            format!("<Version>{}</Version><IsTruncated>false</IsTruncated>", key(1)),
+            format!("<Version>{}<VersionId/><VersionId>v</VersionId></Version><IsTruncated>false</IsTruncated>", key(1)),
+            format!("<Version>{}<VersionId>v</VersionId><VersionId>w</VersionId></Version><IsTruncated>false</IsTruncated>", key(1)),
+            format!("<Version>{}{}<VersionId>v</VersionId></Version><IsTruncated>false</IsTruncated>", key(1), key(1)),
+            "<CommonPrefixes/><IsTruncated>false</IsTruncated>".into(),
+            format!("<Version>{}<VersionId>v</VersionId>{}</Version><IsTruncated>false</IsTruncated>", key(1), "<Metadata>opaque</Metadata>".repeat(1000)),
         ] {
-            assert!(
-                parse_page(make(&body).as_bytes(), prefix, 2).is_err(),
-                "{body}"
-            );
+            assert!(parse_page(make(&body).as_bytes(), prefix, 2).is_err(), "{body}");
         }
         assert!(parse_page(&valid.as_bytes()[..valid.len() - 1], prefix, 2).is_err());
+        assert!(
+            parse_page(
+                valid
+                    .replace("ListVersionsResult", "ListBucketResult")
+                    .as_bytes(),
+                prefix,
+                2
+            )
+            .is_err()
+        );
     }
 }

@@ -1,0 +1,32 @@
+{
+  "source": "/Users/mtakemiya/dev/kasumi-worktrees/check-f2921f5-20260920",
+  "target": "/Users/mtakemiya/dev/kasumi-release-evidence/build-target",
+  "expected_head": "f2921f5f0e69ed354deae2a744b4ca248c27bac9",
+  "expected_tree": "d2fd5ddc5082be4522e11a96b2098034f076281b",
+  "output": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-f2921f5-retired-source-diagnostic",
+  "scope": "Diagnostic reproduction of the failed retired-source gate on unchanged f2921f5 source with RUST_BACKTRACE=1; preserves both original cases and original 900-second gate deadline. Does not replace or qualify the 38-gate cohort.",
+  "gates": [
+    {
+      "name": "server-retired-source",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "runtime::retired_source_tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "runtime::retired_source_tests::retired_registration_rejection_retains_new_owner_until_cancelled_waiter_drains",
+        "runtime::retired_source_tests::retired_preparation_panic_drains_only_new_custody_owner"
+      ]
+    }
+  ]
+}

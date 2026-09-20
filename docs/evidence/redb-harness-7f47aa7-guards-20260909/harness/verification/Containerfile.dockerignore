@@ -1,0 +1,2 @@
+# Include the entire checked git archive. The upstream root ignore files exclude
+# frozen locks, fuzz sources and this harness; they must not filter this build.

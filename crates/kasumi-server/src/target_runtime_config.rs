@@ -1,10 +1,7 @@
 //! Explicit target templates are installed independently of source serving.
 //! Requests select exact committed identifiers, never endpoints, keys or paths.
 use crate::{
-    runtime::{
-        KeyProviderSettings, RuntimeConfig, TlsFiles, credential_path, origin,
-        parse_certificate_pin, read_bounded,
-    },
+    runtime::{KeyProviderSettings, RuntimeConfig, TlsFiles, credential_path},
     serving_runtime::AuthorityEndpoint,
 };
 use anyhow::{Context, Result, ensure};
@@ -53,7 +50,8 @@ pub struct TargetTenantTemplate {
 #[serde(deny_unknown_fields)]
 pub struct TargetRecoveryConfig {
     pub control_root: ControlSigningRoot,
-    pub control_endpoint: AuthorityEndpoint,
+    #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
+    pub control_endpoints: BTreeMap<u64, AuthorityEndpoint>,
     pub control_tls: TlsFiles,
     pub control_ca: PathBuf,
     pub node: NodeIdentity,
@@ -78,7 +76,7 @@ impl TargetRecoveryConfig {
         );
         self.control_tls.validate()?;
         self.limits.validate()?;
-        origin(&self.control_endpoint.endpoint)?;
+        crate::installed_clients::validate(&self.control_endpoints)?;
         let replication = runtime
             .replication
             .as_ref()
@@ -105,13 +103,6 @@ impl TargetRecoveryConfig {
                 && !runtime.database_path.starts_with(&self.generation_root),
             "target cleanup root contains original or journal storage"
         );
-        ensure!(
-            (1..=8).contains(&self.control_endpoint.certificate_pins.len()),
-            "control endpoint needs explicit bounded pins"
-        );
-        for pin in &self.control_endpoint.certificate_pins {
-            parse_certificate_pin(pin)?;
-        }
         let journal_key = self.journal_keys.validate()?;
         let mut protected = BTreeSet::from([
             runtime.control.keys.validate()?,
@@ -204,17 +195,11 @@ impl TargetRecoveryConfig {
         }
         Ok(())
     }
-    pub(crate) fn control_connection(&self) -> Result<KasumiClientConfig> {
-        Ok(KasumiClientConfig {
-            endpoint: self.control_endpoint.endpoint.clone(),
-            identity: self.control_tls.load()?,
-            trusted_ca_pem: read_bounded(&self.control_ca, 1 << 20)?,
-            server_certificate_pins: self
-                .control_endpoint
-                .certificate_pins
-                .iter()
-                .map(|pin| parse_certificate_pin(pin))
-                .collect::<Result<_>>()?,
-        })
+    pub(crate) fn control_connections(&self) -> Result<BTreeMap<u64, KasumiClientConfig>> {
+        crate::installed_clients::connections(
+            &self.control_endpoints,
+            &self.control_tls,
+            &self.control_ca,
+        )
     }
 }

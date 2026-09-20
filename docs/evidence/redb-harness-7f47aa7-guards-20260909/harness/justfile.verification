@@ -1,0 +1,19 @@
+# Full upstream `just test` scope inside one already prepared offline sandbox.
+# The original justfile and Podman recipe remain unchanged.
+test: audit format lint
+    RUST_BACKTRACE=1 cargo test --frozen --all-features --message-format=json-render-diagnostics -- --test-threads=1
+
+audit:
+    cargo deny --frozen --workspace --all-features --config /opt/verification/deny.toml check licenses advisories
+
+format:
+    cargo fmt --all -- --check
+
+lint:
+    cargo clippy --frozen --all-targets --all-features --message-format=json-render-diagnostics -- -D warnings
+
+fuzz-build:
+    cargo fuzz build --sanitizer=none --target-dir=/target-fuzz fuzz_redb
+
+fuzz-smoke:
+    cargo fuzz run --sanitizer=none --target-dir=/target-fuzz fuzz_redb -- -max_len=10000 -max_total_time=60 -seed=41776523

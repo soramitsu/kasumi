@@ -173,6 +173,7 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
         denied.receipt.outcome,
         AuthorityOutcome::Rejected { .. }
     ));
+    drop(fence);
     fixture.close().await;
 }
 
@@ -339,6 +340,8 @@ async fn target_stop_history_exceeds_former_record_ceiling_and_current_fences_ar
             .is_err()
     );
     fixture.router.isolate("independent-control", id, false);
+    drop(fence);
+    drop(current);
     fixture.close().await;
 }
 

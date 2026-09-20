@@ -337,7 +337,10 @@ fn audit_budget_blocks_effects_and_can_be_increased_without_losing_records() {
         ErrorCode::AuditUnavailable
     );
     assert_eq!(db.generation().unwrap().state.document_count, 0);
-    assert!(db.generation().unwrap().state.receipts.is_empty());
+    assert_eq!(
+        db.generation().unwrap().state.mutation_receipt_head.count,
+        0
+    );
     let limits = Limits {
         audit_retention: AuditRetentionBudget {
             hot_bytes: 256 << 10,
@@ -366,14 +369,8 @@ fn audit_budget_blocks_effects_and_can_be_increased_without_losing_records() {
 }
 
 #[test]
-fn receipt_expiry_index_obeys_exact_boundary_and_rebuilds_from_snapshot() {
-    let db = engine(
-        false,
-        Limits {
-            max_receipts: 2,
-            ..Limits::default()
-        },
-    );
+fn permanent_receipts_ignore_former_expiry_boundaries_and_survive_snapshot_recovery() {
+    let db = engine(false, Limits::default());
     db.apply_command(1, command(Operation::CreateCollection(definition())))
         .unwrap()
         .unwrap();
@@ -384,31 +381,48 @@ fn receipt_expiry_index_obeys_exact_boundary_and_rebuilds_from_snapshot() {
             vec![put(id, id, Precondition::Any)],
         )))
     };
-    db.apply_command(2, make("first", "a", 1000))
+    let first = db
+        .apply_command(2, make("first", "a", 1000))
         .unwrap()
         .unwrap();
     db.apply_command(3, make("second", "b", 2000))
         .unwrap()
         .unwrap();
+    db.apply_command(4, make("third", "c", 86_400_999))
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        db.apply_command(4, make("third", "c", 86_400_999))
+        db.apply_command(5, make("first", "a", 86_401_000))
+            .unwrap()
+            .unwrap(),
+        first
+    );
+    assert_eq!(
+        db.generation().unwrap().state.mutation_receipt_head.count,
+        3
+    );
+    db.fixture_restore(&db.fixture_snapshot().unwrap()).unwrap();
+    assert_eq!(
+        db.apply_command(6, make("first", "d", 86_402_000))
             .unwrap()
             .unwrap_err()
             .code,
-        ErrorCode::QuotaExceeded
+        ErrorCode::Conflict
     );
-    db.apply_command(5, make("third", "c", 86_401_000))
-        .unwrap()
-        .unwrap();
-    assert_eq!(db.generation().unwrap().state.receipts.len(), 2);
-    db.fixture_restore(&db.fixture_snapshot().unwrap()).unwrap();
-    db.apply_command(6, make("first", "d", 86_402_000))
-        .unwrap()
-        .unwrap();
-    assert_eq!(db.generation().unwrap().state.receipts.len(), 2);
     assert_eq!(
-        db.generation().unwrap().state.collections["people"].documents["d"].version,
-        6
+        db.apply_command(7, make("first", "a", u64::MAX - 1))
+            .unwrap()
+            .unwrap(),
+        first
+    );
+    assert_eq!(
+        db.generation().unwrap().state.mutation_receipt_head.count,
+        3
+    );
+    assert!(
+        !db.generation().unwrap().state.collections["people"]
+            .documents
+            .contains_key("d")
     );
 }
 
@@ -742,18 +756,19 @@ async fn database(
     Arc<kasumi_engine::SecurityAudit>,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         dir.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let key = Arc::new(LocalKeyProvider::new([7; 32]));
-    let store = TenantStore::open_fixture(node, "tenant-a".into(), key.clone())
+    let store = TenantStore::initialize_catalog_fixture(node, "tenant-a".into(), key.clone())
         .await
         .unwrap();
     let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -804,7 +819,7 @@ async fn actual_raft_writes_queries_and_snapshot_pagination() {
         "new-b"
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -897,7 +912,7 @@ async fn coherent_snapshot_reads_span_collections_under_concurrent_commits_and_s
     conditional.read_set = snapshot.read_assertions();
     db.mutate(context("owner"), conditional).await.unwrap();
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -943,7 +958,7 @@ async fn snapshot_reads_reject_partial_queries_cursors_and_foreign_authority() {
         ErrorCode::InvalidArgument
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1000,7 +1015,7 @@ async fn strict_read_audit_is_committed_before_return_and_tied_to_data_revision(
         None
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1068,7 +1083,7 @@ async fn shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_v
     // A prior authorized release is owned by the trusted embedding application.
     assert_eq!(shared.body["email"], "before");
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1077,14 +1092,14 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
     let node = NodeStore::open_with_backend(backend.clone(), kasumi_store::ScratchDisk::fixture())
         .unwrap();
     let audit_directory = tempfile::tempdir().unwrap();
-    let audit_store = TenantStore::open_fixture(
+    let audit_store = TenantStore::initialize_catalog_fixture(
         node.clone(),
         kasumi_engine::SECURITY_TENANT.into(),
         Arc::new(LocalKeyProvider::new([0xA7; 32])),
     )
     .await
     .unwrap();
-    let audit = kasumi_engine::SecurityAudit::open_with_archive(
+    let audit = kasumi_engine::SecurityAudit::initialize_with_archive(
         audit_store,
         kasumi_types::AuditRetentionBudget::default(),
         Arc::new(
@@ -1094,7 +1109,7 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
     )
     .unwrap();
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([45; 32])),
@@ -1102,7 +1117,7 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
     .await
     .unwrap();
     let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -1149,7 +1164,7 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
         ErrorCode::AuditUnavailable | ErrorCode::Unavailable | ErrorCode::Sealed
     ));
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1177,7 +1192,7 @@ async fn key_revocation_fences_and_evicts_resident_state() {
         "reauthorization must not silently resurrect memory"
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1229,7 +1244,7 @@ async fn key_revocation_evicts_retained_coherent_leases_and_rejects_every_page()
         ErrorCode::Sealed
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1285,14 +1300,15 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
     );
 
     let target_dir = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         target_dir.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
     let target_audit = common::security_audit(node.clone()).await;
     let target_key = Arc::new(LocalKeyProvider::new([9; 32]));
-    let target_store = TenantStore::open_fixture(node, "tenant-a".into(), target_key)
+    let target_store = TenantStore::initialize_catalog_fixture(node, "tenant-a".into(), target_key)
         .await
         .unwrap();
     let restored = kasumi_engine::restore_local(
@@ -1302,7 +1318,7 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
             destination: destination.clone(),
             keys: source_key.clone(),
         },
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             target_store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -1349,7 +1365,7 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
                 destination: destination.clone(),
                 keys: source_key
             },
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::open_existing_custody_fixture(
                 target_store,
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))
             )
@@ -1405,8 +1421,8 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
     assert!(newer.revision > receipt.revision);
     restored.shutdown().await.unwrap();
     source.shutdown().await.unwrap();
-    source_audit.shutdown().await;
-    target_audit.shutdown().await;
+    source_audit.shutdown().await.unwrap();
+    target_audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1415,10 +1431,14 @@ async fn durable_engine_worker() {
         return;
     };
     let root = std::path::PathBuf::from(root);
-    let node =
-        NodeStore::open(root.join("node.redb"), kasumi_store::ScratchDisk::fixture()).unwrap();
+    let node = NodeStore::create_new(
+        root.join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([42; 32])),
@@ -1426,7 +1446,7 @@ async fn durable_engine_worker() {
     .await
     .unwrap();
     let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -1489,13 +1509,14 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
     child.wait().unwrap();
     let expected: WriteReceipt =
         serde_json::from_slice(&std::fs::read(dir.path().join("ack.json")).unwrap()).unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::open_existing(
         dir.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open_fixture(
+    let audit = common::existing_security_audit(node.clone()).await;
+    let store = TenantStore::open_existing_fixture(
         node,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([42; 32])),
@@ -1511,7 +1532,7 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
         strict_read_audit: true,
     };
     let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::open_existing_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -1547,5 +1568,5 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
         expected
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

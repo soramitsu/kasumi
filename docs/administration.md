@@ -1,16 +1,34 @@
 # Runtime administration
 
-`kasumid example-config` emits a credential-free JSON template. Configure a separate TLS 1.3 endpoint for MCP, a TLS 1.3/mTLS native data endpoint, and a TLS 1.3/mTLS administrative endpoint. Every native administrative call additionally requires an OAuth access token. The verified token selects the tenant and principal; requests cannot override either. Control-group membership administration uses an explicitly authorized token for `__kasumi_control` and remains absent from data/MCP discovery.
+`kasumid example-config` emits a credential-free JSON template. Configure a separate TLS 1.3 endpoint for MCP, a TLS 1.3/mTLS native data endpoint, and a TLS 1.3/mTLS administrative endpoint. Every native administrative call additionally requires a signed bearer credential for the selected resource. The verified token selects the tenant and principal; requests cannot override either. Control-group membership administration uses an explicitly authorized token for `__kasumi_control` and remains absent from data/MCP discovery.
 
-`kasumictl example-config` emits a client template. Store one client configuration per node, with its actual administrator certificate, CA, server certificate pin, and environment-variable name for the token. Keep private-key files readable only by their owner. The CLI never accepts access tokens as command-line arguments.
+`kasumictl example-config` emits a client template. Store one client configuration per node, with its actual administrator certificate, CA, server certificate pin, and private renewable credential file. Keep private-key files readable only by their owner. The CLI never accepts access tokens as command-line arguments.
 
 ```
 kasumid check-config /etc/kasumi/node.json
+# First enrollment of this HA node file only:
+kasumid provision-node /etc/kasumi/node.json
 kasumid serve /etc/kasumi/node.json
 kasumictl --config /etc/kasumi/client-node1.json create-collection collection.json
 kasumictl --config /etc/kasumi/client-node1.json suspend
 kasumictl --config /etc/kasumi/client-node1.json manage operation.json
 ```
+
+The server configuration requires a nonnil `database_id` UUID chosen and saved
+before file creation. Keep it unchanged for that node file; each new node gets
+its own UUID. `example-config` generates a candidate UUID, so save the generated
+configuration once instead of regenerating it on restart. The database parent
+and configured scratch parent must already exist, with node state owned by the
+service account. Run `provision-node` as that account; it exclusively creates the
+configured node file and refuses every existing path. It enrolls service audit, application/custody catalogs and immutable local genesis
+under the original exclusive file owner. It does not initialize Raft membership;
+see [cold node enrollment](cold-node-enrollment.md) for the retained enrollment
+identity, finite issuer admission and remaining Control publication boundary.
+`serve` opens an existing file with the configured UUID and never creates or
+repairs an unrelated file. On restart omit `provision-node`; a failed or uncertain
+creation is not permission to remove/recreate its file. See the
+[node-file contract](node-file-envelope.md) for partial creation and cleanup.
+Standalone installations use `kasumid init --mode standalone` instead.
 
 `manage` accepts the closed `ManagementCommand` JSON enum, rejects unknown fields, and prints exact JSON. Ordinary schema, policy, limits, suspension and resume commands use their corresponding native methods. Management is never exposed as an MCP data tool.
 
@@ -18,7 +36,7 @@ kasumictl --config /etc/kasumi/client-node1.json manage operation.json
 
 Each tenant and the control database elect independent leaders. There is no implicit forwarding of bearer tokens or arbitrary client-selected URLs. Configure clients with the approved node-to-endpoint mapping.
 
-`{"operation":"status"}` reports local committed state, the tenant leader node ID and `control_leader`. For a prepared restore use `{"operation":"status","incarnation":"<fresh UUID>"}` to inspect the target group. Status is an administrative observation, not a fresh point read. Required security auditing precedes release. A missing leader means election or quorum recovery is still necessary.
+`{"operation":"status"}` reports local committed state, the tenant leader node ID and `control_leader`. Status has no caller-selected incarnation. Recovery status belongs to the typed coordinator. Status is an administrative observation, not a fresh point read. Required security auditing precedes release. A missing leader means election or quorum recovery is still necessary.
 
 Native data errors may carry `kasumi-leader-node-id`; MCP tool errors may carry `leader_node_id`. Hints are limited to operator-configured pinned nodes and principals with a current tenant grant. Select the matching configured API endpoint. A node ID does not supply an untrusted redirect destination. `UNKNOWN_OUTCOME` remains explicit: resolve or retry the same idempotency key for mutations. Administrative external effects may also have uncertain outcomes; inspect status or existing artifacts before retrying.
 
@@ -36,7 +54,7 @@ Configure destination names in the server JSON, for example:
 }
 ```
 
-S3 destinations use `kind: "s3"`, an HTTPS `endpoint`, `region`, `bucket`, `prefix`, `max_bytes`, one absolute `credentials_file` path and nullable `ca_certificate`. The private credential file contains one JSON object with `access_key_id`, `secret_access_key`, and nullable `session_token`; all fields are reloaded together for each signed request. The adapter requires TLS 1.3, signs requests with SigV4, and refuses redirects. Filesystem and S3 publication are create-only. The destination byte limit bounds individual encrypted objects. Publication uses bounded chunk workspaces; complete verification currently reserves proportional workspace for decoded state and indexes, so node admission must accommodate that remaining capacity limitation.
+S3 destinations use `kind: "s3"`, an HTTPS `endpoint`, `region`, `bucket`, `prefix`, `max_bytes`, one absolute `credentials_file` path and nullable `ca_certificate`. The private credential file contains one JSON object with `access_key_id`, `secret_access_key`, and nullable `session_token`; all fields are reloaded together for each signed request. The adapter requires TLS 1.3, signs requests with SigV4, and refuses redirects. Filesystem and S3 publication are create-only. The destination byte limit bounds individual encrypted objects. Publication and verification use bounded encrypted chunks and streaming records. Decoded database state and indexes still consume their configured resident capacity; final capacity acceptance must measure those allocations and maintenance workspace together.
 
 ```json
 {"operation":"backup","destination":"nightly","session_id":"5daa40b0-d0a4-4ad3-bec1-83ed5880e75a"}
@@ -51,33 +69,62 @@ Persist a newly chosen session UUID before sending the request and reuse it for 
 
 These operations act on the addressed replica's encrypted store, with tenant consensus authorization/auditing and separately protected security auditing. They require that replica to be the group leader. They do not rotate the customer Transit wrapping key itself; that remains a Transit operator action. Rewrapping preserves historical backup wrappers, which may still require older wrapping-key versions. Keep those versions decryptable for retained backup/recovery dependencies. Each replica's actual decrypt leases independently enforce revocation.
 
-## Restoring an immutable generation
+## Recovery through the installed coordinator
 
-Choose a fresh nonnil UUID once and use it on every target replica. Keep the same logical tenant. The server chooses a private generation directory beside the configured database file, hashed by tenant and keyed by this UUID. It never accepts a caller path and never overwrites an existing database. At most `max_prepared_generations_per_tenant` preparations may remain resident (default two). Old files are retained; retiring the source permanently fences ordinary data access while preserving authenticated retirement custody.
+Distributed recovery uses the typed `KasumiRecoveryControl` service and
+`kasumid control-recovery` commands. Install the exact source, target voters,
+issuer, approved endpoints and trust in `control.lifecycle.recovery` before
+starting. The coordinator retains one operation identity and the exact inputs
+of every phase before dispatch. Target file identities derive from the durable
+Control incarnation, target incarnation and physical verifier; management
+requests cannot select paths, open a generation or publish a route.
 
-1. Quiesce application work, suspend the source on its tenant leader, and wait for suspension to apply. Then create and verify the full backup checkpoint. Capture must follow the final application, policy and suspension changes; retirement compares the complete source closure with this checkpoint.
-2. Submit the following on each of the three replicas; use a destination accessible to each:
+For planned recovery, suspend the source and create and verify the complete
+backup after its final application and policy changes. The installed route uses
+independent source application, source custody, target Control and issuer
+credentials. For a source-unavailable disaster, explicitly select that fencing
+mode; it requires the complete issuer drain and cannot claim source retirement
+evidence. Never reuse a source credential to authorize the target.
 
-```json
-{"operation":"prepare_restore","destination":"nightly","backup_id":"<backup UUID>","incarnation":"<fresh UUID>"}
+```sh
+kasumid control-recovery start /private/control-profile.json /private/start.json /private/start-attempt.json 5000
+kasumid control-recovery status /private/control-profile.json OPERATION_UUID 5000
+kasumid control-recovery resume /private/control-profile.json OPERATION_UUID 2 60000
+kasumid control-recovery stop /private/control-profile.json OPERATION_UUID /private/stop-attempt.json 5000
 ```
 
-Preparation authenticates/decrypts the bundle, checks its tenant and backup policy, creates an empty new store, rebuilds documents/indexes, and persists a generation descriptor. Repeating a completed preparation with the same UUID and backup resumes it. A crash before descriptor publication leaves an incomplete file; use another fresh UUID rather than overwriting it.
+Persist the original start/stop attempt files and resolve their retained
+identities after ambiguous replies. Completion requires actual target quorum
+proof, source fencing, the single committed activation winner, confirmation on
+every target voter and atomic Control route publication. A committed activation
+proceeds forward. A pre-activation stop permits physical cleanup only after its
+permanent outcome and issuer drain; failed or uncertain cleanup retains its
+owners and evidence. See [Control recovery](control-recovery.md) for exact phase
+contracts, configured dispatch and remaining acceptance gaps.
 
-3. In replicated mode, issue `{"operation":"initialize_restore","incarnation":"<fresh UUID>"}` on the lowest target voter. Before initializing, the server probes all three pinned mTLS peers and compares their exact restored-bootstrap hashes. A missing or differing preparation refuses initialization. The new group retains three voters; partitions never reduce replication.
-4. Find the target leader with status and issue `{"operation":"complete_restore","incarnation":"<fresh UUID>"}` there. This quorum-commits the mandatory restore-completion audit and clears its durable pending marker. Local restore performs this step during preparation. Wait until the source-leader node and control-leader node observe completion locally.
-5. On the old source leader submit `ManagementCommand::RetireSource { request }`. The typed `RetireSourceRequest` requires a permanent retirement ID, exact source and intended target incarnations, the complete verified `FullBackupCheckpoint`, installed destination alias and trusted execution deadline. Persist `request.reference()` before submitting. The command verifies the actual backup graph, checks complete source closure, and retains one exact consensus outcome. See [planned retirement](planned-retirement.md) for native/SDK proof and stop-resolution contracts.
-6. After the control-leader node observes source retirement and target completion, issue there:
+Standalone recovery uses `kasumid local-recovery` while holding exclusive
+ownership of the stopped installation. Its permanent stop and active-generation
+selection apply to that installation; they do not fence an independently running
+copy. Follow the [standalone recovery procedure](standalone.md#local-data-recovery).
 
-```json
-{"operation":"activate_restore","incarnation":"<fresh UUID>","retirement":{"source_incarnation":"<old incarnation UUID>","retirement_id":"<persisted retirement ID>","request_digest":"<exact request SHA-256>"}}
-```
+The management restore family and its private generation descriptors are removed.
+Unknown operations and an `incarnation` field on management status are rejected.
+The native source retirement/status/abort/proof operations remain independently
+resource-bound custody operations used by planned recovery. See
+[planned retirement](planned-retirement.md). An admitted management invocation
+borrows one exact serving database for execution and response release. Renewing
+a credential or publishing a different route cannot redirect that invocation.
 
-This obtains a fresh source retirement proof, checks its exact target and permanent restored origin, performs a versioned control-route CAS, then atomically swaps the local registry. Other replicas observe the durable route and switch after their restored state is ready. A crash between the CAS and registry publication recovers from that route. Restarting with the original deployment bootstrap follows the new generation descriptor; a missing routed file fails closed. It does not resurrect the source. This managed path requires both generations in its configured topology; cross-host activation requires a separate authenticated control/executor integration.
-
-7. The new generation remains suspended. Resume it explicitly on its own leader, then verify application reads. Source, target and control leaders may be different nodes throughout this procedure.
-
-If route publication fails after retirement, the source remains retired. Recover the exact retirement proof and retry its controlled activation; do not resume or overwrite the source. Before replacing a disputed checkpoint, resolve its full exact request with `abort_retirement`: only an authenticated `Stopped` proof defeats a delayed retirement. A `Retired` winner requires the original target/checkpoint. Status absence, an expired orchestration grant and a lost response are insufficient. New incarnations invalidate historical cursors. Backups include retained idempotency receipts.
+The lifecycle and retirement SDK pools first read the exact command outcome on
+an installed member to select a current leader. After a lost mutation reply they
+only read that original outcome; an absent receipt never authorizes another
+dispatch in the invocation. Credential, clock and deadline remain unchanged
+across these reads. `ReadCustodyReceipt` accepts the complete original
+`CustodyRequest` and returns its immutable receipt or an unknown (absent) result
+without appending a custody command. The read requires current custody Admin,
+the exact retired source, a fresh quorum and response-release checks. A newly
+authorized custodian can recover the original actor's outcome after the original
+actor was revoked; renewing credentials starts a separate invocation.
 
 ## Adding configured tenants and peers
 
@@ -148,7 +195,7 @@ never rewrites an already-created replicated bootstrap in place.
 
 ## Membership replacement
 
-`replication.peers` is an operator-approved pinned peer pool (3–64 nodes). If it contains more than three nodes, set explicit `initial_voters` to the immutable original three IDs. New learners use that same original bootstrap and distinct node identity. Never edit initial voters to shrink an existing group or recover quorum. The final placement must have exactly three voters across independent failure domains recorded by the control database.
+`replication.peers` is an operator-approved pinned peer pool (3–64 nodes). Every replicated configuration must set `initial_voters` to the immutable original three IDs, including a pool of exactly three peers. Missing or empty voter configuration is rejected. New learners use that same original bootstrap and distinct node identity. Never edit initial voters to shrink an existing group or recover quorum. The final placement must have exactly three voters across independent failure domains recorded by the control database.
 
 Start the spare with its configured identity and original bootstrap. On the control leader, using a control-tenant administrator token, run `{"operation":"add_learner","node_id":4}`; it waits for catch-up. Once the spare has the committed topology, add it to the tenant group on that tenant's leader using the same command with the tenant token. The peer must exist in both configured pinned transport and approved control metadata.
 

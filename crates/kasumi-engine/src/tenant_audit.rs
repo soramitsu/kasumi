@@ -8,6 +8,9 @@ use kasumi_store::{AuditSegmentBuilder, InspectedAuditDependency, PreparedAuditS
 pub(crate) const PREFIX: &[u8] = b"KASUMI_AUDIT_PRUNE_V1\0";
 const MAX_REFERENCE: usize = 64 << 10;
 const MAX_COMMAND: usize = PREFIX.len() + 4 + MAX_REFERENCE + MAX_AUDIT_SEGMENT_BYTES;
+// One local, encrypted retry identity. This is preparation metadata, not a
+// replicated archive root; snapshot dependencies remain the committed chain.
+const PREPARATION: &str = "engine.audit.preparation";
 
 pub(crate) fn encode(segment: &PreparedAuditSegment) -> anyhow::Result<Vec<u8>> {
     segment.reference.validate()?;
@@ -54,6 +57,60 @@ fn decode(bytes: &[u8]) -> anyhow::Result<(AuditArchiveReference, &[u8])> {
     Ok((reference, ciphertext))
 }
 
+fn matches_prefix(reference: &AuditArchiveReference, retention: &AuditRetentionState) -> bool {
+    reference.stream_id == retention.stream_id
+        && reference.object.first_sequence == retention.pruned_before
+        && reference.object.next_sequence <= retention.next_sequence
+        && reference.previous
+            == retention
+                .archive_head
+                .as_ref()
+                .map(|head| head.object.clone())
+}
+
+fn verify_prefix(
+    state: &TenantState,
+    store: &kasumi_store::TenantStore,
+    reference: &AuditArchiveReference,
+    ciphertext: &[u8],
+) -> anyhow::Result<u64> {
+    let dependency = InspectedAuditDependency::from_link(ciphertext, &reference.object)?;
+    ensure!(
+        dependency.reference() == reference && dependency.source_tenant() == state.tenant,
+        "audit pruning source differs"
+    );
+    let source = dependency.source_purpose();
+    let root = store.storage_access().purpose();
+    let runtime = tokio::runtime::Handle::try_current()?;
+    let verified = if source == root {
+        runtime.block_on(store.decrypt_audit_segment(ciphertext, reference))?
+    } else {
+        crate::authorize_audit_source(state, root, source)?;
+        runtime.block_on(store.verify_historical_audit(&dependency, source))?
+    };
+    let mut removed_bytes = 0u64;
+    verified.visit(|sequence, bytes| {
+        let index = usize::try_from(
+            sequence
+                .checked_sub(state.audit_retention.pruned_before)
+                .context("audit sequence differs")?,
+        )?;
+        let event = state
+            .audits
+            .get(index)
+            .context("audit hot prefix missing")?;
+        ensure!(
+            serde_json::to_vec(event)? == bytes,
+            "archive differs from hot audit prefix"
+        );
+        removed_bytes = removed_bytes
+            .checked_add(u64::try_from(bytes.len())?)
+            .context("audit byte count exhausted")?;
+        Ok(())
+    })?;
+    Ok(removed_bytes)
+}
+
 impl TenantEngine {
     /// Install the shared node reservation before opening or replaying Raft.
     /// This does not start maintenance; Database construction starts the worker
@@ -91,8 +148,8 @@ impl TenantEngine {
         Ok(())
     }
 
-    /// Fixture-only raw command producer. Production uses the owned worker and
-    /// its installed node reservation through preparation and proposal outcome.
+    /// Fixture-only command producer, called from an owned blocking worker.
+    /// Production keeps its node reservation through preparation and proposal.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn prepare_audit_prune(&self) -> anyhow::Result<Option<Vec<u8>>> {
         ensure!(
@@ -108,6 +165,8 @@ impl TenantEngine {
     }
 
     /// Captures only shared immutable roots; at most one segment is serialized.
+    /// The exact encrypted pending command survives publication uncertainty and
+    /// restart. External publication must complete before Raft sees the command.
     pub(crate) fn prepare_audit_prune_inner(&self) -> anyhow::Result<Option<Vec<u8>>> {
         let generation = self.generation()?;
         let state = &generation.state;
@@ -124,6 +183,15 @@ impl TenantEngine {
             .snapshot_store
             .get()
             .context("audit storage not installed")?;
+        if let Some(bytes) = store.get_bounded(PREPARATION, b"pending", MAX_COMMAND)? {
+            let (reference, ciphertext) = decode(&bytes)?;
+            if matches_prefix(&reference, retention) {
+                Self::publish_prepared_audit(state, store, &reference, ciphertext)?;
+                return Ok(Some(bytes));
+            }
+            // Another committed transition won this prefix. Its local pending
+            // object can never be adopted as the successor's archive identity.
+        }
         let mut builder = AuditSegmentBuilder::new(
             retention.stream_id,
             retention.pruned_before,
@@ -160,7 +228,38 @@ impl TenantEngine {
                 .is_some_and(|bytes| bytes <= budget.archive_bytes),
             "tenant audit archive capacity exhausted"
         );
-        Ok(Some(encode(&segment)?))
+        let bytes = encode(&segment)?;
+        store.write_batch(&[kasumi_store::WriteOp::put(
+            PREPARATION,
+            b"pending",
+            bytes.as_slice(),
+        )])?;
+        Self::publish_prepared_audit(state, store, &segment.reference, &segment.ciphertext)?;
+        Ok(Some(bytes))
+    }
+
+    fn publish_prepared_audit(
+        state: &TenantState,
+        store: &kasumi_store::TenantStore,
+        reference: &AuditArchiveReference,
+        ciphertext: &[u8],
+    ) -> anyhow::Result<()> {
+        ensure!(
+            state
+                .audit_retention
+                .archive_bytes
+                .checked_add(reference.ciphertext_bytes)
+                .is_some_and(|bytes| bytes <= state.limits.audit_retention.archive_bytes),
+            "tenant audit archive capacity exhausted"
+        );
+        verify_prefix(state, store, reference, ciphertext)?;
+        store
+            .tenant_audit_archive()?
+            .publish_destination_blocking(&PreparedAuditSegment {
+                reference: reference.clone(),
+                ciphertext: ciphertext.to_vec(),
+            })?;
+        store.check_access()
     }
 
     pub(crate) fn apply_audit_prune(
@@ -211,14 +310,7 @@ impl TenantEngine {
         let retention = &next.audit_retention;
         let applicable = !next.retired
             && next.pending_restore.is_none()
-            && reference.stream_id == retention.stream_id
-            && reference.object.first_sequence == retention.pruned_before
-            && reference.object.next_sequence <= retention.next_sequence
-            && reference.previous
-                == retention
-                    .archive_head
-                    .as_ref()
-                    .map(|head| head.object.clone());
+            && matches_prefix(&reference, retention);
         let outcome: Result<()> = if !applicable {
             Err(Error::new(
                 ErrorCode::Conflict,
@@ -238,39 +330,12 @@ impl TenantEngine {
                 .snapshot_store
                 .get()
                 .context("audit storage not installed")?;
-            let dependency = InspectedAuditDependency::from_link(ciphertext, &reference.object)?;
-            ensure!(
-                dependency.reference() == &reference && dependency.source_tenant() == next.tenant,
-                "audit pruning source differs"
-            );
-            let source = dependency.source_purpose();
-            let root = store.storage_access().purpose();
-            let runtime = tokio::runtime::Handle::try_current()?;
-            let verified = if source == root {
-                runtime.block_on(store.decrypt_audit_segment(ciphertext, &reference))?
-            } else {
-                crate::authorize_audit_source(&next, root, source)?;
-                runtime.block_on(store.verify_historical_audit(&dependency, source))?
-            };
-            let mut removed_bytes = 0u64;
-            verified.visit(|sequence, bytes| {
-                let index = usize::try_from(
-                    sequence
-                        .checked_sub(retention.pruned_before)
-                        .context("audit sequence differs")?,
-                )?;
-                let event = next.audits.get(index).context("audit hot prefix missing")?;
-                ensure!(
-                    serde_json::to_vec(event)? == bytes,
-                    "archive differs from hot audit prefix"
-                );
-                removed_bytes = removed_bytes
-                    .checked_add(u64::try_from(bytes.len())?)
-                    .context("audit byte count exhausted")?;
-                Ok(())
-            })?;
+            let removed_bytes = verify_prefix(&next, store, &reference, ciphertext)?;
             let placement = store.tenant_audit_archive()?;
-            placement.preserve_blocking(&PreparedAuditSegment {
+            // External publication was verified before this command was
+            // proposed. Committed apply depends only on this replica's durable
+            // copy, so a transient destination outage cannot poison Raft replay.
+            placement.cache().publish_blocking(&PreparedAuditSegment {
                 reference: reference.clone(),
                 ciphertext: ciphertext.to_vec(),
             })?;
@@ -307,16 +372,17 @@ impl TenantEngine {
                 &next,
                 &BTreeMap::new(),
                 &BTreeSet::new(),
-                &BTreeSet::new(),
             )?;
             ensure!(
                 accounting.fits(&next)?,
                 "audit pruning metadata exceeds tenant capacity"
             );
             self.publish_generation(Some(Arc::new(Generation {
+                terminals: previous.terminals.clone(),
+                target_resolutions: previous.target_resolutions.clone(),
                 state: next,
                 indexes: previous.indexes.clone(),
-                receipt_expiry: previous.receipt_expiry.clone(),
+                receipts: previous.receipts.clone(),
                 snapshot_accounting: accounting,
                 _read_reservations: vec![],
             })));
@@ -364,12 +430,13 @@ mod tests {
         Arc<UncertainArchive>,
     ) {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
-        let store = TenantStore::open_fixture(
+        let store = TenantStore::initialize_catalog_fixture(
             node,
             "tenant".into(),
             Arc::new(LocalKeyProvider::new([43; 32])),
@@ -386,10 +453,15 @@ mod tests {
         store
             .install_tenant_audit_archive(cache, archive.clone())
             .unwrap();
+        let engine = replay_engine(&store, uuid::Uuid::new_v4().to_string());
+        (directory, engine, store, archive)
+    }
+
+    fn replay_engine(store: &Arc<TenantStore>, incarnation: String) -> Arc<TenantEngine> {
         let engine = Arc::new(
             TenantEngine::new(
                 "tenant".into(),
-                uuid::Uuid::new_v4().to_string(),
+                incarnation,
                 Policy {
                     grants: vec![Grant {
                         principal: "owner".into(),
@@ -408,7 +480,7 @@ mod tests {
             )
             .unwrap(),
         );
-        engine.install_storage_access(&store).unwrap();
+        engine.install_storage_access(store).unwrap();
         for revision in 1..=50 {
             engine
                 .apply_command(
@@ -437,7 +509,10 @@ mod tests {
                 .unwrap()
                 .unwrap();
         }
-        (directory, engine, store, archive)
+        engine
+    }
+    async fn prepare(engine: Arc<TenantEngine>) -> anyhow::Result<Option<Vec<u8>>> {
+        tokio::task::spawn_blocking(move || engine.prepare_audit_prune()).await?
     }
     async fn apply(
         engine: Arc<TenantEngine>,
@@ -458,13 +533,13 @@ mod tests {
         .await?
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn uncertain_publication_keeps_hot_prefix_and_exact_replay_publishes_matching_root() {
+    async fn uncertain_publication_keeps_hot_prefix_and_apply_never_recontacts_external_archive() {
         let (_directory, engine, store, archive) = fixture().await;
         let before = engine.generation().unwrap();
-        let command = engine.prepare_audit_prune().unwrap().unwrap();
-        let (reference, _) = decode(&command).unwrap();
         archive.fail.store(true, Ordering::SeqCst);
-        assert!(apply(engine.clone(), command.clone(), 51).await.is_err());
+        assert!(prepare(engine.clone()).await.is_err());
+        let pending = store.get(PREPARATION, b"pending").unwrap().unwrap();
+        let (reference, _) = decode(&pending).unwrap();
         assert_eq!(
             engine.generation().unwrap().state.audit_retention,
             before.state.audit_retention
@@ -476,9 +551,13 @@ mod tests {
                 .unwrap()
                 .cache()
                 .read_blocking(&reference.object)
-                .is_ok()
+                .is_err()
         );
+        archive.read(&reference.object).await.unwrap();
         archive.fail.store(false, Ordering::SeqCst);
+        let command = prepare(engine.clone()).await.unwrap().unwrap();
+        assert_eq!(command, pending);
+        archive.fail.store(true, Ordering::SeqCst);
         apply(engine.clone(), command.clone(), 51)
             .await
             .unwrap()
@@ -505,7 +584,15 @@ mod tests {
             current.state.audits.len() as u64 + reference.record_count,
             before.state.audits.len() as u64
         );
-        assert!(engine.prepare_audit_prune().unwrap().is_none());
+        assert!(prepare(engine.clone()).await.unwrap().is_none());
+        assert!(
+            store
+                .tenant_audit_archive()
+                .unwrap()
+                .cache()
+                .read_blocking(&reference.object)
+                .is_ok()
+        );
         assert_eq!(
             apply(engine.clone(), command, 52)
                 .await
@@ -518,7 +605,66 @@ mod tests {
             engine.generation().unwrap().state.audit_retention,
             current.state.audit_retention
         );
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn uncertain_preparation_reopens_the_same_encrypted_object_after_restart() {
+        let (directory, engine, store, archive) = fixture().await;
+        let incarnation = engine.generation().unwrap().state.incarnation.clone();
+        archive.fail.store(true, Ordering::SeqCst);
+        assert!(prepare(engine.clone()).await.is_err());
+        let pending = store.get(PREPARATION, b"pending").unwrap().unwrap();
+        let (reference, _) = decode(&pending).unwrap();
+        archive.read(&reference.object).await.unwrap();
+        store.shutdown().await.unwrap();
+        drop(engine);
+        drop(store);
+
+        let node = NodeStore::open_existing(
+            directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
+        let store = TenantStore::open_existing_fixture(
+            node,
+            "tenant".into(),
+            Arc::new(LocalKeyProvider::new([43; 32])),
+        )
+        .await
+        .unwrap();
+        store
+            .install_tenant_audit_archive(
+                Arc::new(
+                    FilesystemAuditArchive::open(directory.path().join("tenant-audit-archives"))
+                        .unwrap(),
+                ),
+                archive.clone(),
+            )
+            .unwrap();
+        let engine = replay_engine(&store, incarnation);
+        archive.fail.store(false, Ordering::SeqCst);
+        let command = prepare(engine.clone()).await.unwrap().unwrap();
+        assert_eq!(command, pending, "restart must reuse the uncertain object");
+        apply(engine.clone(), command, 51).await.unwrap().unwrap();
+        assert_eq!(
+            engine
+                .generation()
+                .unwrap()
+                .state
+                .audit_retention
+                .archive_head
+                .as_ref(),
+            Some(&reference)
+        );
+        assert_eq!(
+            std::fs::read_dir(directory.path().join("external"))
+                .unwrap()
+                .count(),
+            1
+        );
+        store.shutdown().await.unwrap();
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn authenticated_wrong_prefix_and_corrupt_ciphertext_never_prune() {
@@ -533,7 +679,25 @@ mod tests {
                 .await
                 .is_err()
         );
-        let mut command = engine.prepare_audit_prune().unwrap().unwrap();
+        store
+            .write_batch(&[kasumi_store::WriteOp::put(
+                PREPARATION,
+                b"pending",
+                encode(&wrong).unwrap(),
+            )])
+            .unwrap();
+        assert!(prepare(engine.clone()).await.is_err());
+        assert_eq!(
+            std::fs::read_dir(store.durable_directory().unwrap().join("external"))
+                .unwrap()
+                .count(),
+            0,
+            "a pending identity must verify the exact hot prefix before publication"
+        );
+        store
+            .write_batch(&[kasumi_store::WriteOp::delete(PREPARATION, b"pending")])
+            .unwrap();
+        let mut command = prepare(engine.clone()).await.unwrap().unwrap();
         *command.last_mut().unwrap() ^= 1;
         assert!(apply(engine.clone(), command, 51).await.is_err());
         assert_eq!(
@@ -541,6 +705,6 @@ mod tests {
             before.state.audit_retention
         );
         assert_eq!(engine.generation().unwrap().state.revision, 50);
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
 }

@@ -143,13 +143,59 @@ impl KasumiTargetClient {
                 );
             }
             (TargetRuntimeStep::Complete(input), TargetRuntimeOutcome::Completed(signed)) => {
-                let origin = origin(input)?;
+                let origin = origin(&input.quorum)?;
+                input.validate(&origin, intent)?;
                 ensure!(
                     signed.observation.fact.completion_intent == *intent
-                        && signed.observation.observer_node_id == self.node_id,
+                        && signed.observation.observer_node_id == self.node_id
+                        && signed.observation.fact.predecessor == input.predecessor,
                     "completion phase differs"
                 );
                 verify_target_completion(&origin, signed)?;
+            }
+            (
+                TargetRuntimeStep::PrepareComplete(input),
+                TargetRuntimeOutcome::PreparedCompletion(signed),
+            ) => {
+                let attempt = &signed.observation.attempt;
+                attempt.validate()?;
+                let origin = origin(&input.quorum)?;
+                verify_target_completion_attempt(&origin, signed)?;
+                ensure!(
+                    attempt.origin == origin
+                        && attempt.input == *input
+                        && attempt.intent == *intent
+                        && signed.observation.observer_node_id == self.node_id
+                        && attempt.dispatch_not_after_ms
+                            == request
+                                .not_after_ms
+                                .min(intent.original_credential_expires_at_ms),
+                    "prepared target identity or original dispatch cap differs"
+                );
+            }
+            (
+                TargetRuntimeStep::ResolveComplete(input),
+                TargetRuntimeOutcome::ResolvedCompletion(signed),
+            ) => {
+                ensure!(
+                    signed.observation.fact.input == **input
+                        && signed.observation.observation_intent == *intent
+                        && signed.observation.observer_node_id == self.node_id,
+                    "target terminal response differs"
+                );
+                verify_target_completion_resolution(&input.attempt.origin, signed)?;
+            }
+            (
+                TargetRuntimeStep::MaintainBudget { quorum, input },
+                TargetRuntimeOutcome::ResolutionBudget(signed),
+            ) => {
+                ensure!(
+                    signed.observation.fact.input == *input
+                        && signed.observation.observation_intent == *intent
+                        && signed.observation.observer_node_id == self.node_id,
+                    "target budget response differs"
+                );
+                verify_target_resolution_budget(&origin(quorum)?, signed)?;
             }
             (
                 TargetRuntimeStep::Activate { quorum, .. },
@@ -208,6 +254,28 @@ impl KasumiTargetClient {
                 );
                 verify_target_inspection(input, signed)?;
             }
+            (
+                TargetRuntimeStep::InspectCompletionAttempt(input),
+                TargetRuntimeOutcome::CompletionAttemptStatus(signed),
+            ) => {
+                ensure!(
+                    signed.observation.status_intent == *intent
+                        && signed.observation.observer_node_id == self.node_id,
+                    "preparation status current phase differs"
+                );
+                verify_target_completion_attempt_status(input, signed)?;
+            }
+            (
+                TargetRuntimeStep::InspectCompletionResolution(input),
+                TargetRuntimeOutcome::CompletionTerminalStatus(signed),
+            ) => {
+                ensure!(
+                    signed.observation.status_intent == *intent
+                        && signed.observation.observer_node_id == self.node_id,
+                    "terminal status current phase differs"
+                );
+                verify_target_completion_terminal_status(input, signed)?;
+            }
             (TargetRuntimeStep::Stop(reference), TargetRuntimeOutcome::Stopped(signed)) => {
                 ensure!(
                     signed.fact.stopped.observation.reference == *reference,
@@ -257,17 +325,30 @@ fn validate_request_phase(
         }
         TargetRuntimeStep::Start(TargetReplicaInput::Quorum(i)) => {
             ensure!(
-                matches!(
-                    intent.request.phase,
-                    LifecyclePhase::Initialize | LifecyclePhase::Complete
-                ),
+                matches!(intent.request.phase, LifecyclePhase::Initialize),
                 "invalid target startup phase"
             );
             (intent.request.phase, Some(i.digest()?))
         }
+        TargetRuntimeStep::Start(TargetReplicaInput::Completion(i)) => {
+            (LifecyclePhase::Complete, Some(i.digest()?))
+        }
+        TargetRuntimeStep::Start(TargetReplicaInput::CompletionResolution(i)) => {
+            (LifecyclePhase::ResolveComplete, Some(i.digest()?))
+        }
+        TargetRuntimeStep::Start(TargetReplicaInput::ResolutionBudget { input, .. }) => {
+            (LifecyclePhase::MaintainTarget, Some(input.digest()?))
+        }
         TargetRuntimeStep::Start(TargetReplicaInput::Inspection(i)) => {
             (LifecyclePhase::InspectTarget, Some(i.digest()?))
         }
+        TargetRuntimeStep::Start(TargetReplicaInput::CompletionAttemptStatus(i)) => {
+            (LifecyclePhase::InspectCompletionAttempt, Some(i.digest()?))
+        }
+        TargetRuntimeStep::Start(TargetReplicaInput::CompletionTerminalStatus(i)) => (
+            LifecyclePhase::InspectCompletionResolution,
+            Some(i.digest()?),
+        ),
         TargetRuntimeStep::ConfirmActivation(signed) => {
             verify_target_activation(&signed.observation.completion.origin, signed)?;
             signed
@@ -300,8 +381,23 @@ fn validate_request_phase(
             )
         }
         TargetRuntimeStep::Inspect(i) => (LifecyclePhase::InspectTarget, Some(i.digest()?)),
+        TargetRuntimeStep::InspectCompletionAttempt(i) => {
+            (LifecyclePhase::InspectCompletionAttempt, Some(i.digest()?))
+        }
+        TargetRuntimeStep::InspectCompletionResolution(i) => (
+            LifecyclePhase::InspectCompletionResolution,
+            Some(i.digest()?),
+        ),
         TargetRuntimeStep::Initialize(i) => (LifecyclePhase::Initialize, Some(i.digest()?)),
-        TargetRuntimeStep::Complete(i) => (LifecyclePhase::Complete, Some(i.digest()?)),
+        TargetRuntimeStep::Complete(i) | TargetRuntimeStep::PrepareComplete(i) => {
+            (LifecyclePhase::Complete, Some(i.digest()?))
+        }
+        TargetRuntimeStep::ResolveComplete(i) => {
+            (LifecyclePhase::ResolveComplete, Some(i.digest()?))
+        }
+        TargetRuntimeStep::MaintainBudget { input, .. } => {
+            (LifecyclePhase::MaintainTarget, Some(input.digest()?))
+        }
         TargetRuntimeStep::StartActivation { quorum, .. }
         | TargetRuntimeStep::Activate { quorum, .. } => {
             origin(quorum)?.accepts_phase(intent, LifecyclePhase::Activate)?;

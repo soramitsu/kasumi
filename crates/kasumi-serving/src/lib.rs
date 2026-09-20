@@ -31,6 +31,11 @@ mod signing;
 pub use signing::*;
 mod live_trust;
 pub use live_trust::*;
+mod background_work;
+pub use background_work::{
+    BACKGROUND_WORK_DOMAIN_BYTES, BACKGROUND_WORK_SLOT_BYTES, BackgroundWork, BackgroundWorkBudget,
+    pending_background_custody,
+};
 
 mod live_signer;
 pub use live_signer::*;
@@ -55,3 +60,5 @@ mod control_signer;
 pub use control_signer::*;
 mod issuer_signer;
 pub use issuer_signer::*;
+mod signer_coverage;
+pub use signer_coverage::*;

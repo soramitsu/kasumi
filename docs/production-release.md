@@ -4,19 +4,160 @@ This is the active implementation and acceptance ledger for the approved first
 release. An unchecked gate is unfinished. The September 5 baseline and later
 branch evidence remain historical records; they do not certify this integration.
 
-The explicit release goal remains active. Current integration adds atomic recovery
-route publication, issuer-local activation tied to the global winner, and byte
-budgets for permanent staged outcomes. Permanent ordinary receipt storage, native
-resource reservations, persistent disk admission and the final live/capacity/
-endurance gates remain open. The Linux reference VM has 16 GiB memory. Its latest
-frozen run (`3a8d512`, 15 GiB container limit) failed the restored-runtime restart
-test while all other gates passed. Earlier failures remain retained in full.
+The explicit release goal remains active. Per the latest user instruction, all
+implementation, edits and builds use only `/Users/mtakemiya/dev/kasumi` on
+`master`. This supersedes the original external-worktree direction, including
+that stale location in the active goal text. Existing master changes and prior
+release work are preserved through integration. First-release API removal, permanent
+point-addressed receipts, explicit physical/catalog creation, retained startup and
+request owners, and canonical planned recovery are integrated in source. Persistent
+disk admission, native reservations, complete HA/local lifecycle, and final live,
+capacity, platform, endurance and artifact gates remain open.
 
-Release tooling now requires original command deadlines, verified process-group
-drain and exact executing runner/helper provenance before accepting or packaging
-functional results. Its [44 macOS and 20 Linux Python checks](evidence/release-process-abc8794-20260909/README.md)
-passed after preserving and correcting a failed deadline/cleanup counterexample.
-Those tool checks do not replace any database acceptance gate.
+The [approved completion plan](first-release-plan.md) and
+[fourteen workstream goals](first-release-goals.md) define the remaining work
+and its dependency order. Backward compatibility is forbidden for this first
+release. No goal closes without implementation, final-source validation and
+usable release artifacts or operating documentation.
+
+The [acceptance manifest verifier](release-acceptance-manifest.md) now validates
+the fixed native/domain/artifact roster, complete workload samples, process
+ownership and source identities. It deliberately rejects every domain whose
+semantic adapter remains unimplemented. The Python tooling suite passes 66
+tests, including counterexamples and remote-interpreter provenance. This is
+scoped tooling progress: G11, live runners, all final native gates and release
+acceptance remain open. Physical host observations in
+[Linux acceptance](linux-acceptance.md) are not resource reservations.
+
+## Latest combined checkpoint
+
+The [frozen `c681ba3` successor](evidence/first-release-c681ba3-check-20260920/README.md)
+passed 17 gates before the store library reported 154 passes and three failed
+allocation assertions. All 29 later gates were unrun; all 18 process groups
+drained and source remained unchanged. The correction prepares dormant test
+mutexes before the measured physical I/O and destructor boundaries. The full
+47-gate, 252-mandatory-case successor remains required, including the unrun
+Control genesis stack correction.
+
+## Preceding proposal and authority checkpoint
+
+The [frozen `5233e96` successor](evidence/first-release-5233e96-check-20260920/README.md)
+passed 26 gates, including proposal/authority custody, all MCP response fences,
+complete store/serving libraries and the corrected retired-source ownership
+case. The next Control genesis gate aborted with a stack overflow in its first
+case. All 19 later gates were unrun. All 27 dispatched process groups drained;
+source stayed unchanged and 13 preserved executables were rehashed. The original
+46-gate, 247-mandatory-case cohort and all deadlines remain required.
+
+Source-only disk-owner progress additionally prepares path verification before
+I/O, avoids heap-allocated errors in the physical publication path, and adds
+explicit durable settlement plus allocation-counting regressions. It is not in
+the frozen `5233e96` source and has not yet passed its successor tests. Installed
+constructor integration and G02 remain open.
+
+## Preceding authority compilation checkpoint
+
+The [frozen `207ae69` successor](evidence/first-release-207ae69-check-20260920/README.md)
+failed its first compilation gate: the new shared authority request helper had
+private child-module visibility. All 45 later gates were unrun. Its process
+group drained and source stayed unchanged. The scoped correction also ensures
+the unwind guard lives inside the actual authority child. All 46 gates and 247
+mandatory cases remain required for the successor.
+
+## Preceding SDK and ownership checkpoint
+
+The [frozen `f2921f5` successor](evidence/first-release-f2921f5-check-20260920/README.md)
+passed 16 gates, including all 69 SDK cases, all 11 MCP cases, 154 store tests,
+strict store lint and all six repaired serving owner fixtures. The next
+retired-source gate passed one case and failed its registration-rejection
+ownership case with an elapsed deadline. All 21 later gates were unrun.
+All dispatched process groups drained and source stayed unchanged. The failure
+and exact executable bytes are retained for diagnosis; the original deadlines
+and mandatory cohort remain required for the next frozen successor.
+
+## Preceding MCP checkpoint
+
+The [frozen `b5001b1` successor](evidence/first-release-b5001b1-check-20260920/README.md)
+passed workspace compilation, formatting and the new engine owned-response-fence
+regression. The next MCP gate passed three existing tests and failed seven new
+tests whose assertions expected lower-case errors while the API emits upper-case
+ErrorCode values. All 32 later gates were unrun. All dispatched process groups
+drained and source remained unchanged. Corrected assertions require a new frozen
+successor; production serialization and the original retained cohort are unchanged.
+
+## Preceding compiler checkpoint
+
+The [frozen `e9f39b2` successor](evidence/first-release-e9f39b2-check-20260920/README.md)
+failed its first workspace all-targets/features compilation gate after 154.208
+seconds on native macOS ARM64 with Rust 1.97.1. The previously integrated local
+cleanup fixture has an ambiguous `Result` alias. All 30 later gates were unrun;
+the process group drained and source remained unchanged. The pending correction
+selects `anyhow::Result<()>` explicitly. Its private-directory ownership fixture
+repair still requires execution on a passing successor. Pending MCP and owned
+response-fence changes are excluded from this frozen source.
+
+## Preceding ownership checkpoint
+
+The [frozen `be2667d` cohort](evidence/first-release-be2667d-check-20260919/README.md)
+**failed after eight passing gates**: workspace compilation, formatting,
+complete store library (150 passed, zero failed, two ignored), strict store lint,
+complete serving library (23 passed), database-worker outcomes (four passed),
+audit-worker outcomes (two passed), and corrected Control genesis (five passed).
+All 55 mandatory store cases passed, including the seven new NodeDisk and
+filesystem-backup cases. The ignored store entries remain the live MinIO test
+and the subprocess helper exercised by its passing parent. These are scoped
+results, not full workspace tests or strict workspace lint.
+
+The ninth gate, `server-serving-owner`, passed one case and failed five ownership
+fixtures with `operator material must be owner-only`. The fixtures created
+installation directories without the required private permissions. Correct their
+setup and validate the ownership assertions on a newly frozen source; keep
+production permission enforcement unchanged. All **22 later gates were unrun**,
+including the five audit gates. All nine dispatched process groups drained and
+the frozen source remained unchanged. Original logs, manifests and hashes remain
+preserved. The original evidence's scope text still says "Prepared only"; its
+terminal gate records and failed status establish that the run actually executed.
+That original evidence is not rewritten to correct its stale scope text.
+
+This run used source `be2667d804e483dce2b3bcc408ecb7cb7f3ae66a`, tree
+`5cc19f163e7f0b7b53ef53da9dfc998578ba0f20`. Later integration source and pending MCP
+changes are not qualified by it. Persistent NodeDisk admission, recoverable redb
+capacity handling and all final production, platform, live, capacity, performance,
+endurance and artifact gates remain open.
+
+## Preceding combined checkpoint
+
+The [frozen `32825cf` cohort](evidence/first-release-32825cf-check-20260919/README.md)
+**failed** after seven passing gates: workspace compilation and formatting,
+complete store library (143 passed, zero failed, two ignored), strict store lint,
+complete serving library (23 passed), engine database-worker outcomes (four
+passed), and engine audit-worker outcomes (two passed). All 48 required store,
+12 serving and six engine-worker cases passed. The ignored store entries were
+the live MinIO test and a subprocess helper exercised by its passing parent.
+Strict workspace lint and full workspace tests were not part of these passes.
+
+The next gate, engine Control genesis, passed four tests and failed
+`control_genesis_rejects_wrong_storage_purpose_before_deployment_publication`.
+Its fixture inadvertently selected the permitted `NodeControl` purpose for the
+reserved tenant; the production purpose check remained intact. Source correction
+`d14c4b3` explicitly supplies and asserts the wrong purpose. The failed log remains
+preserved. Its correction subsequently passed in the `be2667d` cohort above.
+
+All 18 later gates in the 26-gate/124-case plan were withheld. Server ownership,
+TLS/lifecycle, SDK/native receipts, authority enrollment and explicit-voter gates
+remain unrun on this source. All eight dispatched process groups drained, source
+remained unchanged, and raw logs plus source/tool/lock/executable hashes are
+preserved. These scoped results do not qualify final production, platform, live,
+capacity, performance, endurance or artifact gates.
+
+Source successors add exclusive NodeDisk acquisition and verified live shrink
+(`9c8309c`) and durable filesystem backup outcome readback (`db4b123`). Their seven
+new storage regressions passed in `be2667d`. That successor also includes the
+audit outage correction; its five audit gates requiring ten cases were withheld
+after the ownership failure. The 31-gate/141-case plan retains every previous
+command, deadline and required case and binds the successor source/tree. These
+results do not establish installed production disk admission or recoverable redb
+quota handling.
 
 ## Contract
 
@@ -68,7 +209,7 @@ it does not make their interfaces or formats part of the release contract.
   automatic fresh admission and maintenance under load.
 - [ ] Source-quorum-absent recovery, exact phased crash/cancellation outcomes,
   cleanup isolation, permanent stops and immutable lineage.
-- [ ] Real 3 GiB incompressible standalone/HA tenant, snapshots, compaction,
+- [ ] Incompressible standalone/HA corpus exceeding 3 GiB, snapshots, compaction,
   restart, member replacement, filesystem/S3 backup/restore and bounded workspaces.
 - [ ] Repeated audit cap crossings, archive failure/recovery, old administrative
   ceiling crossings, member replacement and GC/delayed-upload races.
@@ -80,8 +221,77 @@ it does not make their interfaces or formats part of the release contract.
 ## Next integration checkpoints
 
 These are concrete steps toward the active release goal, not separate release
-approvals. Implementation branches must pass their stated regressions before
-integration; the final integrated source must then pass the complete gates above.
+approvals. Source integration does not accept an implementation milestone. Each change must
+pass its stated regressions on the combined source, followed by the complete final
+gates above. Source-only changes and failed attempts remain explicitly identified.
+
+1. Validate the combined explicit singleton/pair creation and strict reopen paths,
+   canonical administration, stopped-operator ownership and live configured-tenant
+   enrollment. The generic singleton create-or-open API is removed. Complete
+   validation of explicit immutable Control genesis, standalone tenant enrollment and permanent
+   cleanup/replacement of incomplete HA creation without restoring creation rights.
+2. Close and validate stopped-operator ownership from first exclusive lock through
+   every failure/cancellation. Propagate actual worker/core terminal failures;
+   joined errors must survive cancelled drains, and elapsed deadlines never prove
+   owner release. Repeat the restored-runtime restart failure on final source.
+   The [OpenRaft shutdown patch](evidence/openraft-707e82e-source-20260910/README.md)
+   retains core/ticker outcomes and adds post-core cancellation regressions in
+   source only; it is uninstalled and untested. The preceding artifact is retained.
+3. Run full store and authority regressions for acknowledged catalog outcomes,
+   admitted-request/fence retention and exact signer authorization reuse. Follow
+   with the real TLS canonical coordinator and source-unavailable phase faults.
+4. Complete persistent node disk admission and native reservations, then validate
+   canonical `KASUMIT7` permanent receipts, history archival and streaming
+   snapshots/restores under actual pressure exceeding 3 GiB. Scratch or payload
+   limits do not establish disk capacity.
+5. Complete standalone and HA maintenance, secure credential/key/TLS lifecycle,
+   actual provider interoperability and replacement-member recovery. Earlier
+   small standalone and native branch diagnostics remain historical evidence.
+6. Execute all final-source platform/performance/endurance gates and generate
+   source/configuration/dependency/executable-bound installation artifacts. Preserve
+   failed attempts and do not shorten the genuine 24-hour soak.
+
+Persistent disk admission and native durable resource reservations must be
+implemented before claiming configured node disk capacity or reserved import
+completion. A scratch-file budget or an application payload limit does not
+account for persistent databases, indexes, WALs, archived objects or retained
+versions. The exact reservation dependency is specified below.
+
+The source-frozen `f650b99` NodeDisk foundation passes store all-target
+compilation and [23 focused ownership/device/scratch tests](evidence/node-disk-f650b99-20260909/README.md).
+It retains closed-file charges, bounds descriptor metadata and shares filesystem
+promises with scratch storage. Production constructors and redb lifecycle paths
+remain unwired; this result does not close persistent capacity acceptance.
+
+The separate redb owner-failure prototype `4f62863` passes
+[20 focused regressions](evidence/redb-owner-failure-4f62863-20260909/README.md),
+including permanent failure fencing and ordinary capacity rollback. Its
+[complete upstream source overlay](evidence/redb-upstream-preparation-20260909/README.md)
+is prepared at `bdde797`. Offline dependency preparation failed on missing cached
+packages and is preserved. [Online metadata preparation](evidence/redb-upstream-metadata-online-20260909/README.md)
+resolved both complete verification graphs without compilation and committed
+their lockfiles at `3a87154`. Pinned tools/harness, full upstream verification,
+fuzzing and production integration remain open.
+
+## Work ownership
+
+The only authorized checkout is `/Users/mtakemiya/dev/kasumi`, on `master`.
+Do not create or switch branches, create worktrees, or run edits/builds from
+another checkout. All previous external jobs have stopped. Preserve existing
+external work and evidence as historical inputs; transfer pending source into
+master before resuming it. Parallel agents require explicitly disjoint file
+scopes in this checkout. Source integration is not validation.
+
+Mark a milestone complete only when its implementation is integrated and its
+required checks actually pass. Completing scaffolding or a focused diagnostic
+does not complete a whole milestone. Release readiness requires every acceptance
+gate above and usable installation artifacts.
+
+## Preserved master checkpoint before release integration
+
+The following checkpoint list is preserved from master `2e8049a`. These are
+historical source-specific observations, not current acceptance claims. Its
+Linux `3a8d512` failure and all linked evidence remain preserved.
 
 1. Repeat the complete Linux acceptance after the integrated shutdown and SDK
    changes. The corrected three-node TLS restore/restart passed on macOS in the
@@ -169,29 +379,125 @@ integration; the final integrated source must then pass the complete gates above
    pre-header target cleanup and external namespace custody remain open.
    No missing-state fallback or compatibility constructor is permitted.
 
-Persistent disk admission and native durable resource reservations must be
-implemented before claiming configured node disk capacity or reserved import
-completion. A scratch-file budget or an application payload limit does not
-account for persistent databases, indexes, WALs, archived objects or retained
-versions. The exact reservation dependency is specified below.
+## Historical checkpoints
 
-The source-frozen `f650b99` NodeDisk foundation passes store all-target
-compilation and [23 focused ownership/device/scratch tests](evidence/node-disk-f650b99-20260909/README.md).
-It retains closed-file charges, bounds descriptor metadata and shares filesystem
-promises with scratch storage. Production constructors and redb lifecycle paths
-remain unwired; this result does not close persistent capacity acceptance.
+The following records describe their named sources at the time of each run or
+source review. Present-tense limitations inside these historical records are
+source-specific; the latest combined checkpoint above governs current evidence.
+Neither branch passes nor source integration replace final release acceptance.
 
-The separate redb owner-failure prototype `4f62863` passes
-[20 focused regressions](evidence/redb-owner-failure-4f62863-20260909/README.md),
-including permanent failure fencing and ordinary capacity rollback. Its
-[complete upstream source overlay](evidence/redb-upstream-preparation-20260909/README.md)
-is prepared at `bdde797`. Offline dependency preparation failed on missing cached
-packages and is preserved. [Online metadata preparation](evidence/redb-upstream-metadata-online-20260909/README.md)
-resolved both complete verification graphs without compilation and committed
-their lockfiles at `3a87154`. Pinned tools/harness, full upstream verification,
-fuzzing and production integration remain open.
+On September 19 the temporary worktrees and build targets from the previous
+session were absent. Committed source and tracked evidence survived; no old
+process or prepared plan is treated as a running or completed gate. The surviving
+91-file convergence was preserved byte-for-byte as `055a9b6` (tree
+`a3158704dcd09a0cbd65839fa9f391da0e9746f0`). It combines ordered seek, installed
+member endpoint pools, exact recovery attempt/completion identities, the single
+`KASUMIT7` snapshot format, and compiler/caller reconciliation. This is integrated
+source, not qualified release evidence. The original staged worktree is untouched.
 
-## Work ownership
+A [fresh checkpoint on the preceding `46ae68f` source](evidence/first-release-46ae68f-check-20260919/README.md)
+failed compilation in 218.329 seconds: engine dependency/type reconciliation and
+15 obsolete Raft fixture calls. Source stayed unchanged and all processes drained.
+Subsequent gates were withheld. The source fixes are included in `055a9b6`, whose
+new checkpoint preserves the original commands and deadlines.
+The ownership regression plan includes 110 mandatory cases across 20 gates;
+preparing that plan does not count as executing it. Any failure must remain in
+the evidence, with fixes validated on a newly frozen successor source.
+
+The [integrated `15e64dd` checkpoint](evidence/first-release-15e64dd-check-20260919/README.md)
+passed workspace compilation, formatting and the complete store library (143
+passed, zero failed, two ignored; all 48 mandatory store cases passed), then
+stopped on strict store lint. The ignored entries are the explicitly configured
+MinIO test and a subprocess helper exercised by its parent crash-recovery test.
+A subsequent store lint diagnostic at `654c074` found one more fixture UUID
+formatting issue. Both failed attempts remain preserved; `32825cf` fixes the
+known lint findings and adds retained authority enrollment plus mandatory
+explicit original-voter configuration. Its 26-gate/124-case cohort later ran
+with the exact partial results described above; server, receipt, authority,
+capacity and final release gates remain unqualified.
+
+The separately scoped Python tooling suite at `055a9b6` passed all 44 tests in
+3.467 seconds, with unchanged source and a drained process group. Its raw
+evidence remains in
+`/Users/mtakemiya/dev/kasumi-release-evidence/20260919-055a9b6-python`.
+The storage diagnostic on that same source also passed 143 tests before the
+combined successor repeated those results. These are historical scoped results,
+not a substitute for final-source acceptance.
+
+The combined `3b932ee` source adds explicit singleton creation/reopening,
+standalone operator ownership from first lock through cleanup, and Control-approved
+HA tenant enrollment with dormant configuration templates. Its
+[actual frozen cohort](evidence/first-release-3b932ee-check-20260910/README.md)
+failed compilation on three missing redb trait-method diagnostics in the new
+singleton module. All later formatting, full-store and strict-store gates were
+withheld, so the 44 mandatory storage regressions remain **UNRUN** on this source.
+Root `198bb6c` adds the missing trait import; its actual validation is pending.
+The [original prepared cohort](evidence/first-release-3b932ee-prepared-20260910/README.md)
+and failed run retain unchanged deadlines, commands, source and process evidence.
+
+Subsequent development integrates typed drain completion (`b02c60f`), retained
+startup owners across polling panics (`0f940a4`), required immutable Control
+genesis (`2547bad`), standalone tenant staging (`a3b3976`), nested preparation
+ownership (`31ea437`), typed store/audit outcomes (`6778f30`), runtime propagation
+(`c7f72aa`) and serving-task outcome retention (`d4a5e52`, caller reconciliation
+`71fc4e3`). Retired-source preparation (`836f9f1`) retains its new custody owner
+through completed cleanup before returning an error to its retained caller.
+The genesis tag replaces empty-Control startup creation and binds its encrypted
+baseline to enrollment. These changes and their new tests were excluded from the
+failed `3b932ee` cohort. Later scoped results are listed in the current checkpoint above.
+
+Authority memory admission is now an explicitly required operational setting
+(`ed0507a`). Database inner blocking-child custody is integrated (`61ce101`):
+cooperative worker shutdown retains actual child failures and cancels only
+undispatched waits for shared maintenance capacity. Its four encrypted-store
+regressions subsequently passed at `32825cf`. Live signer-worker custody
+(`309b3e5`) now retains one actual child handle with bounded synchronous reaping and no helper supervisor.
+Outer serving ownership (`63a5951`) retains the runtime separately from its
+supervisor and the listener's nested connection/HTTP2 task inventories. Shared
+runtime admission and typed lease callers are reconciled in `bb2f22a`. Static
+metadata keeps its byte charge while releasing the in-flight operation slot.
+The store/serving libraries and engine worker regressions subsequently passed
+at `32825cf`; its server gates were withheld after the Control genesis failure.
+Neither typed parent results nor cooperative loops alone establish a complete
+child census. Standalone staging is integrated in source, while incomplete
+creation cleanup, replacement enrollment and the full local lifecycle remain
+unfinished. No implementation or release gate is accepted by these source-only
+checkpoints.
+
+Retained original error objects can themselves carry opaque owner references.
+The [database-worker qualification](database-worker-outcomes.md) distinguishes
+structural ownership from arbitrary Rust panic payload disposal. No checkpoint
+claims those payloads are resource-free or treats an elapsed timeout as evidence
+that physical owners disappeared.
+
+The preceding [frozen compiler/store cohort](evidence/first-release-7a21995-check-20260909/README.md)
+passed workspace compilation and formatting, then failed one store identity
+assertion: 126 passed, one failed, two ignored. Strict store lint did not run after
+the original stop-on-failure rule. All owned processes drained and source stayed
+unchanged. This source excludes the later canonical administration and ownership
+changes. The failed assertion concerns an obsolete administrative-generation API
+already removed in the newer source; only a new actual run can validate that source.
+The [preceding compilation failure](evidence/first-release-1ff2fe2-check-20260909/README.md)
+and its exact inputs remain retained.
+
+The canonical administration fixture now uses actual encrypted backup data,
+separate pinned TLS issuer/Control/data groups, target materialization, quorum loss,
+source retirement, activation and restart assertions. It remains **UNRUN**; its
+previously missing live enrollment path is now implemented in source and pending
+combined validation. Its
+[source coverage and corrected review note](evidence/canonical-runtime-f7fa592-source-20260909/README.md)
+distinguish fixture-owned target/signing services from full production lifecycle.
+
+Release tooling requires original deadlines, verified process-group drain and exact
+runner/helper provenance. Its [44 macOS and 20 Linux Python checks](evidence/release-process-abc8794-20260909/README.md)
+passed after preserving a failed cleanup counterexample. The separate redb prototype
+[outer containment harness](evidence/redb-outer-92a6a94-guards-20260909/README.md)
+passed 14 Python guard tests; its actual VM/container build, full upstream suite and
+fuzz runs are unrun. Neither tool result replaces a database gate. The latest
+historical Linux reference run (`3a8d512`) failed restored-runtime restart and is
+not evidence for this integration.
+
+## Historical branch increments
 
 The combined SDK metadata checkpoint `e17a5eb` passed all 11 literal-decoder
 tests, client strict Clippy and formatting. Feed after-images now require their
@@ -199,18 +505,6 @@ exact event identity and commit version; schema responses reject impossible
 epoch metadata before constructing schema bodies. Source and all owned process
 groups closed cleanly. [The retained evidence](evidence/sdk-metadata-e17a5eb-20260909/README.md)
 does not certify the server TLS regression, which remains pending execution.
-
-The integration checkout is `/Users/mtakemiya/dev/kasumi`. Implementation branches
-use separate worktrees for streaming storage, standalone runtime and HA runtime.
-The existing `/private/tmp/kasumi-target-runner` remains preserved. Unrelated
-untracked files in the integration checkout are not release inputs.
-
-Mark a milestone complete only when its implementation is integrated and its
-required checks actually pass. Completing scaffolding or a focused diagnostic
-does not complete a whole milestone. Release readiness requires every acceptance
-gate above and usable installation artifacts.
-
-## Current verified increments
 
 - The combined SDK, original-receipt, canonical JSON and shutdown changes are
   integrated through source `980daa4`. Frozen `4e3a29d` passes eleven selected
@@ -882,3 +1176,12 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   `docs/evidence/small-native-runner-20260909`. These are pure runner checks;
   the first actual Linux diagnostic is still unrun. A diagnostic of the failed
   `3a8d512` checkpoint cannot change its workspace result or approve a candidate.
+
+- Source checkpoint: service-audit initialization is now explicit and established
+  daemon/operator opens require the retained canonical head even with no hot
+  records. Bounded hot-range, pending-publication and current archive-root checks
+  preserve the installed stream; HA node provisioning creates/drains the initial
+  audit catalog. Four new source regressions and explicit fixture create/reopen
+  phases are documented in [Service audit installation](security-audit-installation.md).
+  Compilation and functional gates are pending; this does not close release or
+  retention acceptance.

@@ -43,6 +43,46 @@ pub(super) fn certificates() -> (String, TlsIdentity, Vec<TlsIdentity>) {
     )
 }
 
+struct CoverageTransport {
+    config: KasumiClientConfig,
+    trust: AuthorityTrust,
+    bearer_file: std::path::PathBuf,
+    expire_first: std::sync::atomic::AtomicBool,
+}
+#[async_trait::async_trait]
+impl kasumi_authority::SignerPublicationTransport for CoverageTransport {
+    async fn observe(
+        &self,
+        dispatch: &SignerCoverageDispatch,
+    ) -> anyhow::Result<kasumi_client::CurrentSignerPublication> {
+        let bearer = crate::runtime::file_secret(
+            self.bearer_file
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("fixture credential path is not UTF-8"))?,
+        )?;
+        let observation = kasumi_client::CurrentSignerPublication::observe(
+            &self.config,
+            &bearer,
+            self.trust.clone(),
+            dispatch,
+        )
+        .await?;
+        if self
+            .expire_first
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            // The remote effect already committed. Losing its first finite
+            // response must keep coverage pending until the original receipt is
+            // observed again through the same pinned native endpoint.
+            tokio::time::sleep(Duration::from_millis(
+                self.trust.manifest().max_lease_ms + 25,
+            ))
+            .await;
+        }
+        Ok(observation)
+    }
+}
+
 #[tokio::test]
 async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery() {
     let dir = tempfile::tempdir().unwrap();
@@ -63,12 +103,13 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         keys,
     )
     .await;
-    let audit_node = NodeStore::open(
+    let audit_node = NodeStore::create_new(
         dir.path().join("audit.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let audit_store = TenantStore::open(
+    let audit_store = TenantStore::initialize_catalog(
         audit_node,
         kasumi_engine::SECURITY_TENANT.into(),
         Arc::new(LocalKeyProvider::new([88; 32])),
@@ -76,7 +117,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     )
     .await
     .unwrap();
-    let audit = kasumi_engine::SecurityAudit::open(
+    let audit = kasumi_engine::SecurityAudit::initialize(
         audit_store.clone(),
         kasumi_types::AuditRetentionBudget::default(),
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
@@ -150,11 +191,13 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             let keys = directory.join("keys.json");
             kasumi_store::FileKeyProvider::initialize(&keys, "signer-verifier").unwrap();
             let config = SignerVerifierConfig {
+                max_background_workers: 64,
                 identity: verifier,
                 database_path: directory.join("trust.redb"),
                 keys: crate::runtime::KeyProviderSettings::File { path: keys },
             };
             InitializeSignerVerifier {
+                admission: Default::default(),
                 scratch_disk: kasumi_store::ScratchDiskConfig {
                     directory: directory.join("scratch"),
                     max_bytes: 64 << 30,
@@ -176,6 +219,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                         min_free_bytes: 256 << 20,
                     })
                     .unwrap(),
+                    kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
                 )
                 .await
                 .unwrap();
@@ -183,9 +227,10 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             installed_verifiers.push(installed);
             continue;
         }
-        let store = TenantStore::open(
-            NodeStore::open(
+        let store = TenantStore::initialize_catalog(
+            NodeStore::create_new(
                 dir.path().join(format!("verifier-{node_id}.redb")),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap(),
@@ -202,6 +247,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                 Arc::new(CurrentFixtureAdministrator {
                     authority_id: manifest.authority_id,
                 }),
+                kasumi_serving::BackgroundWorkBudget::new(64, Arc::new(())).unwrap(),
             )
             .unwrap();
         verifier_stores.push(store);
@@ -216,35 +262,35 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         .with_live_verifiers(BTreeMap::from([(0, live_owners[3].clone())]))
         .unwrap();
     let router = Arc::new(kasumi_raft::InProcessRouter::default());
-    let settings = kasumi_authority::AuthorityNodeSettings {
-        bootstrap: kasumi_authority::AuthorityBootstrap {
-            initial_signer_certificate: certificate.clone(),
-            administrators: BTreeSet::from(["operator".into()]),
-            capacity: kasumi_serving::AuthorityCapacity {
-                max_tenants: 10,
-                max_state_bytes: 4 << 20,
-                maintenance_reserve_bytes: 1 << 20,
-            },
-            membership: kasumi_serving::AuthorityMembership {
-                voters: BTreeSet::from([1, 2, 3]),
-                members: (1..=3)
-                    .map(|n| {
-                        (
-                            n,
-                            kasumi_serving::AuthorityMember {
-                                verifier: kasumi_serving::TrustVerifierIdentity {
-                                    installation_id: verifier_installation,
-                                    node_id: n,
-                                },
-                                endpoint: format!("https://authority-{n}.test"),
-                                failure_domain: format!("domain-{n}"),
-                                certificate_pins: BTreeSet::from([format!("{n:064x}")]),
-                            },
-                        )
-                    })
-                    .collect(),
-            },
+    let bootstrap = kasumi_authority::AuthorityBootstrap {
+        initial_signer_certificate: certificate.clone(),
+        administrators: BTreeSet::from(["operator".into()]),
+        capacity: kasumi_serving::AuthorityCapacity {
+            max_tenants: 10,
+            max_state_bytes: 4 << 20,
+            maintenance_reserve_bytes: 1 << 20,
         },
+        membership: kasumi_serving::AuthorityMembership {
+            voters: BTreeSet::from([1, 2, 3]),
+            members: (1..=3)
+                .map(|n| {
+                    (
+                        n,
+                        kasumi_serving::AuthorityMember {
+                            verifier: kasumi_serving::TrustVerifierIdentity {
+                                installation_id: verifier_installation,
+                                node_id: n,
+                            },
+                            endpoint: format!("https://authority-{n}.test"),
+                            failure_domain: format!("domain-{n}"),
+                            certificate_pins: BTreeSet::from([format!("{n:064x}")]),
+                        },
+                    )
+                })
+                .collect(),
+        },
+    };
+    let settings = kasumi_authority::AuthorityNodeSettings {
         resource_budget_bytes: 4 << 20,
         installed_members: (1..=3)
             .map(|n| {
@@ -266,12 +312,13 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     let mut services = Vec::new();
     let mut stores = Vec::new();
     for id in 1..=3 {
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             dir.path().join(format!("authority-{id}.redb")),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
-        let storage = TenantStorageSet::open(
+        let storage = TenantStorageSet::initialize_catalogs(
             node,
             installation.tenant(),
             Arc::new(LocalKeyProvider::new([id as u8; 32])),
@@ -280,7 +327,14 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         )
         .await
         .unwrap();
-        let service = IndependentAuthority::open_replicated(
+        IndependentAuthority::initialize_storage(
+            &storage,
+            &installation,
+            &bootstrap,
+            &settings.installed_members[&id].verifier,
+        )
+        .unwrap();
+        let service = IndependentAuthority::open_existing_replicated(
             storage.clone(),
             installation.clone(),
             Arc::new(AuthoritySigner::new(
@@ -300,6 +354,10 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                 election_timeout_max: 180,
                 ..Default::default()
             },
+            crate::authority_runtime::request_budget(
+                &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            )
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -827,9 +885,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         action,
     };
     let mut verifier_set: BTreeSet<_> = settings
-        .bootstrap
-        .membership
-        .members
+        .installed_members
         .values()
         .map(|member| member.verifier.clone())
         .collect();
@@ -846,9 +902,17 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             not_after_ms: deadline,
             action: AuthorityMaintenanceAction::EnrollSignerVerifier {
                 enrollment: kasumi_serving::SignerVerifierEnrollment {
+                    endpoint: if verifier == local_identity {
+                        format!("{}/", config.endpoint)
+                    } else {
+                        format!("https://verifier-admin-{index}.test/")
+                    },
+                    certificate_pins: if verifier == local_identity {
+                        BTreeSet::from([hex::encode(server_pin)])
+                    } else {
+                        BTreeSet::from([format!("{:064x}", 1000 + index)])
+                    },
                     verifier,
-                    endpoint: format!("https://verifier-admin-{index}.test/"),
-                    certificate_pins: BTreeSet::from([format!("{:064x}", 1000 + index)]),
                 },
             },
         };
@@ -1098,15 +1162,134 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         staged.current,
         "an issuer-local abort cannot undo the committed global winner"
     );
-    let activated = client
-        .signer_maintenance(
+    let publication_bearer = signer_directory.join("publication.bearer");
+    kasumi_store::private_files::create(&publication_bearer, operator.as_bytes()).unwrap();
+    let publication_transport = Arc::new(CoverageTransport {
+        config: config.clone(),
+        trust: trust.clone(),
+        bearer_file: publication_bearer,
+        expire_first: std::sync::atomic::AtomicBool::new(true),
+    });
+    leader
+        .install_signer_publication_transport(publication_transport.clone())
+        .unwrap();
+    let coverage = SignerCoverageCommand {
+        operation_id: uuid::Uuid::new_v4(),
+        expected_policy_epoch: global_activated.policy_epoch,
+        expected_operational_revision: global_activated.operational_revision,
+        not_after_ms: activation.not_after_ms,
+        publication: SignerPublicationRequest::Issuer {
+            observation_id: uuid::Uuid::new_v4(),
+            directive: Box::new(
+                IssuerSignerDirective::from_current_head(
+                    local_identity.clone(),
+                    domain.digest().unwrap(),
+                    activation.clone(),
+                    &global_activated.current,
+                )
+                .unwrap(),
+            ),
+        },
+    };
+    let started = client
+        .signer_coverage(
             &operator,
-            &signer_request(SignerVerifierAction::Administer {
-                command: activation.clone(),
-            }),
+            &SignerCoverageRequest::Start {
+                command: coverage.clone(),
+            },
         )
         .await
         .unwrap();
+    assert!(started.status.acknowledgment.is_none());
+    assert_eq!(local_owner.current().unwrap().active.identity.generation, 1);
+    let mut wrong_endpoint = config.clone();
+    wrong_endpoint.server_certificate_pins = BTreeSet::from([[7; 32]]);
+    assert!(
+        kasumi_client::CurrentSignerPublication::observe(
+            &wrong_endpoint,
+            &operator,
+            trust.clone(),
+            &started.status.dispatch
+        )
+        .await
+        .is_err()
+    );
+    let resume = SignerCoverageRequest::Resume {
+        operation_id: coverage.operation_id,
+    };
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match client.signer_coverage(&operator, &resume).await {
+                Err(kasumi_client::ClientError::Transport(status))
+                    if matches!(
+                        status.code(),
+                        tonic::Code::Unknown | tonic::Code::Unavailable
+                    ) => {}
+                result => panic!(
+                    "expected an uncertain response before acknowledging the remote effect: {result:?}"
+                ),
+            }
+            if !publication_transport
+                .expire_first
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                break;
+            }
+            // An earlier connection or finite observation may have failed before
+            // reaching the injected expiration. Resolve only this dispatch and
+            // its unchanged local command until that boundary was exercised.
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(local_owner.current().unwrap().active.identity.generation, 2);
+    let uncertain = client
+        .signer_coverage(
+            &operator,
+            &SignerCoverageRequest::Status {
+                operation_id: coverage.operation_id,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        uncertain.status, started.status,
+        "the immutable dispatch survives lost publication acknowledgment"
+    );
+    let covered = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match client.signer_coverage(&operator, &resume).await {
+                Ok(response) => break response,
+                Err(kasumi_client::ClientError::Transport(status))
+                    if matches!(
+                        status.code(),
+                        tonic::Code::Unknown | tonic::Code::Unavailable
+                    ) => {}
+                Err(error) => panic!("definitive coverage dispatch rejection: {error:?}"),
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let acknowledgment = covered.status.acknowledgment.as_ref().unwrap();
+    assert_eq!(
+        acknowledgment.publication.receipt().unwrap().command,
+        activation
+    );
+    assert_eq!(covered.status.dispatch, started.status.dispatch);
+    assert_eq!(
+        client.signer_coverage(&operator, &resume).await.unwrap(),
+        covered
+    );
+    assert!(
+        global_activated.current.retirement.is_some(),
+        "one physical acknowledgment is not full global retirement"
+    );
+    let SignerPublicationResponse::Issuer(activated) = &acknowledgment.publication else {
+        unreachable!()
+    };
     assert_eq!(activated.current.active.identity.generation, 2);
     assert!(activated.current.retirement.is_some());
     assert!(
@@ -1284,6 +1467,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         "replacing a key cannot re-sign an already encoded response"
     );
     assert!(source_response.release().await.is_err());
+    drop(source_response);
     assert!(retained.check().is_err());
     let fresh_boot = ServingBoot::new(trust.clone(), boot.identity().clone()).unwrap();
     let fresh_attempt = fresh_boot.begin_acquisition().unwrap();
@@ -1306,18 +1490,17 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         service.shutdown().await.unwrap();
     }
     for storage in stores {
-        storage.application().shutdown().await;
-        storage.custody().store().shutdown().await;
+        storage.shutdown().await.unwrap();
     }
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     for owner in live_owners {
         owner.close();
     }
     for store in verifier_stores {
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
     for installed in installed_verifiers {
-        installed.shutdown().await;
+        installed.shutdown().await.unwrap();
     }
 }
 

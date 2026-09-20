@@ -8,7 +8,22 @@ target/release/kasumid init --mode standalone /var/lib/kasumi --tenant default
 target/release/kasumid serve /var/lib/kasumi/kasumi.json
 ```
 
-Initialization creates private directories and files, an exclusive installation identity, independent application/custody/Control/security wrapping keyrings, an Ed25519 issuer, TLS identities, and two client profiles. Listeners default to loopback: MCP on 9443, native data on 9444, and native administration on 9445. Change listener addresses and the MCP public URL in the generated configuration before starting if different ports are required.
+Initialization creates private directories and files, an exclusive installation identity, independent application/custody/Control/security wrapping keyrings, an Ed25519 issuer, TLS identities, and two client profiles. It provisions the Control and application catalogs, authenticated bootstrap, reserved Control schema and initial topology while holding exclusive storage ownership. It drains those owners before publishing the configuration and completion marker. A failed initialization leaves an incomplete private directory; initialization never adopts or overwrites it.
+
+Listeners default to loopback: MCP on 9443, native data on 9444, and native administration on 9445. The initial MCP endpoint and certificate pin are committed in Control topology. Changing that endpoint requires a corresponding authorized topology update; editing only the configuration is insufficient. A stopped endpoint-configuration command remains to be implemented.
+
+Established standalone runtime and operator opens require the existing application/custody catalogs, authenticated bootstrap and exact configured incarnation. Missing bootstrap or Control topology is an error, never permission to create a new genesis from configuration defaults. The completion marker binds the immutable Control incarnation; unsupported marker formats are rejected explicitly.
+
+The required non-nil `database_id` identifies the main physical node file. Init
+persists this random UUID in private `data/initialization.json` before creating
+the inode. The final `data/installation.json` must match that intent and the
+configured ID. An existing node must have a complete canonical node-file
+envelope with the expected ID before the storage engine may recover it. Raw,
+partial, missing or differently identified files are rejected. Restored local
+generations derive their separate file IDs from the retained installation,
+recovery operation and target incarnation; active runtime and stopped operator
+opens use the same derivation. The UUID envelope does not replace encrypted
+tenant catalog authentication or permanent recovery fencing.
 
 The generated configuration includes a required `scratch_disk` object with an
 absolute private `directory` at `data/scratch`, `max_bytes` of 68719476736

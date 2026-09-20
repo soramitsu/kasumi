@@ -270,6 +270,14 @@ impl Authenticator {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_test_clock(
+        config: AuthConfig,
+        clock: Arc<EpochClock>,
+    ) -> anyhow::Result<Arc<Self>> {
+        Self::new_with_clock(config, clock)
+    }
+
+    #[cfg(test)]
     pub(crate) async fn with_test_keys(config: AuthConfig, keys: JwkSet) -> Arc<Self> {
         let authenticator = Self::new(config).expect("valid test authenticator config");
         *authenticator.cache.write().await = Some(CachedKeys {

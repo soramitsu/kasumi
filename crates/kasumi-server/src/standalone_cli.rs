@@ -16,6 +16,32 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
         return Ok(true);
     }
     match arguments {
+        [command, action, configuration, input] if command == "tenant" => {
+            let result = match action.as_str() {
+                "stage" => {
+                    let request: crate::standalone::StageTenantRequest = serde_json::from_slice(
+                        &crate::runtime::read_bounded(Path::new(input), 2 << 20)?,
+                    )?;
+                    crate::standalone::stage_tenant(Path::new(configuration), request).await?
+                }
+                "stage-status" => {
+                    crate::standalone::tenant_stage_status(
+                        Path::new(configuration),
+                        Uuid::parse_str(input)?,
+                    )
+                    .await?
+                }
+                _ => anyhow::bail!("unknown tenant staging operation"),
+            };
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        [command, configuration] if command == "initialize-target-journal" => {
+            crate::target_journal_installation::initialize_from_file(Path::new(configuration))
+                .await?;
+            println!(
+                "Target journal initialized; normal startup now requires this installed journal."
+            );
+        }
         [command, configuration] if command == "initialize-signer-verifier" => {
             crate::signer_runtime::initialize_from_file(Path::new(configuration)).await?;
             println!("Signer verifier initialized; installation roots remain operator-held.");

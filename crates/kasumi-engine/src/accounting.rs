@@ -1,5 +1,6 @@
-//! Exact canonical semantic-record sizes. Only changed document/receipt/stage
-//! records are remeasured during ordinary writes; metadata stays bounded.
+//! Exact canonical resident semantic-record sizes. Only changed document/stage
+//! records are remeasured during ordinary writes; permanent receipt rows have
+//! their own checked byte budget and only a fixed head is resident.
 use crate::snapshot_codec::{Record, metadata};
 use kasumi_types::*;
 use serde::Serialize;
@@ -9,7 +10,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) struct SnapshotAccounting {
     documents: usize,
     archived: usize,
-    receipts: usize,
     audits: usize,
     staged: usize,
     feed: usize,
@@ -19,6 +19,7 @@ pub(crate) struct SnapshotAccounting {
     recovery_operations: usize,
     recovery_phases: usize,
     recovery_targets: usize,
+    recovery_completion_history: usize,
 }
 pub(crate) fn encoded_len(value: &impl Serialize) -> Result<usize> {
     struct Counter(usize);
@@ -47,7 +48,7 @@ fn record(record: &Record) -> Result<usize> {
             "snapshot record exceeds byte limit",
         ));
     }
-    size.checked_add(8)
+    size.checked_add(crate::snapshot_codec::FRAME_HEADER_BYTES)
         .ok_or_else(|| Error::new(ErrorCode::Corruption, "snapshot record overflow"))
 }
 fn change(total: &mut usize, old: usize, new: usize) -> Result<()> {
@@ -69,13 +70,77 @@ pub(crate) fn staged_headroom(state: &TenantState) -> Result<u64> {
     let digits = if state.reserved_staged_terminal_bytes == 0 {
         0
     } else {
-        40 - state.permanent_staged_bytes.to_string().len() as u64
+        80 - state.permanent_staged_bytes.to_string().len() as u64
             - state.reserved_staged_terminal_bytes.to_string().len() as u64
+            - state.staged_terminal_head.count.to_string().len() as u64
+            - state.staged_terminal_head.encoded_bytes.to_string().len() as u64
     };
     state
         .reserved_staged_terminal_bytes
         .checked_add(digits)
         .ok_or_else(|| Error::new(ErrorCode::Corruption, "staged snapshot headroom overflow"))
+}
+pub(crate) fn target_audit_reserve(state: &TenantState) -> u64 {
+    let Some(active) = state
+        .target_completion_head
+        .as_ref()
+        .and_then(|head| head.active.as_ref())
+    else {
+        return 0;
+    };
+    if state
+        .target_lifecycle
+        .get(&state.incarnation)
+        .is_some_and(|entry| entry.completion.is_some())
+    {
+        active
+            .reserved_audit_bytes
+            .saturating_sub(MAX_AUDIT_EVENT_BYTES as u64)
+    } else {
+        active.reserved_audit_bytes
+    }
+}
+pub(crate) fn target_completion_reserve(state: &TenantState) -> u64 {
+    if state
+        .target_completion_head
+        .as_ref()
+        .is_some_and(|head| head.active.is_some())
+        && state
+            .target_lifecycle
+            .get(&state.incarnation)
+            .is_some_and(|entry| entry.completion.is_none())
+    {
+        MAX_TARGET_COMPLETION_RECORD_BYTES
+    } else {
+        0
+    }
+}
+pub(crate) fn audit_fits(state: &TenantState) -> bool {
+    state
+        .audit_retention
+        .hot_bytes
+        .checked_add(target_audit_reserve(state))
+        .is_some_and(|bytes| bytes <= state.limits.audit_retention.hot_bytes)
+}
+pub(crate) fn snapshot_headroom(state: &TenantState) -> Result<u64> {
+    staged_headroom(state)?
+        .checked_add(target_audit_reserve(state))
+        .and_then(|n| n.checked_add(target_completion_reserve(state)))
+        // Active metadata is already charged. Reserve bounded future selector
+        // and decimal-width growth before its completion can be dispatched.
+        .and_then(|n| {
+            n.checked_add(if state.target_completion_head.is_some() {
+                64 << 10
+            } else {
+                0
+            })
+        })
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Corruption,
+                "target completion workspace overflow",
+            )
+        })
 }
 fn stage(key: &str, value: &StagedTransaction) -> Result<usize> {
     let mut size = usize::try_from(staged_header(key, value)?)
@@ -136,6 +201,12 @@ fn recovery_operation(key: &str, value: &RecoveryRecord) -> Result<usize> {
 fn recovery_phase(key: &str, value: &RecoveryPhaseRecord) -> Result<usize> {
     record(&Record::RecoveryPhase(key.into(), Box::new(value.clone())))
 }
+fn recovery_completion_history(key: &str, value: &RecoveryCompletionHistory) -> Result<usize> {
+    record(&Record::RecoveryCompletionHistory(
+        key.into(),
+        Box::new(value.clone()),
+    ))
+}
 fn recovery_target(key: &str, value: &uuid::Uuid) -> Result<usize> {
     record(&Record::RecoveryTarget(key.into(), *value))
 }
@@ -161,13 +232,6 @@ impl SnapshotAccounting {
                     ))?,
                 )?;
             }
-        }
-        for (key, value) in &state.receipts {
-            change(
-                &mut result.receipts,
-                0,
-                record(&Record::Receipt(key.clone(), value.clone()))?,
-            )?;
         }
         for (i, event) in state.audits.iter().enumerate() {
             change(
@@ -203,6 +267,12 @@ impl SnapshotAccounting {
             &Default::default(),
             &state.recovery_control.phases,
             recovery_phase,
+        )?;
+        map_changes(
+            &mut result.recovery_completion_history,
+            &Default::default(),
+            &state.recovery_control.completion_history,
+            recovery_completion_history,
         )?;
         map_changes(
             &mut result.recovery_targets,
@@ -244,7 +314,6 @@ impl SnapshotAccounting {
         previous: &TenantState,
         next: &TenantState,
         changed_documents: &BTreeMap<String, BTreeSet<String>>,
-        changed_receipts: &BTreeSet<String>,
         changed_stages: &BTreeSet<String>,
     ) -> Result<Self> {
         let mut result = self.clone();
@@ -277,17 +346,6 @@ impl SnapshotAccounting {
                     })?,
                 )?;
             }
-        }
-        for key in changed_receipts {
-            change(
-                &mut result.receipts,
-                optional(previous.receipts.get(key), |r| {
-                    record(&Record::Receipt(key.clone(), r.clone()))
-                })?,
-                optional(next.receipts.get(key), |r| {
-                    record(&Record::Receipt(key.clone(), r.clone()))
-                })?,
-            )?;
         }
         for key in changed_stages {
             change(
@@ -382,6 +440,12 @@ impl SnapshotAccounting {
             recovery_phase,
         )?;
         map_changes(
+            &mut result.recovery_completion_history,
+            &previous.recovery_control.completion_history,
+            &next.recovery_control.completion_history,
+            recovery_completion_history,
+        )?;
+        map_changes(
             &mut result.recovery_targets,
             &previous.recovery_control.targets,
             &next.recovery_control.targets,
@@ -392,6 +456,13 @@ impl SnapshotAccounting {
     pub fn bytes(&self, state: &TenantState) -> Result<usize> {
         // Eight-byte format prefix plus the 56-byte terminal record.
         let mut total = 64usize;
+        change(
+            &mut total,
+            0,
+            usize::try_from(state.staged_terminal_head.encoded_bytes).map_err(|_| {
+                Error::new(ErrorCode::Corruption, "terminal snapshot byte overflow")
+            })?,
+        )?;
         change(
             &mut total,
             0,
@@ -443,7 +514,6 @@ impl SnapshotAccounting {
         for size in [
             self.documents,
             self.archived,
-            self.receipts,
             self.audits,
             self.staged,
             self.feed,
@@ -453,13 +523,14 @@ impl SnapshotAccounting {
             self.recovery_operations,
             self.recovery_phases,
             self.recovery_targets,
+            self.recovery_completion_history,
         ] {
             change(&mut total, 0, size)?;
         }
         Ok(total)
     }
     pub fn fits(&self, state: &TenantState) -> Result<bool> {
-        let headroom = staged_headroom(state)?;
+        let headroom = snapshot_headroom(state)?;
         Ok((self.bytes(state)? as u64)
             .checked_add(20 - state.revision.to_string().len() as u64)
             .and_then(|n| n.checked_add(headroom))

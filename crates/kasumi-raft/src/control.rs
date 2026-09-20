@@ -203,6 +203,19 @@ impl CommittedRetirementSeed {
     }
 }
 
+/// Canonical identity rows for an explicit first installation. This prepares no
+/// membership and performs no writes. The caller must atomically publish these
+/// custody rows with application genesis using `TenantStorageSet::initialize_state`,
+/// which rejects all pre-existing domain state, including unknown namespaces.
+pub fn initial_storage_identity(node_id: u64, group: &str) -> Result<[WriteOp; 2]> {
+    ensure!(node_id > 0, "initial consensus node identity is zero");
+    kasumi_types::validate_name(group)?;
+    Ok([
+        WriteOp::put(META, b"node_id", serde_json::to_vec(&node_id)?),
+        WriteOp::put(META, b"group", serde_json::to_vec(group)?),
+    ])
+}
+
 /// Metadata-only recovery reader. It cannot read application log bodies or
 /// initialize a serving state machine. Native source custody routing is separate.
 pub struct ControlLog {
@@ -259,21 +272,15 @@ impl ControlLog {
             return Ok(true);
         }
         let store = self.custody.store();
-        let mut indices = Vec::new();
-        store.visit(SEEDS, 2 << 20, |key, _| {
-            ensure!(
-                indices.len() < 100_000,
-                "retirement recovery identity budget exceeded"
-            );
-            let key: [u8; 8] = key.try_into().context("invalid retirement index")?;
-            indices.push(u64::from_be_bytes(key));
-            Ok(())
-        })?;
-        indices.sort_unstable();
         let mut candidate = None;
-        for index in indices {
+        // The control gate keeps the candidate set and coverage stable. A read
+        // view releases its key-state guard before the callback's point reads;
+        // retaining a normal visit guard here could deadlock key renewal.
+        store.read_view()?.visit(SEEDS, 2 << 20, |key, _| {
+            let key: [u8; 8] = key.try_into().context("invalid retirement index")?;
+            let index = u64::from_be_bytes(key);
             let Some(seed) = self.retirement_seed(index)? else {
-                continue;
+                return Ok(());
             };
             let revision = seed
                 .seed
@@ -288,7 +295,8 @@ impl ControlLog {
                 );
                 candidate = Some((seed, receipt));
             }
-        }
+            Ok(())
+        })?;
         let Some((committed, receipt)) = candidate else {
             return Ok(false);
         };

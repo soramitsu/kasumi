@@ -1,0 +1,4 @@
+(lldb) target create "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/8b457292ae3393310a73fcfd46910679b09e4131a9fb52827391b9a2be9bbe19-kasumi_server-56e77547c1375cd4"
+Current executable set to '/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/8b457292ae3393310a73fcfd46910679b09e4131a9fb52827391b9a2be9bbe19-kasumi_server-56e77547c1375cd4' (arm64).
+(lldb) settings set -- target.run-args  "--exact" "control_genesis::tests::cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_drain" "--nocapture" "--test-threads=1"
+(lldb) run

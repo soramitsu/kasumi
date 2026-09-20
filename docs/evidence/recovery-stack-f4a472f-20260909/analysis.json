@@ -1,0 +1,310 @@
+{
+  "source": "f4a472ffa510cead0a5383a5a199a7e5f47560ef",
+  "test": "recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward",
+  "status": "observed failure; proposed source fix has not been compiled or executed",
+  "report_sha256": "14bf3754f6f2acc61d8a1770b78e6e812621c01fd6cc54d601b9b04d4e2f7a3c",
+  "binary_sha256": "26d58319400fb6ee4fddcfe8b0b1aa2cb116d8f084c72f843c4027eb1e42fd88",
+  "binary_uuid": "dba0fb09-124f-3379-b8d5-5145a61f1c8d",
+  "capture_time": "2026-09-09 14:43:21.2914 +0900",
+  "pid": 65795,
+  "exception_type": "EXC_BAD_ACCESS",
+  "termination": {
+    "namespace": "SIGNAL",
+    "code": 6
+  },
+  "total_triggered_frames": 45,
+  "selected_frames": [
+    {
+      "symbol": "_RNvNtNtNtCsa9BKTri5B3M_3std3sys3pal4unix14abort_internal",
+      "symbolLocation": 12,
+      "imageOffset": 36086088
+    },
+    {
+      "symbol": "_RNvNtCsa9BKTri5B3M_3std7process5abort",
+      "symbolLocation": 12,
+      "imageOffset": 36085448
+    },
+    {
+      "symbol": "_RNvNtNtNtNtNtCsa9BKTri5B3M_3std3sys3pal4unix14stack_overflow3imp14signal_handler",
+      "symbolLocation": 644,
+      "imageOffset": 35623672
+    },
+    {
+      "symbol": "_RNCNCNvMNtCs5Ak5PsZRl9Y_8openraft4raftINtB6_4RaftNtCsfEk3H7tf8uv_11kasumi_raft10TypeConfigE19ensure_linearizable00CscLZrSWTiyRM_13kasumi_engine",
+      "symbolLocation": 388,
+      "imageOffset": 3260188
+    },
+    {
+      "symbol": "_RNCNCNvMNtCs5Ak5PsZRl9Y_8openraft4raftINtB6_4RaftNtCsfEk3H7tf8uv_11kasumi_raft10TypeConfigE19ensure_linearizable00CscLZrSWTiyRM_13kasumi_engine",
+      "symbolLocation": 388,
+      "imageOffset": 3260188
+    },
+    {
+      "symbol": "_RNCNvMNtCs5Ak5PsZRl9Y_8openraft4raftINtB4_4RaftNtCsfEk3H7tf8uv_11kasumi_raft10TypeConfigE19ensure_linearizable0CscLZrSWTiyRM_13kasumi_engine",
+      "symbolLocation": 1696,
+      "imageOffset": 3267964
+    },
+    {
+      "symbol": "_RNCNCNCINvNtCsfEk3H7tf8uv_11kasumi_raft6quorum7barrierNCNCNvMs3_Ba_NtBa_9RaftGroup20linearizable_barrier00E000CscLZrSWTiyRM_13kasumi_engine",
+      "symbolLocation": 568,
+      "imageOffset": 7355208
+    },
+    {
+      "symbol": "_RNvXs0_NtNtCsgtPOCBgevO_4core6future7poll_fnINtB5_6PollFnNCNCNCINvNtCsfEk3H7tf8uv_11kasumi_raft6quorum7barrierNCNCNvMs3_B14_NtB14_9RaftGroup20linearizable_barrier00E000ENtNtB7_6future6Future4pollCscLZrSWTiyRM_13kasumi_engine",
+      "symbolLocation": 40,
+      "imageOffset": 7043172
+    },
+    {
+      "symbol": "_RNCNCINvNtCsfEk3H7tf8uv_11kasumi_raft6quorum7barrierNCNCNvMs3_B8_NtB8_9RaftGroup20linearizable_barrier00E00CscLZrSWTiyRM_13kasumi_engine",
+      "symbolLocation": 1820,
+      "imageOffset": 7351660
+    },
+    {
+      "symbol": "_RNvXs_NtNtCs8C1EuctuCtk_5tokio4time7timeoutINtB4_7TimeoutNCNCINvNtCsfEk3H7tf8uv_11kasumi_raft6quorum7barrierNCNCNvMs3_B12_NtB12_9RaftGroup20linearizable_barrier00E00ENtNtNtCsgtPOCBgevO_4core6future6future6Future4pollCscLZrSWTiyRM_13kasumi_engine",
+      "symbolLocation": 96,
+      "imageOffset": 3145104
+    },
+    {
+      "symbol": "_RNCINvNtCsfEk3H7tf8uv_11kasumi_raft6quorum7barrierNCNCNvMs3_B6_NtB6_9RaftGroup20linearizable_barrier00E0CscLZrSWTiyRM_13kasumi_engine",
+      "symbolLocation": 956,
+      "imageOffset": 7349448
+    },
+    {
+      "symbol": "_RNCNvMs3_CsfEk3H7tf8uv_11kasumi_raftNtB7_9RaftGroup20linearizable_barrier0CscLZrSWTiyRM_13kasumi_engine",
+      "symbolLocation": 500,
+      "imageOffset": 2080160
+    },
+    {
+      "symbol": "_RNvXs_NtNtCs8C1EuctuCtk_5tokio4time7timeoutINtB4_7TimeoutNCNvMs3_CsfEk3H7tf8uv_11kasumi_raftNtB11_9RaftGroup20linearizable_barrier0ENtNtNtCsgtPOCBgevO_4core6future6future6Future4pollCs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 96,
+      "sourceFile": "timeout.rs",
+      "sourceLine": 217,
+      "imageOffset": 1218828
+    },
+    {
+      "symbol": "_RNCNvMs6_NtCscLZrSWTiyRM_13kasumi_engine7serviceNtB7_8Database7barrier0Cs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 656,
+      "sourceFile": "service.rs",
+      "sourceLine": 911,
+      "imageOffset": 188156
+    },
+    {
+      "symbol": "_RNCNvMs6_NtCscLZrSWTiyRM_13kasumi_engine7serviceNtB7_8Database17collections_inner0Cs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 1384,
+      "sourceFile": "service.rs",
+      "sourceLine": 1780,
+      "imageOffset": 182776
+    },
+    {
+      "symbol": "_RNCNvMs6_NtCscLZrSWTiyRM_13kasumi_engine7serviceNtB7_8Database11collections0Cs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 420,
+      "sourceFile": "service.rs",
+      "sourceLine": 1759,
+      "imageOffset": 176836
+    },
+    {
+      "symbol": "_RNCNvMs_NtCscLZrSWTiyRM_13kasumi_engine7controlNtB6_12ControlPlane10initialize0Cs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 4640,
+      "sourceFile": "control.rs",
+      "sourceLine": 163,
+      "imageOffset": 994380
+    },
+    {
+      "symbol": "_RNCNvNtCs9eRdt6wpk4U_9lifecycle16recovery_control26exercise_route_publication0B5_",
+      "symbolLocation": 1800,
+      "sourceFile": "recovery_control.rs",
+      "sourceLine": 1369,
+      "imageOffset": 698132
+    },
+    {
+      "symbol": "_RNCNvNtCs9eRdt6wpk4U_9lifecycle16recovery_control27exercise_completed_recovery0B5_",
+      "symbolLocation": 99304,
+      "sourceFile": "recovery_control.rs",
+      "sourceLine": 1076,
+      "imageOffset": 851244
+    },
+    {
+      "symbol": "_RNCNvNtCs9eRdt6wpk4U_9lifecycle16recovery_controls_87recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward0B5_",
+      "symbolLocation": 376,
+      "sourceFile": "recovery_control.rs",
+      "sourceLine": 101,
+      "imageOffset": 889620
+    },
+    {
+      "symbol": "_RNvXs_NtNtCsgtPOCBgevO_4core6future6futureINtNtB8_3pin3PinQDNtB4_6Futurep6OutputuEL_EBW_4pollCs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 72,
+      "sourceFile": "future.rs",
+      "sourceLine": 133,
+      "imageOffset": 349004
+    },
+    {
+      "symbol": "_RNCINvMs2_NtNtCs8C1EuctuCtk_5tokio7runtime4parkNtB8_16CachedParkThread8block_onINtNtCsgtPOCBgevO_4core3pin3PinQDNtNtNtB1k_6future6future6Futurep6OutputuEL_EE0Cs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 56,
+      "sourceFile": "park.rs",
+      "sourceLine": 284,
+      "imageOffset": 1006216
+    },
+    {
+      "symbol": "_RINvNtNtCs8C1EuctuCtk_5tokio4task4coop11with_budgetINtNtNtCsgtPOCBgevO_4core4task4poll4PolluENCINvMs2_NtNtB6_7runtime4parkNtB1C_16CachedParkThread8block_onINtNtBU_3pin3PinQDNtNtNtBU_6future6future6Futurep6OutputuEL_EE0ECs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 88,
+      "sourceFile": "mod.rs",
+      "sourceLine": 167,
+      "imageOffset": 1004116
+    },
+    {
+      "symbol": "_RINvNtNtCs8C1EuctuCtk_5tokio4task4coop6budgetINtNtNtCsgtPOCBgevO_4core4task4poll4PolluENCINvMs2_NtNtB6_7runtime4parkNtB1w_16CachedParkThread8block_onINtNtBO_3pin3PinQDNtNtNtBO_6future6future6Futurep6OutputuEL_EE0ECs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 216,
+      "sourceFile": "mod.rs",
+      "sourceLine": 133,
+      "imageOffset": 1004116
+    },
+    {
+      "symbol": "_RINvMs2_NtNtCs8C1EuctuCtk_5tokio7runtime4parkNtB6_16CachedParkThread8block_onINtNtCsgtPOCBgevO_4core3pin3PinQDNtNtNtB1i_6future6future6Futurep6OutputuEL_EECs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 600,
+      "sourceFile": "park.rs",
+      "sourceLine": 284,
+      "imageOffset": 1004116
+    },
+    {
+      "symbol": "_RINvMNtNtNtCs8C1EuctuCtk_5tokio7runtime7context8blockingNtB3_19BlockingRegionGuard8block_onINtNtCsgtPOCBgevO_4core3pin3PinQDNtNtNtB1w_6future6future6Futurep6OutputuEL_EECs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 100,
+      "sourceFile": "blocking.rs",
+      "sourceLine": 66,
+      "imageOffset": 1305120
+    },
+    {
+      "symbol": "_RNCINvMNtNtNtCs8C1EuctuCtk_5tokio7runtime9scheduler12multi_threadNtB5_11MultiThread8block_onINtNtCsgtPOCBgevO_4core3pin3PinQDNtNtNtB1x_6future6future6Futurep6OutputuEL_EE0Cs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 64,
+      "sourceFile": "mod.rs",
+      "sourceLine": 92,
+      "imageOffset": 1205756
+    },
+    {
+      "symbol": "_RINvNtNtNtCs8C1EuctuCtk_5tokio7runtime7context7runtime13enter_runtimeNCINvMNtNtB6_9scheduler12multi_threadNtB1b_11MultiThread8block_onINtNtCsgtPOCBgevO_4core3pin3PinQDNtNtNtB2d_6future6future6Futurep6OutputuEL_EE0uECs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 184,
+      "sourceFile": "runtime.rs",
+      "sourceLine": 65,
+      "imageOffset": 319936
+    },
+    {
+      "symbol": "_RINvMNtNtNtCs8C1EuctuCtk_5tokio7runtime9scheduler12multi_threadNtB3_11MultiThread8block_onINtNtCsgtPOCBgevO_4core3pin3PinQDNtNtNtB1v_6future6future6Futurep6OutputuEL_EECs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 68,
+      "sourceFile": "mod.rs",
+      "sourceLine": 91,
+      "imageOffset": 1205596
+    },
+    {
+      "symbol": "_RINvMNtNtCs8C1EuctuCtk_5tokio7runtime7runtimeNtB3_7Runtime14block_on_innerINtNtCsgtPOCBgevO_4core3pin3PinQDNtNtNtB1f_6future6future6Futurep6OutputuEL_EECs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 148,
+      "sourceFile": "runtime.rs",
+      "sourceLine": 376,
+      "imageOffset": 1315168
+    },
+    {
+      "symbol": "_RINvMNtNtCs8C1EuctuCtk_5tokio7runtime7runtimeNtB3_7Runtime8block_onINtNtCsgtPOCBgevO_4core3pin3PinQDNtNtNtB18_6future6future6Futurep6OutputuEL_EECs9eRdt6wpk4U_9lifecycle",
+      "symbolLocation": 332,
+      "sourceFile": "runtime.rs",
+      "sourceLine": 343,
+      "imageOffset": 1315624
+    },
+    {
+      "symbol": "_RNvNtCs9eRdt6wpk4U_9lifecycle16recovery_controls_87recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward",
+      "symbolLocation": 392,
+      "sourceFile": "recovery_control.rs",
+      "sourceLine": 101,
+      "imageOffset": 941044
+    },
+    {
+      "symbol": "_RNCNvNtCs9eRdt6wpk4U_9lifecycle16recovery_control87recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward0B5_",
+      "symbolLocation": 24,
+      "sourceFile": "recovery_control.rs",
+      "sourceLine": 100,
+      "imageOffset": 886016
+    },
+    {
+      "symbol": "_RNvYNCNvNtCs9eRdt6wpk4U_9lifecycle16recovery_control87recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward0INtNtNtCsgtPOCBgevO_4core3ops8function6FnOnceuE9call_onceB8_",
+      "symbolLocation": 20,
+      "sourceFile": "function.rs",
+      "sourceLine": 250,
+      "imageOffset": 314892
+    },
+    {
+      "symbol": "_RINvCs3O4ZRUMviTO_4test28___rust_begin_short_backtraceINtNtCsgtPOCBgevO_4core6result6ResultuNtNtCslJsSqIQKwiA_5alloc6string6StringEFEBQ_EB2_",
+      "symbolLocation": 24,
+      "imageOffset": 1373304
+    },
+    {
+      "symbol": "_RNCNvCs3O4ZRUMviTO_4test8run_test0B3_",
+      "symbolLocation": 908,
+      "imageOffset": 1419456
+    },
+    {
+      "symbol": "_RINvNtNtCsa9BKTri5B3M_3std3sys9backtrace28___rust_begin_short_backtraceNCNvCs3O4ZRUMviTO_4test8run_tests_0uEB1b_",
+      "symbolLocation": 132,
+      "imageOffset": 1398600
+    },
+    {
+      "symbol": "_RNSNvYNCINvNtNtCsa9BKTri5B3M_3std6thread9lifecycle15spawn_uncheckedNCNvCs3O4ZRUMviTO_4test8run_tests_0uEs_0INtNtNtCsgtPOCBgevO_4core3ops8function6FnOnceuE9call_once6vtableB17_",
+      "symbolLocation": 64,
+      "imageOffset": 1429016
+    },
+    {
+      "symbol": "_RNvNvMs0_NtNtNtCsa9BKTri5B3M_3std3sys6thread4unixNtB7_6Thread3new12thread_start",
+      "symbolLocation": 408,
+      "imageOffset": 35624096
+    }
+  ],
+  "prologue_reservations": [
+    {
+      "label": "database barrier poll",
+      "symbol": "_RNCNvMs6_NtCscLZrSWTiyRM_13kasumi_engine7serviceNtB7_8Database7barrier0Cs9eRdt6wpk4U_9lifecycle",
+      "start_address": "0x10002dc6c",
+      "reserved_stack_bytes": 8544,
+      "measurement": "manual sum of fixed ARM64 prologue allocation, including register save; disassembly retained"
+    },
+    {
+      "label": "collections inner poll",
+      "symbol": "_RNCNvMs6_NtCscLZrSWTiyRM_13kasumi_engine7serviceNtB7_8Database17collections_inner0Cs9eRdt6wpk4U_9lifecycle",
+      "start_address": "0x10002c490",
+      "reserved_stack_bytes": 31904,
+      "measurement": "manual sum of fixed ARM64 prologue allocation, including register save; disassembly retained"
+    },
+    {
+      "label": "collections poll",
+      "symbol": "_RNCNvMs6_NtCscLZrSWTiyRM_13kasumi_engine7serviceNtB7_8Database11collections0Cs9eRdt6wpk4U_9lifecycle",
+      "start_address": "0x10002b120",
+      "reserved_stack_bytes": 13184,
+      "measurement": "manual sum of fixed ARM64 prologue allocation, including register save; disassembly retained"
+    },
+    {
+      "label": "Control initialize poll",
+      "symbol": "_RNCNvMs_NtCscLZrSWTiyRM_13kasumi_engine7controlNtB6_12ControlPlane10initialize0Cs9eRdt6wpk4U_9lifecycle",
+      "start_address": "0x1000f1a2c",
+      "reserved_stack_bytes": 30320,
+      "measurement": "manual sum of fixed ARM64 prologue allocation, including register save; disassembly retained"
+    },
+    {
+      "label": "route publication poll",
+      "symbol": "_RNCNvNtCs9eRdt6wpk4U_9lifecycle16recovery_control26exercise_route_publication0B5_",
+      "start_address": "0x1000aa00c",
+      "reserved_stack_bytes": 372016,
+      "measurement": "manual sum of fixed ARM64 prologue allocation, including register save; disassembly retained"
+    },
+    {
+      "label": "completed recovery poll",
+      "symbol": "_RNCNvNtCs9eRdt6wpk4U_9lifecycle16recovery_control27exercise_completed_recovery0B5_",
+      "start_address": "0x1000b7944",
+      "reserved_stack_bytes": 1365616,
+      "measurement": "manual sum of fixed ARM64 prologue allocation, including register save; disassembly retained"
+    }
+  ],
+  "prologues_sha256": "d7484d2123b71c4fc989f9134e09f0c23811165b2a503636a5cf738f75e926e4",
+  "extractor_sha256": "509ff6c17cbdfe91ad2644ff63522ac0a6ae464346c2424f9cb9428f2e3e0511",
+  "tools": {
+    "objdump_version": "Apple LLVM version 21.0.0\n  Optimized build.\n\n\n  Registered Targets:\n    aarch64    - AArch64 (little endian)\n    aarch64_32 - AArch64 (little endian ILP32)\n    aarch64_be - AArch64 (big endian)\n    arm        - ARM\n    arm64      - ARM64 (little endian)\n    arm64_32   - ARM64 (little endian ILP32)\n    armeb      - ARM (big endian)\n    thumb      - Thumb\n    thumbeb    - Thumb (big endian)\n    x86        - 32-bit X86: Pentium-Pro and above\n    x86-64     - 64-bit X86: EM64T and AMD64"
+  },
+  "limitation": "Static prologue inspection is not a measurement of complete dynamic stack usage. No new Kasumi process or compiler ran.",
+  "original_gate_evidence_sha256": "2a5a73ef3a5fb9388ffeaa3a8249f062b88c9008fe408287a02dc830a1c9b396",
+  "original_gate_log_sha256": "9e49ca83468ad0f272629eceb066d2caba61ddf824255ec08ad8716730e7fa9d",
+  "source_before_sha256": "29bdb2cecfaadc310204d977bad74b806033fbbb95fb36c32f52fd7afa75c746"
+}

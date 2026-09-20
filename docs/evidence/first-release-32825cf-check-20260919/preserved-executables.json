@@ -1,0 +1,65 @@
+{
+  "note": "Executables remain at original durable external paths; their bytes and SHA-256 were reverified during preservation. No executables are committed here.",
+  "executables": {
+    "debug/deps/kasumi_store-c910e15433394175": {
+      "sha256": "ebbe6ca433e280e353fac1223ee5e5f26ba0356065cf1309a3c7db8f529cedd3",
+      "bytes": 48773280,
+      "preserved_path": "/Users/mtakemiya/dev/kasumi-release-evidence/20260919-32825cf-ownership/preserved-executables/ebbe6ca433e280e353fac1223ee5e5f26ba0356065cf1309a3c7db8f529cedd3-kasumi_store-c910e15433394175",
+      "package_id": "path+file:///Users/mtakemiya/dev/kasumi-worktrees/check-authority-20260919/crates/kasumi-store#0.1.0",
+      "features": [
+        "test-utils"
+      ],
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "gates": [
+        "complete-store-library"
+      ]
+    },
+    "debug/deps/kasumi_serving-ab3ea266bdba1c03": {
+      "sha256": "1ed53e9af0ec8c2c6fd1c3d6052f981467eba3609dcdcc4a7c4096cd0c154800",
+      "bytes": 11859648,
+      "preserved_path": "/Users/mtakemiya/dev/kasumi-release-evidence/20260919-32825cf-ownership/preserved-executables/1ed53e9af0ec8c2c6fd1c3d6052f981467eba3609dcdcc4a7c4096cd0c154800-kasumi_serving-ab3ea266bdba1c03",
+      "package_id": "path+file:///Users/mtakemiya/dev/kasumi-worktrees/check-authority-20260919/crates/kasumi-serving#0.1.0",
+      "features": [
+        "test-utils"
+      ],
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "gates": [
+        "complete-serving-library"
+      ]
+    },
+    "debug/deps/kasumi_engine-beab15cb9b18300f": {
+      "sha256": "ac436b2141ca18b6f1eacb129e4e9fbe4e3fe725a5d24f4bb6fae5d6342642be",
+      "bytes": 183862752,
+      "preserved_path": "/Users/mtakemiya/dev/kasumi-release-evidence/20260919-32825cf-ownership/preserved-executables/ac436b2141ca18b6f1eacb129e4e9fbe4e3fe725a5d24f4bb6fae5d6342642be-kasumi_engine-beab15cb9b18300f",
+      "package_id": "path+file:///Users/mtakemiya/dev/kasumi-worktrees/check-authority-20260919/crates/kasumi-engine#0.1.0",
+      "features": [
+        "default",
+        "test-utils"
+      ],
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "gates": [
+        "engine-database-worker-outcomes",
+        "engine-audit-worker-outcomes",
+        "engine-control-genesis"
+      ]
+    }
+  }
+}

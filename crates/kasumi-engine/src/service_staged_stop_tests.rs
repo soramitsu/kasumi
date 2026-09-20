@@ -188,17 +188,18 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
         audit,
         context,
     } = fixture;
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
-    let node = NodeStore::open(
+    let node = NodeStore::open_existing(
         directory.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([0x97; 32]));
     let audit = SecurityAudit::open(
-        TenantStore::open_fixture(
+        TenantStore::open_existing_fixture(
             node.clone(),
             crate::SECURITY_TENANT.into(),
             provider.clone(),
@@ -209,10 +210,10 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
         crate::admission::NodeAdmission::new(Default::default()).unwrap(),
     )
     .unwrap();
-    let application = TenantStore::open_fixture(node, context.tenant.clone(), provider)
+    let application = TenantStore::open_existing_fixture(node, context.tenant.clone(), provider)
         .await
         .unwrap();
-    let stores = kasumi_store::test_utils::with_custody(
+    let stores = kasumi_store::test_utils::open_existing_custody_fixture(
         application,
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
@@ -246,7 +247,7 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
             .is_err()
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]

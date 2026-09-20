@@ -1,12 +1,13 @@
 #[tokio::test]
 async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_durable_outcomes() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let audit_store = TenantStore::open_fixture(
+    let audit_store = TenantStore::initialize_catalog_fixture(
         node.clone(),
         crate::SECURITY_TENANT.into(),
         Arc::new(LocalKeyProvider::new([0xA7; 32])),
@@ -14,7 +15,7 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
     .await
     .unwrap();
     let node_admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
-    let audit = SecurityAudit::open(
+    let audit = SecurityAudit::initialize(
         audit_store,
         kasumi_types::AuditRetentionBudget::default(),
         node_admission.clone(),
@@ -27,7 +28,7 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
         scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),
         request_id: "stage-time".into(),
     };
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         context.tenant.clone(),
         Arc::new(LocalKeyProvider::new([0xC7; 32])),
@@ -35,7 +36,7 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
     .await
     .unwrap();
     let db = crate::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -168,5 +169,5 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
         }
     }
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

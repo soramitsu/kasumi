@@ -64,6 +64,46 @@ fn signed(signer: &AuthoritySigner, boot: &ServingBoot, attempt: &LeaseAttempt) 
         })
         .unwrap()
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum InstalledManifest {
+    Replicated { manifest: AuthorityManifest },
+}
+
+#[test]
+fn authority_manifest_round_trips_inside_tagged_installation_without_changing_identity() {
+    let (_, boot, _) = fixture();
+    let manifest = boot.authority().manifest().clone();
+    let original_digest = manifest.digest().unwrap();
+    let original = InstalledManifest::Replicated { manifest };
+    let bytes = serde_json::to_vec(&original).unwrap();
+    let decoded: InstalledManifest = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(decoded, original);
+    assert_eq!(serde_json::to_vec(&decoded).unwrap(), bytes);
+    let InstalledManifest::Replicated { manifest } = decoded;
+    assert_eq!(manifest.digest().unwrap(), original_digest);
+}
+
+#[test]
+fn authority_manifest_rejects_aliased_duplicate_and_out_of_range_partition_keys() {
+    let (_, boot, _) = fixture();
+    let manifest = boot.authority().manifest().clone();
+    let partition = serde_json::to_string(&manifest.partitions[&0]).unwrap();
+    let original = InstalledManifest::Replicated { manifest };
+    let json = serde_json::to_string(&original).unwrap();
+    let original_entry = format!(r#""partitions":{{"0":{partition}}}"#);
+    assert_eq!(json.matches(&original_entry).count(), 1);
+    for keys in [
+        format!(r#""00":{partition}"#),
+        format!(r#""65536":{partition}"#),
+        format!(r#""0":{partition},"0":{partition}"#),
+    ] {
+        let altered = json.replace(&original_entry, &format!(r#""partitions":{{{keys}}}"#));
+        assert!(serde_json::from_str::<InstalledManifest>(&altered).is_err());
+    }
+}
+
 #[test]
 fn delayed_response_retry_clone_and_reinstallation_never_extend_original_attempt() {
     let (signer, boot, clock) = fixture();
@@ -233,4 +273,26 @@ fn physical_verifier_substitution_cannot_reopen_a_serving_or_lifecycle_boot() {
     assert!(serde_json::from_value::<NodeIdentity>(legacy).is_err());
     ServingBoot::with_test_clock(boot.trust.clone(), original.clone(), clock.clone()).unwrap();
     LifecycleBoot::with_clock(boot.trust.clone(), original.node, clock).unwrap();
+}
+
+#[test]
+fn retained_enrollment_grant_and_signed_input_do_not_follow_serving_renewal() {
+    let (signer, boot, clock) = fixture();
+    let original = boot.begin_acquisition().unwrap();
+    let response = signed(&signer, &boot, &original);
+    let original_bytes = serde_json::to_vec(&response).unwrap();
+    let enrollment = original.verify(response).unwrap();
+    let gate = ServingGate::new(enrollment.clone()).unwrap();
+    clock.0.store(900, Ordering::SeqCst);
+    let renewal = boot.begin_acquisition().unwrap();
+    gate.renew(renewal.verify(signed(&signer, &boot, &renewal)).unwrap())
+        .unwrap();
+    clock.0.store(1000, Ordering::SeqCst);
+    gate.check().unwrap();
+    assert!(enrollment.check().is_err());
+    assert!(enrollment.remaining().is_err());
+    assert_eq!(
+        serde_json::to_vec(enrollment.signed()).unwrap(),
+        original_bytes
+    );
 }

@@ -173,19 +173,28 @@ fn policy() -> Policy {
         strict_read_audit: false,
     }
 }
-fn limits(documents: usize, operations: usize) -> Limits {
-    Limits {
+fn limits(documents: usize, operations: usize) -> anyhow::Result<Limits> {
+    let receipt_count = operations
+        .checked_mul(3)
+        .and_then(|n| n.checked_add(documents.div_ceil(256)))
+        .and_then(|n| n.checked_add(128))
+        .context("receipt workload count overflow")?;
+    Ok(Limits {
         max_documents: documents as u64 + 1,
         max_logical_bytes: (documents as u64 + 1) * 2048,
-        max_receipts: documents.div_ceil(256) + operations * 3 + 128,
+        max_mutation_receipt_bytes: u64::try_from(receipt_count)
+            .context("receipt workload exceeds address space")?
+            .checked_mul(2 << 20)
+            .context("receipt workload byte budget overflow")?,
         audit_retention: AuditRetentionBudget {
             hot_bytes: ((documents.div_ceil(256) + operations * 3 + 1024) as u64 * 1024)
                 .max(AuditRetentionBudget::default().hot_bytes),
             ..AuditRetentionBudget::default()
         },
         ..Limits::default()
-    }
+    })
 }
+
 fn definition(text: bool) -> CollectionDefinition {
     let mut indexes = vec![IndexDefinition {
         name: "ordinal".into(),
@@ -272,6 +281,7 @@ impl Databases {
         operations: usize,
         replicated: bool,
         bootstraps: Option<Vec<ReplicatedBootstrap>>,
+        create: bool,
     ) -> Result<Self> {
         let replicas = if replicated { 3 } else { 1 };
         let mut nodes = Vec::new();
@@ -281,20 +291,35 @@ impl Databases {
             min_free_bytes: 256 << 20,
         })?;
         for replica in 0..replicas {
-            nodes.push(NodeStore::open(
-                path.join(format!("replica-{replica}.redb")),
-                scratch_disk.clone(),
-            )?);
+            nodes.push(
+                (if create {
+                    NodeStore::create_new(
+                        path.join(format!("replica-{replica}.redb")),
+                        kasumi_store::test_utils::NODE_STORE_ID,
+                        scratch_disk.clone(),
+                    )
+                } else {
+                    NodeStore::open_existing(
+                        path.join(format!("replica-{replica}.redb")),
+                        kasumi_store::test_utils::NODE_STORE_ID,
+                        scratch_disk.clone(),
+                    )
+                })?,
+            );
         }
         let mut audits = Vec::new();
         for node in &nodes {
-            let service_store = TenantStore::open_fixture(
+            let service_store = TenantStore::initialize_catalog_fixture(
                 node.clone(),
                 SECURITY_TENANT.into(),
                 Arc::new(LocalKeyProvider::new([0xA7; 32])),
             )
             .await?;
-            audits.push(SecurityAudit::open(
+            audits.push((if create {
+                SecurityAudit::initialize
+            } else {
+                SecurityAudit::open
+            })(
                 service_store,
                 kasumi_types::AuditRetentionBudget::default(),
                 kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
@@ -305,15 +330,17 @@ impl Databases {
         let mut result = Vec::new();
         for tenant in 0..tenants {
             let count = documents / tenants + usize::from(tenant < documents % tenants);
+            let workload_limits = limits(count, operations)?;
             let bootstrap = if replicated {
                 Some(
                     bootstraps
                         .as_ref()
                         .map(|values| values[tenant].clone())
                         .unwrap_or_else(|| ReplicatedBootstrap {
+                            genesis: kasumi_engine::ReplicatedGenesis::Application,
                             incarnation: uuid::Uuid::new_v4().to_string(),
                             initial_policy: policy(),
-                            initial_limits: limits(count, operations),
+                            initial_limits: workload_limits.clone(),
                             voters: (1..=3)
                                 .map(|id| {
                                     (
@@ -334,7 +361,7 @@ impl Databases {
             };
             let mut databases = Vec::new();
             for (replica, node) in nodes.iter().enumerate() {
-                let store = TenantStore::open_fixture(
+                let store = TenantStore::initialize_catalog_fixture(
                     node.clone(),
                     context(tenant).tenant,
                     provider.clone(),
@@ -343,7 +370,7 @@ impl Databases {
                 let database = if let Some(bootstrap) = &bootstrap {
                     let database = open_replicated(
                         replica as u64 + 1,
-                        kasumi_store::test_utils::with_custody(
+                        kasumi_store::test_utils::initialize_custody_fixture(
                             store,
                             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new(
                                 [241; 32],
@@ -365,7 +392,7 @@ impl Databases {
                     database
                 } else {
                     open_local(
-                        kasumi_store::test_utils::with_custody(
+                        kasumi_store::test_utils::initialize_custody_fixture(
                             store,
                             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new(
                                 [241; 32],
@@ -374,7 +401,7 @@ impl Databases {
                         .await
                         .unwrap(),
                         policy(),
-                        limits(count, operations),
+                        workload_limits.clone(),
                         audits[replica].clone(),
                     )
                     .await?
@@ -450,13 +477,17 @@ impl Databases {
             }
         }
         self.tenants.clear();
+        let mut report = kasumi_types::drain::DrainReport::default();
         for audit in &self.audits {
-            audit.shutdown().await;
+            if let Err(failure) = audit.shutdown().await {
+                report.merge(&failure);
+            }
         }
         self.audits.clear();
         self.nodes.clear();
         drop(self.provider);
         drop(self.router);
+        report.complete()?;
         Ok(bootstraps)
     }
 }
@@ -500,6 +531,7 @@ async fn database_case(
         options.operations,
         replicated,
         None,
+        true,
     )
     .await?;
     let open_seconds = opened.elapsed().as_secs_f64();
@@ -689,6 +721,7 @@ async fn database_case(
         options.operations,
         replicated,
         bootstraps,
+        false,
     )
     .await?;
     for tenant in 0..tenants {
@@ -1008,7 +1041,7 @@ mod tests {
     #[tokio::test]
     async fn failed_read_workload_retains_counts_and_later_independent_work_can_run() {
         let dir = tempfile::tempdir().unwrap();
-        let databases = Databases::open(dir.path(), 1, 1, 4, false, None)
+        let databases = Databases::open(dir.path(), 1, 1, 4, false, None, true)
             .await
             .unwrap();
         let database = databases.leader(0).await.unwrap();

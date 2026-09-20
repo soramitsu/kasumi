@@ -4,33 +4,52 @@
 use super::*;
 use crate::target_invocation::PreparedTargetAuthorization;
 use serde::{Deserialize, Serialize};
+#[path = "target_completion_receiver.rs"]
+pub(super) mod receiver;
 
-pub(crate) const PREFIX: &[u8] = b"KASUMI_TARGET_V1\0";
+pub(crate) const PREFIX: &[u8] = b"KASUMI_TARGET_V2\0";
 pub(crate) const MAX_COMMAND_BYTES: usize = 256 << 10;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) enum TargetCommand {
+    PrepareComplete {
+        authorization: PreparedTargetAuthorization,
+        input: TargetCompletionInput,
+    },
+    ResolveComplete {
+        authorization: PreparedTargetAuthorization,
+        input: Box<TargetCompletionResolutionInput>,
+    },
+    MaintainBudget {
+        authorization: PreparedTargetAuthorization,
+        input: TargetResolutionBudgetInput,
+    },
     Activate {
         authorization: PreparedTargetAuthorization,
         activation: Box<kasumi_serving::SignedAuthorityReceipt>,
     },
     Complete {
         authorization: PreparedTargetAuthorization,
-        input: TargetQuorumInput,
+        input: TargetCompletionInput,
     },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) enum TargetOutcome {
+    Prepared(Box<TargetCompletionAttempt>),
+    Resolved(Box<TargetCompletionResolutionFact>),
+    Budget(Box<TargetResolutionBudgetFact>),
     Completed(Box<TargetCompletionFact>),
     Activated(Box<TargetActivationFact>),
 }
 impl TargetCommand {
     fn authorization(&self) -> &PreparedTargetAuthorization {
         match self {
-            Self::Complete { authorization, .. } | Self::Activate { authorization, .. } => {
-                authorization
-            }
+            Self::PrepareComplete { authorization, .. }
+            | Self::ResolveComplete { authorization, .. }
+            | Self::MaintainBudget { authorization, .. }
+            | Self::Complete { authorization, .. }
+            | Self::Activate { authorization, .. } => authorization,
         }
     }
     pub fn encode(&self) -> Result<Vec<u8>> {
@@ -74,11 +93,54 @@ impl TenantEngine {
         let mut next = previous.state.clone();
         next.revision = revision;
         let outcome = match &command {
+            TargetCommand::PrepareComplete {
+                authorization,
+                input,
+            } => receiver::prepare(
+                &mut next,
+                &previous.target_resolutions,
+                position,
+                authorization,
+                input,
+                self,
+            )
+            .map(|value| TargetOutcome::Prepared(Box::new(value))),
+            TargetCommand::ResolveComplete {
+                authorization,
+                input,
+            } => receiver::resolve(
+                &mut next,
+                &previous.target_resolutions,
+                position,
+                authorization,
+                input,
+                self,
+            )
+            .map(|value| TargetOutcome::Resolved(Box::new(value))),
+            TargetCommand::MaintainBudget {
+                authorization,
+                input,
+            } => receiver::maintain(
+                &mut next,
+                &previous.target_resolutions,
+                position,
+                authorization,
+                input,
+                self,
+            )
+            .map(|value| TargetOutcome::Budget(Box::new(value))),
             TargetCommand::Complete {
                 authorization,
                 input,
-            } => complete(&mut next, position, authorization, input, self)
-                .map(|fact| TargetOutcome::Completed(Box::new(fact))),
+            } => complete(
+                &mut next,
+                &previous.target_resolutions,
+                position,
+                authorization,
+                input,
+                self,
+            )
+            .map(|fact| TargetOutcome::Completed(Box::new(fact))),
             TargetCommand::Activate {
                 authorization,
                 activation,
@@ -90,6 +152,23 @@ impl TenantEngine {
             next.revision = revision;
         }
         let mut outcome = outcome;
+        let pending = match &outcome {
+            Ok(TargetOutcome::Resolved(fact)) => Some(crate::target_resolution::Pending::prepare(
+                &previous.target_resolutions,
+                &mut next,
+                TargetResolutionRecord::Completion(fact.clone()),
+                position,
+                fact.input.attempt.reserved_terminal_bytes,
+            )?),
+            Ok(TargetOutcome::Budget(fact)) => Some(crate::target_resolution::Pending::prepare(
+                &previous.target_resolutions,
+                &mut next,
+                TargetResolutionRecord::Budget(fact.clone()),
+                position,
+                MAX_TARGET_COMPLETION_RECORD_BYTES + (64 << 10),
+            )?),
+            _ => None,
+        };
         {
             let event_id = format!("{}:{revision}", next.incarnation);
             super::append_audit(
@@ -98,6 +177,9 @@ impl TenantEngine {
                     event_id,
                     principal: authorization.context.principal.clone(),
                     action: match &command {
+                        TargetCommand::PrepareComplete { .. } => "target_prepare_complete",
+                        TargetCommand::ResolveComplete { .. } => "target_resolve_complete",
+                        TargetCommand::MaintainBudget { .. } => "target_resolution_budget",
                         TargetCommand::Complete { .. } => "target_complete",
                         TargetCommand::Activate { .. } => "target_activate",
                     }
@@ -116,7 +198,7 @@ impl TenantEngine {
             )?;
         }
         let mut accounting = SnapshotAccounting::rebuild(&next)?;
-        if next.audit_retention.hot_bytes > next.limits.audit_retention.hot_bytes {
+        if !crate::accounting::audit_fits(&next) {
             next = previous.state.clone();
             next.revision = revision;
             accounting = previous.snapshot_accounting.clone();
@@ -124,7 +206,10 @@ impl TenantEngine {
                 ErrorCode::AuditUnavailable,
                 "target hot audit byte budget exhausted",
             ));
-        } else if !accounting.fits(&next)? || validate_target_history(&next).is_err() {
+        } else if !accounting.fits(&next)?
+            || validate_target_history(&next).is_err()
+            || !receiver::history_reserve_fits(&next)?
+        {
             next = previous.state.clone();
             next.revision = revision;
             accounting = previous.snapshot_accounting.clone();
@@ -133,10 +218,21 @@ impl TenantEngine {
                 "target retained state budget exhausted",
             ));
         }
+        let target_resolutions = if outcome.is_ok() {
+            match pending {
+                Some(pending) => pending.persist()?,
+                None => previous.target_resolutions.clone(),
+            }
+        } else {
+            previous.target_resolutions.clone()
+        };
+        target_resolutions.validate_state(&next)?;
         self.publish_generation(Some(Arc::new(Generation {
+            terminals: previous.terminals.clone(),
+            target_resolutions,
             state: next,
             indexes: previous.indexes.clone(),
-            receipt_expiry: previous.receipt_expiry.clone(),
+            receipts: previous.receipts.clone(),
             snapshot_accounting: accounting,
             _read_reservations: vec![],
         })));
@@ -147,9 +243,10 @@ impl TenantEngine {
 }
 fn complete(
     state: &mut TenantState,
+    terminals: &crate::target_resolution::View,
     position: &kasumi_raft::AppliedEntryContext,
     authorization: &PreparedTargetAuthorization,
-    input: &TargetQuorumInput,
+    input: &TargetCompletionInput,
     engine: &TenantEngine,
 ) -> Result<TargetCompletionFact> {
     let entry = state
@@ -176,19 +273,20 @@ fn complete(
         &input.digest()?,
         position.log_id.leader_id.node_id,
     )?;
-    if input.origin_sha256 != origin.digest()? {
+    if input.quorum.origin_sha256 != origin.digest()? {
         return Err(error(
             ErrorCode::Conflict,
             "target completion origin changed",
         ));
     }
-    let bootstrap = kasumi_serving::verify_target_materializations(&origin, &input.materialized)
-        .map_err(|_| {
-            error(
-                ErrorCode::Forbidden,
-                "exact native target materialization proofs required",
-            )
-        })?;
+    let bootstrap =
+        kasumi_serving::verify_target_materializations(&origin, &input.quorum.materialized)
+            .map_err(|_| {
+                error(
+                    ErrorCode::Forbidden,
+                    "exact native target materialization proofs required",
+                )
+            })?;
     let membership = position.membership.membership();
     let voters: BTreeSet<_> = origin.input.voters.keys().copied().collect();
     if membership.get_joint_config() != &vec![voters]
@@ -208,7 +306,8 @@ fn complete(
     }
     if let Some(existing) = &entry.completion {
         if existing.completion_intent == authorization.grant.claims.commitment.intent
-            && existing.materialized == input.materialized
+            && existing.materialized == input.quorum.materialized
+            && existing.predecessor == input.predecessor
         {
             return Ok(existing.clone());
         }
@@ -217,6 +316,7 @@ fn complete(
             "target already completed under another permanent identity",
         ));
     }
+    receiver::require_active(state, terminals, authorization, input)?;
     if !state.suspended
         || state.retired
         || state
@@ -232,7 +332,8 @@ fn complete(
     }
     let fact = TargetCompletionFact {
         origin,
-        materialized: input.materialized.clone(),
+        materialized: input.quorum.materialized.clone(),
+        predecessor: input.predecessor.clone(),
         completion_intent: authorization.grant.claims.commitment.intent.clone(),
         admitted_at_ms: authorization.admitted_at_ms,
         revision: state.revision,

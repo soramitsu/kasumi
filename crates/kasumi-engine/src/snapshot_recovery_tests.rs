@@ -3,9 +3,20 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 fn coordinator() -> TenantState {
-    let mut state = super::tests::state();
-    state.tenant = crate::control::CONTROL_TENANT.into();
-    state.incarnation = Uuid::new_v4().to_string();
+    let template = super::tests::state();
+    // Build every generation-bound native head for the actual Control identity.
+    // Relabeling an application fixture leaves its receipt origin outside lineage.
+    let mut state = crate::TenantEngine::new(
+        crate::control::CONTROL_TENANT.into(),
+        Uuid::new_v4().to_string(),
+        template.policy,
+        template.limits,
+    )
+    .unwrap()
+    .generation()
+    .unwrap()
+    .state
+    .clone();
     state.revision = 3;
     state.policy_epoch = 1;
     let partition = ControlAuthorityPartition {
@@ -117,6 +128,11 @@ fn coordinator() -> TenantState {
         materialization_intent: None,
         initialization: None,
         completion_intent: None,
+        completion_predecessor: None,
+        completion_preparation_attempt: None,
+        completion_preparation: None,
+        completion_resolution_attempt: None,
+        completion_terminal: None,
         completion_attempt: None,
         completion: None,
         retirement: None,
@@ -148,6 +164,7 @@ fn coordinator() -> TenantState {
         phase_id: Uuid::new_v4(),
         sequence: 1,
         phase: RecoveryPhase::Publish,
+        completion_scope: None,
         previous_phase: None,
         input_sha256: staged_digest(&input).unwrap().0,
         input,
@@ -169,7 +186,17 @@ fn coordinator() -> TenantState {
 fn image(state: &TenantState) -> kasumi_store::SnapshotImage {
     let mut spool =
         kasumi_store::EncryptedSpool::new(&kasumi_store::ScratchDisk::fixture(), 16 << 20).unwrap();
-    write(state, &mut spool).unwrap();
+    let terminals = crate::staged_terminal::View::empty(&state.tenant, &state.incarnation).unwrap();
+    let target_resolutions =
+        crate::target_resolution::View::empty(&state.tenant, &state.incarnation).unwrap();
+    write(
+        state,
+        &crate::mutation_receipt::View::empty(&state.tenant, &state.incarnation).unwrap(),
+        &terminals,
+        &target_resolutions,
+        &mut spool,
+    )
+    .unwrap();
     kasumi_store::SnapshotImage::freeze(spool).unwrap()
 }
 
@@ -180,12 +207,13 @@ fn canonical_recovery_records_roundtrip_and_point_accounting_match_stream() {
     let before = crate::accounting::SnapshotAccounting::rebuild(&previous).unwrap();
     let source = image(&previous);
     assert_eq!(before.bytes(&previous).unwrap() as u64, source.len());
-    let decoded = read(&mut source.reader()).unwrap();
-    assert_eq!(decoded.recovery_control, previous.recovery_control);
+    let decoded = read(source.disk(), &mut source.reader()).unwrap();
+    assert_eq!(decoded.state.recovery_control, previous.recovery_control);
     let indexed = crate::snapshot_index::StagedSnapshot::new(source, 64 << 20, || Ok(())).unwrap();
-    for kind in 18..RECORD_KINDS {
+    for kind in 18..=20 {
         assert_eq!(indexed.count(kind).unwrap(), 1);
     }
+    assert_eq!(indexed.count(21).unwrap(), 0);
     let mut next = previous.clone();
     next.revision += 1;
     let (_, phase) = next.recovery_control.phases.get_min().unwrap();
@@ -198,13 +226,7 @@ fn canonical_recovery_records_roundtrip_and_point_accounting_match_stream() {
         .phases
         .insert(phase.phase_id.to_string(), phase);
     let accounting = before
-        .updated(
-            &previous,
-            &next,
-            &Default::default(),
-            &Default::default(),
-            &Default::default(),
-        )
+        .updated(&previous, &next, &Default::default(), &Default::default())
         .unwrap();
     assert_eq!(accounting.bytes(&next).unwrap() as u64, image(&next).len());
     assert_eq!(
@@ -216,13 +238,7 @@ fn canonical_recovery_records_roundtrip_and_point_accounting_match_stream() {
     );
     next.recovery_control = Default::default();
     let accounting = before
-        .updated(
-            &previous,
-            &next,
-            &Default::default(),
-            &Default::default(),
-            &Default::default(),
-        )
+        .updated(&previous, &next, &Default::default(), &Default::default())
         .unwrap();
     assert_eq!(accounting.bytes(&next).unwrap() as u64, image(&next).len());
 }
@@ -244,10 +260,11 @@ fn application_backup_rejects_control_recovery_and_embedded_or_orphan_records() 
     let mut encoder = Encoder::new(&mut bytes).unwrap();
     encoder.record(Record::Header(Box::new(embedded))).unwrap();
     encoder.finish().unwrap();
-    assert!(read(&mut bytes.as_slice()).is_err());
+    assert!(read(&kasumi_store::ScratchDisk::fixture(), &mut bytes.as_slice()).is_err());
     let mut orphan = state.clone();
     orphan.recovery_control.operations.clear();
-    assert!(read(&mut image(&orphan).reader()).is_err());
+    let orphan = image(&orphan);
+    assert!(read(orphan.disk(), &mut orphan.reader()).is_err());
     let mut wrong_key = state;
     let (_, record) = wrong_key.recovery_control.phases.get_min().unwrap();
     let record = record.clone();
@@ -256,5 +273,6 @@ fn application_backup_rejects_control_recovery_and_embedded_or_orphan_records() 
         .recovery_control
         .phases
         .insert(Uuid::new_v4().to_string(), record);
-    assert!(read(&mut image(&wrong_key).reader()).is_err());
+    let wrong_key = image(&wrong_key);
+    assert!(read(wrong_key.disk(), &mut wrong_key.reader()).is_err());
 }

@@ -77,13 +77,15 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release() {
     for profile in [&mut control, &mut tenant] {
         profile.mcp_endpoint = config.mcp.protocol.public_url.clone();
         profile.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
-        profile.admin_endpoint = format!("https://localhost:{}", config.admin.listen.port());
+        profile.administrative_members.get_mut(&1).unwrap().endpoint =
+            format!("https://localhost:{}", config.admin.listen.port());
     }
     private_files::replace(
         &installation.control_profile,
         &serde_json::to_vec(&control).unwrap(),
     )
     .unwrap();
+    crate::standalone::configure_test_topology(&config).await;
     drop(listeners);
     let runtime = NodeRuntime::open(config.clone()).await.unwrap();
     let audit = runtime.audit.clone();

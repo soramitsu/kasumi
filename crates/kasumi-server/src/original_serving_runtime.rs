@@ -12,6 +12,15 @@ impl Administration {
         else {
             return Ok(());
         };
+        if self.config.mode == crate::runtime::DeploymentMode::Replicated {
+            let enrolled = crate::node_enrollment::tenant_record(self.audit.store(), tenant)?
+                .context("routed original tenant has no enrollment")?;
+            ensure!(
+                enrolled.stage == crate::node_enrollment::Stage::Prepared
+                    && enrolled.incarnation == Uuid::parse_str(incarnation)?,
+                "routed original enrollment is incomplete or substituted"
+            );
+        }
         let context = RequestContext {
             tenant: tenant.to_owned(),
             ..self.control_context.clone()
@@ -27,9 +36,6 @@ impl Administration {
             .incarnation
             .as_deref()
             .is_some_and(|installed| installed != incarnation)
-            || previous
-                .as_ref()
-                .is_some_and(|previous| previous.descriptor.is_some())
             || (configured.incarnation.is_none() && previous.is_none())
         {
             return Ok(());
@@ -51,10 +57,6 @@ impl Administration {
             }
             self.registry
                 .detach_target_generation(tenant, incarnation, &previous.database)?;
-            self.enabled
-                .write()
-                .map_err(|_| anyhow::anyhow!("routing unavailable"))?
-                .remove(tenant);
             if let Some(network) = &self.cluster {
                 network.unregister_group(&format!("{tenant}/{incarnation}"))?;
             }
@@ -103,7 +105,7 @@ impl Administration {
         )
         .await?;
         let provider = configured.keys.provider(self.credential.clone())?;
-        let stores = TenantStorageSet::open(
+        let stores = TenantStorageSet::open_existing(
             self.node.clone(),
             tenant.to_owned(),
             provider.clone(),
@@ -117,58 +119,58 @@ impl Administration {
             let _reservation = self
                 .admission
                 .reserve(kasumi_engine::recovery_workspace_bytes(&stores)?, None)?;
-            let bootstrap = self.config.bootstrap(
-                &configured.initial_policy,
-                &configured.initial_limits,
-                Some(incarnation),
-            )?;
-            let database = if let Some(bootstrap) = &bootstrap {
-                let network = self.cluster.as_ref().context("replication unavailable")?;
-                let database = kasumi_engine::open_replicated(
-                    self.config
-                        .replication
-                        .as_ref()
-                        .context("replication unavailable")?
-                        .node_id,
-                    stores.clone(),
-                    bootstrap,
-                    network.clone(),
-                    kasumi_raft::server_config(),
-                    self.audit.clone(),
-                )
-                .await?;
-                let fingerprint =
-                    crate::runtime::persisted_bootstrap_fingerprint(stores.application())?;
-                let store = stores.application().clone();
-                if let Err(error) = network.register_group_with_bootstrap(
-                    group.clone(),
-                    database.raft_group().raft().clone(),
-                    self.config
-                        .replication
-                        .as_ref()
-                        .unwrap()
-                        .peers
-                        .iter()
-                        .map(|peer| peer.node_id)
-                        .collect(),
-                    fingerprint,
-                    Arc::new(move || store.check_access()),
-                ) {
-                    database.shutdown().await?;
-                    return Err(error);
-                }
-                registered = true;
-                database
-            } else {
-                kasumi_engine::open_local_with_incarnation(
-                    stores.clone(),
-                    configured.initial_policy.clone(),
-                    configured.initial_limits.clone(),
-                    self.audit.clone(),
-                    Uuid::parse_str(incarnation)?,
-                )
-                .await?
-            };
+            let expected_incarnation = Uuid::parse_str(incarnation)?;
+            let (database, bootstrap) =
+                if self.config.mode == crate::runtime::DeploymentMode::Replicated {
+                    let network = self.cluster.as_ref().context("replication unavailable")?;
+                    let opened = kasumi_engine::open_existing_replicated(
+                        self.config
+                            .replication
+                            .as_ref()
+                            .context("replication unavailable")?
+                            .node_id,
+                        stores.clone(),
+                        expected_incarnation,
+                        network.clone(),
+                        kasumi_raft::server_config(),
+                        self.audit.clone(),
+                    )
+                    .await?;
+                    let kasumi_engine::OpenedReplica {
+                        database,
+                        bootstrap,
+                    } = opened;
+                    let fingerprint =
+                        crate::runtime::persisted_bootstrap_fingerprint(stores.application())?;
+                    let store = stores.application().clone();
+                    if let Err(error) = network.register_group_with_bootstrap(
+                        group.clone(),
+                        database.raft_group().raft().clone(),
+                        self.config
+                            .replication
+                            .as_ref()
+                            .unwrap()
+                            .peers
+                            .iter()
+                            .map(|peer| peer.node_id)
+                            .collect(),
+                        fingerprint,
+                        Arc::new(move || store.check_access()),
+                    ) {
+                        database.shutdown().await?;
+                        return Err(error);
+                    }
+                    registered = true;
+                    (database, Some(bootstrap))
+                } else {
+                    let database = kasumi_engine::open_existing_local(
+                        stores.clone(),
+                        self.audit.clone(),
+                        expected_incarnation,
+                    )
+                    .await?;
+                    (database, None)
+                };
             let setup = (|| {
                 database.install_admission(self.admission.clone())?;
                 for (name, destination) in &self.destinations {
@@ -191,10 +193,7 @@ impl Administration {
             Ok(ManagedTenant {
                 database,
                 store: stores.application().clone(),
-                provider,
-                custody_provider,
                 bootstrap,
-                descriptor: None,
                 lease,
             })
         }
@@ -205,19 +204,16 @@ impl Administration {
                 if registered && let Some(network) = &self.cluster {
                     network.unregister_group(&group)?;
                 }
-                stores.application().shutdown().await;
-                stores.custody().store().shutdown().await;
-                return Err(error);
+                return Err(match stores.shutdown().await {
+                    Ok(()) => error,
+                    Err(failure) => error.context(failure),
+                });
             }
         };
         self.generations
             .write()
             .map_err(|_| anyhow::anyhow!("generation registry unavailable"))?
             .insert((tenant.to_owned(), incarnation.to_owned()), current.clone());
-        self.active
-            .write()
-            .map_err(|_| anyhow::anyhow!("active registry unavailable"))?
-            .insert(tenant.to_owned(), incarnation.to_owned());
         self.registry.install_retirement_source(
             kasumi_engine::InstalledRetirementSource::Serving(current.database.clone()),
         )?;

@@ -6,7 +6,7 @@ use kasumi_engine::{
 };
 use kasumi_store::{
     NodeStore, StorageAccess, TenantStore,
-    test_utils::{LocalKeyProvider, ManualClock, with_custody},
+    test_utils::{LocalKeyProvider, ManualClock, initialize_custody_fixture},
 };
 use kasumi_types::*;
 use serde_json::json;
@@ -54,8 +54,8 @@ fn context(database: &Database, clock: &EpochClock) -> RequestContext {
     }
 }
 async fn audit(node: Arc<NodeStore>, admission: Arc<NodeAdmission>) -> Arc<SecurityAudit> {
-    SecurityAudit::open(
-        TenantStore::open_fixture(
+    SecurityAudit::initialize(
+        TenantStore::initialize_catalog_fixture(
             node,
             kasumi_engine::SECURITY_TENANT.into(),
             Arc::new(LocalKeyProvider::new([201; 32])),
@@ -88,8 +88,9 @@ fn query() -> QueryRequest {
 #[tokio::test]
 async fn one_epoch_ages_commands_and_leases_without_renewing_original_credentials() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -97,7 +98,7 @@ async fn one_epoch_ages_commands_and_leases_without_renewing_original_credential
     let audit = audit(node.clone(), admission.clone()).await;
     let elapsed = Arc::new(ManualClock::new());
     let epoch = Arc::new(EpochClock::new(elapsed.clone(), Arc::new(Wall)).unwrap());
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         "clock-fixture".into(),
         Arc::new(LocalKeyProvider::new([202; 32])),
@@ -105,7 +106,7 @@ async fn one_epoch_ages_commands_and_leases_without_renewing_original_credential
     .await
     .unwrap();
     let database = open_fixture_with_epoch_clock(
-        with_custody(store, Arc::new(LocalKeyProvider::new([203; 32])))
+        initialize_custody_fixture(store, Arc::new(LocalKeyProvider::new([203; 32])))
             .await
             .unwrap(),
         policy(),
@@ -232,21 +233,22 @@ async fn one_epoch_ages_commands_and_leases_without_renewing_original_credential
     );
     drop(original_release);
     database.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
 async fn fixture_epoch_rejects_production_storage_before_bootstrap() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
     let admission = NodeAdmission::new(Default::default()).unwrap();
     let audit = audit(node.clone(), admission.clone()).await;
     let epoch = Arc::new(EpochClock::new(Arc::new(ManualClock::new()), Arc::new(Wall)).unwrap());
-    let store = TenantStore::open(
+    let store = TenantStore::initialize_catalog_fixture_with_access(
         node,
         "clock-fixture".into(),
         Arc::new(LocalKeyProvider::new([204; 32])),
@@ -255,9 +257,10 @@ async fn fixture_epoch_rejects_production_storage_before_bootstrap() {
     )
     .await
     .unwrap();
-    let stores = with_custody(store.clone(), Arc::new(LocalKeyProvider::new([205; 32])))
-        .await
-        .unwrap();
+    let stores =
+        initialize_custody_fixture(store.clone(), Arc::new(LocalKeyProvider::new([205; 32])))
+            .await
+            .unwrap();
     let result = open_fixture_with_epoch_clock(
         stores.clone(),
         policy(),
@@ -289,7 +292,7 @@ async fn fixture_epoch_rejects_production_storage_before_bootstrap() {
             .unwrap()
             .is_none()
     );
-    store.shutdown().await;
-    stores.custody().store().shutdown().await;
-    audit.shutdown().await;
+    store.shutdown().await.unwrap();
+    stores.custody().store().shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
 }

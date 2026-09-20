@@ -737,9 +737,11 @@ impl LeaseManager {
                     return Ok(SelectedSnapshot {
                         handle: root.handle.clone(),
                         generation: Arc::new(Generation {
+                            terminals: root.generation.terminals.clone(),
+                            target_resolutions: root.generation.target_resolutions.clone(),
                             state,
                             indexes: Arc::new(QueryIndexes::default()),
-                            receipt_expiry: Default::default(),
+                            receipts: root.generation.receipts.clone(),
                             snapshot_accounting: Default::default(),
                             _read_reservations: vec![],
                         }),
@@ -820,9 +822,11 @@ impl LeaseManager {
         Ok(SelectedSnapshot {
             handle: root.handle.clone(),
             generation: Arc::new(Generation {
+                terminals: root.generation.terminals.clone(),
+                target_resolutions: root.generation.target_resolutions.clone(),
                 state,
                 indexes: Arc::new(QueryIndexes::default()),
-                receipt_expiry: Default::default(),
+                receipts: root.generation.receipts.clone(),
                 snapshot_accounting: Default::default(),
                 _read_reservations: vec![],
             }),

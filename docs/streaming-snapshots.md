@@ -6,12 +6,16 @@ are rejected. `Limits.max_snapshot_bytes` is a checked `u64` resource quota;
 there is no 2 GiB format ceiling. Documents, requests, transactions, individual
 records, results and admitted node work retain independent bounds.
 
-Tenant images begin with `KASUMIT2`. Every record has an eight-byte big-endian
-payload length followed by canonical JSON. Records explicitly identify metadata,
+Tenant images begin with `KASUMIT7`. Every record has an eight-byte big-endian
+payload length, one explicit category byte, then canonical JSON. The category
+byte is included in the digest and must equal the decoded semantic record kind
+before the record reaches a resident-state or permanent-table consumer. Records explicitly identify metadata,
 collections, documents, archive references, command receipts, staged metadata and
 chunks, change-feed headers and individual changes, history archives, schema and
 retirement records, audit events, Control history, target lifecycle records, and
-Control recovery operation, phase, and target identity records. Recovery records
+Control recovery operation, phase, and target identity records. Ranks 5, 21 and 22
+carry immutable ordinary receipts, staged outcomes and target resolution rows into encrypted point
+tables; their aggregate length is separate from resident state. Ordinary receipts retain a 2 MiB per-record bound. Recovery records
 retain their independent 1 MiB work bound; other payloads cannot exceed 32 MiB. Records must follow the specified category/key order, with contiguous
 indices for sequence members. The terminal zero-length record carries checked
 64-bit record and byte counts and SHA-256 over the preceding image. The decoder
@@ -58,7 +62,9 @@ and target signatures one bounded record at a time. Cold-history chunk parsing,
 hashing and encrypted point lookups run in owned blocking workers, retaining the
 original cancellation, deadline, state and workspace through completion. Two temporary tables each
 have an 8 MiB page cache; their keys and pages are encrypted too. The declared
-workspace estimate is 128 MiB, independent of aggregate tenant size. Immediate
+workspace is a 128 MiB index/cache floor plus the measured maximum structural
+record work, independent of aggregate tenant size. A fixed-buffer preflight
+admits that record work before constructing any record DTO or point index. Immediate
 completion instead compares the full authenticated stream to private evidence
 from the exact captured generation and reuses its immutable roots with a 64 MiB
 workspace estimate. Both paths verify every transitive dependency and key catalog.
@@ -91,7 +97,7 @@ in backup/replacement workflows before their pruning transitions become usable.
 
 Application Raft backends use the canonical `KASUMID1` dependency bundle inside
 `KASUMIS2`. A bounded canonical source-purpose header precedes 64 KiB frames of
-`KASUMIT2`, an explicit logical-stream terminator, and the audit ciphertext chain
+`KASUMIT7`, an explicit logical-stream terminator, and the audit ciphertext chain
 in reverse sequence order. Each archive record is at most 8 MiB. The final record
 binds checked logical/archive byte and record totals and the complete bundle
 digest; missing dependencies, extra records and logical-only transport are
@@ -113,15 +119,16 @@ before publishing restored genesis. Restore relocation rewrites bounded records
 between encrypted spools, then materializes the actual target state once under a
 separate node reservation retained through publication. These reservations are
 estimates, not allocator or RSS limits. Final 3 GiB, RSS, disk-capacity and endurance
-acceptance remains required; shared aggregate temporary-disk admission remains
-release work.
+acceptance remains required. Encrypted temporary files and tables retain the
+shared ScratchDisk owner; its physical disk charging is separate from RAM work.
 
 The public `TenantEngine::snapshot(admission, timeout_ms)` asynchronously captures
 a complete backend bundle using the installed store and explicit node admission.
 The public `prepare_snapshot_restore(image, admission, timeout_ms)` verifies and
 stages that bundle without changing live state or any applied position. Its first
 pass checks framing, complete counts, digest and EOF with a 64 KiB buffer; logical
-allocation is admitted before semantic decoding. All blocking work keeps the
+allocation is admitted before semantic decoding. The semantic pass recomputes
+and matches the admitted per-kind counts, bytes and peak work before returning. All blocking work keeps the
 exact store/OS ownership and byte reservation through actual completion, including
 when a caller cancels or times out. The staged result holds only the verified
 image and identity metadata, not another resident tenant generation.

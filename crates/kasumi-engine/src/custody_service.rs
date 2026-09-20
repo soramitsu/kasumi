@@ -10,6 +10,12 @@ enum CustodyGroup {
     Closed(CustodyRaftGroup),
 }
 impl CustodyGroup {
+    fn receipt(&self, command_id: &str) -> anyhow::Result<Option<CustodyReceipt>> {
+        match self {
+            Self::Serving(group) => group.custody_receipt(command_id),
+            Self::Closed(group) => group.receipt(command_id),
+        }
+    }
     fn view(&self) -> anyhow::Result<CustodyView> {
         match self {
             Self::Serving(group) => group.custody_view(),
@@ -104,6 +110,7 @@ pub struct RetiredCustody {
     proposal_gate: Arc<tokio::sync::Mutex<()>>,
     clock: Arc<dyn CommandClock>,
     closing: AtomicBool,
+    shutdown_report: tokio::sync::Mutex<DrainReport>,
 }
 fn unavailable(_: impl std::fmt::Display) -> Error {
     Error::new(
@@ -164,6 +171,7 @@ impl RetiredCustody {
             proposal_gate: Arc::new(tokio::sync::Mutex::new(())),
             clock: Arc::new(SystemCommandClock),
             closing: AtomicBool::new(false),
+            shutdown_report: tokio::sync::Mutex::new(DrainReport::default()),
         }))
     }
     pub fn identity(&self) -> Result<(String, String)> {
@@ -246,6 +254,51 @@ impl RetiredCustody {
     ) -> Result<CustodyReceipt> {
         let result = self.execute_inner(&context, request).await;
         self.denied(&context, result).await
+    }
+    /// Read an exact permanent command without proposing it again. An absence
+    /// is only an observation; it never fences a previously dispatched write.
+    pub async fn receipt(
+        &self,
+        context: &RequestContext,
+        request: &CustodyRequest,
+    ) -> Result<Option<CustodyReceipt>> {
+        let result = async {
+            let cancellation = QueryCancellation::default();
+            let _work = self.work.begin(cancellation)?;
+            let fence = self.response_fence(context)?;
+            request.validate()?;
+            // This audited observation checks the exact retirement and the
+            // current custodian before and after its actual quorum barriers.
+            self.retirement_status(context, &request.retirement).await?;
+            let receipt = self
+                .group
+                .receipt(&request.command_id)
+                .map_err(unavailable)?;
+            let view = self.check(context)?;
+            if let Some(receipt) = &receipt {
+                receipt.validate()?;
+                if receipt.command_id != request.command_id
+                    || receipt.request_digest != request.digest()?
+                {
+                    return Err(Error::new(
+                        ErrorCode::Conflict,
+                        "custody command identity differs",
+                    ));
+                }
+                if receipt.revision > view.revision() || receipt.policy_epoch > view.policy_epoch()
+                {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "custody receipt exceeds applied state",
+                    ));
+                }
+            }
+            self.group.barrier().await.map_err(unavailable)?;
+            fence.check()?;
+            Ok(receipt)
+        }
+        .await;
+        self.denied(context, result).await
     }
     async fn execute_inner(
         &self,
@@ -429,18 +482,30 @@ impl RetiredCustody {
         fence.check()?;
         Ok(fence)
     }
-    pub async fn shutdown(&self) -> anyhow::Result<()> {
+    pub async fn shutdown(&self) -> DrainResult {
+        let mut report = self.shutdown_report.lock().await;
+        let mut retained = None;
         self.closing.store(true, Ordering::Release);
         self.work.seal();
         if let CustodyGroup::Closed(group) = &self.group {
-            let result = group.shutdown().await;
+            if let Err(error) = group.shutdown().await {
+                retained = Some(DrainFailure::retained(report.record(
+                    "custody raft",
+                    0,
+                    error,
+                )));
+            }
             self.work.drain().await;
-            group.custody_store().store().shutdown().await;
-            result
+            if let Err(failure) = group.custody_store().store().shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
+            }
         } else {
             self.work.drain().await;
-            Ok(())
         }
+        report.outcome(retained)
     }
 }
 
@@ -462,6 +527,7 @@ impl Database {
             proposal_gate: self.proposal_gate.clone(),
             clock,
             closing: AtomicBool::new(false),
+            shutdown_report: tokio::sync::Mutex::new(DrainReport::default()),
         }))
     }
 }

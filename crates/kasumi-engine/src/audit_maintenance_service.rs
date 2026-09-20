@@ -2,7 +2,7 @@ use super::*;
 
 // The actual blocking preparation retains every owner even if its async caller
 // disappears. The proposal keeps its separate lane through the Raft outcome.
-struct Prepared {
+pub(super) struct Prepared {
     bytes: Option<Vec<u8>>,
     _engine: Arc<TenantEngine>,
     _pool: Arc<crate::audit_maintenance::NodeAuditMaintenance>,
@@ -30,48 +30,68 @@ impl Database {
         self.audit_worker_started.store(true, Ordering::Release);
         let weak = Arc::downgrade(self);
         let wake = self.audit_worker_wake.clone();
+        let mut stop = self.background_stop.subscribe();
+        let mut exit = BackgroundWorkerExit {
+            database: weak.clone(),
+            completed: false,
+        };
         let task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = wake.notified() => {},
-                    _ = tokio::time::sleep(Duration::from_millis(250)) => {},
-                }
-                let Some(database) = weak.upgrade() else {
-                    return;
-                };
-                #[cfg(test)]
-                {
-                    let pause = database.audit_worker_pause.lock().unwrap().take();
-                    if let Some(pause) = pause {
-                        pause.entered.notify_one();
-                        pause.release.notified().await;
+            let result = async {
+                loop {
+                    if *stop.borrow() {
+                        return Ok(());
                     }
-                }
-                if database.closing.load(Ordering::Acquire) {
-                    return;
-                }
-                let metrics = database.group.raft().metrics().borrow().clone();
-                if metrics.current_leader != Some(metrics.id) {
-                    continue;
-                }
-                let Ok(registration) = database.work.begin(QueryCancellation::default()) else {
-                    return;
-                };
-                let registration = Arc::new(registration);
-                match database.maintain_tenant_audit(registration).await {
-                    Ok(true) => {
-                        database
-                            .audit_worker_completed
-                            .fetch_add(1, Ordering::Relaxed);
+                    tokio::select! {
+                        _ = stop.changed() => return Ok(()),
+                        _ = wake.notified() => {},
+                        _ = tokio::time::sleep(Duration::from_millis(250)) => {},
                     }
-                    Ok(false) => {}
-                    Err(_) => {
-                        database
-                            .audit_worker_failures
-                            .fetch_add(1, Ordering::Relaxed);
+                    let Some(database) = weak.upgrade() else {
+                        return Ok(());
+                    };
+                    #[cfg(test)]
+                    {
+                        let pause = database.audit_worker_pause.lock().unwrap().take();
+                        if let Some(pause) = pause {
+                            pause.entered.notify_one();
+                            pause.release.notified().await;
+                        }
+                    }
+                    if database.closing.load(Ordering::Acquire) {
+                        return Ok(());
+                    }
+                    let metrics = database.group.raft().metrics().borrow().clone();
+                    if metrics.current_leader != Some(metrics.id) {
+                        continue;
+                    }
+                    let Ok(registration) = database.work.begin(QueryCancellation::default()) else {
+                        return Ok(());
+                    };
+                    let registration = Arc::new(registration);
+                    match database.maintain_tenant_audit(registration).await {
+                        Ok(true) => {
+                            database
+                                .audit_worker_completed
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            database
+                                .audit_worker_failures
+                                .fetch_add(1, Ordering::Relaxed);
+                            // Archive connectivity and proposal errors remain
+                            // retryable. An actual blocking worker panic/abort is a
+                            // terminal failure, retained intact in this task result.
+                            if let Ok(failure) = error.downcast::<DrainFailure>() {
+                                return Err(failure);
+                            }
+                        }
                     }
                 }
             }
+            .await;
+            exit.complete(&result);
+            result
         });
         *self
             .audit_worker
@@ -90,24 +110,49 @@ impl Database {
             .map_err(|_| anyhow::anyhow!("audit maintenance ownership unavailable"))?
             .clone()
             .ok_or_else(|| anyhow::anyhow!("audit maintenance not installed"))?;
-        let _serial = self.proposal_gate.clone().lock_owned().await;
-        let permit = pool.preparation.clone().acquire_owned().await?;
+        let mut stop = self.background_stop.subscribe();
+        if *stop.borrow() {
+            return Ok(false);
+        }
+        // No work has been dispatched while these capacities are awaited.
+        // Stop must release this registration even when another database owns
+        // the shared preparation permit in an abandoned completed child.
+        let _serial = tokio::select! {
+            biased;
+            _ = stop.changed() => return Ok(false),
+            guard = self.proposal_gate.clone().lock_owned() => guard,
+        };
+        #[cfg(test)]
+        self.worker_test_hooks.waiting_preparation.notify_one();
+        let permit = tokio::select! {
+            biased;
+            _ = stop.changed() => return Ok(false),
+            permit = pool.preparation.clone().acquire_owned() => permit?,
+        };
         if self.closing.load(Ordering::Acquire) {
             return Ok(false);
         }
         self.access()?;
         let engine = self.engine.clone();
-        let mut prepared = tokio::task::spawn_blocking(move || {
-            let bytes = engine.prepare_audit_prune_inner()?;
-            Ok::<_, anyhow::Error>(Prepared {
-                bytes,
-                _engine: engine,
-                _pool: pool,
-                _permit: permit,
-                _registration: registration,
+        #[cfg(test)]
+        let hook = self.worker_test_hooks.audit.lock().unwrap().take();
+        let mut prepared = self
+            .audit_preparation
+            .run(move || {
+                #[cfg(test)]
+                if let Some(hook) = hook {
+                    hook();
+                }
+                let bytes = engine.prepare_audit_prune_inner()?;
+                Ok::<_, anyhow::Error>(Prepared {
+                    bytes,
+                    _engine: engine,
+                    _pool: pool,
+                    _permit: permit,
+                    _registration: registration,
+                })
             })
-        })
-        .await??;
+            .await??;
         let Some(bytes) = prepared.bytes.take() else {
             return Ok(false);
         };
@@ -134,21 +179,55 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
+    use kasumi_store::{
+        AuditArchiveDestination, FilesystemAuditArchive, NodeStore, PreparedAuditSegment,
+        test_utils::LocalKeyProvider,
+    };
     use std::future::Future;
+
+    struct UncertainArchive {
+        inner: FilesystemAuditArchive,
+        fail: AtomicBool,
+    }
+    #[async_trait::async_trait]
+    impl AuditArchiveDestination for UncertainArchive {
+        fn identity(&self) -> String {
+            self.inner.identity()
+        }
+        async fn publish(&self, segment: &PreparedAuditSegment) -> anyhow::Result<()> {
+            self.inner.publish(segment).await?;
+            anyhow::ensure!(
+                !self.fail.load(Ordering::Acquire),
+                "injected uncertain external publication"
+            );
+            Ok(())
+        }
+        async fn read(&self, link: &AuditArchiveLink) -> anyhow::Result<Vec<u8>> {
+            self.inner.read(link).await
+        }
+    }
 
     #[tokio::test]
     async fn tenant_audit_worker_keeps_its_owner_through_cancelled_shutdown() {
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("node.redb");
-            let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+            let node = NodeStore::create_new(
+                &path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap();
             let weak_node = Arc::downgrade(&node);
             let admission = NodeAdmission::new(Default::default()).unwrap();
             let provider = Arc::new(LocalKeyProvider::new([51; 32]));
-            let store = TenantStore::open_fixture(node.clone(), "tenant".into(), provider.clone())
-                .await
-                .unwrap();
+            let store = TenantStore::initialize_catalog_fixture(
+                node.clone(),
+                "tenant".into(),
+                provider.clone(),
+            )
+            .await
+            .unwrap();
             store
                 .write_batch(&[kasumi_store::WriteOp::put(
                     "drain-test",
@@ -156,7 +235,7 @@ mod tests {
                     b"durable".to_vec(),
                 )])
                 .unwrap();
-            let audit_store = TenantStore::open_fixture(
+            let audit_store = TenantStore::initialize_catalog_fixture(
                 node.clone(),
                 crate::SECURITY_TENANT.into(),
                 Arc::new(LocalKeyProvider::new([52; 32])),
@@ -164,7 +243,8 @@ mod tests {
             .await
             .unwrap();
             let audit =
-                SecurityAudit::open(audit_store, Default::default(), admission.clone()).unwrap();
+                SecurityAudit::initialize(audit_store, Default::default(), admission.clone())
+                    .unwrap();
             let incarnation = uuid::Uuid::new_v4().to_string();
             let engine = Arc::new(
                 TenantEngine::new(
@@ -184,7 +264,7 @@ mod tests {
             );
             engine.install_storage_access(&store).unwrap();
             engine.install_audit_maintenance(&admission).unwrap();
-            let stores = kasumi_store::test_utils::with_custody(
+            let stores = kasumi_store::test_utils::initialize_custody_fixture(
                 store.clone(),
                 Arc::new(LocalKeyProvider::new([53; 32])),
             )
@@ -220,7 +300,7 @@ mod tests {
                 monitor.take();
             }
             database.group.shutdown().await.unwrap();
-            store.shutdown().await;
+            store.shutdown().await.unwrap();
             let mut first = Box::pin(database.shutdown());
             std::future::poll_fn(|cx| {
                 assert!(first.as_mut().poll(cx).is_pending());
@@ -242,7 +322,7 @@ mod tests {
             pause.release.notify_one();
             retry.await.unwrap();
             assert!(database.audit_worker.try_lock().unwrap().is_none());
-            audit.shutdown().await;
+            audit.shutdown().await.unwrap();
             drop(database);
             assert!(weak_database.upgrade().is_none());
             drop(store);
@@ -250,15 +330,20 @@ mod tests {
             drop(node);
             assert!(weak_node.upgrade().is_none());
             // No delay or lock retry is allowed to hide a surviving file owner.
-            let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
-            let store = TenantStore::open_fixture(reopened, "tenant".into(), provider)
+            let reopened = NodeStore::open_existing(
+                &path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap();
+            let store = TenantStore::open_existing_fixture(reopened, "tenant".into(), provider)
                 .await
                 .unwrap();
             assert_eq!(
                 store.get("drain-test", b"marker").unwrap().unwrap(),
                 b"durable"
             );
-            store.shutdown().await;
+            store.shutdown().await.unwrap();
         })
         .await
         .expect("shutdown ownership fixture timed out");
@@ -266,9 +351,19 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn encrypted_worker_drains_hot_history_when_ordinary_capacity_is_full() {
+        worker_drains_hot_history(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn external_archive_outage_before_proposal_preserves_hot_history_and_raft_availability() {
+        worker_drains_hot_history(true).await;
+    }
+
+    async fn worker_drains_hot_history(outage: bool) {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
@@ -277,14 +372,27 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        let store = TenantStore::open_fixture(
+        let store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             "tenant".into(),
             Arc::new(LocalKeyProvider::new([41; 32])),
         )
         .await
         .unwrap();
-        let audit_store = TenantStore::open_fixture(
+        let archive = Arc::new(UncertainArchive {
+            inner: FilesystemAuditArchive::open(directory.path().join("external")).unwrap(),
+            fail: AtomicBool::new(outage),
+        });
+        store
+            .install_tenant_audit_archive(
+                Arc::new(
+                    FilesystemAuditArchive::open(directory.path().join("tenant-audit-archives"))
+                        .unwrap(),
+                ),
+                archive.clone(),
+            )
+            .unwrap();
+        let audit_store = TenantStore::initialize_catalog_fixture(
             node,
             crate::SECURITY_TENANT.into(),
             Arc::new(LocalKeyProvider::new([42; 32])),
@@ -292,7 +400,7 @@ mod tests {
         .await
         .unwrap();
         let audit =
-            SecurityAudit::open(audit_store, Default::default(), admission.clone()).unwrap();
+            SecurityAudit::initialize(audit_store, Default::default(), admission.clone()).unwrap();
         let policy = Policy {
             grants: vec![Grant {
                 principal: "owner".into(),
@@ -321,7 +429,7 @@ mod tests {
         engine.install_audit_maintenance(&admission).unwrap();
         let pool = engine.audit_maintenance.lock().unwrap().clone().unwrap();
         let pause = pool.preparation.clone().acquire_owned().await.unwrap();
-        let stores = kasumi_store::test_utils::with_custody(
+        let stores = kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             Arc::new(LocalKeyProvider::new([43; 32])),
         )
@@ -371,7 +479,28 @@ mod tests {
             .reserve((512 << 20) - admission.snapshot().reserved_bytes, None)
             .unwrap();
         assert!(admission.reserve(1, None).is_err());
+        let before = engine.generation().unwrap();
         drop(pause);
+        if outage {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while database.audit_maintenance_status().unwrap().failures == 0 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let current = engine.generation().unwrap();
+            assert_eq!(current.state.audit_retention, before.state.audit_retention);
+            assert_eq!(current.state.revision, before.state.revision);
+            group.check_access().unwrap();
+            assert_eq!(
+                group.linearizable_barrier().await.unwrap().unwrap().index,
+                before.state.revision
+            );
+            archive.fail.store(false, Ordering::Release);
+            database.audit_worker_wake.notify_one();
+        }
+        drop(before);
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let current = engine.generation().unwrap();
@@ -397,13 +526,13 @@ mod tests {
             50
         );
         let status = database.audit_maintenance_status().unwrap();
-        assert_eq!(status.failures, 0);
+        assert_eq!(status.failures > 0, outage);
         assert!(status.committed_segments > 0);
         drop(current);
         drop(ordinary);
         drop(pool);
         database.shutdown().await.unwrap();
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
         assert_eq!(admission.snapshot().reserved_bytes, 0);
     }
 }

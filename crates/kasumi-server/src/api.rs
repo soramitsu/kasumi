@@ -19,6 +19,27 @@ pub struct DatabaseRegistry {
 }
 
 impl DatabaseRegistry {
+    /// Read-only internal observation of one committed route. This neither
+    /// authorizes a request nor transfers the installed runner's ownership.
+    pub(crate) fn installed_generation(
+        &self,
+        tenant: &str,
+        incarnation: &str,
+    ) -> Result<Option<Arc<Database>>> {
+        let database = self
+            .databases
+            .read()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?
+            .get(tenant)
+            .cloned();
+        match database {
+            Some(database) if database.engine().generation()?.state.incarnation == incarnation => {
+                Ok(Some(database))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Installed source custody is retained separately from mutable data routes.
     /// This takes a typed service handle, never wire-selected keys or locations.
     pub fn install_retirement_source(
@@ -201,38 +222,6 @@ impl DatabaseRegistry {
             .remove(tenant))
     }
 
-    /// Publish one fully recovered generation after the durable control route CAS.
-    /// Existing request handles remain fenced by the retired source engine.
-    pub(crate) fn replace_generation(&self, expected: &str, database: Arc<Database>) -> Result<()> {
-        database.check_serving()?;
-        let state = database.engine().generation()?;
-        if state.state.retired {
-            return Err(Error::new(
-                ErrorCode::Sealed,
-                "retired source cannot enter data routing",
-            ));
-        }
-        let tenant = state.state.tenant.clone();
-        if tenant.starts_with("__kasumi_") {
-            return Err(Error::new(ErrorCode::Forbidden, "reserved tenant"));
-        }
-        let mut databases = self
-            .databases
-            .write()
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?;
-        let previous = databases
-            .get(&tenant)
-            .ok_or_else(|| Error::new(ErrorCode::Conflict, "tenant generation absent"))?;
-        if previous.engine().generation()?.state.incarnation != expected {
-            return Err(Error::new(ErrorCode::Conflict, "tenant generation changed"));
-        }
-        self.install_retirement_source(kasumi_engine::InstalledRetirementSource::Serving(
-            database.clone(),
-        ))?;
-        databases.insert(tenant, database);
-        Ok(())
-    }
-
     /// Only a verified context selects the tenant. No data request has a tenant
     /// override, and unknown tenants do not reveal the registry's contents.
     pub fn database(&self, context: &RequestContext) -> Result<Arc<Database>> {
@@ -369,7 +358,7 @@ mod tests {
     use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
     use kasumi_types::{
         Action, CollectionDefinition, Grant, IndexDefinition, IndexField, Limits, Mutation,
-        MutationBatch, Operation, Policy, ScalarType,
+        MutationBatch, Operation, Policy, ScalarType, WriteReceipt,
     };
     use prost::Message;
     use serde_json::{Value, json};
@@ -407,12 +396,13 @@ mod tests {
             .await;
             let key = EncodingKey::from_ed_pem(key.serialize_pem().as_bytes()).unwrap();
             let dir = tempfile::tempdir().unwrap();
-            let node = NodeStore::open(
+            let node = NodeStore::create_new(
                 dir.path().join("node.redb"),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap();
-            let audit_store = TenantStore::open_fixture(
+            let audit_store = TenantStore::initialize_catalog_fixture(
                 node.clone(),
                 crate::runtime::SECURITY_TENANT.into(),
                 Arc::new(LocalKeyProvider::new([9; 32])),
@@ -421,14 +411,14 @@ mod tests {
             .unwrap();
             let node_admission =
                 kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
-            let audit = crate::runtime::SecurityAudit::open(
+            let audit = crate::runtime::SecurityAudit::initialize(
                 audit_store.clone(),
                 kasumi_types::AuditRetentionBudget::default(),
                 node_admission.clone(),
             )
             .unwrap();
             auth.install_audit(audit.clone()).unwrap();
-            let store = TenantStore::open_fixture(
+            let store = TenantStore::initialize_catalog_fixture(
                 node,
                 "tenant-a".into(),
                 Arc::new(LocalKeyProvider::new([3; 32])),
@@ -452,7 +442,7 @@ mod tests {
                 strict_read_audit: false,
             };
             let db = kasumi_engine::test_utils::open_fixture(
-                kasumi_store::test_utils::with_custody(
+                kasumi_store::test_utils::initialize_custody_fixture(
                     store.clone(),
                     Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
                 )
@@ -560,7 +550,7 @@ mod tests {
         }
         async fn close(&self) {
             self.db.shutdown().await.unwrap();
-            self.audit.shutdown().await;
+            self.audit.shutdown().await.unwrap();
         }
     }
     fn native<T>(message: T, token: &str) -> Request<T> {
@@ -739,28 +729,20 @@ mod tests {
             let committed = fixture.db.engine().generation().unwrap();
             let original = committed.state.collections["docs"].documents["one"].clone();
             assert_eq!(committed.state.document_count, 1);
-            assert_eq!(committed.state.receipts.len(), 1);
+            assert_eq!(committed.state.mutation_receipt_head.count, 1);
+            let original_head = committed.state.mutation_receipt_head.clone();
             let original_batch: MutationBatch = serde_json::from_value(batch()).unwrap();
             let request_digest = original_batch.digest().unwrap();
-            assert_eq!(
-                committed
-                    .state
-                    .receipts
-                    .values()
-                    .next()
-                    .unwrap()
-                    .request_digest,
-                request_digest
-            );
-            let expected = committed
-                .state
-                .receipts
-                .values()
-                .next()
-                .unwrap()
-                .outcome
-                .clone()
-                .unwrap();
+            // Compare the separately authenticated point result with the
+            // actual original committed document position; no resident outcome
+            // map is retained or used as an alternate resolution path.
+            let expected = WriteReceipt {
+                revision: original.version,
+                versions: std::collections::BTreeMap::from([(
+                    "/docs/one".into(),
+                    original.version,
+                )]),
+            };
             if mcp {
                 let (status, receipt) = post(
                     &router, Some(&token),
@@ -846,7 +828,7 @@ mod tests {
             }
             let after = fixture.db.engine().generation().unwrap();
             assert_eq!(after.state.document_count, 1);
-            assert_eq!(after.state.receipts.len(), 1);
+            assert_eq!(after.state.mutation_receipt_head, original_head);
             assert_eq!(after.state.collections["docs"].documents["one"], original);
             assert_eq!(
                 original.body["n"].to_string(),
@@ -1881,14 +1863,16 @@ name: "docs".into(),
             strict_read_audit: true,
         };
         let provider = Arc::new(LocalKeyProvider::new([61; 32]));
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             fixture._dir.path().join("control.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
-        let store = TenantStore::open_fixture(node.clone(), tenant.into(), provider.clone())
-            .await
-            .unwrap();
+        let store =
+            TenantStore::initialize_catalog_fixture(node.clone(), tenant.into(), provider.clone())
+                .await
+                .unwrap();
         let limits = Limits {
             audit_retention: kasumi_types::AuditRetentionBudget {
                 hot_bytes: 128 << 10,
@@ -1897,7 +1881,7 @@ name: "docs".into(),
             ..Limits::default()
         };
         let control = kasumi_engine::test_utils::open_fixture(
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::initialize_custody_fixture(
                 store.clone(),
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
             )
@@ -1940,15 +1924,11 @@ name: "docs".into(),
             vec![ManagedTenant {
                 database: control.clone(),
                 store,
-                provider,
-                custody_provider: Arc::new(LocalKeyProvider::new([241; 32])),
                 bootstrap: None,
-                descriptor: None,
                 lease: None,
             }],
             BTreeMap::new(),
             kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
-            BTreeMap::new(),
             Arc::new(|_| anyhow::bail!("fixture has no installed authority credential")),
         )
         .unwrap();

@@ -27,6 +27,26 @@ impl Backend {
     }
 }
 
+struct PreparedBackend<'a> {
+    backend: &'a Backend,
+    restored: BTreeMap<u64, Vec<u8>>,
+}
+impl kasumi_raft::PreparedStateMachineRestore for PreparedBackend<'_> {
+    fn retirement(&self) -> Option<kasumi_raft::RetiredSnapshotState> {
+        None
+    }
+    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+        vec![]
+    }
+    fn application_writes(&self) -> &[kasumi_store::WriteOp] {
+        &[]
+    }
+    fn publish(self: Box<Self>) -> Result<()> {
+        *self.backend.data.lock().unwrap() = self.restored;
+        Ok(())
+    }
+}
+
 impl StateMachineBackend for Backend {
     fn close_application(&self) {
         self.data.lock().unwrap().clear();
@@ -69,21 +89,50 @@ impl StateMachineBackend for Backend {
         serde_json::from_reader::<_, BTreeMap<u64, Vec<u8>>>(bytes)?;
         Ok(None)
     }
-    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
+    fn prepare_restore<'a>(
+        &'a self,
+        _context: &kasumi_raft::SnapshotRestoreContext,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
         let restored = serde_json::from_reader(bytes)?;
-        *self.data.lock().unwrap() = restored;
-        Ok(())
+        Ok(Box::new(PreparedBackend {
+            backend: self,
+            restored,
+        }))
     }
 }
 
-pub async fn store(path: &Path) -> Result<Arc<kasumi_store::TenantStorageSet>> {
-    kasumi_store::TenantStorageSet::open_fixture(
-        NodeStore::open(path, kasumi_store::ScratchDisk::fixture())?,
-        "tenant-a".into(),
-        Arc::new(LocalKeyProvider::new([19; 32])),
-        Arc::new(LocalKeyProvider::new([241; 32])),
-    )
-    .await
+pub async fn store(path: &Path, create: bool) -> Result<Arc<kasumi_store::TenantStorageSet>> {
+    let node = if create {
+        NodeStore::create_new(
+            path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )?
+    } else {
+        NodeStore::open_existing(
+            path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )?
+    };
+    if create {
+        kasumi_store::TenantStorageSet::initialize_catalogs_fixture(
+            node,
+            "tenant-a".into(),
+            Arc::new(LocalKeyProvider::new([19; 32])),
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await
+    } else {
+        kasumi_store::TenantStorageSet::open_existing_fixture(
+            node,
+            "tenant-a".into(),
+            Arc::new(LocalKeyProvider::new([19; 32])),
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await
+    }
 }
 
 pub fn config() -> Config {

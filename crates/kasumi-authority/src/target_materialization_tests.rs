@@ -12,21 +12,28 @@ use kasumi_store::{FilesystemBackupDestination, StorageAccess, TenantStorageSet,
 async fn audit(
     node: Arc<NodeStore>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
+    existing: bool,
 ) -> Arc<kasumi_engine::SecurityAudit> {
-    let store = TenantStore::open_fixture(
-        node,
-        kasumi_engine::SECURITY_TENANT.into(),
-        Arc::new(LocalKeyProvider::new([0xa7; 32])),
-    )
-    .await
+    let provider = Arc::new(LocalKeyProvider::new([0xa7; 32]));
+    let store = if existing {
+        TenantStore::open_existing_fixture(node, kasumi_engine::SECURITY_TENANT.into(), provider)
+            .await
+    } else {
+        TenantStore::initialize_catalog_fixture(
+            node,
+            kasumi_engine::SECURITY_TENANT.into(),
+            provider,
+        )
+        .await
+    }
     .unwrap();
     // These stores model distinct processes. Audit and database on each node
     // share one admission governor, rather than the test-process fallback.
-    kasumi_engine::SecurityAudit::open(
-        store,
-        kasumi_types::AuditRetentionBudget::default(),
-        admission,
-    )
+    if existing {
+        kasumi_engine::SecurityAudit::open(store, Default::default(), admission)
+    } else {
+        kasumi_engine::SecurityAudit::initialize(store, Default::default(), admission)
+    }
     .unwrap()
 }
 struct MaterialFixture {
@@ -38,27 +45,31 @@ struct MaterialFixture {
     intent: SignedControlIntent,
     signers: BTreeMap<u64, TargetSigner>,
     admissions: BTreeMap<u64, Arc<kasumi_engine::admission::NodeAdmission>>,
+    target_files: std::sync::Mutex<BTreeSet<u64>>,
 }
 impl MaterialFixture {
     async fn new() -> Self {
         let control = ControlFixture::new();
         let issuer = control.issuer().await;
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             issuer._dir.path().join("source.redb"),
+            Uuid::new_v4(),
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
         let source_admission =
             kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
-        let security = audit(node.clone(), source_admission.clone()).await;
+        let security = audit(node.clone(), source_admission.clone(), false).await;
         let sourcekey = Arc::new(LocalKeyProvider::new([51; 32]));
-        let app = TenantStore::open_fixture(node, "city".into(), sourcekey.clone())
+        let app = TenantStore::initialize_catalog_fixture(node, "city".into(), sourcekey.clone())
             .await
             .unwrap();
-        let stores =
-            kasumi_store::test_utils::with_custody(app, Arc::new(LocalKeyProvider::new([211; 32])))
-                .await
-                .unwrap();
+        let stores = kasumi_store::test_utils::initialize_custody_fixture(
+            app,
+            Arc::new(LocalKeyProvider::new([211; 32])),
+        )
+        .await
+        .unwrap();
         let context = RequestContext {
             tenant: "city".into(),
             principal: "source-owner".into(),
@@ -126,7 +137,7 @@ impl MaterialFixture {
         };
         source_db.shutdown().await.unwrap();
         drop(source_db);
-        security.shutdown().await;
+        security.shutdown().await.unwrap();
         drop(security);
         let source_id = Uuid::parse_str(&target.checkpoint.source_incarnation).unwrap();
         super::activation_gate_tests::exact_administrative(
@@ -199,6 +210,7 @@ impl MaterialFixture {
             input,
             intent,
             signers,
+            target_files: Default::default(),
             admissions: (1..=3)
                 .map(|id| {
                     (
@@ -221,6 +233,13 @@ impl MaterialFixture {
         let issuer = self.issuer.leader().await;
         let trust = self.issuer.trust_for(id);
         let node_identity = nodes().into_iter().find(|n| n.node_id == id).unwrap();
+        let node_store_id = kasumi_store::node_store_ids::target_generation(
+            self.control.root.control_incarnation,
+            "city",
+            self.target.incarnation,
+            &node_identity.verifier,
+        )
+        .unwrap();
         let node_context = AuthenticatedNode::from_verified_transport(
             self.issuer.context(&node_identity.principal),
             node_identity.certificate_sha256.clone(),
@@ -283,20 +302,36 @@ impl MaterialFixture {
         // Production runner obtains this original operation before providers.
         // The helper's actual opener is under the same opaque gate; each tested
         // materialization still explicitly obtains its registered operation.
-        let node = NodeStore::open(
-            self.issuer._dir.path().join(format!("target-{id}.redb")),
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap();
-        let security = audit(node.clone(), self.admissions[&id].clone()).await;
-        let stores = TenantStorageSet::open(
-            node,
-            "city".into(),
-            Arc::new(LocalKeyProvider::new([61; 32])),
-            Arc::new(LocalKeyProvider::new([221; 32])),
-            StorageAccess::target_phase(serving, gate).unwrap(),
-        )
-        .await
+        let first_creation = self.target_files.lock().unwrap().insert(id);
+        let node = {
+            let path = self.issuer._dir.path().join(format!("target-{id}.redb"));
+            if first_creation {
+                NodeStore::create_new(path, node_store_id, kasumi_store::ScratchDisk::fixture())
+            } else {
+                NodeStore::open_existing(path, node_store_id, kasumi_store::ScratchDisk::fixture())
+            }
+            .unwrap()
+        };
+        let security = audit(node.clone(), self.admissions[&id].clone(), !first_creation).await;
+        let stores = if first_creation {
+            TenantStorageSet::initialize_catalogs(
+                node,
+                "city".into(),
+                Arc::new(LocalKeyProvider::new([61; 32])),
+                Arc::new(LocalKeyProvider::new([221; 32])),
+                StorageAccess::target_phase(serving, gate).unwrap(),
+            )
+            .await
+        } else {
+            TenantStorageSet::open_existing(
+                node,
+                "city".into(),
+                Arc::new(LocalKeyProvider::new([61; 32])),
+                Arc::new(LocalKeyProvider::new([221; 32])),
+                StorageAccess::target_phase(serving, gate).unwrap(),
+            )
+            .await
+        }
         .unwrap();
         (scope, stores, security)
     }
@@ -439,10 +474,9 @@ async fn actual_target_materialization_preserves_image_and_original_operation_fe
     drop(fresh);
     scope.close();
     scope.drain().await;
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(audit);
     f.close().await;
 }
@@ -485,10 +519,9 @@ async fn fresh_materialization_admission_preserves_expired_origin_and_exact_publ
     drop(operation);
     scope.close();
     scope.drain().await;
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(audit);
 
     let mut resume = f.intent.clone();
@@ -552,10 +585,9 @@ async fn fresh_materialization_admission_preserves_expired_origin_and_exact_publ
         drop(operation);
         scope.close();
         scope.drain().await;
-        stores.application().shutdown().await;
-        stores.custody().store().shutdown().await;
+        stores.shutdown().await.unwrap();
         drop(stores);
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
     }
     verify_target_materializations(&origin, &materialized).unwrap();
     f.close().await;
@@ -606,10 +638,9 @@ async fn materialization_rejects_authenticated_backup_purpose_substitution_befor
     drop(operation);
     scope.close();
     scope.drain().await;
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     f.close().await;
 }
 
@@ -621,14 +652,24 @@ struct RunningTarget {
     audit: Arc<kasumi_engine::SecurityAudit>,
     owner: kasumi_engine::TargetReplica,
 }
+fn initial_complete(input: &TargetQuorumInput) -> kasumi_types::TargetCompletionInput {
+    kasumi_types::TargetCompletionInput {
+        quorum: input.clone(),
+        predecessor: None,
+    }
+}
 impl MaterialFixture {
     async fn commit_phase(
         &self,
         phase: LifecyclePhase,
         input: &TargetQuorumInput,
     ) -> SignedControlIntent {
-        self.commit_phase_input(phase, input.digest().unwrap(), 1_500_000)
-            .await
+        let digest = if phase == LifecyclePhase::Complete {
+            initial_complete(input).digest().unwrap()
+        } else {
+            input.digest().unwrap()
+        };
+        self.commit_phase_input(phase, digest, 1_500_000).await
     }
     async fn commit_phase_input(
         &self,
@@ -678,10 +719,9 @@ impl MaterialFixture {
             drop(operation);
             scope.close();
             scope.drain().await;
-            stores.application().shutdown().await;
-            stores.custody().store().shutdown().await;
+            stores.shutdown().await.unwrap();
             drop(stores);
-            audit.shutdown().await;
+            audit.shutdown().await.unwrap();
         }
         let input = TargetQuorumInput {
             origin_sha256: origin_sha256.unwrap(),
@@ -700,8 +740,12 @@ impl MaterialFixture {
         input: &TargetQuorumInput,
         router: &Arc<InProcessRouter>,
     ) -> Vec<RunningTarget> {
-        self.open_targets_input(phase, TargetReplicaInput::Quorum(input.clone()), router)
-            .await
+        let input = if phase.observation.intent.request.phase == LifecyclePhase::Complete {
+            TargetReplicaInput::Completion(initial_complete(input))
+        } else {
+            TargetReplicaInput::Quorum(input.clone())
+        };
+        self.open_targets_input(phase, input, router).await
     }
     async fn open_targets_input(
         &self,
@@ -756,9 +800,9 @@ impl MaterialFixture {
             drop(t.operation);
             t.scope.close();
             t.scope.drain().await;
-            t.stores.custody().store().shutdown().await;
+            t.stores.custody().store().shutdown().await.unwrap();
             drop(t.stores);
-            t.audit.shutdown().await;
+            t.audit.shutdown().await.unwrap();
         }
     }
 }
@@ -796,7 +840,7 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
         targets[0]
             .owner
             .database()
-            .complete_target(&targets[0].operation, input.clone())
+            .complete_target(&targets[0].operation, initial_complete(&input))
             .await
             .is_err()
     );
@@ -816,7 +860,7 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
     let proof = selected
         .owner
         .database()
-        .complete_target(&selected.operation, input.clone())
+        .complete_target(&selected.operation, initial_complete(&input))
         .await
         .unwrap();
     let signed = f.signers[&selected.id]
@@ -833,7 +877,7 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
     let again = selected
         .owner
         .database()
-        .complete_target(&selected.operation, input.clone())
+        .complete_target(&selected.operation, initial_complete(&input))
         .await
         .unwrap();
     assert_eq!(again.observation().fact, first);
@@ -867,8 +911,20 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
     f.close().await;
 }
 
+#[path = "target_serving_tests.rs"]
+mod serving_tests;
+
 #[tokio::test]
 async fn exact_actual_completion_is_required_for_issuer_and_target_activation() {
+    Box::pin(exercise_target_activation(false)).await;
+}
+
+#[tokio::test]
+async fn activated_target_keeps_operational_suspension_and_membership_across_restart() {
+    Box::pin(exercise_target_activation(true)).await;
+}
+
+async fn exercise_target_activation(maintenance: bool) {
     let f = MaterialFixture::new().await;
     let input = f.materialize_all().await;
     let initialize = f.commit_phase(LifecyclePhase::Initialize, &input).await;
@@ -887,7 +943,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     let proof = targets[index]
         .owner
         .database()
-        .complete_target(&targets[index].operation, input.clone())
+        .complete_target(&targets[index].operation, initial_complete(&input))
         .await
         .unwrap();
     let signed = f.signers[&targets[index].id]
@@ -998,8 +1054,18 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     let journal_access =
         StorageAccess::target_journal(&journal_installation.root, &journal_installation.node)
             .unwrap();
-    let journal_store = TenantStore::open(
-        NodeStore::open(&journal_path, kasumi_store::ScratchDisk::fixture()).unwrap(),
+    let journal_file_id = kasumi_store::node_store_ids::target_journal(
+        journal_installation.root.control_incarnation,
+        &journal_installation.node.verifier,
+    )
+    .unwrap();
+    let journal_store = TenantStore::initialize_catalog(
+        NodeStore::create_new(
+            &journal_path,
+            journal_file_id,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap(),
         journal_tenant.clone(),
         journal_provider.clone(),
         journal_access.clone(),
@@ -1009,7 +1075,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     let journal_limits = TargetJournalLimits {
         max_metadata_bytes: 4 << 20,
     };
-    let journal = kasumi_engine::TargetJournal::open(
+    let journal = kasumi_engine::TargetJournal::create_new(
         journal_store.clone(),
         journal_installation.clone(),
         journal_limits.clone(),
@@ -1076,6 +1142,15 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
         assert_eq!(signed_local.observation.activation, fact);
         assert_eq!(signed_local.observation.observer_node_id, follower.id);
         verify_target_activation(&input.materialized[&1].fact.origin, &signed_local).unwrap();
+        if maintenance {
+            serving_tests::record_follower_projection(
+                &f,
+                follower,
+                &local,
+                &activation_input.digest().unwrap(),
+            )
+            .await;
+        }
         assert!(follower.owner.database().check_serving().is_err());
     }
     let projected = journal
@@ -1100,19 +1175,24 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     drop(replayed);
     drop(projected);
     drop(journal);
-    journal_store.shutdown().await;
+    journal_store.shutdown().await.unwrap();
     drop(journal_store);
     // Reopen only the separately encrypted journal, independently of all app
     // providers. Exact signatures survive restart; substituted facts fail closed.
-    let journal_store = TenantStore::open(
-        NodeStore::open(&journal_path, kasumi_store::ScratchDisk::fixture()).unwrap(),
+    let journal_store = TenantStore::open_existing(
+        NodeStore::open_existing(
+            &journal_path,
+            journal_file_id,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap(),
         journal_tenant.clone(),
         journal_provider.clone(),
         journal_access.clone(),
     )
     .await
     .unwrap();
-    let journal = kasumi_engine::TargetJournal::open(
+    let journal = kasumi_engine::TargetJournal::open_existing(
         journal_store.clone(),
         journal_installation.clone(),
         journal_limits.clone(),
@@ -1149,7 +1229,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     drop(projection);
     drop(journal);
     assert!(
-        kasumi_engine::TargetJournal::open(
+        kasumi_engine::TargetJournal::open_existing(
             journal_store.clone(),
             journal_installation.clone(),
             journal_limits.clone(),
@@ -1164,7 +1244,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
             exact_bytes,
         )])
         .unwrap();
-    let journal = kasumi_engine::TargetJournal::open(
+    let journal = kasumi_engine::TargetJournal::open_existing(
         journal_store.clone(),
         journal_installation.clone(),
         journal_limits.clone(),
@@ -1178,7 +1258,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     projection.check(&serving_gate).unwrap();
     drop(projection);
     drop(journal);
-    journal_store.shutdown().await;
+    journal_store.shutdown().await.unwrap();
     drop(journal_store);
     // A lifecycle-gated handle never turns into an ordinary data route.
     assert!(selected.owner.database().check_serving().is_err());
@@ -1195,118 +1275,10 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     assert_eq!(recovered.fact(), &fact);
     drop(recovered);
     f.close_targets(targets, &router).await;
-    // Ordinary startup uses only the independent journal, current issuer and
-    // existing target keys. No source provider or old Control JWT is consulted.
-    let journal_store = TenantStore::open(
-        NodeStore::open(&journal_path, kasumi_store::ScratchDisk::fixture()).unwrap(),
-        journal_tenant,
-        journal_provider,
-        journal_access,
-    )
-    .await
-    .unwrap();
-    let journal = kasumi_engine::TargetJournal::open(
-        journal_store.clone(),
-        journal_installation,
-        journal_limits,
-        f.admissions[&projected_node_id].clone(),
-    )
-    .unwrap();
-    let projection = Arc::new(
-        journal
-            .serving_projection("city", f.target.incarnation)
-            .unwrap()
-            .unwrap(),
-    );
-    let identity = nodes()
-        .into_iter()
-        .find(|node| node.node_id == projected_node_id)
-        .unwrap();
-    let boot = ServingBoot::with_test_clock(
-        f.issuer.trust_for(projected_node_id),
-        ServingIdentity {
-            tenant: "city".into(),
-            incarnation: f.target.incarnation,
-            authority_epoch: 2,
-            node: identity.clone(),
-        },
-        f.issuer.clock.clone(),
-    )
-    .unwrap();
-    let attempt = boot.begin_acquisition().unwrap();
-    let issuer = f.issuer.leader().await;
-    let (lease, fence) = issuer
-        .acquire(
-            AuthenticatedNode::from_verified_transport(
-                f.issuer.context(&identity.principal),
-                identity.certificate_sha256,
-            )
-            .unwrap(),
-            attempt.request().clone(),
-        )
-        .await
-        .unwrap();
-    fence.check().unwrap();
-    let live = ServingGate::new(attempt.verify(lease).unwrap()).unwrap();
-    let node = NodeStore::open(
-        f.issuer
-            ._dir
-            .path()
-            .join(format!("target-{projected_node_id}.redb")),
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    let security = audit(node.clone(), f.admissions[&projected_node_id].clone()).await;
-    let stores = TenantStorageSet::open(
-        node,
-        "city".into(),
-        Arc::new(LocalKeyProvider::new([61; 32])),
-        Arc::new(LocalKeyProvider::new([221; 32])),
-        projection.storage_access(live.clone()).unwrap(),
-    )
-    .await
-    .unwrap();
-    let mut serving = kasumi_engine::open_serving_target(
-        projection.clone(),
-        stores.clone(),
-        TargetReplicaConfig {
-            node_id: projected_node_id,
-            raft: Config::default(),
-            admission: f.admissions[&projected_node_id].clone(),
-        },
-        router.clone(),
-        security.clone(),
-    )
-    .await
-    .unwrap();
-    let database = serving.database().unwrap();
-    assert_eq!(
-        database
-            .engine()
-            .generation()
-            .unwrap()
-            .state
-            .target_lifecycle[&f.target.incarnation.to_string()]
-            .activation
-            .as_ref(),
-        Some(&fact)
-    );
-    // A later serving expiry closes this newly admitted generation; immutable
-    // projection replay cannot renew its captured gate.
-    f.issuer.clock.0.store(2001, Ordering::SeqCst);
-    assert!(serving.database().is_err());
-    assert!(projection.storage_access(live).is_err());
-    drop(database);
-    serving.close().await.unwrap();
-    drop(serving);
-    stores.custody().store().shutdown().await;
-    drop(stores);
-    security.shutdown().await;
-    drop(security);
-    drop(projection);
-    drop(journal);
-    journal_store.shutdown().await;
-    drop(journal_store);
+    // Ordinary startup uses independent journals and fresh Serving leases.
+    // The extended case also reopens after ordinary maintenance; no old phase
+    // grant becomes data authority and no original activation fact changes.
+    serving_tests::exercise_serving(&f, &router, projected_node_id, &fact, maintenance).await;
     drop(issuer);
     drop(current);
     f.close().await;
@@ -1330,7 +1302,7 @@ async fn dropping_target_on_non_runtime_thread_retains_shutdown_work_until_real_
     assert!(t.stores.application().check_access().is_err());
     drop(handle);
     drop(t.stores);
-    t.audit.shutdown().await;
+    t.audit.shutdown().await.unwrap();
     f.close_targets(targets, &router).await;
     f.close().await;
 }
@@ -1350,14 +1322,18 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
     current_target(&targets).await;
     f.close_targets(targets, &router).await;
     let complete = f
-        .commit_phase_input(LifecyclePhase::Complete, input.digest().unwrap(), 1_000_500)
+        .commit_phase_input(
+            LifecyclePhase::Complete,
+            initial_complete(&input).digest().unwrap(),
+            1_000_500,
+        )
         .await;
     let targets = f.open_targets(&complete, &input, &router).await;
     let index = current_target(&targets).await;
     let proof = targets[index]
         .owner
         .database()
-        .complete_target(&targets[index].operation, input.clone())
+        .complete_target(&targets[index].operation, initial_complete(&input))
         .await
         .unwrap();
     let original = proof.observation().fact.clone();
@@ -1393,6 +1369,7 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
     let inspection_input = TargetInspectionInput {
         quorum: input.clone(),
         original_phase: complete.observation.intent.clone(),
+        predecessor: None,
     };
     let inspection = f
         .commit_phase_input(
@@ -1419,7 +1396,7 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
             .is_err()
     );
     assert!(
-        db.complete_target(&selected.operation, input.clone())
+        db.complete_target(&selected.operation, initial_complete(&input))
             .await
             .is_err()
     );
@@ -1533,12 +1510,17 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         node: nodes().first().unwrap().clone(),
     };
     let path = f.issuer._dir.path().join("independent-target-journal.redb");
-    let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let file_id = kasumi_store::node_store_ids::target_journal(
+        installation.root.control_incarnation,
+        &installation.node.verifier,
+    )
+    .unwrap();
+    let node = NodeStore::create_new(&path, file_id, kasumi_store::ScratchDisk::fixture()).unwrap();
     let tenant = format!("kasumi.target.{}.1", f.control.root.control_incarnation);
     let provider = Arc::new(LocalKeyProvider::new([238; 32]));
     let access = StorageAccess::target_journal(&installation.root, &installation.node).unwrap();
     assert!(
-        TenantStore::open(
+        TenantStore::initialize_catalog(
             node.clone(),
             "city".into(),
             provider.clone(),
@@ -1547,7 +1529,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         .await
         .is_err()
     );
-    let store = TenantStore::open(
+    let store = TenantStore::initialize_catalog(
         node.clone(),
         tenant.clone(),
         provider.clone(),
@@ -1558,14 +1540,14 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     let mut limits = TargetJournalLimits {
         max_metadata_bytes: 4 << 20,
     };
-    let journal = TargetJournal::open(
+    let journal = TargetJournal::create_new(
         store.clone(),
         installation.clone(),
         limits.clone(),
         f.admissions[&1].clone(),
     )
     .unwrap();
-    let again = TargetJournal::open(
+    let again = TargetJournal::open_existing(
         store.clone(),
         installation.clone(),
         limits.clone(),
@@ -1586,6 +1568,49 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     for job in jobs {
         assert_eq!(job.await.unwrap().intent(), &f.intent.observation.intent);
     }
+    // Crash after durable creation intent, before the file exists. Losing the
+    // first permit must never turn its original replay into a new creator.
+    let file_path = f.issuer._dir.path().join("file-intent-target.redb");
+    let creation = journal.reserve_materialization_file(&op).unwrap();
+    drop(creation);
+    assert!(
+        journal
+            .reserve_materialization_file(&op)
+            .unwrap()
+            .open(&file_path, kasumi_store::ScratchDisk::fixture())
+            .is_err()
+    );
+    assert!(!file_path.exists());
+    // A replacement node, even a canonical Kasumi file, cannot be adopted when
+    // its installed UUID differs. The rejected replay must leave its bytes alone.
+    let unrelated = NodeStore::create_new(
+        &file_path,
+        Uuid::new_v4(),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+    drop(unrelated);
+    let unrelated_bytes = std::fs::read(&file_path).unwrap();
+    assert!(
+        journal
+            .reserve_materialization_file(&op)
+            .unwrap()
+            .open(&file_path, kasumi_store::ScratchDisk::fixture())
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&file_path).unwrap(), unrelated_bytes);
+    assert_eq!(
+        journal
+            .materialization_file_id("city", f.target.incarnation)
+            .unwrap(),
+        kasumi_store::node_store_ids::target_generation(
+            f.control.root.control_incarnation,
+            "city",
+            f.target.incarnation,
+            &installation.node.verifier
+        )
+        .unwrap()
+    );
     let metadata: serde_json::Value =
         serde_json::from_slice(&store.get("target.journal", b"metadata").unwrap().unwrap())
             .unwrap();
@@ -1595,7 +1620,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     // completion/stop/activation records. No lifetime record count is involved.
     limits.max_metadata_bytes = metadata["charged_bytes"].as_u64().unwrap();
     drop(journal);
-    let journal = TargetJournal::open(
+    let journal = TargetJournal::open_existing(
         store.clone(),
         installation.clone(),
         limits.clone(),
@@ -1627,7 +1652,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     // accepts the exact previously rejected phase under its original deadline.
     drop(journal);
     limits.max_metadata_bytes = limits.max_metadata_bytes.checked_mul(2).unwrap();
-    let journal = TargetJournal::open(
+    let journal = TargetJournal::open_existing(
         store.clone(),
         installation.clone(),
         limits.clone(),
@@ -1645,7 +1670,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     assert_eq!(metadata["generations"], 1);
     limits.max_metadata_bytes = metadata["charged_bytes"].as_u64().unwrap();
     drop(journal);
-    let journal = TargetJournal::open(
+    let journal = TargetJournal::open_existing(
         store.clone(),
         installation.clone(),
         limits.clone(),
@@ -1700,6 +1725,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     let stop_op = stop_scope.begin_operation(60_000).unwrap();
     journal.stop(&stop_op, &proof).unwrap();
     assert!(journal.prepare(&op, &f.input.digest().unwrap()).is_err());
+    assert!(journal.reserve_materialization_file(&op).is_err());
     let metadata_after: serde_json::Value =
         serde_json::from_slice(&store.get("target.journal", b"metadata").unwrap().unwrap())
             .unwrap();
@@ -1713,14 +1739,15 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     scope.close();
     scope.drain().await;
     drop(journal);
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
     drop(node);
-    let node = NodeStore::open(path, kasumi_store::ScratchDisk::fixture()).unwrap();
-    let store = TenantStore::open(node, tenant, provider, access)
+    let node =
+        NodeStore::open_existing(path, file_id, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let store = TenantStore::open_existing(node, tenant, provider, access)
         .await
         .unwrap();
-    let reopened = TargetJournal::open(
+    let reopened = TargetJournal::open_existing(
         store.clone(),
         installation.clone(),
         limits.clone(),
@@ -1728,6 +1755,12 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     )
     .unwrap();
     reopened.stop(&stop_op, &proof).unwrap();
+    assert!(
+        reopened
+            .materialization_file_id("city", f.target.incarnation)
+            .is_ok()
+    );
+
     assert_eq!(
         store
             .get("target.journal", stop_key.as_bytes())
@@ -1758,7 +1791,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
             )])
             .unwrap();
         assert!(
-            TargetJournal::open(
+            TargetJournal::open_existing(
                 store.clone(),
                 installation.clone(),
                 limits.clone(),
@@ -1782,7 +1815,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         .write_batch(&[kasumi_store::WriteOp::delete("target.journal", b"metadata")])
         .unwrap();
     assert!(
-        TargetJournal::open(
+        TargetJournal::open_existing(
             store.clone(),
             installation,
             limits,
@@ -1798,7 +1831,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
             .unwrap(),
         terminal
     );
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
     drop(issuer);
     f.close().await;
@@ -1853,4 +1886,97 @@ async fn followup_request_keeps_both_original_credential_fences_and_cannot_reope
     let late = TargetRequestAdmission::capture(current, 60_000).unwrap();
     assert!(scope.begin_followup(late).is_err());
     f.close().await;
+}
+
+#[tokio::test]
+async fn target_file_creation_outcome_distinguishes_original_creation_from_strict_replay() {
+    use kasumi_engine::{MaterializationNode, TargetJournal, TargetJournalInstallation};
+    let f = MaterialFixture::new().await;
+    let installation = TargetJournalInstallation {
+        root: f.control.root.clone(),
+        node: nodes().first().unwrap().clone(),
+    };
+    let journal_path = f.issuer._dir.path().join("creation-outcome-journal.redb");
+    let node = NodeStore::create_new(
+        &journal_path,
+        kasumi_store::node_store_ids::target_journal(
+            installation.root.control_incarnation,
+            &installation.node.verifier,
+        )
+        .unwrap(),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+    let store = TenantStore::initialize_catalog(
+        node.clone(),
+        format!("kasumi.target.{}.1", installation.root.control_incarnation),
+        Arc::new(LocalKeyProvider::new([239; 32])),
+        StorageAccess::target_journal(&installation.root, &installation.node).unwrap(),
+    )
+    .await
+    .unwrap();
+    let journal = TargetJournal::create_new(
+        store,
+        installation,
+        TargetJournalLimits {
+            max_metadata_bytes: 4 << 20,
+        },
+        f.admissions[&1].clone(),
+    )
+    .unwrap();
+    let scope = f.journal_scope(&f.intent).await;
+    let operation = scope.begin_operation(60_000).unwrap();
+    journal
+        .prepare(&operation, &f.input.digest().unwrap())
+        .unwrap();
+    let path = f.issuer._dir.path().join("creation-outcome-target.redb");
+    let MaterializationNode::Created(target) = journal
+        .reserve_materialization_file(&operation)
+        .unwrap()
+        .open(&path, kasumi_store::ScratchDisk::fixture())
+        .unwrap()
+    else {
+        panic!("original durable file dispatch lost catalog initialization permission")
+    };
+    target.drain_initializers().await.unwrap();
+    drop(target);
+    let before = std::fs::read(&path).unwrap();
+    let MaterializationNode::Existing(target) = journal
+        .reserve_materialization_file(&operation)
+        .unwrap()
+        .open(&path, kasumi_store::ScratchDisk::fixture())
+        .unwrap()
+    else {
+        panic!("replay regained original catalog initialization permission")
+    };
+    assert!(
+        TenantStorageSet::open_existing_fixture(
+            target.clone(),
+            "city".into(),
+            Arc::new(LocalKeyProvider::new([52; 32])),
+            Arc::new(LocalKeyProvider::new([53; 32])),
+        )
+        .await
+        .is_err()
+    );
+    target.drain_initializers().await.unwrap();
+    drop(target);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    // Even absence after an earlier creation cannot turn a replay into a creator.
+    std::fs::remove_file(&path).unwrap();
+    assert!(
+        journal
+            .reserve_materialization_file(&operation)
+            .unwrap()
+            .open(&path, kasumi_store::ScratchDisk::fixture())
+            .is_err()
+    );
+    assert!(!path.exists());
+    drop(operation);
+    scope.close();
+    scope.drain().await;
+    journal.shutdown().await.unwrap();
+    drop(journal);
+    drop(node);
+    f.issuer.close().await;
 }

@@ -10,8 +10,9 @@ use std::{collections::BTreeSet, sync::Arc};
 async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
     let directory = tempfile::tempdir().unwrap();
     let keys = Arc::new(LocalKeyProvider::new([41; 32]));
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -22,7 +23,7 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
         })
         .unwrap();
     let audit = common::security_audit_with_admission(node.clone(), admission.clone()).await;
-    let store = TenantStore::open_fixture(node, "tenant".into(), keys.clone())
+    let store = TenantStore::initialize_catalog_fixture(node, "tenant".into(), keys.clone())
         .await
         .unwrap();
     let context = RequestContext {
@@ -41,7 +42,7 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
         strict_read_audit: true,
     };
     let database = open_local(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -134,5 +135,5 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
     assert_eq!(fence.check().unwrap_err().code, ErrorCode::Sealed);
     assert!(database.engine().generation().is_err());
     database.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

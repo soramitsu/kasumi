@@ -74,14 +74,31 @@ pub(crate) fn validate_quorum_step(
     };
     origin(state, operation)?.accepts_phase(current, expected)?;
     let input = quorum_input(state, operation)?;
-    if current.request.phase_input_sha256 != input.digest()? {
+    let complete_input = completion::completion_input(state, operation)?;
+    let digest = if phase_kind == RecoveryPhase::Complete {
+        complete_input.digest()?
+    } else {
+        input.digest()?
+    };
+    if current.request.phase_input_sha256 != digest {
         return Err(conflict("committed quorum input differs"));
     }
     match step {
-        TargetRuntimeStep::Start(TargetReplicaInput::Quorum(actual)) if actual == &input => {
+        TargetRuntimeStep::Start(TargetReplicaInput::Quorum(actual))
+            if phase_kind == RecoveryPhase::Initialize && actual == &input =>
+        {
             if admission && started_for(state, operation, node_id, current.request.command_id)? {
                 return Err(conflict(
                     "target already started under this exact Control phase",
+                ));
+            }
+        }
+        TargetRuntimeStep::Start(TargetReplicaInput::Completion(actual))
+            if phase_kind == RecoveryPhase::Complete && actual == &complete_input =>
+        {
+            if admission && started_for(state, operation, node_id, current.request.command_id)? {
+                return Err(conflict(
+                    "target already started under this exact Complete phase",
                 ));
             }
         }
@@ -97,13 +114,12 @@ pub(crate) fn validate_quorum_step(
             }
         }
         TargetRuntimeStep::Complete(actual)
-            if phase_kind == RecoveryPhase::Complete && actual == &input =>
+            if phase_kind == RecoveryPhase::Complete && actual == &complete_input =>
         {
-            if admission && !all_started(state, operation, current.request.command_id)? {
-                return Err(conflict(
-                    "completion requires every target started under this exact phase",
-                ));
+            if admission {
+                require_eligible_observer(state, operation, current.request.command_id, node_id)?;
             }
+            receiver::preparation(state, operation)?;
         }
         _ => {
             return Err(conflict(
@@ -121,7 +137,174 @@ pub(crate) fn completion_route_retry(
     input: &RecoveryDispatch,
     now: u64,
 ) -> bool {
-    matches!((&pending.input,input),
-        (RecoveryDispatch::Target {node_id:old,request:original},RecoveryDispatch::Target {node_id:new,request:next})
-        if matches!(pending.phase,RecoveryPhase::Complete|RecoveryPhase::Confirm) && old!=new && original==next && now<original.not_after_ms && matches!(original.step,TargetRuntimeStep::Complete(_)|TargetRuntimeStep::Inspect(_)|TargetRuntimeStep::Activate{..}))
+    matches!((&pending.input, input),
+        (RecoveryDispatch::Target { node_id: old, request: original }, RecoveryDispatch::Target { node_id: new, request: next })
+        if matches!(pending.phase, RecoveryPhase::Complete | RecoveryPhase::Confirm) && old != new
+            && original == next && now < original.not_after_ms
+            && (established_effect(&original.step) || (pending.phase == RecoveryPhase::Complete && established_start(&original.step))
+                || matches!(original.step, TargetRuntimeStep::Activate { .. })))
+}
+
+/// Exact initialized membership is already retained. Startup acknowledgements
+/// select reachable candidates; only an actual target barrier proves quorum.
+pub(crate) fn established(state: &TenantState, operation: &RecoveryRecord) -> Result<()> {
+    let retained = phase(
+        state,
+        operation,
+        operation
+            .initialization
+            .ok_or_else(|| conflict("established target initialization is absent"))?,
+    )?;
+    let (RecoveryDispatch::Target { request, .. }, Some(RecoveryDispatchOutcome::Target(response))) =
+        (&retained.input, &retained.outcome)
+    else {
+        return Err(conflict(
+            "established target initialization evidence differs",
+        ));
+    };
+    let (TargetRuntimeStep::Initialize(input), TargetRuntimeOutcome::Initialized { origin_sha256 }) =
+        (&request.step, &response.outcome)
+    else {
+        return Err(conflict(
+            "established target initialization outcome differs",
+        ));
+    };
+    if retained.phase != RecoveryPhase::Initialize
+        || input != &quorum_input(state, operation)?
+        || origin_sha256 != &input.origin_sha256
+    {
+        return Err(conflict("established target membership changed"));
+    }
+    Ok(())
+}
+pub(crate) fn established_start(step: &TargetRuntimeStep) -> bool {
+    matches!(
+        step,
+        TargetRuntimeStep::Start(
+            TargetReplicaInput::Completion(_)
+                | TargetReplicaInput::CompletionAttemptStatus(_)
+                | TargetReplicaInput::CompletionTerminalStatus(_)
+                | TargetReplicaInput::CompletionResolution(_)
+                | TargetReplicaInput::Inspection(_)
+        )
+    )
+}
+pub(crate) fn established_effect(step: &TargetRuntimeStep) -> bool {
+    matches!(
+        step,
+        TargetRuntimeStep::PrepareComplete(_)
+            | TargetRuntimeStep::Complete(_)
+            | TargetRuntimeStep::InspectCompletionAttempt(_)
+            | TargetRuntimeStep::InspectCompletionResolution(_)
+            | TargetRuntimeStep::ResolveComplete(_)
+            | TargetRuntimeStep::Inspect(_)
+    )
+}
+fn startup_attempted(
+    state: &TenantState,
+    operation: &RecoveryRecord,
+    node: u64,
+    current: Uuid,
+) -> Result<bool> {
+    let Some(id) = operation.voters.get(&node).and_then(|v| v.start_attempt) else {
+        return Ok(false);
+    };
+    let retained = phase(state, operation, id)?;
+    Ok(
+        matches!(&retained.input, RecoveryDispatch::Target { node_id, request }
+        if *node_id == node && request.command_id == current && established_start(&request.step)),
+    )
+}
+pub(crate) fn ready_nodes(
+    state: &TenantState,
+    operation: &RecoveryRecord,
+    current: Uuid,
+) -> Result<Vec<u64>> {
+    established(state, operation)?;
+    operation
+        .voters
+        .keys()
+        .copied()
+        .filter_map(|node| match started_for(state, operation, node, current) {
+            Ok(true) => Some(Ok(node)),
+            Ok(false) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
+}
+/// The boolean requests startup; otherwise the selected observer can attempt
+/// the actual quorum read/write. Boot receipts themselves never prove quorum.
+pub(crate) fn established_destination(
+    state: &TenantState,
+    operation: &RecoveryRecord,
+    current: Uuid,
+) -> Result<(u64, bool)> {
+    let ready = ready_nodes(state, operation, current)?;
+    if ready.len() > operation.voters.len() / 2 {
+        return Ok((ready[0], false));
+    }
+    for node in operation.voters.keys() {
+        if !ready.contains(node) && !startup_attempted(state, operation, *node, current)? {
+            return Ok((*node, true));
+        }
+    }
+    let after = match operation.last_phase {
+        Some(id) => match &phase(state, operation, id)?.input {
+            RecoveryDispatch::Target { node_id, .. } => Some(*node_id),
+            _ => None,
+        },
+        None => None,
+    };
+    let candidate = operation
+        .voters
+        .keys()
+        .copied()
+        .filter(|node| !ready.contains(node))
+        .find(|node| after.is_none_or(|after| *node > after))
+        .or_else(|| {
+            operation
+                .voters
+                .keys()
+                .copied()
+                .find(|node| !ready.contains(node))
+        })
+        .ok_or_else(|| conflict("established target startup candidates absent"))?;
+    Ok((candidate, true))
+}
+pub(crate) fn require_eligible_observer(
+    state: &TenantState,
+    operation: &RecoveryRecord,
+    current: Uuid,
+    node: u64,
+) -> Result<()> {
+    let ready = ready_nodes(state, operation, current)?;
+    if !ready.contains(&node) {
+        return Err(conflict(
+            "target observer has no exact current startup acknowledgment",
+        ));
+    }
+    Ok(())
+}
+pub(crate) fn retry_destination(
+    state: &TenantState,
+    operation: &RecoveryRecord,
+    current: Uuid,
+    old: u64,
+    step: &TargetRuntimeStep,
+) -> Result<u64> {
+    if established_start(step) {
+        let (candidate, startup) = established_destination(state, operation, current)?;
+        if !startup || candidate == old {
+            return Err(conflict("another pending startup route is unavailable"));
+        }
+        return Ok(candidate);
+    }
+    let ready = ready_nodes(state, operation, current)?;
+    ready
+        .iter()
+        .copied()
+        .find(|node| *node > old)
+        .or_else(|| ready.first().copied())
+        .filter(|node| *node != old)
+        .ok_or_else(|| conflict("another eligible target observer is unavailable"))
 }

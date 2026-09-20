@@ -210,9 +210,10 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
         )
         .unwrap();
         network.install_audit(Arc::new(TestAudit)).unwrap();
-        let store = TenantStorageSet::open(
-            NodeStore::open(
+        let store = TenantStorageSet::initialize_catalogs(
+            NodeStore::create_new(
                 dir.path().join(format!("node-{id}.redb")),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap(),
@@ -223,7 +224,14 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
         )
         .await
         .unwrap();
-        let service = IndependentAuthority::open_replicated(
+        IndependentAuthority::initialize_storage(
+            &store,
+            &installation,
+            &bootstrap,
+            &members[&id].verifier,
+        )
+        .unwrap();
+        let service = IndependentAuthority::open_existing_replicated(
             store.clone(),
             installation.clone(),
             signing
@@ -232,7 +240,6 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
                 .signer,
             id,
             AuthorityNodeSettings {
-                bootstrap: bootstrap.clone(),
                 resource_budget_bytes: 64 << 20,
                 installed_members: members.clone(),
             },
@@ -243,6 +250,10 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
                 election_timeout_max: 1000,
                 ..Default::default()
             },
+            crate::authority_runtime::request_budget(
+                &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            )
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -370,7 +381,6 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
         service.shutdown().await.unwrap();
     }
     for store in stores {
-        store.application().shutdown().await;
-        store.custody().store().shutdown().await;
+        store.shutdown().await.unwrap();
     }
 }

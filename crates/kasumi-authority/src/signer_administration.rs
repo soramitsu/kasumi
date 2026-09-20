@@ -8,7 +8,7 @@ pub struct AuthorityAdministrativeFence {
     context: RequestContext,
     policy_epoch: u64,
     term: u64,
-    _permit: OwnedSemaphorePermit,
+    _permit: RequestPermit,
 }
 impl AuthorityAdministrativeFence {
     pub fn local_node_id(&self) -> u64 {
@@ -25,6 +25,7 @@ impl AuthorityAdministrativeFence {
         &self.context
     }
     pub fn check(&self) -> Result<()> {
+        self.authority.check_open()?;
         self.context.authorization.check_live()?;
         self.authority.group.check_access().map_err(unavailable)?;
         self.authority
@@ -37,7 +38,7 @@ impl AuthorityAdministrativeFence {
                 "current authority administrative observation changed",
             ));
         }
-        Ok(())
+        self.authority.check_open()
     }
     pub async fn release(&self) -> Result<()> {
         if self.authority.barrier(&self.context).await? != self.term {
@@ -120,6 +121,7 @@ pub struct CommittedSignerDirective {
     term: u64,
     authority: Arc<IndependentAuthority>,
     context: RequestContext,
+    authorization: Arc<AuthorityAdministrativeFence>,
 }
 impl CommittedSignerDirective {
     pub fn status(&self) -> &AuthorityMaintenanceStatus {
@@ -131,6 +133,7 @@ impl CommittedSignerDirective {
     /// First local publication retains this current source permission in
     /// addition to its original local administrative scope and deadline.
     pub fn check(&self) -> Result<()> {
+        self.authorization.check()?;
         self.context.authorization.check_live()?;
         self.authority.group.check_access().map_err(unavailable)?;
         self.authority
@@ -143,18 +146,27 @@ impl CommittedSignerDirective {
             .backend
             .check_current_issuer_directive(&self.context, &self.status)
             .map_err(unavailable)?;
-        self.context.authorization.check_live()
+        self.context.authorization.check_live()?;
+        self.authority.check_open()
     }
 }
 impl IndependentAuthority {
     pub async fn commit_signer_directive(
         self: &Arc<Self>,
-        context: &RequestContext,
+        authorization: Arc<AuthorityAdministrativeFence>,
         verifier: &TrustVerifierIdentity,
         domain_sha256: &str,
         command: &SignerTrustCommand,
     ) -> Result<CommittedSignerDirective> {
         use crate::state::maintenance_state::MaintenanceTransition;
+        if !Arc::ptr_eq(self, &authorization.authority) {
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "signer directive authority owner differs",
+            ));
+        }
+        authorization.check()?;
+        let context = authorization.context();
         command.digest().map_err(unavailable)?;
         if verifier.node_id != self.local_node_id {
             return Err(Error::new(
@@ -163,6 +175,7 @@ impl IndependentAuthority {
             ));
         }
         let _serial = self.proposal.lock().await;
+        authorization.release().await?;
         let term = self.barrier(context).await?;
         let epoch = self.backend.authorize_admin(context)?;
         let status = if let Some(status) = self
@@ -220,15 +233,24 @@ impl IndependentAuthority {
             term,
             authority: self.clone(),
             context: context.clone(),
+            authorization,
         })
     }
     pub async fn signer_directive(
         &self,
-        context: &RequestContext,
+        authorization: Arc<AuthorityAdministrativeFence>,
         verifier: &TrustVerifierIdentity,
         domain_sha256: &str,
         operation_id: uuid::Uuid,
     ) -> Result<Option<AuthorityMaintenanceStatus>> {
+        if !std::ptr::eq(self, authorization.authority.as_ref()) {
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "signer receipt authority owner differs",
+            ));
+        }
+        authorization.release().await?;
+        let context = authorization.context();
         self.barrier(context).await?;
         self.backend.authorize_admin(context)?;
         let status = self
@@ -243,6 +265,7 @@ impl IndependentAuthority {
                 "operation belongs to another verifier or directive",
             ));
         }
+        authorization.check()?;
         Ok(status)
     }
 }

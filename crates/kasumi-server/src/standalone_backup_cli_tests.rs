@@ -34,7 +34,11 @@ async fn backup_cli_persists_session_before_connect_and_resolves_original_comple
     .unwrap();
     for selected in [&mut profile, &mut control] {
         selected.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
-        selected.admin_endpoint = format!("https://localhost:{}", config.admin.listen.port());
+        selected
+            .administrative_members
+            .get_mut(&1)
+            .unwrap()
+            .endpoint = format!("https://localhost:{}", config.admin.listen.port());
         selected.mcp_endpoint = config.mcp.protocol.public_url.clone();
     }
     private_files::replace(
@@ -47,6 +51,7 @@ async fn backup_cli_persists_session_before_connect_and_resolves_original_comple
         &serde_json::to_vec(&control).unwrap(),
     )
     .unwrap();
+    crate::standalone::configure_test_topology(&config).await;
     drop(listeners);
     let output = installation
         .tenant_profile

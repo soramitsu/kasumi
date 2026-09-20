@@ -1,0 +1,9 @@
+{
+  "status": "source_only_uninstalled",
+  "source": "bed7bada75bfdb7d5c4de92cc628951a9a23da8a",
+  "tree": "5a3875b2633fea4fac65b1190eea0af14202f195",
+  "upstream_base": "8815cdba2826f74e848acef361ad03f93bb1c3f8",
+  "patch_sha256": "a59b5b83f02d2358c1ae07d1a81b301c5bfd2cf20ecd14fcf5bea0302d74ebed",
+  "cargo_tests": "unrun",
+  "kasumi_dependency_changed": false
+}

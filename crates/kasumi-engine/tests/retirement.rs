@@ -74,13 +74,14 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
         let audit = common::security_audit(node.clone()).await;
-        let store = TenantStore::open_fixture(
+        let store = TenantStore::initialize_catalog_fixture(
             node,
             context().tenant,
             Arc::new(LocalKeyProvider::new([0xe1; 32])),
@@ -88,7 +89,7 @@ impl Fixture {
         .await
         .unwrap();
         let db = kasumi_engine::test_utils::open_fixture(
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::initialize_custody_fixture(
                 store.clone(),
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
             )
@@ -165,7 +166,7 @@ impl Fixture {
     }
     async fn close(self) {
         self.db.shutdown().await.unwrap();
-        self.audit.shutdown().await;
+        self.audit.shutdown().await.unwrap();
     }
 }
 
@@ -205,7 +206,7 @@ async fn actual_retirement_seed_reopens_through_control_domain_without_loading_s
     drop(stored);
     drop(control);
     fixture.db.shutdown().await.unwrap();
-    fixture.audit.shutdown().await;
+    fixture.audit.shutdown().await.unwrap();
     let Fixture {
         directory,
         db,
@@ -220,8 +221,9 @@ async fn actual_retirement_seed_reopens_through_control_domain_without_loading_s
     // The custody opener has no application provider or Database parameter.
     // This observation is recovery input; it is not a fresh Admin proof.
     let custody = kasumi_store::CustodyStore::open(
-        NodeStore::open(
+        NodeStore::open_existing(
             directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap(),
@@ -241,7 +243,7 @@ async fn actual_retirement_seed_reopens_through_control_domain_without_loading_s
             .unwrap(),
         original
     );
-    custody.store().shutdown().await;
+    custody.store().shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -349,7 +351,7 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
     );
     let path = fixture.directory.path().join("node.redb");
     fixture.db.shutdown().await.unwrap();
-    fixture.audit.shutdown().await;
+    fixture.audit.shutdown().await.unwrap();
     let Fixture {
         directory,
         db,
@@ -361,8 +363,13 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
     drop(audit);
     drop(store);
     drop(destination);
-    let node = NodeStore::open(path, kasumi_store::ScratchDisk::fixture()).unwrap();
-    let audit = common::security_audit(node.clone()).await;
+    let node = NodeStore::open_existing(
+        path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+    let audit = common::existing_security_audit(node.clone()).await;
     let db = reopen_custody(node, audit.clone()).await;
     // Permanent recovery does not need backup objects to be read again, and the
     // original action deadline does not expire immutable retirement evidence.
@@ -381,7 +388,7 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
         &receipt
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(directory);
 }
 
@@ -883,7 +890,7 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     drop(paused);
     let path = fixture.directory.path().join("node.redb");
     fixture.db.shutdown().await.unwrap();
-    fixture.audit.shutdown().await;
+    fixture.audit.shutdown().await.unwrap();
     let Fixture {
         directory,
         db,
@@ -895,9 +902,14 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     drop(audit);
     drop(store);
     drop(destination);
-    let node = NodeStore::open(path, kasumi_store::ScratchDisk::fixture()).unwrap();
-    let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open_fixture(
+    let node = NodeStore::open_existing(
+        path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+    let audit = common::existing_security_audit(node.clone()).await;
+    let store = TenantStore::open_existing_fixture(
         node,
         context().tenant,
         Arc::new(LocalKeyProvider::new([0xe1; 32])),
@@ -905,7 +917,7 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     .await
     .unwrap();
     let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::open_existing_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -930,7 +942,7 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
         ErrorCode::Conflict
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(directory);
 }
 

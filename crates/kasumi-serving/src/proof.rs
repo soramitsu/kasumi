@@ -83,10 +83,11 @@ impl AuthorityTrust {
     pub fn start_background_work(
         &self,
         partition: u16,
-        install: impl FnOnce() -> Arc<dyn crate::LiveTrustBackgroundWork>,
+        worker: Arc<crate::BackgroundWork>,
+        task: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> Result<()> {
         self.require_live_partition(partition)?
-            .start_background_work(install)
+            .start_background_work(worker, task)
     }
     pub fn install(manifest: AuthorityManifest) -> Result<Self> {
         manifest.validate()?;
@@ -419,6 +420,11 @@ pub struct VerifiedLease {
     signer: SignerGenerationFence,
 }
 impl VerifiedLease {
+    /// Exact immutable signed input retained by an explicitly authorized local
+    /// enrollment. This historical evidence does not create a new live grant.
+    pub fn signed(&self) -> &SignedLease {
+        &self.signed
+    }
     pub fn identity(&self) -> &ServingIdentity {
         &self.signed.claims.request.identity
     }

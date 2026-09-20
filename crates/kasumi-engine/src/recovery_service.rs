@@ -53,6 +53,33 @@ impl VerifiedRecoveryPhase {
             .ok_or_else(|| error(ErrorCode::NotFound, "recovery operation absent"))?;
         recovery::dispatch_limit(operation, &self.record)
     }
+    /// Current finite wait allowance, measured using the same installed clock as
+    /// dispatch admission. It never changes a recorded target command deadline.
+    pub async fn dispatch_remaining(&self) -> Result<std::time::Duration> {
+        self.admit_dispatch().await?;
+        let limit = self.dispatch_limit().await?.min(
+            self.context.authorization.expires_at_ms().ok_or_else(|| {
+                error(
+                    ErrorCode::Forbidden,
+                    "recovery dispatch requires finite authorization",
+                )
+            })?,
+        );
+        let limit = match &self.record.input {
+            RecoveryDispatch::Authority(command) => limit.min(command.not_after_ms),
+            RecoveryDispatch::Target { request, .. } => limit.min(request.not_after_ms),
+            RecoveryDispatch::RetireSource(request) => limit.min(request.not_after_ms),
+            _ => limit,
+        };
+        let remaining = limit.saturating_sub(self.database.lifecycle_now()?);
+        if remaining == 0 {
+            return Err(error(
+                ErrorCode::Conflict,
+                "original recovery dispatch expired",
+            ));
+        }
+        Ok(std::time::Duration::from_millis(remaining))
+    }
     pub async fn admit_dispatch(&self) -> Result<()> {
         self.release().await?;
         let current = self.database.engine.generation()?;
@@ -400,20 +427,28 @@ impl Database {
                     RecoveryPhase::Complete | RecoveryPhase::Confirm
                 )
                 && now < request.not_after_ms
-                && matches!(
-                    request.step,
-                    TargetRuntimeStep::Complete(_)
-                        | TargetRuntimeStep::Inspect(_)
-                        | TargetRuntimeStep::Activate { .. }
-                )
+                && (recovery::quorum::established_effect(&request.step)
+                    || (operation.phase == RecoveryPhase::Complete
+                        && recovery::quorum::established_start(&request.step))
+                    || matches!(request.step, TargetRuntimeStep::Activate { .. }))
             {
-                let next = operation
-                    .voters
-                    .keys()
-                    .copied()
-                    .find(|id| id > node_id)
-                    .or_else(|| operation.voters.keys().next().copied())
-                    .ok_or_else(|| error(ErrorCode::Corruption, "recovery voters absent"))?;
+                let next = if operation.phase == RecoveryPhase::Complete {
+                    recovery::quorum::retry_destination(
+                        state,
+                        operation,
+                        request.command_id,
+                        *node_id,
+                        &request.step,
+                    )?
+                } else {
+                    operation
+                        .voters
+                        .keys()
+                        .copied()
+                        .find(|id| id > node_id)
+                        .or_else(|| operation.voters.keys().next().copied())
+                        .ok_or_else(|| error(ErrorCode::Corruption, "recovery voters absent"))?
+                };
                 return Ok(Some(RecoveryDispatch::Target {
                     node_id: next,
                     request: request.clone(),
@@ -450,10 +485,14 @@ impl Database {
                         }
                         TargetRuntimeStep::Start(_)
                         | TargetRuntimeStep::Complete(_)
+                        | TargetRuntimeStep::PrepareComplete(_)
+                        | TargetRuntimeStep::InspectCompletionAttempt(_)
+                        | TargetRuntimeStep::InspectCompletionResolution(_)
+                        | TargetRuntimeStep::ResolveComplete(_)
                         | TargetRuntimeStep::Inspect(_)
                             if operation.phase == RecoveryPhase::Complete =>
                         {
-                            LifecyclePhase::InspectTarget
+                            recovery::receiver::fresh_phase(state, operation)?
                         }
                         TargetRuntimeStep::StartActivation { .. }
                         | TargetRuntimeStep::Activate { .. }
@@ -613,83 +652,167 @@ impl Database {
                     .current_intent
                     .map(|id| recovery::intent(state, operation, id))
                     .transpose()?;
-                match current {
-                    Some(current)
-                        if kind == LifecyclePhase::Complete
-                            && current.request.phase == LifecyclePhase::InspectTarget
-                            && now < current.original_credential_expires_at_ms =>
-                    {
-                        recovery::completion::next_inspection(
-                            state, operation, current, now, expires,
-                        )?
-                    }
-                    Some(current) if now < current.original_credential_expires_at_ms => {
-                        let quorum = recovery::quorum_input(state, operation)?;
-                        let mut missing = None;
-                        for id in operation.voters.keys() {
-                            if !recovery::started_for(
-                                state,
-                                operation,
-                                *id,
-                                current.request.command_id,
-                            )? {
-                                missing = Some(*id);
-                                break;
-                            }
-                        }
-                        let (node_id, step) = if let Some(id) = missing {
-                            (
-                                id,
-                                TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum)),
-                            )
-                        } else {
-                            let first = *operation.voters.keys().next().ok_or_else(|| {
-                                error(ErrorCode::Corruption, "recovery voters absent")
-                            })?;
-                            (
-                                first,
-                                if kind == LifecyclePhase::Initialize {
-                                    TargetRuntimeStep::Initialize(quorum)
-                                } else {
-                                    TargetRuntimeStep::Complete(quorum)
-                                },
-                            )
-                        };
-                        RecoveryDispatch::Target {
-                            node_id,
-                            request: Box::new(TargetRuntimeRequest {
-                                tenant: operation.request.tenant.clone(),
-                                command_id: current.request.command_id,
-                                not_after_ms: now
-                                    .checked_add(operation.request.phase_timeout_ms)
-                                    .ok_or_else(|| {
-                                        error(
-                                            ErrorCode::InvalidArgument,
-                                            "recovery dispatch deadline overflow",
-                                        )
-                                    })?
-                                    .min(expires)
-                                    .min(current.original_credential_expires_at_ms),
-                                step,
-                            }),
-                        }
-                    }
-                    Some(_) if kind == LifecyclePhase::Complete => {
-                        RecoveryDispatch::ControlIntent(Box::new(recovery::expected_intent(
-                            state,
-                            operation,
-                            phase_id,
-                            state.policy_epoch,
-                            LifecyclePhase::InspectTarget,
-                        )?))
-                    }
-                    _ => RecoveryDispatch::ControlIntent(Box::new(recovery::expected_intent(
+                let preparation_cap = operation
+                    .completion_preparation_attempt
+                    .map(|_| {
+                        recovery::receiver::status_input(state, operation)
+                            .map(|input| input.original_dispatch_not_after_ms)
+                    })
+                    .transpose()?;
+                let require_fresh = kind == LifecyclePhase::Complete
+                    && current.is_some_and(|current| {
+                        (operation.completion_terminal.is_some()
+                            && current.request.phase != LifecyclePhase::InspectTarget)
+                            || (operation.completion_preparation.is_some()
+                                && current.request.phase
+                                    == LifecyclePhase::InspectCompletionAttempt)
+                            || (current.request.phase == LifecyclePhase::Complete
+                                && preparation_cap.is_some_and(|cap| now >= cap))
+                    });
+                if require_fresh {
+                    RecoveryDispatch::ControlIntent(Box::new(recovery::expected_intent(
                         state,
                         operation,
                         phase_id,
                         state.policy_epoch,
-                        kind,
-                    )?)),
+                        recovery::receiver::fresh_phase(state, operation)?,
+                    )?))
+                } else {
+                    match current {
+                        Some(current)
+                            if kind == LifecyclePhase::Complete
+                                && matches!(
+                                    current.request.phase,
+                                    LifecyclePhase::InspectCompletionAttempt
+                                        | LifecyclePhase::InspectCompletionResolution
+                                        | LifecyclePhase::ResolveComplete
+                                )
+                                && now < current.original_credential_expires_at_ms =>
+                        {
+                            recovery::receiver::next(state, operation, current, now, expires)?
+                        }
+                        Some(current)
+                            if kind == LifecyclePhase::Complete
+                                && current.request.phase == LifecyclePhase::InspectTarget
+                                && now < current.original_credential_expires_at_ms =>
+                        {
+                            recovery::completion::next_inspection(
+                                state, operation, current, now, expires,
+                            )?
+                        }
+                        Some(current) if now < current.original_credential_expires_at_ms => {
+                            let quorum = recovery::quorum_input(state, operation)?;
+                            let (preferred_observer, mut missing) = if kind
+                                == LifecyclePhase::Complete
+                            {
+                                let (node, startup) = recovery::quorum::established_destination(
+                                    state,
+                                    operation,
+                                    current.request.command_id,
+                                )?;
+                                (Some(node), startup.then_some(node))
+                            } else {
+                                (None, None)
+                            };
+                            for id in operation
+                                .voters
+                                .keys()
+                                .filter(|_| kind == LifecyclePhase::Initialize)
+                            {
+                                if !recovery::started_for(
+                                    state,
+                                    operation,
+                                    *id,
+                                    current.request.command_id,
+                                )? {
+                                    missing = Some(*id);
+                                    break;
+                                }
+                            }
+                            let (node_id, step) = if let Some(id) = missing {
+                                (
+                                    id,
+                                    TargetRuntimeStep::Start(if kind == LifecyclePhase::Complete {
+                                        TargetReplicaInput::Completion(
+                                            recovery::completion::completion_input(
+                                                state, operation,
+                                            )?,
+                                        )
+                                    } else {
+                                        TargetReplicaInput::Quorum(quorum)
+                                    }),
+                                )
+                            } else {
+                                let first = preferred_observer
+                                    .or_else(|| operation.voters.keys().next().copied())
+                                    .ok_or_else(|| {
+                                        error(ErrorCode::Corruption, "recovery voters absent")
+                                    })?;
+                                (
+                                    first,
+                                    if kind == LifecyclePhase::Initialize {
+                                        TargetRuntimeStep::Initialize(quorum)
+                                    } else {
+                                        let input = recovery::completion::completion_input(
+                                            state, operation,
+                                        )?;
+                                        if operation.completion_preparation.is_some() {
+                                            TargetRuntimeStep::Complete(input)
+                                        } else {
+                                            TargetRuntimeStep::PrepareComplete(input)
+                                        }
+                                    },
+                                )
+                            };
+                            RecoveryDispatch::Target {
+                                node_id,
+                                request: Box::new(TargetRuntimeRequest {
+                                    tenant: operation.request.tenant.clone(),
+                                    command_id: current.request.command_id,
+                                    not_after_ms: if matches!(step, TargetRuntimeStep::Complete(_))
+                                    {
+                                        let cap =
+                                            recovery::receiver::status_input(state, operation)?
+                                                .original_dispatch_not_after_ms;
+                                        if cap > expires {
+                                            return Err(error(
+                                                ErrorCode::Forbidden,
+                                                "current coordinator credential cannot cover the original completion dispatch",
+                                            ));
+                                        }
+                                        cap
+                                    } else {
+                                        now.checked_add(operation.request.phase_timeout_ms)
+                                            .ok_or_else(|| {
+                                                error(
+                                                    ErrorCode::InvalidArgument,
+                                                    "recovery dispatch deadline overflow",
+                                                )
+                                            })?
+                                            .min(expires)
+                                            .min(current.original_credential_expires_at_ms)
+                                    },
+                                    step,
+                                }),
+                            }
+                        }
+                        Some(_) if kind == LifecyclePhase::Complete => {
+                            RecoveryDispatch::ControlIntent(Box::new(recovery::expected_intent(
+                                state,
+                                operation,
+                                phase_id,
+                                state.policy_epoch,
+                                recovery::receiver::fresh_phase(state, operation)?,
+                            )?))
+                        }
+                        _ => RecoveryDispatch::ControlIntent(Box::new(recovery::expected_intent(
+                            state,
+                            operation,
+                            phase_id,
+                            state.policy_epoch,
+                            kind,
+                        )?)),
+                    }
                 }
             }
             _ => {

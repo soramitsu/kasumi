@@ -12,6 +12,47 @@ use std::{
     time::Duration,
 };
 use uuid::Uuid;
+
+fn request_budget() -> BackgroundWorkBudget {
+    static ADMISSION: OnceLock<Arc<kasumi_engine::admission::NodeAdmission>> = OnceLock::new();
+    let admission = ADMISSION
+        .get_or_init(|| kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap());
+    let bytes = authority_request_metadata_bytes().unwrap();
+    let mut charge = admission.reserve(bytes, None).unwrap();
+    charge.retain(bytes);
+    BackgroundWorkBudget::new(AUTHORITY_REQUEST_SLOTS, Arc::new(charge)).unwrap()
+}
+
+async fn commit_directive(
+    authority: &Arc<IndependentAuthority>,
+    context: &RequestContext,
+    verifier: &TrustVerifierIdentity,
+    domain: &str,
+    command: &SignerTrustCommand,
+) -> Result<CommittedSignerDirective> {
+    let authorization = authority
+        .authorize_signer_maintenance(context.clone())
+        .await?;
+    authority
+        .commit_signer_directive(authorization, verifier, domain, command)
+        .await
+}
+
+async fn read_directive(
+    authority: &Arc<IndependentAuthority>,
+    context: &RequestContext,
+    verifier: &TrustVerifierIdentity,
+    domain: &str,
+    operation_id: Uuid,
+) -> Result<Option<AuthorityMaintenanceStatus>> {
+    let authorization = authority
+        .authorize_signer_maintenance(context.clone())
+        .await?;
+    authority
+        .signer_directive(authorization, verifier, domain, operation_id)
+        .await
+}
+
 struct Clock(AtomicU64);
 impl LeaseClock for Clock {
     fn now(&self) -> Duration {
@@ -34,6 +75,7 @@ struct Fixture {
     installation: AuthorityInstallation,
     trust: AuthorityTrust,
     settings: AuthorityNodeSettings,
+    bootstrap: crate::AuthorityBootstrap,
     signing: kasumi_serving::test_utils::FixtureAuthority,
     signing_root: InstallationSigningRoot,
     readiness: Arc<TestMaintenanceTransport>,
@@ -105,17 +147,19 @@ impl Fixture {
         };
         let clock = Arc::new(Clock(AtomicU64::new(0)));
         let epoch = Arc::new(EpochClock::new(clock.clone(), Arc::new(Wall)).unwrap());
-        let settings = test_settings(ordinary_state_bytes, signing.signer.certificate().clone());
+        let (bootstrap, settings) =
+            test_settings(ordinary_state_bytes, signing.signer.certificate().clone());
         let readiness = Arc::new(TestMaintenanceTransport::default());
         let mut services = Vec::new();
         let mut stores = Vec::new();
         for id in 1..=3 {
-            let node = NodeStore::open(
+            let node = NodeStore::create_new(
                 dir.path().join(format!("authority-{id}.redb")),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap();
-            let store = TenantStorageSet::open(
+            let store = TenantStorageSet::initialize_catalogs(
                 node,
                 installation.tenant(),
                 Arc::new(LocalKeyProvider::new([id as u8; 32])),
@@ -128,7 +172,14 @@ impl Fixture {
             )
             .await
             .unwrap();
-            let service = IndependentAuthority::open_with_clock(
+            IndependentAuthority::initialize_storage(
+                &store,
+                &installation,
+                &bootstrap,
+                &settings.installed_members[&id].verifier,
+            )
+            .unwrap();
+            let service = IndependentAuthority::open_existing_with_clock(
                 store.clone(),
                 installation.clone(),
                 signing
@@ -144,6 +195,7 @@ impl Fixture {
                     election_timeout_max: 1000,
                     ..Config::default()
                 },
+                request_budget(),
                 epoch.clone(),
             )
             .await
@@ -170,6 +222,7 @@ impl Fixture {
             installation,
             trust,
             settings,
+            bootstrap,
             signing,
             signing_root,
             readiness,
@@ -253,8 +306,7 @@ impl Fixture {
             service.shutdown().await.unwrap();
         }
         for store in &self.stores {
-            store.application().shutdown().await;
-            store.custody().store().shutdown().await;
+            store.shutdown().await.unwrap();
         }
     }
     async fn reopen(&mut self) {
@@ -262,8 +314,7 @@ impl Fixture {
             service.shutdown().await.unwrap();
         }
         for store in &self.stores {
-            store.application().shutdown().await;
-            store.custody().store().shutdown().await;
+            store.shutdown().await.unwrap();
         }
         let member_ids: Vec<_> = self.services.iter().map(|s| s.local_node_id).collect();
         self.services.clear();
@@ -271,12 +322,13 @@ impl Fixture {
         self.router = Arc::new(InProcessRouter::default());
         self.readiness = Arc::new(TestMaintenanceTransport::default());
         for id in member_ids {
-            let node = NodeStore::open(
+            let node = NodeStore::open_existing(
                 self._dir.path().join(format!("authority-{id}.redb")),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap();
-            let stores = TenantStorageSet::open(
+            let stores = TenantStorageSet::open_existing(
                 node,
                 self.installation.tenant(),
                 Arc::new(LocalKeyProvider::new([id as u8; 32])),
@@ -289,7 +341,7 @@ impl Fixture {
             )
             .await
             .unwrap();
-            let service = IndependentAuthority::open_with_clock(
+            let service = IndependentAuthority::open_existing_with_clock(
                 stores.clone(),
                 self.installation.clone(),
                 self.signing
@@ -305,6 +357,7 @@ impl Fixture {
                     election_timeout_max: 1000,
                     ..Config::default()
                 },
+                request_budget(),
                 self.epoch.clone(),
             )
             .await
@@ -465,6 +518,7 @@ async fn independent_quorum_fence_drains_original_lease_and_competing_activation
         .await
         .check()
         .unwrap();
+    drop(accepted);
     fixture.close().await;
 }
 
@@ -654,10 +708,15 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     let lease_boot = boot(&fixture, source, 1);
     let gate = ServingGate::new(acquire(&fixture, &service, &lease_boot).await).unwrap();
     let path = fixture._dir.path().join("separate-municipality.redb");
-    let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([90; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([91; 32]));
-    let stores = TenantStorageSet::open(
+    let stores = TenantStorageSet::initialize_catalogs(
         node.clone(),
         "city".into(),
         provider.clone(),
@@ -714,11 +773,15 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     let probes = provider.probe_count();
     assert!(kasumi_store::StorageAccess::serving(gate).is_err());
     assert_eq!(provider.probe_count(), probes);
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
     drop(node);
-    let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let reopened = NodeStore::open_existing(
+        &path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let custody =
         kasumi_store::CustodyStore::open(reopened.clone(), "city".into(), custody_provider)
             .await
@@ -735,12 +798,12 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     // Even a fixture-enabled embedding cannot reinterpret a serving catalog as
     // an unleased fixture. The persisted purpose is required, without defaults.
     assert!(
-        kasumi_store::TenantStore::open_fixture(reopened, "city".into(), provider.clone())
+        kasumi_store::TenantStore::open_existing_fixture(reopened, "city".into(), provider.clone())
             .await
             .is_err()
     );
     assert_eq!(provider.probe_count(), probes);
-    custody.store().shutdown().await;
+    custody.store().shutdown().await.unwrap();
     fixture.close().await;
 }
 
@@ -1011,7 +1074,7 @@ mod issuer_tests;
 fn test_settings(
     ordinary_state_bytes: u64,
     initial_signer_certificate: SigningCertificate,
-) -> AuthorityNodeSettings {
+) -> (crate::AuthorityBootstrap, AuthorityNodeSettings) {
     let installed_members: BTreeMap<_, _> = (1..=4)
         .map(|id| {
             (
@@ -1025,27 +1088,28 @@ fn test_settings(
             )
         })
         .collect();
-    AuthorityNodeSettings {
-        bootstrap: crate::AuthorityBootstrap {
-            initial_signer_certificate,
-            administrators: BTreeSet::from(["operator".into()]),
-            capacity: AuthorityCapacity {
-                max_tenants: 100,
-                max_state_bytes: ordinary_state_bytes + (1 << 20),
-                maintenance_reserve_bytes: 1 << 20,
-            },
-            membership: AuthorityMembership {
-                voters: BTreeSet::from([1, 2, 3]),
-                members: installed_members
-                    .iter()
-                    .filter(|(id, _)| **id <= 3)
-                    .map(|(id, m)| (*id, m.clone()))
-                    .collect(),
-            },
+    let bootstrap = crate::AuthorityBootstrap {
+        initial_signer_certificate,
+        administrators: BTreeSet::from(["operator".into()]),
+        capacity: AuthorityCapacity {
+            max_tenants: 100,
+            max_state_bytes: ordinary_state_bytes + (1 << 20),
+            maintenance_reserve_bytes: 1 << 20,
         },
+        membership: AuthorityMembership {
+            voters: BTreeSet::from([1, 2, 3]),
+            members: installed_members
+                .iter()
+                .filter(|(id, _)| **id <= 3)
+                .map(|(id, m)| (*id, m.clone()))
+                .collect(),
+        },
+    };
+    let settings = AuthorityNodeSettings {
         resource_budget_bytes: 64 << 20,
         installed_members,
-    }
+    };
+    (bootstrap, settings)
 }
 #[derive(Default)]
 struct TestMaintenanceTransport(
@@ -1077,3 +1141,11 @@ impl AuthorityMaintenanceTransport for TestMaintenanceTransport {
 include!("maintenance_tests.rs");
 
 include!("signer_directive_tests.rs");
+
+include!("signer_coverage_tests.rs");
+
+#[path = "bootstrap_open_tests.rs"]
+mod bootstrap_open_tests;
+
+#[path = "request_drain_tests.rs"]
+mod request_drain_tests;

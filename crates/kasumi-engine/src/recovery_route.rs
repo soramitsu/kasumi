@@ -147,6 +147,7 @@ pub(crate) fn apply(
         },
         revision,
         now,
+        &QueryIndexes::default(),
     )?;
     Ok(RecoveryDispatchOutcome::RoutePublished { revision })
 }

@@ -6,16 +6,21 @@ use kasumi_store::private_files;
 use kasumi_types::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 use uuid::Uuid;
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Binding {
-    endpoint: String,
+    #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
+    members: BTreeMap<u64, (String, BTreeSet<String>)>,
     resource: CredentialResource,
     family_id: Uuid,
-    server_pin: String,
     client_pin: String,
     ca_sha256: String,
 }
@@ -42,15 +47,40 @@ fn binding(profile: &ClientProfile) -> Result<Binding> {
         profile.tenant == crate::runtime::CONTROL_TENANT,
         "distributed recovery requires a Control administrator profile"
     );
-    let connection = profile.connection(true)?;
+    let connections = profile.administrative_connections()?;
+    let connection = connections
+        .values()
+        .next()
+        .context("no administrative members")?;
     Ok(Binding {
-        endpoint: connection.endpoint,
+        members: profile
+            .administrative_members
+            .iter()
+            .map(|(id, member)| {
+                (
+                    *id,
+                    (member.endpoint.clone(), member.certificate_pins.clone()),
+                )
+            })
+            .collect(),
         resource: profile.resource.clone(),
         family_id: profile.family_id,
-        server_pin: profile.admin_certificate_pin.clone(),
         client_pin: hex::encode(connection.identity.certificate_pin()),
         ca_sha256: hex::encode(Sha256::digest(&connection.trusted_ca_pem)),
     })
+}
+fn request_timeout(value: &str) -> Result<Duration> {
+    let millis: u64 = value.parse()?;
+    ensure!(
+        (1..=600_000).contains(&millis),
+        "recovery timeout must be 1 to 600000 milliseconds"
+    );
+    Ok(Duration::from_millis(millis))
+}
+fn client(profile: &ClientProfile) -> Result<kasumi_client::KasumiRecoveryPool> {
+    let connections = profile.administrative_connections()?;
+    let profile = profile.clone();
+    kasumi_client::KasumiRecoveryPool::new(connections, Arc::new(move || profile.bearer()))
 }
 pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
     match arguments {
@@ -75,9 +105,10 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
                 )?
             );
         }
-        [command, action, profile, input, attempt]
+        [command, action, profile, input, attempt, timeout]
             if command == "control-recovery" && (action == "start" || action == "stop") =>
         {
+            let duration = request_timeout(timeout)?;
             let profile = ClientProfile::load(Path::new(profile))?;
             let binding = binding(&profile)?;
             let attempt = Path::new(attempt);
@@ -131,83 +162,168 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
                 private_files::publish(attempt, &serde_json::to_vec(&record)?)?;
                 record
             };
-            let mut client =
-                kasumi_client::KasumiRecoveryClient::connect(&profile.connection(true)?).await?;
+            let mut client = client(&profile)?;
             let record = match attempt_record.operation {
-                Operation::Start(request) => client.start(&profile.bearer()?, &request).await?,
-                Operation::Stop(request) => client.stop(&profile.bearer()?, &request).await?,
+                Operation::Start(request) => client.start(&request, duration).await?,
+                Operation::Stop(request) => client.stop(&request, duration).await?,
             };
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
-        [command, action, profile, operation]
+        [command, action, profile, operation, timeout]
             if command == "control-recovery" && action == "status" =>
         {
+            let duration = request_timeout(timeout)?;
             let profile = ClientProfile::load(Path::new(profile))?;
             binding(&profile)?;
-            let mut client =
-                kasumi_client::KasumiRecoveryClient::connect(&profile.connection(true)?).await?;
+            let mut client = client(&profile)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(
                     &client
                         .status(
-                            &profile.bearer()?,
                             &RecoveryStatusRequest {
                                 operation_id: Uuid::parse_str(operation)?
-                            }
+                            },
+                            duration
                         )
                         .await?
                 )?
             );
         }
-        [command, action, profile, operation, steps]
+        [command, action, profile, operation, steps, timeout]
             if command == "control-recovery" && action == "resume" =>
         {
+            let duration = request_timeout(timeout)?;
             let profile = ClientProfile::load(Path::new(profile))?;
             binding(&profile)?;
-            let mut client =
-                kasumi_client::KasumiRecoveryClient::connect(&profile.connection(true)?).await?;
+            let mut client = client(&profile)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(
                     &client
                         .resume(
-                            &profile.bearer()?,
                             &RecoveryResume {
                                 operation_id: Uuid::parse_str(operation)?,
                                 max_steps: steps.parse()?
-                            }
+                            },
+                            duration
                         )
                         .await?
                 )?
             );
         }
-        [command, action, profile, operation, phase]
+        [command, action, profile, operation, phase, timeout]
             if command == "control-recovery" && action == "phase" =>
         {
+            let duration = request_timeout(timeout)?;
             let profile = ClientProfile::load(Path::new(profile))?;
             binding(&profile)?;
-            let mut client =
-                kasumi_client::KasumiRecoveryClient::connect(&profile.connection(true)?).await?;
+            let mut client = client(&profile)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(
                     &client
                         .read_phase(
-                            &profile.bearer()?,
                             &RecoveryPhaseRequest {
                                 operation_id: Uuid::parse_str(operation)?,
                                 phase_id: Uuid::parse_str(phase)?
-                            }
+                            },
+                            duration
                         )
                         .await?
                 )?
             );
         }
         [command, ..] if command == "control-recovery" => anyhow::bail!(
-            "usage: kasumid control-recovery configuration-digest CONFIGURATION ROUTE | start CONTROL_PROFILE REQUEST_JSON PRIVATE_ATTEMPT_JSON | stop CONTROL_PROFILE OPERATION_UUID PRIVATE_ATTEMPT_JSON | status CONTROL_PROFILE OPERATION_UUID | resume CONTROL_PROFILE OPERATION_UUID MAX_STEPS | phase CONTROL_PROFILE OPERATION_UUID PHASE_UUID"
+            "usage: kasumid control-recovery configuration-digest CONFIGURATION ROUTE | start CONTROL_PROFILE REQUEST_JSON PRIVATE_ATTEMPT_JSON TIMEOUT_MS | stop CONTROL_PROFILE OPERATION_UUID PRIVATE_ATTEMPT_JSON TIMEOUT_MS | status CONTROL_PROFILE OPERATION_UUID TIMEOUT_MS | resume CONTROL_PROFILE OPERATION_UUID MAX_STEPS TIMEOUT_MS | phase CONTROL_PROFILE OPERATION_UUID PHASE_UUID TIMEOUT_MS"
         ),
         _ => return Ok(false),
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn recovery_attempt_binding_includes_every_installed_member_and_rejects_the_old_profile_shape()
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let certificate = directory.path().join("client.pem");
+        let key = directory.path().join("client-key.pem");
+        // Public unit fixture only; no listener is opened with this key.
+        private_files::create(
+            &certificate,
+            include_bytes!("../../kasumi-client/src/installed-pool-test-cert.pem"),
+        )
+        .unwrap();
+        private_files::create(
+            &key,
+            include_bytes!("../../kasumi-client/src/installed-pool-test-key.pem"),
+        )
+        .unwrap();
+        let mut profile = ClientProfile {
+            format: 1,
+            family_id: Uuid::new_v4(),
+            tenant: crate::runtime::CONTROL_TENANT.into(),
+            resource: CredentialResource::Control {
+                incarnation: Uuid::new_v4(),
+            },
+            native_endpoint: "https://localhost:9444".into(),
+            mcp_endpoint: "https://localhost:9443/mcp".into(),
+            administrative_members: (1..=3)
+                .map(|id| {
+                    (
+                        id,
+                        crate::serving_runtime::AuthorityEndpoint {
+                            endpoint: format!("https://localhost:{}", 9500 + id),
+                            certificate_pins: BTreeSet::from(["ab".repeat(32)]),
+                        },
+                    )
+                })
+                .collect(),
+            identity: crate::runtime::TlsFiles {
+                certificate: certificate.clone(),
+                private_key: key,
+            },
+            server_ca: certificate,
+            native_certificate_pin: "ab".repeat(32),
+            bearer_file: directory.path().join("unused.token"),
+        };
+        let original = binding(&profile).unwrap();
+        assert_eq!(original.members.len(), 3);
+        assert!(
+            profile.connection(true).is_err(),
+            "member-specific commands cannot silently select a peer"
+        );
+        profile
+            .administrative_members
+            .get_mut(&3)
+            .unwrap()
+            .certificate_pins = BTreeSet::from(["cd".repeat(32)]);
+        assert_ne!(binding(&profile).unwrap(), original);
+        profile
+            .administrative_members
+            .get_mut(&3)
+            .unwrap()
+            .certificate_pins = BTreeSet::from(["ab".repeat(32)]);
+        profile.administrative_members.get_mut(&2).unwrap().endpoint =
+            "https://replacement.example:9502".into();
+        assert_ne!(binding(&profile).unwrap(), original);
+        let mut old = serde_json::to_value(&profile).unwrap();
+        old.as_object_mut()
+            .unwrap()
+            .remove("administrative_members");
+        old["admin_endpoint"] = serde_json::json!("https://localhost:9501");
+        old["admin_certificate_pin"] = serde_json::json!("ab".repeat(32));
+        assert!(serde_json::from_value::<ClientProfile>(old).is_err());
+    }
+    #[test]
+    fn every_recovery_invocation_requires_a_finite_bounded_timeout() {
+        for invalid in ["", "0", "-1", "600001", "18446744073709551616"] {
+            assert!(request_timeout(invalid).is_err());
+        }
+        assert_eq!(request_timeout("1").unwrap(), Duration::from_millis(1));
+        assert_eq!(request_timeout("600000").unwrap(), Duration::from_secs(600));
+    }
 }

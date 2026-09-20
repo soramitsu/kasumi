@@ -325,3 +325,215 @@ pub fn verify_local_target_cleanup_history(
         &signed.signature,
     )
 }
+
+#[derive(Clone)]
+pub struct AuthenticatedTargetCompletionAttempt {
+    signed: kasumi_types::SignedTargetCompletionAttempt,
+}
+impl AuthenticatedTargetCompletionAttempt {
+    pub fn signed(&self) -> &kasumi_types::SignedTargetCompletionAttempt {
+        &self.signed
+    }
+}
+/// Authenticate a committed original capacity reservation. This historical
+/// proof does not extend its dispatch cap or authorize a target phase.
+pub fn verify_target_completion_attempt(
+    expected: &TargetOrigin,
+    signed: &kasumi_types::SignedTargetCompletionAttempt,
+) -> Result<AuthenticatedTargetCompletionAttempt> {
+    signed.observation.validate()?;
+    let attempt = &signed.observation.attempt;
+    ensure!(
+        attempt.origin == *expected,
+        "prepared completion target differs"
+    );
+    verify_target_materializations(expected, &attempt.input.quorum.materialized)?;
+    let installed = expected
+        .materialization
+        .request
+        .target_nodes
+        .get(&signed.observation.observer_node_id)
+        .ok_or_else(|| anyhow::anyhow!("prepared completion observer is not installed"))?;
+    verify(
+        &installed.attestation_public_key,
+        "kasumi.prepared-target-completion-observation.v1",
+        &signed.observation,
+        &signed.signature,
+    )?;
+    Ok(AuthenticatedTargetCompletionAttempt {
+        signed: signed.clone(),
+    })
+}
+
+#[derive(Clone)]
+pub struct AuthenticatedTargetCompletionAttemptStatus {
+    signed: kasumi_types::SignedTargetCompletionAttemptStatus,
+}
+impl AuthenticatedTargetCompletionAttemptStatus {
+    pub fn signed(&self) -> &kasumi_types::SignedTargetCompletionAttemptStatus {
+        &self.signed
+    }
+}
+/// A positive exact preparation fact observed under a distinct Control phase.
+/// This proves neither an absent original effect nor permission for a successor.
+pub fn verify_target_completion_attempt_status(
+    expected: &kasumi_types::TargetCompletionAttemptStatusInput,
+    signed: &kasumi_types::SignedTargetCompletionAttemptStatus,
+) -> Result<AuthenticatedTargetCompletionAttemptStatus> {
+    signed.observation.validate()?;
+    ensure!(
+        &signed.observation.input == expected,
+        "preparation status input differs"
+    );
+    let origin = &signed.observation.attempt.origin;
+    verify_target_materializations(origin, &expected.original_input.quorum.materialized)?;
+    let node = origin
+        .materialization
+        .request
+        .target_nodes
+        .get(&signed.observation.observer_node_id)
+        .ok_or_else(|| anyhow::anyhow!("preparation status observer is not installed"))?;
+    verify(
+        &node.attestation_public_key,
+        "kasumi.target-completion-attempt-status-observation.v1",
+        &signed.observation,
+        &signed.signature,
+    )?;
+    Ok(AuthenticatedTargetCompletionAttemptStatus {
+        signed: signed.clone(),
+    })
+}
+
+#[derive(Clone)]
+pub struct AuthenticatedTargetCompletionResolution {
+    signed: kasumi_types::SignedTargetCompletionResolution,
+}
+impl AuthenticatedTargetCompletionResolution {
+    pub fn signed(&self) -> &kasumi_types::SignedTargetCompletionResolution {
+        &self.signed
+    }
+}
+/// A sealed outcome proves an actual permanent target transition over one
+/// exact prepared attempt. Missing facts never enter this proof type. Current
+/// Control and issuer admission are independently required for a successor.
+pub fn verify_target_completion_resolution(
+    expected: &TargetOrigin,
+    signed: &kasumi_types::SignedTargetCompletionResolution,
+) -> Result<AuthenticatedTargetCompletionResolution> {
+    signed.observation.validate()?;
+    let fact = &signed.observation.fact;
+    ensure!(
+        fact.input.attempt.origin == *expected,
+        "resolved completion target differs"
+    );
+    let bootstrap =
+        verify_target_materializations(expected, &fact.input.attempt.input.quorum.materialized)?;
+    if let kasumi_types::TargetCompletionTerminal::Committed(completion) = &fact.terminal {
+        ensure!(
+            completion.bootstrap_sha256 == bootstrap,
+            "resolved committed completion changed its prepared bootstrap"
+        );
+    }
+    let installed = expected
+        .materialization
+        .request
+        .target_nodes
+        .get(&signed.observation.observer_node_id)
+        .ok_or_else(|| anyhow::anyhow!("terminal completion observer is not installed"))?;
+    verify(
+        &installed.attestation_public_key,
+        "kasumi.resolved-target-completion-observation.v1",
+        &signed.observation,
+        &signed.signature,
+    )?;
+    Ok(AuthenticatedTargetCompletionResolution {
+        signed: signed.clone(),
+    })
+}
+
+#[derive(Clone)]
+pub struct AuthenticatedTargetResolutionBudget {
+    signed: kasumi_types::SignedTargetResolutionBudget,
+}
+impl AuthenticatedTargetResolutionBudget {
+    pub fn signed(&self) -> &kasumi_types::SignedTargetResolutionBudget {
+        &self.signed
+    }
+}
+/// Exact permanent maintenance outcome only. Re-observing an old increase does
+/// not reapply that increase or overwrite a later authorized budget change.
+pub fn verify_target_resolution_budget(
+    expected: &TargetOrigin,
+    signed: &kasumi_types::SignedTargetResolutionBudget,
+) -> Result<AuthenticatedTargetResolutionBudget> {
+    signed.observation.validate()?;
+    ensure!(
+        signed.observation.fact.origin == *expected,
+        "target budget origin differs"
+    );
+    let installed = expected
+        .materialization
+        .request
+        .target_nodes
+        .get(&signed.observation.observer_node_id)
+        .ok_or_else(|| anyhow::anyhow!("target budget observer is not installed"))?;
+    verify(
+        &installed.attestation_public_key,
+        "kasumi.target-resolution-budget-observation.v1",
+        &signed.observation,
+        &signed.signature,
+    )?;
+    Ok(AuthenticatedTargetResolutionBudget {
+        signed: signed.clone(),
+    })
+}
+
+#[derive(Clone)]
+pub struct AuthenticatedTargetCompletionTerminalStatus {
+    signed: kasumi_types::SignedTargetCompletionTerminalStatus,
+}
+impl AuthenticatedTargetCompletionTerminalStatus {
+    pub fn signed(&self) -> &kasumi_types::SignedTargetCompletionTerminalStatus {
+        &self.signed
+    }
+}
+/// Exact original positive resolver fact only; absence and new resolver grants
+/// cannot be represented by this signature domain.
+pub fn verify_target_completion_terminal_status(
+    expected: &kasumi_types::TargetCompletionTerminalStatusInput,
+    signed: &kasumi_types::SignedTargetCompletionTerminalStatus,
+) -> Result<AuthenticatedTargetCompletionTerminalStatus> {
+    signed.observation.validate()?;
+    ensure!(
+        &signed.observation.input == expected,
+        "terminal status input differs"
+    );
+    let origin = &signed.observation.fact.input.attempt.origin;
+    let bootstrap = verify_target_materializations(
+        origin,
+        &expected.original_input.attempt.input.quorum.materialized,
+    )?;
+    if let kasumi_types::TargetCompletionTerminal::Committed(completion) =
+        &signed.observation.fact.terminal
+    {
+        ensure!(
+            completion.bootstrap_sha256 == bootstrap,
+            "terminal status completion bootstrap differs"
+        );
+    }
+    let node = origin
+        .materialization
+        .request
+        .target_nodes
+        .get(&signed.observation.observer_node_id)
+        .ok_or_else(|| anyhow::anyhow!("terminal status observer is not installed"))?;
+    verify(
+        &node.attestation_public_key,
+        "kasumi.target-completion-terminal-status-observation.v1",
+        &signed.observation,
+        &signed.signature,
+    )?;
+    Ok(AuthenticatedTargetCompletionTerminalStatus {
+        signed: signed.clone(),
+    })
+}

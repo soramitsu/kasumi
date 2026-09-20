@@ -5,7 +5,7 @@ use anyhow::{Context, Result, ensure};
 use kasumi_client::{KasumiAuthorityPool, KasumiClientConfig};
 use kasumi_serving::{
     AuthorityManifest, AuthorityTrust, LeaseDiscovery, LeasePurpose, NodeIdentity, ServingBoot,
-    ServingGate,
+    ServingGate, VerifiedLease,
 };
 use kasumi_store::StorageAccess;
 use serde::{Deserialize, Serialize};
@@ -33,12 +33,32 @@ pub struct AuthorityEndpoint {
 #[serde(deny_unknown_fields)]
 pub struct ServingAuthorityConfig {
     pub manifest: AuthorityManifest,
+    #[serde(deserialize_with = "deserialize_endpoints")]
     pub endpoints: BTreeMap<u16, BTreeMap<u64, AuthorityEndpoint>>,
     pub tls: TlsFiles,
     pub server_ca: PathBuf,
     #[serde(deserialize_with = "deserialize_bearer_files")]
     pub bearer_files: BTreeMap<u16, String>,
     pub principal: String,
+}
+fn deserialize_endpoints<'de, D>(
+    deserializer: D,
+) -> std::result::Result<BTreeMap<u16, BTreeMap<u64, AuthorityEndpoint>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(transparent)]
+    struct Members(
+        #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
+        BTreeMap<u64, AuthorityEndpoint>,
+    );
+    Ok(
+        kasumi_types::deserialize_u16_map::<D, Members>(deserializer)?
+            .into_iter()
+            .map(|(partition, members)| (partition, members.0))
+            .collect(),
+    )
 }
 fn deserialize_bearer_files<'de, D>(
     deserializer: D,
@@ -123,7 +143,7 @@ pub(crate) struct RuntimeLease {
 impl Drop for RuntimeLease {
     fn drop(&mut self) {
         self.gate.close();
-        self.renewal.abort();
+        self.renewal.close();
     }
 }
 impl RuntimeLease {
@@ -147,10 +167,9 @@ impl RuntimeLease {
     pub(crate) fn gate(&self) -> &Arc<ServingGate> {
         &self.gate
     }
-    pub(crate) async fn shutdown(&self) -> Result<()> {
+    pub(crate) async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
         self.close();
-        self.renewal.drain().await?;
-        Ok(())
+        self.renewal.drain().await
     }
     pub(crate) fn close(&self) {
         self.gate.close();
@@ -165,6 +184,52 @@ impl RuntimeLease {
         node_id: u64,
         purpose: LeasePurpose,
     ) -> Result<Arc<Self>> {
+        let (runtime, _) = Self::acquire_once(
+            config,
+            trust,
+            credential,
+            tenant,
+            incarnation,
+            node_id,
+            purpose,
+        )
+        .await?;
+        Self::start_renewal(&runtime)?;
+        Ok(runtime)
+    }
+
+    /// Explicit first enrollment retains this exact issuer-verified grant and
+    /// its original suspend-aware deadline. It starts no renewal worker and
+    /// cannot reauthorize a partial installation after the grant expires.
+    pub(crate) async fn acquire_for_enrollment(
+        config: &ServingAuthorityConfig,
+        trust: AuthorityTrust,
+        credential: CredentialSource,
+        tenant: &str,
+        incarnation: Uuid,
+        node_id: u64,
+    ) -> Result<(Arc<Self>, VerifiedLease)> {
+        Self::acquire_once(
+            config,
+            trust,
+            credential,
+            tenant,
+            incarnation,
+            node_id,
+            LeasePurpose::Serving,
+        )
+        .await
+    }
+
+    async fn acquire_once(
+        config: &ServingAuthorityConfig,
+        trust: AuthorityTrust,
+        credential: CredentialSource,
+        tenant: &str,
+        incarnation: Uuid,
+        node_id: u64,
+        purpose: LeasePurpose,
+    ) -> Result<(Arc<Self>, VerifiedLease)> {
         config.validate()?;
         let partition = config.manifest.partition(tenant)?;
         let endpoints = &config.endpoints[&partition];
@@ -224,7 +289,7 @@ impl RuntimeLease {
                 Duration::from_millis(config.manifest.max_lease_ms.min(5000)),
             )
             .await?;
-        let gate = ServingGate::new(lease)?;
+        let gate = ServingGate::new(lease.clone())?;
         let runtime = Arc::new(Self {
             gate,
             boot,
@@ -232,8 +297,7 @@ impl RuntimeLease {
             renewal: Default::default(),
             serving: AtomicBool::new(purpose == LeasePurpose::Serving),
         });
-        Self::start_renewal(&runtime)?;
-        Ok(runtime)
+        Ok((runtime, lease))
     }
     fn start_renewal(runtime: &Arc<Self>) -> Result<()> {
         let weak = Arc::downgrade(runtime);
@@ -243,52 +307,49 @@ impl RuntimeLease {
             .authority()
             .manifest()
             .partition(&runtime.boot.identity().tenant)?;
-        runtime
-            .boot
-            .authority()
-            .start_background_work(partition, || {
-                let task = tokio::spawn(async move {
-                    let mut failed = false;
-                    loop {
-                        let delay = {
-                            let Some(runtime) = weak.upgrade() else { break };
-                            if runtime.renewal.is_closed() {
-                                break;
-                            }
-                            let Ok(remaining) = runtime.gate.remaining() else {
-                                break;
-                            };
-                            if failed {
-                                (remaining / 4).min(Duration::from_millis(100))
-                            } else {
-                                remaining / 3
-                            }
-                        };
-                        tokio::select! {
-                            _ = wake.notified() => {},
-                            _ = tokio::time::sleep(delay) => {},
-                        }
+        runtime.boot.authority().start_background_work(
+            partition,
+            runtime.renewal.work(),
+            async move {
+                let mut failed = false;
+                loop {
+                    let delay = {
                         let Some(runtime) = weak.upgrade() else { break };
-                        #[cfg(test)]
-                        runtime.renewal.after_upgrade().await;
                         if runtime.renewal.is_closed() {
                             break;
                         }
                         let Ok(remaining) = runtime.gate.remaining() else {
                             break;
                         };
-                        failed = !matches!(
-                            tokio::time::timeout(remaining, runtime.renew()).await,
-                            Ok(Ok(()))
-                        );
-                        if runtime.gate.check().is_err() {
-                            break;
+                        if failed {
+                            (remaining / 4).min(Duration::from_millis(100))
+                        } else {
+                            remaining / 3
                         }
+                    };
+                    tokio::select! {
+                        _ = wake.notified() => {},
+                        _ = tokio::time::sleep(delay) => {},
                     }
-                });
-                runtime.renewal.register(task);
-                runtime.renewal.clone()
-            })
+                    let Some(runtime) = weak.upgrade() else { break };
+                    #[cfg(test)]
+                    runtime.renewal.after_upgrade().await;
+                    if runtime.renewal.is_closed() {
+                        break;
+                    }
+                    let Ok(remaining) = runtime.gate.remaining() else {
+                        break;
+                    };
+                    failed = !matches!(
+                        tokio::time::timeout(remaining, runtime.renew()).await,
+                        Ok(Ok(()))
+                    );
+                    if runtime.gate.check().is_err() {
+                        break;
+                    }
+                }
+            },
+        )
     }
     async fn renew(&self) -> Result<()> {
         // Mode changes and acquisitions share one gate, so a queued preparation
@@ -307,23 +368,6 @@ impl RuntimeLease {
     }
     pub(crate) fn access(&self) -> Result<StorageAccess> {
         StorageAccess::serving(self.gate.clone())
-    }
-    pub(crate) async fn promote(&self) -> Result<()> {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            let mut client = self.client.lock().await;
-            if self.serving.load(Ordering::Acquire) {
-                return self.gate.check_serving();
-            }
-            let attempt = self.boot.clone().for_serving().begin_acquisition()?;
-            let lease = client
-                .acquire_lease(&attempt, self.gate.remaining()?.min(Duration::from_secs(5)))
-                .await?;
-            self.gate.promote_prepared(lease)?;
-            self.serving.store(true, Ordering::Release);
-            Ok(())
-        })
-        .await
-        .context("active target lease acquisition timed out")?
     }
 }
 
@@ -442,6 +486,64 @@ mod partition_credential_tests {
             );
             assert_ne!(replaced, encoded);
             assert!(serde_json::from_str::<ServingAuthorityConfig>(&replaced).is_err());
+        }
+    }
+
+    #[test]
+    fn enrollment_input_preserves_nested_authority_endpoints_and_serialized_identity() {
+        let mut configuration = crate::runtime::example_config();
+        configuration
+            .serving_authorities
+            .insert("storage-fence".into(), configured());
+        let input = crate::node_enrollment::Input::Data {
+            configuration: Box::new(configuration),
+        };
+        let bytes = serde_json::to_vec(&input).unwrap();
+        let from_bytes: crate::node_enrollment::Input = serde_json::from_slice(&bytes).unwrap();
+        let from_value: crate::node_enrollment::Input =
+            serde_json::from_value(serde_json::to_value(&input).unwrap()).unwrap();
+        for decoded in [from_bytes, from_value] {
+            assert_eq!(serde_json::to_vec(&decoded).unwrap(), bytes);
+            let crate::node_enrollment::Input::Data { configuration } = decoded else {
+                panic!("data enrollment changed kind");
+            };
+            configuration.serving_authorities["storage-fence"]
+                .validate()
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn enrollment_endpoint_decoder_rejects_aliases_duplicates_and_overflow_at_both_levels() {
+        let mut configuration = crate::runtime::example_config();
+        let authority = configured();
+        let endpoint = serde_json::to_string(&authority.endpoints[&0][&1]).unwrap();
+        let valid = serde_json::to_string(&authority.endpoints).unwrap();
+        configuration
+            .serving_authorities
+            .insert("storage-fence".into(), authority);
+        let encoded = serde_json::to_string(&crate::node_enrollment::Input::Data {
+            configuration: Box::new(configuration),
+        })
+        .unwrap();
+        let member = format!("{{\"1\":{endpoint}}}");
+        let invalid = [
+            format!("{{\"00\":{member}}}"),
+            format!("{{\"0\":{member},\"0\":{member}}}"),
+            format!("{{\"65536\":{member}}}"),
+            format!("{{\"+0\":{member}}}"),
+            format!("{{\"0\":{{\"01\":{endpoint}}}}}"),
+            format!("{{\"0\":{{\"1\":{endpoint},\"1\":{endpoint}}}}}"),
+            format!("{{\"0\":{{\"18446744073709551616\":{endpoint}}}}}"),
+            format!("{{\"0\":{{\"+1\":{endpoint}}}}}"),
+        ];
+        for endpoints in invalid {
+            let replaced = encoded.replace(
+                &format!("\"endpoints\":{valid}"),
+                &format!("\"endpoints\":{endpoints}"),
+            );
+            assert_ne!(replaced, encoded);
+            assert!(serde_json::from_str::<crate::node_enrollment::Input>(&replaced).is_err());
         }
     }
 }

@@ -2,6 +2,7 @@
 //! tenant quotas. Charges follow the actual file owner, including detached workers
 //! and immutable snapshot readers. This does not reserve persistent database space
 //! or make filesystem allocation immune to other processes or device failures.
+use crate::device_disk::DeviceDisk;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -55,20 +56,16 @@ pub struct ScratchDiskSnapshot {
     /// with every scratch governor on the same physical filesystem in this process.
     pub filesystem_pending_bytes: u64,
     pub filesystem_available_bytes: Option<u64>,
+    pub filesystem_admission_ready: bool,
 }
 #[derive(Default, Debug)]
 struct State {
     bytes: u64,
     files: u64,
 }
-#[derive(Default, Debug)]
-struct Device {
-    pending: Mutex<u64>,
-}
 #[derive(Default)]
 struct Registry {
     directories: HashMap<(u64, u64), Weak<ScratchDisk>>,
-    devices: HashMap<u64, Weak<Device>>,
 }
 fn registry() -> &'static Mutex<Registry> {
     static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
@@ -80,7 +77,7 @@ pub struct ScratchDisk {
     directory: File,
     allocation_unit: u64,
     state: Mutex<State>,
-    device: Arc<Device>,
+    device: DeviceDisk,
     #[cfg(any(test, feature = "test-utils"))]
     _fixture: Option<tempfile::TempDir>,
     #[cfg(test)]
@@ -128,7 +125,6 @@ impl ScratchDisk {
         let key = (metadata.dev(), metadata.ino());
         let mut registry = registry().lock().unwrap_or_else(|p| p.into_inner());
         registry.directories.retain(|_, v| v.strong_count() != 0);
-        registry.devices.retain(|_, v| v.strong_count() != 0);
         if let Some(existing) = registry.directories.get(&key).and_then(Weak::upgrade) {
             ensure!(
                 existing.config.max_bytes == config.max_bytes
@@ -138,20 +134,7 @@ impl ScratchDisk {
             return Ok(existing);
         }
         let (_, allocation_unit) = filesystem(&directory)?;
-        let device = match registry
-            .devices
-            .get(&metadata.dev())
-            .and_then(Weak::upgrade)
-        {
-            Some(device) => device,
-            None => {
-                let device = Arc::new(Device::default());
-                registry
-                    .devices
-                    .insert(metadata.dev(), Arc::downgrade(&device));
-                device
-            }
-        };
+        let device = DeviceDisk::open(metadata.dev(), config.min_free_bytes)?;
         let disk = Arc::new(Self {
             config,
             directory,
@@ -179,13 +162,29 @@ impl ScratchDisk {
         )
         .expect("fixture scratch governor")
     }
+    #[cfg(test)]
+    pub(crate) fn test_with_device(
+        directory: PathBuf,
+        device: DeviceDisk,
+        available: u64,
+    ) -> Arc<Self> {
+        let owner = Self::open_inner(
+            ScratchDiskConfig {
+                directory,
+                max_bytes: 16 << 20,
+                min_free_bytes: 0,
+            },
+            None,
+        )
+        .unwrap();
+        let mut owner = Arc::try_unwrap(owner).expect("unique synthetic test owner");
+        owner.device = device;
+        *owner.available_override.lock().unwrap() = Some(available);
+        Arc::new(owner)
+    }
     pub fn snapshot(&self) -> ScratchDiskSnapshot {
-        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        let pending = self
-            .device
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let state = self.lock_state();
+        let pending = self.device.lock();
         ScratchDiskSnapshot {
             max_bytes: self.config.max_bytes,
             min_free_bytes: self.config.min_free_bytes,
@@ -193,7 +192,14 @@ impl ScratchDisk {
             live_files: state.files,
             filesystem_pending_bytes: *pending,
             filesystem_available_bytes: self.available().ok(),
+            filesystem_admission_ready: pending.admission_ready(),
         }
+    }
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|p| {
+            self.device.lock().fail_owner();
+            p.into_inner()
+        })
     }
     fn available(&self) -> io::Result<u64> {
         #[cfg(test)]
@@ -209,6 +215,12 @@ impl ScratchDisk {
             .ok_or_else(|| exhausted("scratch rounded extent overflow"))
     }
     pub(crate) fn file(self: &Arc<Self>) -> io::Result<(File, Charge)> {
+        let state = self.lock_state();
+        let ready = self.device.lock().admission_ready();
+        drop(state);
+        if !ready {
+            return Err(io::Error::other("shared filesystem admission is closed"));
+        }
         check_directory(&self.directory.metadata()?).map_err(io::Error::other)?;
         let name = CString::new(format!("kasumi-scratch-{}", uuid::Uuid::new_v4())).unwrap();
         // The opened directory descriptor, not a replaceable pathname, selects
@@ -229,7 +241,7 @@ impl ScratchDisk {
         if unsafe { libc::unlinkat(self.directory.as_raw_fd(), name.as_ptr(), 0) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.lock_state();
         state.files = state
             .files
             .checked_add(1)
@@ -285,17 +297,15 @@ impl Charge {
     }
     pub(crate) fn grow(&mut self, ciphertext_len: u64) -> io::Result<()> {
         let bytes = self.disk.rounded(ciphertext_len)?;
+        let mut state = self.disk.lock_state();
+        let mut pending = self.disk.device.lock();
+        if !pending.admission_ready() {
+            return Err(io::Error::other("shared filesystem admission is closed"));
+        }
         if bytes <= self.bytes {
             return Ok(());
         }
         let delta = bytes - self.bytes;
-        let mut state = self.disk.state.lock().unwrap_or_else(|p| p.into_inner());
-        let mut pending = self
-            .disk
-            .device
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let next = state
             .bytes
             .checked_add(delta)
@@ -305,33 +315,37 @@ impl Charge {
             .checked_add(delta)
             .ok_or_else(|| exhausted("scratch promises overflow"))?;
         let required = promised
-            .checked_add(self.disk.config.min_free_bytes)
+            .checked_add(pending.minimum_free_bytes())
             .ok_or_else(|| exhausted("scratch filesystem reserve overflow"))?;
-        if self.disk.available()? < required {
+        let available = self
+            .disk
+            .available()
+            .inspect_err(|_| pending.fail_owner())?;
+        if available < required {
             return Err(exhausted("scratch filesystem free-space reserve exhausted"));
         }
+        pending.set_pending(promised)?;
         state.bytes = next;
-        *pending = promised;
         self.bytes = bytes;
         Ok(())
     }
     pub(crate) fn observe(&mut self, file: &File) -> io::Result<()> {
         let allocated = file
-            .metadata()?
+            .metadata()
+            .inspect_err(|_| self.disk.device.lock().fail_owner())?
             .blocks()
             .checked_mul(512)
             .ok_or_else(|| io::Error::other("scratch allocated blocks overflow"))?
             .min(self.bytes);
-        let mut pending = self
-            .disk
-            .device
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        *pending = pending
+        let mut pending = self.disk.device.lock();
+        let Some(next) = pending
             .checked_sub(self.bytes - self.allocated)
             .and_then(|n| n.checked_add(self.bytes - allocated))
-            .expect("owned scratch promises balance");
+        else {
+            pending.fail_owner();
+            return Err(io::Error::other("scratch observation promise mismatch"));
+        };
+        pending.set_pending(next)?;
         self.allocated = allocated;
         Ok(())
     }
@@ -341,23 +355,24 @@ impl Charge {
             return self.observe(file);
         }
         let allocated = file
-            .metadata()?
+            .metadata()
+            .inspect_err(|_| self.disk.device.lock().fail_owner())?
             .blocks()
             .checked_mul(512)
             .ok_or_else(|| io::Error::other("scratch allocated blocks overflow"))?
             .min(bytes);
-        let mut state = self.disk.state.lock().unwrap_or_else(|p| p.into_inner());
-        let mut pending = self
-            .disk
-            .device
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        *pending = pending
+        let mut state = self.disk.lock_state();
+        let mut pending = self.disk.device.lock();
+        let next = pending
             .checked_sub(self.bytes - self.allocated)
-            .and_then(|n| n.checked_add(bytes - allocated))
-            .expect("owned scratch promises balance");
-        state.bytes -= self.bytes - bytes;
+            .and_then(|n| n.checked_add(bytes - allocated));
+        let owned = state.bytes.checked_sub(self.bytes - bytes);
+        let (Some(next), Some(owned)) = (next, owned) else {
+            pending.fail_owner();
+            return Err(io::Error::other("scratch shrink accounting mismatch"));
+        };
+        pending.set_pending(next)?;
+        state.bytes = owned;
         self.bytes = bytes;
         self.allocated = allocated;
         Ok(())
@@ -365,16 +380,19 @@ impl Charge {
 }
 impl Drop for Charge {
     fn drop(&mut self) {
-        let mut state = self.disk.state.lock().unwrap_or_else(|p| p.into_inner());
-        let mut pending = self
-            .disk
-            .device
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        state.bytes -= self.bytes;
-        state.files -= 1;
-        *pending -= self.bytes - self.allocated;
+        let mut state = self.disk.lock_state();
+        let mut pending = self.disk.device.lock();
+        let bytes = state.bytes.checked_sub(self.bytes);
+        let files = state.files.checked_sub(1);
+        let next = pending.checked_sub(self.bytes - self.allocated);
+        if let (Some(bytes), Some(files), Some(next)) = (bytes, files, next) {
+            if pending.set_pending(next).is_ok() {
+                state.bytes = bytes;
+                state.files = files;
+            }
+        } else {
+            pending.fail_owner();
+        }
     }
 }
 
@@ -396,7 +414,7 @@ mod tests {
         // on the host's actual shared filesystem promise ledger.
         if min_free_bytes != 0 {
             let mut owned = Arc::try_unwrap(disk).expect("unique test governor");
-            owned.device = Arc::new(Device::default());
+            owned.device = DeviceDisk::isolated(min_free_bytes);
             Arc::new(owned)
         } else {
             disk
@@ -442,7 +460,7 @@ mod tests {
     fn separate_governors_cannot_double_spend_filesystem_promises() {
         let first = disk(1 << 20, 1 << 16);
         let mut second = Arc::try_unwrap(disk(1 << 20, 1 << 16)).unwrap();
-        second.device = first.device.clone();
+        second.device = first.device.share(second.config.min_free_bytes);
         let second = Arc::new(second);
         *first.available_override.lock().unwrap() = Some(1 << 17);
         *second.available_override.lock().unwrap() = Some(1 << 17);

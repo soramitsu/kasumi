@@ -25,20 +25,21 @@ async fn fixture(
     provider: Arc<LocalKeyProvider>,
     audit_provider: Arc<LocalKeyProvider>,
 ) -> (Arc<Database>, Arc<TenantStore>, Arc<SecurityAudit>) {
-    let store = TenantStore::open_fixture(node.clone(), "tenant".into(), provider)
+    let store = TenantStore::initialize_catalog_fixture(node.clone(), "tenant".into(), provider)
         .await
         .unwrap();
-    let service = TenantStore::open_fixture(node, SECURITY_TENANT.into(), audit_provider)
-        .await
-        .unwrap();
-    let audit = SecurityAudit::open(
+    let service =
+        TenantStore::initialize_catalog_fixture(node, SECURITY_TENANT.into(), audit_provider)
+            .await
+            .unwrap();
+    let audit = SecurityAudit::initialize(
         service,
         kasumi_types::AuditRetentionBudget::default(),
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
     )
     .unwrap();
     let db = open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -64,7 +65,12 @@ async fn fixture(
 async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenants() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("node.redb");
-    let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([31; 32]));
     let service_provider = Arc::new(LocalKeyProvider::new([32; 32]));
     let (db, store, audit) = fixture(node.clone(), provider, service_provider.clone()).await;
@@ -152,17 +158,23 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
     assert_eq!(error.code, ErrorCode::Sealed);
     assert!(error.denial_audit_attempted());
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(store);
     drop(audit);
     drop(node);
-    let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
-    let service = TenantStore::open_fixture(reopened, SECURITY_TENANT.into(), service_provider)
-        .await
-        .unwrap();
+    let reopened = NodeStore::open_existing(
+        &path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+    let service =
+        TenantStore::open_existing_fixture(reopened, SECURITY_TENANT.into(), service_provider)
+            .await
+            .unwrap();
     assert_eq!(service.scan("security.audit").unwrap().len(), 12);
-    service.shutdown().await;
+    service.shutdown().await.unwrap();
 }
 
 #[test]
@@ -175,7 +187,12 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
     runtime.block_on(async {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("node.redb");
-        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let node = NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let weak = Arc::downgrade(&node);
         let service_provider = Arc::new(LocalKeyProvider::new([44; 32]));
         let (db, store, audit) = fixture(
@@ -210,18 +227,24 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
         occupying.await.unwrap();
         db.shutdown().await.unwrap();
         assert_eq!(audit.store().scan("security.audit").unwrap().len(), 1);
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
         drop(db);
         drop(store);
         drop(audit);
         drop(node);
         assert!(weak.upgrade().is_none());
-        let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
-        let service = TenantStore::open_fixture(reopened, SECURITY_TENANT.into(), service_provider)
-            .await
-            .unwrap();
+        let reopened = NodeStore::open_existing(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
+        let service =
+            TenantStore::open_existing_fixture(reopened, SECURITY_TENANT.into(), service_provider)
+                .await
+                .unwrap();
         assert_eq!(service.scan("security.audit").unwrap().len(), 1);
-        service.shutdown().await;
+        service.shutdown().await.unwrap();
     });
 }
 
@@ -230,8 +253,9 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     use kasumi_engine::{ReplicaPlacement, ReplicaRestoreConfig, prepare_replicated_restore};
     use kasumi_raft::{Config, InProcessRouter};
     let dir = tempfile::tempdir().unwrap();
-    let source_node = NodeStore::open(
+    let source_node = NodeStore::create_new(
         dir.path().join("source.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -250,29 +274,34 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
         .unwrap();
     let backup = checkpoint.backup_id();
     let target_path = dir.path().join("target.redb");
-    let target_node = NodeStore::open(&target_path, kasumi_store::ScratchDisk::fixture()).unwrap();
-    let target_store = TenantStore::open_fixture(
+    let target_node = NodeStore::create_new(
+        &target_path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+    let target_store = TenantStore::initialize_catalog_fixture(
         target_node.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([53; 32])),
     )
     .await
     .unwrap();
-    let target_domains = kasumi_store::test_utils::with_custody(
+    let target_domains = kasumi_store::test_utils::initialize_custody_fixture(
         target_store.clone(),
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
     .await
     .unwrap();
     let service_key = Arc::new(LocalKeyProvider::new([54; 32]));
-    let service_store = TenantStore::open_fixture(
+    let service_store = TenantStore::initialize_catalog_fixture(
         target_node.clone(),
         SECURITY_TENANT.into(),
         service_key.clone(),
     )
     .await
     .unwrap();
-    let audit = SecurityAudit::open(
+    let audit = SecurityAudit::initialize(
         service_store,
         kasumi_types::AuditRetentionBudget::default(),
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
@@ -385,20 +414,25 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     assert_eq!(entries.len(), 3);
     let last: Value = serde_json::from_slice(&entries[2].1).unwrap();
     assert_eq!(last["event"]["kind"], "tenant_sealed");
-    target_store.shutdown().await;
-    audit.shutdown().await;
+    target_store.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
     drop(target_store);
     drop(target_domains);
     drop(audit);
     drop(target_node);
-    let reopened = NodeStore::open(&target_path, kasumi_store::ScratchDisk::fixture()).unwrap();
-    let service = TenantStore::open_fixture(reopened, SECURITY_TENANT.into(), service_key)
+    let reopened = NodeStore::open_existing(
+        &target_path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+    let service = TenantStore::open_existing_fixture(reopened, SECURITY_TENANT.into(), service_key)
         .await
         .unwrap();
     assert_eq!(service.scan("security.audit").unwrap().len(), 3);
-    service.shutdown().await;
+    service.shutdown().await.unwrap();
     source.shutdown().await.unwrap();
-    source_audit.shutdown().await;
+    source_audit.shutdown().await.unwrap();
     drop(source);
     drop(source_store);
     drop(source_audit);

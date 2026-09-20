@@ -1,0 +1,12 @@
+{
+  "evidence.json": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-control-stack-diagnostic/evidence.json",
+    "sha256": "bf0843f62307dbda315af6350874bf242a166b84e917dc44c1244d97e7851604",
+    "bytes": 3065
+  },
+  "debugger.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-control-stack-diagnostic/debugger.log",
+    "sha256": "d471cc8e9be9fa577cc2137ddb370d43b08905a62b3eb1b2f6f1c9b7abc1e29e",
+    "bytes": 656
+  }
+}

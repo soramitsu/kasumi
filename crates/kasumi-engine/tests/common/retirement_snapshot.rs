@@ -134,8 +134,13 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     let path = recipient.path().join("replica.redb");
     let app_provider = Arc::new(LocalKeyProvider::new([0xe2; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([0xe3; 32]));
-    let domains = TenantStorageSet::open_fixture(
-        NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
+    let domains = TenantStorageSet::initialize_catalogs_fixture(
+        NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap(),
         context().tenant,
         app_provider.clone(),
         custody_provider.clone(),
@@ -196,14 +201,18 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     app_provider.revoke();
     assert!(domains.application().refresh_lease().await.is_err());
     let probes = app_provider.probe_count();
-    domains.application().shutdown().await;
-    domains.custody().store().shutdown().await;
+    domains.shutdown().await.unwrap();
     drop(recipient_group);
     drop(backend);
     drop(domains);
     // Only the independently keyed domain is opened after the encrypted restart.
     let custody = CustodyStore::open(
-        NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
+        NodeStore::open_existing(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap(),
         context().tenant,
         custody_provider,
     )
@@ -233,7 +242,7 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     let control = ControlLog::open(custody.clone(), 2, group).unwrap();
     assert!(control.recover_retired().unwrap());
     learner.shutdown().await.unwrap();
-    custody.store().shutdown().await;
+    custody.store().shutdown().await.unwrap();
     closed.shutdown().await.unwrap();
     source.close().await;
 }

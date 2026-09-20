@@ -3,7 +3,7 @@ use super::signer_roster::{control_key, verifier_key};
 use super::*;
 
 impl Backend {
-    fn control_signer_dependencies(
+    pub(super) fn control_signer_dependencies(
         &self,
         directive: &ControlSignerDirective,
         revision: u64,

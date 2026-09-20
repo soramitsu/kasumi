@@ -46,13 +46,14 @@ fn request() -> OrderedSeekRequest {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn actual_store_ordered_seek_has_bounded_visits_and_epoch_fenced_continuation() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("seek.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         "seek".into(),
         Arc::new(LocalKeyProvider::new([55; 32])),
@@ -60,9 +61,12 @@ async fn actual_store_ordered_seek_has_bounded_visits_and_epoch_fenced_continuat
     .await
     .unwrap();
     let database = open_fixture(
-        kasumi_store::test_utils::with_custody(store, Arc::new(LocalKeyProvider::new([56; 32])))
-            .await
-            .unwrap(),
+        kasumi_store::test_utils::initialize_custody_fixture(
+            store,
+            Arc::new(LocalKeyProvider::new([56; 32])),
+        )
+        .await
+        .unwrap(),
         policy(true),
         Limits {
             max_query_candidates: 3,
@@ -205,5 +209,5 @@ async fn actual_store_ordered_seek_has_bounded_visits_and_epoch_fenced_continuat
         ErrorCode::Forbidden
     );
     database.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

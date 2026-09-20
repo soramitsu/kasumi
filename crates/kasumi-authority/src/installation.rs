@@ -83,34 +83,22 @@ impl AuthorityBootstrap {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthorityNodeSettings {
-    pub bootstrap: AuthorityBootstrap,
     pub resource_budget_bytes: u64,
     #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
     pub installed_members: BTreeMap<u64, kasumi_serving::AuthorityMember>,
 }
 impl AuthorityNodeSettings {
     pub fn validate(&self, node_id: u64) -> Result<()> {
-        self.bootstrap.validate()?;
         ensure!(
             node_id > 0 && self.installed_members.contains_key(&node_id),
             "local authority node is absent from installed transport pool"
         );
         ensure!(
-            self.resource_budget_bytes >= self.bootstrap.capacity.max_state_bytes
+            self.resource_budget_bytes > 0
                 && self.resource_budget_bytes <= (u64::MAX - (64 << 20)) / 8,
-            "authority node resources cannot fit its bootstrap capacity"
+            "invalid authority node resource budget"
         );
-        for (id, member) in &self.bootstrap.membership.members {
-            ensure!(
-                self.installed_members.get(id) == Some(member),
-                "installed original authority member differs from bootstrap"
-            );
-        }
-        AuthorityMembership {
-            voters: self.bootstrap.membership.voters.clone(),
-            members: self.installed_members.clone(),
-        }
-        .validate()?;
+        AuthorityMembership::validate_installed_members(&self.installed_members)?;
         Ok(())
     }
 }

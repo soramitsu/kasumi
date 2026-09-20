@@ -114,9 +114,17 @@ pub enum LifecyclePhase {
     ResumeMaterialize,
     Initialize,
     Complete,
+    /// Ordered terminal resolution of one exact prepared completion attempt.
+    ResolveComplete,
+    /// Exact current-Control maintenance of a prepared target metadata budget.
+    MaintainTarget,
     Activate,
     /// Fresh control authority to inspect committed target facts only.
     InspectTarget,
+    /// Fresh read-only authority for a positively persisted original reservation.
+    InspectCompletionAttempt,
+    /// Fresh read-only authority for an exact positively persisted resolver fact.
+    InspectCompletionResolution,
     StopLocal,
 }
 

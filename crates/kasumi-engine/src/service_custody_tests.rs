@@ -13,7 +13,11 @@ async fn credential_custody_fixture() -> (CredentialFixture, Arc<RetiredCustody>
         .unwrap();
     let checkpoint = fixture
         .db
-        .backup_checkpoint(fixture.context.clone(), destination.as_ref(), uuid::Uuid::new_v4())
+        .backup_checkpoint(
+            fixture.context.clone(),
+            destination.as_ref(),
+            uuid::Uuid::new_v4(),
+        )
         .await
         .unwrap();
     let request = RetireSourceRequest {
@@ -132,17 +136,65 @@ async fn committed_custody_with_expired_ack_recovers_only_with_fresh_authority()
     assert!(custody.response_fence(&context).is_err());
     assert_eq!(
         custody
-            .verify_retirement_receipt(context, &reference)
+            .verify_retirement_receipt(context.clone(), &reference)
             .await
             .unwrap_err()
             .code,
         ErrorCode::Unauthorized
     );
+    assert!(custody.receipt(&context, &request).await.is_err());
+    let before = fixture.db.raft_group().custody_view().unwrap().revision();
     let receipt = custody
-        .execute(fixture.context.clone(), request.clone())
+        .receipt(&fixture.context, &request)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fixture.db.raft_group().custody_view().unwrap().revision(),
+        before
+    );
+    receipt.outcome.clone().unwrap();
+    let mut conflict = request.clone();
+    conflict.not_after_ms -= 1;
+    assert_eq!(
+        custody
+            .receipt(&fixture.context, &conflict)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let mut absent = request.clone();
+    absent.command_id = "unaccepted-custody-command".into();
+    assert!(
+        custody
+            .receipt(&fixture.context, &absent)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let mut wrong_source = request.clone();
+    wrong_source.retirement.source_incarnation = uuid::Uuid::new_v4().to_string();
+    assert!(
+        custody
+            .receipt(&fixture.context, &wrong_source)
+            .await
+            .is_err()
+    );
+    let mut rejected = request.clone();
+    rejected.command_id = "rejected-custody-command".into();
+    let rejection = custody
+        .execute(fixture.context.clone(), rejected.clone())
         .await
         .unwrap();
-    receipt.outcome.clone().unwrap();
+    assert_eq!(
+        rejection.outcome.as_ref().unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        custody.receipt(&fixture.context, &rejected).await.unwrap(),
+        Some(rejection)
+    );
     assert_eq!(
         custody
             .execute(fixture.context.clone(), request)
@@ -163,8 +215,6 @@ async fn custody_observations_preserve_mutation_capacity_and_exhaustion_can_expa
         expected_policy_epoch: 1,
         not_after_ms: u64::MAX,
         action: CustodyAction::SetLimits(CustodyLimits {
-
-
             max_state_bytes: 4096,
         }),
     };
@@ -212,13 +262,22 @@ async fn custody_observations_preserve_mutation_capacity_and_exhaustion_can_expa
     }
     let mut exhausted = false;
     for _ in 0..64 {
-        match custody.execute(fixture.context.clone(), bounded.clone()).await {
+        match custody
+            .execute(fixture.context.clone(), bounded.clone())
+            .await
+        {
             Ok(receipt) => receipt.outcome.unwrap(),
-            Err(error) if error.code == ErrorCode::QuotaExceeded => { exhausted = true; break; }
+            Err(error) if error.code == ErrorCode::QuotaExceeded => {
+                exhausted = true;
+                break;
+            }
             Err(error) => panic!("unexpected custody fill outcome: {error:?}"),
         }
     }
-    assert!(exhausted, "bounded custody history did not exhaust its byte budget");
+    assert!(
+        exhausted,
+        "bounded custody history did not exhaust its byte budget"
+    );
     let rotation = credential_custody_rotation(&reference, "after-full-budget", 2);
     assert_eq!(
         custody
@@ -234,8 +293,6 @@ async fn custody_observations_preserve_mutation_capacity_and_exhaustion_can_expa
         expected_policy_epoch: 2,
         not_after_ms: u64::MAX,
         action: CustodyAction::SetLimits(CustodyLimits {
-
-
             max_state_bytes: 16384,
         }),
     };

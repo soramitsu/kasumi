@@ -4,6 +4,30 @@ use kasumi_store::{
     test_utils::{FaultBackend, LocalKeyProvider, ManualClock},
 };
 
+#[path = "joint_publication_tests.rs"]
+mod joint_publication_tests;
+#[path = "worker_failure_tests.rs"]
+mod worker_failure_tests;
+
+struct PreparedFixtureRestore<'a> {
+    retirement: Option<crate::RetiredSnapshotState>,
+    commit: Box<dyn FnOnce() -> Result<()> + 'a>,
+}
+impl crate::PreparedStateMachineRestore for PreparedFixtureRestore<'_> {
+    fn retirement(&self) -> Option<crate::RetiredSnapshotState> {
+        self.retirement.clone()
+    }
+    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+        vec![]
+    }
+    fn application_writes(&self) -> &[kasumi_store::WriteOp] {
+        &[]
+    }
+    fn publish(self: Box<Self>) -> Result<()> {
+        (self.commit)()
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_finishes() -> Result<()>
 {
@@ -16,8 +40,12 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
 
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("cancelled-persistence.redb");
-    let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open(&path, kasumi_store::ScratchDisk::fixture())?,
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
+        NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )?,
         "cancelled-persistence".into(),
         Arc::new(LocalKeyProvider::new([19; 32])),
         Arc::new(ManualClock::new()),
@@ -25,7 +53,7 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
     .await?;
     let (drain, lease) = StorageDrain::new();
     let log = LogStore::open_tracked(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
@@ -51,7 +79,7 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
     assert!(poll_fn(|cx| Poll::Ready(drained.as_mut().poll(cx).is_pending())).await);
     release.send(())?;
     tokio::time::timeout(Duration::from_secs(10), drained).await?;
-    let domains = kasumi_store::test_utils::with_custody(
+    let domains = kasumi_store::test_utils::open_existing_custody_fixture(
         store.clone(),
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
@@ -64,11 +92,15 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
             .unwrap(),
         b"whole-write"
     );
-    domains.custody().store().shutdown().await;
+    domains.custody().store().shutdown().await.unwrap();
     drop(domains);
     drop(store);
     // An abandoned response does not detach persistence from its drain lease.
-    let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture())?;
+    let reopened = NodeStore::open_existing(
+        &path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )?;
     drop(reopened);
     Ok(())
 }
@@ -104,17 +136,36 @@ impl StateMachineBackend for BytesBackend {
         ensure!(captured != b"invalid", "invalid application snapshot");
         Ok(None)
     }
-    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
+    fn prepare_restore<'a>(
+        &'a self,
+        _context: &crate::SnapshotRestoreContext,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
         let mut captured = Vec::new();
         bytes.read_to_end(&mut captured)?;
         self.validate_snapshot(&mut captured.as_slice())?;
-        *self.0.lock().unwrap() = captured;
-        Ok(())
+        Ok(Box::new(PreparedFixtureRestore {
+            retirement: None,
+            commit: Box::new(move || {
+                *self.0.lock().unwrap() = captured;
+                Ok(())
+            }),
+        }))
     }
 }
 
-async fn fault_store(disk: FaultBackend) -> Result<Arc<TenantStore>> {
-    TenantStore::open_fixture_with_clock(
+async fn new_fault_store(disk: FaultBackend) -> Result<Arc<TenantStore>> {
+    TenantStore::initialize_catalog_fixture_with_clock(
+        NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?,
+        "snapshot-test".into(),
+        Arc::new(LocalKeyProvider::new([7; 32])),
+        Arc::new(ManualClock::new()),
+    )
+    .await
+}
+
+async fn existing_fault_store(disk: FaultBackend) -> Result<Arc<TenantStore>> {
+    TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?,
         "snapshot-test".into(),
         Arc::new(LocalKeyProvider::new([7; 32])),
@@ -166,15 +217,22 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
         ) -> Result<Option<crate::RetiredSnapshotState>> {
             Ok(None)
         }
-        fn restore(&self, _: &mut dyn std::io::Read) -> Result<()> {
-            Ok(())
+        fn prepare_restore<'a>(
+            &'a self,
+            _context: &crate::SnapshotRestoreContext,
+            _: &mut dyn std::io::Read,
+        ) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+            Ok(Box::new(PreparedFixtureRestore {
+                retirement: None,
+                commit: Box::new(|| Ok(())),
+            }))
         }
     }
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, wait) = std::sync::mpsc::channel();
     let mut machine = StateMachine::open(
-        kasumi_store::test_utils::with_custody(
-            fault_store(FaultBackend::new()).await?,
+        kasumi_store::test_utils::initialize_custody_fixture(
+            new_fault_store(FaultBackend::new()).await?,
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
         .await?,
@@ -231,9 +289,9 @@ fn envelope(bytes: Vec<u8>) -> SnapshotEnvelope {
 #[tokio::test]
 async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> Result<()> {
     let disk = FaultBackend::new();
-    let store = fault_store(disk.clone()).await?;
+    let store = new_fault_store(disk.clone()).await?;
     let mut machine = StateMachine::open(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
@@ -275,8 +333,8 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
     );
     let restored = Arc::new(BytesBackend::default());
     StateMachine::open(
-        kasumi_store::test_utils::with_custody(
-            fault_store(disk.crash()).await?,
+        kasumi_store::test_utils::open_existing_custody_fixture(
+            existing_fault_store(disk.crash()).await?,
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
         .await?,
@@ -290,9 +348,10 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let store = TenantStore::open_fixture(
-        NodeStore::open(
+    let store = TenantStore::initialize_catalog_fixture(
+        NodeStore::create_new(
             dir.path().join("large.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )?,
         "large".into(),
@@ -301,7 +360,7 @@ async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() ->
     .await?;
     let value = envelope(vec![42; 33 * 1024 * 1024]);
     let bytes = value.encode(64 << 20)?.read_bounded(64 << 20)?;
-    let domains = kasumi_store::test_utils::with_custody(
+    let domains = kasumi_store::test_utils::initialize_custody_fixture(
         store.clone(),
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
@@ -332,8 +391,8 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
     let old = envelope(b"old-complete-snapshot".to_vec());
     let mut new = envelope(b"new-complete-snapshot".to_vec());
     new.meta.last_log_id.as_mut().unwrap().index += 1;
-    let initial = kasumi_store::test_utils::with_custody(
-        fault_store(seed.clone()).await?,
+    let initial = kasumi_store::test_utils::initialize_custody_fixture(
+        new_fault_store(seed.clone()).await?,
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
     .await?;
@@ -343,12 +402,12 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
         1024,
         &old,
     )?;
-    initial.custody().store().shutdown().await;
+    initial.custody().store().shutdown().await.unwrap();
     drop(initial);
     let bytes = new.encode(64 << 20)?.read_bounded(64 << 20)?;
     let baseline = seed.crash();
-    let store = fault_store(baseline.clone()).await?;
-    let domains = kasumi_store::test_utils::with_custody(
+    let store = existing_fault_store(baseline.clone()).await?;
+    let domains = kasumi_store::test_utils::open_existing_custody_fixture(
         store.clone(),
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
@@ -362,18 +421,18 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
     );
     for failure in 0..=operations {
         let disk = seed.crash();
-        let store = fault_store(disk.clone()).await?;
-        let domains = kasumi_store::test_utils::with_custody(
+        let store = existing_fault_store(disk.clone()).await?;
+        let domains = kasumi_store::test_utils::open_existing_custody_fixture(
             store.clone(),
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
         .await?;
         disk.fail_after(failure);
         let written = persist_snapshot(&domains, &bytes, 1024, &new);
-        let recovered = fault_store(disk.crash()).await?;
+        let recovered = existing_fault_store(disk.crash()).await?;
         cleanup_snapshots(&recovered, 1024)?;
         let restored = load_snapshot(&recovered, 1024)?.context("snapshot lost")?;
-        let recovered_domains = kasumi_store::test_utils::with_custody(
+        let recovered_domains = kasumi_store::test_utils::open_existing_custody_fixture(
             recovered.clone(),
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
@@ -403,18 +462,40 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("large-command.redb");
     let bytes = vec![171u8; (8 << 20) + (64 << 10)];
-    async fn open(path: &std::path::Path) -> Result<Arc<TenantStore>> {
-        TenantStore::open_fixture(
-            NodeStore::open(path, kasumi_store::ScratchDisk::fixture())?,
-            "large-command".into(),
-            Arc::new(LocalKeyProvider::new([9; 32])),
-        )
-        .await
+    async fn open(path: &std::path::Path, create: bool) -> Result<Arc<TenantStore>> {
+        let node = (if create {
+            NodeStore::create_new(
+                path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+        } else {
+            NodeStore::open_existing(
+                path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+        })?;
+        if create {
+            TenantStore::initialize_catalog_fixture(
+                node,
+                "large-command".into(),
+                Arc::new(LocalKeyProvider::new([9; 32])),
+            )
+            .await
+        } else {
+            TenantStore::open_existing_fixture(
+                node,
+                "large-command".into(),
+                Arc::new(LocalKeyProvider::new([9; 32])),
+            )
+            .await
+        }
     }
     {
-        let store = open(&path).await?;
+        let store = open(&path, true).await?;
         let mut log = LogStore::open(
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::initialize_custody_fixture(
                 store.clone(),
                 Arc::new(LocalKeyProvider::new([241; 32])),
             )
@@ -435,9 +516,9 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
             "command must not expand into JSON integer arrays"
         );
     }
-    let store = open(&path).await?;
+    let store = open(&path, false).await?;
     let mut log = LogStore::open(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::open_existing_custody_fixture(
             store.clone(),
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
@@ -447,8 +528,11 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
     .await?;
     let backend = Arc::new(BytesBackend::default());
     let mut machine = StateMachine::open(
-        kasumi_store::test_utils::with_custody(store, Arc::new(LocalKeyProvider::new([241; 32])))
-            .await?,
+        kasumi_store::test_utils::open_existing_custody_fixture(
+            store,
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?,
         backend.clone(),
     )
     .await?;
@@ -501,8 +585,15 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
         ) -> Result<Option<crate::RetiredSnapshotState>> {
             Ok(None)
         }
-        fn restore(&self, _: &mut dyn Read) -> Result<()> {
-            Ok(())
+        fn prepare_restore<'a>(
+            &'a self,
+            _context: &crate::SnapshotRestoreContext,
+            _: &mut dyn Read,
+        ) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+            Ok(Box::new(PreparedFixtureRestore {
+                retirement: None,
+                commit: Box::new(|| Ok(())),
+            }))
         }
     }
     let (entered, ready) = tokio::sync::oneshot::channel();
@@ -513,8 +604,8 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
         release: Arc::new(Mutex::new(wait)),
     });
     let mut machine = StateMachine::open(
-        kasumi_store::test_utils::with_custody(
-            fault_store(FaultBackend::new()).await?,
+        kasumi_store::test_utils::initialize_custody_fixture(
+            new_fault_store(FaultBackend::new()).await?,
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
         .await?,

@@ -15,7 +15,7 @@ struct Binding {
     endpoint: String,
     resource: CredentialResource,
     family_id: Uuid,
-    server_pin: String,
+    server_pins: std::collections::BTreeSet<String>,
     client_pin: String,
     ca_sha256: String,
 }
@@ -39,7 +39,7 @@ fn binding(profile: &ClientProfile) -> Result<Binding> {
         endpoint: connection.endpoint,
         resource: profile.resource.clone(),
         family_id: profile.family_id,
-        server_pin: profile.admin_certificate_pin.clone(),
+        server_pins: profile.administrative_member()?.certificate_pins.clone(),
         client_pin: hex::encode(connection.identity.certificate_pin()),
         ca_sha256: hex::encode(Sha256::digest(&connection.trusted_ca_pem)),
     })

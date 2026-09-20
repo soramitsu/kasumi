@@ -35,6 +35,13 @@ async fn run(args: &[String]) -> Result<()> {
             AuthorityRuntimeConfig::load(path)?;
             Ok(())
         }
+        [command, path] if command == "provision-node" => {
+            AuthorityRuntimeConfig::load(path)?.provision_node().await?;
+            println!(
+                "Enrolled the configured authority node, audit, independent catalogs and immutable issuer genesis. Membership uses the retained original voter handshake."
+            );
+            Ok(())
+        }
         [command, path] if command == "serve" => {
             let runtime = AuthorityRuntime::open(AuthorityRuntimeConfig::load(path)?)
                 .await
@@ -60,6 +67,8 @@ async fn run(args: &[String]) -> Result<()> {
             signal.abort();
             result
         }
-        _ => bail!("usage: kasumi-authority check-config <config.json> | serve <config.json>"),
+        _ => bail!(
+            "usage: kasumi-authority check-config <config.json> | provision-node <config.json> | serve <config.json>"
+        ),
     }
 }

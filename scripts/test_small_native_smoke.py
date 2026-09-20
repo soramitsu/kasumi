@@ -297,7 +297,7 @@ class SmokeTests(unittest.TestCase):
         for status, body in [(200, b'{"ready":false,"lifecycle":"starting"}'), (403, b"denied")]:
             with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
                 runner = self.runner(Path(directory))
-                runner.control = {"admin_endpoint": "https://localhost:1234"}
+                runner.control = {"administrative_members": {"1": {"endpoint": "https://localhost:1234", "certificate_pins": ["ab" * 32]}}}
                 runner.config_file = Path("unused")
                 runner.binaries = {"kasumid": Path("never-executed")}
                 child = SimpleNamespace(process=Mock(), entry={})

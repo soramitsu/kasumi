@@ -56,6 +56,66 @@ impl NativeAuthority {
 }
 #[tonic::async_trait]
 impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
+    async fn signer_coverage(
+        &self,
+        request: Request<AuthorityJsonRequest>,
+    ) -> Result<Response<AuthorityJsonResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(|peer| peer.certificate_pin())
+            .ok_or_else(|| Status::unauthenticated("actual administrative mTLS required"))?;
+        let body: kasumi_serving::SignerCoverageRequest =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let request_sha256 = body
+            .digest()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let mutation = !matches!(body, kasumi_serving::SignerCoverageRequest::Status { .. });
+        let (coverage, fence) = self
+            .auth
+            .audit_result(
+                &context,
+                self.authority.signer_coverage(context.clone(), body).await,
+            )
+            .await
+            .map_err(status)?;
+        let reply = kasumi_serving::SignerCoverageResponse {
+            request_sha256,
+            status: coverage,
+        };
+        let response = AuthorityJsonResponse {
+            response_json: encode_json(&reply).map_err(|error| {
+                if mutation {
+                    Status::unknown(format!(
+                        "coverage outcome retained; encoding failed: {error}"
+                    ))
+                } else {
+                    status(error)
+                }
+            })?,
+        };
+        self.auth
+            .audit_result(&context, fence.release().await)
+            .await
+            .map_err(|error| {
+                if mutation {
+                    Status::unknown(format!(
+                        "coverage outcome retained; recover original identity: {error}"
+                    ))
+                } else {
+                    status(error)
+                }
+            })?;
+        fence.release().await.map_err(|error| {
+            if mutation {
+                Status::unknown(format!("coverage response fenced: {error}"))
+            } else {
+                status(error)
+            }
+        })?;
+        Ok(Response::new(response))
+    }
     async fn observe_control_signer(
         &self,
         request: Request<AuthorityJsonRequest>,
@@ -215,7 +275,7 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
                     &context,
                     self.authority
                         .signer_directive(
-                            &context,
+                            fence.clone(),
                             &body.verifier,
                             &body.domain_sha256,
                             *operation_id,
@@ -231,7 +291,7 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
                             &context,
                             self.authority
                                 .commit_signer_directive(
-                                    &context,
+                                    fence.clone(),
                                     &body.verifier,
                                     &body.domain_sha256,
                                     command,

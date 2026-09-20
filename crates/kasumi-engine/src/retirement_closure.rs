@@ -125,7 +125,7 @@ fn digest_records(
     use crate::snapshot_codec::Record;
     let state = view.metadata();
     let mut digest = Sha256::new();
-    record(&mut digest, &"kasumi.retirement-closure.v2", &mut check)?;
+    record(&mut digest, &"kasumi.retirement-closure.v4", &mut check)?;
     record(
         &mut digest,
         &(
@@ -216,7 +216,7 @@ fn digest_records(
             .ok_or_else(|| corrupt("retirement collection count overflow"))?;
     }
     record(&mut digest, &("collections-end", collections), &mut check)?;
-    for kind in [1u8, 5, 6, 7, 8, 9, 10, 11, 12, 17] {
+    for kind in [1u8, 6, 7, 8, 9, 10, 11, 12, 17] {
         record(&mut digest, &("category", kind), &mut check)?;
         let mut count = 0u64;
         for value in view.records(kind, None).map_err(corrupt)? {
@@ -228,6 +228,21 @@ fn digest_records(
         }
         record(&mut digest, &("category-end", kind, count), &mut check)?;
     }
+    // Ordinary receipts are permanent point rows as well. The selected chain
+    // root commits exact original scope, input, result and applied provenance;
+    // resident and independently verified indexed closures use the same root.
+    record(
+        &mut digest,
+        &("mutation-receipt-history", &state.mutation_receipt_head),
+        &mut check,
+    )?;
+    // The verified immutable chain commits every original terminal identity,
+    // applied binding and outcome without rereading permanent rows on closure.
+    record(
+        &mut digest,
+        &("terminal-stage-history", &state.staged_terminal_head),
+        &mut check,
+    )?;
     // Full feed metadata accompanies its independently emitted commit/items.
     record(
         &mut digest,

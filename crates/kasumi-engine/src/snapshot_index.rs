@@ -18,6 +18,29 @@ pub(crate) struct StagedSnapshot {
 }
 
 impl StagedSnapshot {
+    /// Fixed-workspace structural inspection, with the original worker's live
+    /// cancellation/deadline check on every bounded encrypted read.
+    pub(crate) fn inspect(
+        image: &SnapshotImage,
+        check: &mut impl FnMut() -> Result<()>,
+    ) -> Result<StreamSummary> {
+        struct Checked<'a, F> {
+            reader: kasumi_store::SnapshotReader,
+            check: &'a mut F,
+        }
+        impl<F: FnMut() -> Result<()>> Read for Checked<'_, F> {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                (self.check)().map_err(std::io::Error::other)?;
+                self.reader.read(bytes)
+            }
+        }
+        let summary = crate::snapshot_codec::inspect(&mut Checked {
+            reader: image.reader(),
+            check: &mut *check,
+        })?;
+        check()?;
+        Ok(summary)
+    }
     pub(crate) fn new(
         image: SnapshotImage,
         max_index_disk_bytes: u64,
@@ -58,6 +81,21 @@ impl StagedSnapshot {
                         &(18, record.operation_id.to_string(), String::new()),
                     )?;
                 }
+                Record::RecoveryCompletionHistory(_, history) => {
+                    require(
+                        &index,
+                        &(18, history.operation_id.to_string(), String::new()),
+                    )?;
+                    require(
+                        &index,
+                        &(19, history.scope.intent.to_string(), String::new()),
+                    )?;
+                    require(&index, &(19, history.terminal.to_string(), String::new()))?;
+                    require(
+                        &index,
+                        &(19, history.successor_intent.to_string(), String::new()),
+                    )?;
+                }
                 Record::RecoveryTarget(_, operation) => {
                     require(&index, &(18, operation.to_string(), String::new()))?;
                 }
@@ -89,7 +127,7 @@ impl StagedSnapshot {
                 .ok_or_else(|| anyhow::anyhow!("snapshot index offset overflow"))?;
             let first = spans[kind]
                 .map(|(first, _)| first)
-                .unwrap_or(position.offset - 8);
+                .unwrap_or(position.offset - crate::snapshot_codec::FRAME_HEADER_BYTES as u64);
             spans[kind] = Some((first, end));
             if group
                 .as_ref()
@@ -97,7 +135,13 @@ impl StagedSnapshot {
             {
                 write_group(&index, group.take().expect("present group"))?;
             }
-            let group = group.get_or_insert((key.0, key.1.clone(), position.offset - 8, end, 0));
+            let group = group.get_or_insert((
+                key.0,
+                key.1.clone(),
+                position.offset - crate::snapshot_codec::FRAME_HEADER_BYTES as u64,
+                end,
+                0,
+            ));
             group.3 = end;
             group.4 = group
                 .4
@@ -139,6 +183,15 @@ impl StagedSnapshot {
             .get(usize::from(kind))
             .copied()
             .ok_or_else(|| anyhow::anyhow!("unsupported snapshot record kind"))
+    }
+
+    /// Exact payload and typed length-prefix bytes for one canonical record kind.
+    pub(crate) fn framed_bytes(&self, kind: u8) -> Result<u64> {
+        let span = self
+            .spans
+            .get(usize::from(kind))
+            .ok_or_else(|| anyhow::anyhow!("unsupported snapshot record kind"))?;
+        Ok(span.map_or(0, |(start, end)| end - start))
     }
 
     pub(crate) fn image(&self) -> &SnapshotImage {
@@ -218,7 +271,7 @@ impl Iterator for RecordCursor {
             reader.read_exact(&mut length)?;
             let position = RecordPosition {
                 offset: offset
-                    .checked_add(8)
+                    .checked_add(crate::snapshot_codec::FRAME_HEADER_BYTES as u64)
                     .ok_or_else(|| anyhow::anyhow!("snapshot index offset overflow"))?,
                 bytes: u64::from_be_bytes(length),
             };
@@ -277,7 +330,7 @@ fn get_record(image: &SnapshotImage, index: &EncryptedTable, key: &Key) -> Resul
 
 fn read_record(image: &SnapshotImage, position: RecordPosition) -> Result<Record> {
     ensure!(
-        position.offset >= 16
+        position.offset >= 8 + crate::snapshot_codec::FRAME_HEADER_BYTES as u64
             && position.bytes > 0
             && position.bytes <= 32 << 20
             && position
@@ -287,10 +340,21 @@ fn read_record(image: &SnapshotImage, position: RecordPosition) -> Result<Record
         "snapshot index location outside image"
     );
     let mut reader = image.reader();
-    reader.seek(SeekFrom::Start(position.offset))?;
+    reader.seek(SeekFrom::Start(position.offset - 1))?;
+    let mut kind = [0];
+    reader.read_exact(&mut kind)?;
+    ensure!(
+        position.bytes <= crate::snapshot_codec::record_limit(kind[0])?,
+        "snapshot typed point record exceeds limit"
+    );
     let mut bytes = vec![0u8; usize::try_from(position.bytes)?];
     reader.read_exact(&mut bytes)?;
     // The immutable image was canonically decoded and terminally verified before
     // this index was returned. Every point read still authenticates spool frames.
-    Ok(serde_json::from_slice(&bytes)?)
+    let record: Record = serde_json::from_slice(&bytes)?;
+    ensure!(
+        record.order().0 == kind[0],
+        "snapshot point kind differs from payload"
+    );
+    Ok(record)
 }

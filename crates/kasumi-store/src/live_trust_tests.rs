@@ -82,9 +82,10 @@ impl Fixture {
             node_id: 1,
         };
         let clock = Arc::new(Clock(AtomicU64::new(0)));
-        let store = TenantStore::open_with_clock(
-            NodeStore::open(
+        let store = TenantStore::initialize_catalog_fixture_with_clock_and_access(
+            NodeStore::create_new(
                 directory.path().join("trust.redb"),
+                crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
             )
             .unwrap(),
@@ -136,6 +137,7 @@ impl Fixture {
                 &self.verifier,
                 self.signers[0].certificate().clone(),
                 self.administrator.clone(),
+                worker_budget(),
             )
             .unwrap()
     }
@@ -145,6 +147,7 @@ impl Fixture {
                 &self.verifier,
                 self.domain.clone(),
                 self.administrator.clone(),
+                worker_budget(),
             )
             .unwrap()
     }
@@ -180,10 +183,10 @@ impl Fixture {
         )
     }
     async fn reopen(&mut self) {
-        self.store.shutdown().await;
+        self.store.shutdown().await.unwrap();
         // The closed old owner may remain referenced. Its capability can never
         // become live when the new store installs its own fresh clock witness.
-        self.store = TenantStore::open_with_clock(
+        self.store = TenantStore::open_existing_fixture_with_clock_and_access(
             self.store.node.clone(),
             self.verifier.tenant(),
             Arc::new(test_utils::LocalKeyProvider::new([51; 32])),
@@ -205,7 +208,8 @@ async fn exact_live_generation_rejects_historical_and_reused_key_forgery() {
             .initialize_live_signer_trust(
                 &f.verifier,
                 f.signers[0].certificate().clone(),
-                f.administrator.clone()
+                f.administrator.clone(),
+                worker_budget(),
             )
             .is_err()
     );
@@ -309,7 +313,7 @@ async fn exact_live_generation_rejects_historical_and_reused_key_forgery() {
     );
     assert!(trust.administer(&f.context(), stage_reused).is_err());
     assert!(old_fence.check().is_err());
-    f.store.shutdown().await;
+    f.store.shutdown().await.unwrap();
     let raw = std::fs::read(f.directory.path().join("trust.redb")).unwrap();
     assert!(
         !raw.windows(f.domain.manifest_sha256.len())
@@ -369,7 +373,7 @@ async fn encrypted_restart_and_clock_regression_restart_the_complete_retirement_
             .verify_live("lease", &"current", &signature)
             .is_ok()
     );
-    f.store.shutdown().await;
+    f.store.shutdown().await.unwrap();
 }
 
 struct LostReply {
@@ -421,6 +425,7 @@ async fn uncertain_activation_closes_old_owner_and_exact_receipt_recovers_from_e
         persistence,
         f.administrator.clone(),
         f.clock.clone(),
+        worker_budget(),
     )
     .unwrap();
     let old = f.signers[0].sign("lease", &"old").unwrap();
@@ -444,7 +449,7 @@ async fn uncertain_activation_closes_old_owner_and_exact_receipt_recovers_from_e
             .status(&f.context(), activation.operation_id)
             .is_err()
     );
-    f.store.shutdown().await;
+    f.store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -489,7 +494,8 @@ async fn stopped_stage_and_new_admin_requests_preserve_original_identity_and_rej
                 Arc::new(Administrator {
                     allowed: AtomicBool::new(true),
                     resource: f.administrator.resource.clone(),
-                })
+                }),
+                worker_budget(),
             )
             .is_err()
     );
@@ -507,14 +513,19 @@ async fn stopped_stage_and_new_admin_requests_preserve_original_identity_and_rej
         .unwrap();
     assert!(
         f.store
-            .open_live_signer_trust(&f.verifier, f.domain.clone(), f.administrator.clone())
+            .open_live_signer_trust(
+                &f.verifier,
+                f.domain.clone(),
+                f.administrator.clone(),
+                worker_budget()
+            )
             .is_err()
     );
     f.store
         .write_batch(&[WriteOp::put(NS, key.as_bytes(), bytes)])
         .unwrap();
     assert_eq!(f.open().current().unwrap().revision, 3);
-    f.store.shutdown().await;
+    f.store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -535,11 +546,12 @@ async fn complete_file_reopen_retains_exact_trust_and_permanent_key_bindings() {
     } = f;
     trust.close();
     drop(trust);
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
-    let reopened = TenantStore::open(
-        NodeStore::open(
+    let reopened = TenantStore::open_existing(
+        NodeStore::open_existing(
             directory.path().join("trust.redb"),
+            crate::test_utils::NODE_STORE_ID,
             crate::ScratchDisk::fixture(),
         )
         .unwrap(),
@@ -550,7 +562,7 @@ async fn complete_file_reopen_retains_exact_trust_and_permanent_key_bindings() {
     .await
     .unwrap();
     let trust = reopened
-        .open_live_signer_trust(&verifier, domain, administrator)
+        .open_live_signer_trust(&verifier, domain, administrator, worker_budget())
         .unwrap();
     assert_eq!(trust.administer(&context, activation).unwrap(), expected);
     assert_eq!(trust.current().unwrap().active.identity.generation, 2);
@@ -567,10 +579,11 @@ async fn complete_file_reopen_retains_exact_trust_and_permanent_key_bindings() {
                     allowed: AtomicBool::new(true),
                     resource: context.authorization.resource().unwrap().clone(),
                 }),
+                worker_budget(),
             )
             .is_err()
     );
-    reopened.shutdown().await;
+    reopened.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -629,7 +642,7 @@ async fn issuance_and_encoded_response_require_the_exact_active_signer_owner() {
     assert!(signer(0, reopened).is_err());
     assert!(new_pending.check().is_err());
     assert!(current.check().is_err());
-    f.store.shutdown().await;
+    f.store.shutdown().await.unwrap();
     assert!(fresh.sign("lease", &"closed-storage").is_err());
 }
 
@@ -714,5 +727,117 @@ async fn encrypted_current_generation_fences_lease_admission_and_retained_respon
     assert_eq!(reopened.current().unwrap().active.identity.generation, 2);
     assert!(owner.current().is_err());
     assert!(response.check().is_err());
-    f.store.shutdown().await;
+    f.store.shutdown().await.unwrap();
+}
+
+fn worker_budget() -> kasumi_serving::BackgroundWorkBudget {
+    kasumi_serving::BackgroundWorkBudget::new(64, Arc::new(())).unwrap()
+}
+
+#[tokio::test]
+async fn dropped_closed_verifier_keeps_cache_fence_until_actual_background_join() {
+    let f = Fixture::new().await;
+    let trust = f.initialize();
+    let weak = Arc::downgrade(&trust);
+    let key = f.domain.digest().unwrap();
+    let before = f.store.get(NS, key.as_bytes()).unwrap();
+    let worker = Arc::new(kasumi_serving::BackgroundWork::default());
+    let (release, waiting) = tokio::sync::oneshot::channel::<()>();
+    trust
+        .start_background_work(worker.clone(), async move {
+            waiting.await.unwrap();
+        })
+        .unwrap();
+    trust.close();
+    assert!(
+        f.store
+            .open_live_signer_trust(
+                &f.verifier,
+                f.domain.clone(),
+                f.administrator.clone(),
+                worker_budget()
+            )
+            .is_err()
+    );
+    drop(trust);
+    assert!(weak.upgrade().is_none());
+    assert!(
+        f.store
+            .open_live_signer_trust(
+                &f.verifier,
+                f.domain.clone(),
+                f.administrator.clone(),
+                worker_budget()
+            )
+            .is_err()
+    );
+    release.send(()).unwrap();
+    worker.drain().await.unwrap();
+    let reopened = f.open();
+    assert_eq!(f.store.get(NS, key.as_bytes()).unwrap(), before);
+    reopened.close();
+    reopened.drain_background_work().await.unwrap();
+    f.store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement() {
+    let f = Fixture::new().await;
+    let trust = f.initialize();
+    let worker = Arc::new(kasumi_serving::BackgroundWork::default());
+    let weak = Arc::downgrade(&worker);
+    let (release, waiting) = tokio::sync::oneshot::channel::<()>();
+    trust
+        .start_background_work(worker.clone(), async move {
+            waiting.await.unwrap();
+            panic!("unreported verifier worker failure");
+        })
+        .unwrap();
+    drop(worker);
+    drop(trust);
+    release.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !matches!(weak.upgrade().unwrap().observed(), Some(Err(_))) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        f.store
+            .open_live_signer_trust(
+                &f.verifier,
+                f.domain.clone(),
+                f.administrator.clone(),
+                worker_budget()
+            )
+            .is_err()
+    );
+    let original = weak.upgrade().unwrap();
+    let mut after = None;
+    let retained = loop {
+        let page = kasumi_serving::pending_background_custody(after, 16).unwrap();
+        assert!(!page.is_empty(), "unreported failure vanished from custody");
+        if let Some((_, cell)) = page.iter().find(|(_, cell)| Arc::ptr_eq(cell, &original)) {
+            break cell.clone();
+        }
+        after = Some(page.last().unwrap().0);
+    };
+    drop(original);
+    let error = retained.drain().await.unwrap_err();
+    assert!(
+        error.issues()[0]
+            .error()
+            .downcast_ref::<tokio::task::JoinError>()
+            .unwrap()
+            .is_panic()
+    );
+    let reopened = f.open();
+    let repeated = retained.drain().await.unwrap_err();
+    assert!(Arc::ptr_eq(&error.issues()[0], &repeated.issues()[0]));
+    reopened.close();
+    reopened.drain_background_work().await.unwrap();
+    drop(retained);
+    assert!(weak.upgrade().is_none());
+    f.store.shutdown().await.unwrap();
 }

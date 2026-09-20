@@ -232,6 +232,7 @@ async fn materialize_origin(
         "materialization source purpose differs from the authenticated backup root"
     );
     let bootstrap = ReplicatedBootstrap {
+        genesis: crate::ReplicatedGenesis::Application,
         incarnation: replica.incarnation.to_string(),
         initial_policy: verified.state.metadata().policy.clone(),
         initial_limits: verified.state.metadata().limits.clone(),

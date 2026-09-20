@@ -1723,6 +1723,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "hex",
+ "kasumi-client",
  "kasumi-clock",
  "kasumi-engine",
  "kasumi-raft",
@@ -1830,8 +1831,10 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "tracing",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -3130,6 +3133,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "futures-core",
+ "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -3206,8 +3210,6 @@ dependencies = [
 [[package]]
 name = "rmcp"
 version = "3.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42b6914fac0be956fe704a38239c3f44a9f841d1b06a5713d2f638065593f5b5"
 dependencies = [
  "async-trait",
  "base64 0.23.1",

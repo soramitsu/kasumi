@@ -344,7 +344,16 @@ async fn benchmark(
             initial_limits: Limits {
                 max_documents: count as u64 + 1,
                 max_logical_bytes: (count as u64 + 1) * 2048,
-                max_receipts: documents.div_ceil(256) + operations * 4 + 1000,
+                max_mutation_receipt_bytes: u64::try_from(
+                    operations
+                        .checked_mul(4)
+                        .and_then(|n| n.checked_add(documents.div_ceil(256)))
+                        .and_then(|n| n.checked_add(1000))
+                        .context("receipt workload count overflow")?,
+                )
+                .context("receipt workload exceeds address space")?
+                .checked_mul(2 << 20)
+                .context("receipt workload byte budget overflow")?,
                 ..Limits::default()
             },
             incarnation: Some(incarnation.to_string()),

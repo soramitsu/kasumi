@@ -78,9 +78,12 @@ configuration.
 
 ## Independent application and custody storage
 
-Engine and Raft openers require `Arc<TenantStorageSet>`. Create it with
-`TenantStorageSet::open(node, tenant, application_provider, custody_provider)`.
-Both providers are explicit. The installed catalogs must have distinct identities,
+Engine and Raft openers require `Arc<TenantStorageSet>`. Explicit fresh enrollment
+uses `TenantStorageSet::initialize_catalogs(node, tenant, application_provider,
+custody_provider, access)`. Existing installations use `TenantStorageSet::open_existing`
+with the same arguments. Missing or partial catalogs fail; no API chooses creation
+from their absence. Join `NodeStore::drain_initializers` before releasing physical
+ownership after any attempted catalog acquisition. Both providers are explicit. The installed catalogs must have distinct identities,
 wrapping policies and actual key bytes. Their immutable encrypted binding prevents
 a substituted application/control pair. The same node transaction can publish
 application and custody records together, retaining both key-access guards through
@@ -91,8 +94,18 @@ control domain. It inspects wrapped application catalog identity without creatin
 an application provider or decrypting application keys. It grants no application
 data authority. Native tenant and control configuration therefore requires a
 separate `custody_keys` setting. Test embeddings can explicitly use
-`test_utils::with_custody(existing_application_store, distinct_test_provider)`;
-this feature is unavailable to native configuration.
+`test_utils::initialize_custody_fixture(application_store, distinct_test_provider)`
+for fresh custody, or `test_utils::open_existing_custody_fixture` for its strict
+authenticated reopen. Single-domain fixture calls likewise distinguish
+`initialize_catalog_fixture` from `open_existing_fixture`. These features are
+unavailable to native configuration.
+
+Production `TenantStore::initialize_catalog` and `TenantStore::open_existing`
+accept only service audit, signer trust and target journal storage purposes.
+Fresh initialization rejects live owners, existing catalogs and orphan physical
+rows. Its acknowledged initializer retains new owners and failed outcomes through
+cancellation; strict existing opens preserve borrowed owners and never seed keys
+or metadata. See [singleton ownership](../../docs/explicit-singleton-catalogs.md).
 
 
 ## Actual S3 interoperability

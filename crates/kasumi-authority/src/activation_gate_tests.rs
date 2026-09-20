@@ -108,9 +108,12 @@ fn completion_fixture(
     let mut completion_intent = origin.materialization.clone();
     completion_intent.request.command_id = Uuid::new_v4();
     completion_intent.request.phase = LifecyclePhase::Complete;
-    completion_intent.request.phase_input_sha256 = TargetQuorumInput {
-        origin_sha256: origin.digest().unwrap(),
-        materialized: materialized.clone(),
+    completion_intent.request.phase_input_sha256 = kasumi_types::TargetCompletionInput {
+        quorum: TargetQuorumInput {
+            origin_sha256: origin.digest().unwrap(),
+            materialized: materialized.clone(),
+        },
+        predecessor: None,
     }
     .digest()
     .unwrap();
@@ -120,6 +123,7 @@ fn completion_fixture(
         origin,
         materialized,
         completion_intent,
+        predecessor: None,
         admitted_at_ms: 1_000_000,
         revision: target.checkpoint.revision + 3,
         term: 1,
@@ -460,14 +464,15 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
     )
     .unwrap();
     let captured = phase.capture().unwrap();
-    let node_store = NodeStore::open(
+    let node_store = NodeStore::create_new(
         f._dir.path().join("actual-target.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([91; 32]));
     let access = kasumi_store::StorageAccess::target_phase(serving.clone(), phase.clone()).unwrap();
-    let store = kasumi_store::TenantStore::open(
+    let store = kasumi_store::TenantStore::initialize_catalog_fixture_with_access(
         node_store.clone(),
         "city".into(),
         provider.clone(),
@@ -501,7 +506,7 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
     )
     .unwrap();
     assert!(
-        kasumi_store::TenantStore::open(
+        kasumi_store::TenantStore::open_existing_fixture_with_access(
             node_store,
             "city".into(),
             provider,
@@ -520,7 +525,7 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
             .write_batch(&[kasumi_store::WriteOp::put("bootstrap", b"late", b"denied")])
             .is_err()
     );
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
     drop(service);
     f.close().await;
@@ -558,6 +563,7 @@ async fn resolved_completion_activates_only_with_its_distinct_positive_inspectio
             materialized: original.observation.fact.materialized.clone(),
         },
         original_phase: original.observation.fact.completion_intent.clone(),
+        predecessor: original.observation.fact.predecessor.clone(),
     };
     let mut inspection = input.original_phase.clone();
     inspection.request.command_id = Uuid::new_v4();

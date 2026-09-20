@@ -140,6 +140,7 @@ pub(crate) fn ordinary(index: u64) -> Entry<TypeConfig> {
 }
 pub(crate) async fn fixture(
     disk: FaultBackend,
+    create: bool,
 ) -> Result<(
     Arc<TenantStorageSet>,
     Arc<LocalKeyProvider>,
@@ -149,32 +150,68 @@ pub(crate) async fn fixture(
     let node = NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?;
     let app_provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([12; 32]));
-    let app = TenantStore::open_fixture_with_clock(
-        node.clone(),
-        "tenant".into(),
-        app_provider.clone(),
-        Arc::new(ManualClock::new()),
-    )
-    .await?;
-    let custody = TenantStore::open_fixture_with_clock(
-        node,
-        CustodyStore::catalog_name("tenant"),
-        custody_provider.clone(),
-        Arc::new(ManualClock::new()),
-    )
-    .await?;
-    let stores = TenantStorageSet::install(app, custody)?;
-    if stores
-        .custody()
-        .store()
-        .get(META, b"application_bootstrap_sha256")?
-        .is_none()
-    {
+    let app = (if create {
+        TenantStore::initialize_catalog_fixture_with_clock(
+            node.clone(),
+            "tenant".into(),
+            app_provider.clone(),
+            Arc::new(ManualClock::new()),
+        )
+        .await
+    } else {
+        TenantStore::open_existing_fixture_with_clock(
+            node.clone(),
+            "tenant".into(),
+            app_provider.clone(),
+            Arc::new(ManualClock::new()),
+        )
+        .await
+    })?;
+    let custody = (if create {
+        TenantStore::initialize_catalog_fixture_with_clock(
+            node,
+            CustodyStore::catalog_name("tenant"),
+            custody_provider.clone(),
+            Arc::new(ManualClock::new()),
+        )
+        .await
+    } else {
+        TenantStore::open_existing_fixture_with_clock(
+            node,
+            CustodyStore::catalog_name("tenant"),
+            custody_provider.clone(),
+            Arc::new(ManualClock::new()),
+        )
+        .await
+    })?;
+    let stores = if create {
+        kasumi_store::test_utils::with_domains(app, custody)?
+    } else {
+        let pair =
+            kasumi_store::test_utils::open_existing_custody_fixture(app, custody_provider.clone())
+                .await?;
+        ensure!(
+            Arc::ptr_eq(pair.custody().store(), &custody),
+            "strict reopen changed original custody owner"
+        );
+        pair
+    };
+    if create {
         stores.custody().store().write_batch(&[WriteOp::put(
             META,
             b"application_bootstrap_sha256",
             serde_json::to_vec(&"0".repeat(64))?,
         )])?;
+    } else {
+        ensure!(
+            stores
+                .custody()
+                .store()
+                .get(META, b"application_bootstrap_sha256")?
+                .as_deref()
+                == Some(serde_json::to_vec(&"0".repeat(64))?.as_slice()),
+            "existing fixture lost bootstrap commitment"
+        );
     }
     let log = LogStore::open(stores.clone(), 1).await?;
     log.bind_group(group()).await?;
@@ -185,7 +222,7 @@ pub(crate) async fn fixture(
 async fn committed_seed_reopens_before_any_projection_without_application_key_access() -> Result<()>
 {
     let disk = FaultBackend::new();
-    let (stores, app_provider, custody_provider, mut log) = fixture(disk.clone()).await?;
+    let (stores, app_provider, custody_provider, mut log) = fixture(disk.clone(), true).await?;
     log.blocking_append([ordinary(0), retirement_entry()?])
         .await?;
     let view = ControlLog::open(stores.custody().clone(), 1, group())?;
@@ -220,7 +257,7 @@ async fn committed_seed_reopens_before_any_projection_without_application_key_ac
     for (_, bytes) in control.store().scan(HEADERS)? {
         assert!(!String::from_utf8_lossy(&bytes).contains("municipal-sensitive-payload"));
     }
-    control.store().shutdown().await;
+    control.store().shutdown().await.unwrap();
     Ok(())
 }
 
@@ -228,7 +265,7 @@ async fn committed_seed_reopens_before_any_projection_without_application_key_ac
 async fn truncation_permanently_removes_uncommitted_seed_before_overwrite_and_restart() -> Result<()>
 {
     let disk = FaultBackend::new();
-    let (stores, _, provider, mut log) = fixture(disk.clone()).await?;
+    let (stores, _, provider, mut log) = fixture(disk.clone(), true).await?;
     log.blocking_append([ordinary(0), retirement_entry()?])
         .await?;
     log.save_committed(Some(id(0))).await?;
@@ -260,7 +297,7 @@ async fn truncation_permanently_removes_uncommitted_seed_before_overwrite_and_re
             .retirement_seed(1)?
             .is_none()
     );
-    control.store().shutdown().await;
+    control.store().shutdown().await.unwrap();
     Ok(())
 }
 
@@ -268,7 +305,7 @@ async fn truncation_permanently_removes_uncommitted_seed_before_overwrite_and_re
 async fn interrupted_raft_append_never_persists_seed_without_matching_body_and_header() -> Result<()>
 {
     let seed_disk = FaultBackend::new();
-    let (stores, _, _, mut log) = fixture(seed_disk.clone()).await?;
+    let (stores, _, _, mut log) = fixture(seed_disk.clone(), true).await?;
     log.blocking_append([ordinary(0)]).await?;
     log.save_committed(Some(id(0))).await?;
     let baseline = seed_disk.crash();
@@ -278,14 +315,14 @@ async fn interrupted_raft_append_never_persists_seed_without_matching_body_and_h
     let mut succeeded = 0;
     for failure in 0..40 {
         let disk = baseline.crash();
-        let (stores, _, _, mut log) = fixture(disk.clone()).await?;
+        let (stores, _, _, mut log) = fixture(disk.clone(), false).await?;
         disk.fail_after(failure);
         let appended = log.blocking_append([retirement_entry()?]).await;
         let crash = disk.crash();
         disk.disarm();
         drop(log);
         drop(stores);
-        let (reopened, _, _, _) = fixture(crash).await?;
+        let (reopened, _, _, _) = fixture(crash, false).await?;
         let control = reopened.custody().store();
         let body = reopened
             .application()
@@ -312,7 +349,7 @@ async fn interrupted_raft_append_never_persists_seed_without_matching_body_and_h
 
 #[tokio::test]
 async fn substituted_seed_bootstrap_or_command_and_uncovered_commit_fail_closed() -> Result<()> {
-    let (stores, _, _, mut log) = fixture(FaultBackend::new()).await?;
+    let (stores, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
     log.blocking_append([ordinary(0), retirement_entry()?])
         .await?;
     assert!(log.save_committed(Some(id(9))).await.is_err());
@@ -342,7 +379,7 @@ async fn substituted_seed_bootstrap_or_command_and_uncovered_commit_fail_closed(
 #[tokio::test]
 async fn ordinary_purge_deletes_bodies_and_nonretirement_overwrite_cannot_leave_a_seed()
 -> Result<()> {
-    let (stores, _, _, mut log) = fixture(FaultBackend::new()).await?;
+    let (stores, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
     log.blocking_append([ordinary(0), retirement_entry()?])
         .await?;
     log.save_committed(Some(id(0))).await?;
@@ -376,7 +413,7 @@ async fn ordinary_purge_deletes_bodies_and_nonretirement_overwrite_cannot_leave_
 async fn accepted_boundary_and_exact_applied_position_publish_atomically_before_retained_purge()
 -> Result<()> {
     let seed_disk = FaultBackend::new();
-    let (stores, _, _, mut log) = fixture(seed_disk.clone()).await?;
+    let (stores, _, _, mut log) = fixture(seed_disk.clone(), true).await?;
     let entry = retirement_entry()?;
     let EntryPayload::Normal(command) = &entry.payload else {
         unreachable!()
@@ -410,13 +447,13 @@ async fn accepted_boundary_and_exact_applied_position_publish_atomically_before_
     let mut successes = 0;
     for failure in 0..40 {
         let disk = baseline.crash();
-        let (stores, _, _, _) = fixture(disk.clone()).await?;
+        let (stores, _, _, _) = fixture(disk.clone(), false).await?;
         disk.fail_after(failure);
         let result = persist_applied(&stores, &context, Some(receipt.clone()));
         let crash = disk.crash();
         disk.disarm();
         drop(stores);
-        let (reopened, _, _, mut log) = fixture(crash).await?;
+        let (reopened, _, _, mut log) = fixture(crash, false).await?;
         let applied: Option<AppliedCursor> = load(reopened.custody().store(), META, b"applied")?;
         let boundary = retired_boundary(reopened.custody())?;
         assert_eq!(
@@ -464,7 +501,7 @@ fn membership(index: u64) -> Entry<TypeConfig> {
 async fn reserved_committed_retirement_recovers_atomic_custody_after_crash_without_app_key()
 -> Result<()> {
     let disk = FaultBackend::new();
-    let (stores, app_provider, custody_provider, mut log) = fixture(disk.clone()).await?;
+    let (stores, app_provider, custody_provider, mut log) = fixture(disk.clone(), true).await?;
     log.blocking_append([membership(0), retirement_entry()?])
         .await?;
     let reader = ControlLog::open(stores.custody().clone(), 1, group())?;
@@ -504,14 +541,78 @@ async fn reserved_committed_retirement_recovers_atomic_custody_after_crash_witho
     .await?;
     assert!(ControlLog::open(custody.clone(), 1, group())?.recover_retired()?);
     assert_eq!(custody_state(&custody)?, saved);
-    custody.store().shutdown().await;
+    custody.store().shutdown().await.unwrap();
+    Ok(())
+}
+
+#[tokio::test]
+async fn retirement_recovery_crosses_former_seed_count_ceiling_without_promoting_a_tail()
+-> Result<()> {
+    let (stores, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
+    log.blocking_append([membership(0), retirement_entry()?])
+        .await?;
+    // These authenticated physical rows are outside committed coverage. Their
+    // payloads must never become recovery evidence, regardless of their count.
+    // Keep fixture construction bounded too: one small batch at a time.
+    let store = stores.custody().store();
+    let mut batch = Vec::with_capacity(128);
+    for index in 2u64..=100_001 {
+        batch.push(WriteOp::put(
+            SEEDS,
+            index.to_be_bytes(),
+            b"uncommitted physical tail",
+        ));
+        if batch.len() == 128 {
+            store.write_batch(&batch)?;
+            batch.clear();
+        }
+    }
+    if !batch.is_empty() {
+        store.write_batch(&batch)?;
+    }
+    let reader = ControlLog::open(stores.custody().clone(), 1, group())?;
+    assert!(!reader.recover_retired()?);
+    assert!(retired_boundary(stores.custody())?.is_none());
+    log.save_committed(Some(id(1))).await?;
+    assert!(reader.recover_retired()?);
+    let boundary = retired_boundary(stores.custody())?.unwrap();
+    assert_eq!(boundary.position.log_id, id(1));
+    assert_eq!(boundary.receipt.revision, 1);
+    assert!(reader.retirement_seed(100_001)?.is_none());
+    stores.shutdown().await.unwrap();
+    Ok(())
+}
+
+#[tokio::test]
+async fn retirement_recovery_never_selects_between_multiple_committed_successes() -> Result<()> {
+    let (stores, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
+    let mut second = retirement_entry()?;
+    second.log_id = id(2);
+    log.blocking_append([membership(0), retirement_entry()?, second])
+        .await?;
+    log.save_committed(Some(id(2))).await?;
+    let reader = ControlLog::open(stores.custody().clone(), 1, group())?;
+    for index in [1, 2] {
+        let committed = reader.retirement_seed(index)?.unwrap();
+        assert!(committed.seed.recovered_success(index)?.is_some());
+    }
+    let error = reader.recover_retired().unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("multiple successful retirement candidates"),
+        "unexpected recovery rejection: {error:#}"
+    );
+    assert!(retired_boundary(stores.custody())?.is_none());
+    assert!(load::<AppliedCursor>(stores.custody().store(), META, b"applied")?.is_none());
+    stores.shutdown().await.unwrap();
     Ok(())
 }
 
 #[tokio::test]
 async fn exhausted_seed_completion_budget_cannot_promote_a_committed_candidate() -> Result<()> {
     let disk = FaultBackend::new();
-    let (stores, _, _, mut log) = fixture(disk).await?;
+    let (stores, _, _, mut log) = fixture(disk, true).await?;
     let (command, prior) = seed()?;
     let mut source = prior.source().clone();
     source.max_snapshot_bytes = source.snapshot_bytes + 100;
@@ -546,7 +647,7 @@ async fn exhausted_seed_completion_budget_cannot_promote_a_committed_candidate()
 async fn failed_or_already_applied_without_boundary_cannot_be_reinterpreted_as_retired()
 -> Result<()> {
     let disk = FaultBackend::new();
-    let (stores, _, _, mut log) = fixture(disk).await?;
+    let (stores, _, _, mut log) = fixture(disk, true).await?;
     let (mut command, prior) = seed()?;
     command.timestamp_ms = 1001;
     let seed = RetirementLogSeed::prepare(&command, prior.source().clone())?;
@@ -564,7 +665,7 @@ async fn failed_or_already_applied_without_boundary_cannot_be_reinterpreted_as_r
     log.save_committed(Some(id(1))).await?;
     assert!(!ControlLog::open(stores.custody().clone(), 1, group())?.recover_retired()?);
     let disk = FaultBackend::new();
-    let (stores, _, _, mut log) = fixture(disk).await?;
+    let (stores, _, _, mut log) = fixture(disk, true).await?;
     let entry = retirement_entry()?;
     let digest = match &entry.payload {
         EntryPayload::Normal(command) => sha256(command.bytes()),

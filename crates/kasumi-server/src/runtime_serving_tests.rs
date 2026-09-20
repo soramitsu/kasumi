@@ -65,15 +65,27 @@ async fn fenced_source_startup_keeps_control_handle_without_constructing_applica
     let authority = config.serving_authorities.get_mut("storage-fence").unwrap();
     authority.tls = files.clone();
     authority.server_ca = files.certificate.clone();
-    authority.endpoints.get_mut(&0).unwrap().get_mut(&1).unwrap().endpoint =
-        format!("https://localhost:{}", unavailable_address.port());
+    authority
+        .endpoints
+        .get_mut(&0)
+        .unwrap()
+        .get_mut(&1)
+        .unwrap()
+        .endpoint = format!("https://localhost:{}", unavailable_address.port());
     // Even an unavailable authority requires explicit current local trust;
     // startup must not manufacture it from the root manifest or a wire reply.
     let root_key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
-    authority.manifest.partitions.get_mut(&0).unwrap().public_key = hex::encode(root_key.public_key_raw());
+    authority
+        .manifest
+        .partitions
+        .get_mut(&0)
+        .unwrap()
+        .public_key = hex::encode(root_key.public_key_raw());
     let root = kasumi_serving::InstallationSigningRoot::from_pkcs8(
-        authority.manifest.signing_domain(0).unwrap(), &root_key.serialize_der(),
-    ).unwrap();
+        authority.manifest.signing_domain(0).unwrap(),
+        &root_key.serialize_der(),
+    )
+    .unwrap();
     let operational = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
     let trust_directory = dir.path().join("signer-verifier");
     kasumi_store::private_files::create_directory(&trust_directory).unwrap();
@@ -83,13 +95,26 @@ async fn fenced_source_startup_keeps_control_handle_without_constructing_applica
     verifier.database_path = trust_directory.join("trust.redb");
     verifier.keys = KeyProviderSettings::File { path: wrapping };
     crate::signer_runtime::InitializeSignerVerifier {
+        admission: Default::default(),
         scratch_disk: config.scratch_disk.clone(),
         verifier: verifier.clone(),
-        initial_certificates: vec![root.certify(1, hex::encode(operational.public_key_raw())).unwrap()],
-    }.initialize().await.unwrap();
-    let application_token = config.tenants[0].keys.transit_mut().unwrap().token_file.clone();
+        initial_certificates: vec![
+            root.certify(1, hex::encode(operational.public_key_raw()))
+                .unwrap(),
+        ],
+    }
+    .initialize()
+    .await
+    .unwrap();
+    let application_token = config.tenants[0]
+        .keys
+        .transit_mut()
+        .unwrap()
+        .token_file
+        .clone();
     let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = probes.clone();
+    create_fixture_node(&config).await;
     let mut runtime = NodeRuntime::open_using(config.clone(), move |name| {
         if name == application_token {
             observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -164,15 +189,31 @@ async fn original_tenant_reopens_after_key_outage_without_reviving_retained_hand
     config.native.listen = native;
     config.admin.listen = admin;
     config.mcp.protocol = McpConfig::new(format!("https://localhost:{}/mcp", mcp.port())).unwrap();
-    for settings in [&mut config.control.keys, &mut config.control.custody_keys, &mut config.security_audit.keys]
-        .into_iter().chain(config.tenants.iter_mut().flat_map(|tenant| [&mut tenant.keys, &mut tenant.custody_keys])) {
+    for settings in [
+        &mut config.control.keys,
+        &mut config.control.custody_keys,
+        &mut config.security_audit.keys,
+    ]
+    .into_iter()
+    .chain(
+        config
+            .tenants
+            .iter_mut()
+            .flat_map(|tenant| [&mut tenant.keys, &mut tenant.custody_keys]),
+    ) {
         let settings = settings.transit_mut().unwrap();
         settings.endpoint = endpoint.clone();
         settings.ca_certificate = Some(files.certificate.clone());
     }
-    let application_file = config.tenants[0].keys.transit_mut().unwrap().token_file.clone();
+    let application_file = config.tenants[0]
+        .keys
+        .transit_mut()
+        .unwrap()
+        .token_file
+        .clone();
     let available = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let credential_available = available.clone();
+    create_fixture_node(&config).await;
     let runtime = NodeRuntime::open_using(config.clone(), move |path| {
         anyhow::ensure!(
             path != application_file

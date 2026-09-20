@@ -122,6 +122,29 @@ impl NativeAdmin {
         ))
     }
 
+    pub(super) async fn read_custody_receipt_rpc(
+        &self,
+        request: Request<CustodyCommandRequest>,
+    ) -> Result<Response<CustodyReceiptResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let request: kasumi_types::CustodyRequest =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let source = self
+            .retirement_source(&context, &request.retirement.source_incarnation)
+            .await?;
+        let custody = source.retired().map_err(status)?;
+        let fence = custody.response_fence(&context).map_err(status)?;
+        let receipt = custody.receipt(&context, &request).await.map_err(status)?;
+        let response = CustodyReceiptResponse {
+            response_json: encode_json(&receipt).map_err(status)?,
+        };
+        Ok(Response::new(
+            release_response(&self.auth, &context, fence, response, false)
+                .await
+                .map_err(status)?,
+        ))
+    }
+
     pub(super) async fn retire_source_rpc(
         &self,
         request: Request<RetireSourceRequest>,

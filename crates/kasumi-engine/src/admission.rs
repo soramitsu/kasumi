@@ -535,7 +535,11 @@ impl Reservation {
         self.retain(u64::MAX);
     }
 
-    pub(crate) fn retain(&mut self, bytes: u64) {
+    /// Keep at most `bytes` of this existing charge while releasing its in-flight
+    /// operation slot. Retained bytes can only shrink; the final owner releases
+    /// them when this reservation drops. Use for installed metadata and results
+    /// after the operation that acquired their workspace has finished.
+    pub fn retain(&mut self, bytes: u64) {
         let mut state = self.node.state.lock().unwrap_or_else(|p| p.into_inner());
         let charge = state.charges.get_mut(&self.id).expect("live reservation");
         let bytes = bytes.min(charge.bytes);

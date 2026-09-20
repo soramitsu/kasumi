@@ -18,7 +18,37 @@ pub async fn security_audit_with_admission(
     node: Arc<NodeStore>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
 ) -> Arc<SecurityAudit> {
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
+        node,
+        SECURITY_TENANT.into(),
+        Arc::new(LocalKeyProvider::new([0xA7; 32])),
+    )
+    .await
+    .unwrap();
+    SecurityAudit::initialize(
+        store,
+        kasumi_types::AuditRetentionBudget::default(),
+        admission,
+    )
+    .unwrap()
+}
+
+/// Reopen a previously initialized ledger; absence is a test failure.
+#[allow(dead_code)]
+pub async fn existing_security_audit(node: Arc<NodeStore>) -> Arc<SecurityAudit> {
+    existing_security_audit_with_admission(
+        node,
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+    )
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn existing_security_audit_with_admission(
+    node: Arc<NodeStore>,
+    admission: Arc<kasumi_engine::admission::NodeAdmission>,
+) -> Arc<SecurityAudit> {
+    let store = TenantStore::open_existing_fixture(
         node,
         SECURITY_TENANT.into(),
         Arc::new(LocalKeyProvider::new([0xA7; 32])),

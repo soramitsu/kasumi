@@ -1,15 +1,15 @@
 use super::*;
 use crate::test_utils::{FaultBackend, LocalKeyProvider, ManualClock};
 
-async fn installed(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
-    let app = TenantStore::open_fixture_with_clock(
+async fn initialize_pair_fixture(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
+    let app = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([11; 32])),
         Arc::new(ManualClock::new()),
     )
     .await?;
-    let custody = TenantStore::open_fixture_with_clock(
+    let custody = TenantStore::initialize_catalog_fixture_with_clock(
         node,
         CustodyStore::catalog_name("tenant"),
         Arc::new(LocalKeyProvider::new([12; 32])),
@@ -19,29 +19,77 @@ async fn installed(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
     TenantStorageSet::install(app, custody)
 }
 
+async fn existing_pair_fixture(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
+    let application = Arc::new(LocalKeyProvider::new([11; 32]));
+    let custody = Arc::new(LocalKeyProvider::new([12; 32]));
+    let app = TenantStore::open_existing_fixture_with_clock(
+        node.clone(),
+        "tenant".into(),
+        application.clone(),
+        Arc::new(ManualClock::new()),
+    )
+    .await?;
+    let control = TenantStore::open_existing_fixture_with_clock(
+        node.clone(),
+        CustodyStore::catalog_name("tenant"),
+        custody.clone(),
+        Arc::new(ManualClock::new()),
+    )
+    .await?;
+    let result = TenantStorageSet::open_existing(
+        node.clone(),
+        "tenant".into(),
+        application,
+        custody,
+        StorageAccess::fixture(),
+    )
+    .await;
+    if result.is_err() {
+        app.shutdown().await.unwrap();
+        control.shutdown().await.unwrap();
+        node.drain_initializers().await?;
+    }
+    result
+}
+
 #[tokio::test]
 async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let node = NodeStore::open(dir.path().join("same.redb"), crate::ScratchDisk::fixture())?;
+    let node = NodeStore::create_new(
+        dir.path().join("same.redb"),
+        crate::test_utils::NODE_STORE_ID,
+        crate::ScratchDisk::fixture(),
+    )?;
     let provider = Arc::new(LocalKeyProvider::new([1; 32]));
-    let app = TenantStore::open_fixture(node.clone(), "tenant".into(), provider.clone()).await?;
-    let control =
-        TenantStore::open_fixture(node, CustodyStore::catalog_name("tenant"), provider).await?;
+    let app =
+        TenantStore::initialize_catalog_fixture(node.clone(), "tenant".into(), provider.clone())
+            .await?;
+    let control = TenantStore::initialize_catalog_fixture(
+        node,
+        CustodyStore::catalog_name("tenant"),
+        provider,
+    )
+    .await?;
     assert!(TenantStorageSet::install(app.clone(), control.clone()).is_err());
     assert!(control.get(BINDING_NS, BINDING_KEY)?.is_none());
-    let other = TenantStore::open_fixture(
-        NodeStore::open(dir.path().join("other.redb"), crate::ScratchDisk::fixture())?,
+    let other = TenantStore::initialize_catalog_fixture(
+        NodeStore::create_new(
+            dir.path().join("other.redb"),
+            crate::test_utils::NODE_STORE_ID,
+            crate::ScratchDisk::fixture(),
+        )?,
         CustodyStore::catalog_name("tenant"),
         Arc::new(LocalKeyProvider::new([2; 32])),
     )
     .await?;
     assert!(TenantStorageSet::install(app, other).is_err());
-    let reserved = NodeStore::open(
+    let reserved = NodeStore::create_new(
         dir.path().join("reserved.redb"),
+        crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
     )?;
     assert!(
-        TenantStorageSet::open_fixture(
+        TenantStorageSet::initialize_catalogs_fixture(
             reserved.clone(),
             "kasumi.custody/tenant".into(),
             Arc::new(LocalKeyProvider::new([3; 32])),
@@ -63,8 +111,12 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
     let path = dir.path().join("revoked.redb");
     let app_provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let control_provider = Arc::new(LocalKeyProvider::new([12; 32]));
-    let node = NodeStore::open(&path, crate::ScratchDisk::fixture())?;
-    let stores = TenantStorageSet::open_fixture(
+    let node = NodeStore::create_new(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        crate::ScratchDisk::fixture(),
+    )?;
+    let stores = TenantStorageSet::initialize_catalogs_fixture(
         node.clone(),
         "tenant".into(),
         app_provider.clone(),
@@ -92,12 +144,15 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
             .unwrap(),
         b"exact-commit"
     );
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
     drop(node);
     let reopened = CustodyStore::open(
-        NodeStore::open(&path, crate::ScratchDisk::fixture())?,
+        NodeStore::open_existing(
+            &path,
+            crate::test_utils::NODE_STORE_ID,
+            crate::ScratchDisk::fixture(),
+        )?,
         "tenant".into(),
         control_provider,
     )
@@ -108,14 +163,14 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
         b"exact-commit"
     );
     assert_eq!(app_provider.probe_count(), probes);
-    reopened.store().shutdown().await;
+    reopened.store().shutdown().await.unwrap();
     Ok(())
 }
 
 #[tokio::test]
 async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() -> Result<()> {
     let original = FaultBackend::new();
-    let stores = installed(NodeStore::open_with_backend(
+    let stores = initialize_pair_fixture(NodeStore::open_with_backend(
         original.clone(),
         crate::ScratchDisk::fixture(),
     )?)
@@ -130,7 +185,7 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
     let mut failures = 0;
     for failure in 0..40 {
         let disk = starting.crash();
-        let stores = installed(NodeStore::open_with_backend(
+        let stores = existing_pair_fixture(NodeStore::open_with_backend(
             disk.clone(),
             crate::ScratchDisk::fixture(),
         )?)
@@ -143,7 +198,7 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
         let crashed = disk.crash();
         disk.disarm();
         drop(stores);
-        let reopened = installed(NodeStore::open_with_backend(
+        let reopened = existing_pair_fixture(NodeStore::open_with_backend(
             crashed,
             crate::ScratchDisk::fixture(),
         )?)
@@ -172,14 +227,14 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
     let disk = FaultBackend::new();
     let node = NodeStore::open_with_backend(disk.clone(), crate::ScratchDisk::fixture())?;
     let clock = Arc::new(ManualClock::new());
-    let app = TenantStore::open_fixture_with_clock(
+    let app = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([11; 32])),
         clock.clone(),
     )
     .await?;
-    let custody = TenantStore::open_fixture_with_clock(
+    let custody = TenantStore::initialize_catalog_fixture_with_clock(
         node,
         CustodyStore::catalog_name("tenant"),
         Arc::new(LocalKeyProvider::new([12; 32])),
@@ -198,7 +253,7 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
     assert!(stores.application().check_access().is_err());
     let recovered = disk.crash();
     drop(stores);
-    let reopened = installed(NodeStore::open_with_backend(
+    let reopened = existing_pair_fixture(NodeStore::open_with_backend(
         recovered,
         crate::ScratchDisk::fixture(),
     )?)
@@ -221,19 +276,187 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
 #[tokio::test]
 async fn combined_quota_and_substituted_catalog_binding_fail_before_publication() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         dir.path().join("binding.redb"),
+        crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
     )?;
-    let stores = installed(node.clone()).await?;
+    let stores = initialize_pair_fixture(node.clone()).await?;
     let ops = vec![WriteOp::put("data", b"entry", b"a"); 32769];
     assert!(stores.write_batch(&ops, &ops).is_err());
     assert!(stores.application().get("data", b"entry")?.is_none());
     let mut catalog = node.catalog("tenant")?.unwrap();
     catalog.catalog_id = Uuid::new_v4();
     node.save_catalog("tenant", &catalog)?;
-    let result =
-        CustodyStore::from_installed(node, "tenant".into(), stores.custody().store().clone());
+    let result = CustodyStore::open(
+        node.clone(),
+        "tenant".into(),
+        Arc::new(LocalKeyProvider::new([12; 32])),
+    )
+    .await;
     assert!(result.is_err());
+    node.drain_initializers().await?;
+    stores.check_access()?;
+    stores.shutdown().await.unwrap();
+    Ok(())
+}
+
+#[tokio::test]
+async fn initial_state_rejects_unknown_records_in_either_complete_domain() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    for custody in [false, true] {
+        let node = NodeStore::create_new(
+            directory.path().join(format!("unknown-{custody}.redb")),
+            crate::test_utils::NODE_STORE_ID,
+            ScratchDisk::fixture(),
+        )?;
+        let stores = initialize_pair_fixture(node).await?;
+        let domain = if custody {
+            stores.custody().store()
+        } else {
+            stores.application()
+        };
+        domain.write_batch(&[WriteOp::put(
+            "unsupported.application.v99",
+            b"retained",
+            b"never-overwrite",
+        )])?;
+        assert!(
+            stores
+                .initialize_state(
+                    &[WriteOp::put("genesis", b"head", b"new")],
+                    &[WriteOp::put("genesis", b"head", b"new")],
+                )
+                .is_err()
+        );
+        assert_eq!(
+            domain
+                .get("unsupported.application.v99", b"retained")?
+                .unwrap(),
+            b"never-overwrite"
+        );
+        assert!(stores.application().get("genesis", b"head")?.is_none());
+        assert!(stores.custody().store().get("genesis", b"head")?.is_none());
+        stores.shutdown().await.unwrap();
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn initial_state_checks_and_joint_publication_have_one_concurrent_winner() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let stores = initialize_pair_fixture(NodeStore::create_new(
+        directory.path().join("first-publication.redb"),
+        crate::test_utils::NODE_STORE_ID,
+        ScratchDisk::fixture(),
+    )?)
+    .await?;
+    let barrier = std::sync::Barrier::new(2);
+    let results = std::thread::scope(|scope| {
+        let left = scope.spawn(|| {
+            barrier.wait();
+            stores.initialize_state(
+                &[WriteOp::put("genesis", b"head", b"left")],
+                &[WriteOp::put("genesis", b"head", b"left")],
+            )
+        });
+        let right = scope.spawn(|| {
+            barrier.wait();
+            stores.initialize_state(
+                &[WriteOp::put("genesis", b"head", b"right")],
+                &[WriteOp::put("genesis", b"head", b"right")],
+            )
+        });
+        (left.join().unwrap(), right.join().unwrap())
+    });
+    assert_ne!(results.0.is_ok(), results.1.is_ok());
+    let expected = if results.0.is_ok() {
+        b"left".as_slice()
+    } else {
+        b"right".as_slice()
+    };
+    assert_eq!(
+        stores.application().get("genesis", b"head")?.unwrap(),
+        expected
+    );
+    assert_eq!(
+        stores.custody().store().get("genesis", b"head")?.unwrap(),
+        expected
+    );
+    assert!(
+        stores
+            .initialize_state(
+                &[WriteOp::put("genesis", b"head", expected)],
+                &[WriteOp::put("genesis", b"head", expected)],
+            )
+            .is_err(),
+        "even exact initialization replay is existing state, not permission to publish genesis"
+    );
+    stores.shutdown().await.unwrap();
+    Ok(())
+}
+
+#[tokio::test]
+async fn initial_state_requires_the_exact_retained_custody_binding() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    for missing in [false, true] {
+        let stores = initialize_pair_fixture(NodeStore::create_new(
+            directory.path().join(format!("binding-{missing}.redb")),
+            crate::test_utils::NODE_STORE_ID,
+            ScratchDisk::fixture(),
+        )?)
+        .await?;
+        let damage = if missing {
+            WriteOp::delete(BINDING_NS, BINDING_KEY)
+        } else {
+            WriteOp::put(BINDING_NS, BINDING_KEY, b"unrelated")
+        };
+        stores.custody().store().write_batch(&[damage])?;
+        let before = stores.custody().store().get(BINDING_NS, BINDING_KEY)?;
+        assert!(
+            stores
+                .initialize_state(
+                    &[WriteOp::put("genesis", b"head", b"new")],
+                    &[WriteOp::put("genesis", b"head", b"new")],
+                )
+                .is_err()
+        );
+        assert_eq!(
+            stores.custody().store().get(BINDING_NS, BINDING_KEY)?,
+            before
+        );
+        assert!(stores.application().get("genesis", b"head")?.is_none());
+        stores.shutdown().await.unwrap();
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn initial_state_rejects_delete_only_publications_without_consuming_initialization()
+-> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let stores = initialize_pair_fixture(NodeStore::create_new(
+        directory.path().join("empty-initialization.redb"),
+        crate::test_utils::NODE_STORE_ID,
+        ScratchDisk::fixture(),
+    )?)
+    .await?;
+    let put = [WriteOp::put("genesis", b"head", b"initial")];
+    let delete = [WriteOp::delete("genesis", b"head")];
+    for (app, custody) in [(&delete, &delete), (&delete, &put), (&put, &delete)] {
+        assert!(stores.initialize_state(app, custody).is_err());
+        assert!(stores.application().get("genesis", b"head")?.is_none());
+        assert!(stores.custody().store().get("genesis", b"head")?.is_none());
+    }
+    stores.initialize_state(&put, &put)?;
+    assert_eq!(
+        stores.application().get("genesis", b"head")?.unwrap(),
+        b"initial"
+    );
+    assert_eq!(
+        stores.custody().store().get("genesis", b"head")?.unwrap(),
+        b"initial"
+    );
+    stores.shutdown().await.unwrap();
     Ok(())
 }

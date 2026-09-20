@@ -48,7 +48,7 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
             .flat_map(|tenant| [&mut tenant.keys, &mut tenant.custody_keys]),
     ) {
         let transit = transit.transit_mut().unwrap();
-            transit.endpoint = endpoint.clone();
+        transit.endpoint = endpoint.clone();
         transit.ca_certificate = Some(files.certificate.clone());
     }
     let context = RequestContext {
@@ -58,6 +58,7 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
         scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
         request_id: "custody-native-restart".into(),
     };
+    create_fixture_node(&config).await;
     let mut runtime = NodeRuntime::open_using(config.clone(), |_| {
         Ok(Zeroizing::new("test-runtime-token".into()))
     })
@@ -132,7 +133,12 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
         .clone();
     old_key.revoke();
     let probes = old_key.probe_count();
-    let forbidden_credential = config.tenants[0].keys.transit_mut().unwrap().token_file.clone();
+    let forbidden_credential = config.tenants[0]
+        .keys
+        .transit_mut()
+        .unwrap()
+        .token_file
+        .clone();
     let mut runtime = NodeRuntime::open_using(config, move |name| {
         anyhow::ensure!(
             name != forbidden_credential,

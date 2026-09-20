@@ -15,7 +15,7 @@ rereads the exact abort ciphertext before enumeration or deletion and checks the
 capability while working. A corrupted, missing, pending, completed, or uncertain
 outcome grants no cleanup authority.
 
-Cleanup enumerates at most 256 object identities, deletes that page, and starts
+Cleanup enumerates at most 256 file or S3 version identities, deletes that page, and starts
 again at the namespace head on a later call. It does not promise a permanent empty
 namespace: uploads admitted before abort can arrive after a pass. Repeated cleanup
 catches them while retaining both permanent control records. No accumulated
@@ -28,10 +28,37 @@ same reclaimable object subtree. Metadata publication links the complete file
 outside that subtree before removing the temporary link. Cleanup cannot follow a
 substituted directory symlink or accept a caller-supplied path.
 
-S3 uses conditional single-object PUTs, signed ListObjectsV2 head pages, strict
-bounded XML parsing, and per-object DELETE restricted to generated session keys.
+S3 uses conditional single-object PUTs and signed `ListObjectVersions` head pages.
+Cleanup includes current and noncurrent data versions and delete markers, including
+literal `null` version IDs. Every DELETE names the exact listed `versionId` and a
+key reconstructed beneath the verified aborted session's `objects/` namespace.
+Service-provided version order is preserved. A newer upload at the same key is
+left for a later pass; deleting a listed version never issues a simple DELETE that
+would create another marker. `deleted_objects` counts version and marker selectors
+on S3, and files on filesystem destinations.
+
+Each page contains at most the requested number of selectors (maximum 256).
+Version IDs are bounded to 1,024 UTF-8 bytes, individual XML version records to
+16 KiB, and the response to 64 KiB plus 16 KiB per requested selector. Malformed,
+duplicate, out-of-scope, grouped, or oversized responses fail before deletion,
+even when the service returns HTTP 200. Each entire deletion page is validated
+before its first mutation. The installed service must support `ListObjectVersions`
+and exact version deletion; directory buckets are unsupported and there is no
+current-object enumeration or unversioned deletion fallback. See the AWS
+[ListObjectVersions contract](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectVersions.html)
+and [version deletion semantics](https://docs.aws.amazon.com/AmazonS3/latest/userguide/DeletingObjectVersions.html).
+
 The credentials for every request are freshly read as one atomic bundle. A failed
 publication may already exist and must be resolved by authenticated readback.
+The [sample S3 policy](../deploy/s3-backup-policy.json) grants `s3:GetObject` and
+`s3:PutObject` within the configured prefix, `s3:ListBucket` for missing-object
+readback, `s3:ListBucketVersions` for session object prefixes, and
+`s3:DeleteObjectVersion` only for session object keys. Replace its example bucket
+and prefix with the installed destination. Version-specific deletion permission
+is required even for a `null` version. The application additionally requires the
+verified immutable abort before using this deletion authority; IAM cannot identify
+an aborted session from its object path. Completed sessions, control records,
+audit archives, and tombstones remain outside application cleanup authority.
 
 The source storage purpose and wrapping-key catalog remain exact historical
 identities, including the original HA replica. They are separate from the current
@@ -117,7 +144,10 @@ It counts and hashes chunks directly without staging another full resident image
 The readback has a fixed 64 MiB workspace reservation. A receipt cannot be supplied
 over an API or reconstructed from a completed outcome. Verification of older or
 uncertain sessions independently validates canonical records through an encrypted
-point index and checked scratch counters, with a fixed 128 MiB workspace estimate.
+point index and checked scratch counters. RAM admission retains a 128 MiB
+index/cache floor plus structurally measured peak record work, with fixed-buffer
+inspection before DTO allocation. Aggregate permanent point bytes stay on the
+shared encrypted scratch-disk governor.
 It never materializes another logical tenant or query index. Each record remains
 bounded, and all cross-record identity/accounting checks run before any dependency
 is trusted. Target restore separately reserves its actual materialization and

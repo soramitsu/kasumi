@@ -1,0 +1,119 @@
+{
+  "source": "/tmp/kasumi-first-release-be04883-check",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "be04883f9c0c6ba999e0201c3a5fef4e331475bb",
+  "expected_tree": "6e058fcecb378b00551abc92422c181c95cca8f4",
+  "output": "/tmp/kasumi-be04883-first-release-check",
+  "scope": "Combined first-release compiler, formatting, full store library and strict store check after frozen7a21995 actual126PASS/1FAIL/2ignored. Includes canonical administration524d752/8f081a0, coordinator fixturef7fa592, explicit pair/local-target creation0243bc5, ordinary catalog-error acknowledgement3f09eac, authority request drain635e330, strict local Control publicationd71995a, standalone operator7234f9a and explicit singleton/fixture8c59935. Exact integrated commit is authoritative for source inclusion. Original900s workspace,300s fmt,900s full-store,600s strict-store deadlines unchanged. All prior32 required tests remain required with canonical obsolete administrative_generation assertions removed by their prior API deletion, plus all12 added singleton/pair acknowledgement tests. Stop at first failure, preserve all raw outcomes/source/runner/process provenance. Does not include pending configured-tenant enrollment, typed leaf drain outcomes, OpenRaft patch, explicit HA Control genesis, persistent native reservation prototype, or foreign ordered_seek work. Store tests do not qualify full server runtime, final workspace/production/Linux/native/capacity/endurance acceptance.",
+  "gates": [
+    {
+      "name": "workspace-all-targets-check",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "check",
+        "--locked",
+        "--offline",
+        "--keep-going",
+        "-j1",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics"
+      ],
+      "required_tests": []
+    },
+    {
+      "name": "workspace-format",
+      "timeout_seconds": 300,
+      "cargo_args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "required_tests": []
+    },
+    {
+      "name": "complete-store-library",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-store",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "node_file::tests::unrelated_clean_and_unclean_redb_rejection_is_byte_exact",
+        "node_file::tests::recognized_store_recovers_after_actual_process_exit_without_close",
+        "node_file::tests::partial_envelopes_are_never_adopted_or_reinitialized",
+        "node_file::tests::existing_header_requires_exact_canonical_fields_and_checksum",
+        "node_file::tests::initialization_requires_exact_journal_owned_empty_inode",
+        "node_file::tests::offset_io_preserves_header_and_retained_backend_cannot_outlive_close",
+        "node_file::tests::canonical_header_rejects_nil_identity_without_creating_a_file",
+        "node_file::tests::validated_descriptor_handoff_never_reopens_a_substituted_path",
+        "node_file::tests::cleanup_custody_accepts_only_exact_recognized_headers_and_holds_the_inode_lock",
+        "node_store_ids::tests::immutable_identity_derivations_are_stable_and_domain_separated",
+        "storage_domains::existing_tests::missing_catalogs_and_authenticated_binding_never_provision_during_reopen",
+        "storage_domains::existing_tests::existing_catalog_admission_cannot_provision_after_waiting_for_the_open_gate",
+        "storage_domains::existing_tests::corrupt_or_authenticated_wrong_binding_is_never_repaired_by_reopen",
+        "storage_domains::existing_tests::exact_standalone_binding_reopens_after_both_domains_close_and_drain",
+        "node_file::tests::reads_enforce_payload_bounds_even_for_empty_buffers",
+        "node_file::tests::resize_drains_a_write_after_its_extent_check_before_truncating",
+        "storage_domains::tests::initial_state_rejects_unknown_records_in_either_complete_domain",
+        "storage_domains::tests::initial_state_checks_and_joint_publication_have_one_concurrent_winner",
+        "storage_domains::tests::initial_state_requires_the_exact_retained_custody_binding",
+        "storage_domains::tests::initial_state_rejects_delete_only_publications_without_consuming_initialization",
+        "storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits",
+        "storage_domains::catalog_initialization::tests::buffered_unclaimed_ticket_drains_only_unpublished_new_owners",
+        "storage_domains::catalog_initialization::tests::committed_pair_handoff_preserves_a_concurrent_borrower_through_initializer_drain",
+        "storage_domains::catalog_initialization::tests::fresh_pair_rejects_shared_partial_and_orphan_domains_without_mutation",
+        "storage_domains::catalog_initialization::tests::cancelled_receiver_keeps_preparation_registered_until_actual_provider_work_drains",
+        "storage_domains::existing_catalogs::tests::application_failure_drains_new_custody_without_changing_existing_bytes",
+        "storage_domains::existing_catalogs::tests::application_failure_preserves_borrowed_custody_and_original_deadline",
+        "storage_domains::existing_catalogs::tests::caller_cancellation_drains_only_new_domains_after_active_provider_work",
+        "storage_domains::existing_catalogs::tests::caller_cancellation_never_closes_a_borrowed_custody_owner",
+        "storage_domains::existing_catalogs::tests::buffered_existing_pair_ticket_publishes_nothing_and_drains_its_new_workers",
+        "storage_domains::existing_catalogs::tests::missing_binding_rejects_new_custody_and_leaves_every_existing_byte_unchanged",
+        "storage_domains::existing_catalogs::tests::unclaimed_borrowed_pair_and_changed_binding_never_close_its_cached_owners",
+        "single_catalog::tests::production_singletons_reject_paired_capabilities_before_provider_or_catalog_effects",
+        "single_catalog::tests::strict_singleton_creation_rejects_orphan_partial_and_existing_catalogs_without_mutation",
+        "single_catalog::tests::existing_singleton_requires_installed_catalog_and_never_repairs_cached_substitution",
+        "single_catalog::tests::buffered_singleton_success_publishes_only_on_claim_and_abandonment_preserves_borrowers",
+        "single_catalog::tests::borrowed_singleton_keeps_original_provider_clock_and_deadline",
+        "single_catalog::tests::buffered_singleton_preparation_errors_require_actual_claim_and_preserve_partial_installation",
+        "single_catalog::tests::cancelled_singleton_drain_retains_buffered_preparation_error",
+        "single_catalog::tests::cancelling_during_singleton_key_preparation_retains_actual_node_until_provider_drains",
+        "storage_domains::catalog_initialization::tests::buffered_preparation_error_requires_claim_before_registry_forgets_it",
+        "storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_unclaimed_preparation_error",
+        "storage_domains::catalog_initialization::tests::admission_reaper_reports_unclaimed_preparation_failure_before_new_work",
+        "storage_domains::existing_catalogs::tests::buffered_existing_preparation_failure_requires_claim_and_preserves_borrowed_owners"
+      ]
+    },
+    {
+      "name": "strict-store",
+      "timeout_seconds": 600,
+      "cargo_args": [
+        "clippy",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-store",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "required_tests": []
+    }
+  ]
+}

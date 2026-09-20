@@ -17,7 +17,7 @@ impl StoreBuilder<TypeConfig, LogStore, StateMachine, TempDir> for Builder {
     async fn build(&self) -> Result<(TempDir, LogStore, StateMachine), StorageError<u64>> {
         async {
             let dir = tempfile::tempdir()?;
-            let store = common::store(&dir.path().join("node.redb")).await?;
+            let store = common::store(&dir.path().join("node.redb"), true).await?;
             let log = LogStore::open(store.clone(), 1).await?;
             let machine = StateMachine::open(store, Arc::new(common::Backend::default())).await?;
             anyhow::Ok((dir, log, machine))
@@ -45,14 +45,14 @@ async fn log_vote_and_committed_cursor_survive_full_reopen() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("node.redb");
     {
-        let store = common::store(&path).await?;
+        let store = common::store(&path, true).await?;
         let mut log = LogStore::open(store, 1).await?;
         log.save_vote(&Vote::new_committed(3, 1)).await?;
         log.blocking_append([entry(0, b"a"), entry(1, b"b"), entry(2, b"uncommitted")])
             .await?;
         log.save_committed(Some(entry(1, b"").log_id)).await?;
     }
-    let store = common::store(&path).await?;
+    let store = common::store(&path, false).await?;
     let mut log = LogStore::open(store, 1).await?;
     assert_eq!(log.read_vote().await?, Some(Vote::new_committed(3, 1)));
     assert_eq!(log.read_committed().await?, Some(entry(1, b"").log_id));
@@ -71,7 +71,7 @@ async fn snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable() -
     let path = dir.path().join("node.redb");
     let snapshot_meta;
     {
-        let store = common::store(&path).await?;
+        let store = common::store(&path, true).await?;
         let backend = Arc::new(common::Backend::default());
         let mut machine = StateMachine::open(store, backend.clone()).await?;
         machine.apply([entry(0, b"before")]).await?;
@@ -88,7 +88,7 @@ async fn snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable() -
         assert!(machine.apply([entry(2, b"must-not-apply")]).await.is_err());
         assert_eq!(backend.values(), vec![b"before".to_vec()]);
     }
-    let store = common::store(&path).await?;
+    let store = common::store(&path, false).await?;
     let backend = Arc::new(common::Backend::default());
     let mut machine = StateMachine::open(store, backend.clone()).await?;
     assert!(!machine.failed());
@@ -127,19 +127,37 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> R
         test_utils::{FaultBackend, LocalKeyProvider, ManualClock},
     };
     use openraft::storage::StorageHelper;
-    async fn open(disk: FaultBackend) -> Result<Arc<kasumi_store::TenantStorageSet>> {
-        let application = TenantStore::open_fixture_with_clock(
-            NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?,
-            "log-crash".into(),
-            Arc::new(LocalKeyProvider::new([4; 32])),
-            Arc::new(ManualClock::new()),
-        )
-        .await?;
-        kasumi_store::test_utils::with_custody(
-            application,
-            Arc::new(LocalKeyProvider::new([241; 32])),
-        )
-        .await
+    async fn open(disk: FaultBackend, create: bool) -> Result<Arc<kasumi_store::TenantStorageSet>> {
+        let application = (if create {
+            TenantStore::initialize_catalog_fixture_with_clock(
+                NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?,
+                "log-crash".into(),
+                Arc::new(LocalKeyProvider::new([4; 32])),
+                Arc::new(ManualClock::new()),
+            )
+            .await
+        } else {
+            TenantStore::open_existing_fixture_with_clock(
+                NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?,
+                "log-crash".into(),
+                Arc::new(LocalKeyProvider::new([4; 32])),
+                Arc::new(ManualClock::new()),
+            )
+            .await
+        })?;
+        if create {
+            kasumi_store::test_utils::initialize_custody_fixture(
+                application,
+                Arc::new(LocalKeyProvider::new([241; 32])),
+            )
+            .await
+        } else {
+            kasumi_store::test_utils::open_existing_custody_fixture(
+                application,
+                Arc::new(LocalKeyProvider::new([241; 32])),
+            )
+            .await
+        }
     }
     async fn append_commit(log: &mut LogStore) -> Result<()> {
         log.blocking_append([entry(1, b"new-a"), entry(2, b"new-b")])
@@ -148,24 +166,24 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> R
         Ok(())
     }
     let seed = FaultBackend::new();
-    let mut initial = LogStore::open(open(seed.clone()).await?, 1).await?;
+    let mut initial = LogStore::open(open(seed.clone(), true).await?, 1).await?;
     initial.save_vote(&Vote::new_committed(3, 1)).await?;
     initial
         .blocking_append([entry(0, b"already-acknowledged")])
         .await?;
     initial.save_committed(Some(entry(0, b"").log_id)).await?;
     let baseline = seed.crash();
-    let mut log = LogStore::open(open(baseline.clone()).await?, 1).await?;
+    let mut log = LogStore::open(open(baseline.clone(), false).await?, 1).await?;
     let start = baseline.operations();
     append_commit(&mut log).await?;
     let operations = baseline.operations() - start;
     assert!(operations > 4);
     for failure in 0..=operations {
         let disk = seed.crash();
-        let mut log = LogStore::open(open(disk.clone()).await?, 1).await?;
+        let mut log = LogStore::open(open(disk.clone(), false).await?, 1).await?;
         disk.fail_after(failure);
         let acknowledged = append_commit(&mut log).await.is_ok();
-        let store = open(disk.crash()).await?;
+        let store = open(disk.crash(), false).await?;
         let backend = Arc::new(common::Backend::default());
         let mut log = LogStore::open(store.clone(), 1).await?;
         let mut machine = StateMachine::open(store, backend.clone()).await?;

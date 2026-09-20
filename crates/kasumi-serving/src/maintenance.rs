@@ -81,27 +81,20 @@ pub struct AuthorityMembership {
     pub members: BTreeMap<u64, AuthorityMember>,
 }
 impl AuthorityMembership {
-    pub fn validate(&self) -> Result<()> {
+    /// Validate an approved operational transport pool independently of either
+    /// original genesis or current voting rights. This grants no membership.
+    pub fn validate_installed_members(members: &BTreeMap<u64, AuthorityMember>) -> Result<()> {
         ensure!(
-            (3..=64).contains(&self.members.len()) && !self.members.contains_key(&0),
+            (3..=64).contains(&members.len()) && !members.contains_key(&0),
             "authority requires three to 64 installed live members"
         );
-        ensure!(
-            self.voters.len() == 3 && self.voters.iter().all(|id| self.members.contains_key(id)),
-            "authority membership requires exactly three installed voters"
-        );
-        let mut domains = BTreeSet::new();
         let mut origins = BTreeSet::new();
         let mut pins = BTreeSet::new();
-        for (id, member) in &self.members {
+        for (id, member) in members {
             member.validate()?;
             ensure!(
                 member.verifier.node_id == *id,
                 "authority physical verifier node differs"
-            );
-            ensure!(
-                !self.voters.contains(id) || domains.insert(&member.failure_domain),
-                "authority voters require independent failure domains"
             );
             ensure!(
                 origins.insert(url::Url::parse(&member.endpoint)?.to_string()),
@@ -110,6 +103,21 @@ impl AuthorityMembership {
             ensure!(
                 member.certificate_pins.iter().all(|pin| pins.insert(pin)),
                 "authority certificate cannot identify multiple members"
+            );
+        }
+        Ok(())
+    }
+    pub fn validate(&self) -> Result<()> {
+        Self::validate_installed_members(&self.members)?;
+        ensure!(
+            self.voters.len() == 3 && self.voters.iter().all(|id| self.members.contains_key(id)),
+            "authority membership requires exactly three installed voters"
+        );
+        let mut domains = BTreeSet::new();
+        for id in &self.voters {
+            ensure!(
+                domains.insert(&self.members[id].failure_domain),
+                "authority voters require independent failure domains"
             );
         }
         Ok(())

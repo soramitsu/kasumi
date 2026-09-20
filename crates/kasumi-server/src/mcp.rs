@@ -5,12 +5,14 @@ use crate::{
 };
 use axum::{
     Json, Router,
+    body::{Body, to_bytes},
     extract::{Request, State},
     http::{HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
+use hyper::body::Body as _;
 use kasumi_types::{
     Action, Error, ErrorCode, MutationBatch, QueryRequest, RequestContext, validate_name,
 };
@@ -24,15 +26,22 @@ use rmcp::{
     },
     service::RequestContext as McpRequestContext,
     transport::streamable_http_server::{
-        StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
+        StreamableHttpServerConfig, StreamableHttpService, TerminalTransportFailure,
     },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     borrow::Cow,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
+
+#[cfg(test)]
+#[path = "mcp_credential_tests.rs"]
+mod credential_tests;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -103,7 +112,56 @@ fn normalized_origin(text: &str) -> anyhow::Result<String> {
 }
 
 #[derive(Clone)]
-struct Verified(RequestContext);
+struct Verified {
+    context: RequestContext,
+    mutation_dispatched: Arc<AtomicBool>,
+    response_fence: Arc<Mutex<Option<kasumi_engine::ResponseFence<'static>>>>,
+}
+impl Verified {
+    fn new(context: RequestContext) -> Self {
+        Self {
+            context,
+            mutation_dispatched: Arc::new(AtomicBool::new(false)),
+            response_fence: Arc::new(Mutex::new(None)),
+        }
+    }
+    fn release_error(&self, error: Error) -> Error {
+        if self.mutation_dispatched.load(Ordering::Acquire) {
+            Error::new(
+                ErrorCode::UnknownOutcome,
+                "MCP mutation response was withheld; resolve or retry the same idempotency key",
+            )
+        } else {
+            error
+        }
+    }
+    fn retain_response_fence(
+        &self,
+        fence: kasumi_engine::ResponseFence<'static>,
+    ) -> kasumi_types::Result<()> {
+        let mut retained = self
+            .response_fence
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "MCP request ownership unavailable"))?;
+        if retained.is_some() {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "MCP request already owns a response",
+            ));
+        }
+        *retained = Some(fence);
+        Ok(())
+    }
+    fn take_response_fence(
+        &self,
+    ) -> kasumi_types::Result<Option<kasumi_engine::ResponseFence<'static>>> {
+        let mut retained = self
+            .response_fence
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "MCP request ownership unavailable"))?;
+        Ok(retained.take())
+    }
+}
 #[derive(Clone)]
 struct HttpAuth {
     auth: Arc<Authenticator>,
@@ -140,8 +198,31 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
     let context = state.auth.authenticate(authorization).await;
     match context {
         Ok(context) => {
-            request.extensions_mut().insert(Verified(context.clone()));
+            let invocation = Verified::new(context.clone());
+            request.extensions_mut().insert(invocation.clone());
+            #[cfg(test)]
+            let gate = request
+                .extensions()
+                .get::<Arc<credential_tests::ReleaseGate>>()
+                .cloned();
             let response = next.run(request).await;
+            let fence = match invocation.take_response_fence() {
+                Ok(fence) => fence,
+                Err(error) => return rejected(&state, invocation.release_error(error)),
+            };
+            if response
+                .extensions()
+                .get::<TerminalTransportFailure>()
+                .is_some()
+            {
+                return rejected(
+                    &state,
+                    invocation.release_error(Error::new(
+                        ErrorCode::Unavailable,
+                        "MCP terminal transport withheld the response",
+                    )),
+                );
+            }
             if response.status() == StatusCode::FORBIDDEN {
                 let _ = state
                     .auth
@@ -151,27 +232,103 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
                     )
                     .await;
             }
-            response
-        }
-        Err(error) => {
-            let code = if matches!(
-                error.code,
-                ErrorCode::Unavailable | ErrorCode::AuditUnavailable
-            ) {
-                StatusCode::SERVICE_UNAVAILABLE
-            } else {
-                StatusCode::UNAUTHORIZED
+            // The SDK body may suspend even with an exact size hint. Own every
+            // byte before the final fence, retaining the handler's original
+            // policy epoch and admitted workspace across SDK serialization.
+            let response = match materialize_response(response).await {
+                Ok(response) => response,
+                Err(error) => return rejected(&state, invocation.release_error(error)),
             };
-            let mut response = (code, Json(json!({"error":error.code}))).into_response();
-            response
-                .headers_mut()
-                .insert("www-authenticate", state.challenge.clone());
-            response
-                .headers_mut()
-                .insert("cache-control", HeaderValue::from_static("no-store"));
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                gate.wait().await;
+            }
+            // Discovery and protocol errors have no database fence, but still
+            // reuse the original credential deadline and live family guard.
+            let release = match &fence {
+                Some(fence) => fence.check(),
+                None => context.authorization.check_live(),
+            };
+            let release = state.auth.audit_result(&context, release).await;
+            if let Err(error) = release {
+                return rejected(&state, invocation.release_error(error));
+            }
             response
         }
+        Err(error) => rejected(&state, error),
     }
+}
+
+async fn materialize_response(response: Response) -> kasumi_types::Result<Response> {
+    // rmcp may fall back to SSE after an intermediate handler message. No
+    // streaming response is supported, including one with a declared length.
+    let streaming = response
+        .headers()
+        .get_all("content-type")
+        .iter()
+        .any(|value| {
+            value.to_str().map_or(true, |value| {
+                value.split(';').next().is_some_and(|media_type| {
+                    media_type.trim().eq_ignore_ascii_case("text/event-stream")
+                })
+            })
+        });
+    let length = response.body().size_hint().exact();
+    if streaming || length.is_none() {
+        return Err(Error::new(
+            ErrorCode::Unavailable,
+            "MCP requires a terminal response before release",
+        ));
+    }
+    if length.is_some_and(|length| length > MAX_RESPONSE_BYTES as u64) {
+        return Err(Error::new(
+            ErrorCode::ResourceExhausted,
+            "MCP response exceeds byte limit",
+        ));
+    }
+    let (parts, body) = response.into_parts();
+    let bytes = to_bytes(body, MAX_RESPONSE_BYTES).await.map_err(|error| {
+        use std::error::Error as _;
+        let exceeded = error
+            .source()
+            .is_some_and(|source| source.is::<http_body_util::LengthLimitError>());
+        Error::new(
+            if exceeded {
+                ErrorCode::ResourceExhausted
+            } else {
+                ErrorCode::Unavailable
+            },
+            "MCP terminal response could not be materialized",
+        )
+    })?;
+    if length != Some(bytes.len() as u64) {
+        return Err(Error::new(
+            ErrorCode::Unavailable,
+            "MCP terminal response length changed during materialization",
+        ));
+    }
+    Ok(Response::from_parts(parts, Body::from(bytes)))
+}
+
+fn rejected(state: &HttpAuth, error: Error) -> Response {
+    let code = match error.code {
+        ErrorCode::Unavailable
+        | ErrorCode::AuditUnavailable
+        | ErrorCode::UnknownOutcome
+        | ErrorCode::ResourceExhausted
+        | ErrorCode::Sealed => StatusCode::SERVICE_UNAVAILABLE,
+        ErrorCode::Conflict => StatusCode::CONFLICT,
+        ErrorCode::Forbidden => StatusCode::FORBIDDEN,
+        _ => StatusCode::UNAUTHORIZED,
+    };
+    let mut response = (code, Json(json!({"error":error.code}))).into_response();
+    response
+        .headers_mut()
+        .insert("www-authenticate", state.challenge.clone());
+    response
+        .headers_mut()
+        .insert("cache-control", HeaderValue::from_static("no-store"));
+    response
 }
 
 /// Returns routes only. The runtime must serve this router through TLS 1.3.
@@ -204,16 +361,15 @@ pub fn router(
         .with_allowed_origins(state.origins.clone())
         .with_max_request_body_bytes(MAX_REQUEST_BYTES);
     let handler_auth = state.auth.clone();
-    let service = StreamableHttpService::new(
+    let service = StreamableHttpService::new_terminal_stateless(
         move || {
             Ok(KasumiMcp {
                 registry: registry.clone(),
                 auth: handler_auth.clone(),
             })
         },
-        Arc::new(NeverSessionManager::default()),
         sdk_config,
-    );
+    )?;
     let protected = Router::new()
         .route_service("/mcp", service)
         .route_layer(middleware::from_fn_with_state(state, authenticate));
@@ -235,12 +391,12 @@ struct KasumiMcp {
     auth: Arc<Authenticator>,
 }
 
-fn verified(context: &McpRequestContext<RoleServer>) -> Result<RequestContext, ErrorData> {
+fn verified(context: &McpRequestContext<RoleServer>) -> Result<Verified, ErrorData> {
     context
         .extensions
         .get::<axum::http::request::Parts>()
         .and_then(|parts| parts.extensions.get::<Verified>())
-        .map(|verified| verified.0.clone())
+        .cloned()
         .ok_or_else(|| ErrorData::internal_error("verified request identity unavailable", None))
 }
 
@@ -328,9 +484,10 @@ impl KasumiMcp {
         &self,
         db: &kasumi_engine::Database,
         name: &str,
-        context: RequestContext,
+        invocation: &Verified,
         args: Value,
     ) -> kasumi_types::Result<Value> {
+        let context = invocation.context.clone();
         match name {
             "kasumi_collections" => {
                 let _: EmptyArguments = arguments(args)?;
@@ -348,7 +505,11 @@ impl KasumiMcp {
             }
             "kasumi_mutate" => {
                 let args: MutationBatch = arguments(args)?;
+                invocation
+                    .mutation_dispatched
+                    .store(true, Ordering::Release);
                 output(&db.mutate(context, args).await?)
+                    .map_err(|error| invocation.release_error(error))
             }
             "kasumi_receipt" => {
                 let args: ReceiptArguments = arguments(args)?;
@@ -390,7 +551,7 @@ impl ServerHandler for KasumiMcp {
         request: Option<PaginatedRequestParams>,
         context: McpRequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let context = verified(&context)?;
+        let context = verified(&context)?.context;
         if request.is_some_and(|request| request.cursor.is_some()) {
             return Err(ErrorData::invalid_params(
                 "tool catalog has no pagination cursor",
@@ -425,7 +586,8 @@ impl ServerHandler for KasumiMcp {
             return Err(ErrorData::invalid_params("unknown tool", None));
         }
         let response_id = context.id.clone();
-        let identity = verified(&context)?;
+        let invocation = verified(&context)?;
+        let identity = invocation.context.clone();
         let args = Value::Object(request.arguments.unwrap_or_default());
         let result = async {
             let db = self
@@ -434,24 +596,16 @@ impl ServerHandler for KasumiMcp {
                 .await?;
             let fence = self
                 .auth
-                .audit_result(&identity, db.response_fence(&identity))
+                .audit_result(&identity, db.owned_response_fence(&identity))
                 .await?;
+            invocation.retain_response_fence(fence)?;
             // Argument validation/encoding produce protocol or resource errors.
             // Request denials from the Database itself are already durable.
-            let value = self
-                .execute(&db, &request.name, identity.clone(), args)
-                .await?;
+            let value = self.execute(&db, &request.name, &invocation, args).await?;
             // Current MCP supports structured output directly. A text copy
             // would escape large JSON again and can triple its wire size.
-            let response = bounded_tool_result(value, false, &response_id)?;
-            crate::api::release_response(
-                &self.auth,
-                &identity,
-                fence,
-                response,
-                request.name == "kasumi_mutate",
-            )
-            .await
+            bounded_tool_result(value, false, &response_id)
+                .map_err(|error| invocation.release_error(error))
         }
         .await;
         // Preserve coverage for any adapter-originated execution rejection;

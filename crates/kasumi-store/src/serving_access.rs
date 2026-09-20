@@ -177,8 +177,12 @@ impl StorageAccess {
                     phase,
                     kasumi_types::LifecyclePhase::Activate
                         | kasumi_types::LifecyclePhase::InspectTarget
+                        | kasumi_types::LifecyclePhase::InspectCompletionAttempt
+                        | kasumi_types::LifecyclePhase::InspectCompletionResolution
+                        | kasumi_types::LifecyclePhase::ResolveComplete
+                        | kasumi_types::LifecyclePhase::MaintainTarget
                 ),
-            "active target requires activation or metadata inspection capability"
+            "active target requires an exact installed target phase"
         );
         ensure!(
             phase != kasumi_types::LifecyclePhase::StopLocal,
@@ -311,8 +315,12 @@ impl StorageAccess {
         self.check()?;
         if let Some(gate) = &self.lifecycle {
             ensure!(
-                gate.current()?.commitment().intent.request.phase
-                    != kasumi_types::LifecyclePhase::InspectTarget,
+                !matches!(
+                    gate.current()?.commitment().intent.request.phase,
+                    kasumi_types::LifecyclePhase::InspectTarget
+                        | kasumi_types::LifecyclePhase::InspectCompletionAttempt
+                        | kasumi_types::LifecyclePhase::InspectCompletionResolution
+                ),
                 "target inspection cannot admit consensus mutations"
             );
         }

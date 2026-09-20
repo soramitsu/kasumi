@@ -19,6 +19,31 @@ use tokio::{net::TcpListener, sync::watch};
 
 #[derive(Default)]
 struct Backend(Mutex<BTreeMap<u64, Vec<u8>>>);
+
+struct PreparedRestore<'a> {
+    current: std::sync::MutexGuard<'a, BTreeMap<u64, Vec<u8>>>,
+    restored: BTreeMap<u64, Vec<u8>>,
+}
+impl kasumi_raft::PreparedStateMachineRestore for PreparedRestore<'_> {
+    fn retirement(&self) -> Option<kasumi_raft::RetiredSnapshotState> {
+        None
+    }
+    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+        vec![]
+    }
+    fn application_writes(&self) -> &[kasumi_store::WriteOp] {
+        &[]
+    }
+    fn publish(self: Box<Self>) -> Result<()> {
+        let Self {
+            mut current,
+            restored,
+        } = *self;
+        *current = restored;
+        Ok(())
+    }
+}
+
 impl StateMachineBackend for Backend {
     fn close_application(&self) {
         self.0.lock().unwrap().clear();
@@ -46,9 +71,14 @@ impl StateMachineBackend for Backend {
         serde_json::from_reader::<_, BTreeMap<u64, Vec<u8>>>(bytes)?;
         Ok(None)
     }
-    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
-        *self.0.lock().unwrap() = serde_json::from_reader(bytes)?;
-        Ok(())
+    fn prepare_restore<'a>(
+        &'a self,
+        _context: &kasumi_raft::SnapshotRestoreContext,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
+        let current = self.0.lock().unwrap();
+        let restored = serde_json::from_reader(bytes)?;
+        Ok(Box::new(PreparedRestore { current, restored }))
     }
 }
 
@@ -57,8 +87,12 @@ fn vote(source: u64) -> serde_json::Value {
 }
 
 async fn store(path: &std::path::Path) -> Result<Arc<TenantStore>> {
-    TenantStore::open_fixture(
-        NodeStore::open(path, kasumi_store::ScratchDisk::fixture())?,
+    TenantStore::initialize_catalog_fixture(
+        NodeStore::create_new(
+            path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )?,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([13; 32])),
     )
@@ -109,7 +143,7 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
         let group = RaftGroup::open(
             id,
             "tenant-a".into(),
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::initialize_custody_fixture(
                 store(&dir.path().join(format!("node-{id}.redb"))).await?,
                 Arc::new(LocalKeyProvider::new([241; 32])),
             )
@@ -242,7 +276,7 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
     let group = RaftGroup::open(
         1,
         "tenant-a".into(),
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store(&dir.path().join("node.redb")).await?,
             Arc::new(LocalKeyProvider::new([241; 32])),
         )

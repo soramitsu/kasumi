@@ -248,11 +248,16 @@ mod tests {
         let provider = Arc::new(
             FileKeyProvider::initialize(&private.join("key.json"), "application").unwrap(),
         );
-        let node = NodeStore::open(root.path().join("db"), crate::ScratchDisk::fixture()).unwrap();
+        let node = NodeStore::create_new(
+            root.path().join("db"),
+            crate::test_utils::NODE_STORE_ID,
+            crate::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let installation = Uuid::new_v4();
         let incarnation = Uuid::new_v4();
         let access = StorageAccess::standalone(installation, "tenant", incarnation).unwrap();
-        let store = TenantStore::open(
+        let store = TenantStore::initialize_catalog_fixture_with_access(
             node.clone(),
             "tenant".into(),
             provider.clone(),
@@ -264,7 +269,7 @@ mod tests {
             .write_batch(&[WriteOp::put("docs", b"a", b"private")])
             .unwrap();
         assert!(
-            TenantStore::open(
+            TenantStore::open_existing_fixture_with_access(
                 node.clone(),
                 "tenant".into(),
                 provider.clone(),
@@ -274,7 +279,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            TenantStore::open(
+            TenantStore::open_existing_fixture_with_access(
                 node.clone(),
                 "tenant".into(),
                 provider.clone(),
@@ -284,9 +289,14 @@ mod tests {
             .is_err()
         );
         drop(store);
-        let reopened = TenantStore::open(node.clone(), "tenant".into(), provider.clone(), access)
-            .await
-            .unwrap();
+        let reopened = TenantStore::open_existing_fixture_with_access(
+            node.clone(),
+            "tenant".into(),
+            provider.clone(),
+            access,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             reopened.get("docs", b"a").unwrap(),
             Some(b"private".to_vec())

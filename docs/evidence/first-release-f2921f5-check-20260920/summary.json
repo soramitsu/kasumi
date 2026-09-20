@@ -1,0 +1,331 @@
+{
+  "status": "failed",
+  "source": "f2921f5f0e69ed354deae2a744b4ca248c27bac9",
+  "tree": "d2fd5ddc5082be4522e11a96b2098034f076281b",
+  "source_unchanged": true,
+  "gate_status_counts": {
+    "passed": 16,
+    "failed": 1,
+    "not_run": 21
+  },
+  "all_dispatched_process_groups_drained": true,
+  "completed_gates": [
+    {
+      "name": "workspace-all-targets-check",
+      "status": "passed",
+      "duration_seconds": 146.001,
+      "process_exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "name": "workspace-format",
+      "status": "passed",
+      "duration_seconds": 1.665,
+      "process_exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "name": "rmcp-terminal-ownership",
+      "status": "passed",
+      "duration_seconds": 79.016,
+      "process_exit_code": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "9",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "rmcp-upstream-protocol",
+      "status": "passed",
+      "duration_seconds": 127.315,
+      "process_exit_code": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "7",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "8",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "5",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "6",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "25",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "9",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "engine-owned-response-fence",
+      "status": "passed",
+      "duration_seconds": 176.184,
+      "process_exit_code": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "server-mcp-response-fencing",
+      "status": "passed",
+      "duration_seconds": 319.564,
+      "process_exit_code": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "11",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "server-shared_adapter_release_audits_a_seal_after_response_encoding",
+      "status": "passed",
+      "duration_seconds": 5.239,
+      "process_exit_code": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "server-encoded_response_credential_expiry_is_audited_and_preserves_committed_receipt",
+      "status": "passed",
+      "duration_seconds": 4.421,
+      "process_exit_code": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "server-native_and_mcp_lost_committed_responses_resolve_without_reapplying",
+      "status": "passed",
+      "duration_seconds": 5.435,
+      "process_exit_code": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "complete-store-library",
+      "status": "passed",
+      "duration_seconds": 153.365,
+      "process_exit_code": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "154",
+          "0",
+          "2"
+        ]
+      ]
+    },
+    {
+      "name": "strict-store",
+      "status": "passed",
+      "duration_seconds": 25.228,
+      "process_exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "name": "complete-serving-library",
+      "status": "passed",
+      "duration_seconds": 28.714,
+      "process_exit_code": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "23",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "engine-database-worker-outcomes",
+      "status": "passed",
+      "duration_seconds": 13.118,
+      "process_exit_code": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "4",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "engine-audit-worker-outcomes",
+      "status": "passed",
+      "duration_seconds": 17.553,
+      "process_exit_code": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "2",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "engine-control-genesis",
+      "status": "passed",
+      "duration_seconds": 5.389,
+      "process_exit_code": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "5",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "server-serving-owner",
+      "status": "passed",
+      "duration_seconds": 4.904,
+      "process_exit_code": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "6",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "server-retired-source",
+      "status": "failed",
+      "duration_seconds": 40.498,
+      "process_exit_code": 101,
+      "test_summaries": [
+        [
+          "FAILED",
+          "1",
+          "1",
+          "0"
+        ]
+      ]
+    }
+  ],
+  "unrun_gates": [
+    "server-serving-task-drain",
+    "server-control-genesis",
+    "server-standalone-tenant-staging",
+    "server-standalone-tenant-enrollment",
+    "server-configured-tenant-enrollment",
+    "server-runtime-lifecycle",
+    "server-signer-runtime",
+    "server-tls-lifecycle",
+    "server-tls-task-custody",
+    "server-local-recovery-generation-custody",
+    "complete-client-library",
+    "engine-custody-receipt",
+    "engine-lifecycle-exact-completion",
+    "native-custody-receipt",
+    "authority-enrollment-ownership",
+    "explicit-original-voters",
+    "engine-audit-preproposal-outage",
+    "engine-tenant-audit-local-apply",
+    "engine-security-audit-repeated-retention",
+    "engine-audit-snapshot-dependencies",
+    "engine-audit-backup-source-unavailable"
+  ],
+  "release_accepted": false,
+  "retained_executables": {
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-f2921f5-ownership-mcp/preserved-executables/2c1287a8ccd1461a0ffaa800aea8030e5169f663c7bca47e42c50a8f6ed34527-rmcp-be9a77413837ead2": {
+      "sha256": "2c1287a8ccd1461a0ffaa800aea8030e5169f663c7bca47e42c50a8f6ed34527",
+      "bytes": 31408024
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-f2921f5-ownership-mcp/preserved-executables/ddb052268494c13f5abbc479bbe18f0105d9e00337ec3b566514a4af65b43cfa-test_protocol_version_negotiation-548906498a439f3f": {
+      "sha256": "ddb052268494c13f5abbc479bbe18f0105d9e00337ec3b566514a4af65b43cfa",
+      "bytes": 29361584
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-f2921f5-ownership-mcp/preserved-executables/2d947ee934f926b3c8eeebad97c8e74eab93605eee569afe24e7870c9755d1aa-test_streamable_http_protocol_version-ef160af2be92561d": {
+      "sha256": "2d947ee934f926b3c8eeebad97c8e74eab93605eee569afe24e7870c9755d1aa",
+      "bytes": 45248888
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-f2921f5-ownership-mcp/preserved-executables/a43545c6297f40932ff88bf658b10e39178b2798f06d5932ea5f592a35a9fca6-test_streamable_http_json_response-a419c25f75fcf63d": {
+      "sha256": "a43545c6297f40932ff88bf658b10e39178b2798f06d5932ea5f592a35a9fca6",
+      "bytes": 45009248
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-f2921f5-ownership-mcp/preserved-executables/e5eb9674f140f87014380abe0c4a8fa56de3ce96c2e43cb7adb385cd5d2c0fec-test_streamable_http_standard_headers-3af1267ffc35ddba": {
+      "sha256": "e5eb9674f140f87014380abe0c4a8fa56de3ce96c2e43cb7adb385cd5d2c0fec",
+      "bytes": 37071864
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-f2921f5-ownership-mcp/preserved-executables/9a8f7c494454e384e78454e893848068a8d56e3a7d0128d67c92b32b0d17a3fb-test_stateless_protocol_version-187dc3bc4e722d88": {
+      "sha256": "9a8f7c494454e384e78454e893848068a8d56e3a7d0128d67c92b32b0d17a3fb",
+      "bytes": 44028848
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-f2921f5-ownership-mcp/preserved-executables/55f384cf82a7cba5bd52d29e19441ac5284518c5af7e46e761a66b8a8e5a1b17-test_server_discover-f747e2bbdcd3c73e": {
+      "sha256": "55f384cf82a7cba5bd52d29e19441ac5284518c5af7e46e761a66b8a8e5a1b17",
+      "bytes": 8827528
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-f2921f5-ownership-mcp/preserved-executables/987761e3ca39d6a29b878211a07616bfe2117d97139040439e41153c2081fbfc-kasumi_engine-beab15cb9b18300f": {
+      "sha256": "987761e3ca39d6a29b878211a07616bfe2117d97139040439e41153c2081fbfc",
+      "bytes": 184046464
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-f2921f5-ownership-mcp/preserved-executables/bee8f92b4d84980d130601cc6aeeb46d9bc659d5c7cc0b42d20b4dba0a606409-kasumi_server-56e77547c1375cd4": {
+      "sha256": "bee8f92b4d84980d130601cc6aeeb46d9bc659d5c7cc0b42d20b4dba0a606409",
+      "bytes": 330562224
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-f2921f5-ownership-mcp/preserved-executables/d9f045f23d1cdff94132cee3b6496ed962b0486874c80a3e4cbcf69916e9dc26-kasumi_store-c910e15433394175": {
+      "sha256": "d9f045f23d1cdff94132cee3b6496ed962b0486874c80a3e4cbcf69916e9dc26",
+      "bytes": 49371568
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-f2921f5-ownership-mcp/preserved-executables/fde360ecf79de2a2c3301d8207b529335ce5d1520db8dcdc5543dbcb8aa2035f-kasumi_serving-ab3ea266bdba1c03": {
+      "sha256": "fde360ecf79de2a2c3301d8207b529335ce5d1520db8dcdc5543dbcb8aa2035f",
+      "bytes": 11858704
+    }
+  }
+}

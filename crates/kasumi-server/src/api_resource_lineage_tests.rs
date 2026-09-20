@@ -110,12 +110,17 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
                 .is_err()
         );
         let dir = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(dir.path().join("node.redb"), kasumi_store::ScratchDisk::fixture()).unwrap();
+        let node = NodeStore::create_new(
+            dir.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let key = Arc::new(LocalKeyProvider::new([20 + hop as u8; 32]));
-        let store = TenantStore::open_fixture(node, "tenant-a".into(), key.clone())
+        let store = TenantStore::initialize_catalog_fixture(node, "tenant-a".into(), key.clone())
             .await
             .unwrap();
-        let stores = kasumi_store::test_utils::with_custody(
+        let stores = kasumi_store::test_utils::initialize_custody_fixture(
             store,
             Arc::new(LocalKeyProvider::new([240 - hop as u8; 32])),
         )
@@ -156,7 +161,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
             .await
             .unwrap();
         let snapshot = restored.engine().fixture_snapshot().unwrap();
-        let mut substituted: kasumi_types::TenantState =
+        let mut substituted =
             kasumi_engine::test_utils::decode_snapshot_candidate(&snapshot).unwrap();
         substituted.restore_lineage[0].checkpoint.resident_sha256 =
             if substituted.restore_lineage[0].checkpoint.resident_sha256 == "0".repeat(64) {
@@ -189,14 +194,19 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         restored.shutdown().await.unwrap();
         drop(restored);
         drop(stores);
-        let reopened_store = TenantStore::open_fixture(
-            NodeStore::open(dir.path().join("node.redb"), kasumi_store::ScratchDisk::fixture()).unwrap(),
+        let reopened_store = TenantStore::open_existing_fixture(
+            NodeStore::open_existing(
+                dir.path().join("node.redb"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             "tenant-a".into(),
             key.clone(),
         )
         .await
         .unwrap();
-        let reopened_stores = kasumi_store::test_utils::with_custody(
+        let reopened_stores = kasumi_store::test_utils::open_existing_custody_fixture(
             reopened_store,
             Arc::new(LocalKeyProvider::new([240 - hop as u8; 32])),
         )

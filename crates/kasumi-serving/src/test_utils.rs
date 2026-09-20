@@ -90,6 +90,7 @@ impl FixtureAuthority {
             persistence,
             Arc::new(NoMaintenance),
             Arc::new(kasumi_clock::SystemLeaseClock),
+            crate::BackgroundWorkBudget::new(64, Arc::new(()))?,
         )?;
         let signer = Arc::new(AuthoritySigner::new(LiveGenerationSigner::install(
             GenerationSigner::from_pkcs8(certificate, operational.as_ref())?,

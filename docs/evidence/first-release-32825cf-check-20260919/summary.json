@@ -1,0 +1,140 @@
+{
+  "status": "failed",
+  "source": "32825cfe42497ea0fe700199d4cd9f475acccebd",
+  "tree": "7ce63492e2ccac83c5245463bf1dacaffa678d22",
+  "gate_count": 26,
+  "mandatory_test_count": 124,
+  "completed_gates": [
+    {
+      "name": "workspace-all-targets-check",
+      "status": "passed",
+      "duration_seconds": 132.968,
+      "process_group": 38609,
+      "process_exit_code": 0,
+      "required_tests_passed": true,
+      "test_summaries": []
+    },
+    {
+      "name": "workspace-format",
+      "status": "passed",
+      "duration_seconds": 1.625,
+      "process_group": 42446,
+      "process_exit_code": 0,
+      "required_tests_passed": true,
+      "test_summaries": []
+    },
+    {
+      "name": "complete-store-library",
+      "status": "passed",
+      "duration_seconds": 88.924,
+      "process_group": 42470,
+      "process_exit_code": 0,
+      "required_tests_passed": true,
+      "test_summaries": [
+        [
+          "ok",
+          "143",
+          "0",
+          "2"
+        ]
+      ]
+    },
+    {
+      "name": "strict-store",
+      "status": "passed",
+      "duration_seconds": 18.798,
+      "process_group": 42952,
+      "process_exit_code": 0,
+      "required_tests_passed": true,
+      "test_summaries": []
+    },
+    {
+      "name": "complete-serving-library",
+      "status": "passed",
+      "duration_seconds": 36.252,
+      "process_group": 43024,
+      "process_exit_code": 0,
+      "required_tests_passed": true,
+      "test_summaries": [
+        [
+          "ok",
+          "23",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "engine-database-worker-outcomes",
+      "status": "passed",
+      "duration_seconds": 264.368,
+      "process_group": 43362,
+      "process_exit_code": 0,
+      "required_tests_passed": true,
+      "test_summaries": [
+        [
+          "ok",
+          "4",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "engine-audit-worker-outcomes",
+      "status": "passed",
+      "duration_seconds": 7.546,
+      "process_group": 45216,
+      "process_exit_code": 0,
+      "required_tests_passed": true,
+      "test_summaries": [
+        [
+          "ok",
+          "2",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "engine-control-genesis",
+      "status": "failed",
+      "duration_seconds": 1.877,
+      "process_group": 45255,
+      "process_exit_code": 101,
+      "required_tests_passed": false,
+      "test_summaries": [
+        [
+          "FAILED",
+          "4",
+          "1",
+          "0"
+        ]
+      ]
+    }
+  ],
+  "unrun_gates": [
+    "server-serving-owner",
+    "server-retired-source",
+    "server-serving-task-drain",
+    "server-control-genesis",
+    "server-standalone-tenant-staging",
+    "server-standalone-tenant-enrollment",
+    "server-configured-tenant-enrollment",
+    "server-runtime-lifecycle",
+    "server-signer-runtime",
+    "server-tls-lifecycle",
+    "server-tls-task-custody",
+    "server-local-recovery-generation-custody",
+    "complete-client-library",
+    "engine-custody-receipt",
+    "engine-lifecycle-exact-completion",
+    "native-custody-receipt",
+    "authority-enrollment-ownership",
+    "explicit-original-voters"
+  ],
+  "copied_file_count": 12,
+  "source_unchanged": true,
+  "all_dispatched_groups_drained": true,
+  "executables_reverified": 3
+}

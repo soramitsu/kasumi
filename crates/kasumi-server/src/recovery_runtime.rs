@@ -9,7 +9,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use kasumi_client::{
-    KasumiAdminClient, KasumiAuthorityPool, KasumiClientConfig, KasumiTargetClient,
+    KasumiAuthorityPool, KasumiClientConfig, KasumiRetirementPool, KasumiTargetClient,
 };
 use kasumi_engine::{Database, LifecycleSigner, VerifiedRecoveryPhase, VerifiedRecoveryStatus};
 use kasumi_serving::{AuthorityTrust, ControlTrust};
@@ -26,6 +26,32 @@ pub struct RecoveryMember {
     pub replication: TargetPeer,
     pub client: AdminClientConfig,
 }
+/// One independently authorized source service, reached only through installed members.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoverySource {
+    #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
+    pub members: BTreeMap<u64, crate::serving_runtime::AuthorityEndpoint>,
+    pub identity: crate::runtime::TlsFiles,
+    pub server_ca: std::path::PathBuf,
+    pub token_file: String,
+}
+impl RecoverySource {
+    pub(crate) fn validate(&self) -> Result<()> {
+        crate::installed_clients::validate(&self.members)?;
+        self.identity.validate()?;
+        ensure!(
+            self.server_ca.is_absolute(),
+            "source CA path must be absolute"
+        );
+        credential_path(&self.token_file)?;
+        Ok(())
+    }
+    fn connections(&self) -> Result<BTreeMap<u64, KasumiClientConfig>> {
+        self.validate()?;
+        crate::installed_clients::connections(&self.members, &self.identity, &self.server_ca)
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryRoute {
@@ -37,9 +63,9 @@ pub struct RecoveryRoute {
     #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
     pub targets: BTreeMap<u64, RecoveryMember>,
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
-    pub source: Option<AdminClientConfig>,
+    pub source: Option<RecoverySource>,
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
-    pub source_custody: Option<AdminClientConfig>,
+    pub source_custody: Option<RecoverySource>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -458,12 +484,20 @@ impl ControlRecoveryCoordinator {
                 let config = connection(&target.client)?;
                 let credential = FileCredentialSource::new(&target.client.token_file)?;
                 let bearer = token(&credential)?;
-                let mut client =
-                    KasumiTargetClient::connect(&config, control, trust.clone(), *node_id).await?;
-                prepared.admit_dispatch().await?;
-                let acknowledgement =
-                    tokio::time::timeout(duration, client.execute(&bearer, &verified, request))
-                        .await??;
+                // An unreachable installed voter must not consume the entire
+                // current phase before another voter can be tried. The wait
+                // covers connection as well as dispatch, while the exact request
+                // and its target-owned operation keep their original cap.
+                let remaining = prepared.dispatch_remaining().await?;
+                let wait = target_route_wait(head, request, duration.min(remaining));
+                let acknowledgement = tokio::time::timeout(wait, async {
+                    let mut client =
+                        KasumiTargetClient::connect(&config, control, trust.clone(), *node_id)
+                            .await?;
+                    prepared.admit_dispatch().await?;
+                    Ok::<_, anyhow::Error>(client.execute(&bearer, &verified, request).await?)
+                })
+                .await??;
                 prepared.release().await?;
                 phase.release().await?;
                 Ok(RecoveryDispatchOutcome::Target(Box::new(
@@ -497,12 +531,12 @@ impl ControlRecoveryCoordinator {
                     .source_custody
                     .as_ref()
                     .context("planned custody source is absent")?;
-                let custody_config = connection(custody)?;
+                let custody_config = custody.connections()?;
                 let custody_bearer = token(&FileCredentialSource::new(&custody.token_file)?)?;
                 let verified = dispatch_planned_retirement(
                     || {
                         Ok((
-                            connection(source)?,
+                            source.connections()?,
                             token(&FileCredentialSource::new(&source.token_file)?)?,
                         ))
                     },
@@ -522,92 +556,143 @@ impl ControlRecoveryCoordinator {
         }
     }
 }
+fn target_route_wait(
+    head: &RecoveryRecord,
+    request: &TargetRuntimeRequest,
+    remaining: Duration,
+) -> Duration {
+    let established = head.phase == RecoveryPhase::Complete
+        && matches!(
+            request.step,
+            TargetRuntimeStep::Start(
+                TargetReplicaInput::Completion(_)
+                    | TargetReplicaInput::CompletionAttemptStatus(_)
+                    | TargetReplicaInput::CompletionTerminalStatus(_)
+                    | TargetReplicaInput::CompletionResolution(_)
+                    | TargetReplicaInput::Inspection(_)
+            ) | TargetRuntimeStep::PrepareComplete(_)
+                | TargetRuntimeStep::Complete(_)
+                | TargetRuntimeStep::InspectCompletionAttempt(_)
+                | TargetRuntimeStep::InspectCompletionResolution(_)
+                | TargetRuntimeStep::ResolveComplete(_)
+                | TargetRuntimeStep::Inspect(_)
+        );
+    if established {
+        // RecoveryStart validates exactly three installed voters. Leave time for
+        // their routes and the final current-Control response/phase commit.
+        remaining / 5
+    } else {
+        remaining
+    }
+}
+
 // Exact custody verification is independent of application admission. A failed
 // custody read is never proof of absence: only an authenticated application
 // status with no original outcome permits the unchanged retirement dispatch.
 pub(crate) async fn dispatch_planned_retirement<S, F>(
     source: S,
-    custody: &KasumiClientConfig,
+    custody: &BTreeMap<u64, KasumiClientConfig>,
     custody_bearer: &str,
     request: &RetireSourceRequest,
     duration: Duration,
     admit: F,
 ) -> Result<kasumi_client::VerifiedRetirementReceipt>
 where
-    S: FnOnce() -> Result<(KasumiClientConfig, zeroize::Zeroizing<String>)>,
+    S: FnOnce() -> Result<(
+        BTreeMap<u64, KasumiClientConfig>,
+        zeroize::Zeroizing<String>,
+    )>,
     F: std::future::Future<Output = Result<()>>,
 {
-    let reference = request.reference()?;
-    let mut custody = KasumiAdminClient::connect(custody).await?;
-    let verify = |proof: kasumi_client::VerifiedRetirementReceipt| -> Result<_> {
+    use kasumi_clock::LeaseClock;
+    let clock = kasumi_clock::SystemLeaseClock;
+    let mut last = clock.now();
+    let end = last
+        .checked_add(duration)
+        .context("retirement deadline overflow")?;
+    let mut remaining = || -> Result<Duration> {
+        let now = clock.now();
         ensure!(
-            proof.receipt().checkpoint == request.checkpoint
-                && proof.receipt().target_incarnation == request.target_incarnation
-                && proof.receipt().admitted_at_ms <= request.not_after_ms,
-            "source custody verification returned a different original retirement"
+            now >= last && now < end,
+            "retirement deadline elapsed or clock regressed"
         );
-        Ok(proof)
+        last = now;
+        Ok(end - now)
     };
-    if let Ok(Ok(proof)) = tokio::time::timeout(
-        duration,
-        custody.verify_retirement_receipt(custody_bearer, &reference),
-    )
-    .await
-    {
-        return verify(proof);
-    }
-    let (config, bearer) = source()?;
-    let mut application = KasumiAdminClient::connect(&config).await?;
-    let observed =
-        tokio::time::timeout(duration, application.retirement_status(&bearer, &reference)).await?;
-    match observed {
-        Ok(None) => {
-            admit.await?;
-            // An ambiguous acknowledgement is resolved only through the exact
-            // independently authorized custody proof below, never a new ID.
-            let mutation =
-                tokio::time::timeout(duration, application.retire_source(&bearer, request)).await;
-            let proof = tokio::time::timeout(
-                duration,
-                custody.verify_retirement_receipt(custody_bearer, &reference),
-            )
+    tokio::time::timeout(duration, async {
+        remaining()?;
+        let reference = request.reference()?;
+        let credential = zeroize::Zeroizing::new(custody_bearer.to_owned());
+        let mut custody =
+            KasumiRetirementPool::new(custody.clone(), Arc::new(move || Ok(credential.clone())))?;
+        let verify = |proof: kasumi_client::VerifiedRetirementReceipt| -> Result<_> {
+            ensure!(
+                proof.receipt().checkpoint == request.checkpoint
+                    && proof.receipt().target_incarnation == request.target_incarnation
+                    && proof.receipt().admitted_at_ms <= request.not_after_ms,
+                "source custody verification returned a different original retirement"
+            );
+            Ok(proof)
+        };
+        if let Ok(proof) = custody
+            .verify_retirement_receipt(&reference, remaining()?)
+            .await
+        {
+            remaining()?;
+            return verify(proof);
+        }
+        let (connections, bearer) = source()?;
+        remaining()?;
+        let mut application =
+            KasumiRetirementPool::new(connections, Arc::new(move || Ok(bearer.clone())))?;
+        let observed = application
+            .retirement_status(&reference, remaining()?)
             .await;
-            match proof {
-                Ok(Ok(proof)) => verify(proof),
-                failure => {
-                    mutation??;
-                    verify(failure??)
+        remaining()?;
+        let proof = match observed {
+            Ok(None) => {
+                admit.await?;
+                // Exact original identity and nonrenewed admission survive ambiguity.
+                let mutation = application.retire_source(request, remaining()?).await;
+                let proof = custody
+                    .verify_retirement_receipt(&reference, remaining()?)
+                    .await;
+                match proof {
+                    Ok(proof) => verify(proof),
+                    Err(failure) => {
+                        mutation?;
+                        Err(failure.into())
+                    }
                 }
             }
-        }
-        Ok(Some(status)) => {
-            ensure!(
-                status.outcome.is_ok(),
-                "original source retirement was permanently rejected"
-            );
-            verify(
-                tokio::time::timeout(
-                    duration,
-                    custody.verify_retirement_receipt(custody_bearer, &reference),
+            Ok(Some(status)) => {
+                ensure!(
+                    status.outcome.is_ok(),
+                    "original source retirement was permanently rejected"
+                );
+                verify(
+                    custody
+                        .verify_retirement_receipt(&reference, remaining()?)
+                        .await?,
                 )
-                .await??,
-            )
-        }
-        Err(original) => {
-            // Retirement can commit between the first custody observation and
-            // the application read. Recover that race with custody authority.
-            match tokio::time::timeout(
-                duration,
-                custody.verify_retirement_receipt(custody_bearer, &reference),
-            )
-            .await
-            {
-                Ok(Ok(proof)) => verify(proof),
-                _ => Err(original.into()),
             }
-        }
-    }
+            Err(original) => {
+                // An unsuccessful read never authorizes another source effect.
+                match custody
+                    .verify_retirement_receipt(&reference, remaining()?)
+                    .await
+                {
+                    Ok(proof) => verify(proof),
+                    Err(_) => Err(original.into()),
+                }
+            }
+        }?;
+        remaining()?;
+        Ok(proof)
+    })
+    .await?
 }
+
 fn connection(config: &AdminClientConfig) -> Result<KasumiClientConfig> {
     config.validate()?;
     Ok(KasumiClientConfig {

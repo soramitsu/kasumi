@@ -45,6 +45,31 @@ fn observed_status(
     Ok(status)
 }
 impl KasumiAdminClient {
+    /// Observe the original custody command on its exact retired source. A
+    /// missing receipt remains unknown and does not authorize a fresh effect.
+    pub async fn read_custody_receipt(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::CustodyRequest,
+    ) -> Result<Option<kasumi_types::CustodyReceipt>, ClientError> {
+        request.validate().map_err(invalid)?;
+        let response = self
+            .inner
+            .read_custody_receipt(self.authorized(
+                bearer,
+                proto::CustodyCommandRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let receipt: Option<kasumi_types::CustodyReceipt> =
+            serde_json::from_slice(&response.response_json)?;
+        if let Some(receipt) = &receipt {
+            verify_custody_receipt(request, receipt)?;
+        }
+        Ok(receipt)
+    }
     pub async fn read_custody(
         &mut self,
         bearer: &str,
@@ -53,7 +78,7 @@ impl KasumiAdminClient {
         reference.validate().map_err(invalid)?;
         let response = self
             .inner
-            .read_custody(authorized(
+            .read_custody(self.authorized(
                 bearer,
                 proto::RetirementReference {
                     request_json: encode(reference)?,
@@ -77,7 +102,7 @@ impl KasumiAdminClient {
         request.validate().map_err(invalid)?;
         let response = self
             .inner
-            .execute_custody(authorized(
+            .execute_custody(self.authorized(
                 bearer,
                 proto::CustodyCommandRequest {
                     request_json: encode(request)?,
@@ -87,12 +112,7 @@ impl KasumiAdminClient {
             .into_inner();
         let receipt: kasumi_types::CustodyReceipt =
             serde_json::from_slice(&response.response_json)?;
-        receipt.validate().map_err(invalid)?;
-        if receipt.command_id != request.command_id
-            || receipt.request_digest != request.digest().map_err(invalid)?
-        {
-            return Err(invalid("custody receipt identity differs"));
-        }
+        verify_custody_receipt(request, &receipt)?;
         Ok(receipt)
     }
 
@@ -105,13 +125,15 @@ impl KasumiAdminClient {
         request: &RetireSourceRequest,
     ) -> Result<VerifiedRetirementReceipt, ClientError> {
         let reference = request.reference().map_err(invalid)?;
-        let mut wire = authorized(
+        let mut wire = self.authorized(
             bearer,
             proto::RetireSourceRequest {
                 request_json: encode(request)?,
             },
         )?;
-        wire.set_timeout(std::time::Duration::from_secs(310));
+        if self.deadline.is_none() {
+            wire.set_timeout(std::time::Duration::from_secs(310));
+        }
         let response = self.inner.retire_source(wire).await?.into_inner();
         let proof = verified(&response.response_json, &reference)?;
         if proof.checkpoint() != &request.checkpoint
@@ -131,7 +153,7 @@ impl KasumiAdminClient {
         reference.validate().map_err(invalid)?;
         let response = self
             .inner
-            .retirement_status(authorized(
+            .retirement_status(self.authorized(
                 bearer,
                 proto::RetirementReference {
                     request_json: encode(reference)?,
@@ -150,7 +172,7 @@ impl KasumiAdminClient {
         let reference = request.reference().map_err(invalid)?;
         let response = self
             .inner
-            .abort_retirement(authorized(
+            .abort_retirement(self.authorized(
                 bearer,
                 proto::RetireSourceRequest {
                     request_json: encode(request)?,
@@ -191,7 +213,7 @@ impl KasumiAdminClient {
         reference.validate().map_err(invalid)?;
         let response = self
             .inner
-            .verify_retirement_receipt(authorized(
+            .verify_retirement_receipt(self.authorized(
                 bearer,
                 proto::RetirementReference {
                     request_json: encode(reference)?,
@@ -201,4 +223,17 @@ impl KasumiAdminClient {
             .into_inner();
         verified(&response.response_json, reference)
     }
+}
+
+fn verify_custody_receipt(
+    request: &kasumi_types::CustodyRequest,
+    receipt: &kasumi_types::CustodyReceipt,
+) -> Result<(), ClientError> {
+    receipt.validate().map_err(invalid)?;
+    if receipt.command_id != request.command_id
+        || receipt.request_digest != request.digest().map_err(invalid)?
+    {
+        return Err(invalid("custody receipt identity differs"));
+    }
+    Ok(())
 }

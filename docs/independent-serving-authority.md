@@ -6,6 +6,23 @@ This source implements the independent issuer, signed serving and restore-prepar
 
 `kasumi-authority` owns a separately keyed, explicitly installed three-voter Raft group. It cannot be opened as a local municipality database. The `kasumi-authority` server binary exposes only the independent authority service; its application, custody and security-audit wrapping roots are separate. Bootstrap waits for the installed peer fingerprints and never manufactures a smaller voter set.
 
+The authority configuration requires a durable nonnil `database_id` for each
+physical authority node file. Install that configuration and its private parent
+directory before running these commands as the authority service account:
+
+```sh
+kasumi-authority check-config /etc/kasumi/authority.json
+kasumi-authority provision-node /etc/kasumi/authority.json
+kasumi-authority serve /etc/kasumi/authority.json
+```
+
+`provision-node` is exclusive first enrollment of the file envelope and storage
+tables; issuer/security catalog and bootstrap initialization remain separate.
+Subsequent starts run only `serve`, retaining the same configured UUID. Missing,
+partial, unrelated or differently identified files fail closed. No existing
+path is overwritten, and a failed initialization does not authorize automatic
+recreation. See [node-file identity and recovery](node-file-envelope.md).
+
 The immutable `AuthorityManifest` fixes its partition map, signing keys, maximum lease interval and `clock_rate_error_ppm`. A tenant hashes to one power-of-two partition. A source database does not host its own serving authority. The installed node client supplies the actual mTLS leaf and a verified finite JWT; body fields cannot substitute a peer certificate or grant capability.
 
 Commands retain an exact request digest and outcome permanently, under current global Admin authorization. `Enroll` registers the initial incarnation and installed node principals/certificates. `Fence` permanently freezes that exact active source epoch. `Activate` requires that exact committed fence plus a private term-scoped complete drain, then atomically advances the active incarnation/epoch and binds the target nodes to the full backup checkpoint. Every previously activated incarnation remains in permanent history and cannot be reactivated. Concurrent candidates cannot both win. Self-revocation or a failed post-acceptance release produces `UnknownOutcome`; a current custodian can recover the exact original receipt.
@@ -24,7 +41,7 @@ A `ServingGate` supports only continuous fresh renewal for its original boot/inc
 
 ## Required storage and engine boundaries
 
-`TenantStore::open(node, tenant, provider, StorageAccess)` and `TenantStorageSet::open(node, tenant, application_provider, custody_provider, StorageAccess)` require an explicit capability. Production application access uses `StorageAccess::serving(Arc<ServingGate>)`. Reserved node-control, service-audit, independent-authority and retirement-custody domains have closed installed purposes. These purposes are authenticated in the key catalog and custody binding, so a serving catalog cannot be reopened as an unfenced control/fixture store. `open_fixture` helpers exist only in the explicit test feature; there is no production compatibility decoder.
+`TenantStorageSet::initialize_catalogs(node, tenant, application_provider, custody_provider, StorageAccess)` (fresh enrollment) and `TenantStorageSet::open_existing` (existing state) require an explicit capability. The separate `TenantStore::initialize_catalog` and `TenantStore::open_existing` entry points accept only service audit, signer trust and target journal purposes; they cannot create or reopen an unpaired application or custody domain. Production application access uses `StorageAccess::serving(Arc<ServingGate>)`. Reserved node-control, service-audit, independent-authority and retirement-custody domains have closed installed purposes. These purposes are authenticated in the key catalog and custody binding, so a serving catalog cannot be reopened as an unfenced control/fixture store. `initialize_catalogs_fixture` and `open_existing_fixture` pair helpers exist only in the explicit test feature; there is no production compatibility decoder.
 
 Application keys cannot be constructed/unwrapped/refreshed and application ciphertext cannot be read/written without the live installed capability. Engine generation access, serialized proposal admission, ordered application, persistence and final response release repeat the fence. A serving capability cannot open or restore a local data group. Replicated bootstrap must match the signed incarnation before persistence. Prepared restore verifies the signed backup ID and manifest ciphertext before decrypting the backup graph, and compares the full verified checkpoint before creating the target genesis.
 

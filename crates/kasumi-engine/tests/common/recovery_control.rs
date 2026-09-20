@@ -108,13 +108,46 @@ async fn recovery_uncertain_activation_requires_permanent_stop_before_target_cle
 async fn recovery_expired_completion_resolves_its_exact_positive_fact_before_activation() {
     exercise_completed_recovery(false, Some(true), true).await;
 }
+/// Transfer the exact live fixture only after the completion/activation future
+/// has returned. Polling route publication inside that large future composes
+/// both debug poll frames on the same thread and can exhaust its normal stack.
+struct RoutePublicationFixture {
+    fixture: Fixture,
+    database: Arc<Database>,
+    request: RecoveryStart,
+}
 async fn exercise_completed_recovery(
     planned: bool,
     activation_outcome: Option<bool>,
     inspect_completion: bool,
 ) {
+    let route = {
+        let completed = Box::pin(complete_recovery(
+            planned,
+            activation_outcome,
+            inspect_completion,
+        ));
+        completed.await
+    };
+    if let Some(RoutePublicationFixture {
+        mut fixture,
+        database,
+        request,
+    }) = route
+    {
+        // The old future and its poll frame are gone; this moves the same
+        // storage owners and original request into the next phase. No detached
+        // task, replacement authorization or altered deadline is introduced.
+        Box::pin(exercise_route_publication(&mut fixture, database, &request)).await;
+    }
+}
+async fn complete_recovery(
+    planned: bool,
+    activation_outcome: Option<bool>,
+    inspect_completion: bool,
+) -> Option<RoutePublicationFixture> {
     let mut f = if activation_outcome == Some(true) {
-        Fixture::with_topology().await
+        Fixture::new().await
     } else {
         Fixture::new().await
     };
@@ -265,7 +298,7 @@ async fn exercise_completed_recovery(
     snapshot(&db).await;
     drop(db);
     f.close().await;
-    f.open().await;
+    f.open(false).await;
     let db = f.leader().await;
     let status = db.recovery_status(f.context("owner"), id).await.unwrap();
     assert_eq!(status.record().pending_phase, Some(intent_phase));
@@ -453,8 +486,14 @@ async fn exercise_completed_recovery(
     )
     .await;
     assert_eq!(complete_under.request.phase, LifecyclePhase::Complete);
-    // Prior Initialize startup replies cannot satisfy the new Complete phase.
-    for node_id in 1..=3 {
+    // A fresh Start sent to the first installed voter has no response. Keep it
+    // unknown and retry the unchanged phase on the two other installed voters.
+    let (missing_start, missing_dispatch) = prepare_next(&f, &db, id).await;
+    assert!(
+        matches!(&missing_dispatch, RecoveryDispatch::Target { node_id: 1, request }
+        if matches!(request.step, TargetRuntimeStep::Start(TargetReplicaInput::Completion(_))))
+    );
+    for node_id in 2..=3 {
         let (phase_id, input) = prepare_next(&f, &db, id).await;
         let RecoveryDispatch::Target {
             node_id: actual,
@@ -464,9 +503,10 @@ async fn exercise_completed_recovery(
             panic!("fresh target startup required")
         };
         assert_eq!(actual, node_id);
-        let TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum)) = request.step else {
+        let TargetRuntimeStep::Start(TargetReplicaInput::Completion(input)) = request.step else {
             panic!("current completion startup required")
         };
+        let quorum = input.quorum;
         assert_eq!(request.command_id, complete_under.request.command_id);
         resolve_phase(
             &f,
@@ -482,6 +522,75 @@ async fn exercise_completed_recovery(
         )
         .await;
     }
+    assert!(
+        db.recovery_phase(f.context("owner"), id, missing_start)
+            .await
+            .unwrap()
+            .record()
+            .outcome
+            .is_none()
+    );
+    let (prepared_phase, prepared_request) = prepare_next(&f, &db, id).await;
+    let RecoveryDispatch::Target {
+        node_id: prepared_node,
+        request: prepared_request,
+    } = prepared_request
+    else {
+        panic!("completion preparation required");
+    };
+    let TargetRuntimeStep::PrepareComplete(prepared_input) = prepared_request.step else {
+        panic!("explicit completion preparation required");
+    };
+    let prepared_attempt = TargetCompletionAttempt {
+        origin: prepared_input.quorum.materialized[&1].fact.origin.clone(),
+        input: prepared_input,
+        intent: complete_under.clone(),
+        dispatch_not_after_ms: prepared_request.not_after_ms,
+        admitted_at_ms: complete_under.accepted_at_ms + 1,
+        revision: request.checkpoint.revision + 2,
+        position: TargetCommitPosition {
+            index: 1,
+            term: 8,
+            leader_node_id: prepared_node,
+            command_sha256: "a9".repeat(32),
+        },
+        reserved_terminal_bytes: TARGET_COMPLETION_RESERVE_BYTES,
+        reserved_audit_bytes: TARGET_COMPLETION_AUDIT_RESERVE_BYTES,
+    };
+    let prepared_observation = TargetCompletionAttemptObservation {
+        attempt: prepared_attempt,
+        observer_node_id: prepared_node,
+        observed_revision: request.checkpoint.revision + 2,
+        observed_term: 8,
+    };
+    let prepared_signature = hex::encode(
+        attestation[&prepared_node]
+            .sign(
+                &serde_json::to_vec(&(
+                    "kasumi.prepared-target-completion-observation.v1",
+                    &prepared_observation,
+                ))
+                .unwrap(),
+            )
+            .as_ref(),
+    );
+    resolve_phase(
+        &f,
+        id,
+        prepared_phase,
+        RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
+            command_id: prepared_request.command_id,
+            node_id: prepared_node,
+            outcome: TargetRuntimeOutcome::PreparedCompletion(Box::new(
+                SignedTargetCompletionAttempt {
+                    observation: prepared_observation,
+                    signature: prepared_signature,
+                },
+            )),
+        })),
+    )
+    .await;
+    reject_changed_completion_caps(&f, id).await;
     let (unresolved, original_request) = prepare_next(&f, &db, id).await;
     let (complete_phase, retried) = prepare_next(&f, &db, id).await;
     let RecoveryDispatch::Target {
@@ -498,7 +607,7 @@ async fn exercise_completed_recovery(
     else {
         panic!("completion peer retry required")
     };
-    assert_eq!((old_node, node_id), (1, 2));
+    assert_eq!((old_node, node_id), (2, 3));
     assert_eq!(
         old, completion,
         "peer retry must preserve original command and absolute deadline"
@@ -511,13 +620,15 @@ async fn exercise_completed_recovery(
             .outcome
             .is_none()
     );
-    let TargetRuntimeStep::Complete(quorum) = completion.step else {
+    let TargetRuntimeStep::Complete(input) = completion.step else {
         panic!("completion required")
     };
+    let quorum = input.quorum;
     let completed = TargetCompletionFact {
         origin: quorum.materialized[&1].fact.origin.clone(),
         materialized: quorum.materialized,
         completion_intent: complete_under.clone(),
+        predecessor: input.predecessor,
         admitted_at_ms: complete_under.accepted_at_ms + 1,
         revision: request.checkpoint.revision + 3,
         term: 8,
@@ -995,8 +1106,11 @@ async fn exercise_completed_recovery(
             );
             drop(published);
             snapshot(&db).await;
-            exercise_route_publication(&mut f, db, &request).await;
-            return;
+            return Some(RoutePublicationFixture {
+                fixture: f,
+                database: db,
+                request,
+            });
         }
     }
     if activation_outcome.is_none() {
@@ -1205,7 +1319,7 @@ async fn exercise_completed_recovery(
     snapshot(&db).await;
     drop(db);
     f.close().await;
-    f.open().await;
+    f.open(false).await;
     let db = f.leader().await;
     let mut alias = request.clone();
     alias.operation_id = Uuid::new_v4();
@@ -1231,6 +1345,7 @@ async fn exercise_completed_recovery(
     );
     drop(db);
     f.close().await;
+    None
 }
 async fn publish_route(f: &Fixture, operation: Uuid, phase: Uuid) -> RecoveryDispatchOutcome {
     let context = f.context("owner");
@@ -1488,7 +1603,7 @@ async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request:
     drop(plane);
     drop(db);
     f.close().await;
-    f.open().await;
+    f.open(false).await;
     let db = f.leader().await;
     assert_eq!(
         publish_route(f, request.operation_id, fresh).await,
@@ -2007,10 +2122,93 @@ async fn resolve_expired_completion(
             .await
             .is_err()
     );
+    let resolution = commit_next_control(f, db, operation).await;
+    assert_eq!(resolution.request.phase, LifecyclePhase::ResolveComplete);
+    for node in 1..=2 {
+        let (id, dispatch) = prepare_next(f, db, operation).await;
+        let RecoveryDispatch::Target { node_id, request } = dispatch else {
+            panic!("terminal startup required")
+        };
+        assert_eq!(node_id, node);
+        let TargetRuntimeStep::Start(TargetReplicaInput::CompletionResolution(input)) =
+            request.step
+        else {
+            panic!("terminal startup input required")
+        };
+        assert_eq!(input.attempt.intent, old_intent);
+        resolve_phase(
+            f,
+            operation,
+            id,
+            RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
+                command_id: request.command_id,
+                node_id,
+                outcome: TargetRuntimeOutcome::Started {
+                    origin_sha256: input.attempt.input.quorum.origin_sha256,
+                },
+            })),
+        )
+        .await;
+    }
+    let (resolution_phase, dispatch) = prepare_next(f, db, operation).await;
+    let RecoveryDispatch::Target { node_id, request } = dispatch else {
+        panic!("terminal resolution required")
+    };
+    let TargetRuntimeStep::ResolveComplete(input) = request.step else {
+        panic!("terminal input required")
+    };
+    let terminal = TargetCompletionResolutionFact {
+        input: *input,
+        resolution_intent: resolution.clone(),
+        admitted_at_ms: resolution.accepted_at_ms + 1,
+        dispatch_not_after_ms: request.not_after_ms,
+        revision: fact.revision + 1,
+        position: TargetCommitPosition {
+            index: fact.revision - fact.origin.materialization.request.checkpoint.revision,
+            term: 8,
+            leader_node_id: node_id,
+            command_sha256: "bb".repeat(32),
+        },
+        terminal: TargetCompletionTerminal::Committed(Box::new(fact.clone())),
+    };
+    let terminal_observation = TargetCompletionResolutionObservation {
+        fact: terminal,
+        observation_intent: resolution,
+        observer_node_id: node_id,
+        observed_revision: fact.revision + 1,
+        observed_term: 8,
+    };
+    let terminal_signature = hex::encode(
+        keys[&node_id]
+            .sign(
+                &serde_json::to_vec(&(
+                    "kasumi.resolved-target-completion-observation.v1",
+                    &terminal_observation,
+                ))
+                .unwrap(),
+            )
+            .as_ref(),
+    );
+    resolve_phase(
+        f,
+        operation,
+        resolution_phase,
+        RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
+            command_id: request.command_id,
+            node_id,
+            outcome: TargetRuntimeOutcome::ResolvedCompletion(Box::new(
+                SignedTargetCompletionResolution {
+                    observation: terminal_observation,
+                    signature: terminal_signature,
+                },
+            )),
+        })),
+    )
+    .await;
     let inspection = commit_next_control(f, db, operation).await;
     assert_eq!(inspection.request.phase, LifecyclePhase::InspectTarget);
     assert_ne!(inspection.request.command_id, old_intent.request.command_id);
-    for node in 1..=3 {
+    for node in 1..=2 {
         let (id, dispatch) = prepare_next(f, db, operation).await;
         let RecoveryDispatch::Target { node_id, request } = dispatch else {
             panic!("fresh inspection startup required")
@@ -2126,7 +2324,7 @@ async fn resolve_expired_completion(
     );
     assert_eq!(
         retained.record().outcome,
-        Some(RecoveryDispatchOutcome::CompletionResolution { inspection_phase })
+        Some(RecoveryDispatchOutcome::CompletionTerminal { resolution_phase })
     );
     drop(retained);
     let head = db
@@ -2142,4 +2340,76 @@ async fn resolve_expired_completion(
     assert_eq!(head.record().phase, RecoveryPhase::FenceSource);
     drop(head);
     snapshot(db).await;
+}
+
+async fn reject_changed_completion_caps(f: &Fixture, operation: Uuid) {
+    for delta in [-1_i64, 1] {
+        let db = f.leader().await;
+        let context = f.context("owner");
+        let id = Uuid::new_v4();
+        let head = db
+            .recovery_status(context.clone(), operation)
+            .await
+            .unwrap()
+            .record()
+            .clone();
+        let mut input = db
+            .next_recovery_dispatch(&context, operation, id)
+            .await
+            .unwrap()
+            .unwrap();
+        let RecoveryDispatch::Target { request, .. } = &mut input else {
+            panic!("Complete required");
+        };
+        assert!(matches!(request.step, TargetRuntimeStep::Complete(_)));
+        request.not_after_ms = request.not_after_ms.checked_add_signed(delta).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let current = f.leader().await;
+                match current
+                    .prepare_recovery_dispatch(
+                        context.clone(),
+                        operation,
+                        id,
+                        head.next_phase_sequence,
+                        head.pending_phase,
+                        input.clone(),
+                    )
+                    .await
+                {
+                    Err(error)
+                        if matches!(
+                            error.code,
+                            ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                        ) =>
+                    {
+                        continue;
+                    }
+                    Err(error) => {
+                        assert_eq!(error.code, ErrorCode::Conflict, "{error}");
+                        break;
+                    }
+                    Ok(_) => panic!("changed original Complete cap was committed"),
+                }
+            }
+        })
+        .await
+        .expect("exact negative Complete admission did not resolve");
+        let current = f.leader().await;
+        let error = current
+            .recovery_phase(f.context("owner"), operation, id)
+            .await
+            .err()
+            .expect("rejected phase was retained");
+        assert_eq!(error.code, ErrorCode::NotFound);
+        assert_eq!(
+            *current
+                .recovery_status(f.context("owner"), operation)
+                .await
+                .unwrap()
+                .record(),
+            head
+        );
+        snapshot(&current).await;
+    }
 }

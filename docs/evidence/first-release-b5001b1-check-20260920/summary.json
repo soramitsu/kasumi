@@ -1,0 +1,101 @@
+{
+  "status": "failed",
+  "source": "b5001b1c675d9857dbc69d915466d834a8b04e65",
+  "tree": "58a0a99875036e9ad45d4d0c6e5bc690794c29bb",
+  "source_unchanged": true,
+  "gate_status_counts": {
+    "passed": 3,
+    "failed": 1,
+    "not_run": 32
+  },
+  "all_dispatched_process_groups_drained": true,
+  "completed_gates": [
+    {
+      "name": "workspace-all-targets-check",
+      "status": "passed",
+      "duration_seconds": 200.96,
+      "process_exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "name": "workspace-format",
+      "status": "passed",
+      "duration_seconds": 1.756,
+      "process_exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "name": "engine-owned-response-fence",
+      "status": "passed",
+      "duration_seconds": 176.648,
+      "process_exit_code": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "server-mcp-response-fencing",
+      "status": "failed",
+      "duration_seconds": 305.914,
+      "process_exit_code": 101,
+      "test_summaries": [
+        [
+          "FAILED",
+          "3",
+          "7",
+          "0"
+        ]
+      ]
+    }
+  ],
+  "unrun_gates": [
+    "server-shared_adapter_release_audits_a_seal_after_response_encoding",
+    "server-encoded_response_credential_expiry_is_audited_and_preserves_committed_receipt",
+    "server-native_and_mcp_lost_committed_responses_resolve_without_reapplying",
+    "complete-store-library",
+    "strict-store",
+    "complete-serving-library",
+    "engine-database-worker-outcomes",
+    "engine-audit-worker-outcomes",
+    "engine-control-genesis",
+    "server-serving-owner",
+    "server-retired-source",
+    "server-serving-task-drain",
+    "server-control-genesis",
+    "server-standalone-tenant-staging",
+    "server-standalone-tenant-enrollment",
+    "server-configured-tenant-enrollment",
+    "server-runtime-lifecycle",
+    "server-signer-runtime",
+    "server-tls-lifecycle",
+    "server-tls-task-custody",
+    "server-local-recovery-generation-custody",
+    "complete-client-library",
+    "engine-custody-receipt",
+    "engine-lifecycle-exact-completion",
+    "native-custody-receipt",
+    "authority-enrollment-ownership",
+    "explicit-original-voters",
+    "engine-audit-preproposal-outage",
+    "engine-tenant-audit-local-apply",
+    "engine-security-audit-repeated-retention",
+    "engine-audit-snapshot-dependencies",
+    "engine-audit-backup-source-unavailable"
+  ],
+  "release_accepted": false,
+  "retained_executables": {
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-b5001b1-ownership-mcp/preserved-executables/3fc06cfa8bae230b06fd5e29b37875ccddf1f836d497ffdb77c530af2a27cf6a-kasumi_engine-beab15cb9b18300f": {
+      "sha256": "3fc06cfa8bae230b06fd5e29b37875ccddf1f836d497ffdb77c530af2a27cf6a",
+      "bytes": 184046464
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-b5001b1-ownership-mcp/preserved-executables/b5a12743b7eb98e35fed9625e2a0abc96d3a4ee4a1764063113fd30c5beb5d9a-kasumi_server-e3667717601737f5": {
+      "sha256": "b5a12743b7eb98e35fed9625e2a0abc96d3a4ee4a1764063113fd30c5beb5d9a",
+      "bytes": 330393984
+    }
+  }
+}

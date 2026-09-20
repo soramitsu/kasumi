@@ -140,9 +140,10 @@ mod tests {
     async fn owned_publication_resolves_partial_writes_and_uncertain_rename_without_adopting_files()
     {
         let directory = tempfile::tempdir().unwrap();
-        let store = TenantStore::open_fixture(
-            crate::NodeStore::open(
+        let store = TenantStore::initialize_catalog_fixture(
+            crate::NodeStore::create_new(
                 directory.path().join("node.redb"),
+                crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
             )
             .unwrap(),
@@ -191,7 +192,7 @@ mod tests {
         observer.fault.store(4, Ordering::Release);
         assert!(archive.publish(&segment).await.is_err());
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
 
     #[test]

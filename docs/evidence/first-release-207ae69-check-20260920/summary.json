@@ -1,0 +1,22 @@
+{
+  "status": "failed",
+  "source": "207ae699788086f1320047899960056fabbb77f5",
+  "tree": "650f5b545d9ba3067f4e6cf2d769234ff4aebc4b",
+  "source_unchanged": true,
+  "gate_status_counts": {
+    "failed": 1,
+    "not_run": 45
+  },
+  "cleanup": {
+    "group": 41436,
+    "before": [],
+    "after": [],
+    "signals": [],
+    "errors": [],
+    "drained": true,
+    "process_returncode": 101,
+    "remaining_after_command": false
+  },
+  "duration_seconds": 116.201,
+  "release_accepted": false
+}

@@ -137,6 +137,14 @@ impl CustodyRaftGroup {
         self.check_access()?;
         Ok(CustodyView(state))
     }
+    /// Local point lookup, not current quorum or response-release authority.
+    pub fn receipt(&self, command_id: &str) -> Result<Option<kasumi_types::CustodyReceipt>> {
+        self.check_access()?;
+        kasumi_types::validate_name(command_id)?;
+        let receipt = crate::custody_tables::receipt(self.custody.store(), command_id)?;
+        self.check_access()?;
+        Ok(receipt)
+    }
     pub async fn write(&self, command: CustodyCommand) -> Result<Vec<u8>> {
         self.check_access()?;
         let result = self

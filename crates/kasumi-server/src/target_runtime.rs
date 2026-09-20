@@ -14,11 +14,12 @@ use kasumi_engine::{
 };
 use kasumi_serving::*;
 use kasumi_store::{BackupDestination, NodeStore, StorageAccess, TenantStorageSet, TenantStore};
+use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
 use kasumi_types::*;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -37,6 +38,7 @@ mod serving;
 mod shutdown_tests;
 #[derive(Default)]
 struct Generation {
+    report: DrainReport,
     custody: Option<(GenerationKey, Arc<kasumi_engine::RetiredCustody>)>,
     custody_probe: Option<Arc<kasumi_store::CustodyStore>>,
     serving: Option<kasumi_engine::TargetServingReplica>,
@@ -44,75 +46,235 @@ struct Generation {
     registered_data: Option<(GenerationKey, Arc<kasumi_engine::Database>)>,
     phase: Option<Arc<RuntimeTargetPhase>>,
     node: Option<Arc<NodeStore>>,
+    // Consumed only from the journal's original Created outcome. A lost
+    // attempt cannot recover creation permission from missing catalogs.
+    fresh_catalogs: bool,
     stores: Option<Arc<TenantStorageSet>>,
     replica: Option<TargetReplica>,
+    #[cfg(test)]
+    sealed_restore_observation: RestoreDrainObservation,
     registered_group: Option<String>,
+}
+/// A test observer holds metadata only; it cannot keep a physical generation,
+/// Raft task, key provider, database, route, or serving authority alive.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct RestoreDrainObservation(Arc<std::sync::Mutex<Option<Option<PendingRestore>>>>);
+#[cfg(test)]
+impl RestoreDrainObservation {
+    fn record(&self, marker: Option<PendingRestore>) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(marker);
+    }
+    pub(crate) fn marker(&self) -> Result<Option<PendingRestore>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .context("no actual committed marker captured at target drain")
+    }
 }
 impl Generation {
     async fn close(
         &mut self,
         cluster: &ClusterNetwork,
         registry: &crate::api::DatabaseRegistry,
-    ) -> Result<()> {
-        if let Some((key, database)) = &self.registered_data {
-            serving::detach_owned_data(registry, key, database)?;
-            self.registered_data = None;
-        }
-        if let Some((key, custody)) = &self.custody {
-            registry.detach_target_custody(&key.0, &key.1.to_string(), custody)?;
-        }
+    ) -> DrainResult {
+        let mut retained = None;
+        let mut custody_route_closed = true;
         if let Some(lease) = &self.lease {
             lease.close();
         }
         if let Some(phase) = &self.phase {
             phase.close();
         }
-        if let Some(group) = &self.registered_group {
-            cluster.unregister_group(group)?;
-            self.registered_group = None;
-        }
-        if let Some((_, custody)) = &self.custody {
-            custody.shutdown().await?;
-        }
-        self.custody.take();
-        if let Some(probe) = &self.custody_probe {
-            probe.store().shutdown().await;
-        }
-        self.custody_probe.take();
-        if let Some(serving) = &mut self.serving {
-            serving.close().await?;
-        }
-        self.serving.take();
-        if let Some(replica) = &mut self.replica {
-            replica.close().await?;
-        }
-        self.replica.take();
-        if let Some(phase) = &self.phase {
-            phase.shutdown().await?;
-        }
-        self.phase.take();
-        if let Some(lease) = &self.lease {
-            lease.shutdown().await?;
-        }
-        if let Some(stores) = &self.stores {
-            stores.application().shutdown().await;
-            stores.custody().store().shutdown().await;
-        }
-        self.stores.take();
-        self.lease.take();
-        if let Some(node) = self.node.take() {
-            match Arc::try_unwrap(node) {
-                Ok(node) => drop(node),
-                Err(node) => {
-                    self.node = Some(node);
-                    anyhow::bail!("target file still has an actual detached owner")
+        if let Some((key, database)) = &self.registered_data {
+            match serving::detach_owned_data(registry, key, database) {
+                Ok(()) => self.registered_data = None,
+                Err(error) => {
+                    retained = Some(DrainFailure::retained(self.report.record(
+                        "target data route",
+                        0,
+                        error,
+                    )))
                 }
             }
         }
-        Ok(())
+        if let Some((key, custody)) = &self.custody {
+            if let Err(error) = registry.detach_target_custody(&key.0, &key.1.to_string(), custody)
+            {
+                custody_route_closed = false;
+                retained = Some(DrainFailure::retained(self.report.record(
+                    "target custody route",
+                    0,
+                    error.into(),
+                )));
+            }
+        }
+        if let Some(group) = &self.registered_group {
+            match cluster.unregister_group(group) {
+                Ok(()) => self.registered_group = None,
+                Err(error) => {
+                    retained = Some(DrainFailure::retained(self.report.record(
+                        "target group route",
+                        0,
+                        error,
+                    )))
+                }
+            }
+        }
+        if let Some((_, custody)) = &self.custody {
+            match custody.shutdown().await {
+                Ok(()) => {
+                    if custody_route_closed {
+                        self.custody.take();
+                    }
+                }
+                Err(failure) => {
+                    self.report.merge(&failure);
+                    if failure.completion() == DrainCompletion::Retained {
+                        retained = Some(failure);
+                    } else if custody_route_closed {
+                        self.custody.take();
+                    }
+                }
+            }
+        }
+        if let Some(probe) = &self.custody_probe {
+            match probe.store().shutdown().await {
+                Ok(()) => {
+                    self.custody_probe.take();
+                }
+                Err(failure) => {
+                    self.report.merge(&failure);
+                    if failure.completion() == DrainCompletion::Retained {
+                        retained = Some(failure);
+                    } else {
+                        self.custody_probe.take();
+                    }
+                }
+            }
+        }
+        if let Some(serving) = &mut self.serving {
+            match serving.close().await {
+                Ok(()) => {
+                    self.serving.take();
+                }
+                Err(failure) => {
+                    self.report.merge(&failure);
+                    if failure.completion() == DrainCompletion::Retained {
+                        retained = Some(failure);
+                    } else {
+                        self.serving.take();
+                    }
+                }
+            }
+        }
+        if let Some(replica) = &mut self.replica {
+            match replica.close().await {
+                Ok(()) => {
+                    #[cfg(test)]
+                    {
+                        self.sealed_restore_observation.record(
+                            replica
+                                .database()
+                                .engine()
+                                .fixture_pending_restore_at_seal()
+                                .expect("drained replica seal observation"),
+                        );
+                    }
+                    self.replica.take();
+                }
+                Err(failure) => {
+                    self.report.merge(&failure);
+                    if failure.completion() == DrainCompletion::Retained {
+                        retained = Some(failure);
+                    } else {
+                        #[cfg(test)]
+                        {
+                            self.sealed_restore_observation.record(
+                                replica
+                                    .database()
+                                    .engine()
+                                    .fixture_pending_restore_at_seal()
+                                    .expect("completed replica seal observation"),
+                            );
+                        }
+                        self.replica.take();
+                    }
+                }
+            }
+        }
+        if let Some(phase) = &self.phase {
+            match phase.shutdown().await {
+                Ok(()) => {
+                    self.phase.take();
+                }
+                Err(error) => {
+                    self.report.merge(&error);
+                    if error.completion() == DrainCompletion::Retained {
+                        retained = Some(error);
+                    } else {
+                        self.phase.take();
+                    }
+                }
+            }
+        }
+        if let Some(lease) = &self.lease {
+            match lease.shutdown().await {
+                Ok(()) => {
+                    self.lease.take();
+                }
+                Err(error) => {
+                    self.report.merge(&error);
+                    if error.completion() == DrainCompletion::Retained {
+                        retained = Some(error);
+                    } else {
+                        self.lease.take();
+                    }
+                }
+            }
+        }
+        if let Some(stores) = &self.stores {
+            match stores.shutdown().await {
+                Ok(()) => {
+                    self.stores.take();
+                }
+                Err(failure) => {
+                    self.report.merge(&failure);
+                    if failure.completion() == DrainCompletion::Retained {
+                        retained = Some(failure);
+                    } else {
+                        self.stores.take();
+                    }
+                }
+            }
+        }
+        if let Some(node) = &self.node {
+            if let Err(error) = node.drain_initializers().await {
+                self.report.record("target node initializers", 0, error);
+            }
+        }
+        self.fresh_catalogs = false;
+        if retained.is_none() {
+            if let Some(node) = self.node.take() {
+                match Arc::try_unwrap(node) {
+                    Ok(node) => drop(node),
+                    Err(node) => {
+                        self.node = Some(node);
+                        retained = Some(DrainFailure::retained(self.report.record(
+                            "target physical owner",
+                            0,
+                            anyhow::anyhow!("target file still has an actual detached owner"),
+                        )));
+                    }
+                }
+            }
+        }
+        self.report.outcome(retained)
     }
 }
 enum ResponseEvidence {
+    Receiver(Box<kasumi_engine::VerifiedTargetReceiver>),
     Materialized(Box<kasumi_engine::VerifiedTargetMaterialization>),
     Completed(Box<kasumi_engine::VerifiedTargetCompletion>),
     Activated(Box<kasumi_engine::VerifiedTargetActivation>),
@@ -140,6 +302,7 @@ impl TargetRuntimeReply {
             .await?;
         match &self.evidence {
             ResponseEvidence::Materialized(p) => p.release(&self.operation).await?,
+            ResponseEvidence::Receiver(p) => p.release(&self.operation).await?,
             ResponseEvidence::Completed(p) => p.release(&self.operation).await?,
             ResponseEvidence::Activated(p) => p.release(&self.operation).await?,
             ResponseEvidence::Inspected(p) => p.release(&self.operation).await?,
@@ -150,7 +313,7 @@ impl TargetRuntimeReply {
             ResponseEvidence::Stopped(stop, key) => {
                 self.runtime.journal.stop(&self.operation, stop)?;
                 ensure!(
-                    !self.runtime.path(key)?.exists(),
+                    !target_file_exists(&self.runtime.path(key)?)?,
                     "target storage reappeared after stop"
                 );
             }
@@ -163,7 +326,7 @@ pub struct TargetRecoveryRuntime {
     recovery_health: std::sync::Mutex<serving::RecoveryHealth>,
     registry: crate::api::DatabaseRegistry,
     serving_monitor: crate::runtime_worker::RuntimeWorker,
-    shutdown_gate: Mutex<()>,
+    shutdown_gate: Mutex<DrainReport>,
     config: RuntimeConfig,
     authority_trusts: BTreeMap<String, AuthorityTrust>,
     installed: TargetRecoveryConfig,
@@ -181,7 +344,7 @@ pub struct TargetRecoveryRuntime {
     closing: AtomicBool,
 }
 /// Keep the outer owner reachable across cancellation of its recursive drain.
-pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime>>) -> Result<()> {
+pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime>>) -> DrainResult {
     if let Some(target) = owner.as_ref() {
         target.shutdown().await?;
     }
@@ -189,6 +352,46 @@ pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime
     Ok(())
 }
 impl TargetRecoveryRuntime {
+    /// Inspect an already owned target in the native integration fixture. This
+    /// never opens storage, publishes a route, or creates serving authority.
+    #[cfg(test)]
+    pub(crate) async fn test_owned_database(
+        &self,
+        tenant: &str,
+        incarnation: Uuid,
+    ) -> Option<Arc<kasumi_engine::Database>> {
+        let generation = self
+            .generations
+            .lock()
+            .await
+            .get(&(tenant.to_owned(), incarnation))
+            .cloned()?;
+        let generation = generation.lock().await;
+        if let Some(replica) = &generation.replica {
+            Some(replica.database().clone())
+        } else {
+            generation.serving.as_ref()?.database().ok()
+        }
+    }
+
+    /// Observe the next actual drain without retaining its generation owner.
+    #[cfg(test)]
+    pub(crate) async fn test_restore_drain_observer(
+        &self,
+        tenant: &str,
+        incarnation: Uuid,
+    ) -> Result<RestoreDrainObservation> {
+        let generation = self
+            .generations
+            .lock()
+            .await
+            .get(&(tenant.to_owned(), incarnation))
+            .cloned()
+            .context("target generation absent")?;
+        let generation = generation.lock().await;
+        Ok(generation.sealed_restore_observation.clone())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn open(
         config: RuntimeConfig,
@@ -205,36 +408,13 @@ impl TargetRecoveryRuntime {
             .clone()
             .context("target recovery not configured")?;
         installed.validate(&config)?;
-        let key = read_private_file(&installed.attestation_key, 1 << 20)?;
-        let signer = TargetSigner::from_pkcs8(installed.node.clone(), &key)?;
-        let cleanup_key =
-            Ed25519KeyPair::from_pkcs8(&key).map_err(|_| anyhow::anyhow!("invalid target key"))?;
-        // Only the independent journal KMS provider is constructed at startup.
-        let provider = installed.journal_keys.provider(credential.clone())?;
-        let node = NodeStore::open(
-            &installed.journal_path,
-            audit.store().scratch_disk().clone(),
-        )?;
-        let access = StorageAccess::target_journal(&installed.control_root, &installed.node)?;
-        let store = TenantStore::open(
-            node,
-            format!(
-                "kasumi.target.{}.{}",
-                installed.control_root.control_incarnation, installed.node.node_id
-            ),
-            provider,
-            access,
-        )
-        .await?;
-        let journal = TargetJournal::open(
-            store,
-            TargetJournalInstallation {
-                root: installed.control_root.clone(),
-                node: installed.node.clone(),
-            },
-            installed.limits.journal.clone(),
-            admission.clone(),
-        )?;
+        let monitor_bytes = kasumi_serving::BackgroundWorkBudget::required_bytes(1, 1)?;
+        let mut monitor_charge = admission.reserve(monitor_bytes, None)?;
+        monitor_charge.retain(monitor_bytes);
+        let monitor_budget =
+            kasumi_serving::BackgroundWorkBudget::new(1, Arc::new(monitor_charge))?;
+        // Finish fallible filesystem setup before a journal catalog can start
+        // renewal workers. A rejected root must not detach storage ownership.
         std::fs::create_dir_all(&installed.generation_root)?;
         ensure!(
             !std::fs::symlink_metadata(&installed.generation_root)?
@@ -244,11 +424,54 @@ impl TargetRecoveryRuntime {
         );
         let root = std::fs::canonicalize(&installed.generation_root)?;
         std::fs::File::open(&root)?.sync_all()?;
+        let key = read_private_file(&installed.attestation_key, 1 << 20)?;
+        let signer = TargetSigner::from_pkcs8(installed.node.clone(), &key)?;
+        let cleanup_key =
+            Ed25519KeyPair::from_pkcs8(&key).map_err(|_| anyhow::anyhow!("invalid target key"))?;
+        // Only the independent journal KMS provider is constructed at startup.
+        let provider = installed.journal_keys.provider(credential.clone())?;
+        let node = NodeStore::open_existing(
+            &installed.journal_path,
+            kasumi_store::node_store_ids::target_journal(
+                installed.control_root.control_incarnation,
+                &installed.node.verifier,
+            )?,
+            audit.store().scratch_disk().clone(),
+        )?;
+        let access = StorageAccess::target_journal(&installed.control_root, &installed.node)?;
+        let store = TenantStore::open_existing(
+            node,
+            format!(
+                "kasumi.target.{}.{}",
+                installed.control_root.control_incarnation, installed.node.node_id
+            ),
+            provider,
+            access,
+        )
+        .await?;
+        let journal = TargetJournal::open_existing(
+            store.clone(),
+            TargetJournalInstallation {
+                root: installed.control_root.clone(),
+                node: installed.node.clone(),
+            },
+            installed.limits.journal.clone(),
+            admission.clone(),
+        );
+        let journal = match journal {
+            Ok(journal) => journal,
+            Err(error) => {
+                return Err(match store.shutdown().await {
+                    Ok(()) => error,
+                    Err(failure) => error.context(failure),
+                });
+            }
+        };
         let runtime = Arc::new(Self {
             recovery_health: std::sync::Mutex::new(serving::RecoveryHealth::new()),
             registry,
             serving_monitor: Default::default(),
-            shutdown_gate: Mutex::new(()),
+            shutdown_gate: Mutex::new(DrainReport::default()),
             config,
             authority_trusts,
             installed,
@@ -265,7 +488,24 @@ impl TargetRecoveryRuntime {
             calls: Arc::new(Semaphore::new(MAX_CALLS as usize)),
             closing: AtomicBool::new(false),
         });
-        runtime.start_serving_reconciliation();
+        if let Err(error) = runtime.start_serving_reconciliation(&monitor_budget) {
+            // The actual unpublished target remains owned while its journal and
+            // any started monitor drain, even if the outer request loses its reply.
+            struct FailedMonitor(Arc<TargetRecoveryRuntime>);
+            impl crate::startup_owner::Runtime for FailedMonitor {
+                fn close(
+                    &mut self,
+                ) -> std::pin::Pin<Box<dyn std::future::Future<Output = DrainResult> + Send + '_>>
+                {
+                    Box::pin(self.0.shutdown())
+                }
+            }
+            let mut failed = FailedMonitor(runtime);
+            return Err(match crate::startup_owner::finish(&mut failed).await {
+                Ok(()) => error,
+                Err(drain) => error.context(drain),
+            });
+        }
         Ok(runtime)
     }
     pub fn control_root(&self) -> &ControlSigningRoot {
@@ -402,7 +642,12 @@ impl TargetRecoveryRuntime {
             let proof = phase.target_stop(&operation, reference).await?;
             self.journal.stop(&operation, &proof)?;
             operation
-                .run(generation.close(&self.cluster, &self.registry))
+                .run(async {
+                    generation
+                        .close(&self.cluster, &self.registry)
+                        .await
+                        .map_err(Into::into)
+                })
                 .await
                 .map_err(unknown)?;
             let outcome = self
@@ -447,7 +692,12 @@ impl TargetRecoveryRuntime {
             old
         } else {
             admission
-                .run(generation.close(&self.cluster, &self.registry))
+                .run(async {
+                    generation
+                        .close(&self.cluster, &self.registry)
+                        .await
+                        .map_err(Into::into)
+                })
                 .await?;
             generation.phase = Some(phase.clone());
             phase
@@ -524,7 +774,12 @@ impl TargetRecoveryRuntime {
                 continue;
             }
             admission
-                .run(generation.close(&self.cluster, &self.registry))
+                .run(async {
+                    generation
+                        .close(&self.cluster, &self.registry)
+                        .await
+                        .map_err(Into::into)
+                })
                 .await?;
             drop(generation);
             let mut all = admission
@@ -566,18 +821,39 @@ impl TargetRecoveryRuntime {
                 (LifecyclePhase::Materialize, input.digest()?)
             }
             TargetRuntimeStep::Start(input) => match input {
+                TargetReplicaInput::Completion(i) => (LifecyclePhase::Complete, i.digest()?),
+                TargetReplicaInput::CompletionResolution(i) => {
+                    (LifecyclePhase::ResolveComplete, i.digest()?)
+                }
+                TargetReplicaInput::ResolutionBudget { input, .. } => {
+                    (LifecyclePhase::MaintainTarget, input.digest()?)
+                }
                 TargetReplicaInput::Inspection(i) => (LifecyclePhase::InspectTarget, i.digest()?),
+                TargetReplicaInput::CompletionAttemptStatus(i) => {
+                    (LifecyclePhase::InspectCompletionAttempt, i.digest()?)
+                }
+                TargetReplicaInput::CompletionTerminalStatus(i) => {
+                    (LifecyclePhase::InspectCompletionResolution, i.digest()?)
+                }
                 TargetReplicaInput::Quorum(q) => {
                     let p = phase.original().observation().intent.request.phase;
                     ensure!(
-                        matches!(p, LifecyclePhase::Initialize | LifecyclePhase::Complete),
+                        p == LifecyclePhase::Initialize,
                         "start cannot synthesize activation"
                     );
                     (p, q.digest()?)
                 }
             },
             TargetRuntimeStep::Initialize(q) => (LifecyclePhase::Initialize, q.digest()?),
-            TargetRuntimeStep::Complete(q) => (LifecyclePhase::Complete, q.digest()?),
+            TargetRuntimeStep::Complete(q) | TargetRuntimeStep::PrepareComplete(q) => {
+                (LifecyclePhase::Complete, q.digest()?)
+            }
+            TargetRuntimeStep::ResolveComplete(input) => {
+                (LifecyclePhase::ResolveComplete, input.digest()?)
+            }
+            TargetRuntimeStep::MaintainBudget { input, .. } => {
+                (LifecyclePhase::MaintainTarget, input.digest()?)
+            }
             TargetRuntimeStep::ConfirmActivation(signed) => {
                 verify_target_activation(&signed.observation.completion.origin, signed)?;
                 (
@@ -599,6 +875,12 @@ impl TargetRecoveryRuntime {
                 )
             }
             TargetRuntimeStep::Inspect(i) => (LifecyclePhase::InspectTarget, i.digest()?),
+            TargetRuntimeStep::InspectCompletionAttempt(i) => {
+                (LifecyclePhase::InspectCompletionAttempt, i.digest()?)
+            }
+            TargetRuntimeStep::InspectCompletionResolution(i) => {
+                (LifecyclePhase::InspectCompletionResolution, i.digest()?)
+            }
             TargetRuntimeStep::StartActivation {
                 issuer_command_id, ..
             }
@@ -634,6 +916,14 @@ impl TargetRecoveryRuntime {
             ),
         })
     }
+    fn generation_file_id(&self, key: &GenerationKey) -> Result<Uuid> {
+        kasumi_store::node_store_ids::target_generation(
+            self.installed.control_root.control_incarnation,
+            &key.0,
+            key.1,
+            &self.installed.node.verifier,
+        )
+    }
     fn path(&self, key: &GenerationKey) -> Result<PathBuf> {
         ensure!(
             std::fs::canonicalize(&self.installed.generation_root)? == self.root
@@ -645,12 +935,7 @@ impl TargetRecoveryRuntime {
         let path = self
             .root
             .join(format!("{}.{}.redb", digest(&key.0)?, key.1));
-        if let Ok(meta) = std::fs::symlink_metadata(&path) {
-            ensure!(
-                meta.is_file() && !meta.file_type().is_symlink(),
-                "target file is not a regular installed path"
-            );
-        }
+        target_file_exists(&path)?;
         Ok(path)
     }
     async fn perform(
@@ -668,10 +953,31 @@ impl TargetRecoveryRuntime {
         );
         if g.node.is_none() {
             op.check()?;
-            g.node = Some(NodeStore::open(
-                self.path(&key)?,
-                self.audit.store().scratch_disk().clone(),
-            )?);
+            let path = self.path(&key)?;
+            let scratch = self.audit.store().scratch_disk().clone();
+            if matches!(step, TargetRuntimeStep::Materialize(_)) {
+                match self
+                    .journal
+                    .reserve_materialization_file(op)?
+                    .open(&path, scratch)?
+                {
+                    kasumi_engine::MaterializationNode::Created(node) => {
+                        g.node = Some(node);
+                        g.fresh_catalogs = true;
+                    }
+                    kasumi_engine::MaterializationNode::Existing(node) => {
+                        g.node = Some(node);
+                        g.fresh_catalogs = false;
+                    }
+                }
+            } else {
+                g.node = Some(NodeStore::open_existing(
+                    path,
+                    self.journal.materialization_file_id(&key.0, key.1)?,
+                    scratch,
+                )?);
+                g.fresh_catalogs = false;
+            }
             op.check()?;
         }
         if g.stores.is_none() {
@@ -680,17 +986,33 @@ impl TargetRecoveryRuntime {
                 .application_keys
                 .provider(self.credential.clone())?;
             let custody = template.custody_keys.provider(self.credential.clone())?;
-            g.stores = Some(
-                op.run(TenantStorageSet::open(
-                    g.node.as_ref().unwrap().clone(),
+            let node = g.node.as_ref().unwrap().clone();
+            let access = phase.access()?;
+            g.stores = Some(if std::mem::take(&mut g.fresh_catalogs) {
+                ensure!(
+                    matches!(step, TargetRuntimeStep::Materialize(_)),
+                    "only original materialization may initialize catalogs"
+                );
+                op.run(TenantStorageSet::initialize_catalogs(
+                    node,
                     key.0.clone(),
                     app,
                     custody,
-                    phase.access()?,
+                    access,
                 ))
-                .await?,
-            );
+                .await?
+            } else {
+                op.run(TenantStorageSet::open_existing(
+                    node,
+                    key.0.clone(),
+                    app,
+                    custody,
+                    access,
+                ))
+                .await?
+            });
         }
+
         let stores = g.stores.as_ref().unwrap().clone();
         self.config
             .install_tenant_audit_archive(stores.application(), None)?;
@@ -773,8 +1095,19 @@ impl TargetRecoveryRuntime {
         }
         let input = match step {
             TargetRuntimeStep::Start(i) => i.clone(),
+            TargetRuntimeStep::Complete(q) | TargetRuntimeStep::PrepareComplete(q) => {
+                TargetReplicaInput::Completion(q.clone())
+            }
+            TargetRuntimeStep::ResolveComplete(input) => {
+                TargetReplicaInput::CompletionResolution(input.clone())
+            }
+            TargetRuntimeStep::MaintainBudget { quorum, input } => {
+                TargetReplicaInput::ResolutionBudget {
+                    quorum: quorum.clone(),
+                    input: input.clone(),
+                }
+            }
             TargetRuntimeStep::Initialize(q)
-            | TargetRuntimeStep::Complete(q)
             | TargetRuntimeStep::StartActivation { quorum: q, .. }
             | TargetRuntimeStep::Activate { quorum: q, .. } => {
                 TargetReplicaInput::Quorum(q.clone())
@@ -789,6 +1122,12 @@ impl TargetRecoveryRuntime {
                 TargetReplicaInput::Inspection(Box::new(signed.observation.input.clone()))
             }
             TargetRuntimeStep::Inspect(i) => TargetReplicaInput::Inspection(i.clone()),
+            TargetRuntimeStep::InspectCompletionAttempt(i) => {
+                TargetReplicaInput::CompletionAttemptStatus(i.clone())
+            }
+            TargetRuntimeStep::InspectCompletionResolution(i) => {
+                TargetReplicaInput::CompletionTerminalStatus(i.clone())
+            }
             _ => unreachable!(),
         };
         let first = input
@@ -849,6 +1188,68 @@ impl TargetRecoveryRuntime {
                         self.signer.sign_completed(&proof, op).await?,
                     )),
                     ResponseEvidence::Completed(Box::new(proof)),
+                ))
+            }
+            TargetRuntimeStep::PrepareComplete(input) => {
+                let proof = replica
+                    .database()
+                    .prepare_target_completion(op, input.clone())
+                    .await?;
+                Ok((
+                    TargetRuntimeOutcome::PreparedCompletion(Box::new(
+                        self.signer.sign_completion_preparation(&proof, op).await?,
+                    )),
+                    ResponseEvidence::Receiver(Box::new(proof)),
+                ))
+            }
+            TargetRuntimeStep::InspectCompletionAttempt(input) => {
+                let proof = replica
+                    .database()
+                    .inspect_target_completion_attempt(op, *input.clone())
+                    .await?;
+                let signed = self
+                    .signer
+                    .sign_completion_attempt_status(&proof, op)
+                    .await?;
+                Ok((
+                    TargetRuntimeOutcome::CompletionAttemptStatus(Box::new(signed)),
+                    ResponseEvidence::Receiver(Box::new(proof)),
+                ))
+            }
+            TargetRuntimeStep::InspectCompletionResolution(input) => {
+                let proof = replica
+                    .database()
+                    .inspect_target_completion_terminal(op, *input.clone())
+                    .await?;
+                let signed = self
+                    .signer
+                    .sign_completion_terminal_status(&proof, op)
+                    .await?;
+                Ok((
+                    TargetRuntimeOutcome::CompletionTerminalStatus(Box::new(signed)),
+                    ResponseEvidence::Receiver(Box::new(proof)),
+                ))
+            }
+            TargetRuntimeStep::ResolveComplete(input) => {
+                let proof = replica
+                    .database()
+                    .resolve_target_completion(op, *input.clone())
+                    .await?;
+                let signed = self.signer.sign_completion_resolution(&proof, op).await?;
+                Ok((
+                    TargetRuntimeOutcome::ResolvedCompletion(Box::new(signed)),
+                    ResponseEvidence::Receiver(Box::new(proof)),
+                ))
+            }
+            TargetRuntimeStep::MaintainBudget { input, .. } => {
+                let proof = replica
+                    .database()
+                    .maintain_target_resolution_budget(op, input.clone())
+                    .await?;
+                let signed = self.signer.sign_resolution_budget(&proof, op).await?;
+                Ok((
+                    TargetRuntimeOutcome::ResolutionBudget(Box::new(signed)),
+                    ResponseEvidence::Receiver(Box::new(proof)),
                 ))
             }
             TargetRuntimeStep::ConfirmActivation(expected) => {
@@ -948,12 +1349,14 @@ impl TargetRecoveryRuntime {
         op.check()?;
         self.journal.stop(op, proof)?;
         let path = self.path(key)?;
-        if path.exists() {
-            // An exclusive redb owner proves no other process owns the file;
-            // no application provider/key is constructed by this closed path.
-            let node = NodeStore::open(&path, self.audit.store().scratch_disk().clone())?;
-            let node = Arc::try_unwrap(node)
-                .map_err(|_| anyhow::anyhow!("target file has another owner"))?;
+        if target_file_exists(&path)? {
+            // Permanent journal stop and joined generation owners precede this
+            // exact Prepared/Ready file claim. No redb or application keys open.
+            let node = NodeStore::claim_cleanup(&path, self.generation_file_id(key)?)?;
+            ensure!(
+                kasumi_store::private_files::file_identity(&path)? == *node.identity(),
+                "target cleanup path changed after ownership"
+            );
             op.check()?;
             std::fs::remove_file(&path)?;
             std::fs::File::open(&self.root)?.sync_all()?;
@@ -994,10 +1397,18 @@ impl TargetRecoveryRuntime {
         op.check()?;
         Ok(SignedLocalTargetCleanup { fact, signature })
     }
-    pub async fn shutdown(&self) -> Result<()> {
-        let _shutdown = self.shutdown_gate.lock().await;
+    pub async fn shutdown(&self) -> DrainResult {
+        let mut report = self.shutdown_gate.lock().await;
+        let mut retained = None;
         self.closing.store(true, Ordering::Release);
-        self.serving_monitor.drain().await?;
+        // RuntimeWorker returns only after its exact handle joins. Retain its
+        // actual JoinError before waiting for any target or admitted call.
+        if let Err(error) = self.serving_monitor.drain().await {
+            report.merge(&error);
+            if error.completion() == DrainCompletion::Retained {
+                retained = Some(error);
+            }
+        }
         let targets = self
             .generations
             .lock()
@@ -1012,18 +1423,54 @@ impl TargetRecoveryRuntime {
                 p.close();
             }
         }
-        let _all = self.calls.clone().acquire_many_owned(MAX_CALLS).await?;
+        let _all = match self.calls.clone().acquire_many_owned(MAX_CALLS).await {
+            Ok(all) => all,
+            Err(error) => {
+                return Err(DrainFailure::retained(report.record(
+                    "target admitted calls",
+                    0,
+                    error.into(),
+                )));
+            }
+        };
         for target in targets {
-            target
+            if let Err(failure) = target
                 .lock()
                 .await
                 .close(&self.cluster, &self.registry)
-                .await?;
+                .await
+            {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
+            }
         }
-        self.journal.shutdown().await;
-        Ok(())
+        if let Err(failure) = self.journal.shutdown().await {
+            report.merge(&failure);
+            if failure.completion() == DrainCompletion::Retained {
+                retained = Some(failure);
+            }
+        }
+        report.outcome(retained)
     }
 }
+// A failed filesystem observation is not an absence proof. In particular,
+// Path::exists must not turn permission/I/O failures into successful cleanup.
+fn target_file_exists(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            ensure!(
+                metadata.is_file() && !metadata.file_type().is_symlink(),
+                "target file is not a regular installed path"
+            );
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn unknown(error: impl std::fmt::Display) -> anyhow::Error {
     let _ = error;
     Error::new(

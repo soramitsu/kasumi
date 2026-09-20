@@ -1,8 +1,13 @@
 #[tokio::test]
 async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_release_authority() {
     let root = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(root.path().join("node.redb"), kasumi_store::ScratchDisk::fixture()).unwrap();
-    let audit_store = TenantStore::open_fixture(
+    let node = NodeStore::create_new(
+        root.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+    let audit_store = TenantStore::initialize_catalog_fixture(
         node.clone(),
         crate::SECURITY_TENANT.into(),
         Arc::new(LocalKeyProvider::new([0x91; 32])),
@@ -10,8 +15,13 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
     .await
     .unwrap();
     let node_admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
-    let audit = SecurityAudit::open(audit_store, kasumi_types::AuditRetentionBudget::default(), node_admission.clone()).unwrap();
-    let store = TenantStore::open_fixture(
+    let audit = SecurityAudit::initialize(
+        audit_store,
+        kasumi_types::AuditRetentionBudget::default(),
+        node_admission.clone(),
+    )
+    .unwrap();
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         "schema-cancel".into(),
         Arc::new(LocalKeyProvider::new([0x92; 32])),
@@ -34,7 +44,7 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
         strict_read_audit: false,
     };
     let db = crate::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -110,7 +120,7 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
     );
     drop(fence);
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]

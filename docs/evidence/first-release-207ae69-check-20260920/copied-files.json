@@ -1,0 +1,22 @@
+{
+  "evidence.json": {
+    "bytes": 538934,
+    "sha256": "abf1ddcc0972c54caa0a415e1245a4a3fa38473259d4123d9cf9d3f68413a350"
+  },
+  "plan.json": {
+    "bytes": 47083,
+    "sha256": "d7b011167ad63516c90d87ece226b029757bfb011b786e4742984eb5abac84af"
+  },
+  "runner.py": {
+    "bytes": 10765,
+    "sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f"
+  },
+  "source-before.json": {
+    "bytes": 368284,
+    "sha256": "b764c24c2cf3fc0481c6feed47b8a03437b5842891cfea4a3b44ed6a79ecb7ee"
+  },
+  "workspace-all-targets-check.log": {
+    "bytes": 482118,
+    "sha256": "bef679b0f1ccd0e163958efd3289255909a29589a43d644444b3f2a69e535731"
+  }
+}

@@ -12,6 +12,16 @@ empty map selects the private filesystem archive beneath each store's durable
 data directory, in `tenant-audit-archives`. An override selects an additional
 filesystem or S3 destination for that tenant; each replica still preserves the
 exact required ciphertext in its own installed cache before applying pruning.
+The preparing leader publishes and reads back its installed destination before
+proposing a pruning transition. External publication is not repeated during
+committed application. A publication failure during preparation leaves the hot
+prefix intact and retryable without stopping Raft. A single encrypted pending
+segment binds the stream, prior archive root and exact hot prefix; retries and restart
+reuse its object identity and ciphertext. A changed prefix cannot adopt it.
+For HA, configure the same S3 namespace on members if every leader must publish
+to one external archive. Distinct member destinations do not receive additional
+copies from other leaders. Every replica's private filesystem archive remains a
+required durable copy independently of external placement.
 The Control tenant can have its own override. Service security audit and retired
 custody storage have separate configurations.
 

@@ -45,7 +45,8 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
     for profile in [&mut control, &mut tenant] {
         profile.mcp_endpoint = config.mcp.protocol.public_url.clone();
         profile.native_endpoint = format!("https://localhost:{}", addresses[1].port());
-        profile.admin_endpoint = format!("https://localhost:{}", addresses[2].port());
+        profile.administrative_members.get_mut(&1).unwrap().endpoint =
+            format!("https://localhost:{}", addresses[2].port());
     }
     private_files::replace(
         &installation.control_profile,
@@ -57,6 +58,7 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         &serde_json::to_vec_pretty(&tenant).unwrap(),
     )
     .unwrap();
+    crate::standalone::configure_test_topology(&config).await;
     drop(listeners);
     let runtime = NodeRuntime::open(config.clone()).await.unwrap();
     assert!(NodeRuntime::open(config.clone()).await.is_err());
@@ -250,7 +252,11 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
     // Repeated connection failures preserve the same exact pending identity.
     let unavailable = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let mut offline_profile = tenant.clone();
-    offline_profile.admin_endpoint = format!(
+    offline_profile
+        .administrative_members
+        .get_mut(&1)
+        .unwrap()
+        .endpoint = format!(
         "https://localhost:{}",
         unavailable.local_addr().unwrap().port()
     );
@@ -366,9 +372,11 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
         let mut profile = ClientProfile::load(path).unwrap();
         profile.mcp_endpoint = config.mcp.protocol.public_url.clone();
         profile.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
-        profile.admin_endpoint = format!("https://localhost:{}", config.admin.listen.port());
+        profile.administrative_members.get_mut(&1).unwrap().endpoint =
+            format!("https://localhost:{}", config.admin.listen.port());
         private_files::replace(path, &serde_json::to_vec_pretty(&profile).unwrap()).unwrap();
     }
+    crate::standalone::configure_test_topology(&config).await;
     drop(listeners);
     let runtime = NodeRuntime::open(config.clone()).await.unwrap();
     let registry = runtime.registry().clone();
@@ -477,8 +485,11 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
         std::fs::read(&updated.identity.certificate).unwrap()
     );
     assert_ne!(
-        old_profile.admin_certificate_pin,
-        updated.admin_certificate_pin
+        old_profile
+            .administrative_member()
+            .unwrap()
+            .certificate_pins,
+        updated.administrative_member().unwrap().certificate_pins
     );
     backup_operator_keys(
         &installation.configuration,

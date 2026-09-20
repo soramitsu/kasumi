@@ -20,7 +20,13 @@ pub enum TargetRuntimeStep {
     ResumeMaterialization(Box<TargetOrigin>),
     Start(TargetReplicaInput),
     Initialize(TargetQuorumInput),
-    Complete(TargetQuorumInput),
+    Complete(TargetCompletionInput),
+    PrepareComplete(TargetCompletionInput),
+    ResolveComplete(Box<TargetCompletionResolutionInput>),
+    MaintainBudget {
+        quorum: TargetQuorumInput,
+        input: TargetResolutionBudgetInput,
+    },
     /// Open one voter under the exact independently committed issuer winner.
     /// This does not propose or confirm target activation.
     StartActivation {
@@ -34,6 +40,8 @@ pub enum TargetRuntimeStep {
     ConfirmActivation(Box<SignedTargetActivation>),
     ConfirmInspection(Box<SignedTargetInspection>),
     Inspect(Box<TargetInspectionInput>),
+    InspectCompletionAttempt(Box<TargetCompletionAttemptStatusInput>),
+    InspectCompletionResolution(Box<TargetCompletionTerminalStatusInput>),
     Stop(TargetStopReference),
 }
 impl TargetRuntimeRequest {
@@ -55,7 +63,17 @@ impl TargetRuntimeRequest {
             TargetRuntimeStep::Start(input) => {
                 input.quorum().digest()?;
             }
-            TargetRuntimeStep::Initialize(input) | TargetRuntimeStep::Complete(input) => {
+            TargetRuntimeStep::Initialize(input) => {
+                input.digest()?;
+            }
+            TargetRuntimeStep::Complete(input) | TargetRuntimeStep::PrepareComplete(input) => {
+                input.digest()?;
+            }
+            TargetRuntimeStep::ResolveComplete(input) => {
+                input.digest()?;
+            }
+            TargetRuntimeStep::MaintainBudget { quorum, input } => {
+                quorum.digest()?;
                 input.digest()?;
             }
             TargetRuntimeStep::StartActivation {
@@ -79,6 +97,12 @@ impl TargetRuntimeRequest {
                 signed.observation.validate()?;
             }
             TargetRuntimeStep::Inspect(input) => {
+                input.digest()?;
+            }
+            TargetRuntimeStep::InspectCompletionAttempt(input) => {
+                input.digest()?;
+            }
+            TargetRuntimeStep::InspectCompletionResolution(input) => {
                 input.digest()?;
             }
             TargetRuntimeStep::Stop(reference) => {
@@ -109,8 +133,14 @@ pub enum TargetRuntimeOutcome {
         origin_sha256: String,
     },
     Completed(Box<SignedTargetCompletion>),
+    /// A positive capacity reservation, never a completion/activation proof.
+    PreparedCompletion(Box<SignedTargetCompletionAttempt>),
+    ResolvedCompletion(Box<SignedTargetCompletionResolution>),
+    ResolutionBudget(Box<SignedTargetResolutionBudget>),
     Activated(Box<SignedTargetActivation>),
     Inspected(Box<SignedTargetInspection>),
+    CompletionAttemptStatus(Box<SignedTargetCompletionAttemptStatus>),
+    CompletionTerminalStatus(Box<SignedTargetCompletionTerminalStatus>),
     Stopped(Box<SignedLocalTargetCleanup>),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

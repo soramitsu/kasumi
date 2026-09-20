@@ -22,11 +22,15 @@ pub use audit_maintenance::AuditMaintenanceStatus;
 mod backup_format;
 mod backup_proof;
 mod backup_verify;
+mod target_completion_machine;
+#[cfg(test)]
+mod target_completion_status_tests;
 mod target_invocation;
 mod target_signer;
 pub use backup_proof::VerifiedBackupCheckpoint;
 pub use service::target_activation_service::VerifiedTargetActivation;
 pub use service::target_inspection_service::VerifiedTargetInspection;
+pub use service::target_receiver_service::VerifiedTargetReceiver;
 pub use service::target_service::VerifiedTargetCompletion;
 pub use target_invocation::{
     TargetLifecycleInvocation, TargetOperation, TargetOperationScope, TargetRequestAdmission,
@@ -34,18 +38,22 @@ pub use target_invocation::{
 pub use target_signer::TargetSigner;
 mod bootstrap;
 pub mod control;
+mod mutation_receipt;
 pub mod security_audit;
 mod service;
 mod snapshot_codec;
 mod snapshot_index;
+mod staged_terminal;
 mod state;
+mod target_resolution;
 pub use bootstrap::{
-    LocalRestoreRequest, MaterializedTargetReplica, PreparedReplicaRestore, ReplicaPlacement,
-    ReplicaRestoreConfig, ReplicatedBootstrap, RestoreSource, TargetMaterializationConfig,
+    ControlGenesis, ControlLifecycleGenesis, LocalRestoreRequest, MaterializedTargetReplica,
+    OpenedReplica, PreparedReplicaRestore, ReplicaPlacement, ReplicaRestoreConfig,
+    ReplicatedBootstrap, ReplicatedGenesis, RestoreSource, TargetMaterializationConfig,
     TargetReplica, TargetReplicaConfig, VerifiedTargetMaterialization, initialize_replicated,
-    materialize_target_replica, open_local, open_local_with_incarnation, open_replicated,
-    open_target_replica, prepare_replicated_restore, recovery_workspace_bytes, restore_local,
-    resume_target_materialization,
+    materialize_target_replica, open_existing_local, open_existing_replicated, open_local,
+    open_local_with_incarnation, open_replicated, open_target_replica, prepare_replicated_restore,
+    recovery_workspace_bytes, restore_local, resume_target_materialization,
 };
 pub use security_audit::{
     SECURITY_TENANT, SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome,
@@ -81,7 +89,8 @@ impl EncodedResponseFence for RetirementResponseFence<'_> {
 
 mod target_journal;
 pub use target_journal::{
-    TargetJournal, TargetJournalInstallation, TargetJournalIntent, VerifiedTargetServingProjection,
+    MaterializationFile, MaterializationNode, TargetJournal, TargetJournalInstallation,
+    TargetJournalIntent, VerifiedTargetServingProjection,
 };
 
 pub use bootstrap::target_serving::{TargetServingReplica, open_serving_target};

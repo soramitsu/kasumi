@@ -13,20 +13,57 @@ use zeroize::Zeroizing;
 use crate::{GeneratedKey, KeyProvider, SecretKey, WrappedKey, decrypt, encrypt};
 use kasumi_clock::LeaseClock;
 
+/// Explicit fixture identity; production callers must retain their own installed
+/// UUID. Tests of identity mismatch select distinct UUIDs directly.
+pub const NODE_STORE_ID: uuid::Uuid =
+    uuid::Uuid::from_u128(0x5c8c_7c42_e708_452c_b92f_510a_4673_4f2b);
+
 /// Explicitly install an independent custody provider for a trusted test store.
 /// Production configuration must supply both providers through TenantStorageSet.
-pub async fn with_custody(
+pub async fn initialize_custody_fixture(
     application: std::sync::Arc<crate::TenantStore>,
     custody_provider: std::sync::Arc<dyn KeyProvider>,
 ) -> Result<std::sync::Arc<crate::TenantStorageSet>> {
-    let control = crate::TenantStore::open(
+    let control = crate::TenantStore::initialize_catalog_fixture_with_access(
         application.node.clone(),
         crate::CustodyStore::catalog_name(application.tenant()),
         custody_provider,
         crate::StorageAccess::custody(application.tenant()),
     )
     .await?;
-    crate::TenantStorageSet::install(application, control)
+    let result = crate::TenantStorageSet::install(application, control.clone());
+    match result {
+        Ok(stores) => Ok(stores),
+        Err(error) => Err(match control.shutdown().await {
+            Ok(()) => error,
+            Err(failure) => error.context(failure),
+        }),
+    }
+}
+
+/// Reopen the exact authenticated pair surrounding a borrowed test application.
+/// Missing custody or bindings are errors, including a partially created pair.
+pub async fn open_existing_custody_fixture(
+    application: std::sync::Arc<crate::TenantStore>,
+    custody_provider: std::sync::Arc<dyn KeyProvider>,
+) -> Result<std::sync::Arc<crate::TenantStorageSet>> {
+    crate::TenantStorageSet::open_existing(
+        application.node.clone(),
+        application.tenant.clone(),
+        application.provider.clone(),
+        custody_provider,
+        application.access.clone(),
+    )
+    .await
+}
+
+/// Assemble explicitly clocked test domains. This helper is unavailable in
+/// production; production callers use initialize_catalogs or open_existing.
+pub fn with_domains(
+    application: std::sync::Arc<crate::TenantStore>,
+    custody: std::sync::Arc<crate::TenantStore>,
+) -> Result<std::sync::Arc<crate::TenantStorageSet>> {
+    crate::TenantStorageSet::install(application, custody)
 }
 
 pub struct LocalKeyProvider {

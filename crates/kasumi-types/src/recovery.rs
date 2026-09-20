@@ -141,10 +141,71 @@ pub struct RecoveryVoterProgress {
     pub materialization: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub started: Option<Uuid>,
+    /// Latest exact startup dispatch, including an uncertain effect.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub start_attempt: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub confirmation: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub cleanup: Option<Uuid>,
+}
+
+/// Exact logical completion identity carried by each immutable Complete phase.
+/// Its predecessor is a point to a positively sealed native resolution phase.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryCompletionScope {
+    pub intent: Uuid,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub predecessor: Option<Uuid>,
+}
+impl RecoveryCompletionScope {
+    pub fn validate(&self) -> Result<()> {
+        require_recovery(
+            !self.intent.is_nil()
+                && self
+                    .predecessor
+                    .is_none_or(|id| !id.is_nil() && id != self.intent),
+            "completion scope identity differs",
+        )
+    }
+}
+/// Closed historical cursor. Native phase records retain the actual signed
+/// evidence; this bounded index lets an old phase use its exact old context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryCompletionHistory {
+    pub operation_id: Uuid,
+    pub scope: RecoveryCompletionScope,
+    pub current_intent: Uuid,
+    pub preparation_attempt: Uuid,
+    pub preparation: Uuid,
+    pub resolution_attempt: Uuid,
+    pub terminal: Uuid,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub attempted_completion: Option<Uuid>,
+    pub successor_intent: Uuid,
+}
+impl RecoveryCompletionHistory {
+    pub fn validate(&self) -> Result<()> {
+        self.scope.validate()?;
+        require_recovery(
+            [
+                self.operation_id,
+                self.current_intent,
+                self.preparation_attempt,
+                self.preparation,
+                self.resolution_attempt,
+                self.terminal,
+                self.successor_intent,
+            ]
+            .iter()
+            .all(|id| !id.is_nil())
+                && self.successor_intent != self.scope.intent
+                && self.attempted_completion.is_none_or(|id| !id.is_nil()),
+            "closed completion history identity differs",
+        )
+    }
 }
 
 /// The bounded head holds only point references. Complete signed inputs and
@@ -173,6 +234,16 @@ pub struct RecoveryRecord {
     pub initialization: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub completion_intent: Option<Uuid>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub completion_predecessor: Option<Uuid>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub completion_preparation_attempt: Option<Uuid>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub completion_preparation: Option<Uuid>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub completion_resolution_attempt: Option<Uuid>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub completion_terminal: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub completion_attempt: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
@@ -244,6 +315,18 @@ pub enum RecoveryDispatchOutcome {
     CompletionResolution {
         inspection_phase: Uuid,
     },
+    /// Positive original preparation observed by exact retry or fresh read-only status.
+    PreparationObserved {
+        status_phase: Uuid,
+    },
+    /// Exact ordered committed-or-sealed terminal; never an absence inference.
+    CompletionTerminal {
+        resolution_phase: Uuid,
+    },
+    /// Positive exact original resolver terminal observed under fresh authority.
+    TerminalObserved {
+        status_phase: Uuid,
+    },
     SourceRetired(Box<RetirementReceipt>),
     RoutePublished {
         revision: u64,
@@ -265,6 +348,8 @@ pub struct RecoveryPhaseRecord {
     pub sequence: u64,
     pub phase: RecoveryPhase,
     #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub completion_scope: Option<RecoveryCompletionScope>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
     pub previous_phase: Option<Uuid>,
     pub input: RecoveryDispatch,
     pub input_sha256: String,
@@ -279,6 +364,13 @@ pub struct RecoveryPhaseRecord {
 }
 impl RecoveryPhaseRecord {
     pub fn validate(&self) -> Result<()> {
+        if let Some(scope) = &self.completion_scope {
+            scope.validate()?;
+        }
+        require_recovery(
+            (self.phase == RecoveryPhase::Complete) == self.completion_scope.is_some(),
+            "recovery phase completion scope differs",
+        )?;
         validate_name(&self.principal)?;
         require_recovery(
             !self.operation_id.is_nil()
@@ -301,6 +393,12 @@ impl RecoveryPhaseRecord {
 }
 impl RecoveryRecord {
     pub fn validate(&self) -> Result<()> {
+        require_recovery(
+            self.completion_predecessor.is_none_or(|id| {
+                !id.is_nil() && self.completion_intent.is_some_and(|current| current != id)
+            }),
+            "active completion predecessor lacks its original intent",
+        )?;
         self.request.validate()?;
         validate_name(&self.original_principal)?;
         require_recovery(
@@ -352,12 +450,16 @@ impl RecoveryRecord {
 pub struct RecoveryControlState {
     pub operations: imbl::OrdMap<String, RecoveryRecord>,
     pub phases: imbl::OrdMap<String, RecoveryPhaseRecord>,
+    pub completion_history: imbl::OrdMap<String, RecoveryCompletionHistory>,
     /// Permanent target incarnation identity, retained after physical cleanup.
     pub targets: imbl::OrdMap<String, Uuid>,
 }
 impl RecoveryControlState {
     pub fn is_empty(&self) -> bool {
-        self.operations.is_empty() && self.phases.is_empty() && self.targets.is_empty()
+        self.operations.is_empty()
+            && self.phases.is_empty()
+            && self.completion_history.is_empty()
+            && self.targets.is_empty()
     }
 }
 

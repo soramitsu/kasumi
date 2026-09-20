@@ -41,15 +41,26 @@ fn literal_marker_documents_schema_and_staged_records_survive_canonical_snapshot
             archived_document_bytes: 0,
         },
     );
-    let image = kasumi_store::SnapshotImage::capture(
-        &kasumi_store::ScratchDisk::fixture(),
-        64 << 20,
-        |writer| write(&state, writer),
-    )
+    let disk = kasumi_store::ScratchDisk::fixture();
+    let terminals = crate::staged_terminal::View::empty(&state.tenant, &state.incarnation).unwrap();
+    let target_resolutions =
+        crate::target_resolution::View::empty(&state.tenant, &state.incarnation).unwrap();
+    let image = kasumi_store::SnapshotImage::capture(&disk, 64 << 20, |writer| {
+        write(
+            &state,
+            &crate::mutation_receipt::View::empty(&state.tenant, &state.incarnation)?,
+            &terminals,
+            &target_resolutions,
+            writer,
+        )
+    })
     .unwrap();
-    let restored = read(&mut image.reader()).unwrap();
-    assert_eq!(restored.collections["docs"].definition, definition);
-    assert_eq!(restored.collections["docs"].documents["first"], document);
+    let restored = read(image.disk(), &mut image.reader()).unwrap();
+    assert_eq!(restored.state.collections["docs"].definition, definition);
+    assert_eq!(
+        restored.state.collections["docs"].documents["first"],
+        document
+    );
     let index = crate::snapshot_index::StagedSnapshot::new(image, 16 << 20, || Ok(())).unwrap();
     let Some(Record::Document(_, observed)) = index.get(3, "docs", "first").unwrap() else {
         panic!("document record missing")

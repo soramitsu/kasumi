@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import struct
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -26,6 +27,10 @@ class PackageReleaseTests(unittest.TestCase):
         (root / "source.tar").write_bytes(b"unit fixture archive")
         write_json(root / "source-files.json", inventory(source))
         (root / "target").mkdir()
+        (root / "tools").mkdir()
+        (root / "tools/python").write_bytes(b"synthetic remote interpreter bytes")
+        interpreter = {"path": "/native/remote/bin/python3.13", "artifact": "tools/python",
+                       "sha256": sha256(root / "tools/python")}
         artifacts = {}
         for name in package.BINARIES:
             binary = root / "target" / name
@@ -35,7 +40,7 @@ class PackageReleaseTests(unittest.TestCase):
             binary.write_bytes(header)
             artifacts[name] = {"target": name, "test": False, "sha256": sha256(binary)}
         gates = []
-        for name, command in functional_gates(2):
+        for name, command in functional_gates(2, interpreter["path"]):
             log = root / (name + ".log")
             log.write_text("host: aarch64-unknown-linux-gnu\n" if name == "toolchain" else "fixture\n")
             resources = root / (name + "-resources.json")
@@ -47,6 +52,9 @@ class PackageReleaseTests(unittest.TestCase):
                        "errors": [], "drained": True, "process_returncode": 0}
             process = root / (name + "-process.json")
             write_json(process, {"status": "passed", "outputs_stable": True, "command": command, "exit_code": 0,
+                                 "executable": {"path": interpreter["path"], "sha256": interpreter["sha256"]}
+                                 if name in {"python", "dependency-patches"} else
+                                 {"path": "/native/remote/bin/" + command[0], "sha256": "a" * 64},
                                  "process_exit_code": 0, "timeout_seconds": 14400, "timed_out": False,
                                  "received_signals": [], "error": None, "process_group": 123,
                                  "cleanup": cleanup})
@@ -57,12 +65,51 @@ class PackageReleaseTests(unittest.TestCase):
             gates.append(gate)
         record = {"schema": 1, "status": "passed", "toolchain": package.TOOLCHAIN, "jobs": 2,
                   "gate_timeout_seconds": 14400,
+                  "python_executable": interpreter,
                   "runner_inputs": runner_inputs,
                   "gates": gates, "source_files_sha256": sha256(root / "source-files.json"),
                   "source_archive_sha256": sha256(root / "source.tar"),
                   "lockfile_sha256": sha256(source / "Cargo.lock")}
         write_json(root / "evidence.json", record)
         return record
+
+    def test_remote_python_identity_survives_verification_on_another_host(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record = self.make_evidence(root)
+            self.assertNotEqual(record["python_executable"]["path"], sys.executable)
+            self.assertFalse(Path(record["python_executable"]["path"]).exists())
+            self.assertEqual(package.verify_evidence(root)[0], record)
+
+    def test_python_evidence_cannot_replace_or_omit_the_dispatched_interpreter(self):
+        for changed in ("missing", "relative", "bytes", "digest", "different-process", "missing-process", "different-command"):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                record = self.make_evidence(root)
+                gate = next(g for g in record["gates"] if g["name"] == "python")
+                if changed == "missing":
+                    del record["python_executable"]
+                elif changed == "relative":
+                    record["python_executable"]["path"] = "python3"
+                elif changed == "bytes":
+                    (root / "tools/python").write_bytes(b"substituted interpreter")
+                elif changed == "digest":
+                    record["python_executable"]["sha256"] = "z" * 64
+                else:
+                    path = root / gate["process"]
+                    process = json.loads(path.read_text())
+                    if changed == "different-process":
+                        process["executable"]["sha256"] = "0" * 64
+                    elif changed == "missing-process":
+                        del process["executable"]
+                    else:
+                        process["command"][0] = sys.executable
+                        gate["command"][0] = sys.executable
+                    write_json(path, process)
+                    gate["process_sha256"] = sha256(path)
+                write_json(root / "evidence.json", record)
+                with self.assertRaises(ValueError):
+                    package.verify_evidence(root)
 
     def test_changed_binary_log_source_and_failed_gate_cannot_be_packaged(self):
         for changed in ("binary", "log", "source", "failed", "missing-inventory", "missing-doc-gate", "missing-network-gate",

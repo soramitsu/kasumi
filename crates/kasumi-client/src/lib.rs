@@ -22,6 +22,13 @@ pub use snapshot_decode::{
 mod credentials;
 mod security_audit;
 pub use security_audit::VerifiedSecurityAuditArchive;
+mod installed_pool;
+mod lifecycle_pool;
+mod recovery_pool;
+mod retirement_pool;
+pub use lifecycle_pool::KasumiLifecyclePool;
+pub use recovery_pool::KasumiRecoveryPool;
+pub use retirement_pool::KasumiRetirementPool;
 mod recovery;
 pub use recovery::KasumiRecoveryClient;
 mod lifecycle;
@@ -30,10 +37,14 @@ mod authority;
 mod authority_pool;
 mod control_signer;
 pub use control_signer::CurrentControlSignerObservation;
+mod signer_publication;
+pub use signer_publication::CurrentSignerPublication;
 mod data_pool;
 mod mutation_receipt;
 pub use authority_pool::KasumiAuthorityPool;
-pub use data_pool::{KasumiClientPool, RoutedOrderedSeekPage, RoutedQueryPage, RoutedSnapshotLease};
+pub use data_pool::{
+    KasumiClientPool, RoutedOrderedSeekPage, RoutedQueryPage, RoutedSnapshotLease,
+};
 pub use mutation_receipt::verify_mutation_receipt;
 mod restore_lineage_proof;
 mod retirement_proof;
@@ -299,10 +310,17 @@ impl KasumiClient {
 /// Connect this client to the separate administrative listener.
 #[derive(Clone)]
 pub struct KasumiAdminClient {
+    deadline: Option<tokio::time::Instant>,
     bounded_channel: Channel,
     inner: proto::kasumi_admin_client::KasumiAdminClient<Channel>,
 }
 impl KasumiAdminClient {
+    pub(crate) fn set_deadline(&mut self, deadline: tokio::time::Instant) {
+        self.deadline = Some(deadline);
+    }
+    fn authorized<T>(&self, bearer: &str, value: T) -> Result<tonic::Request<T>, ClientError> {
+        crate::authorized_until(bearer, value, self.deadline)
+    }
     pub async fn backup_session_status(
         &mut self,
         bearer: &str,
@@ -493,6 +511,7 @@ impl KasumiAdminClient {
         )
         .await?;
         Ok(Self {
+            deadline: None,
             bounded_channel: channel.clone(),
             inner: proto::kasumi_admin_client::KasumiAdminClient::new(channel)
                 .max_encoding_message_size((8 << 20) + (64 << 10))
@@ -527,6 +546,24 @@ fn encode(value: &impl Serialize) -> Result<Vec<u8>, ClientError> {
         return Err(ClientError::RequestTooLarge);
     }
     Ok(bytes)
+}
+
+fn authorized_until<T>(
+    bearer: &str,
+    value: T,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<Request<T>, ClientError> {
+    let mut request = authorized(bearer, value)?;
+    if let Some(deadline) = deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(
+                tonic::Status::deadline_exceeded("native operation deadline elapsed").into(),
+            );
+        }
+        request.set_timeout(remaining);
+    }
+    Ok(request)
 }
 
 fn authorized<T>(bearer: &str, value: T) -> Result<Request<T>, ClientError> {

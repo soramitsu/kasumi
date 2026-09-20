@@ -16,11 +16,23 @@ pub use audit_archive::{
 mod backup;
 mod backup_sessions;
 pub use backup_sessions::{
-    BackupSessionObjectPage, BackupSessionObjects, BackupSessionSlot, MAX_SESSION_GC_OBJECTS,
-    MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession, verify_backup_session,
+    BackupSessionObject, BackupSessionObjectPage, BackupSessionObjects, BackupSessionSlot,
+    MAX_SESSION_GC_OBJECTS, MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession,
+    verify_backup_session,
 };
+#[cfg(test)]
+mod allocation_tests;
+mod device_disk;
 mod keys;
+mod node_disk;
+mod node_file;
+pub use node_file::NodeFileCleanup;
+pub mod node_store_ids;
 mod read_view;
+pub use node_disk::{
+    CensusCancellation, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeDiskPhase,
+    NodeDiskSnapshot,
+};
 mod scratch_disk;
 mod scratch_table;
 pub use scratch_disk::{ScratchDisk, ScratchDiskConfig, ScratchDiskSnapshot};
@@ -44,6 +56,7 @@ pub use backup::{
 };
 pub use backup::{MAX_BACKUP_BUNDLE_BYTES, MAX_BACKUP_OBJECT_BYTES};
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
+use kasumi_types::drain::{DrainReport, DrainResult};
 pub use keys::{
     GeneratedKey, KeyProvider, SecretKey, TransitConfig, TransitKeyProvider, WrappedKey,
 };
@@ -140,55 +153,122 @@ pub(crate) fn durable_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[derive(Default)]
+struct InitializerRegistry {
+    handles: Vec<tokio::task::JoinHandle<Result<()>>>,
+    // A joined failure is still unreported while a cancelled drain has more
+    // owners to await. Keep that outcome with the surviving task registry.
+    failure: Option<anyhow::Error>,
+}
+impl InitializerRegistry {
+    async fn reap_finished(&mut self) -> Result<()> {
+        while let Some(index) = self
+            .handles
+            .iter()
+            .position(tokio::task::JoinHandle::is_finished)
+        {
+            let result = (&mut self.handles[index]).await;
+            drop(self.handles.swap_remove(index));
+            if let Err(error) = result
+                .context("catalog initializer task join failed")
+                .and_then(|outcome| outcome)
+            {
+                self.failure.get_or_insert(error);
+            }
+        }
+        self.take_failure()
+    }
+    fn take_failure(&mut self) -> Result<()> {
+        self.failure.take().map_or(Ok(()), |error| {
+            Err(error.context("catalog initializer task failed"))
+        })
+    }
+}
+
 pub struct NodeStore {
     db: Database,
     scratch_disk: Arc<ScratchDisk>,
     path: Option<PathBuf>,
     tenants: AsyncMutex<HashMap<String, Arc<AsyncMutex<Weak<TenantStore>>>>>,
+    // Retain initialization tasks through rejected/cancelled result delivery.
+    initializers: AsyncMutex<InitializerRegistry>,
 }
 
 impl NodeStore {
-    pub fn open(path: impl AsRef<Path>, scratch_disk: Arc<ScratchDisk>) -> Result<Arc<Self>> {
-        let path = path.as_ref();
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        durable_directory(parent).context("creating database directory")?;
-        let file = private_files::open_database(path).context("opening private database file")?;
-        let db = Database::builder()
-            .create_file(file)
-            .context("opening durable database")?;
-        let node = Self::from_database(db, Some(std::fs::canonicalize(path)?), scratch_disk)?;
-        // redb synchronizes file contents; a new directory entry needs its own
-        // persistence before any acknowledged first write can be crash durable.
-        std::fs::File::open(parent)?
-            .sync_all()
-            .context("syncing database directory entry")?;
-        Ok(node)
+    /// Claim an exact recognized Prepared or Ready inode for independently
+    /// authorized cleanup. No redb open, initialization or repair takes place.
+    /// This physical guard grants no authority to stop or delete a generation.
+    pub fn claim_cleanup(path: impl AsRef<Path>, expected_id: Uuid) -> Result<NodeFileCleanup> {
+        node_file::NodeFile::claim_cleanup(path.as_ref(), expected_id)
     }
 
-    /// Reopen an installed database without creating directories or an absent
-    /// file. Validation and redb operate on the same owner-only descriptor.
-    pub fn open_existing(
+    /// Initialize a new, exclusively created inode. Its parent must exist.
+    /// The caller durably chooses `node_store_id` before creating the file and
+    /// retains responsibility for exact partial/uncertain initialization cleanup.
+    pub fn create_new(
         path: impl AsRef<Path>,
+        node_store_id: Uuid,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
-        let path = path.as_ref();
-        let file = private_files::open_existing_database(path)?;
-        let db = Database::builder().create_file(file)?;
-        // A valid unrelated redb file is not an initialized Kasumi store.
+        Self::initialize(
+            node_file::NodeFile::create_new(path.as_ref(), node_store_id)?,
+            scratch_disk,
+        )
+    }
+
+    /// Initialize the exact empty inode already durably owned by an installation
+    /// or recovery journal. A populated/partial file is never adopted or reset.
+    pub fn initialize_owned_empty(
+        path: impl AsRef<Path>,
+        expected_file: &private_files::FileIdentity,
+        node_store_id: Uuid,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
+        Self::initialize(
+            node_file::NodeFile::initialize_owned_empty(
+                path.as_ref(),
+                expected_file,
+                node_store_id,
+            )?,
+            scratch_disk,
+        )
+    }
+
+    fn initialize(
+        file: Arc<node_file::NodeFile>,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
+        let db = Database::builder().create_with_backend(file.backend())?;
+        Self::initialize_tables(&db)?;
+        file.publish_ready()?;
+        Ok(Self::installed(
+            db,
+            Some(file.path().to_owned()),
+            scratch_disk,
+        ))
+    }
+
+    /// Reject unknown/partial files and a different installed UUID before redb
+    /// can write. The exact locked descriptor survives validation and recovery.
+    /// A recognized owned payload may need redb recovery bookkeeping even if a
+    /// later table, tenant, or bootstrap check rejects its logical contents.
+    pub fn open_existing(
+        path: impl AsRef<Path>,
+        expected_id: Uuid,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
+        let file = node_file::NodeFile::open_existing(path.as_ref(), expected_id)?;
+        let db = Database::builder().create_with_backend(file.backend())?;
         {
             let tx = db.begin_read()?;
             tx.open_table(CATALOG)?;
             tx.open_table(RECORDS)?;
         }
-        Ok(Arc::new(Self {
+        Ok(Self::installed(
             db,
+            Some(file.path().to_owned()),
             scratch_disk,
-            path: Some(std::fs::canonicalize(path)?),
-            tenants: AsyncMutex::new(HashMap::new()),
-        }))
+        ))
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -196,11 +276,9 @@ impl NodeStore {
         backend: impl redb::StorageBackend,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
-        Self::from_database(
-            Database::builder().create_with_backend(backend)?,
-            None,
-            scratch_disk,
-        )
+        let db = Database::builder().create_with_backend(backend)?;
+        Self::initialize_tables(&db)?;
+        Ok(Self::installed(db, None, scratch_disk))
     }
 
     /// Every temporary image/table on this node shares this explicit owner.
@@ -208,11 +286,7 @@ impl NodeStore {
         &self.scratch_disk
     }
 
-    fn from_database(
-        db: Database,
-        path: Option<PathBuf>,
-        scratch_disk: Arc<ScratchDisk>,
-    ) -> Result<Arc<Self>> {
+    fn initialize_tables(db: &Database) -> Result<()> {
         let mut tx = db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         tx.set_two_phase_commit(true);
@@ -221,16 +295,24 @@ impl NodeStore {
             tx.open_table(RECORDS)?;
         }
         tx.commit()?;
-        Ok(Arc::new(Self {
+        Ok(())
+    }
+
+    fn installed(db: Database, path: Option<PathBuf>, scratch_disk: Arc<ScratchDisk>) -> Arc<Self> {
+        Arc::new(Self {
             db,
             scratch_disk,
             path,
             tenants: AsyncMutex::new(HashMap::new()),
-        }))
+            initializers: AsyncMutex::new(InitializerRegistry::default()),
+        })
     }
 
     fn catalog(&self, tenant: &str) -> Result<Option<KeyCatalog>> {
-        let tx = self.db.begin_read()?;
+        Self::catalog_at(&self.db.begin_read()?, tenant)
+    }
+
+    fn catalog_at(tx: &redb::ReadTransaction, tenant: &str) -> Result<Option<KeyCatalog>> {
         let table = tx.open_table(CATALOG)?;
         table
             .get(tenant_hash(tenant).as_slice())?
@@ -261,7 +343,7 @@ impl NodeStore {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct KeyCatalog {
     format: u32,
@@ -340,16 +422,28 @@ pub struct TenantStore {
     // Low bit closes admission; the remaining bits invalidate in-flight probes.
     access_epoch: AtomicU64,
     shutdown_requested: AtomicBool,
+    shutdown_signal: watch::Sender<bool>,
     background: AsyncMutex<BackgroundTasks>,
     audit_placement: Mutex<Option<Arc<TenantAuditPlacement>>>,
-    live_trust: Mutex<BTreeMap<String, Weak<kasumi_serving::LiveSignerTrust>>>,
+    live_trust: Mutex<
+        BTreeMap<
+            String,
+            (
+                Weak<kasumi_serving::LiveSignerTrust>,
+                kasumi_serving::BackgroundWorkScope,
+            ),
+        >,
+    >,
 }
 
 #[derive(Default)]
 struct BackgroundTasks {
     started: bool,
     handles: Vec<tokio::task::JoinHandle<()>>,
+    report: DrainReport,
 }
+
+mod single_catalog;
 
 impl Drop for TenantStore {
     fn drop(&mut self) {
@@ -373,158 +467,19 @@ impl TenantStore {
         self.node.scratch_disk()
     }
 
-    pub async fn open(
+    /// Construct an unpublished owner. The caller retains its open gate until
+    /// either publication or completed shutdown of this exact new owner.
+    fn unpublished(
         node: Arc<NodeStore>,
         tenant: String,
         provider: Arc<dyn KeyProvider>,
         access: StorageAccess,
-    ) -> Result<Arc<Self>> {
-        Self::open_inner(
-            node,
-            tenant,
-            provider,
-            Arc::new(SystemLeaseClock),
-            true,
-            access,
-        )
-        .await
-    }
-
-    /// Open an explicitly initialized tenant catalog. This is required for
-    /// independent verifier metadata; a wrong physical identity cannot seed a
-    /// fresh catalog in an existing application or unrelated metadata file.
-    pub async fn open_existing(
-        node: Arc<NodeStore>,
-        tenant: String,
-        provider: Arc<dyn KeyProvider>,
-        access: StorageAccess,
-    ) -> Result<Arc<Self>> {
-        access.validate_tenant(&tenant)?;
-        ensure!(
-            node.catalog(&tenant)?.is_some(),
-            "tenant catalog is not initialized"
-        );
-        Self::open(node, tenant, provider, access).await
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub async fn open_fixture(
-        node: Arc<NodeStore>,
-        tenant: String,
-        provider: Arc<dyn KeyProvider>,
-    ) -> Result<Arc<Self>> {
-        let access = StorageAccess::fixture_for(&tenant);
-        Self::open(node, tenant, provider, access).await
-    }
-    #[cfg(any(test, feature = "test-utils"))]
-    pub async fn open_fixture_with_clock(
-        node: Arc<NodeStore>,
-        tenant: String,
-        provider: Arc<dyn KeyProvider>,
         clock: Arc<dyn LeaseClock>,
-    ) -> Result<Arc<Self>> {
-        let access = StorageAccess::fixture_for(&tenant);
-        Self::open_inner(node, tenant, provider, clock, false, access).await
-    }
-    #[cfg(any(test, feature = "test-utils"))]
-    pub async fn open_with_clock(
-        node: Arc<NodeStore>,
-        tenant: String,
-        provider: Arc<dyn KeyProvider>,
-        clock: Arc<dyn LeaseClock>,
-        access: StorageAccess,
-    ) -> Result<Arc<Self>> {
-        Self::open_inner(node, tenant, provider, clock, false, access).await
-    }
-
-    async fn open_inner(
-        node: Arc<NodeStore>,
-        tenant: String,
-        provider: Arc<dyn KeyProvider>,
-        clock: Arc<dyn LeaseClock>,
-        renew: bool,
-        access: StorageAccess,
-    ) -> Result<Arc<Self>> {
-        access.validate_tenant(&tenant)?;
-        ensure!(
-            !tenant.is_empty() && tenant.len() <= 1024,
-            "invalid tenant identifier"
-        );
-        // Serialize only concurrent opens of the same tenant. A slow KMS cannot
-        // hold the node-wide registry lock while unrelated tenants are opening.
-        let gate = node
-            .tenants
-            .lock()
-            .await
-            .entry(tenant.clone())
-            .or_default()
-            .clone();
-        let mut slot = gate.lock().await;
-        if let Some(existing) = slot.upgrade() {
-            ensure!(
-                existing.access.purpose() == access.purpose(),
-                "existing storage purpose differs"
-            );
-            if existing.shutdown_requested.load(Ordering::Acquire) {
-                // Join any cancellation-interrupted shutdown before publishing a
-                // distinct store. Retained old handles stay permanently sealed.
-                existing.shutdown().await;
-            } else {
-                // A new boot cannot replace a live handle's original capability.
-                match (existing.access.serving_gate(), access.serving_gate()) {
-                    (Some(old), Some(new)) => ensure!(
-                        Arc::ptr_eq(old, new),
-                        "live store belongs to another serving capability"
-                    ),
-                    (None, None) => {}
-                    _ => anyhow::bail!("live store serving capability differs"),
-                }
-                match (existing.access.lifecycle_gate(), access.lifecycle_gate()) {
-                    (Some(old), Some(new)) => ensure!(
-                        Arc::ptr_eq(old, new),
-                        "live store belongs to another lifecycle capability"
-                    ),
-                    (None, None) => {}
-                    _ => anyhow::bail!("live store lifecycle capability differs"),
-                }
-                existing.check_access()?;
-                return Ok(existing);
-            }
-        }
-        let catalog = if let Some(catalog) = node.catalog(&tenant)? {
-            ensure!(
-                &catalog.purpose == access.purpose(),
-                "wrapped catalog storage authority differs"
-            );
-            catalog
-        } else {
-            let root = tokio::time::timeout(PROVIDER_TIMEOUT, provider.generate_key(&tenant))
-                .await
-                .context("key generation timed out")??;
-            access.check()?;
-            let data = tokio::time::timeout(PROVIDER_TIMEOUT, provider.generate_key(&tenant))
-                .await
-                .context("key generation timed out")??;
-            access.check()?;
-            let active = Uuid::new_v4().to_string();
-            let catalog = KeyCatalog {
-                format: 1,
-                catalog_id: Uuid::new_v4(),
-                tenant: tenant.clone(),
-                purpose: access.purpose().clone(),
-                active: active.clone(),
-                keys: BTreeMap::from([
-                    (INDEX_KEY.to_owned(), root.wrapped),
-                    (active, data.wrapped),
-                ]),
-            };
-            // Drop plaintext generation responses. Initial access requires fresh decrypts.
-            node.save_catalog(&tenant, &catalog)?;
-            access.check()?;
-            catalog
-        };
+        catalog: KeyCatalog,
+    ) -> Arc<Self> {
         let (seal_notifier, _) = watch::channel(0);
-        let store = Arc::new(Self {
+        let (shutdown_signal, _) = watch::channel(false);
+        Arc::new(Self {
             node: node.clone(),
             tenant: tenant.clone(),
             access,
@@ -541,30 +496,70 @@ impl TenantStore {
             seal_notifier,
             access_epoch: AtomicU64::new(1),
             shutdown_requested: AtomicBool::new(false),
+            shutdown_signal,
             background: AsyncMutex::new(BackgroundTasks::default()),
             audit_placement: Mutex::new(None),
             live_trust: Mutex::new(BTreeMap::new()),
-        });
-        store.refresh_lease().await?;
-        // Register every background owner before another open can see this store.
-        if renew {
-            Self::start_renewal(&store).await;
-        }
-        *slot = Arc::downgrade(&store);
-        drop(slot);
-        Ok(store)
+        })
     }
 
+    async fn generate_catalog(
+        tenant: &str,
+        provider: &Arc<dyn KeyProvider>,
+        access: &StorageAccess,
+    ) -> Result<KeyCatalog> {
+        access.check()?;
+        let root = tokio::time::timeout(PROVIDER_TIMEOUT, provider.generate_key(tenant))
+            .await
+            .context("key generation timed out")??;
+        access.check()?;
+        let data = tokio::time::timeout(PROVIDER_TIMEOUT, provider.generate_key(tenant))
+            .await
+            .context("key generation timed out")??;
+        access.check()?;
+        let active = Uuid::new_v4().to_string();
+        let catalog = KeyCatalog {
+            format: 1,
+            catalog_id: Uuid::new_v4(),
+            tenant: tenant.to_owned(),
+            purpose: access.purpose().clone(),
+            active: active.clone(),
+            keys: BTreeMap::from([(INDEX_KEY.to_owned(), root.wrapped), (active, data.wrapped)]),
+        };
+        catalog.validate(tenant)?;
+        Ok(catalog)
+    }
+
+    #[cfg(test)]
     async fn start_renewal(store: &Arc<Self>) {
+        let (ready, receive) = watch::channel(true);
+        Self::prepare_renewal(store, receive).await;
+        drop(ready);
+    }
+
+    /// Register dormant workers before a prepared owner becomes visible. Their
+    /// first key probe cannot run before the synchronous handoff commits.
+    async fn prepare_renewal(store: &Arc<Self>, ready: watch::Receiver<bool>) {
         let mut background = store.background.lock().await;
         if background.started || store.shutdown_requested.load(Ordering::Acquire) {
             return;
         }
         background.started = true;
         let weak = Arc::downgrade(store);
+        let mut checking_ready = ready.clone();
+        let mut stopping = store.shutdown_signal.subscribe();
         background.handles.push(tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                _ = stopping.wait_for(|stopped| *stopped) => return,
+                ready = checking_ready.wait_for(|ready| *ready) => if ready.is_err() { return; },
+            }
             loop {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::select! {
+                    biased;
+                    _ = stopping.wait_for(|stopped| *stopped) => return,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                }
                 let Some(store) = weak.upgrade() else { return };
                 if store.check_access().is_err() {
                     return;
@@ -572,7 +567,14 @@ impl TenantStore {
             }
         }));
         let weak = Arc::downgrade(store);
+        let mut refreshing_ready = ready;
+        let mut stopping = store.shutdown_signal.subscribe();
         background.handles.push(tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                _ = stopping.wait_for(|stopped| *stopped) => return,
+                ready = refreshing_ready.wait_for(|ready| *ready) => if ready.is_err() { return; },
+            }
             let interval = Duration::from_secs(20);
             let mut schedule =
                 tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
@@ -580,11 +582,20 @@ impl TenantStore {
             // issuing a burst of catch-up decrypt requests after a delayed poll.
             schedule.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                schedule.tick().await;
+                tokio::select! {
+                    biased;
+                    _ = stopping.wait_for(|stopped| *stopped) => return,
+                    _ = schedule.tick() => {},
+                }
                 let Some(store) = weak.upgrade() else { return };
                 // Sealing requires explicit recovery; a timer never silently unseals.
-                if store.check_access().is_err() || store.refresh_lease().await.is_err() {
+                if store.check_access().is_err() {
                     return;
+                }
+                tokio::select! {
+                    biased;
+                    _ = stopping.wait_for(|stopped| *stopped) => return,
+                    refreshed = store.refresh_lease() => if refreshed.is_err() { return; },
                 }
             }
         }));
@@ -597,20 +608,27 @@ impl TenantStore {
     /// store/node handles before reopening the database file. Concurrent calls
     /// are safe; canceling this future leaves task handles available for a later
     /// call to finish waiting. A shutdown store cannot be refreshed or restarted.
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self) -> DrainResult {
         self.shutdown_requested.store(true, Ordering::Release);
+        self.shutdown_signal.send_replace(true);
         self.seal();
         let mut background = self.background.lock().await;
-        for task in &background.handles {
-            task.abort();
-        }
+        // Cooperative stop returns normally. Any JoinError, including an abort
+        // requested elsewhere before shutdown, is an actual terminal failure.
         // Await in place: dropping a shutdown future must not detach a task. Pop
         // each completed handle before awaiting another, because a completed
         // JoinHandle must never be polled twice by a subsequent shutdown caller.
         while let Some(task) = background.handles.last_mut() {
-            let _ = task.await;
+            let result = task.await;
+            let index = background.handles.len() - 1;
+            if let Err(error) = result {
+                background
+                    .report
+                    .record("store worker", index, error.into());
+            }
             background.handles.pop();
         }
+        background.report.complete()
     }
 
     pub fn tenant(&self) -> &str {

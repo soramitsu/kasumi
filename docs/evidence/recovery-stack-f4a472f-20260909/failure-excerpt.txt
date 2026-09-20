@@ -1,0 +1,12 @@
+{"reason":"build-finished","success":true}
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s
+     Running tests/lifecycle.rs (/private/tmp/kasumi-production-root-target/debug/deps/lifecycle-c7c48daaf7d59fcb)
+
+running 1 test
+test recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward ... 
+thread 'recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward' (23564005) has overflowed its stack
+fatal runtime error: stack overflow, aborting
+error: test failed, to rerun pass `-p kasumi-engine --test lifecycle`
+
+Caused by:
+  process didn't exit successfully: `/private/tmp/kasumi-production-root-target/debug/deps/lifecycle-c7c48daaf7d59fcb 'recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward' --exact --test-threads=1` (signal: 6, SIGABRT: process abort signal)

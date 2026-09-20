@@ -24,10 +24,12 @@ pub struct SignerVerifierConfig {
     pub identity: TrustVerifierIdentity,
     pub database_path: PathBuf,
     pub keys: KeyProviderSettings,
+    pub max_background_workers: usize,
 }
 impl SignerVerifierConfig {
     pub fn validate(&self) -> Result<()> {
         self.identity.validate()?;
+        BackgroundWorkBudget::required_bytes(self.max_background_workers, 1)?;
         ensure!(
             self.database_path.is_absolute(),
             "verifier storage requires an installed absolute path"
@@ -47,29 +49,74 @@ impl SignerVerifierConfig {
                 .parent()
                 .context("verifier directory missing")?,
         )?;
-        let node = if initialize {
-            NodeStore::open(&self.database_path, scratch_disk.clone())?
-        } else {
-            NodeStore::open_existing(&self.database_path, scratch_disk.clone())?
-        };
-        let provider = self.keys.provider(credential)?;
-        let access = StorageAccess::live_signer_trust(self.identity.clone())?;
-        if initialize {
-            TenantStore::open(node, self.identity.tenant(), provider, access).await
-        } else {
-            TenantStore::open_existing(node, self.identity.tenant(), provider, access).await
+        let database_id = kasumi_store::node_store_ids::signer_verifier(&self.identity)?;
+        // Preparation is called only inside a retained startup/installation
+        // owner. Keep acquired scopes outside the caught future until cleanup
+        // has actually joined every initializer and worker.
+        let mut pending = crate::startup_resources::Resources::default();
+        let prepared = crate::startup_preparation::capture("signer verifier storage", async {
+            let provider = self.keys.provider(credential)?;
+            let access = StorageAccess::live_signer_trust(self.identity.clone())?;
+            let node = if initialize {
+                NodeStore::create_new(&self.database_path, database_id, scratch_disk.clone())?
+            } else {
+                NodeStore::open_existing(&self.database_path, database_id, scratch_disk.clone())?
+            };
+            pending.nodes.push(node.clone());
+            #[cfg(test)]
+            crate::startup_preparation::checkpoint(database_id, "verifier-storage-node");
+            let store = if initialize {
+                TenantStore::initialize_catalog(
+                    node.clone(),
+                    self.identity.tenant(),
+                    provider,
+                    access,
+                )
+                .await?
+            } else {
+                TenantStore::open_existing(node.clone(), self.identity.tenant(), provider, access)
+                    .await?
+            };
+            pending.stores.push(store.clone());
+            #[cfg(test)]
+            crate::startup_preparation::checkpoint(database_id, "verifier-storage-catalog");
+            node.drain_initializers().await?;
+            Ok(store)
+        })
+        .await;
+        match prepared {
+            Ok(store) => Ok(store),
+            Err(error) => {
+                #[cfg(test)]
+                crate::startup_preparation::failure_checkpoint(database_id).await;
+                match crate::startup_owner::finish(&mut pending).await {
+                    Ok(()) => Err(error),
+                    Err(drain) => {
+                        Err(error
+                            .context(format!("signer verifier storage drain failed: {drain:#}")))
+                    }
+                }
+            }
         }
     }
+
     pub(crate) async fn open(
         &self,
         domains: BTreeMap<String, SigningDomain>,
         credential: CredentialSource,
         scratch_disk: Arc<kasumi_store::ScratchDisk>,
+        admission: Arc<kasumi_engine::admission::NodeAdmission>,
     ) -> Result<Arc<InstalledSignerVerifier>> {
         ensure!(
             self.database_path.is_file(),
             "signer verifier must be explicitly initialized before runtime startup"
         );
+        self.validate()?;
+        let bytes =
+            BackgroundWorkBudget::required_bytes(self.max_background_workers, domains.len())?;
+        let mut reserved = admission.reserve(bytes, None)?;
+        reserved.retain(bytes);
+        let charge: Arc<dyn Send + Sync> = Arc::new(reserved);
         let store = self.store(credential, false, scratch_disk).await?;
         let administrator = Arc::new(ScopedSignerAdministrator::default());
         let result = (|| -> Result<BTreeMap<String, Arc<LiveSignerTrust>>> {
@@ -86,8 +133,12 @@ impl SignerVerifierConfig {
             let mut owners = BTreeMap::new();
             for (digest, domain) in domains {
                 ensure!(digest == domain.digest()?, "noncanonical verifier domain");
-                let owner =
-                    store.open_live_signer_trust(&self.identity, domain, administrator.clone())?;
+                let owner = store.open_live_signer_trust(
+                    &self.identity,
+                    domain,
+                    administrator.clone(),
+                    BackgroundWorkBudget::new(self.max_background_workers, charge.clone())?,
+                )?;
                 let current = owner.current()?;
                 ensure!(
                     current.revision != 0 || current.active.digest()? == installed.domains[&digest],
@@ -100,14 +151,17 @@ impl SignerVerifierConfig {
         let owners = match result {
             Ok(owners) => owners,
             Err(error) => {
-                store.shutdown().await;
-                return Err(error);
+                return Err(match store.shutdown().await {
+                    Ok(()) => error,
+                    Err(failure) => error.context(failure),
+                });
             }
         };
         Ok(Arc::new(InstalledSignerVerifier {
             store,
             owners,
             administrator,
+            drain_report: Default::default(),
         }))
     }
 }
@@ -115,6 +169,7 @@ pub(crate) struct InstalledSignerVerifier {
     store: Arc<TenantStore>,
     owners: BTreeMap<String, Arc<LiveSignerTrust>>,
     administrator: Arc<ScopedSignerAdministrator>,
+    drain_report: std::sync::Mutex<kasumi_types::drain::DrainReport>,
 }
 impl InstalledSignerVerifier {
     pub(crate) async fn authorize_control(
@@ -201,14 +256,38 @@ impl InstalledSignerVerifier {
             .cloned()
             .context("installed signer domain absent")
     }
-    pub(crate) async fn shutdown(&self) {
+    pub(crate) async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
+        use kasumi_types::drain::DrainCompletion;
         for owner in self.owners.values() {
             owner.close();
         }
+        let mut retained = None;
         for owner in self.owners.values() {
-            owner.drain_background_work().await;
+            if let Err(error) = owner.drain_background_work().await {
+                self.drain_report
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .merge(&error);
+                if error.completion() == DrainCompletion::Retained {
+                    retained = Some(error);
+                }
+            }
         }
-        self.store.shutdown().await;
+        if retained.is_none()
+            && let Err(error) = self.store.shutdown().await
+        {
+            self.drain_report
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .merge(&error);
+            if error.completion() == DrainCompletion::Retained {
+                retained = Some(error);
+            }
+        }
+        self.drain_report
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .outcome(retained)
     }
 }
 
@@ -273,17 +352,51 @@ impl VerifierInstallation {
         Ok(())
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InitializeSignerVerifier {
+    pub admission: kasumi_engine::admission::AdmissionConfig,
     pub scratch_disk: kasumi_store::ScratchDiskConfig,
     pub verifier: SignerVerifierConfig,
     pub initial_certificates: Vec<SigningCertificate>,
 }
+// Only a drained result crosses the acknowledged startup handoff. Abandoned
+// errors remain observable through the retained initialization registry.
+struct InitializedVerifier;
+impl crate::startup_owner::Runtime for InitializedVerifier {
+    fn close(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+}
 impl InitializeSignerVerifier {
     pub async fn initialize(&self) -> Result<()> {
+        crate::startup_owner::open(
+            crate::startup_owner::Kind::SignerVerifier,
+            self.clone().initialize_owned(),
+        )
+        .await?;
+        Ok(())
+    }
+    /// Stop admitting new initializations before joining abandoned operations.
+    /// Cancellation retains the exact pending task and its original failure.
+    pub async fn drain_initializations() -> Result<()> {
+        crate::startup_owner::drain(crate::startup_owner::Kind::SignerVerifier).await
+    }
+    async fn initialize_owned(self) -> Result<InitializedVerifier> {
         self.verifier.validate()?;
         self.scratch_disk.validate()?;
+        let admission = kasumi_engine::admission::NodeAdmission::new(self.admission.clone())?;
+        let bytes = BackgroundWorkBudget::required_bytes(
+            self.verifier.max_background_workers,
+            self.initial_certificates.len(),
+        )?;
+        let mut reserved = admission.reserve(bytes, None)?;
+        reserved.retain(bytes);
+        let charge: Arc<dyn Send + Sync> = Arc::new(reserved);
         ensure!(
             !self.initial_certificates.is_empty() && self.initial_certificates.len() <= 1024,
             "verifier requires a bounded explicit domain set"
@@ -316,75 +429,67 @@ impl InitializeSignerVerifier {
         if !parent.exists() {
             private_files::create_directory(parent)?;
         }
-        let store = self
-            .verifier
-            .store(
-                Arc::new(file_secret),
-                true,
-                kasumi_store::ScratchDisk::open(self.scratch_disk.clone())?,
-            )
-            .await?;
-        let result = (|| -> Result<()> {
-            if let Some(previous) = store.get_bounded(NS, b"installation", 256 << 10)? {
-                ensure!(
-                    serde_json::from_slice::<VerifierInstallation>(&previous)? == installed,
-                    "verifier installation already differs"
-                );
-                let administrator: Arc<dyn LiveTrustAdministrator> =
-                    Arc::new(ScopedSignerAdministrator::default());
-                for certificate in &self.initial_certificates {
-                    let owner = store.open_live_signer_trust(
-                        &self.verifier.identity,
-                        certificate.identity.domain.clone(),
-                        administrator.clone(),
-                    )?;
-                    let current = owner.current()?;
-                    ensure!(
-                        current.revision != 0 || current.active == *certificate,
-                        "initial verifier head differs from completed installation"
-                    );
-                }
-            } else {
-                let administrator: Arc<dyn LiveTrustAdministrator> =
-                    Arc::new(ScopedSignerAdministrator::default());
-                for certificate in &self.initial_certificates {
-                    if store.has_live_signer_trust(
-                        &self.verifier.identity,
-                        &certificate.identity.domain,
-                    )? {
-                        let owner = store.open_live_signer_trust(
-                            &self.verifier.identity,
-                            certificate.identity.domain.clone(),
-                            administrator.clone(),
-                        )?;
-                        ensure!(
-                            owner.current()?
-                                == LocalSignerTrustRecord::initial(
-                                    self.verifier.identity.clone(),
-                                    certificate.clone()
-                                )?,
-                            "partial verifier initialization differs"
-                        );
-                    } else {
-                        store.initialize_live_signer_trust(
-                            &self.verifier.identity,
-                            certificate.clone(),
-                            administrator.clone(),
-                        )?;
-                    }
-                }
-                store.write_batch(&[WriteOp::put(
-                    NS,
-                    b"installation",
-                    serde_json::to_vec(&installed)?,
-                )])?;
+        #[cfg(test)]
+        let database_id = kasumi_store::node_store_ids::signer_verifier(&self.verifier.identity)?;
+        let mut pending = crate::startup_resources::Resources::default();
+        let result = crate::startup_preparation::capture("signer verifier installation", async {
+            let store = self
+                .verifier
+                .store(
+                    Arc::new(file_secret),
+                    true,
+                    kasumi_store::ScratchDisk::open(self.scratch_disk.clone())?,
+                )
+                .await?;
+            pending.stores.push(store.clone());
+            #[cfg(test)]
+            crate::startup_preparation::checkpoint(database_id, "verifier-installation-store");
+            ensure!(
+                store.get_bounded(NS, b"installation", 256 << 10)?.is_none(),
+                "fresh verifier unexpectedly contains an installation"
+            );
+            let administrator: Arc<dyn LiveTrustAdministrator> =
+                Arc::new(ScopedSignerAdministrator::default());
+            for certificate in &self.initial_certificates {
+                // This operation exclusively created the physical file. Neither
+                // a previous head nor partial trust is a resumable installation.
+                store.initialize_live_signer_trust(
+                    &self.verifier.identity,
+                    certificate.clone(),
+                    administrator.clone(),
+                    BackgroundWorkBudget::new(
+                        self.verifier.max_background_workers,
+                        charge.clone(),
+                    )?,
+                )?;
             }
+            #[cfg(test)]
+            crate::startup_preparation::checkpoint(database_id, "verifier-installation-domains");
+            store.write_batch(&[WriteOp::put(
+                NS,
+                b"installation",
+                serde_json::to_vec(&installed)?,
+            )])?;
+            #[cfg(test)]
+            crate::startup_preparation::checkpoint(database_id, "verifier-installation-complete");
             Ok(())
-        })();
-        store.shutdown().await;
-        result
+        })
+        .await;
+        #[cfg(test)]
+        if result.is_err() {
+            crate::startup_preparation::failure_checkpoint(database_id).await;
+        }
+        let drained = crate::startup_owner::finish(&mut pending).await;
+        match (result, drained) {
+            (Ok(()), Ok(())) => Ok(InitializedVerifier),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(drain)) => Err(error.context(format!(
+                "signer verifier installation drain failed: {drain:#}"
+            ))),
+        }
     }
 }
+
 pub async fn initialize_from_file(path: &Path) -> Result<()> {
     let input: InitializeSignerVerifier = serde_json::from_slice(&read_bounded(path, 2 << 20)?)?;
     input.initialize().await

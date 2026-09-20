@@ -60,7 +60,16 @@ pub async fn open_fixture_replicated(
     audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     check(&stores)?;
-    open_replicated_inner(node_id, stores, bootstrap, transport, config, audit, false).await
+    let (database, _) = open_replicated_inner(
+        node_id,
+        stores,
+        transport,
+        config,
+        audit,
+        ReplicaRuntime::FixtureEnrollment(bootstrap),
+    )
+    .await?;
+    Ok(database)
 }
 
 #[cfg(test)]
@@ -72,21 +81,23 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn production_bootstrap_installs_shared_pool_for_application_and_control() {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
         let admission = NodeAdmission::new(Default::default()).unwrap();
-        let audit_store = TenantStore::open_fixture(
+        let audit_store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             crate::SECURITY_TENANT.into(),
             Arc::new(LocalKeyProvider::new([41; 32])),
         )
         .await
         .unwrap();
-        let audit = SecurityAudit::open(audit_store.clone(), Default::default(), admission.clone())
-            .unwrap();
+        let audit =
+            SecurityAudit::initialize(audit_store.clone(), Default::default(), admission.clone())
+                .unwrap();
         assert!(
             SecurityAudit::open(
                 audit_store,
@@ -97,14 +108,14 @@ mod tests {
         );
         let mut databases = Vec::new();
         for name in ["tenant", "__kasumi_control", "manual"] {
-            let store = TenantStore::open_fixture(
+            let store = TenantStore::initialize_catalog_fixture(
                 node.clone(),
                 name.into(),
                 Arc::new(LocalKeyProvider::new([42; 32])),
             )
             .await
             .unwrap();
-            let stores = kasumi_store::test_utils::with_custody(
+            let stores = kasumi_store::test_utils::initialize_custody_fixture(
                 store,
                 Arc::new(LocalKeyProvider::new([43; 32])),
             )
@@ -147,7 +158,7 @@ mod tests {
         for database in databases {
             database.shutdown().await.unwrap();
         }
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
         assert_eq!(admission.snapshot().reserved_bytes, 0);
     }
 }

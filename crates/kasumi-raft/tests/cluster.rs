@@ -31,7 +31,7 @@ impl Cluster {
             nodes: BTreeMap::new(),
         };
         for id in 1..=3 {
-            cluster.open(id).await?;
+            cluster.open(id, true).await?;
         }
         cluster.nodes[&1]
             .group
@@ -45,8 +45,8 @@ impl Cluster {
         Ok(cluster)
     }
 
-    async fn open(&mut self, id: u64) -> Result<()> {
-        let store = common::store(&self.dir.path().join(format!("node-{id}.redb"))).await?;
+    async fn open(&mut self, id: u64, create: bool) -> Result<()> {
+        let store = common::store(&self.dir.path().join(format!("node-{id}.redb")), create).await?;
         let backend = Arc::new(common::Backend::default());
         let group = RaftGroup::open(
             id,
@@ -199,7 +199,7 @@ async fn partition_rejects_minority_reads_and_writes_and_recovers_after_full_res
     // files. No test-side state is carried into the new application instances.
     cluster.stop_all().await?;
     for id in 1..=3 {
-        cluster.open(id).await?;
+        cluster.open(id, false).await?;
     }
     let leader = cluster.leader(&[]).await?;
     let committed = cluster.nodes[&leader]
@@ -259,7 +259,7 @@ async fn snapshot_catches_up_partitioned_follower_and_replaces_a_voter() -> Resu
         .snapshot(last, "follower installed remote snapshot")
         .await?;
 
-    cluster.open(4).await?;
+    cluster.open(4, true).await?;
     let leader = cluster.leader(&[]).await?;
     cluster.nodes[&leader]
         .group
@@ -309,7 +309,7 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
         let group = RaftGroup::local(
             1,
             GROUP.into(),
-            common::store(&path).await?,
+            common::store(&path, true).await?,
             backend.clone(),
         )
         .await?;
@@ -324,7 +324,7 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
     let group = RaftGroup::local(
         1,
         GROUP.into(),
-        common::store(&path).await?,
+        common::store(&path, false).await?,
         backend.clone(),
     )
     .await?;
@@ -335,7 +335,7 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
 #[tokio::test]
 async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let store = common::store(&dir.path().join("fatal-snapshot.redb")).await?;
+    let store = common::store(&dir.path().join("fatal-snapshot.redb"), true).await?;
     let backend = Arc::new(common::Backend::default());
     let group = RaftGroup::local(1, GROUP.into(), store.clone(), backend.clone()).await?;
     group.write(b"committed".to_vec()).await?;
@@ -369,7 +369,7 @@ async fn raft_crash_worker() -> Result<()> {
     let group = RaftGroup::local(
         1,
         GROUP.into(),
-        common::store(&path).await?,
+        common::store(&path, true).await?,
         Arc::new(common::Backend::default()),
     )
     .await?;
@@ -409,7 +409,7 @@ async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown
     let recovered = RaftGroup::local(
         1,
         GROUP.into(),
-        common::store(&path).await?,
+        common::store(&path, false).await?,
         backend.clone(),
     )
     .await?;
@@ -469,7 +469,7 @@ async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_m
         let group = RaftGroup::open(
             id,
             GROUP.into(),
-            common::store(&dir.path().join(format!("node-{id}.redb"))).await?,
+            common::store(&dir.path().join(format!("node-{id}.redb")), true).await?,
             backend.clone(),
             transport.clone(),
             config,

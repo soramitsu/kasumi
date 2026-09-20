@@ -13,13 +13,14 @@ use std::{collections::BTreeSet, sync::Arc};
 #[tokio::test]
 async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_still_applies() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([9; 32])),
@@ -53,7 +54,7 @@ async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_stil
     let group = RaftGroup::local(
         1,
         "tenant/incarnation".into(),
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -145,19 +146,20 @@ async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_stil
         ErrorCode::ResourceExhausted
     );
     database.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
 async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("local.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         "local".into(),
         Arc::new(LocalKeyProvider::new([8; 32])),
@@ -180,7 +182,7 @@ async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
         strict_read_audit: false,
     };
     let database = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -246,5 +248,5 @@ async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
     assert_eq!(response.revision, receipt.revision);
     assert_eq!(response.rows[0].body, response.rows[1].body);
     database.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

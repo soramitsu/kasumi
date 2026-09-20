@@ -1,0 +1,185 @@
+
+<retained-binary>:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010002dc6c <__RNCNvMs6_NtCscLZrSWTiyRM_13kasumi_engine7serviceNtB7_8Database7barrier0Cs9eRdt6wpk4U_9lifecycle>:
+10002dc6c: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+10002dc70: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10002dc74: 910043fd    	add	x29, sp, #0x10
+10002dc78: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+10002dc7c: f90003ff    	str	xzr, [sp]
+10002dc80: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+10002dc84: f90003ff    	str	xzr, [sp]
+10002dc88: d10503ff    	sub	sp, sp, #0x140
+10002dc8c: 914007e9    	add	x9, sp, #0x1, lsl #12   ; =0x1000
+10002dc90: 913e0129    	add	x9, x9, #0xf80
+10002dc94: f9000fe9    	str	x9, [sp, #0x18]
+10002dc98: f90013e8    	str	x8, [sp, #0x20]
+10002dc9c: f90017e0    	str	x0, [sp, #0x28]
+10002dca0: f9001fe1    	str	x1, [sp, #0x38]
+10002dca4: aa0003e8    	mov	x8, x0
+10002dca8: f81183a8    	stur	x8, [x29, #-0xe8]
+10002dcac: aa0003e8    	mov	x8, x0
+10002dcb0: f81283a8    	stur	x8, [x29, #-0xd8]
+10002dcb4: 39692008    	ldrb	w8, [x0, #0xa48]
+10002dcb8: b90037e8    	str	w8, [sp, #0x34]
+10002dcbc: 34000168    	cbz	w8, 0x10002dce8 <__RNCNvMs6_NtCscLZrSWTiyRM_13kasumi_engine7serviceNtB7_8Database7barrier0Cs9eRdt6wpk4U_9lifecycle+0x7c>
+10002dcc0: 14000001    	b	0x10002dcc4 <__RNCNvMs6_NtCscLZrSWTiyRM_13kasumi_engine7serviceNtB7_8Database7barrier0Cs9eRdt6wpk4U_9lifecycle+0x58>
+10002dcc4: b94037e8    	ldr	w8, [sp, #0x34]
+10002dcc8: 71000508    	subs	w8, w8, #0x1
+
+
+<retained-binary>:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010002c490 <__RNCNvMs6_NtCscLZrSWTiyRM_13kasumi_engine7serviceNtB7_8Database17collections_inner0Cs9eRdt6wpk4U_9lifecycle>:
+10002c490: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+10002c494: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10002c498: 910043fd    	add	x29, sp, #0x10
+10002c49c: d1401fe9    	sub	x9, sp, #0x7, lsl #12   ; =0x7000
+10002c4a0: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+10002c4a4: f90003ff    	str	xzr, [sp]
+10002c4a8: eb2963ff    	cmp	sp, x9
+10002c4ac: 54ffffa1    	b.ne	0x10002c4a0 <__RNCNvMs6_NtCscLZrSWTiyRM_13kasumi_engine7serviceNtB7_8Database17collections_inner0Cs9eRdt6wpk4U_9lifecycle+0x10>
+10002c4b0: d13203ff    	sub	sp, sp, #0xc80
+10002c4b4: f90003ff    	str	xzr, [sp]
+10002c4b8: 91401fe9    	add	x9, sp, #0x7, lsl #12   ; =0x7000
+10002c4bc: 912d8129    	add	x9, x9, #0xb60
+10002c4c0: f90083e9    	str	x9, [sp, #0x100]
+10002c4c4: 91401fe9    	add	x9, sp, #0x7, lsl #12   ; =0x7000
+10002c4c8: 9129a129    	add	x9, x9, #0xa68
+10002c4cc: f90087e9    	str	x9, [sp, #0x108]
+10002c4d0: 91401fe9    	add	x9, sp, #0x7, lsl #12   ; =0x7000
+10002c4d4: 91253d29    	add	x9, x9, #0x94f
+10002c4d8: f9008be9    	str	x9, [sp, #0x110]
+10002c4dc: 910783e9    	add	x9, sp, #0x1e0
+10002c4e0: f9008fe9    	str	x9, [sp, #0x118]
+10002c4e4: f90093e8    	str	x8, [sp, #0x120]
+10002c4e8: f90097e0    	str	x0, [sp, #0x128]
+10002c4ec: f9009fe1    	str	x1, [sp, #0x138]
+
+
+<retained-binary>:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010002b120 <__RNCNvMs6_NtCscLZrSWTiyRM_13kasumi_engine7serviceNtB7_8Database11collections0Cs9eRdt6wpk4U_9lifecycle>:
+10002b120: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+10002b124: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10002b128: 910043fd    	add	x29, sp, #0x10
+10002b12c: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+10002b130: f90003ff    	str	xzr, [sp]
+10002b134: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+10002b138: f90003ff    	str	xzr, [sp]
+10002b13c: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+10002b140: f90003ff    	str	xzr, [sp]
+10002b144: d10d83ff    	sub	sp, sp, #0x360
+10002b148: 91400fe9    	add	x9, sp, #0x3, lsl #12   ; =0x3000
+10002b14c: 91030129    	add	x9, x9, #0xc0
+10002b150: f9000fe9    	str	x9, [sp, #0x18]
+10002b154: f90013e8    	str	x8, [sp, #0x20]
+10002b158: f90017e0    	str	x0, [sp, #0x28]
+10002b15c: f9001fe1    	str	x1, [sp, #0x38]
+10002b160: aa0003e8    	mov	x8, x0
+10002b164: f81a03a8    	stur	x8, [x29, #-0x60]
+10002b168: aa0003e8    	mov	x8, x0
+10002b16c: f81a83a8    	stur	x8, [x29, #-0x58]
+10002b170: 39408008    	ldrb	w8, [x0, #0x20]
+10002b174: b90037e8    	str	w8, [sp, #0x34]
+10002b178: 340001e8    	cbz	w8, 0x10002b1b4 <__RNCNvMs6_NtCscLZrSWTiyRM_13kasumi_engine7serviceNtB7_8Database11collections0Cs9eRdt6wpk4U_9lifecycle+0x94>
+10002b17c: 14000001    	b	0x10002b180 <__RNCNvMs6_NtCscLZrSWTiyRM_13kasumi_engine7serviceNtB7_8Database11collections0Cs9eRdt6wpk4U_9lifecycle+0x60>
+
+
+<retained-binary>:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000f1a2c <__RNCNvMs_NtCscLZrSWTiyRM_13kasumi_engine7controlNtB6_12ControlPlane10initialize0Cs9eRdt6wpk4U_9lifecycle>:
+1000f1a2c: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1000f1a30: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1000f1a34: 910043fd    	add	x29, sp, #0x10
+1000f1a38: d1401fe9    	sub	x9, sp, #0x7, lsl #12   ; =0x7000
+1000f1a3c: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+1000f1a40: f90003ff    	str	xzr, [sp]
+1000f1a44: eb2963ff    	cmp	sp, x9
+1000f1a48: 54ffffa1    	b.ne	0x1000f1a3c <__RNCNvMs_NtCscLZrSWTiyRM_13kasumi_engine7controlNtB6_12ControlPlane10initialize0Cs9eRdt6wpk4U_9lifecycle+0x10>
+1000f1a4c: d11943ff    	sub	sp, sp, #0x650
+1000f1a50: f90003ff    	str	xzr, [sp]
+1000f1a54: 91401fe9    	add	x9, sp, #0x7, lsl #12   ; =0x7000
+1000f1a58: 9114c129    	add	x9, x9, #0x530
+1000f1a5c: f90097e9    	str	x9, [sp, #0x128]
+1000f1a60: 91401fe9    	add	x9, sp, #0x7, lsl #12   ; =0x7000
+1000f1a64: 91109d29    	add	x9, x9, #0x427
+1000f1a68: f9009be9    	str	x9, [sp, #0x130]
+1000f1a6c: 910783e9    	add	x9, sp, #0x1e0
+1000f1a70: f9009fe9    	str	x9, [sp, #0x138]
+1000f1a74: f900a3e8    	str	x8, [sp, #0x140]
+1000f1a78: f900a7e0    	str	x0, [sp, #0x148]
+1000f1a7c: f900afe1    	str	x1, [sp, #0x158]
+1000f1a80: aa0003e8    	mov	x8, x0
+1000f1a84: f93a2fe8    	str	x8, [sp, #0x7458]
+1000f1a88: aa0003e8    	mov	x8, x0
+
+
+<retained-binary>:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000aa00c <__RNCNvNtCs9eRdt6wpk4U_9lifecycle16recovery_control26exercise_route_publication0B5_>:
+1000aa00c: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1000aa010: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1000aa014: 910043fd    	add	x29, sp, #0x10
+1000aa018: d1416be9    	sub	x9, sp, #0x5a, lsl #12  ; =0x5a000
+1000aa01c: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+1000aa020: f90003ff    	str	xzr, [sp]
+1000aa024: eb2963ff    	cmp	sp, x9
+1000aa028: 54ffffa1    	b.ne	0x1000aa01c <__RNCNvNtCs9eRdt6wpk4U_9lifecycle16recovery_control26exercise_route_publication0B5_+0x10>
+1000aa02c: d13443ff    	sub	sp, sp, #0xd10
+1000aa030: f90003ff    	str	xzr, [sp]
+1000aa034: 914167e8    	add	x8, sp, #0x59, lsl #12  ; =0x59000
+1000aa038: 912d0108    	add	x8, x8, #0xb40
+1000aa03c: f90343e8    	str	x8, [sp, #0x680]
+1000aa040: 914167e9    	add	x9, sp, #0x59, lsl #12  ; =0x59000
+1000aa044: 910a6129    	add	x9, x9, #0x298
+1000aa048: f90347e9    	str	x9, [sp, #0x688]
+1000aa04c: 914163e8    	add	x8, sp, #0x58, lsl #12  ; =0x58000
+1000aa050: 913b1d08    	add	x8, x8, #0xec7
+1000aa054: f9034be8    	str	x8, [sp, #0x690]
+1000aa058: 91414be8    	add	x8, sp, #0x52, lsl #12  ; =0x52000
+1000aa05c: 91064108    	add	x8, x8, #0x190
+1000aa060: f9034fe8    	str	x8, [sp, #0x698]
+1000aa064: 91413fe8    	add	x8, sp, #0x4f, lsl #12  ; =0x4f000
+1000aa068: 91272108    	add	x8, x8, #0x9c8
+
+
+<retained-binary>:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000b7944 <__RNCNvNtCs9eRdt6wpk4U_9lifecycle16recovery_control27exercise_completed_recovery0B5_>:
+1000b7944: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1000b7948: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1000b794c: 910043fd    	add	x29, sp, #0x10
+1000b7950: d14537e9    	sub	x9, sp, #0x14d, lsl #12 ; =0x14d000
+1000b7954: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+1000b7958: f90003ff    	str	xzr, [sp]
+1000b795c: eb2963ff    	cmp	sp, x9
+1000b7960: 54ffffa1    	b.ne	0x1000b7954 <__RNCNvNtCs9eRdt6wpk4U_9lifecycle16recovery_control27exercise_completed_recovery0B5_+0x10>
+1000b7964: d11943ff    	sub	sp, sp, #0x650
+1000b7968: f90003ff    	str	xzr, [sp]
+1000b796c: 914533e8    	add	x8, sp, #0x14c, lsl #12 ; =0x14c000
+1000b7970: 91092108    	add	x8, x8, #0x248
+1000b7974: f9103fe8    	str	x8, [sp, #0x2078]
+1000b7978: 914523e8    	add	x8, sp, #0x148, lsl #12 ; =0x148000
+1000b797c: 912ac108    	add	x8, x8, #0xab0
+1000b7980: f91043e8    	str	x8, [sp, #0x2080]
+1000b7984: 914523e8    	add	x8, sp, #0x148, lsl #12 ; =0x148000
+1000b7988: 9118dd08    	add	x8, x8, #0x637
+1000b798c: f91047e8    	str	x8, [sp, #0x2088]
+1000b7990: 91451fe8    	add	x8, sp, #0x147, lsl #12 ; =0x147000
+1000b7994: 9114c108    	add	x8, x8, #0x530
+1000b7998: f9104be8    	str	x8, [sp, #0x2090]
+1000b799c: 91451fe8    	add	x8, sp, #0x147, lsl #12 ; =0x147000
+1000b79a0: 91097d08    	add	x8, x8, #0x25f

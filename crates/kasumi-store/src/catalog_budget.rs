@@ -36,8 +36,9 @@ impl KeyProvider for WideReferences {
 #[tokio::test]
 async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_persistence() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("catalog.redb"),
+        crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -47,7 +48,7 @@ async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_pe
     });
     let clock = Arc::new(ManualClock::new());
     assert!(
-        TenantStore::open_fixture_with_clock(
+        TenantStore::initialize_catalog_fixture_with_clock(
             node.clone(),
             "tenant".into(),
             provider.clone(),
@@ -58,7 +59,7 @@ async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_pe
     );
     assert!(node.catalog("tenant").unwrap().is_none());
     provider.padding.store(0, Ordering::SeqCst);
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
         provider.clone(),
@@ -103,14 +104,15 @@ async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_pe
 #[tokio::test]
 async fn exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encoding() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("boundary.redb"),
+        crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
     )
     .unwrap();
     let tenant = "\u{0001}".repeat(1024);
     let provider = Arc::new(LocalKeyProvider::new([62; 32]));
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         tenant.clone(),
         provider,

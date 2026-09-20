@@ -4,6 +4,8 @@ use anyhow::{Context, Result, ensure};
 use kasumi_query::QueryCancellation;
 use kasumi_store::{TenantStore, WriteOp};
 use kasumi_types::AuditRetentionBudget;
+#[path = "security_audit_jobs.rs"]
+mod jobs;
 #[path = "security_audit_retention.rs"]
 mod retention;
 
@@ -70,14 +72,16 @@ pub struct SecurityEvent {
     pub outcome: SecurityOutcome,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransportAuditMetadata {
     pub peer_address: SocketAddr,
     pub certificate_pin: Option<String>,
     pub observed_at_ms: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct StoredSecurityEvent {
     format: u32,
     sequence: u64,
@@ -103,8 +107,12 @@ struct AuditWriter {
     maintenance: tokio::sync::Mutex<()>,
     wake: Arc<tokio::sync::Notify>,
     worker: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    jobs: tokio::sync::Mutex<jobs::Jobs>,
+    report: Mutex<kasumi_types::drain::DrainReport>,
     #[cfg(test)]
     worker_pause: Mutex<Option<Arc<retention::WorkerPause>>>,
+    #[cfg(test)]
+    record_fault: Mutex<Option<jobs::RecordFault>>,
     workspace: Mutex<Option<crate::admission::Reservation>>,
     admission: Arc<crate::admission::NodeAdmission>,
     work: Arc<WorkFence>,
@@ -132,7 +140,34 @@ impl AuditWork {
     }
 }
 
+#[derive(Clone, Copy)]
+enum AuditOpen {
+    Initialize,
+    Existing,
+}
+
 impl SecurityAudit {
+    /// Create the canonical stream exactly once at explicit installation time.
+    /// The caller must own a newly provisioned security domain and its node.
+    pub fn initialize(
+        store: Arc<TenantStore>,
+        budget: AuditRetentionBudget,
+        admission: Arc<crate::admission::NodeAdmission>,
+    ) -> Result<Arc<Self>> {
+        let root = store.durable_directory()?.join("audit-archives");
+        let destination = Arc::new(kasumi_store::FilesystemAuditArchive::open(root)?);
+        Self::initialize_with_archive(store, budget, destination, admission)
+    }
+
+    pub fn initialize_with_archive(
+        store: Arc<TenantStore>,
+        budget: AuditRetentionBudget,
+        destination: Arc<dyn kasumi_store::AuditArchiveDestination>,
+        admission: Arc<crate::admission::NodeAdmission>,
+    ) -> Result<Arc<Self>> {
+        Self::open_inner(store, budget, destination, admission, AuditOpen::Initialize)
+    }
+
     /// The default archive is beneath the durable data directory. Embedded
     /// backends without a directory must install an explicit durable destination.
     pub fn open(
@@ -151,6 +186,16 @@ impl SecurityAudit {
         destination: Arc<dyn kasumi_store::AuditArchiveDestination>,
         admission: Arc<crate::admission::NodeAdmission>,
     ) -> Result<Arc<Self>> {
+        Self::open_inner(store, budget, destination, admission, AuditOpen::Existing)
+    }
+
+    fn open_inner(
+        store: Arc<TenantStore>,
+        budget: AuditRetentionBudget,
+        destination: Arc<dyn kasumi_store::AuditArchiveDestination>,
+        admission: Arc<crate::admission::NodeAdmission>,
+        mode: AuditOpen,
+    ) -> Result<Arc<Self>> {
         budget.validate()?;
         ensure!(
             store.tenant() == SECURITY_TENANT,
@@ -166,16 +211,37 @@ impl SecurityAudit {
         let identity = Arc::as_ptr(&store) as usize;
         if let Some(writer) = writers.get(&identity).and_then(Weak::upgrade) {
             ensure!(
+                matches!(mode, AuditOpen::Existing),
+                "service audit already has an installed writer"
+            );
+            ensure!(
                 writer.budget == budget
                     && writer.destination.identity() == destination.identity()
                     && Arc::ptr_eq(&writer.admission, &admission),
                 "live service audit retention configuration or node governor differs"
             );
+            {
+                // Keep the writer's reserved maintenance workspace alive while
+                // the strict retained-head observation reads bounded records.
+                let _registration = writer.work.begin(QueryCancellation::default())?;
+                let current = writer
+                    .sequence
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("service audit state unavailable"))?;
+                let head = retention::Head::open(&store, &destination.identity(), &budget)?;
+                ensure!(
+                    !current.failed && head == current.head,
+                    "live service audit head differs from durable state"
+                );
+            }
             return Ok(Arc::new(Self { writer }));
         }
         let mut workspace = admission.reserve(AuditRetentionBudget::MAINTENANCE_BYTES, None)?;
         workspace.retain_workspace();
-        let head = retention::Head::open(&store, &destination.identity())?;
+        let head = match mode {
+            AuditOpen::Initialize => retention::Head::initialize(&store, &destination.identity())?,
+            AuditOpen::Existing => retention::Head::open(&store, &destination.identity(), &budget)?,
+        };
         let writer = Arc::new(AuditWriter {
             store,
             sequence: Mutex::new(AuditSequence {
@@ -189,8 +255,12 @@ impl SecurityAudit {
             maintenance: tokio::sync::Mutex::new(()),
             wake: Arc::new(tokio::sync::Notify::new()),
             worker: tokio::sync::Mutex::new(None),
+            jobs: tokio::sync::Mutex::new(jobs::Jobs::default()),
+            report: Mutex::new(kasumi_types::drain::DrainReport::default()),
             #[cfg(test)]
             worker_pause: Mutex::new(None),
+            #[cfg(test)]
+            record_fault: Mutex::new(None),
             work: Arc::new(WorkFence::default()),
             workspace: Mutex::new(Some(workspace)),
             admission,
@@ -253,8 +323,12 @@ impl SecurityAudit {
         event: SecurityEvent,
         transport: Option<TransportAuditMetadata>,
     ) -> Result<()> {
-        let work = self.begin()?;
-        tokio::task::spawn_blocking(move || work.record(event, transport)).await?
+        self.run_owned(move |work, id| async move {
+            let owner = work.writer.clone();
+            let outcome = tokio::task::spawn_blocking(move || work.record(event, transport)).await;
+            owner.observe_join("audit record", id, outcome)
+        })
+        .await
     }
 
     /// Blocking entry for an engine-owned, independently tracked request job.
@@ -268,6 +342,15 @@ impl SecurityAudit {
         event: SecurityEvent,
         transport: Option<TransportAuditMetadata>,
     ) -> Result<()> {
+        #[cfg(test)]
+        if let Some(fault) = self.writer.record_fault.lock().unwrap().take() {
+            fault.entered.send(()).unwrap();
+            fault
+                .release
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            panic!("injected real blocking audit record panic");
+        }
         for value in [
             event.principal.as_deref(),
             event.tenant.as_deref(),
@@ -370,7 +453,14 @@ impl SecurityAudit {
         ]) {
             // Unknown fsync outcomes fence every queued writer until reopen.
             sequence.failed = true;
-            return Err(error);
+            return Err(
+                kasumi_types::drain::DrainFailure::retained(self.record_terminal(
+                    "audit persistence",
+                    0,
+                    error,
+                ))
+                .into(),
+            );
         }
         sequence.head = updated;
         if sequence.head.position.hot_bytes >= self.writer.budget.starts_at() {
@@ -393,7 +483,7 @@ impl SecurityAudit {
 
     /// Called once all databases/listeners sharing the writer have stopped.
     /// Cancellation leaves the fence closed and permits a later call to finish.
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
         self.writer.work.seal();
         self.writer.wake.notify_one();
         {
@@ -402,19 +492,31 @@ impl SecurityAudit {
                 // Keep the handle in place across await: cancellation must not
                 // detach the worker or allow a repeated shutdown to skip it.
                 // Do not abort an admitted archive publication.
-                let _ = task.await;
+                if let Err(error) = task.await {
+                    self.record_terminal("audit archive worker", 0, error.into());
+                }
                 worker.take();
             }
         }
+        self.drain_jobs().await;
         self.writer.work.drain().await;
-        self.writer.store.shutdown().await;
+        let store = self.writer.store.shutdown().await;
+        let mut report = self.writer.report.lock().unwrap_or_else(|p| p.into_inner());
+        let retained = store.err().and_then(|failure| {
+            report.merge(&failure);
+            (failure.completion() == kasumi_types::drain::DrainCompletion::Retained)
+                .then_some(failure)
+        });
         // Retained closed handles cannot perform more work. Release the node's
         // maintenance reservation only after every actual store owner drains.
-        self.writer
-            .workspace
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
+        if retained.is_none() {
+            self.writer
+                .workspace
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+        }
+        report.outcome(retained)
     }
 }
 
@@ -447,16 +549,25 @@ mod tests {
     async fn archive_worker_before_registration_is_joined_through_cancelled_shutdown_and_reopen() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("worker-security.redb");
-        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let node = NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let weak_node = Arc::downgrade(&node);
         let provider = Arc::new(LocalKeyProvider::new([89; 32]));
-        let store =
-            TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
-                .await
-                .unwrap();
+        let store = TenantStore::initialize_catalog_fixture(
+            node.clone(),
+            SECURITY_TENANT.into(),
+            provider.clone(),
+        )
+        .await
+        .unwrap();
         let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
         let audit =
-            SecurityAudit::open(store.clone(), AuditRetentionBudget::default(), admission).unwrap();
+            SecurityAudit::initialize(store.clone(), AuditRetentionBudget::default(), admission)
+                .unwrap();
         audit.record_sync(event()).unwrap();
         let pause = Arc::new(retention::WorkerPause::default());
         *audit.writer.worker_pause.lock().unwrap() = Some(pause.clone());
@@ -467,7 +578,7 @@ mod tests {
         audit.writer.work.drain().await;
         // Drain key monitors first to isolate the missing worker ownership from
         // unrelated asynchronous store shutdown. No timing sleep drives this race.
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
 
         let mut shutdown = Box::pin(audit.shutdown());
         std::future::poll_fn(|cx| {
@@ -489,15 +600,20 @@ mod tests {
         })
         .await;
         pause.release.notify_one();
-        repeated.await;
+        repeated.await.unwrap();
         assert!(audit.writer.worker.lock().await.is_none());
         drop(audit);
         drop(store);
         drop(node);
         assert!(weak_node.upgrade().is_none());
 
-        let reopened = TenantStore::open_fixture(
-            NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
+        let reopened = TenantStore::open_existing_fixture(
+            NodeStore::open_existing(
+                &path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             SECURITY_TENANT.into(),
             provider,
         )
@@ -505,13 +621,17 @@ mod tests {
         .unwrap();
         assert_eq!(reopened.scan("security.audit").unwrap().len(), 1);
         assert_eq!(
-            retention::Head::open(&reopened, &audit_destination(&reopened))
-                .unwrap()
-                .position
-                .next_sequence,
+            retention::Head::open(
+                &reopened,
+                &audit_destination(&reopened),
+                &AuditRetentionBudget::default()
+            )
+            .unwrap()
+            .position
+            .next_sequence,
             1
         );
-        reopened.shutdown().await;
+        reopened.shutdown().await.unwrap();
     }
 
     #[test]
@@ -526,15 +646,23 @@ mod tests {
         runtime.block_on(async {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("security.redb");
-            let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+            let node = NodeStore::create_new(
+                &path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap();
             let weak_node = Arc::downgrade(&node);
             let provider = Arc::new(LocalKeyProvider::new([83; 32]));
-            let store =
-                TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
-                    .await
-                    .unwrap();
+            let store = TenantStore::initialize_catalog_fixture(
+                node.clone(),
+                SECURITY_TENANT.into(),
+                provider.clone(),
+            )
+            .await
+            .unwrap();
             let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
-            let audit = SecurityAudit::open(
+            let audit = SecurityAudit::initialize(
                 store.clone(),
                 kasumi_types::AuditRetentionBudget::default(),
                 admission.clone(),
@@ -585,7 +713,7 @@ mod tests {
             })
             .await;
             release.send(()).unwrap();
-            repeated.await;
+            repeated.await.unwrap();
             blocker.await.unwrap();
             assert!(store.check_access().is_err());
             drop(audit);
@@ -593,8 +721,13 @@ mod tests {
             drop(node);
             assert!(weak_node.upgrade().is_none());
 
-            let reopened = TenantStore::open_fixture(
-                NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
+            let reopened = TenantStore::open_existing_fixture(
+                NodeStore::open_existing(
+                    &path,
+                    kasumi_store::test_utils::NODE_STORE_ID,
+                    kasumi_store::ScratchDisk::fixture(),
+                )
+                .unwrap(),
                 SECURITY_TENANT.into(),
                 provider,
             )
@@ -606,13 +739,17 @@ mod tests {
             assert_eq!(record["event"]["kind"], "access_denied");
             assert_eq!(record["event"]["request_id"], "cancelled-denial");
             assert_eq!(
-                retention::Head::open(&reopened, &audit_destination(&reopened))
-                    .unwrap()
-                    .position
-                    .next_sequence,
+                retention::Head::open(
+                    &reopened,
+                    &audit_destination(&reopened),
+                    &AuditRetentionBudget::default()
+                )
+                .unwrap()
+                .position
+                .next_sequence,
                 1
             );
-            reopened.shutdown().await;
+            reopened.shutdown().await.unwrap();
         });
     }
 
@@ -620,15 +757,23 @@ mod tests {
     async fn live_opens_share_sequence_and_preserve_concurrent_records_through_reopen() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("shared-security.redb");
-        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let node = NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let weak_node = Arc::downgrade(&node);
         let provider = Arc::new(LocalKeyProvider::new([85; 32]));
-        let store =
-            TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
-                .await
-                .unwrap();
+        let store = TenantStore::initialize_catalog_fixture(
+            node.clone(),
+            SECURITY_TENANT.into(),
+            provider.clone(),
+        )
+        .await
+        .unwrap();
         let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
-        let first = SecurityAudit::open(
+        let first = SecurityAudit::initialize(
             store.clone(),
             kasumi_types::AuditRetentionBudget::default(),
             admission.clone(),
@@ -672,15 +817,20 @@ mod tests {
         let mut other = event();
         other.request_id = "third-denial".into();
         third.record(other).await.unwrap();
-        third.shutdown().await;
+        third.shutdown().await.unwrap();
         drop(retained);
         drop(third);
         drop(store);
         drop(node);
         assert!(weak_node.upgrade().is_none());
 
-        let reopened = TenantStore::open_fixture(
-            NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
+        let reopened = TenantStore::open_existing_fixture(
+            NodeStore::open_existing(
+                &path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             SECURITY_TENANT.into(),
             provider,
         )
@@ -703,13 +853,17 @@ mod tests {
             ])
         );
         assert_eq!(
-            retention::Head::open(&reopened, &audit_destination(&reopened))
-                .unwrap()
-                .position
-                .next_sequence,
+            retention::Head::open(
+                &reopened,
+                &audit_destination(&reopened),
+                &AuditRetentionBudget::default()
+            )
+            .unwrap()
+            .position
+            .next_sequence,
             3
         );
-        reopened.shutdown().await;
+        reopened.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -723,7 +877,7 @@ mod tests {
         let disk = FaultBackend::new();
         let clock = Arc::new(ManualClock::new());
         let provider = Arc::new(LocalKeyProvider::new([84; 32]));
-        let store = TenantStore::open_fixture_with_clock(
+        let store = TenantStore::initialize_catalog_fixture_with_clock(
             NodeStore::open_with_backend(disk.clone(), kasumi_store::ScratchDisk::fixture())
                 .unwrap(),
             SECURITY_TENANT.into(),
@@ -732,7 +886,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let audit = SecurityAudit::open_with_archive(
+        let audit = SecurityAudit::initialize_with_archive(
             store.clone(),
             kasumi_types::AuditRetentionBudget::default(),
             archive.clone(),
@@ -745,19 +899,20 @@ mod tests {
         assert!(error.to_string().contains("outcome unknown"));
         // Even explicit key reauthorization cannot reuse the uncertain counter.
         store.refresh_lease().await.unwrap();
-        let duplicate = SecurityAudit::open_with_archive(
-            store.clone(),
-            kasumi_types::AuditRetentionBudget::default(),
-            archive.clone(),
-            admission.clone(),
-        )
-        .unwrap();
-        assert!(duplicate.record_sync(event()).is_err());
+        assert!(
+            SecurityAudit::open_with_archive(
+                store.clone(),
+                kasumi_types::AuditRetentionBudget::default(),
+                archive.clone(),
+                admission.clone(),
+            )
+            .is_err()
+        );
         assert!(queued.record(event(), None).is_err());
         assert!(audit.record_sync(event()).is_err());
         assert_eq!(store.scan("security.audit").unwrap().len(), 1);
 
-        let recovered = TenantStore::open_fixture_with_clock(
+        let recovered = TenantStore::open_existing_fixture_with_clock(
             NodeStore::open_with_backend(disk.crash(), kasumi_store::ScratchDisk::fixture())
                 .unwrap(),
             SECURITY_TENANT.into(),
@@ -784,7 +939,11 @@ mod tests {
         assert_eq!(first["event"]["request_id"], "cancelled-denial");
         assert_eq!(second["sequence"], 1);
         assert_eq!(second["event"]["request_id"], "after-recovery");
-        audit.shutdown().await;
-        reopened.shutdown().await;
+        audit.shutdown().await.unwrap();
+        reopened.shutdown().await.unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "security_audit_existing_tests.rs"]
+mod existing_tests;

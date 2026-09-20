@@ -128,10 +128,19 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("node.redb");
         let provider = Arc::new(LocalKeyProvider::new([73; 32]));
-        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
-        let store = TenantStore::open_fixture(node.clone(), "tenant".into(), provider.clone())
-            .await
-            .unwrap();
+        let node = NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
+        let store = TenantStore::initialize_catalog_fixture(
+            node.clone(),
+            "tenant".into(),
+            provider.clone(),
+        )
+        .await
+        .unwrap();
         let cache =
             Arc::new(FilesystemAuditArchive::open(directory.path().join("owned-cache")).unwrap());
         let mut installed = crate::runtime::example_config();
@@ -148,11 +157,16 @@ mod tests {
             store.tenant_audit_archive().unwrap().cache().identity(),
             cache.identity()
         );
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
         drop(store);
         drop(node);
-        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
-        let reopened = TenantStore::open_fixture(node, "tenant".into(), provider)
+        let node = NodeStore::open_existing(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
+        let reopened = TenantStore::open_existing_fixture(node, "tenant".into(), provider)
             .await
             .unwrap();
         let empty = crate::runtime::example_config();
@@ -170,6 +184,6 @@ mod tests {
             .install_tenant_audit_archive(&reopened, Some(cache))
             .unwrap();
         assert!(reopened.tenant_audit_archive().is_ok());
-        reopened.shutdown().await;
+        reopened.shutdown().await.unwrap();
     }
 }

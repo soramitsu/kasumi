@@ -9,10 +9,10 @@
 
 mod cancellation;
 pub use cancellation::QueryCancellation;
+mod ordered_seek;
 mod scalar;
 mod search;
 mod structured;
-mod ordered_seek;
 pub use ordered_seek::{OrderedSeekPage, ordered_seek_request_sha256};
 mod validation;
 
@@ -32,7 +32,8 @@ use structured::{IdSet, Structured, validate_predicate};
 
 #[derive(Debug)]
 struct CollectionIndexes {
-    _validator: std::sync::Arc<jsonschema::Validator>,
+    validator: std::sync::Arc<jsonschema::Validator>,
+    schema_sha256: [u8; 32],
     structured: Structured,
     text: Option<Arc<TextSnapshot>>,
 }
@@ -74,6 +75,22 @@ impl ReadIds {
 }
 
 impl QueryIndexes {
+    /// Reuse this generation's validator only for the exact compiled schema.
+    /// A missing collection or changed schema takes the fully checked compiler
+    /// path. Index and text constraints always use the supplied definition.
+    pub fn validate_document(&self, definition: &CollectionDefinition, body: &Value) -> Result<()> {
+        if let Some(indexes) = self.collections.get(&definition.name)
+            && indexes.schema_sha256 == validation::schema_sha256(&definition.schema)?
+        {
+            return validation::validate_document_with_validator(
+                definition,
+                body,
+                &indexes.validator,
+            );
+        }
+        validate_document(definition, body)
+    }
+
     pub fn read_ids(&self) -> ReadIds {
         ReadIds(
             self.collections
@@ -152,12 +169,15 @@ impl QueryIndexes {
             if name != &collection.definition.name {
                 return Err(invalid("collection map key differs from its definition"));
             }
-            let validator = validation::compile(&collection.definition.schema)?;
-            validate_collection(&collection.definition, &collection.documents)?;
+            let validator = validation::validate_collection_and_compile(
+                &collection.definition,
+                &collection.documents,
+            )?;
             indexes.insert(
                 name.clone(),
                 Arc::new(CollectionIndexes {
-                    _validator: validator,
+                    validator,
+                    schema_sha256: validation::schema_sha256(&collection.definition.schema)?,
                     structured: Structured::build(collection)?,
                     text: TextSnapshot::build(collection)?.map(Arc::new),
                 }),
@@ -195,7 +215,11 @@ impl QueryIndexes {
                             if &document.id != id {
                                 return Err(invalid("document map key differs from its id"));
                             }
-                            validate_document(&collection.definition, &document.body)?;
+                            validation::validate_document_with_validator(
+                                &collection.definition,
+                                &document.body,
+                                &indexes.validator,
+                            )?;
                         }
                     }
                     let structured = indexes.structured.update(old, collection, ids)?;
@@ -211,7 +235,8 @@ impl QueryIndexes {
                     collections.insert(
                         name.clone(),
                         Arc::new(CollectionIndexes {
-                            _validator: indexes._validator.clone(),
+                            validator: indexes.validator.clone(),
+                            schema_sha256: indexes.schema_sha256,
                             structured,
                             text,
                         }),

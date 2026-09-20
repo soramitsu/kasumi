@@ -18,7 +18,8 @@ impl ServingFixture {
         let keys =
             ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
                 .unwrap();
-        let root = kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(keys.as_ref()).unwrap();
+        let root =
+            kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(keys.as_ref()).unwrap();
         let manifest = kasumi_serving::AuthorityManifest {
             lifecycle_controls: std::collections::BTreeMap::new(),
             authority_id: uuid::Uuid::new_v4(),
@@ -42,6 +43,7 @@ impl ServingFixture {
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
         };
         let bootstrap = crate::ReplicatedBootstrap {
+            genesis: crate::ReplicatedGenesis::Application,
             incarnation: uuid::Uuid::new_v4().to_string(),
             initial_policy: Policy {
                 grants: vec![Grant {
@@ -76,7 +78,7 @@ impl ServingFixture {
             router: Arc::new(kasumi_raft::InProcessRouter::default()),
             context,
         };
-        fixture.open().await;
+        fixture.open(true).await;
         crate::initialize_replicated(&fixture.databases[0], &fixture.bootstrap)
             .await
             .unwrap();
@@ -97,18 +99,21 @@ impl ServingFixture {
             .unwrap();
         fixture
     }
-    async fn open(&mut self) {
+    async fn open(&mut self, create: bool) {
         let group = format!("{}/{}", self.context.tenant, self.bootstrap.incarnation);
         for id in 1..=3 {
             let boot = kasumi_serving::ServingBoot::with_test_clock(
-                self.signing.for_verifier(kasumi_serving::test_utils::fixture_verifier(id)).unwrap().trust,
+                self.signing
+                    .for_verifier(kasumi_serving::test_utils::fixture_verifier(id))
+                    .unwrap()
+                    .trust,
                 kasumi_serving::ServingIdentity {
                     tenant: self.context.tenant.clone(),
                     incarnation: uuid::Uuid::parse_str(&self.bootstrap.incarnation).unwrap(),
                     authority_epoch: 1,
                     node: kasumi_serving::NodeIdentity {
                         node_id: id,
-            verifier: kasumi_serving::test_utils::fixture_verifier(id),
+                        verifier: kasumi_serving::test_utils::fixture_verifier(id),
                         principal: format!("node-{id}"),
                         certificate_sha256: format!("{id:064x}"),
                     },
@@ -135,29 +140,80 @@ impl ServingFixture {
                 )
                 .unwrap();
             let gate = kasumi_serving::ServingGate::new(lease).unwrap();
-            let node =
-                NodeStore::open(self.directory.path().join(format!("node-{id}.redb")), kasumi_store::ScratchDisk::fixture()).unwrap();
-            let audit_store = TenantStore::open(
-                node.clone(),
-                crate::SECURITY_TENANT.into(),
-                Arc::new(LocalKeyProvider::new([id as u8 + 20; 32])),
-                kasumi_store::StorageAccess::security_audit(),
-            )
-            .await
+            let node = (if create {
+                NodeStore::create_new(
+                    self.directory.path().join(format!("node-{id}.redb")),
+                    kasumi_store::test_utils::NODE_STORE_ID,
+                    kasumi_store::ScratchDisk::fixture(),
+                )
+            } else {
+                NodeStore::open_existing(
+                    self.directory.path().join(format!("node-{id}.redb")),
+                    kasumi_store::test_utils::NODE_STORE_ID,
+                    kasumi_store::ScratchDisk::fixture(),
+                )
+            })
+            .unwrap();
+            let audit_store = (if create {
+                TenantStore::initialize_catalog(
+                    node.clone(),
+                    crate::SECURITY_TENANT.into(),
+                    Arc::new(LocalKeyProvider::new([id as u8 + 20; 32])),
+                    kasumi_store::StorageAccess::security_audit(),
+                )
+                .await
+            } else {
+                TenantStore::open_existing(
+                    node.clone(),
+                    crate::SECURITY_TENANT.into(),
+                    Arc::new(LocalKeyProvider::new([id as u8 + 20; 32])),
+                    kasumi_store::StorageAccess::security_audit(),
+                )
+                .await
+            })
             .unwrap();
             // Each simulated data node has the same independent governor used
             // by a real NodeRuntime, including its maintenance reservation.
             let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
-            let archive = Arc::new(kasumi_store::FilesystemAuditArchive::open(audit_store.durable_directory().unwrap().join("audit-archives")).unwrap());
-            let audit = SecurityAudit::open_with_archive(audit_store, kasumi_types::AuditRetentionBudget::default(), archive, admission.clone()).unwrap();
-            let stores = kasumi_store::TenantStorageSet::open(
-                node,
-                self.context.tenant.clone(),
-                Arc::new(LocalKeyProvider::new([id as u8; 32])),
-                Arc::new(LocalKeyProvider::new([id as u8 + 10; 32])),
-                kasumi_store::StorageAccess::serving(gate).unwrap(),
+            let archive = Arc::new(
+                kasumi_store::FilesystemAuditArchive::open(
+                    audit_store
+                        .durable_directory()
+                        .unwrap()
+                        .join("audit-archives"),
+                )
+                .unwrap(),
+            );
+            let audit = (if create {
+                SecurityAudit::initialize_with_archive
+            } else {
+                SecurityAudit::open_with_archive
+            })(
+                audit_store,
+                kasumi_types::AuditRetentionBudget::default(),
+                archive,
+                admission.clone(),
             )
-            .await
+            .unwrap();
+            let stores = if create {
+                kasumi_store::TenantStorageSet::initialize_catalogs(
+                    node,
+                    self.context.tenant.clone(),
+                    Arc::new(LocalKeyProvider::new([id as u8; 32])),
+                    Arc::new(LocalKeyProvider::new([id as u8 + 10; 32])),
+                    kasumi_store::StorageAccess::serving(gate).unwrap(),
+                )
+                .await
+            } else {
+                kasumi_store::TenantStorageSet::open_existing(
+                    node,
+                    self.context.tenant.clone(),
+                    Arc::new(LocalKeyProvider::new([id as u8; 32])),
+                    Arc::new(LocalKeyProvider::new([id as u8 + 10; 32])),
+                    kasumi_store::StorageAccess::serving(gate).unwrap(),
+                )
+                .await
+            }
             .unwrap();
             let db = crate::open_replicated(
                 id,
@@ -203,7 +259,7 @@ impl ServingFixture {
             db.shutdown().await.unwrap();
         }
         for audit in &self.audits {
-            audit.shutdown().await;
+            audit.shutdown().await.unwrap();
         }
         self.databases.clear();
         self.audits.clear();
@@ -211,7 +267,7 @@ impl ServingFixture {
     }
     async fn reopen(&mut self) {
         self.drain().await;
-        self.open().await;
+        self.open(false).await;
         self.leader().await;
     }
 }
@@ -294,7 +350,11 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
         .unwrap(),
     );
     let proof = db
-        .backup_checkpoint(fixture.context.clone(), destination.as_ref(), uuid::Uuid::new_v4())
+        .backup_checkpoint(
+            fixture.context.clone(),
+            destination.as_ref(),
+            uuid::Uuid::new_v4(),
+        )
         .await
         .unwrap();
     let paused = CredentialPausedDestination {
@@ -304,8 +364,11 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
     };
     let result = expire_paused_backup(
         db.verify_backup_checkpoint(fixture.context.clone(), &paused, proof.backup_id()),
-        &paused, &fixture.clock, 1000,
-    ).await;
+        &paused,
+        &fixture.clock,
+        1000,
+    )
+    .await;
     let result = match result {
         Ok((true, result)) => result,
         other => {
@@ -323,8 +386,11 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
         let session_id = uuid::Uuid::new_v4();
         let result = expire_paused_backup(
             db.backup_checkpoint(fixture.context.clone(), &paused, session_id),
-            &paused, &fixture.clock, 2000,
-        ).await;
+            &paused,
+            &fixture.clock,
+            2000,
+        )
+        .await;
         match result {
             Ok((true, result)) => {
                 assert_eq!(result.unwrap_err().code, ErrorCode::UnknownOutcome);
@@ -337,7 +403,8 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
                 // This fixture gives replicas independent wrapping keys, so its
                 // original publisher must regain leadership to audit the abort.
                 db.work.drain().await;
-                db.install_archive_destination("expiry-abort".into(), paused.inner.clone()).unwrap();
+                db.install_archive_destination("expiry-abort".into(), paused.inner.clone())
+                    .unwrap();
                 let mut aborted = false;
                 for _ in 0..3 {
                     db.group.raft().trigger().elect().await.unwrap();
@@ -345,26 +412,52 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
                         while db.barrier().await.is_err() {
                             tokio::time::sleep(Duration::from_millis(10)).await;
                         }
-                    }).await.unwrap();
-                    let session = db.backup_session(&fixture.context, paused.inner.as_ref(), session_id)
-                        .await.unwrap().expect("admitted session must remain visible");
-                    if matches!(session.outcome(), Some(BackupSessionOutcome::Aborted { .. })) {
+                    })
+                    .await
+                    .unwrap();
+                    let session = db
+                        .backup_session(&fixture.context, paused.inner.as_ref(), session_id)
+                        .await
+                        .unwrap()
+                        .expect("admitted session must remain visible");
+                    if matches!(
+                        session.outcome(),
+                        Some(BackupSessionOutcome::Aborted { .. })
+                    ) {
                         aborted = true;
                         break;
                     }
-                    assert!(session.outcome().is_none(), "unexpired attempt unexpectedly completed");
-                    let _outcome = db.abort_backup_session(fixture.context.clone(), AbortBackupSession {
-                        destination: "expiry-abort".into(), session_id,
-                        reason: "settle interrupted expiry fixture preparation".into(),
-                    }).await;
-                    let session = db.backup_session(&fixture.context, paused.inner.as_ref(), session_id)
-                        .await.unwrap().expect("abort must retain its session tombstone");
-                    if matches!(session.outcome(), Some(BackupSessionOutcome::Aborted { .. })) {
+                    assert!(
+                        session.outcome().is_none(),
+                        "unexpired attempt unexpectedly completed"
+                    );
+                    let _outcome = db
+                        .abort_backup_session(
+                            fixture.context.clone(),
+                            AbortBackupSession {
+                                destination: "expiry-abort".into(),
+                                session_id,
+                                reason: "settle interrupted expiry fixture preparation".into(),
+                            },
+                        )
+                        .await;
+                    let session = db
+                        .backup_session(&fixture.context, paused.inner.as_ref(), session_id)
+                        .await
+                        .unwrap()
+                        .expect("abort must retain its session tombstone");
+                    if matches!(
+                        session.outcome(),
+                        Some(BackupSessionOutcome::Aborted { .. })
+                    ) {
                         aborted = true;
                         break;
                     }
                 }
-                assert!(aborted, "original backup session did not reach permanent abort");
+                assert!(
+                    aborted,
+                    "original backup session did not reach permanent abort"
+                );
             }
             other => {
                 drop(db);
@@ -374,7 +467,10 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
         }
     }
     fixture.drain().await;
-    assert!(expired, "elections repeatedly prevented the controlled expiry attempt");
+    assert!(
+        expired,
+        "elections repeatedly prevented the controlled expiry attempt"
+    );
 }
 
 // A failed operation must not leave the companion pause waiter pending forever.
@@ -395,5 +491,7 @@ async fn expire_paused_backup<T: std::fmt::Debug>(
     clock.0.store(expires_at, Ordering::SeqCst);
     paused.release.notify_one();
     tokio::time::timeout(Duration::from_secs(10), operation)
-        .await.map(|result| (true, result)).map_err(|_| "operation did not exit after serving expiry".into())
+        .await
+        .map(|result| (true, result))
+        .map_err(|_| "operation did not exit after serving expiry".into())
 }

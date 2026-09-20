@@ -56,20 +56,12 @@ impl VerifiedBackup {
         incarnation: String,
         target_origin: Option<TargetOrigin>,
     ) -> anyhow::Result<PreparedState> {
-        let workspace = self
-            .state
-            .metadata()
-            .limits
-            .max_snapshot_bytes
-            .min(
-                self.bytes
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("restore snapshot image missing"))?
-                    .len(),
-            )
-            .checked_mul(3)
-            .and_then(|v| v.checked_add(64 << 20))
-            .ok_or_else(|| anyhow::anyhow!("restore materialization budget overflow"))?;
+        let crate::backup_verify::VerifiedState::Indexed(source) = &self.state else {
+            anyhow::bail!("restore requires independently verified indexed state");
+        };
+        // The authenticated index records exact resident and point spans. The
+        // permanent ciphertext tables remain on the shared scratch governor.
+        let workspace = source.index().summary().materialization_workspace()?;
         // The completed verifier owns one operation and its bounded indexes.
         // Its worker transfers that charge only after dropping those indexes.
         let materialization = self._reservation.clone();
@@ -363,6 +355,8 @@ pub(super) async fn load_authorized(
     // immutable source manifest and object ciphertext unchanged.
     let alias = source.destination_alias.clone();
     let relocation_work = registration.clone();
+    let relocation_reservation = reservation.clone();
+    let relocation_admission = admission.clone();
     let relocation_cancellation = reader.cancellation();
     let (state, bytes) = deadline
         .blocking(reservation.clone(), registration.clone(), move || {
@@ -371,16 +365,25 @@ pub(super) async fn load_authorized(
                 crate::backup_verify::VerifiedState::Indexed(state) => state,
                 _ => anyhow::bail!("restore requires independently verified indexed state"),
             };
-            let state = (*state).relocate(&alias, backup_id, || {
-                deadline.check()?;
-                if let Some(work) = &relocation_work {
-                    work.check()?;
-                }
-                if let Some(token) = &relocation_cancellation {
-                    token.check()?;
-                }
-                Ok(())
-            })?;
+            let state = (*state).relocate(
+                &alias,
+                backup_id,
+                |layout| {
+                    relocation_reservation
+                        .handoff_workspace(&relocation_admission, layout.index_workspace()?)
+                        .map_err(Into::into)
+                },
+                || {
+                    deadline.check()?;
+                    if let Some(work) = &relocation_work {
+                        work.check()?;
+                    }
+                    if let Some(token) = &relocation_cancellation {
+                        token.check()?;
+                    }
+                    Ok(())
+                },
+            )?;
             let bytes = state.image().clone();
             Ok((state, bytes))
         })

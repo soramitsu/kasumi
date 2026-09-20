@@ -21,11 +21,15 @@ impl TargetReplica {
     pub fn database(&self) -> &Arc<Database> {
         &self.database
     }
-    pub async fn close(&mut self) -> anyhow::Result<()> {
+    pub async fn close(&mut self) -> kasumi_types::drain::DrainResult {
         self.invocation.gate().close();
-        self.database.shutdown().await?;
-        self.registration.take();
-        Ok(())
+        let outcome = self.database.shutdown().await;
+        if !outcome.as_ref().is_err_and(|failure| {
+            failure.completion() == kasumi_types::drain::DrainCompletion::Retained
+        }) {
+            self.registration.take();
+        }
+        outcome
     }
     fn check(&self, operation: &TargetOperation, phase: LifecyclePhase) -> anyhow::Result<()> {
         operation.check()?;
@@ -114,7 +118,9 @@ impl Drop for TargetReplica {
         let database = self.database.clone();
         self.shutdown_runtime.spawn(async move {
             let _registration = registration;
-            let _ = database.shutdown().await;
+            if let Err(failure) = database.shutdown().await {
+                tracing::error!(%failure, "abandoned target replica drain failed");
+            }
         });
     }
 }
@@ -148,8 +154,12 @@ pub async fn open_target_replica(
             phase,
             LifecyclePhase::Initialize
                 | LifecyclePhase::Complete
+                | LifecyclePhase::ResolveComplete
+                | LifecyclePhase::MaintainTarget
                 | LifecyclePhase::Activate
                 | LifecyclePhase::InspectTarget
+                | LifecyclePhase::InspectCompletionAttempt
+                | LifecyclePhase::InspectCompletionResolution
         ) && config.node_id == lease.signed().claims.request.target_node.node_id,
         "target group startup phase or node differs"
     );
@@ -206,16 +216,40 @@ pub async fn open_target_replica(
                             TargetReplicaInput::Inspection(inspection) => {
                                 inspection.validate(&origin, &intent)?;
                             }
+                            TargetReplicaInput::CompletionAttemptStatus(input) => {
+                                input.validate(&origin, &intent)?;
+                            }
+                            TargetReplicaInput::CompletionTerminalStatus(input) => {
+                                input.validate(&origin, &intent)?;
+                            }
+                            TargetReplicaInput::Completion(completion) => {
+                                completion.validate(&origin, &intent)?;
+                            }
+                            TargetReplicaInput::CompletionResolution(resolution) => {
+                                resolution.validate(&origin, &intent)?;
+                            }
+                            TargetReplicaInput::ResolutionBudget { input, .. } => {
+                                input.validate(&origin, &intent)?;
+                            }
                             TargetReplicaInput::Quorum(_) => anyhow::ensure!(
-                                phase != LifecyclePhase::InspectTarget,
-                                "inspection requires exact original phase input"
+                                matches!(
+                                    phase,
+                                    LifecyclePhase::Initialize | LifecyclePhase::Activate
+                                ),
+                                "target startup requires its exact typed phase input"
                             ),
                         }
                         anyhow::ensure!(
                             origin.digest()? == input_copy.origin_sha256
                                 && (matches!(
                                     phase,
-                                    LifecyclePhase::Activate | LifecyclePhase::InspectTarget
+                                    LifecyclePhase::Activate
+                                        | LifecyclePhase::InspectTarget
+                                        | LifecyclePhase::InspectCompletionAttempt
+                                        | LifecyclePhase::InspectCompletionResolution
+                                        | LifecyclePhase::Complete
+                                        | LifecyclePhase::ResolveComplete
+                                        | LifecyclePhase::MaintainTarget
                                 ) || input_copy.digest()? == intent.request.phase_input_sha256),
                             "target group phase input differs"
                         );

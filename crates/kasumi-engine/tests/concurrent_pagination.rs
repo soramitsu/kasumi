@@ -57,13 +57,14 @@ fn request() -> QueryRequest {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         "pages".into(),
         Arc::new(LocalKeyProvider::new([62; 32])),
@@ -71,7 +72,7 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
     .await
     .unwrap();
     let database = open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -226,5 +227,5 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
     );
     assert!(database.query(&identity("reader"), request()).await.is_ok());
     database.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

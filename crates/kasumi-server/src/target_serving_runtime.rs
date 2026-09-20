@@ -4,10 +4,13 @@ use super::*;
 use crate::{api::DatabaseRegistry, serving_runtime::RuntimeLease};
 use std::ops::Bound;
 impl TargetRecoveryRuntime {
-    pub(super) fn start_serving_reconciliation(self: &Arc<Self>) {
+    pub(super) fn start_serving_reconciliation(
+        self: &Arc<Self>,
+        budget: &kasumi_serving::BackgroundWorkBudget,
+    ) -> Result<()> {
         let weak = Arc::downgrade(self);
         let wake = self.serving_monitor.wake();
-        let task = tokio::spawn(async move {
+        let task = async move {
             let mut after = None::<String>;
             loop {
                 tokio::select! {
@@ -54,8 +57,8 @@ impl TargetRecoveryRuntime {
                     }
                 }
             }
-        });
-        self.serving_monitor.register(task);
+        };
+        self.serving_monitor.start(task, budget)
     }
     async fn prune_inactive_serving(&self) {
         let candidates: Vec<_> = self
@@ -159,8 +162,9 @@ impl TargetRecoveryRuntime {
         );
         let path = self.path(&key)?;
         ensure!(path.is_file(), "activated target file is missing");
-        g.node = Some(NodeStore::open(
+        g.node = Some(NodeStore::open_existing(
             path,
+            self.journal.materialization_file_id(&key.0, key.1)?,
             self.audit.store().scratch_disk().clone(),
         )?);
         self.placement(&projection.execution()?.origin.input)?;
@@ -214,7 +218,7 @@ impl TargetRecoveryRuntime {
             return Ok(());
         }
         drop(control);
-        probe.store().shutdown().await;
+        probe.store().shutdown().await?;
         g.custody_probe = None;
         drop(probe);
         *stage = RecoveryStage::Issuer;
@@ -247,7 +251,7 @@ impl TargetRecoveryRuntime {
         let custody = template.custody_keys.provider(self.credential.clone())?;
         projection.check(lease.gate())?;
         g.stores = Some(
-            TenantStorageSet::open(
+            TenantStorageSet::open_existing(
                 g.node.as_ref().unwrap().clone(),
                 tenant.into(),
                 app,
@@ -273,7 +277,12 @@ impl TargetRecoveryRuntime {
             self.audit.clone(),
         )
         .await?;
+        g.serving = Some(owner);
+        let owner = g.serving.as_ref().context("opened serving owner absent")?;
         let database = owner.database()?;
+        for (name, destination) in &self.destinations {
+            database.install_archive_destination(name.clone(), destination.clone())?;
+        }
         let execution = projection.execution()?;
         let name = format!("{tenant}/{incarnation}");
         let check = stores.clone();
@@ -291,7 +300,6 @@ impl TargetRecoveryRuntime {
             Arc::new(move || check.check_access()),
         )?;
         g.registered_group = Some(name);
-        g.serving = Some(owner);
         ensure!(
             !self.closing.load(Ordering::Acquire),
             "target runtime closing"

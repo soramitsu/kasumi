@@ -27,7 +27,7 @@ const NS: &str = "kasumi.independent-authority";
 const META: &[u8] = b"meta";
 const MAX_RECORD_BYTES: usize = 256 << 10;
 
-use crate::installation::{AuthorityInstallation, AuthorityNodeSettings};
+use crate::installation::{AuthorityBootstrap, AuthorityInstallation};
 
 #[path = "maintenance_state.rs"]
 pub(crate) mod maintenance_state;
@@ -36,6 +36,9 @@ use maintenance_state::{OperationalState, PreparedMaintenance, RevokedMember};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Meta {
+    coverage_dispatches: u64,
+    coverage_acknowledgments: u64,
+    coverage_permissions: u64,
     signer_rosters: u64,
     signer_verifiers: u64,
     signer_controls: u64,
@@ -72,6 +75,10 @@ pub(crate) struct TenantRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "record", deny_unknown_fields)]
 enum Record {
+    CoverageDispatch(SignerCoverageDispatch),
+    CoverageAcknowledgment(SignerCoverageAcknowledgment),
+    CoverageBinding(signer_coverage_state::CoverageBinding),
+    CoveragePermission(signer_coverage_state::CoveragePermission),
     Verifier(SignerVerifierRegistration),
     SignerRoster(signer_roster::FrozenSignerRoster),
     ControlVerifier(signer_roster::ControlVerifierRecord),
@@ -132,6 +139,7 @@ pub(crate) struct PreparedCommand {
     deny_unknown_fields
 )]
 pub(crate) enum PreparedOperation {
+    Coverage(Box<signer_coverage_state::PreparedCoverage>),
     Administrative(Box<PreparedCommand>),
     Lifecycle(Box<lifecycle_state::PreparedLifecycle>),
     Maintenance(Box<PreparedMaintenance>),
@@ -172,11 +180,7 @@ fn unavailable(error: impl std::fmt::Display) -> Error {
     Error::new(ErrorCode::Unavailable, error.to_string())
 }
 impl Backend {
-    pub fn install(
-        store: Arc<TenantStore>,
-        installation: AuthorityInstallation,
-        settings: &AuthorityNodeSettings,
-    ) -> Result<Arc<Self>> {
+    fn validate_store(store: &TenantStore, installation: &AuthorityInstallation) -> Result<()> {
         installation.validate()?;
         ensure!(
             store.tenant() == installation.tenant(),
@@ -191,54 +195,110 @@ impl Backend {
                 .purpose(),
             "independent authority requires its exact installed storage root"
         );
-        if let Some(bytes) = store.get_bounded(NS, META, MAX_RECORD_BYTES)? {
-            let meta: Meta = serde_json::from_slice(&bytes)?;
-            ensure!(
-                meta.installation == installation
-                    && meta.signing.initial == settings.bootstrap.initial_signer_certificate,
-                "authority installation or initial signer differs from durable genesis"
-            );
-            meta.signing.validate()?;
-        } else {
-            let meta = Meta {
-                signer_rosters: 0,
-                signer_verifiers: 0,
-                signer_controls: 0,
-                signing: AuthoritySigningHead::initial(
-                    settings.bootstrap.initial_signer_certificate.clone(),
-                )?,
-                administrators: settings.bootstrap.administrators.clone(),
-                operational: OperationalState {
-                    revision: 0,
-                    membership: settings.bootstrap.membership.clone(),
-                    capacity: settings.bootstrap.capacity.clone(),
-                    pending_operation: None,
-                },
-                maintenance_receipts: 0,
-                member_revocations: 0,
-                installation: installation.clone(),
-                policy_epoch: 1,
+        Ok(())
+    }
+    fn genesis(
+        installation: &AuthorityInstallation,
+        bootstrap: &AuthorityBootstrap,
+    ) -> Result<Meta> {
+        Ok(Meta {
+            coverage_dispatches: 0,
+            coverage_acknowledgments: 0,
+            coverage_permissions: 0,
+            signer_rosters: 0,
+            signer_verifiers: 0,
+            signer_controls: 0,
+            signing: AuthoritySigningHead::initial(bootstrap.initial_signer_certificate.clone())?,
+            administrators: bootstrap.administrators.clone(),
+            operational: OperationalState {
                 revision: 0,
-                tenants: 0,
-                receipts: 0,
-                state_bytes: 0,
-                active_fences: 0,
-                preparations: 0,
-                incarnations: 0,
-                target_stops: 0,
-                lifecycle_receipts: 0,
-                lifecycle_epochs: 0,
-                open_control_epochs: 0,
-            };
-            store.write_batch(&[WriteOp::put(NS, META, serde_json::to_vec(&meta)?)])?;
+                membership: bootstrap.membership.clone(),
+                capacity: bootstrap.capacity.clone(),
+                pending_operation: None,
+            },
+            maintenance_receipts: 0,
+            member_revocations: 0,
+            installation: installation.clone(),
+            policy_epoch: 1,
+            revision: 0,
+            tenants: 0,
+            receipts: 0,
+            state_bytes: 0,
+            active_fences: 0,
+            preparations: 0,
+            incarnations: 0,
+            target_stops: 0,
+            lifecycle_receipts: 0,
+            lifecycle_epochs: 0,
+            open_control_epochs: 0,
+        })
+    }
+    pub(crate) fn initial_state(
+        store: &TenantStore,
+        installation: &AuthorityInstallation,
+        bootstrap: &AuthorityBootstrap,
+    ) -> Result<WriteOp> {
+        Self::validate_store(store, installation)?;
+        let bytes = serde_json::to_vec(&Self::genesis(installation, bootstrap)?)?;
+        ensure!(
+            bytes.len() <= MAX_RECORD_BYTES,
+            "authority genesis exceeds record budget"
+        );
+        Ok(WriteOp::put(NS, META, bytes))
+    }
+    pub fn open_existing(
+        store: Arc<TenantStore>,
+        installation: AuthorityInstallation,
+        bootstrap: &AuthorityBootstrap,
+        resource_budget_bytes: u64,
+    ) -> Result<Arc<Self>> {
+        Self::validate_store(&store, &installation)?;
+        let bytes = store
+            .get_bounded(NS, META, MAX_RECORD_BYTES)?
+            .context("authority metadata absent")?;
+        let meta: Meta = serde_json::from_slice(&bytes)?;
+        ensure!(
+            meta.installation == installation
+                && meta.signing.initial == bootstrap.initial_signer_certificate,
+            "authority installation or initial signer differs from durable genesis"
+        );
+        ensure!(
+            meta.policy_epoch > 0
+                && !meta.administrators.is_empty()
+                && meta.administrators.len() <= 64,
+            "invalid retained authority policy"
+        );
+        for principal in &meta.administrators {
+            kasumi_types::validate_name(principal)?;
         }
+        meta.signing.validate()?;
+        meta.operational.membership.validate()?;
+        meta.operational.capacity.validate()?;
         Ok(Arc::new(Self {
             store,
             installation,
-            initial_signer_certificate: settings.bootstrap.initial_signer_certificate.clone(),
-            resource_budget_bytes: settings.resource_budget_bytes,
+            initial_signer_certificate: bootstrap.initial_signer_certificate.clone(),
+            resource_budget_bytes,
             mutation: Mutex::new(()),
         }))
+    }
+    pub(crate) fn require_genesis(&self, bootstrap: &AuthorityBootstrap) -> Result<()> {
+        let _lock = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
+        let expected = serde_json::to_vec(&Self::genesis(&self.installation, bootstrap)?)?;
+        let mut found = false;
+        self.store.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
+            ensure!(
+                !found && key == META && bytes == expected,
+                "uninitialized consensus cannot reuse non-genesis authority state"
+            );
+            found = true;
+            Ok(())
+        })?;
+        ensure!(found, "authority metadata absent");
+        Ok(())
     }
     pub fn installation(&self) -> &AuthorityInstallation {
         &self.installation
@@ -589,7 +649,11 @@ impl Backend {
                     Record::Preparation(_) => add_count(&mut meta.preparations, 1)?,
                     Record::Incarnation(_) => add_count(&mut meta.incarnations, 1)?,
                     Record::TargetStop(_) => add_count(&mut meta.target_stops, 1)?,
-                    Record::SignerRoster(_)
+                    Record::CoverageDispatch(_)
+                    | Record::CoverageAcknowledgment(_)
+                    | Record::CoverageBinding(_)
+                    | Record::CoveragePermission(_)
+                    | Record::SignerRoster(_)
                     | Record::Verifier(_)
                     | Record::ControlVerifier(_)
                     | Record::Lifecycle(_)
@@ -910,6 +974,9 @@ impl StateMachineBackend for Backend {
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
         let prepared: PreparedOperation = serde_json::from_slice(bytes)?;
         let bytes = match prepared {
+            PreparedOperation::Coverage(prepared) => {
+                serde_json::to_vec(&self.reduce_coverage(position, *prepared)?)?
+            }
             PreparedOperation::Maintenance(prepared) => {
                 serde_json::to_vec(&self.reduce_maintenance(position, *prepared)?)?
             }
@@ -940,20 +1007,48 @@ impl StateMachineBackend for Backend {
         self.decode_snapshot(bytes)?;
         Ok(None)
     }
-    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
-        let _lock = self
+    fn prepare_restore<'a>(
+        &'a self,
+        _context: &kasumi_raft::SnapshotRestoreContext,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
+        let guard = self
             .mutation
             .lock()
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
         let snapshot = self.decode_snapshot(bytes)?;
         self.validate_lifecycle_history(&snapshot)?;
         self.validate_roster_history(&snapshot)?;
-        snapshot.records.publish(&self.store)
+        Ok(Box::new(PreparedAuthorityRestore {
+            backend: self,
+            snapshot,
+            _mutation_guard: guard,
+        }))
     }
     fn close_application(&self) {
         self.store.seal();
     }
 }
+struct PreparedAuthorityRestore<'a> {
+    backend: &'a Backend,
+    snapshot: Snapshot,
+    _mutation_guard: std::sync::MutexGuard<'a, ()>,
+}
+impl kasumi_raft::PreparedStateMachineRestore for PreparedAuthorityRestore<'_> {
+    fn retirement(&self) -> Option<RetiredSnapshotState> {
+        None
+    }
+    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+        self.snapshot.records.replacements()
+    }
+    fn application_writes(&self) -> &[kasumi_store::WriteOp] {
+        &[]
+    }
+    fn publish(self: Box<Self>) -> Result<()> {
+        self.backend.store.check_access()
+    }
+}
+
 impl Backend {
     fn decode_snapshot(&self, bytes: &mut dyn std::io::Read) -> Result<Snapshot> {
         let snapshot =
@@ -982,7 +1077,7 @@ impl Backend {
             );
             add_count(&mut state_bytes, u64::try_from(bytes.len())?)?;
             match record {
-                Record::SignerRoster(_) | Record::Verifier(_) | Record::ControlVerifier(_) | Record::Lifecycle(_) | Record::ControlEpoch(_) | Record::Maintenance(_) | Record::RevokedMember(_) => {}
+                Record::CoverageDispatch(_) | Record::CoverageAcknowledgment(_) | Record::CoverageBinding(_) | Record::CoveragePermission(_) | Record::SignerRoster(_) | Record::Verifier(_) | Record::ControlVerifier(_) | Record::Lifecycle(_) | Record::ControlEpoch(_) | Record::Maintenance(_) | Record::RevokedMember(_) => {}
                 Record::Tenant(record) => {
                     add_count(&mut tenants, 1)?;
                     ensure!(
@@ -1215,6 +1310,8 @@ impl Backend {
         self.validate_lifecycle_snapshot(&snapshot)?;
         self.validate_maintenance_snapshot(&snapshot)?;
         self.validate_signing_snapshot(&snapshot)?;
+        self.validate_coverage_snapshot(&snapshot)?;
+        self.validate_coverage_history(&snapshot)?;
         self.validate_roster_snapshot(&snapshot)?;
         Ok(snapshot)
     }
@@ -1227,5 +1324,21 @@ mod signing_state;
 mod control_signer_state;
 #[path = "issuer_signer_state.rs"]
 mod issuer_signer_state;
+#[path = "signer_coverage_state.rs"]
+pub(crate) mod signer_coverage_state;
 #[path = "signer_roster.rs"]
 mod signer_roster;
+
+#[cfg(test)]
+pub(crate) fn restore_test_context(bytes: &[u8]) -> kasumi_raft::SnapshotRestoreContext {
+    use sha2::Digest;
+    kasumi_raft::SnapshotRestoreContext {
+        mode: kasumi_raft::SnapshotRestoreMode::Install,
+        backend_sha256: hex::encode(sha2::Sha256::digest(bytes)),
+        meta: kasumi_raft::SnapshotMeta {
+            last_log_id: None,
+            last_membership: Default::default(),
+            snapshot_id: "negative-fixture".into(),
+        },
+    }
+}

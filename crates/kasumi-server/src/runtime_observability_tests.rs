@@ -84,8 +84,10 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release() {
     for profile in [&mut control, &mut tenant] {
         profile.mcp_endpoint = config.mcp.protocol.public_url.clone();
         profile.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
-        profile.admin_endpoint = format!("https://localhost:{}", config.admin.listen.port());
+        profile.administrative_members.get_mut(&1).unwrap().endpoint =
+            format!("https://localhost:{}", config.admin.listen.port());
     }
+    crate::standalone::configure_test_topology(&config).await;
     drop(listeners);
     let runtime = NodeRuntime::open(config.clone()).await.unwrap();
     let telemetry = runtime.telemetry.clone();
@@ -99,9 +101,18 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release() {
         .unwrap();
     let operator = control.bearer().unwrap();
     let client = http(&control, true);
-    let metrics = format!("{}/metrics", control.admin_endpoint);
-    let ready = format!("{}/ready", control.admin_endpoint);
-    let health = format!("{}/health", control.admin_endpoint);
+    let metrics = format!(
+        "{}/metrics",
+        control.administrative_member().unwrap().endpoint
+    );
+    let ready = format!(
+        "{}/ready",
+        control.administrative_member().unwrap().endpoint
+    );
+    let health = format!(
+        "{}/health",
+        control.administrative_member().unwrap().endpoint
+    );
     let no_identity = http(&control, false);
     assert!(
         no_identity

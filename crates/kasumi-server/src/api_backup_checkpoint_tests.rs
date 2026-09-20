@@ -254,16 +254,34 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
     let custody_bearer = custody_token.strip_prefix("Bearer ").unwrap();
     let admitted = std::sync::atomic::AtomicBool::new(false);
     let retired = crate::recovery_runtime::dispatch_planned_retirement(
-        || Ok((config.clone(), zeroize::Zeroizing::new(bearer.to_owned()))),
-        &config, custody_bearer, &retirement, std::time::Duration::from_secs(30),
-        async { admitted.store(true, std::sync::atomic::Ordering::Release); Ok(()) },
-    ).await.unwrap();
+        || {
+            Ok((
+                std::collections::BTreeMap::from([(1, config.clone())]),
+                zeroize::Zeroizing::new(bearer.to_owned()),
+            ))
+        },
+        &std::collections::BTreeMap::from([(1, config.clone())]),
+        custody_bearer,
+        &retirement,
+        std::time::Duration::from_secs(30),
+        async {
+            admitted.store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        },
+    )
+    .await
+    .unwrap();
     assert!(admitted.load(std::sync::atomic::Ordering::Acquire));
     let retained = crate::recovery_runtime::dispatch_planned_retirement(
         || panic!("accepted retirement must recover without the application credential"),
-        &config, custody_bearer, &retirement, std::time::Duration::from_secs(30),
+        &std::collections::BTreeMap::from([(1, config.clone())]),
+        custody_bearer,
+        &retirement,
+        std::time::Duration::from_secs(30),
         async { panic!("accepted retirement must not dispatch another effect") },
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(retained.receipt(), retired.receipt());
     assert!(
         client
@@ -333,6 +351,13 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
             "custodian".into()
         ])),
     };
+    assert!(
+        client
+            .read_custody_receipt(bearer, &rotation)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let kasumi_client::ClientError::Transport(error) =
         client.execute_custody(bearer, &rotation).await.unwrap_err()
     else {
@@ -348,10 +373,42 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
     );
     let custodian_token = fixture.custody_token("custodian");
     let custodian_bearer = custodian_token.strip_prefix("Bearer ").unwrap();
+    assert!(
+        client
+            .read_custody_receipt(bearer, &rotation)
+            .await
+            .is_err()
+    );
+    let before_receipt = client
+        .read_custody(custodian_bearer, &reference)
+        .await
+        .unwrap();
+    let observed_receipt = client
+        .read_custody_receipt(custodian_bearer, &rotation)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        client
+            .read_custody(custodian_bearer, &reference)
+            .await
+            .unwrap()
+            .revision,
+        before_receipt.revision
+    );
+    let mut substituted = rotation.clone();
+    substituted.not_after_ms -= 1;
+    assert!(
+        client
+            .read_custody_receipt(custodian_bearer, &substituted)
+            .await
+            .is_err()
+    );
     let replay = client
         .execute_custody(custodian_bearer, &rotation)
         .await
         .unwrap();
+    assert_eq!(replay, observed_receipt);
     assert_eq!(replay.principal, "person");
     replay.outcome.unwrap();
     assert_eq!(
@@ -400,6 +457,13 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
     // source route. The old application Database and store are permanently sealed.
     fixture.db.shutdown().await.unwrap();
     assert!(fixture.db.engine().generation().is_err());
+    assert_eq!(
+        client
+            .read_custody_receipt(custodian_bearer, &rotation)
+            .await
+            .unwrap(),
+        Some(observed_receipt),
+    );
     assert_eq!(
         client
             .verify_retirement_receipt(custodian_bearer, &reference)

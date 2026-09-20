@@ -186,7 +186,7 @@ async fn current_control_administration_pins_actual_membership_and_pending_polic
     drop(current);
     drop(database);
     fixture.close().await;
-    fixture.open().await;
+    fixture.open(false).await;
     let database = fixture.leader().await;
     assert!(
         database

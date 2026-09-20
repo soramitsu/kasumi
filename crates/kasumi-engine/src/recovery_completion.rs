@@ -2,6 +2,28 @@
 //! may resolve it; absence never becomes a negative outcome or new mutation.
 use super::*;
 
+/// The retained Complete identity commits the complete canonical input,
+/// including the explicit predecessor field. A quorum-only digest is invalid.
+pub(crate) fn validate_original_intent(
+    origin: &TargetOrigin,
+    expected: &TargetCompletionInput,
+    original: &LifecycleIntent,
+) -> Result<()> {
+    expected
+        .validate(origin, original)
+        .map_err(|_| conflict("original completion identity input differs"))
+}
+
+pub(crate) fn completion_input(
+    state: &TenantState,
+    operation: &RecoveryRecord,
+) -> Result<TargetCompletionInput> {
+    Ok(TargetCompletionInput {
+        quorum: quorum_input(state, operation)?,
+        predecessor: attempts::predecessor(state, operation)?,
+    })
+}
+
 pub(crate) fn inspection_input(
     state: &TenantState,
     operation: &RecoveryRecord,
@@ -17,6 +39,7 @@ pub(crate) fn inspection_input(
     Ok(TargetInspectionInput {
         quorum: quorum_input(state, operation)?,
         original_phase: original.clone(),
+        predecessor: completion_input(state, operation)?.predecessor,
     })
 }
 pub(crate) fn is_inspection(step: &TargetRuntimeStep) -> bool {
@@ -44,10 +67,13 @@ pub(crate) fn validate_step(
             }
         }
         TargetRuntimeStep::Inspect(actual) if **actual == input => {
-            if admission && !quorum::all_started(state, operation, current.request.command_id)? {
-                return Err(conflict(
-                    "inspection requires every target started under its exact phase",
-                ));
+            if admission {
+                quorum::require_eligible_observer(
+                    state,
+                    operation,
+                    current.request.command_id,
+                    node,
+                )?;
             }
         }
         _ => return Err(conflict("completion inspection input differs")),
@@ -69,6 +95,7 @@ pub(crate) fn validate_proof(
     }
     kasumi_serving::verify_target_inspection(&input, signed)
         .map_err(|_| conflict("completion inspection lacks its exact positive signature"))?;
+    receiver::validate_inspected_terminal(state, operation, &signed.observation.completion)?;
     if let Some(id) = operation.completion_attempt {
         let original = phase(state, operation, id)?;
         let RecoveryDispatch::Target { request, .. } = &original.input else {
@@ -134,6 +161,14 @@ pub(crate) fn resolve_original(
         return Ok(());
     };
     let mut original = phase(state, operation, id)?.clone();
+    if matches!(
+        original.outcome,
+        Some(RecoveryDispatchOutcome::CompletionTerminal { .. })
+    ) {
+        // Its exact positive terminal was validated against the inspection above;
+        // preserve the earlier permanent terminal reference and resolution time.
+        return Ok(());
+    }
     if original.outcome.is_some() {
         return Err(conflict(
             "original completion already has a permanent outcome",
@@ -158,27 +193,12 @@ pub(crate) fn next_inspection(
 ) -> Result<RecoveryDispatch> {
     let input = inspection_input(state, operation)?;
     input.validate(&origin(state, operation)?, current)?;
-    let mut missing = None;
-    for node in operation.voters.keys() {
-        if !started_for(state, operation, *node, current.request.command_id)? {
-            missing = Some(*node);
-            break;
-        }
-    }
-    let (node_id, step) = if let Some(node) = missing {
-        (
-            node,
-            TargetRuntimeStep::Start(TargetReplicaInput::Inspection(Box::new(input))),
-        )
+    let (node_id, startup) =
+        quorum::established_destination(state, operation, current.request.command_id)?;
+    let step = if startup {
+        TargetRuntimeStep::Start(TargetReplicaInput::Inspection(Box::new(input)))
     } else {
-        (
-            *operation
-                .voters
-                .keys()
-                .next()
-                .ok_or_else(|| conflict("inspection voters absent"))?,
-            TargetRuntimeStep::Inspect(Box::new(input)),
-        )
+        TargetRuntimeStep::Inspect(Box::new(input))
     };
     Ok(RecoveryDispatch::Target {
         node_id,
@@ -194,3 +214,7 @@ pub(crate) fn next_inspection(
         }),
     })
 }
+
+#[cfg(test)]
+#[path = "recovery_completion_tests.rs"]
+mod tests;

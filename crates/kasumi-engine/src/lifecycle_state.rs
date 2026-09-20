@@ -282,6 +282,9 @@ fn apply_candidate(
                 return Err(conflict("exact control change identity differs"));
             }
             if let Some(completed) = change.completed_revision {
+                if change.completion_stops.as_ref() != Some(&request.stops) {
+                    return Err(conflict("permanent control completion input differs"));
+                }
                 return Ok(receipt(completed));
             }
             if control.pending_change != Some(request.command_id)

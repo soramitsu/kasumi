@@ -1,0 +1,18 @@
+{
+  "/Users/mtakemiya/dev/kasumi-release-evidence/20260919-be2667d-ownership/preserved-executables/7f1661e8f326db30a88868b0d14454d0a3736a5d730077a0815334eea4f185d8-kasumi_store-c910e15433394175": {
+    "sha256": "7f1661e8f326db30a88868b0d14454d0a3736a5d730077a0815334eea4f185d8",
+    "bytes": 48997984
+  },
+  "/Users/mtakemiya/dev/kasumi-release-evidence/20260919-be2667d-ownership/preserved-executables/34aa2a919db6ac7f5e46a4d12ce268eb301e52abf262f23eafe6e2729466fdb8-kasumi_serving-ab3ea266bdba1c03": {
+    "sha256": "34aa2a919db6ac7f5e46a4d12ce268eb301e52abf262f23eafe6e2729466fdb8",
+    "bytes": 11859648
+  },
+  "/Users/mtakemiya/dev/kasumi-release-evidence/20260919-be2667d-ownership/preserved-executables/e5bbd04899013264dd769cee694ba28433f747e9e542e6a4bed317832e06c334-kasumi_engine-beab15cb9b18300f": {
+    "sha256": "e5bbd04899013264dd769cee694ba28433f747e9e542e6a4bed317832e06c334",
+    "bytes": 184036480
+  },
+  "/Users/mtakemiya/dev/kasumi-release-evidence/20260919-be2667d-ownership/preserved-executables/2eb42e617db233d467b7bbc646efecbb458a41e7c0b388867d1b631bc9d8f2e0-kasumi_server-e3667717601737f5": {
+    "sha256": "2eb42e617db233d467b7bbc646efecbb458a41e7c0b388867d1b631bc9d8f2e0",
+    "bytes": 329540192
+  }
+}

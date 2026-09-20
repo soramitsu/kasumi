@@ -1,0 +1,37 @@
+{
+  "source": "/tmp/kasumi-first-release-t6-check",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "1ff2fe2691bb3adfe74da762b3a64204c941ebfd",
+  "expected_tree": "10eb44a92929ad9bfd6ca764f464d628225d3ef4",
+  "output": "/tmp/kasumi-1ff2fe2-first-release-check",
+  "scope": "First combined workspace all-target/all-feature compiler and format check for permanent mutation point receipts/T6 format, strict installed node/envelope/genesis and authority startup, explicit finite-grant cold HA enrollment, cancellation-safe fresh catalog preparation, retained physical enrollment ownership, and bounded retirement seed scanning. Includes the exact ReadableTable correction to the preserved64c14aa failed check. Compilation only: no functional, Clippy, production binary, capacity, recovery or final release claim. Supersedes the UNRUN fb7e478 compile plan before dispatch; preserves original900/300-second deadlines and single build job. The earlier d5fb231 store-only functional cohort remains UNRUN and its20required regression names plus new catalog tests still require actual execution against integrated source. Foreign ordered_seek changes in main are not included. Later startup-owner and target operational-membership corrections are separate source work and not part of this frozen attempt.",
+  "gates": [
+    {
+      "name": "workspace-all-targets-check",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "check",
+        "--locked",
+        "--offline",
+        "--keep-going",
+        "-j1",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics"
+      ],
+      "required_tests": []
+    },
+    {
+      "name": "workspace-format",
+      "timeout_seconds": 300,
+      "cargo_args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "required_tests": []
+    }
+  ]
+}

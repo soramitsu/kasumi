@@ -16,7 +16,7 @@ struct Binding {
     tenant: String,
     resource: CredentialResource,
     endpoint: String,
-    server_pin: String,
+    server_pins: std::collections::BTreeSet<String>,
     client_pin: String,
     ca_sha256: String,
 }
@@ -40,7 +40,7 @@ fn binding(
         tenant: profile.tenant.clone(),
         resource: profile.resource.clone(),
         endpoint: connection.endpoint.clone(),
-        server_pin: profile.admin_certificate_pin.clone(),
+        server_pins: profile.administrative_member()?.certificate_pins.clone(),
         client_pin: hex::encode(connection.identity.certificate_pin()),
         ca_sha256: hex::encode(Sha256::digest(&connection.trusted_ca_pem)),
     })

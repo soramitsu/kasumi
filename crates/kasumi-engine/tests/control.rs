@@ -66,13 +66,14 @@ fn placement_rejects_shared_domains_unknown_nodes_duplicate_identities_and_clear
 #[tokio::test]
 async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
     let root = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         root.path().join("control.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         CONTROL_TENANT.into(),
         Arc::new(LocalKeyProvider::new([44; 32])),
@@ -95,7 +96,7 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
         strict_read_audit: true,
     };
     let db = open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -173,7 +174,7 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
     db.raft_group().shutdown().await.unwrap();
     audit.drain().await;
     let reopened = open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::open_existing_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -191,5 +192,5 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
         topology
     );
     reopened.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

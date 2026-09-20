@@ -35,7 +35,7 @@ fn visit_spool(
 #[tokio::test]
 async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens() -> Result<()> {
     let disk = FaultBackend::new();
-    let (domains, _, _, mut log) = fixture(disk.clone()).await?;
+    let (domains, _, _, mut log) = fixture(disk.clone(), true).await?;
     log.blocking_append([
         openraft::Entry {
             log_id: id(0),
@@ -116,7 +116,7 @@ async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopen
         Ok::<_, anyhow::Error>((head, request, original, revision, context))
     })
     .await??;
-    let (reopened, _, _, _) = fixture(disk.crash()).await?;
+    let (reopened, _, _, _) = fixture(disk.crash(), false).await?;
     tokio::task::spawn_blocking(move || -> Result<()> {
         let current = custody_tables::load(reopened.custody().store())?;
         assert_eq!(current, head);

@@ -6,7 +6,7 @@ use crate::observability::{
 impl Administration {
     pub(crate) async fn local_observation(&self) -> Result<LocalObservation> {
         let local_id = self.config.replication.as_ref().map_or(1, |r| r.node_id);
-        let control = self.configured(crate::runtime::CONTROL_TENANT)?;
+        let control = SelectedTenant::new(self.control.clone());
         let (expected_groups, required) = {
             // Borrow the shared document root and decode one bounded route at a
             // time; a scrape never clones the entire Control topology document.
@@ -41,18 +41,13 @@ impl Administration {
                 if required.len() == MAX_GROUPS {
                     continue;
                 }
-                let managed = self.generation(tenant, &route.incarnation).ok();
-                let routed = self
-                    .enabled
-                    .read()
-                    .map_err(|_| anyhow::anyhow!("routing unavailable"))?
-                    .contains(tenant)
-                    && self
-                        .active
-                        .read()
-                        .map_err(|_| anyhow::anyhow!("routing unavailable"))?
-                        .get(tenant)
-                        == Some(&route.incarnation);
+                let managed = self
+                    .registry
+                    .installed_generation(tenant, &route.incarnation)
+                    .ok()
+                    .flatten()
+                    .map(SelectedTenant::new);
+                let routed = managed.is_some();
                 required.push((tenant.clone(), managed, routed));
             }
             (expected, required)

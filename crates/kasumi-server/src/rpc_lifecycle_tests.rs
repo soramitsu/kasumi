@@ -36,9 +36,10 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         jwks,
     )
     .await;
-    let audit_store = TenantStore::open(
-        NodeStore::open(
+    let audit_store = TenantStore::initialize_catalog(
+        NodeStore::create_new(
             directory.path().join("audit.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap(),
@@ -48,7 +49,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     )
     .await
     .unwrap();
-    let audit = kasumi_engine::SecurityAudit::open(
+    let audit = kasumi_engine::SecurityAudit::initialize(
         audit_store.clone(),
         kasumi_types::AuditRetentionBudget::default(),
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
@@ -92,9 +93,10 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let issuer_router = Arc::new(kasumi_raft::InProcessRouter::default());
     let mut issuers = Vec::new();
     for id in 1..=3 {
-        let stores = TenantStorageSet::open(
-            NodeStore::open(
+        let stores = TenantStorageSet::initialize_catalogs(
+            NodeStore::create_new(
                 directory.path().join(format!("issuer-{id}.redb")),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap(),
@@ -105,7 +107,39 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         )
         .await
         .unwrap();
-        let issuer = kasumi_authority::IndependentAuthority::open_replicated(
+        let bootstrap = kasumi_authority::AuthorityBootstrap {
+            initial_signer_certificate: issuer_signing.signer.certificate().clone(),
+            administrators: BTreeSet::from(["operator".into()]),
+            capacity: kasumi_serving::AuthorityCapacity {
+                max_tenants: 10,
+                max_state_bytes: 4 << 20,
+                maintenance_reserve_bytes: 1 << 20,
+            },
+            membership: kasumi_serving::AuthorityMembership {
+                voters: BTreeSet::from([1, 2, 3]),
+                members: (1..=3)
+                    .map(|n| {
+                        (
+                            n,
+                            kasumi_serving::AuthorityMember {
+                                verifier: kasumi_serving::test_utils::fixture_verifier(n),
+                                endpoint: format!("https://authority-{n}.test"),
+                                failure_domain: format!("domain-{n}"),
+                                certificate_pins: BTreeSet::from([format!("{n:064x}")]),
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+        };
+        kasumi_authority::IndependentAuthority::initialize_storage(
+            &stores,
+            &issuer_install,
+            &bootstrap,
+            &kasumi_serving::test_utils::fixture_verifier(id),
+        )
+        .unwrap();
+        let issuer = kasumi_authority::IndependentAuthority::open_existing_replicated(
             stores,
             issuer_install.clone(),
             issuer_signing
@@ -114,31 +148,6 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
                 .signer,
             id,
             kasumi_authority::AuthorityNodeSettings {
-                bootstrap: kasumi_authority::AuthorityBootstrap {
-                    initial_signer_certificate: issuer_signing.signer.certificate().clone(),
-                    administrators: BTreeSet::from(["operator".into()]),
-                    capacity: kasumi_serving::AuthorityCapacity {
-                        max_tenants: 10,
-                        max_state_bytes: 4 << 20,
-                        maintenance_reserve_bytes: 1 << 20,
-                    },
-                    membership: kasumi_serving::AuthorityMembership {
-                        voters: BTreeSet::from([1, 2, 3]),
-                        members: (1..=3)
-                            .map(|n| {
-                                (
-                                    n,
-                                    kasumi_serving::AuthorityMember {
-                                        verifier: kasumi_serving::test_utils::fixture_verifier(n),
-                                        endpoint: format!("https://authority-{n}.test"),
-                                        failure_domain: format!("domain-{n}"),
-                                        certificate_pins: BTreeSet::from([format!("{n:064x}")]),
-                                    },
-                                )
-                            })
-                            .collect(),
-                    },
-                },
                 resource_budget_bytes: 4 << 20,
                 installed_members: (1..=3)
                     .map(|n| {
@@ -161,6 +170,10 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
                 election_timeout_max: 180,
                 ..Default::default()
             },
+            crate::authority_runtime::request_budget(
+                &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            )
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -203,7 +216,29 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         }],
         strict_read_audit: true,
     };
+    let installation_command_id = Uuid::new_v4();
     let bootstrap = ReplicatedBootstrap {
+        genesis: kasumi_engine::ReplicatedGenesis::Control(kasumi_engine::ControlGenesis {
+            topology: kasumi_engine::control::ControlTopology {
+                nodes: (1..=3)
+                    .map(|id| {
+                        (
+                            id,
+                            kasumi_engine::control::ControlNode {
+                                endpoint: format!("https://control-{id}.example"),
+                                failure_domain: format!("zone-{id}"),
+                                certificate_pins: BTreeSet::from([format!("{id:064x}")]),
+                            },
+                        )
+                    })
+                    .collect(),
+                tenants: BTreeMap::new(),
+            },
+            lifecycle: kasumi_engine::ControlLifecycleGenesis::Installed {
+                command_id: installation_command_id,
+                installation: installation.clone(),
+            },
+        }),
         incarnation: incarnation.to_string(),
         initial_policy: policy.clone(),
         initial_limits: Limits::default(),
@@ -212,7 +247,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
                 (
                     id,
                     ReplicaPlacement {
-                        address: format!("control-{id}"),
+                        address: format!("https://control-{id}.example"),
                         failure_domain: format!("zone-{id}"),
                     },
                 )
@@ -223,9 +258,10 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let group = format!("__kasumi_control/{incarnation}");
     let mut nodes = Vec::new();
     for id in 1..=3 {
-        let stores = TenantStorageSet::open(
-            NodeStore::open(
+        let stores = TenantStorageSet::initialize_catalogs(
+            NodeStore::create_new(
                 directory.path().join(format!("node-{id}.redb")),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap(),
@@ -334,7 +370,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         "kasumi:read",
     );
     let install = LifecycleControlCommand::Install {
-        command_id: Uuid::new_v4(),
+        command_id: installation_command_id,
         installation: installation.clone(),
     };
     assert!(client.execute(&data, &install).await.is_err());
@@ -694,6 +730,6 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         node.shutdown().await.unwrap();
     }
     nodes.clear();
-    audit.shutdown().await;
-    audit_store.shutdown().await;
+    audit.shutdown().await.unwrap();
+    audit_store.shutdown().await.unwrap();
 }

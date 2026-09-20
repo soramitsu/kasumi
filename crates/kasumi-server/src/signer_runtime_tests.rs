@@ -3,6 +3,68 @@ use kasumi_store::FileKeyProvider;
 use std::future::Future;
 use uuid::Uuid;
 
+#[tokio::test]
+async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open() {
+    let fixture = Fixture::new();
+    fixture.input.initialize().await.unwrap();
+    let before = std::fs::read(&fixture.input.verifier.database_path).unwrap();
+    let admission =
+        kasumi_engine::admission::NodeAdmission::new(kasumi_engine::admission::AdmissionConfig {
+            max_inflight_bytes: Some(1024),
+            ..Default::default()
+        })
+        .unwrap();
+    let domain = fixture.manifest.signing_domain(0).unwrap();
+    assert!(
+        fixture
+            .input
+            .verifier
+            .open(
+                BTreeMap::from([(domain.digest().unwrap(), domain)]),
+                Arc::new(file_secret),
+                kasumi_store::ScratchDisk::open(fixture.input.scratch_disk.clone()).unwrap(),
+                admission,
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(&fixture.input.verifier.database_path).unwrap(),
+        before
+    );
+    let admission =
+        kasumi_engine::admission::NodeAdmission::new(kasumi_engine::admission::AdmissionConfig {
+            max_inflight_operations: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    let domain = fixture.manifest.signing_domain(0).unwrap();
+    let opened = fixture
+        .input
+        .verifier
+        .open(
+            BTreeMap::from([(domain.digest().unwrap(), domain)]),
+            Arc::new(file_secret),
+            kasumi_store::ScratchDisk::open(fixture.input.scratch_disk.clone()).unwrap(),
+            admission.clone(),
+        )
+        .await
+        .unwrap();
+    let expected =
+        BackgroundWorkBudget::required_bytes(fixture.input.verifier.max_background_workers, 1)
+            .unwrap();
+    assert_eq!(admission.snapshot().reserved_bytes, expected);
+    assert_eq!(admission.snapshot().inflight_operations, 0);
+    // Installed metadata must leave the sole operation slot usable.
+    let request = admission.reserve(1, None).unwrap();
+    assert_eq!(admission.snapshot().inflight_operations, 1);
+    drop(request);
+    opened.shutdown().await.unwrap();
+    assert_eq!(admission.snapshot().reserved_bytes, expected);
+    drop(opened);
+    assert_eq!(admission.snapshot().reserved_bytes, 0);
+}
+
 struct Fixture {
     _directory: tempfile::TempDir,
     input: InitializeSignerVerifier,
@@ -42,12 +104,14 @@ impl Fixture {
         private_files::create(&key_file, &key.serialize_der()).unwrap();
         Self {
             input: InitializeSignerVerifier {
+                admission: Default::default(),
                 scratch_disk: kasumi_store::ScratchDiskConfig {
                     directory: directory.path().join("scratch"),
                     max_bytes: 64 << 30,
                     min_free_bytes: 256 << 20,
                 },
                 verifier: SignerVerifierConfig {
+                    max_background_workers: 64,
                     identity: TrustVerifierIdentity {
                         installation_id: Uuid::new_v4(),
                         node_id: 1,
@@ -74,6 +138,7 @@ impl Fixture {
                 BTreeMap::from([(domain.digest()?, domain)]),
                 Arc::new(file_secret),
                 kasumi_store::ScratchDisk::open(self.input.scratch_disk.clone())?,
+                kasumi_engine::admission::NodeAdmission::new(Default::default())?,
             )
             .await
     }
@@ -174,10 +239,10 @@ async fn renewal_shutdown_keeps_its_handle_through_cancelled_join_and_verifier_r
         retry.await.unwrap();
         drop(lease);
         assert!(weak_lease.upgrade().is_none());
-        installed.shutdown().await;
+        installed.shutdown().await.unwrap();
         drop(installed);
         let reopened = f.open().await.unwrap();
-        reopened.shutdown().await;
+        reopened.shutdown().await.unwrap();
     })
     .await
     .expect("shutdown ownership fixture timed out");
@@ -206,7 +271,9 @@ async fn verifier_shutdown_joins_renewal_after_setup_owner_is_dropped() {
             .unwrap();
         assert!(
             owner
-                .start_background_work(|| panic!("closed verifier spawned a late worker"))
+                .start_background_work(Arc::new(BackgroundWork::default()), async {
+                    panic!("closed verifier spawned a late worker")
+                })
                 .is_err()
         );
         drop(owner);
@@ -217,11 +284,11 @@ async fn verifier_shutdown_joins_renewal_after_setup_owner_is_dropped() {
         })
         .await;
         pause.release.notify_one();
-        retry.await;
+        retry.await.unwrap();
         assert!(weak_lease.upgrade().is_none());
         drop(installed);
         let reopened = f.open().await.unwrap();
-        reopened.shutdown().await;
+        reopened.shutdown().await.unwrap();
     })
     .await
     .expect("shutdown ownership fixture timed out");
@@ -242,7 +309,10 @@ async fn explicit_encrypted_verifier_initialization_never_bootstraps_runtime_tru
     );
     std::fs::remove_file(&f.input.verifier.database_path).unwrap();
     f.input.initialize().await.unwrap();
-    f.input.initialize().await.unwrap();
+    assert!(
+        f.input.initialize().await.is_err(),
+        "installation cannot repeat"
+    );
     let installed = f.open().await.unwrap();
     assert!(f.open().await.is_err(), "exclusive metadata ownership");
     let signer = f.operational.open(&installed).unwrap();
@@ -276,17 +346,17 @@ async fn explicit_encrypted_verifier_initialization_never_bootstraps_runtime_tru
     let mut forged = f.operational.clone();
     forged.certificate.root_signature = "00".repeat(64);
     assert!(forged.open(&installed).is_err());
-    installed.shutdown().await;
+    installed.shutdown().await.unwrap();
     assert!(signer.check().is_err());
     drop(signer);
     drop(installed);
     let reopened = f.open().await.unwrap();
     f.operational.open(&reopened).unwrap().check().unwrap();
-    reopened.shutdown().await;
+    reopened.shutdown().await.unwrap();
 }
 
 #[tokio::test]
-async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corruption() {
+async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_reseeded() {
     let f = Fixture::new();
     let store = f
         .input
@@ -303,21 +373,52 @@ async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corrup
             &f.input.verifier.identity,
             f.operational.certificate.clone(),
             Arc::new(ScopedSignerAdministrator::default()),
+            BackgroundWorkBudget::new(64, Arc::new(())).unwrap(),
         )
         .unwrap();
-    store.shutdown().await;
+    let digest = f.manifest.signing_domain(0).unwrap().digest().unwrap();
+    let retained = store
+        .get("live.signer.trust", digest.as_bytes())
+        .unwrap()
+        .unwrap();
+    assert!(store.get(NS, b"installation").unwrap().is_none());
+    store.shutdown().await.unwrap();
     drop(store);
     assert!(f.open().await.is_err());
-    f.input.initialize().await.unwrap();
-    let installed = f.open().await.unwrap();
-    installed.shutdown().await;
-    drop(installed);
+    assert!(
+        f.input.initialize().await.is_err(),
+        "partial installation cannot be adopted"
+    );
     let store = f
         .input
         .verifier
         .store(
             Arc::new(file_secret),
-            true,
+            false,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .await
+        .unwrap();
+    assert!(store.get(NS, b"installation").unwrap().is_none());
+    assert_eq!(
+        store
+            .get("live.signer.trust", digest.as_bytes())
+            .unwrap()
+            .unwrap(),
+        retained
+    );
+    store.shutdown().await.unwrap();
+    drop(store);
+
+    // Independently completed installation: corruption must not reseed its head.
+    let f = Fixture::new();
+    f.input.initialize().await.unwrap();
+    let store = f
+        .input
+        .verifier
+        .store(
+            Arc::new(file_secret),
+            false,
             kasumi_store::ScratchDisk::fixture(),
         )
         .await
@@ -330,7 +431,7 @@ async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corrup
             b"corrupt".to_vec(),
         )])
         .unwrap();
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
     assert!(f.open().await.is_err());
     // A completion marker is not permission to reseed a damaged durable head.
@@ -340,7 +441,7 @@ async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corrup
         .verifier
         .store(
             Arc::new(file_secret),
-            true,
+            false,
             kasumi_store::ScratchDisk::fixture(),
         )
         .await
@@ -352,7 +453,7 @@ async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corrup
             .unwrap(),
         b"corrupt"
     );
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -378,7 +479,8 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
             .open(
                 BTreeMap::new(),
                 Arc::new(file_secret),
-                kasumi_store::ScratchDisk::fixture()
+                kasumi_store::ScratchDisk::fixture(),
+                kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
             )
             .await
             .is_err()
@@ -390,7 +492,8 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
             .open(
                 BTreeMap::from([(domain.digest().unwrap(), domain)]),
                 Arc::new(file_secret),
-                kasumi_store::ScratchDisk::fixture()
+                kasumi_store::ScratchDisk::fixture(),
+                kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
             )
             .await
             .is_err()
@@ -434,7 +537,7 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
             .is_err(),
         "production maintenance requires the current coordinator"
     );
-    installed.shutdown().await;
+    installed.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -466,7 +569,7 @@ async fn operational_source_is_private_bounded_and_cannot_substitute_installed_t
     assert!(OperationalSignerConfig::load(&path, &domain).is_err());
     retained.check().unwrap();
     private_files::replace(&path, &bytes).unwrap();
-    installed.shutdown().await;
+    installed.shutdown().await.unwrap();
     assert!(retained.check().is_err());
     drop(installed);
     assert!(
@@ -481,5 +584,153 @@ async fn operational_source_is_private_bounded_and_cannot_substitute_installed_t
         .unwrap()
         .check()
         .unwrap();
-    reopened.shutdown().await;
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn panicked_verifier_initialization_drains_each_acquired_encrypted_owner() -> Result<()> {
+    for phase in [
+        "verifier-storage-node",
+        "verifier-storage-catalog",
+        "verifier-installation-store",
+        "verifier-installation-domains",
+        "verifier-installation-complete",
+    ] {
+        let fixture = Fixture::new();
+        let id = kasumi_store::node_store_ids::signer_verifier(&fixture.input.verifier.identity)?;
+        let _fault = crate::startup_preparation::install(id, phase);
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            fixture.input.initialize(),
+        )
+        .await?
+        .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<crate::startup_preparation::PreparationPanic>()
+                .is_some(),
+            "{phase}: {error:#}"
+        );
+        let node = NodeStore::open_existing(
+            &fixture.input.verifier.database_path,
+            id,
+            kasumi_store::ScratchDisk::open(fixture.input.scratch_disk.clone())?,
+        )?;
+        if phase != "verifier-storage-node" {
+            let store = TenantStore::open_existing(
+                node.clone(),
+                fixture.input.verifier.identity.tenant(),
+                fixture
+                    .input
+                    .verifier
+                    .keys
+                    .provider(Arc::new(file_secret))?,
+                StorageAccess::live_signer_trust(fixture.input.verifier.identity.clone())?,
+            )
+            .await?;
+            let complete = store.get(NS, b"installation")?.is_some();
+            assert_eq!(complete, phase == "verifier-installation-complete");
+            let domain = fixture.manifest.signing_domain(0)?.digest()?;
+            assert_eq!(
+                store.get("live.signer.trust", domain.as_bytes())?.is_some(),
+                matches!(
+                    phase,
+                    "verifier-installation-domains" | "verifier-installation-complete"
+                )
+            );
+            store.shutdown().await?;
+            drop(store);
+        }
+        node.drain_initializers().await?;
+        drop(node);
+        let before = std::fs::read(&fixture.input.verifier.database_path)?;
+        assert!(fixture.input.initialize().await.is_err());
+        assert_eq!(
+            std::fs::read(&fixture.input.verifier.database_path)?,
+            before
+        );
+        if phase == "verifier-installation-complete" {
+            let installed = fixture.open().await?;
+            fixture.operational.open(&installed)?.check()?;
+            installed.shutdown().await?;
+        } else {
+            assert!(
+                fixture.open().await.is_err(),
+                "partial trust cannot be resumed"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_verifier_initialization_retains_physical_owner_and_unclaimed_panic() -> Result<()>
+{
+    use std::task::Poll;
+    for phase in ["verifier-storage-catalog", "verifier-installation-complete"] {
+        let fixture = Fixture::new();
+        let registry = crate::startup_owner::TestRegistry::default();
+        let id = kasumi_store::node_store_ids::signer_verifier(&fixture.input.verifier.identity)?;
+        let _fault = crate::startup_preparation::install(id, phase);
+        // This guard releases the retained operation even if an assertion fails.
+        let pause = crate::startup_preparation::pause_failure(id);
+        let mut initialize = Box::pin(registry.open(fixture.input.clone().initialize_owned()));
+        std::future::poll_fn(|cx| {
+            assert!(initialize.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered()).await?;
+        drop(initialize);
+        let reopen = || {
+            NodeStore::open_existing(
+                &fixture.input.verifier.database_path,
+                id,
+                kasumi_store::ScratchDisk::open(fixture.input.scratch_disk.clone())?,
+            )
+        };
+        assert!(
+            reopen().is_err(),
+            "{phase}: caller cancellation lost ownership"
+        );
+        let mut drain = Box::pin(registry.drain());
+        std::future::poll_fn(|cx| {
+            assert!(drain.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(drain);
+        assert!(reopen().is_err(), "{phase}: cancelled drain lost ownership");
+        let mut drain = Box::pin(registry.drain());
+        std::future::poll_fn(|cx| {
+            assert!(drain.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        pause.release();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(10), drain)
+            .await?
+            .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<crate::startup_preparation::PreparationPanic>()
+                .is_some(),
+            "original unclaimed panic must survive both cancellations: {error:#}"
+        );
+        let node = reopen()?;
+        node.drain_initializers().await?;
+        drop(node);
+        registry.drain().await?;
+        if phase == "verifier-installation-complete" {
+            let installed = fixture.open().await?;
+            fixture.operational.open(&installed)?.check()?;
+            installed.shutdown().await?;
+        } else {
+            assert!(
+                fixture.open().await.is_err(),
+                "partial trust cannot be resumed"
+            );
+        }
+    }
+    Ok(())
 }

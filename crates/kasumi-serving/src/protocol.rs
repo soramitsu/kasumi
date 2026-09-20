@@ -17,6 +17,7 @@ pub struct AuthorityManifest {
     pub authority_id: Uuid,
     /// Fixed bounded Control roots. Empty explicitly disables lifecycle grants.
     pub lifecycle_controls: BTreeMap<Uuid, String>,
+    #[serde(deserialize_with = "kasumi_types::deserialize_u16_map")]
     pub partitions: BTreeMap<u16, AuthorityPartition>,
     pub max_lease_ms: u64,
     /// Installed bound on each participating suspend-aware clock's rate error.

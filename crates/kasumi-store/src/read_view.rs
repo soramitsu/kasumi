@@ -42,6 +42,9 @@ impl TenantStore {
     }
 }
 impl TenantReadView {
+    pub(super) fn catalog(&self, tenant: &str) -> Result<Option<KeyCatalog>> {
+        NodeStore::catalog_at(&self.transaction, tenant)
+    }
     pub fn scratch_disk(&self) -> &Arc<ScratchDisk> {
         self.store.scratch_disk()
     }

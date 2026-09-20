@@ -1,0 +1,82 @@
+{
+  "source": "c681ba39eba460d5da62c5b30a9fb50fe7525ba9",
+  "tree": "1a6f5921b13940372c42e0f9d5b0472e79580e75",
+  "source_unchanged": true,
+  "status": "failed",
+  "gates": {
+    "passed": 17,
+    "failed": 1,
+    "not_run": 29
+  },
+  "drained_process_groups": [
+    68534,
+    69593,
+    69607,
+    69801,
+    70690,
+    71354,
+    73344,
+    73392,
+    73442,
+    73491,
+    73560,
+    73608,
+    74443,
+    74456,
+    74630,
+    74645,
+    74674,
+    74692
+  ],
+  "preserved_executables": {
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/preserved-executables/b47e99e0c299219ca8fc4283cad268124b42b125e438f744373285613837abe6-rmcp-be9a77413837ead2": {
+      "sha256": "b47e99e0c299219ca8fc4283cad268124b42b125e438f744373285613837abe6",
+      "bytes": 31408024
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/preserved-executables/75b1e8c217c8cfff2e80891e9c7146554e044bba28c3c6e97f041897eb3be6f0-test_protocol_version_negotiation-548906498a439f3f": {
+      "sha256": "75b1e8c217c8cfff2e80891e9c7146554e044bba28c3c6e97f041897eb3be6f0",
+      "bytes": 29361584
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/preserved-executables/21d493581f8f15f36e2b8364fc982b669c139db64f36c052521499594b051e39-test_streamable_http_protocol_version-ef160af2be92561d": {
+      "sha256": "21d493581f8f15f36e2b8364fc982b669c139db64f36c052521499594b051e39",
+      "bytes": 45248888
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/preserved-executables/df22f8d84302dc4979949a5b81438c0fcbca356924bb3fe956427e5d70c24226-test_streamable_http_standard_headers-3af1267ffc35ddba": {
+      "sha256": "df22f8d84302dc4979949a5b81438c0fcbca356924bb3fe956427e5d70c24226",
+      "bytes": 37071864
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/preserved-executables/3ce3a094125abb246cfeafeb8fd397452a2dcee0c53914a640a3bcff0489e681-test_server_discover-f747e2bbdcd3c73e": {
+      "sha256": "3ce3a094125abb246cfeafeb8fd397452a2dcee0c53914a640a3bcff0489e681",
+      "bytes": 8827528
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/preserved-executables/26e93f62050bf70d67141fe11c2949aaa1e7322112b82655d34553dc367045a6-test_streamable_http_json_response-a419c25f75fcf63d": {
+      "sha256": "26e93f62050bf70d67141fe11c2949aaa1e7322112b82655d34553dc367045a6",
+      "bytes": 45009248
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/preserved-executables/1b004a69e9b3831cecae52c7e90d5dc65fe25fc199fd4a25c5790e7e2e34243b-test_stateless_protocol_version-187dc3bc4e722d88": {
+      "sha256": "1b004a69e9b3831cecae52c7e90d5dc65fe25fc199fd4a25c5790e7e2e34243b",
+      "bytes": 44028848
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/preserved-executables/653b9265b1c38b8b6a7f7560c5d24eb8b9895303b14c581b28d7ed63d664e9b5-kasumi_raft-e65e0685d1bb4325": {
+      "sha256": "653b9265b1c38b8b6a7f7560c5d24eb8b9895303b14c581b28d7ed63d664e9b5",
+      "bytes": 46108192
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/preserved-executables/ebff4b5232c8d9c96cb8002c38d67fda1956df86b2cde90d2405c6605cff5135-kasumi_engine-beab15cb9b18300f": {
+      "sha256": "ebff4b5232c8d9c96cb8002c38d67fda1956df86b2cde90d2405c6605cff5135",
+      "bytes": 187924800
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/preserved-executables/8603d93d0c6e7b1320cb1061af8ec276124d641d5ad759b44b397d76bfa14f1c-kasumi_authority-18c067e31ed9db59": {
+      "sha256": "8603d93d0c6e7b1320cb1061af8ec276124d641d5ad759b44b397d76bfa14f1c",
+      "bytes": 195863872
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/preserved-executables/9acef51ad164d8cb8c4ab460247cf7db99fcc19dedf81426d889b4b84439cf68-kasumi_server-56e77547c1375cd4": {
+      "sha256": "9acef51ad164d8cb8c4ab460247cf7db99fcc19dedf81426d889b4b84439cf68",
+      "bytes": 331273488
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/preserved-executables/e1ef24c69a97c8fd7a892579ae5ed0ba33ec333bb1fdee5ba590cb136f34a9b1-kasumi_store-c910e15433394175": {
+      "sha256": "e1ef24c69a97c8fd7a892579ae5ed0ba33ec333bb1fdee5ba590cb136f34a9b1",
+      "bytes": 49464352
+    }
+  },
+  "scope": "Scoped failed native macOS ARM64 Rust1.97.1 run. No final acceptance."
+}

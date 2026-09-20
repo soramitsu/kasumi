@@ -42,6 +42,16 @@ The generic number deserializer also retains larger integers on that exact map
 path through Serde enum buffering; explicit typed 128-bit requests stay exact.
 Both upstream MIT and Apache-2.0 licenses remain in the vendored directory.
 
+## rmcp 3.2.0
+
+The terminal stateless HTTP constructor executes the handler inside its calling
+HTTP future, preserving SDK validation while avoiding detached service, handler
+and response-send tasks. Unsupported asynchronous peer traffic fails explicitly;
+Kasumi preserves uncertain mutation outcomes when the transport withholds a
+response. See [the ownership review](rmcp-terminal-ownership.md) for provenance,
+the exact ownership graph and required regression commands. The upstream
+Apache-2.0 license is retained.
+
 ## Verification
 
 ```sh

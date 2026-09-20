@@ -1,0 +1,86 @@
+{
+  "scope": "Read-only debugger diagnosis using preserved failed executable and original default thread stack. Not a passing gate.",
+  "source": "5233e967d9b37a05eafc5fafd54f68f9645ee607",
+  "binary": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/8b457292ae3393310a73fcfd46910679b09e4131a9fb52827391b9a2be9bbe19-kasumi_server-56e77547c1375cd4",
+  "binary_sha256": "8b457292ae3393310a73fcfd46910679b09e4131a9fb52827391b9a2be9bbe19",
+  "debugger_sha256": "ae3f84177101eaf68de5746fbdb68ba50223d1199520b1c306fe6fd0e68ddbab",
+  "command": [
+    "/Library/Developer/CommandLineTools/usr/bin/lldb",
+    "--batch",
+    "-o",
+    "run",
+    "-o",
+    "thread backtrace all -c 70",
+    "-o",
+    "process kill",
+    "--",
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/8b457292ae3393310a73fcfd46910679b09e4131a9fb52827391b9a2be9bbe19-kasumi_server-56e77547c1375cd4",
+    "--exact",
+    "control_genesis::tests::cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_drain",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "started_at": "2026-09-20T06:31:49.190703+00:00",
+  "process_record": {
+    "status": "failed",
+    "command": [
+      "/Library/Developer/CommandLineTools/usr/bin/lldb",
+      "--batch",
+      "-o",
+      "run",
+      "-o",
+      "thread backtrace all -c 70",
+      "-o",
+      "process kill",
+      "--",
+      "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/8b457292ae3393310a73fcfd46910679b09e4131a9fb52827391b9a2be9bbe19-kasumi_server-56e77547c1375cd4",
+      "--exact",
+      "control_genesis::tests::cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_drain",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "timeout_seconds": 90,
+    "executable": {
+      "path": "/Library/Developer/CommandLineTools/usr/bin/lldb",
+      "sha256": "ae3f84177101eaf68de5746fbdb68ba50223d1199520b1c306fe6fd0e68ddbab"
+    },
+    "process_group": 67398,
+    "process_exit_code": -15,
+    "exit_code": 124,
+    "timed_out": true,
+    "received_signals": [],
+    "error": null,
+    "cleanup": {
+      "group": 67398,
+      "before": [
+        {
+          "pid": 67398,
+          "ppid": 67390,
+          "group": 67398,
+          "state": "Ss"
+        }
+      ],
+      "after": [],
+      "signals": [
+        "SIGTERM"
+      ],
+      "errors": [],
+      "drained": true,
+      "process_returncode": -15
+    },
+    "duration_seconds": 90.222
+  },
+  "log_sha256": "d471cc8e9be9fa577cc2137ddb370d43b08905a62b3eb1b2f6f1c9b7abc1e29e",
+  "binary_unchanged": true,
+  "finished_at": "2026-09-20T06:33:19.581479+00:00",
+  "detached_debugserver_cleanup": {
+    "pid": 67460,
+    "before": "67460     1 67460 S    /Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/Resources/debugserver --native-regs --setsid --fd=8",
+    "signals": [
+      "SIGTERM"
+    ],
+    "after": "",
+    "drained": true
+  },
+  "source_unchanged": true
+}

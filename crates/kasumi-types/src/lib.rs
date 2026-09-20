@@ -1,4 +1,5 @@
 //! Transport-independent, exact JSON contracts shared by every Kasumi interface.
+pub mod drain;
 mod ordered_seek;
 pub use ordered_seek::*;
 mod security_audit;
@@ -8,9 +9,15 @@ pub use audit::*;
 mod canonical_json;
 pub use canonical_json::CanonicalJsonValue;
 mod canonical_keys;
-pub use canonical_keys::deserialize_u64_map;
+pub use canonical_keys::{deserialize_u16_map, deserialize_u64_map};
 mod target;
 pub use target::*;
+mod target_completion;
+pub use target_completion::*;
+mod target_completion_status;
+pub use target_completion_status::*;
+mod target_terminal_status;
+pub use target_terminal_status::*;
 mod authority_protocol;
 pub use authority_protocol::*;
 mod target_runtime_protocol;
@@ -207,10 +214,11 @@ pub struct Limits {
     pub max_schema_bytes: usize,
     pub max_schema_activation_bytes: u64,
     pub max_retirement_bytes: u64,
+    pub max_target_resolution_bytes: u64,
     pub max_policy_grants: usize,
     pub max_logical_bytes: u64,
     pub max_snapshot_bytes: u64,
-    pub max_receipts: usize,
+    pub max_mutation_receipt_bytes: u64,
     pub audit_retention: AuditRetentionBudget,
     pub max_query_candidates: usize,
     pub max_query_groups: usize,
@@ -219,7 +227,6 @@ pub struct Limits {
     pub max_cursors: usize,
     pub max_cursor_bytes: usize,
     pub cursor_ttl_ms: u64,
-    pub receipt_ttl_ms: u64,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -234,10 +241,11 @@ impl Default for Limits {
             max_schema_bytes: 8 << 20,
             max_schema_activation_bytes: 64 << 20,
             max_retirement_bytes: 64 << 20,
+            max_target_resolution_bytes: 64 << 20,
             max_policy_grants: 4096,
             max_logical_bytes: 1 << 30,
             max_snapshot_bytes: default_snapshot_bytes(),
-            max_receipts: 100_000,
+            max_mutation_receipt_bytes: 128 << 20,
             audit_retention: AuditRetentionBudget::default(),
             max_query_candidates: 100_000,
             max_query_groups: 10_000,
@@ -246,7 +254,6 @@ impl Default for Limits {
             max_cursors: 128,
             max_cursor_bytes: 64 << 20,
             cursor_ttl_ms: 60_000,
-            receipt_ttl_ms: 86_400_000,
         }
     }
 }
@@ -477,6 +484,31 @@ pub struct MutationReceiptScope {
     pub incarnation: String,
     pub principal: String,
 }
+/// Exact immutable ordinary mutation history selected by one applied generation.
+/// Later physical rows are invisible until their original command is replayed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MutationReceiptHead {
+    pub origin_incarnation: String,
+    pub count: u64,
+    pub encoded_bytes: u64,
+    pub last_applied_revision: u64,
+    pub sha256: String,
+}
+impl MutationReceiptHead {
+    pub fn empty(tenant: &str, incarnation: &str) -> Result<Self> {
+        validate_name(tenant)?;
+        validate_name(incarnation)?;
+        Ok(Self {
+            origin_incarnation: incarnation.into(),
+            count: 0,
+            encoded_bytes: 0,
+            last_applied_revision: 0,
+            sha256: staged_digest(&("kasumi.mutation-receipt-root.v1", tenant, incarnation))?.0,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredReceipt {
@@ -484,7 +516,6 @@ pub struct StoredReceipt {
     pub idempotency_key: String,
     pub recorded_revision: u64,
     pub request_digest: String,
-    pub expires_at_ms: u64,
     pub collections: Vec<String>,
     pub outcome: Result<WriteReceipt>,
 }
@@ -506,7 +537,6 @@ impl StoredReceipt {
             || identity != key
             || self.recorded_revision <= genesis_revision
             || self.recorded_revision > maximum_revision
-            || self.expires_at_ms == 0
             || self
                 .outcome
                 .as_ref()
@@ -533,6 +563,7 @@ pub struct AuditEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TenantState {
     pub tenant: String,
     pub incarnation: String,
@@ -555,8 +586,7 @@ pub struct TenantState {
     pub policy: Policy,
     pub limits: Limits,
     pub collections: BTreeMap<String, CollectionState>,
-    #[serde(serialize_with = "serialize_resident_map")]
-    pub receipts: imbl::OrdMap<String, StoredReceipt>,
+    pub mutation_receipt_head: MutationReceiptHead,
     #[serde(serialize_with = "serialize_resident_map")]
     pub staged_transactions: imbl::OrdMap<String, StagedTransaction>,
     pub active_staged_transactions: BTreeSet<String>,
@@ -564,6 +594,10 @@ pub struct TenantState {
     pub permanent_staged_bytes: u64,
     /// Outstanding capacity owned by active stages for counter growth and termination.
     pub reserved_staged_terminal_bytes: u64,
+    pub staged_terminal_head: StagedTerminalHead,
+    pub target_resolution_head: TargetResolutionPrefixHead,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub target_completion_head: Option<TargetCompletionHead>,
     pub change_feed: ChangeFeedState,
     #[serde(serialize_with = "serialize_resident_map")]
     pub history_archives: imbl::OrdMap<String, std::sync::Arc<RetainedHistoryArchive>>,

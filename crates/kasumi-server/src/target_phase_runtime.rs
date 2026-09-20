@@ -5,7 +5,7 @@ use crate::{
     serving_runtime::{CredentialSource, RuntimeLease, ServingAuthorityConfig},
 };
 use anyhow::{Context, Result, ensure};
-use kasumi_client::{KasumiAuthorityPool, KasumiClientConfig, KasumiLifecycleClient};
+use kasumi_client::{KasumiAuthorityPool, KasumiClientConfig, KasumiLifecyclePool};
 use kasumi_engine::{
     TargetLifecycleInvocation, TargetOperation, TargetOperationScope, TargetRequestAdmission,
 };
@@ -21,29 +21,42 @@ use zeroize::Zeroizing;
 pub(crate) struct RuntimeTargetPhase {
     scope: Arc<TargetOperationScope>,
     serving: Option<Arc<RuntimeLease>>,
-    control: AsyncMutex<KasumiLifecycleClient>,
+    control: AsyncMutex<KasumiLifecyclePool>,
     original: VerifiedControlIntent,
-    control_bearer: Zeroizing<String>,
     authority: AsyncMutex<KasumiAuthorityPool>,
     authority_admin: AsyncMutex<KasumiAuthorityPool>,
     boot: LifecycleBoot,
     renewal: Arc<crate::runtime_worker::RuntimeWorker>,
+    drain_report: AsyncMutex<kasumi_types::drain::DrainReport>,
 }
 impl Drop for RuntimeTargetPhase {
     fn drop(&mut self) {
         self.scope.close();
-        self.renewal.abort();
+        self.renewal.close();
     }
 }
 impl RuntimeTargetPhase {
-    pub(crate) async fn shutdown(&self) -> Result<()> {
+    pub(crate) async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
+        use kasumi_types::drain::DrainCompletion;
         self.close();
-        self.renewal.drain().await?;
-        if let Some(serving) = &self.serving {
-            serving.shutdown().await?;
+        let mut report = self.drain_report.lock().await;
+        let mut retained = None;
+        if let Err(error) = self.renewal.drain().await {
+            report.merge(&error);
+            if error.completion() == DrainCompletion::Retained {
+                retained = Some(error);
+            }
+        }
+        if let Some(serving) = &self.serving
+            && let Err(error) = serving.shutdown().await
+        {
+            report.merge(&error);
+            if error.completion() == DrainCompletion::Retained {
+                retained = Some(error);
+            }
         }
         self.scope.drain().await;
-        Ok(())
+        report.outcome(retained)
     }
     pub(crate) fn close(&self) {
         self.scope.close();
@@ -77,19 +90,20 @@ impl RuntimeTargetPhase {
             "current installed Control Admin required"
         );
         authority.validate()?;
-        let control_connection = configured.control_connection()?;
+        let control_connections = configured.control_connections()?;
         let control_trust = ControlTrust::install(configured.control_root.clone())?;
-        let mut control = admission
-            .run(async {
-                Ok(tokio::time::timeout(
-                    Duration::from_secs(5),
-                    KasumiLifecycleClient::connect(&control_connection, control_trust),
-                )
-                .await??)
-            })
-            .await?;
+        let original_credential = original_bearer.clone();
+        let mut control = KasumiLifecyclePool::new(
+            control_connections,
+            control_trust,
+            Arc::new(move || Ok(original_credential.clone())),
+        )?;
         let original = admission
-            .run(async { Ok(control.observe_intent(&original_bearer, command_id).await?) })
+            .run(async {
+                Ok(control
+                    .observe_intent(command_id, Duration::from_secs(5))
+                    .await?)
+            })
             .await?;
         let intent = &original.observation().intent;
         ensure!(
@@ -212,11 +226,11 @@ impl RuntimeTargetPhase {
             serving,
             control: AsyncMutex::new(control),
             original,
-            control_bearer: original_bearer,
             authority: AsyncMutex::new(issuer),
             boot,
             authority_admin: AsyncMutex::new(issuer_admin),
             renewal: Default::default(),
+            drain_report: Default::default(),
         });
         admission.run(runtime.check_current()).await?;
         let weak = Arc::downgrade(&runtime);
@@ -226,55 +240,51 @@ impl RuntimeTargetPhase {
             .authority()
             .manifest()
             .partition(&runtime.original.observation().intent.request.tenant)?;
-        runtime
-            .boot
-            .authority()
-            .start_background_work(partition, || {
-                let worker = tokio::spawn(async move {
-                    let mut failed = false;
-                    loop {
-                        let delay = {
-                            let Some(runtime) = weak.upgrade() else { break };
-                            if runtime.renewal.is_closed() {
-                                break;
-                            }
-                            let Ok(remaining) = runtime.scope.invocation().gate().remaining()
-                            else {
-                                break;
-                            };
-                            if failed {
-                                (remaining / 4).min(Duration::from_millis(100))
-                            } else {
-                                remaining / 3
-                            }
-                        };
-                        tokio::select! {
-                            _ = wake.notified() => {},
-                            _ = tokio::time::sleep(delay) => {},
-                        }
+        runtime.boot.authority().start_background_work(
+            partition,
+            runtime.renewal.work(),
+            async move {
+                let mut failed = false;
+                loop {
+                    let delay = {
                         let Some(runtime) = weak.upgrade() else { break };
-                        #[cfg(test)]
-                        runtime.renewal.after_upgrade().await;
                         if runtime.renewal.is_closed() {
                             break;
                         }
                         let Ok(remaining) = runtime.scope.invocation().gate().remaining() else {
-                            runtime.scope.close();
                             break;
                         };
-                        failed = !matches!(
-                            tokio::time::timeout(remaining, runtime.renew()).await,
-                            Ok(Ok(()))
-                        );
-                        if runtime.scope.invocation().check().is_err() {
-                            runtime.scope.close();
-                            break;
+                        if failed {
+                            (remaining / 4).min(Duration::from_millis(100))
+                        } else {
+                            remaining / 3
                         }
+                    };
+                    tokio::select! {
+                        _ = wake.notified() => {},
+                        _ = tokio::time::sleep(delay) => {},
                     }
-                });
-                runtime.renewal.register(worker);
-                runtime.renewal.clone()
-            })?;
+                    let Some(runtime) = weak.upgrade() else { break };
+                    #[cfg(test)]
+                    runtime.renewal.after_upgrade().await;
+                    if runtime.renewal.is_closed() {
+                        break;
+                    }
+                    let Ok(remaining) = runtime.scope.invocation().gate().remaining() else {
+                        runtime.scope.close();
+                        break;
+                    };
+                    failed = !matches!(
+                        tokio::time::timeout(remaining, runtime.renew()).await,
+                        Ok(Ok(()))
+                    );
+                    if runtime.scope.invocation().check().is_err() {
+                        runtime.scope.close();
+                        break;
+                    }
+                }
+            },
+        )?;
         admission.check()?;
         Ok(runtime)
     }
@@ -302,8 +312,8 @@ impl RuntimeTargetPhase {
         let mut control = self.control.lock().await;
         let fresh = control
             .observe_intent(
-                &self.control_bearer,
                 self.original.observation().intent.request.command_id,
+                Duration::from_secs(5),
             )
             .await?;
         ensure!(
@@ -360,11 +370,17 @@ impl RuntimeTargetPhase {
         operation.check()
     }
     async fn observe_with(&self, bearer: &str) -> Result<()> {
-        let mut control = self.control.lock().await;
+        let credential = Zeroizing::new(bearer.to_owned());
+        let mut control = self
+            .control
+            .lock()
+            .await
+            .clone()
+            .with_credential(Arc::new(move || Ok(credential.clone())));
         let fresh = control
             .observe_intent(
-                bearer,
                 self.original.observation().intent.request.command_id,
+                Duration::from_secs(5),
             )
             .await?;
         ensure!(

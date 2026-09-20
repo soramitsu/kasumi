@@ -1,0 +1,29 @@
+# A source-pinned preparation image. The external runner must bound the builder
+# and record the resulting platform-specific image ID before offline execution.
+FROM rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97
+
+RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/* \
+    && printf '%s\n' \
+      'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260908T000000Z bookworm main' \
+      'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260908T000000Z bookworm-updates main' \
+      'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20260908T000000Z bookworm-security main' \
+      > /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get install --no-install-recommends --yes libclang-dev python3-dev cmake \
+    && rm -rf /var/lib/apt/lists/*
+RUN rustup component add --toolchain 1.97.1 clippy rustfmt
+
+ENV RUSTUP_TOOLCHAIN=1.97.1 \
+    CARGO_HOME=/opt/verification/cargo \
+    CARGO_BUILD_JOBS=1 \
+    RUST_TEST_THREADS=1 \
+    CARGO_TERM_COLOR=never \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH=/opt/verification/tools/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WORKDIR /workspace
+# The build context must be a checked git archive, never an arbitrary checkout.
+COPY . /workspace
+RUN python3 verification/prepare.py
+
+ENV CARGO_NET_OFFLINE=true \
+    CARGO_TARGET_DIR=/target

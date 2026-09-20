@@ -423,7 +423,7 @@ mod tests {
     }
     #[tokio::test]
     async fn same_entry_position_snapshot_cannot_substitute_rotated_custody_state() -> Result<()> {
-        let (domains, _, _, mut log) = fixture(FaultBackend::new()).await?;
+        let (domains, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -484,7 +484,7 @@ mod tests {
 
     #[tokio::test]
     async fn existing_quorum_runs_closed_commands_after_application_key_revocation() -> Result<()> {
-        let (domains, app, _, mut log) = fixture(FaultBackend::new()).await?;
+        let (domains, app, _, mut log) = fixture(FaultBackend::new(), true).await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -519,7 +519,7 @@ mod tests {
         assert_eq!(instance.view()?.policy_epoch(), 2);
         assert_eq!(app.probe_count(), probes);
         instance.shutdown().await?;
-        domains.custody().store().shutdown().await;
+        domains.custody().store().shutdown().await.unwrap();
         Ok(())
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -540,7 +540,7 @@ mod tests {
             )),
         };
         for node in voters {
-            let (domains, app, _, mut log) = fixture(FaultBackend::new()).await?;
+            let (domains, app, _, mut log) = fixture(FaultBackend::new(), true).await?;
             // This is installed consensus metadata for each distinct replica;
             // the source retirement producer is exercised by engine tests.
             domains.custody().store().write_batch(&[WriteOp::put(
@@ -595,7 +595,7 @@ mod tests {
             instance.shutdown().await?;
         }
         for domains in stores {
-            domains.custody().store().shutdown().await;
+            domains.custody().store().shutdown().await.unwrap();
         }
         Ok(())
     }
@@ -603,7 +603,7 @@ mod tests {
     async fn custody_point_head_receipt_audit_and_applied_cursor_survive_each_write_failure()
     -> Result<()> {
         let disk = FaultBackend::new();
-        let (domains, _, _, mut log) = fixture(disk.clone()).await?;
+        let (domains, _, _, mut log) = fixture(disk.clone(), true).await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -628,7 +628,7 @@ mod tests {
         drop(log);
         drop(domains);
         let measured = baseline.crash();
-        let (domains, _, _, _) = fixture(measured.clone()).await?;
+        let (domains, _, _, _) = fixture(measured.clone(), false).await?;
         let start = measured.operations();
         control::apply_custody(domains.custody(), &position, &command)?;
         let operations = measured.operations() - start;
@@ -639,13 +639,13 @@ mod tests {
         drop(domains);
         for failure in 0..=operations {
             let disk = baseline.crash();
-            let (domains, _, _, _) = fixture(disk.clone()).await?;
+            let (domains, _, _, _) = fixture(disk.clone(), false).await?;
             disk.fail_after(failure);
             let result = control::apply_custody(domains.custody(), &position, &command);
             let crash = disk.crash();
             disk.disarm();
             drop(domains);
-            let (reopened, _, _, _) = fixture(crash).await?;
+            let (reopened, _, _, _) = fixture(crash, false).await?;
             let actual = control::custody_state(reopened.custody())?;
             let (cursor, _) = applied(reopened.custody())?;
             if actual == initial {
@@ -668,7 +668,7 @@ mod tests {
     #[tokio::test]
     async fn closed_snapshot_rejects_prior_format_without_rewriting_permanent_storage() -> Result<()>
     {
-        let (domains, _, _, mut log) = fixture(FaultBackend::new()).await?;
+        let (domains, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -698,7 +698,7 @@ mod tests {
     #[tokio::test]
     async fn canonical_custody_stream_authenticates_counts_digest_and_record_order() -> Result<()> {
         use sha2::{Digest, Sha256};
-        let (domains, _, _, mut log) = fixture(FaultBackend::new()).await?;
+        let (domains, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -794,7 +794,7 @@ mod tests {
     async fn streamed_custody_tables_and_snapshot_coverage_publish_at_one_crash_boundary()
     -> Result<()> {
         let disk = FaultBackend::new();
-        let (domains, _, _, mut log) = fixture(disk.clone()).await?;
+        let (domains, _, _, mut log) = fixture(disk.clone(), true).await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -823,7 +823,7 @@ mod tests {
         drop(log);
         drop(domains);
         let measure = baseline.crash();
-        let (domains, _, _, _) = fixture(measure.clone()).await?;
+        let (domains, _, _, _) = fixture(measure.clone(), false).await?;
         let snapshot = capture(domains.custody())?;
         let start = measure.operations();
         publish(domains.custody(), &snapshot)?;
@@ -832,14 +832,14 @@ mod tests {
         drop(domains);
         for failure in 0..=operations {
             let disk = baseline.crash();
-            let (domains, _, _, _) = fixture(disk.clone()).await?;
+            let (domains, _, _, _) = fixture(disk.clone(), false).await?;
             let snapshot = capture(domains.custody())?;
             disk.fail_after(failure);
             let result = publish(domains.custody(), &snapshot);
             let crash = disk.crash();
             disk.disarm();
             drop(domains);
-            let (reopened, _, _, _) = fixture(crash).await?;
+            let (reopened, _, _, _) = fixture(crash, false).await?;
             assert_eq!(
                 control::custody_state(reopened.custody())?,
                 original,

@@ -29,20 +29,19 @@ use kasumi_transport::{
 };
 
 const RPC_PATH: &str = "/internal/raft";
-const RESTORE_PATH: &str = "/internal/restore-readiness";
+const ENROLLMENT_PATH: &str = "/internal/enrollment-readiness";
 const MAINTENANCE_PATH: &str = "/internal/authority-maintenance-readiness";
 const BOOTSTRAP_PATH: &str = "/internal/bootstrap-readiness";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RestoreReadiness {
+pub struct EnrollmentReadiness {
     pub bootstrap_sha256: String,
-    pub pending_restore: bool,
     pub initialized: bool,
     pub revision: u64,
 }
-pub trait RestoreReadinessProvider: Send + Sync {
-    fn readiness(&self, group: &str) -> Result<RestoreReadiness>;
+pub trait EnrollmentReadinessProvider: Send + Sync {
+    fn readiness(&self, group: &str) -> Result<EnrollmentReadiness>;
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -122,12 +121,14 @@ pub struct ClusterNetwork {
     clients: BTreeMap<u64, PeerClient>,
     certificate_nodes: BTreeMap<CertificatePin, u64>,
     groups: RwLock<BTreeMap<String, GroupRoute>>,
+    #[cfg(test)]
+    test_isolated_groups: RwLock<BTreeSet<String>>,
     server_tls: Arc<rustls::ServerConfig>,
     incoming: Arc<Semaphore>,
     outgoing: Arc<Semaphore>,
     limits: PeerLimits,
     audit: OnceLock<Arc<dyn RequestAuditSink>>,
-    readiness: OnceLock<std::sync::Weak<dyn RestoreReadinessProvider>>,
+    readiness: OnceLock<std::sync::Weak<dyn EnrollmentReadinessProvider>>,
     maintenance: OnceLock<std::sync::Weak<kasumi_authority::IndependentAuthority>>,
 }
 
@@ -238,6 +239,8 @@ impl ClusterNetwork {
             clients,
             certificate_nodes,
             groups: RwLock::new(BTreeMap::new()),
+            #[cfg(test)]
+            test_isolated_groups: RwLock::new(BTreeSet::new()),
             server_tls: server_config(identity, ClientAuthentication::Required { trusted_ca_pem })?,
             incoming: Arc::new(Semaphore::new(limits.max_inflight_requests)),
             outgoing: Arc::new(Semaphore::new(limits.max_inflight_requests)),
@@ -275,9 +278,9 @@ impl ClusterNetwork {
         StatusCode::FORBIDDEN.into_response()
     }
 
-    pub fn install_restore_readiness(
+    pub fn install_enrollment_readiness(
         &self,
-        provider: std::sync::Weak<dyn RestoreReadinessProvider>,
+        provider: std::sync::Weak<dyn EnrollmentReadinessProvider>,
     ) -> Result<()> {
         self.readiness
             .set(provider)
@@ -313,7 +316,11 @@ impl ClusterNetwork {
             Ok(None)
         }
     }
-    pub async fn restore_readiness(&self, peer_id: u64, group: &str) -> Result<RestoreReadiness> {
+    pub async fn enrollment_readiness(
+        &self,
+        peer_id: u64,
+        group: &str,
+    ) -> Result<EnrollmentReadiness> {
         self.authorize(group, peer_id)?;
         if peer_id == self.local_node_id {
             return self
@@ -323,7 +330,7 @@ impl ClusterNetwork {
                 .context("readiness unavailable")?
                 .readiness(group);
         }
-        self.fetch_readiness(peer_id, group, RESTORE_PATH).await
+        self.fetch_readiness(peer_id, group, ENROLLMENT_PATH).await
     }
     async fn fetch_readiness<T: serde::de::DeserializeOwned>(
         &self,
@@ -461,6 +468,22 @@ impl ClusterNetwork {
         Ok(())
     }
 
+    /// Test-only network partition, retained when a phase reopens its Raft route.
+    /// It can only deny peer traffic; configured and durable admission still apply.
+    #[cfg(test)]
+    pub(crate) fn set_test_group_isolated(&self, group: &str, isolated: bool) -> Result<()> {
+        let mut groups = self
+            .test_isolated_groups
+            .write()
+            .map_err(|_| anyhow::anyhow!("test network partition unavailable"))?;
+        if isolated {
+            groups.insert(group.into());
+        } else {
+            groups.remove(group);
+        }
+        Ok(())
+    }
+
     /// Install a durable membership/revocation check in addition to static pins.
     pub fn install_group_peer_fence(&self, group: &str, fence: PeerAccessFence) -> Result<()> {
         let mut groups = self
@@ -479,7 +502,7 @@ impl ClusterNetwork {
     pub fn router(self: &Arc<Self>) -> Router {
         Router::new()
             .route(RPC_PATH, post(receive))
-            .route(RESTORE_PATH, post(receive_readiness))
+            .route(ENROLLMENT_PATH, post(receive_readiness))
             .route(BOOTSTRAP_PATH, post(receive_bootstrap))
             .route(MAINTENANCE_PATH, post(receive_maintenance))
             .layer(DefaultBodyLimit::max(self.limits.max_rpc_bytes))
@@ -500,6 +523,16 @@ impl ClusterNetwork {
         if let Some(fence) = &route.peer_fence {
             fence(peer)?;
         }
+        #[cfg(test)]
+        ensure!(
+            peer == self.local_node_id
+                || !self
+                    .test_isolated_groups
+                    .read()
+                    .map_err(|_| anyhow::anyhow!("test network partition unavailable"))?
+                    .contains(group),
+            "test network partition blocks this group peer"
+        );
         Ok(route.raft.clone())
     }
 }

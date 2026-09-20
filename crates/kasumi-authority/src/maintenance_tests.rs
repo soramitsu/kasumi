@@ -39,8 +39,13 @@ impl Fixture {
         let id = 4;
         let mut settings = self.settings.clone();
         settings.resource_budget_bytes = resource_budget_bytes;
-        let stores = TenantStorageSet::open(
-            NodeStore::open(self._dir.path().join("authority-4.redb"), kasumi_store::ScratchDisk::fixture()).unwrap(),
+        let stores = TenantStorageSet::initialize_catalogs(
+            NodeStore::create_new(
+                self._dir.path().join("authority-4.redb"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             self.installation.tenant(),
             Arc::new(LocalKeyProvider::new([4; 32])),
             Arc::new(LocalKeyProvider::new([14; 32])),
@@ -52,10 +57,20 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let service = IndependentAuthority::open_with_clock(
+        IndependentAuthority::initialize_storage(
+            &stores,
+            &self.installation,
+            &self.bootstrap,
+            &settings.installed_members[&id].verifier,
+        )
+        .unwrap();
+        let service = IndependentAuthority::open_existing_with_clock(
             stores.clone(),
             self.installation.clone(),
-            self.signing.for_verifier(kasumi_serving::test_utils::fixture_verifier(id)).unwrap().signer,
+            self.signing
+                .for_verifier(kasumi_serving::test_utils::fixture_verifier(id))
+                .unwrap()
+                .signer,
             id,
             settings,
             self.router.clone(),
@@ -65,6 +80,7 @@ impl Fixture {
                 election_timeout_max: 1000,
                 ..Config::default()
             },
+            request_budget(),
             self.epoch.clone(),
         )
         .await
@@ -427,6 +443,14 @@ async fn maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_d
     );
     drop(leader);
     fixture.reopen().await;
+    for service in &fixture.services {
+        assert_eq!(
+            service.bootstrap(),
+            &fixture.bootstrap,
+            "current voter replacement must not rewrite immutable genesis"
+        );
+    }
+
     assert_eq!(
         fixture
             .maintenance(AuthorityMaintenanceRequest::Resume {
@@ -490,14 +514,19 @@ async fn maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_d
 #[tokio::test]
 async fn maintenance_store_cannot_reopen_as_another_member_identity() {
     let fixture = Fixture::new().await;
-    let result = IndependentAuthority::open_with_clock(
+    let result = IndependentAuthority::open_existing_with_clock(
         fixture.stores[0].clone(),
         fixture.installation.clone(),
-        fixture.signing.for_verifier(kasumi_serving::test_utils::fixture_verifier(4)).unwrap().signer,
+        fixture
+            .signing
+            .for_verifier(kasumi_serving::test_utils::fixture_verifier(4))
+            .unwrap()
+            .signer,
         4,
         fixture.settings.clone(),
         fixture.router.clone(),
         Config::default(),
+        request_budget(),
         fixture.epoch.clone(),
     )
     .await;
@@ -590,7 +619,7 @@ async fn maintenance_resource_acknowledgement_survives_lost_reply_before_admissi
     );
     let mut smaller = fixture.settings.clone();
     smaller.resource_budget_bytes = 8 << 20;
-    let result = IndependentAuthority::open_with_clock(
+    let result = IndependentAuthority::open_existing_with_clock(
         fixture.stores[0].clone(),
         fixture.installation.clone(),
         member.request_signer().unwrap(),
@@ -598,6 +627,7 @@ async fn maintenance_resource_acknowledgement_survives_lost_reply_before_admissi
         smaller,
         fixture.router.clone(),
         Config::default(),
+        request_budget(),
         fixture.epoch.clone(),
     )
     .await;
@@ -654,8 +684,14 @@ async fn maintenance_removing_the_leader_resumes_the_same_committed_operation() 
     let completed = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let current = fixture.leader().await;
-            let attempt = current.maintenance(original_context.clone(),
-                AuthorityMaintenanceRequest::Start { command: command.clone() }).await;
+            let attempt = current
+                .maintenance(
+                    original_context.clone(),
+                    AuthorityMaintenanceRequest::Start {
+                        command: command.clone(),
+                    },
+                )
+                .await;
             let result = match attempt {
                 Ok((response, fence)) => fence.release().await.map(|()| response),
                 Err(error) => Err(error),
@@ -663,27 +699,46 @@ async fn maintenance_removing_the_leader_resumes_the_same_committed_operation() 
             match result {
                 Ok(AuthorityMaintenanceResponse::Operation { status }) => {
                     assert_eq!(status.command, command);
-                    if status.phase == AuthorityMaintenancePhase::Completed { break status; }
-                    assert!(!status.phase.terminal(), "replacement has a different terminal outcome");
+                    if status.phase == AuthorityMaintenancePhase::Completed {
+                        break status;
+                    }
+                    assert!(
+                        !status.phase.terminal(),
+                        "replacement has a different terminal outcome"
+                    );
                 }
                 Ok(_) => panic!("replacement receipt response kind differs"),
-                Err(error) => assert!(matches!(error.code, ErrorCode::UnknownOutcome | ErrorCode::Unavailable), "exact replacement resolution failed: {error}"),
+                Err(error) => assert!(
+                    matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ),
+                    "exact replacement resolution failed: {error}"
+                ),
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-    }).await.expect("original voter replacement did not resolve");
+    })
+    .await
+    .expect("original voter replacement did not resolve");
     let successor = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             for service in &fixture.services {
-                if service.local_node_id == former.local_node_id { continue; }
+                if service.local_node_id == former.local_node_id {
+                    continue;
+                }
                 let metric = service.group.raft().metrics().borrow().clone();
-                if metric.current_leader == Some(metric.id) && service.group.linearizable_barrier().await.is_ok() {
+                if metric.current_leader == Some(metric.id)
+                    && service.group.linearizable_barrier().await.is_ok()
+                {
                     return service.clone();
                 }
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-    }).await.expect("completed voter replacement did not elect a current successor");
+    })
+    .await
+    .expect("completed voter replacement did not elect a current successor");
     assert_ne!(successor.local_node_id, former.local_node_id);
     assert_eq!(completed.command, command);
     assert_eq!(completed.phase, AuthorityMaintenancePhase::Completed);
@@ -697,10 +752,17 @@ async fn maintenance_removing_the_leader_resumes_the_same_committed_operation() 
     for service in &fixture.services {
         let lock = tokio::time::timeout(Duration::from_secs(2), service.proposal.lock())
             .await
-            .unwrap_or_else(|_| panic!("member {} retains proposal ownership", service.local_node_id));
+            .unwrap_or_else(|_| {
+                panic!(
+                    "member {} retains proposal ownership",
+                    service.local_node_id
+                )
+            });
         drop(lock);
     }
-    tokio::time::timeout(Duration::from_secs(15), fixture.close()).await.expect("authority owners did not drain");
+    tokio::time::timeout(Duration::from_secs(15), fixture.close())
+        .await
+        .expect("authority owners did not drain");
 }
 
 #[tokio::test]
@@ -709,11 +771,29 @@ async fn authority_signer_cannot_substitute_another_physical_verifier_with_the_s
     let mut verifier = fixture.settings.installed_members[&1].verifier.clone();
     verifier.installation_id = Uuid::new_v4();
     let substituted = fixture.signing.for_verifier(verifier).unwrap();
-    let result = IndependentAuthority::open_with_clock(
-        fixture.stores[0].clone(), fixture.installation.clone(), substituted.signer,
-        1, fixture.settings.clone(), fixture.router.clone(), Config::default(), fixture.epoch.clone(),
-    ).await;
-    assert!(result.err().unwrap().to_string().contains("physical verifier"));
-    fixture.services[0].request_signer().unwrap().check().unwrap();
+    let result = IndependentAuthority::open_existing_with_clock(
+        fixture.stores[0].clone(),
+        fixture.installation.clone(),
+        substituted.signer,
+        1,
+        fixture.settings.clone(),
+        fixture.router.clone(),
+        Config::default(),
+        request_budget(),
+        fixture.epoch.clone(),
+    )
+    .await;
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("physical verifier")
+    );
+    fixture.services[0]
+        .request_signer()
+        .unwrap()
+        .check()
+        .unwrap();
     fixture.close().await;
 }

@@ -6,10 +6,20 @@ mod audit_maintenance_service;
 mod ordered_seek_service;
 #[path = "control_administration.rs"]
 pub(crate) mod control_administration;
+#[cfg(test)]
+#[path = "database_worker_outcome_tests.rs"]
+mod database_worker_outcome_tests;
+#[path = "database_workers.rs"]
+mod database_workers;
+#[path = "ordered_seek_service.rs"]
+mod ordered_seek_service;
+#[path = "proposal_jobs.rs"]
+mod proposal_jobs;
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
 use kasumi_query::QueryCancellation;
 use kasumi_raft::RaftGroup;
 use kasumi_store::{BackupDestination, TenantStore};
+use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
 #[path = "backup_checkpoints.rs"]
@@ -36,14 +46,20 @@ mod restore_lineage_service;
 #[path = "retirement_service.rs"]
 mod retirement_service;
 pub use retirement_service::RetirementResponseFence;
+#[path = "mutation_receipt_reads.rs"]
+mod mutation_receipt_reads;
 #[path = "schema_service.rs"]
 mod schema_service;
 #[path = "snapshot_leases.rs"]
 mod snapshot_leases;
+#[path = "staged_reads.rs"]
+mod staged_reads;
 #[path = "target_activation_service.rs"]
 pub(crate) mod target_activation_service;
 #[path = "target_inspection_service.rs"]
 pub(crate) mod target_inspection_service;
+#[path = "target_receiver_service.rs"]
+pub(crate) mod target_receiver_service;
 #[path = "target_service.rs"]
 pub(crate) mod target_service;
 use std::{
@@ -81,7 +97,7 @@ struct ProposalWork {
 }
 
 impl ProposalWork {
-    async fn run(mut self, mut command: Command, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+    async fn run(&mut self, mut command: Command, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
         // The background proposal owns this gate; caller timeout/cancellation
         // cannot let later commands overtake an unresolved write. Time is
         // sampled only after the previous write has finished.
@@ -126,10 +142,19 @@ impl ProposalWork {
                 Err(error) => return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?),
                 Ok(Some(_)) => {}
                 Ok(None) => {
-                    let workspace = self.admission.reserve(
+                    let workspace = match self.admission.reserve(
                         crate::retirement_closure::workspace_bytes(&generation.state)?,
                         None,
-                    )?;
+                    ) {
+                        Ok(workspace) => workspace,
+                        Err(error) if error.code == ErrorCode::ResourceExhausted => {
+                            // Nothing was proposed and no retirement identity was
+                            // accepted. Local capacity pressure is a definite
+                            // request rejection, not a failed proposal child.
+                            return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
                     let registration = self._registration.clone();
                     let credential = command.context.authorization.clone();
                     struct Output {
@@ -175,7 +200,7 @@ impl ProposalWork {
             bytes.len() <= max_bytes,
             "command exceeds proposal byte budget"
         );
-        if matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
+        let response = if matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
         {
             let engine = &self.source_engine;
             let seed = kasumi_raft::RetirementLogSeed::prepare(
@@ -188,6 +213,18 @@ impl ProposalWork {
             self.group.write_retirement(bytes, seed).await
         } else {
             self.group.write(bytes).await
+        };
+        match response {
+            Err(error) if kasumi_raft::is_application_write_redirect(&error) => {
+                // Leadership changes are request outcomes. Preserve the existing
+                // uncertain-write contract: only original identity resolution
+                // settles whether an earlier attempt committed.
+                Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
+                    ErrorCode::UnknownOutcome,
+                    "write leadership changed; resolve or retry with the same idempotency key",
+                )))?)
+            }
+            outcome => outcome,
         }
     }
 }
@@ -383,24 +420,57 @@ pub struct Database {
     embedded: bool,
     closing: AtomicBool,
     custody_detached: AtomicBool,
-    shutdown_gate: tokio::sync::Mutex<()>,
-    seal_monitor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    audit_worker: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    shutdown_gate: tokio::sync::Mutex<DrainReport>,
+    seal_monitor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<DrainResult>>>,
+    audit_worker: tokio::sync::Mutex<Option<tokio::task::JoinHandle<DrainResult>>>,
+    monitor_check: database_workers::BlockingChild<bool>,
+    audit_preparation:
+        database_workers::BlockingChild<anyhow::Result<audit_maintenance_service::Prepared>>,
+    background_stop: tokio::sync::watch::Sender<bool>,
+    seal_monitor_wake: Arc<tokio::sync::Notify>,
     audit_worker_wake: Arc<tokio::sync::Notify>,
     #[cfg(test)]
     audit_worker_pause: Mutex<Option<Arc<audit_maintenance_service::WorkerPause>>>,
+    #[cfg(test)]
+    worker_test_hooks: database_worker_outcome_tests::BlockingHooks,
     audit_worker_started: AtomicBool,
     audit_worker_failures: AtomicU64,
     audit_worker_completed: AtomicU64,
     proposal_gate: Arc<tokio::sync::Mutex<()>>,
+    proposals: proposal_jobs::Jobs,
     command_clock: Mutex<Arc<dyn CommandClock>>,
+}
+
+/// An unexpected worker exit closes request admission even before an operator
+/// joins its handle. The handle retains the actual terminal cause; this guard
+/// contains only a Weak reference and does not create an owner/task cycle.
+struct BackgroundWorkerExit {
+    database: std::sync::Weak<Database>,
+    completed: bool,
+}
+impl BackgroundWorkerExit {
+    fn complete(&mut self, result: &DrainResult) {
+        self.completed = result.is_ok();
+    }
+}
+impl Drop for BackgroundWorkerExit {
+    fn drop(&mut self) {
+        if !self.completed {
+            if let Some(database) = self.database.upgrade() {
+                database.closing.store(true, Ordering::Release);
+                database.work.seal();
+                database.audit_work.seal();
+                database.background_stop.send_replace(true);
+            }
+        }
+    }
 }
 
 /// Extends an already authorized operation through adapter response encoding.
 /// Capture before the operation, and check after constructing its final payload.
 /// This is an additional release gate, not authorization to read tenant state.
 pub struct ResponseFence<'a> {
-    database: &'a Database,
+    database: ResponseDatabase<'a>,
     context: RequestContext,
     policy_epoch: u64,
     cancellation: QueryCancellation,
@@ -410,6 +480,22 @@ pub struct ResponseFence<'a> {
     _workspace: Reservation,
 }
 
+enum ResponseDatabase<'a> {
+    Borrowed(&'a Database),
+    Owned(Arc<Database>),
+}
+
+impl std::ops::Deref for ResponseDatabase<'_> {
+    type Target = Database;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(database) => database,
+            Self::Owned(database) => database,
+        }
+    }
+}
+
 fn staged_stop_acknowledgement(_error: Error) -> Error {
     Error::new(
         ErrorCode::UnknownOutcome,
@@ -417,7 +503,43 @@ fn staged_stop_acknowledgement(_error: Error) -> Error {
     )
 }
 
-impl ResponseFence<'_> {
+impl<'a> ResponseFence<'a> {
+    fn capture(database: ResponseDatabase<'a>, context: &RequestContext) -> Result<Self> {
+        context.authorization.check_live()?;
+        database.access()?;
+        let generation = database.engine.generation()?;
+        crate::state::authorize_resource(&generation.state, context)?;
+        if generation.state.tenant != context.tenant {
+            return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
+        }
+        // Retain a bounded response workspace through adapter serialization.
+        // The engine operation owns its separate execution slot, so release
+        // this reservation's temporary slot while keeping its byte charge.
+        let bytes = generation
+            .state
+            .limits
+            .max_result_bytes
+            .max(generation.state.limits.max_document_bytes)
+            .max(320 << 10)
+            .saturating_add(64 << 10)
+            .saturating_mul(3) as u64;
+        let cancellation = QueryCancellation::default();
+        let mut workspace = database
+            .admission()
+            .reserve(bytes, Some(cancellation.clone()))?;
+        workspace.retain(bytes);
+        Ok(Self {
+            database,
+            context: context.clone(),
+            policy_epoch: generation.state.policy_epoch,
+            cancellation,
+            read_admission: None,
+            schema_admission: None,
+            snapshot_lease: None,
+            _workspace: workspace,
+        })
+    }
+
     /// Bind the exact retained snapshot through final transport handoff. The
     /// handle carries expiry and identity only; it owns no document or ID roots.
     pub async fn bind_snapshot_lease(&mut self, lease_id: &str) -> Result<()> {
@@ -504,39 +626,17 @@ impl Database {
     /// and response serialization. It never replaces that call's RBAC checks,
     /// quorum barrier, strict audit, or operation-receipt semantics.
     pub fn response_fence(&self, context: &RequestContext) -> Result<ResponseFence<'_>> {
-        context.authorization.check_live()?;
-        self.access()?;
-        let generation = self.engine.generation()?;
-        crate::state::authorize_resource(&generation.state, context)?;
-        if generation.state.tenant != context.tenant {
-            return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
-        }
-        // Retain a bounded response workspace through adapter serialization.
-        // The engine operation owns its separate execution slot, so release
-        // this reservation's temporary slot while keeping its byte charge.
-        let bytes = generation
-            .state
-            .limits
-            .max_result_bytes
-            .max(generation.state.limits.max_document_bytes)
-            .max(320 << 10)
-            .saturating_add(64 << 10)
-            .saturating_mul(3) as u64;
-        let cancellation = QueryCancellation::default();
-        let mut workspace = self
-            .admission()
-            .reserve(bytes, Some(cancellation.clone()))?;
-        workspace.retain(bytes);
-        Ok(ResponseFence {
-            database: self,
-            context: context.clone(),
-            policy_epoch: generation.state.policy_epoch,
-            cancellation,
-            read_admission: None,
-            schema_admission: None,
-            snapshot_lease: None,
-            _workspace: workspace,
-        })
+        ResponseFence::capture(ResponseDatabase::Borrowed(self), context)
+    }
+
+    /// Retain this database and the original response admission through adapters
+    /// whose response body outlives the engine call. Capturing an owned fence
+    /// does not renew authorization or replace the original cancellation token.
+    pub fn owned_response_fence(
+        self: &Arc<Self>,
+        context: &RequestContext,
+    ) -> Result<ResponseFence<'static>> {
+        ResponseFence::capture(ResponseDatabase::Owned(self.clone()), context)
     }
 
     /// Retains exactly this stop attempt's authority dependencies through final
@@ -548,7 +648,7 @@ impl Database {
     ) -> Result<ResponseFence<'_>> {
         let mut fence = self.response_fence(context)?;
         let generation = self.engine.generation()?;
-        crate::state::staging::authorize_stop(&generation.state, context, request)?;
+        crate::state::staging::authorize_stop_envelope(&generation.state, context, request)?;
         if request.admission.len() > generation.state.limits.atomic.max_read_assertions {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
@@ -675,16 +775,23 @@ impl Database {
             embedded,
             closing: AtomicBool::new(false),
             custody_detached: AtomicBool::new(false),
-            shutdown_gate: tokio::sync::Mutex::new(()),
+            shutdown_gate: tokio::sync::Mutex::new(DrainReport::default()),
             seal_monitor: tokio::sync::Mutex::new(None),
             audit_worker: tokio::sync::Mutex::new(None),
+            monitor_check: database_workers::BlockingChild::new("database retention check"),
+            audit_preparation: database_workers::BlockingChild::new("database audit preparation"),
+            background_stop: tokio::sync::watch::channel(false).0,
+            seal_monitor_wake: Arc::new(tokio::sync::Notify::new()),
             audit_worker_wake: Arc::new(tokio::sync::Notify::new()),
             #[cfg(test)]
             audit_worker_pause: Mutex::new(None),
+            #[cfg(test)]
+            worker_test_hooks: Default::default(),
             audit_worker_started: AtomicBool::new(false),
             audit_worker_failures: AtomicU64::new(0),
             audit_worker_completed: AtomicU64::new(0),
             proposal_gate: Arc::new(tokio::sync::Mutex::new(())),
+            proposals: proposal_jobs::Jobs::default(),
             command_clock: Mutex::new(clocks.command),
         });
         database.spawn_seal_monitor();
@@ -725,7 +832,7 @@ impl Database {
     /// Stop admission, drain background work, and release owned keys and state.
     /// Retained application handles still own this database/store; drop them
     /// before reopening the same node file. A canceled shutdown can be awaited again.
-    pub async fn shutdown(&self) -> anyhow::Result<()> {
+    pub async fn shutdown(&self) -> DrainResult {
         self.shutdown_inner(false).await
     }
 
@@ -737,55 +844,111 @@ impl Database {
         Ok(self.group.storage_domains().custody().clone())
     }
 
-    async fn shutdown_inner(&self, detach_custody: bool) -> anyhow::Result<()> {
-        let _shutdown = self.shutdown_gate.lock().await;
+    async fn shutdown_inner(&self, detach_custody: bool) -> DrainResult {
+        let mut report = self.shutdown_gate.lock().await;
+        let mut retained = None;
         if detach_custody && !self.custody_detached.load(Ordering::Acquire) {
-            let control =
-                kasumi_raft::ControlLog::installed(self.group.storage_domains().custody().clone())?
-                    .ok_or_else(|| anyhow::anyhow!("installed custody identity absent"))?;
-            anyhow::ensure!(
-                control.recover_retired()?,
-                "source is not permanently retired"
-            );
+            let detached = (|| -> anyhow::Result<()> {
+                let control = kasumi_raft::ControlLog::installed(
+                    self.group.storage_domains().custody().clone(),
+                )?
+                .ok_or_else(|| anyhow::anyhow!("installed custody identity absent"))?;
+                anyhow::ensure!(
+                    control.recover_retired()?,
+                    "source is not permanently retired"
+                );
+                Ok(())
+            })();
+            if let Err(error) = detached {
+                return Err(DrainFailure::retained(report.record(
+                    "custody detach",
+                    0,
+                    error,
+                )));
+            }
             self.custody_detached.store(true, Ordering::Release);
         }
         self.closing.store(true, Ordering::Release);
         self.work.seal();
         self.audit_work.seal();
+        self.background_stop.send_replace(true);
         self.audit_worker_wake.notify_one();
         {
             let mut monitor = self.seal_monitor.lock().await;
             if let Some(task) = monitor.as_mut() {
-                task.abort();
-                let _ = task.await;
+                match task.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(failure)) => report.merge(&failure),
+                    Err(error) => {
+                        report.record("database seal monitor", 0, error.into());
+                    }
+                }
                 monitor.take();
             }
         }
-        let result = self.group.shutdown().await;
-        self.work.drain().await;
-        self.audit_work.drain().await;
+        if let Err(failure) = self.monitor_check.drain().await {
+            report.merge(&failure);
+        }
+        // A caller timeout never stops an admitted application proposal. Join
+        // its actual child before stopping Raft or releasing durable owners.
+        if let Err(failure) = self.proposals.drain().await {
+            report.merge(&failure);
+            if failure.completion() == DrainCompletion::Retained {
+                return report.outcome(Some(failure));
+            }
+        }
+        if let Err(error) = self.group.shutdown().await {
+            retained = Some(DrainFailure::retained(report.record(
+                "database raft",
+                0,
+                error,
+            )));
+        }
         {
             let mut worker = self.audit_worker.lock().await;
             if let Some(task) = worker.as_mut() {
-                let _ = task.await;
+                match task.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(failure)) => report.merge(&failure),
+                    Err(error) => {
+                        report.record("database audit worker", 0, error.into());
+                    }
+                }
                 worker.take();
             }
         }
-        self.store.shutdown().await;
+        if let Err(failure) = self.audit_preparation.drain().await {
+            report.merge(&failure);
+        }
+        self.work.drain().await;
+        self.audit_work.drain().await;
+        if let Err(failure) = self.store.shutdown().await {
+            report.merge(&failure);
+            if failure.completion() == DrainCompletion::Retained {
+                retained = Some(failure);
+            }
+        }
         if !self.custody_detached.load(Ordering::Acquire) {
-            self.group
+            if let Err(failure) = self
+                .group
                 .storage_domains()
                 .custody()
                 .store()
                 .shutdown()
-                .await;
+                .await
+            {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
+            }
         }
         self.engine.seal();
         self.cursors
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clear();
-        result
+        report.outcome(retained)
     }
     pub(crate) fn store(&self) -> &Arc<TenantStore> {
         &self.store
@@ -823,6 +986,7 @@ impl Database {
                 "database is shutting down",
             ));
         }
+        self.proposals.check()?;
         if self.store.check_access().is_err() {
             self.work.seal();
             self.engine.seal();
@@ -847,52 +1011,83 @@ impl Database {
     fn spawn_seal_monitor(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         let mut notices = self.store.seal_notifications();
+        let mut stop = self.background_stop.subscribe();
+        let wake = self.seal_monitor_wake.clone();
+        let mut exit = BackgroundWorkerExit {
+            database: weak.clone(),
+            completed: false,
+        };
         let task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    changed = notices.changed() => { if changed.is_err() { break; } },
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
-                }
-                let Some(db) = weak.upgrade() else { break };
-                // Aborting the async monitor cannot abort a running blocking
-                // job. Its registration keeps shutdown draining until both the
-                // database owner and its retained roots are actually released.
-                let Ok(registration) = db.work.begin(QueryCancellation::default()) else {
-                    break;
-                };
-                struct RetentionCheck {
-                    database: Arc<Database>,
-                    _registration: WorkRegistration,
-                }
-                let work = RetentionCheck {
-                    database: db,
-                    _registration: registration,
-                };
-                let check = tokio::task::spawn_blocking(move || {
-                    let db = &work.database;
-                    let _ = db.access();
-                    if db.engine.generation().is_err() {
-                        db.work.seal();
+            let result = async {
+                loop {
+                    if *stop.borrow() {
+                        break;
                     }
-                    let pressured = db.admission.get().is_some_and(|node| {
-                        let status = node.snapshot();
-                        status.pressured || !status.sample_usable
-                    });
-                    let now = db.clock.now();
-                    db.cursors
+                    tokio::select! {
+                        _ = stop.changed() => break,
+                        _ = wake.notified() => {},
+                        changed = notices.changed() => { if changed.is_err() { break; } },
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                    }
+                    let Some(db) = weak.upgrade() else { break };
+                    // Explicit shutdown stops the idle loop and joins this actual
+                    // blocking child before discarding the monitor handle. The work
+                    // registration also retains roots if an external actor aborts it.
+                    let Ok(registration) = db.work.begin(QueryCancellation::default()) else {
+                        break;
+                    };
+                    struct RetentionCheck {
+                        database: Arc<Database>,
+                        _registration: WorkRegistration,
+                    }
+                    let work = RetentionCheck {
+                        database: db.clone(),
+                        _registration: registration,
+                    };
+                    #[cfg(test)]
+                    let hook = work
+                        .database
+                        .worker_test_hooks
+                        .monitor
                         .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .retain(|_, c| !pressured && now.saturating_sub(c.created) < c.ttl);
-                    let term = db.group.raft().metrics().borrow().current_term;
-                    db.engine.leases.expire_idle(pressured, term);
-                    let serving = db.engine.generation().is_ok();
-                    drop(work);
-                    serving
-                });
-                if !check.await.unwrap_or(false) {
-                    break;
+                        .unwrap()
+                        .take();
+                    let serving =
+                        db.monitor_check
+                            .run(move || {
+                                #[cfg(test)]
+                                if let Some(hook) = hook {
+                                    hook();
+                                }
+                                let db = &work.database;
+                                let _ = db.access();
+                                if db.engine.generation().is_err() {
+                                    db.work.seal();
+                                }
+                                let pressured = db.admission.get().is_some_and(|node| {
+                                    let status = node.snapshot();
+                                    status.pressured || !status.sample_usable
+                                });
+                                let now = db.clock.now();
+                                db.cursors.lock().unwrap_or_else(|p| p.into_inner()).retain(
+                                    |_, c| !pressured && now.saturating_sub(c.created) < c.ttl,
+                                );
+                                let term = db.group.raft().metrics().borrow().current_term;
+                                db.engine.leases.expire_idle(pressured, term);
+                                let serving = db.engine.generation().is_ok();
+                                drop(work);
+                                serving
+                            })
+                            .await?;
+                    if !serving {
+                        break;
+                    }
                 }
+                Ok(())
             }
+            .await;
+            exit.complete(&result);
+            result
         });
         *self
             .seal_monitor
@@ -1001,14 +1196,18 @@ impl Database {
     ) -> Result<StagedTransactionStatus> {
         context.authorization.check_live()?;
         self.access()?;
-        crate::state::staging::lookup(&self.engine.generation()?.state, context, reference)?;
-        let mut reservation = self.admission().reserve(1 << 20, None)?;
+        crate::state::staging::authorize_scope(
+            &self.engine.generation()?.state,
+            context,
+            &reference.scope,
+        )?;
         self.barrier().await?;
-        let generation = self.engine.generation()?;
-        let stage = crate::state::staging::lookup(&generation.state, context, reference)?;
-        let status = stage.status();
-        let policy_epoch = generation.state.policy_epoch;
-        let revision = generation.state.revision;
+        let mut observed = self
+            .read_staged_identity(context, &reference.scope, &reference.transaction_id)
+            .await?;
+        let stage = crate::state::staging::lookup(&observed.state, context, reference)?;
+        let policy_epoch = observed.state.policy_epoch;
+        let revision = observed.state.revision;
         let mut collections = BTreeMap::new();
         for collection in &stage.manifest.read_collections {
             collections.insert(collection.clone(), "read");
@@ -1019,17 +1218,15 @@ impl Database {
         let release: Vec<_> = collections
             .into_iter()
             .map(|(collection, kind)| {
-                let strict = generation.state.policy.strict_read_audit
-                    || generation
-                        .state
-                        .collections
-                        .get(&collection)
-                        .is_some_and(|collection| collection.definition.strict_read_audit);
+                let strict = observed.state.policy.strict_read_audit
+                    || observed.strict_collections.contains(&collection);
                 (collection, kind, strict)
             })
             .collect();
-        drop(generation);
-        reservation.retain_workspace();
+        let status = observed
+            .status
+            .take()
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "staged transaction not found"))?;
         for (collection, kind, strict) in release {
             self.release_event(
                 context,
@@ -1042,7 +1239,15 @@ impl Database {
             .await?;
         }
         self.access()?;
-        crate::state::staging::lookup(&self.engine.generation()?.state, context, reference)?;
+        let current = self.engine.generation()?;
+        crate::state::staging::authorize_scope(&current.state, context, &reference.scope)?;
+        crate::state::staging::authorize_manifest(&current.state, context, &status.manifest)?;
+        if current.state.policy_epoch != policy_epoch {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "staged status policy changed before release",
+            ));
+        }
         Ok(status)
     }
 
@@ -1220,6 +1425,11 @@ impl Database {
         if context.tenant != self.engine.generation()?.state.tenant {
             return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
         }
+        let staged_read = self.staged_operation_read(&context, &operation).await?;
+        let preflight = self.engine.generation()?;
+        let stage_state = staged_read
+            .as_ref()
+            .map_or(&preflight.state, |read| &read.state);
         // Authorization repeats during ordered apply, so queued operations cannot bypass policy changes.
         match &operation {
             Operation::ActivateSchema(request) => crate::state::schema::authorize(
@@ -1227,29 +1437,21 @@ impl Database {
                 &context,
                 request,
             )?,
-            Operation::BeginStaged(request) => crate::state::staging::authorize_begin(
-                &self.engine.generation()?.state,
-                &context,
-                request,
-            )?,
+            Operation::BeginStaged(request) => {
+                crate::state::staging::authorize_begin(stage_state, &context, request)?
+            }
             Operation::AppendStaged(request) => {
                 crate::state::staging::authorize_upload(
-                    &self.engine.generation()?.state,
+                    stage_state,
                     &context,
                     &request.transaction,
                 )?;
             }
-            Operation::StopStaged(request) => crate::state::staging::authorize_stop(
-                &self.engine.generation()?.state,
-                &context,
-                request,
-            )?,
+            Operation::StopStaged(request) => {
+                crate::state::staging::authorize_stop(stage_state, &context, request)?
+            }
             Operation::FinalizeStaged(reference) => {
-                crate::state::staging::authorize_upload(
-                    &self.engine.generation()?.state,
-                    &context,
-                    reference,
-                )?;
+                crate::state::staging::authorize_upload(stage_state, &context, reference)?;
             }
             Operation::Mutate(batch) => {
                 for mutation in &batch.operations {
@@ -1285,7 +1487,7 @@ impl Database {
                 .iter()
                 .any(|change| has_text(change.definition())),
             Operation::FinalizeStaged(reference) => {
-                let stage = crate::state::staging::lookup(&generation.state, &context, reference)?;
+                let stage = crate::state::staging::lookup(stage_state, &context, reference)?;
                 stage.manifest.write_collections.iter().any(|name| {
                     generation
                         .state
@@ -1312,7 +1514,7 @@ impl Database {
         let staged_workspace = if matches!(operation, Operation::PublishHistoryArchive(_)) {
             MAX_ARCHIVE_SOURCE_BYTES.saturating_mul(3)
         } else if let Operation::FinalizeStaged(reference) = &operation {
-            let stage = crate::state::staging::lookup(&generation.state, &context, reference)?;
+            let stage = crate::state::staging::lookup(stage_state, &context, reference)?;
             if stage.is_active() {
                 stage
                     .manifest
@@ -1331,10 +1533,14 @@ impl Database {
         } else {
             0
         };
-        let max_command_payload = if matches!(operation, Operation::ActivateSchema(_)) {
-            MAX_SCHEMA_CHANGESET_BYTES
-        } else {
-            generation.state.limits.max_batch_bytes
+        let max_command_payload = match &operation {
+            Operation::ActivateSchema(_) => MAX_SCHEMA_CHANGESET_BYTES,
+            // Permanent receipt replay is ordered before today's tenant batch
+            // admission. Retain the immutable request envelope so lowering a
+            // tenant budget cannot hide an already committed outcome. A new
+            // identity still meets the configured limit in apply_batch.
+            Operation::Mutate(_) => 8 << 20,
+            _ => generation.state.limits.max_batch_bytes,
         };
         let command_budget = max_command_payload
             .saturating_add(64 << 10)
@@ -1348,6 +1554,9 @@ impl Database {
             .saturating_add(if needs_writer { 15_000_000 } else { 0 })
             as u64;
         drop(generation);
+        drop(preflight);
+        drop(staged_read);
+        self.proposals.prepare(self.admission())?;
         let reservation = self.admission().reserve(command_budget, None)?;
         let release_context = context.clone();
         let command = Command {
@@ -1368,7 +1577,7 @@ impl Database {
             ));
         }
         let registration = self.work.begin(QueryCancellation::default())?;
-        let proposal = tokio::spawn(
+        let proposal = self.proposals.start(
             ProposalWork {
                 source_engine: self.engine.clone(),
                 admission: self.admission().clone(),
@@ -1381,44 +1590,26 @@ impl Database {
                     .clone(),
                 _reservation: reservation,
                 _registration: Arc::new(registration),
-            }
-            .run(command, max_bytes),
-        );
-        let result = tokio::time::timeout(Duration::from_secs(10), proposal)
-            .await
-            .map_err(|_| {
+            },
+            command,
+            max_bytes,
+        )?;
+        let response = proposal.wait(Duration::from_secs(10)).await?;
+        let result = &response.bytes;
+        if restore_completion {
+            let outcome = serde_json::from_slice::<Result<WriteReceipt>>(result).map_err(|_| {
                 Error::new(
                     ErrorCode::UnknownOutcome,
-                    "write deadline exceeded; resolve or retry with the same idempotency key",
-                )
-            })?
-            .map_err(|_| {
-                Error::new(
-                    ErrorCode::UnknownOutcome,
-                    "write result unavailable; resolve or retry with the same idempotency key",
-                )
-            })?
-            .map_err(|_| {
-                Error::new(
-                    ErrorCode::UnknownOutcome,
-                    "write task failed; resolve or retry with the same idempotency key",
+                    "restore completion response unavailable",
                 )
             })?;
-        if restore_completion {
-            let outcome =
-                serde_json::from_slice::<Result<WriteReceipt>>(&result).map_err(|_| {
-                    Error::new(
-                        ErrorCode::UnknownOutcome,
-                        "restore completion response unavailable",
-                    )
-                })?;
             if outcome.is_ok() {
                 self.materialization_access()
                     .map_err(staged_stop_acknowledgement)?;
             }
             self.audit_write_result(&release_context, outcome).await
         } else {
-            self.release_submitted_response(&release_context, &result)
+            self.release_submitted_response(&release_context, result)
                 .await
         }
     }
@@ -1827,51 +2018,22 @@ impl Database {
         context: &RequestContext,
         idempotency_key: &str,
     ) -> Result<Option<MutationReceipt>> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         self.access()?;
         self.engine
             .authorize_discovery(context, Action::Write, None)?;
-        let mut reservation = self.admission().reserve(
-            self.engine
-                .generation()?
-                .state
-                .limits
-                .max_batch_operations
-                .saturating_mul(1024)
-                .saturating_add(64 << 10)
-                .saturating_mul(3) as u64,
-            None,
-        )?;
+        validate_name(idempotency_key)?;
         self.barrier().await?;
-        let generation = self.engine.generation()?;
-        if context.tenant != generation.state.tenant {
-            return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
-        }
-        let identity = serde_json::to_vec(&(&context.principal, idempotency_key))
-            .map_err(|_| Error::new(ErrorCode::InvalidArgument, "receipt identity invalid"))?;
-        let key = hex::encode(Sha256::digest(identity));
-        let now = self
-            .command_clock
-            .lock()
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "command clock unavailable"))?
-            .now_ms()?;
-        let receipt = generation
-            .state
-            .receipts
-            .get(&key)
-            .filter(|r| r.expires_at_ms > now)
-            .cloned();
-        let epoch = generation.state.policy_epoch;
-        let revision = generation.state.revision;
-        let strict = generation.state.policy.strict_read_audit;
-        reservation.retain_workspace();
-        if let Some(receipt) = &receipt {
+        let read = self
+            .read_mutation_receipt(context, idempotency_key, deadline)
+            .await?;
+        let receipt = &read.receipt;
+        let epoch = read.epoch;
+        let revision = read.revision;
+        let strict = read.strict;
+        if let Some(receipt) = receipt {
             for collection in &receipt.collections {
-                let strict = strict
-                    || generation
-                        .state
-                        .collections
-                        .get(collection)
-                        .is_some_and(|c| c.definition.strict_read_audit);
+                let strict = strict || read.strict_collections.contains(collection);
                 self.release_event(
                     context,
                     Some(collection),
@@ -1887,7 +2049,14 @@ impl Database {
                 .await?;
         }
         self.access()?;
-        Ok(receipt.map(|r| MutationReceipt {
+        context.authorization.check_live()?;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "mutation receipt deadline exceeded",
+            ));
+        }
+        Ok(read.receipt.map(|r| MutationReceipt {
             scope: r.scope,
             request_digest: r.request_digest,
             outcome: r.outcome,
@@ -2202,6 +2371,8 @@ mod tests {
     include!("service_staged_stop_tests.rs");
     include!("service_schema_tests.rs");
     include!("service_credential_tests.rs");
+    include!("service_proposal_tests.rs");
+    include!("service_mutation_receipt_tests.rs");
     include!("service_serving_tests.rs");
     include!("service_retirement_tests.rs");
     include!("service_custody_tests.rs");
@@ -2221,19 +2392,20 @@ mod tests {
     #[tokio::test]
     async fn queued_deadlines_use_admission_time_and_survive_caller_cancellation() {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
-        let audit_store = TenantStore::open_fixture(
+        let audit_store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             crate::SECURITY_TENANT.into(),
             Arc::new(LocalKeyProvider::new([0xA7; 32])),
         )
         .await
         .unwrap();
-        let audit = SecurityAudit::open(
+        let audit = SecurityAudit::initialize(
             audit_store,
             kasumi_types::AuditRetentionBudget::default(),
             crate::admission::NodeAdmission::new(Default::default()).unwrap(),
@@ -2246,7 +2418,7 @@ mod tests {
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),
             request_id: "deadline-test".into(),
         };
-        let store = TenantStore::open_fixture(
+        let store = TenantStore::initialize_catalog_fixture(
             node,
             context.tenant.clone(),
             Arc::new(LocalKeyProvider::new([0xB7; 32])),
@@ -2254,7 +2426,7 @@ mod tests {
         .await
         .unwrap();
         let db = crate::test_utils::open_fixture(
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::initialize_custody_fixture(
                 store,
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
             )
