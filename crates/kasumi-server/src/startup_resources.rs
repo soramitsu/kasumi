@@ -2,7 +2,7 @@
 //! catalogs or a new custody runtime on an already owned node. A borrowed node
 //! is retained only to join its initializers; borrowed serving runtimes, stores
 //! and databases never enter this scope.
-use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
+use kasumi_types::drain::{DrainCompletion, DrainReport, DrainResult};
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -23,14 +23,12 @@ impl Resources {
     pub(crate) async fn close(&self) -> DrainResult {
         let mut report = self.report.lock().await;
         let mut retained = None;
-        for (index, authority) in self.authorities.iter().enumerate() {
-            if let Err(error) = authority.shutdown().await {
-                // Until this child returns typed completion, keep its exact owner.
-                retained = Some(DrainFailure::retained(report.record(
-                    "authority",
-                    index,
-                    error,
-                )));
+        for authority in &self.authorities {
+            if let Err(failure) = authority.shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
             }
         }
         for custody in &self.custodies {

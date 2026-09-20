@@ -7,6 +7,7 @@ use kasumi_clock::{EpochClock, LeaseClock};
 use kasumi_raft::{BasicNode, Config, RaftGroup, RaftTransport};
 use kasumi_serving::*;
 use kasumi_store::TenantStorageSet;
+use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
 use kasumi_types::{Error, ErrorCode, RequestContext, Result};
 use std::{
     collections::BTreeMap,
@@ -19,6 +20,10 @@ use uuid::Uuid;
 mod lifecycle_service;
 #[path = "maintenance_service.rs"]
 mod maintenance_service;
+#[path = "request_jobs.rs"]
+mod request_jobs;
+use request_jobs::RequestJobs;
+pub use request_jobs::{AUTHORITY_REQUEST_SLOTS, authority_request_metadata_bytes};
 #[path = "target_stop_service.rs"]
 mod target_stop_service;
 
@@ -42,6 +47,13 @@ struct Drain {
     term: u64,
     started: Duration,
     last: Duration,
+}
+#[derive(Default)]
+struct AuthorityShutdown {
+    report: DrainReport,
+    // A later opaque success cannot establish that a prior uncertain OpenRaft
+    // census has resolved. Keep the original retained owner diagnostic.
+    raft_unresolved: Option<DrainFailure>,
 }
 
 // Capacity and lifetime move together from admission through the returned
@@ -152,6 +164,8 @@ pub struct IndependentAuthority {
     proposal: tokio::sync::Mutex<()>,
     requests: Arc<Semaphore>,
     request_owners: Arc<RwLock<()>>,
+    request_jobs: RequestJobs,
+    shutdown_report: tokio::sync::Mutex<AuthorityShutdown>,
     drains: Mutex<BTreeMap<String, Drain>>,
     settings: AuthorityNodeSettings,
     local_node_id: u64,
@@ -180,6 +194,7 @@ impl IndependentAuthority {
     }
     /// The authority is an explicitly installed three-voter trust root. It has
     /// no local/downgrade opener and never uses a municipality data group.
+    #[allow(clippy::too_many_arguments)]
     pub async fn open_existing_replicated(
         stores: Arc<TenantStorageSet>,
         installation: AuthorityInstallation,
@@ -188,6 +203,7 @@ impl IndependentAuthority {
         settings: AuthorityNodeSettings,
         transport: Arc<dyn RaftTransport>,
         config: Config,
+        request_budget: BackgroundWorkBudget,
     ) -> anyhow::Result<Arc<Self>> {
         Self::open_existing_with_clock(
             stores,
@@ -197,6 +213,7 @@ impl IndependentAuthority {
             settings,
             transport,
             config,
+            request_budget,
             EpochClock::system()?,
         )
         .await
@@ -210,10 +227,12 @@ impl IndependentAuthority {
         settings: AuthorityNodeSettings,
         transport: Arc<dyn RaftTransport>,
         config: Config,
+        request_budget: BackgroundWorkBudget,
         clock: Arc<EpochClock>,
     ) -> anyhow::Result<Arc<Self>> {
         installation.validate()?;
         settings.validate(node_id)?;
+        let request_jobs = RequestJobs::new(request_budget)?;
         ensure!(
             settings.installed_members[&node_id].verifier == signer.verifier_identity()?,
             "operational signer physical verifier differs from installed authority member"
@@ -282,8 +301,10 @@ impl IndependentAuthority {
             elapsed: clock.elapsed_clock(),
             clock,
             proposal: tokio::sync::Mutex::new(()),
-            requests: Arc::new(Semaphore::new(32)),
+            requests: Arc::new(Semaphore::new(AUTHORITY_REQUEST_SLOTS)),
             request_owners: Arc::new(RwLock::new(())),
+            request_jobs,
+            shutdown_report: Default::default(),
             drains: Mutex::new(BTreeMap::new()),
             settings,
             local_node_id: node_id,
@@ -326,6 +347,7 @@ impl IndependentAuthority {
         self.group.raft().metrics().borrow().current_term
     }
     fn check_open(&self) -> Result<()> {
+        self.request_jobs.observe(&self.requests);
         if self.requests.is_closed() {
             return Err(unavailable("independent authority is shutting down"));
         }
@@ -623,6 +645,7 @@ impl IndependentAuthority {
         context: RequestContext,
         command: AuthorityCommand,
     ) -> Result<(SignedAuthorityReceipt, AuthorityResponseFence)> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let permit = self.permit()?;
         let signer = self.request_signer()?;
         command
@@ -634,15 +657,12 @@ impl IndependentAuthority {
         // Own the permit until consensus and release actually finish, including
         // when the caller drops this future or receives an unknown outcome.
         let service = self.clone();
-        let job = tokio::spawn(async move {
+        self.accepted_request(deadline, async move {
             service
                 .execute_owned(permit, signer, context, command)
                 .await
-        });
-        tokio::time::timeout(Duration::from_secs(5), job)
-            .await
-            .map_err(unknown)?
-            .map_err(unknown)?
+        })
+        .await
     }
     async fn execute_owned(
         self: Arc<Self>,
@@ -774,16 +794,37 @@ impl IndependentAuthority {
     }
     /// Close admission and response release synchronously before listener drain.
     pub fn close_admission(&self) {
-        self.requests.close();
+        self.request_jobs.close(&self.requests);
     }
-    pub async fn shutdown(&self) -> anyhow::Result<()> {
+    pub async fn shutdown(&self) -> DrainResult {
         self.close_admission();
-        // Never hold proposal while draining admitted jobs: a detached accepted
-        // job may still be waiting to acquire it. Cancelling this waiter leaves
-        // every original read owner installed until its work/fence is dropped.
+        let mut shutdown = self.shutdown_report.lock().await;
+        let mut retained = None;
+        // Join children before taking the owner writer: their live request
+        // permits and undelivered response fences can hold its read guards.
+        if let Err(failure) = self.request_jobs.drain(&self.requests).await {
+            shutdown.report.merge(&failure);
+            if failure.completion() == DrainCompletion::Retained {
+                retained = Some(failure);
+            }
+        }
+        if retained.is_some() {
+            return shutdown.report.outcome(retained);
+        }
+        // Never hold proposal while draining admitted jobs. Cancelling this
+        // waiter leaves every original request/response read owner installed.
         let _owners = self.request_owners.write().await;
         let _gate = self.proposal.lock().await;
-        self.group.shutdown().await
+        if let Err(error) = self.group.shutdown().await {
+            // An opaque OpenRaft error is not evidence of a complete child
+            // census. Retain the authority and its exact diagnostic on retry.
+            let failure =
+                DrainFailure::retained(shutdown.report.record("authority raft", 0, error));
+            shutdown.raft_unresolved = Some(failure);
+        }
+        shutdown
+            .report
+            .outcome(retained.or_else(|| shutdown.raft_unresolved.clone()))
     }
 }
 

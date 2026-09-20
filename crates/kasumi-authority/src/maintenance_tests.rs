@@ -80,6 +80,7 @@ impl Fixture {
                 election_timeout_max: 1000,
                 ..Config::default()
             },
+            request_budget(),
             self.epoch.clone(),
         )
         .await
@@ -525,6 +526,7 @@ async fn maintenance_store_cannot_reopen_as_another_member_identity() {
         fixture.settings.clone(),
         fixture.router.clone(),
         Config::default(),
+        request_budget(),
         fixture.epoch.clone(),
     )
     .await;
@@ -625,6 +627,7 @@ async fn maintenance_resource_acknowledgement_survives_lost_reply_before_admissi
         smaller,
         fixture.router.clone(),
         Config::default(),
+        request_budget(),
         fixture.epoch.clone(),
     )
     .await;
@@ -776,6 +779,7 @@ async fn authority_signer_cannot_substitute_another_physical_verifier_with_the_s
         fixture.settings.clone(),
         fixture.router.clone(),
         Config::default(),
+        request_budget(),
         fixture.epoch.clone(),
     )
     .await;

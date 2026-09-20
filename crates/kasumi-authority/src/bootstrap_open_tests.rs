@@ -87,6 +87,7 @@ impl InstalledFixture {
             settings,
             Arc::new(InProcessRouter::default()),
             Config::default(),
+            request_budget(),
             EpochClock::system()?,
         )
         .await

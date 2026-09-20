@@ -13,6 +13,16 @@ use std::{
 };
 use uuid::Uuid;
 
+fn request_budget() -> BackgroundWorkBudget {
+    static ADMISSION: OnceLock<Arc<kasumi_engine::admission::NodeAdmission>> = OnceLock::new();
+    let admission = ADMISSION
+        .get_or_init(|| kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap());
+    let bytes = authority_request_metadata_bytes().unwrap();
+    let mut charge = admission.reserve(bytes, None).unwrap();
+    charge.retain(bytes);
+    BackgroundWorkBudget::new(AUTHORITY_REQUEST_SLOTS, Arc::new(charge)).unwrap()
+}
+
 async fn commit_directive(
     authority: &Arc<IndependentAuthority>,
     context: &RequestContext,
@@ -185,6 +195,7 @@ impl Fixture {
                     election_timeout_max: 1000,
                     ..Config::default()
                 },
+                request_budget(),
                 epoch.clone(),
             )
             .await
@@ -346,6 +357,7 @@ impl Fixture {
                     election_timeout_max: 1000,
                     ..Config::default()
                 },
+                request_budget(),
                 self.epoch.clone(),
             )
             .await

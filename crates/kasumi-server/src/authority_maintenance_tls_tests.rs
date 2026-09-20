@@ -250,6 +250,10 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
                 election_timeout_max: 1000,
                 ..Default::default()
             },
+            crate::authority_runtime::request_budget(
+                &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            )
+            .unwrap(),
         )
         .await
         .unwrap();

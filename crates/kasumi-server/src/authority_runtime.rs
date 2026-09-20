@@ -228,15 +228,7 @@ impl AuthorityRuntime {
     ) -> kasumi_types::drain::DrainResult {
         use crate::runtime_drain::observe;
         let mut retained = None;
-        if let Err(error) = authority.shutdown().await {
-            // This authority API has not yet proved its complete child census
-            // in a typed outcome. Retain this exact owner on an opaque error.
-            retained = Some(kasumi_types::drain::DrainFailure::retained(report.record(
-                "authority",
-                0,
-                error,
-            )));
-        }
+        observe(report, &mut retained, authority.shutdown().await);
         observe(report, &mut retained, stores.shutdown().await);
         observe(report, &mut retained, audit.shutdown().await);
         observe(report, &mut retained, audit_store.shutdown().await);
@@ -349,6 +341,7 @@ impl AuthorityRuntime {
                 config.node_settings()?,
                 network.clone(),
                 kasumi_raft::server_config(),
+                request_budget(&admission)?,
             )
             .await?;
             pending.authorities.push(authority.clone());
@@ -572,4 +565,17 @@ impl crate::serving_owner::Owner for AuthorityServing {
             self.report.outcome(retained)
         })
     }
+}
+
+/// Charge the full bounded request-child inventory to the installed node governor.
+pub(crate) fn request_budget(
+    admission: &Arc<kasumi_engine::admission::NodeAdmission>,
+) -> Result<kasumi_serving::BackgroundWorkBudget> {
+    let bytes = kasumi_authority::authority_request_metadata_bytes()?;
+    let mut charge = admission.reserve(bytes, None)?;
+    charge.retain(bytes);
+    kasumi_serving::BackgroundWorkBudget::new(
+        kasumi_authority::AUTHORITY_REQUEST_SLOTS,
+        Arc::new(charge),
+    )
 }

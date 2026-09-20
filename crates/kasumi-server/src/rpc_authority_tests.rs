@@ -354,6 +354,10 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                 election_timeout_max: 180,
                 ..Default::default()
             },
+            crate::authority_runtime::request_budget(
+                &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            )
+            .unwrap(),
         )
         .await
         .unwrap();

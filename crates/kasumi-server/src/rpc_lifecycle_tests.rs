@@ -170,6 +170,10 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
                 election_timeout_max: 180,
                 ..Default::default()
             },
+            crate::authority_runtime::request_budget(
+                &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            )
+            .unwrap(),
         )
         .await
         .unwrap();

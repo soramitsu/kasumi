@@ -114,6 +114,7 @@ impl IndependentAuthority {
         context: RequestContext,
         request: AuthorityMaintenanceRequest,
     ) -> Result<(AuthorityMaintenanceResponse, AuthorityResponseFence)> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(35);
         request.validate().map_err(|_| {
             Error::new(
                 ErrorCode::InvalidArgument,
@@ -156,15 +157,12 @@ impl IndependentAuthority {
         let service = self.clone();
         // Own accepted work through cancellation and remote response loss. The
         // exact phase journal precedes every external membership operation.
-        let job = tokio::spawn(async move {
+        self.accepted_request(deadline, async move {
             service
                 .maintenance_owned(permit, signer, context, request)
                 .await
-        });
-        tokio::time::timeout(Duration::from_secs(35), job)
-            .await
-            .map_err(unknown)?
-            .map_err(unknown)?
+        })
+        .await
     }
     async fn maintenance_owned(
         self: Arc<Self>,

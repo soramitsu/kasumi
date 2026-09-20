@@ -7,7 +7,8 @@ pub use installation::{
     AuthorityBootstrap, AuthorityInstallation, AuthorityMaintenanceTransport, AuthorityNodeSettings,
 };
 pub use service::{
-    AuthenticatedNode, AuthorityAdministrativeFence, AuthorityResponseFence,
-    AuthoritySigningResponseFence, CommittedSignerDirective, ControlSignerObservationFence,
-    IndependentAuthority, SignerCoverageFence, SignerPublicationTransport,
+    AUTHORITY_REQUEST_SLOTS, AuthenticatedNode, AuthorityAdministrativeFence,
+    AuthorityResponseFence, AuthoritySigningResponseFence, CommittedSignerDirective,
+    ControlSignerObservationFence, IndependentAuthority, SignerCoverageFence,
+    SignerPublicationTransport, authority_request_metadata_bytes,
 };

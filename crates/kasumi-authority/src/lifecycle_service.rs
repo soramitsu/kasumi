@@ -7,6 +7,7 @@ impl IndependentAuthority {
         context: RequestContext,
         request: LifecycleAuthorityRequest,
     ) -> Result<(SignedLifecycleAuthorityReceipt, AuthorityResponseFence)> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let permit = self.permit()?;
         let signer = self.request_signer()?;
         self.installation()
@@ -21,15 +22,12 @@ impl IndependentAuthority {
         self.barrier(&context).await?;
         self.backend.authorize_admin(&context)?;
         let service = self.clone();
-        let job = tokio::spawn(async move {
+        self.accepted_request(deadline, async move {
             service
                 .execute_lifecycle_owned(permit, signer, context, request)
                 .await
-        });
-        tokio::time::timeout(Duration::from_secs(5), job)
-            .await
-            .map_err(unknown)?
-            .map_err(unknown)?
+        })
+        .await
     }
     async fn execute_lifecycle_owned(
         self: Arc<Self>,

@@ -461,6 +461,10 @@ impl Fixture {
                     },
                     network.clone(),
                     kasumi_raft::server_config(),
+                    crate::authority_runtime::request_budget(
+                        &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+                    )
+                    .unwrap(),
                 )
                 .await
                 .unwrap();
