@@ -11,6 +11,8 @@ mod database_worker_outcome_tests;
 mod database_workers;
 #[path = "ordered_seek_service.rs"]
 mod ordered_seek_service;
+#[path = "proposal_jobs.rs"]
+mod proposal_jobs;
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
 use kasumi_query::QueryCancellation;
 use kasumi_raft::RaftGroup;
@@ -93,7 +95,7 @@ struct ProposalWork {
 }
 
 impl ProposalWork {
-    async fn run(mut self, mut command: Command, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+    async fn run(&mut self, mut command: Command, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
         // The background proposal owns this gate; caller timeout/cancellation
         // cannot let later commands overtake an unresolved write. Time is
         // sampled only after the previous write has finished.
@@ -412,6 +414,7 @@ pub struct Database {
     audit_worker_failures: AtomicU64,
     audit_worker_completed: AtomicU64,
     proposal_gate: Arc<tokio::sync::Mutex<()>>,
+    proposals: proposal_jobs::Jobs,
     command_clock: Mutex<Arc<dyn CommandClock>>,
 }
 
@@ -765,6 +768,7 @@ impl Database {
             audit_worker_failures: AtomicU64::new(0),
             audit_worker_completed: AtomicU64::new(0),
             proposal_gate: Arc::new(tokio::sync::Mutex::new(())),
+            proposals: proposal_jobs::Jobs::default(),
             command_clock: Mutex::new(clocks.command),
         });
         database.spawn_seal_monitor();
@@ -862,6 +866,14 @@ impl Database {
         if let Err(failure) = self.monitor_check.drain().await {
             report.merge(&failure);
         }
+        // A caller timeout never stops an admitted application proposal. Join
+        // its actual child before stopping Raft or releasing durable owners.
+        if let Err(failure) = self.proposals.drain().await {
+            report.merge(&failure);
+            if failure.completion() == DrainCompletion::Retained {
+                return report.outcome(Some(failure));
+            }
+        }
         if let Err(error) = self.group.shutdown().await {
             retained = Some(DrainFailure::retained(report.record(
                 "database raft",
@@ -951,6 +963,7 @@ impl Database {
                 "database is shutting down",
             ));
         }
+        self.proposals.check()?;
         if self.store.check_access().is_err() {
             self.work.seal();
             self.engine.seal();
@@ -1520,6 +1533,7 @@ impl Database {
         drop(generation);
         drop(preflight);
         drop(staged_read);
+        self.proposals.prepare(self.admission())?;
         let reservation = self.admission().reserve(command_budget, None)?;
         let release_context = context.clone();
         let command = Command {
@@ -1540,7 +1554,7 @@ impl Database {
             ));
         }
         let registration = self.work.begin(QueryCancellation::default())?;
-        let proposal = tokio::spawn(
+        let proposal = self.proposals.start(
             ProposalWork {
                 source_engine: self.engine.clone(),
                 admission: self.admission().clone(),
@@ -1553,44 +1567,26 @@ impl Database {
                     .clone(),
                 _reservation: reservation,
                 _registration: Arc::new(registration),
-            }
-            .run(command, max_bytes),
-        );
-        let result = tokio::time::timeout(Duration::from_secs(10), proposal)
-            .await
-            .map_err(|_| {
+            },
+            command,
+            max_bytes,
+        )?;
+        let response = proposal.wait(Duration::from_secs(10)).await?;
+        let result = &response.bytes;
+        if restore_completion {
+            let outcome = serde_json::from_slice::<Result<WriteReceipt>>(result).map_err(|_| {
                 Error::new(
                     ErrorCode::UnknownOutcome,
-                    "write deadline exceeded; resolve or retry with the same idempotency key",
-                )
-            })?
-            .map_err(|_| {
-                Error::new(
-                    ErrorCode::UnknownOutcome,
-                    "write result unavailable; resolve or retry with the same idempotency key",
-                )
-            })?
-            .map_err(|_| {
-                Error::new(
-                    ErrorCode::UnknownOutcome,
-                    "write task failed; resolve or retry with the same idempotency key",
+                    "restore completion response unavailable",
                 )
             })?;
-        if restore_completion {
-            let outcome =
-                serde_json::from_slice::<Result<WriteReceipt>>(&result).map_err(|_| {
-                    Error::new(
-                        ErrorCode::UnknownOutcome,
-                        "restore completion response unavailable",
-                    )
-                })?;
             if outcome.is_ok() {
                 self.materialization_access()
                     .map_err(staged_stop_acknowledgement)?;
             }
             self.audit_write_result(&release_context, outcome).await
         } else {
-            self.release_submitted_response(&release_context, &result)
+            self.release_submitted_response(&release_context, result)
                 .await
         }
     }
@@ -2352,6 +2348,7 @@ mod tests {
     include!("service_staged_stop_tests.rs");
     include!("service_schema_tests.rs");
     include!("service_credential_tests.rs");
+    include!("service_proposal_tests.rs");
     include!("service_mutation_receipt_tests.rs");
     include!("service_serving_tests.rs");
     include!("service_retirement_tests.rs");
