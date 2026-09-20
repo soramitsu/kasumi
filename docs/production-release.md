@@ -30,6 +30,17 @@ acceptance remain open. Physical host observations in
 
 ## Latest combined checkpoint
 
+The [frozen `f2921f5` successor](evidence/first-release-f2921f5-check-20260920/README.md)
+passed 16 gates, including all 69 SDK cases, all 11 MCP cases, 154 store tests,
+strict store lint and all six repaired serving owner fixtures. The next
+retired-source gate passed one case and failed its registration-rejection
+ownership case with an elapsed deadline. All 21 later gates were unrun.
+All dispatched process groups drained and source stayed unchanged. The failure
+and exact executable bytes are retained for diagnosis; the original deadlines
+and mandatory cohort remain required for the next frozen successor.
+
+## Preceding MCP checkpoint
+
 The [frozen `b5001b1` successor](evidence/first-release-b5001b1-check-20260920/README.md)
 passed workspace compilation, formatting and the new engine owned-response-fence
 regression. The next MCP gate passed three existing tests and failed seven new
