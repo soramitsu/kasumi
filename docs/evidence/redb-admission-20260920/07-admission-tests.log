@@ -1,0 +1,12 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.26s
+     Running unittests src/lib.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/redb-3b041280eaede368)
+
+running 4 tests
+test admission::tests::caught_capacity_denial_aborts_all_tables_and_keeps_pinned_read_root ... ok
+test admission::tests::commit_metadata_denial_rolls_back_before_winning_header ... ok
+test admission::tests::construction_denial_never_grows_or_fails_owner ... ok
+test admission::tests::explicit_close_returns_busy_owner_and_drop_does_not_reserve_checkpoint_growth ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 86 filtered out; finished in 1.26s
+

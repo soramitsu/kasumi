@@ -1,0 +1,27 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+error[E0425]: cannot find value `db2` in this scope
+    --> tests/basic_tests.rs:2215:21
+     |
+2215 |     let read_txn2 = db2.begin_read().unwrap();
+     |                     ^^^
+     |
+help: a local variable with a similar name exists
+     |
+2215 -     let read_txn2 = db2.begin_read().unwrap();
+2215 +     let read_txn2 = db.begin_read().unwrap();
+     |
+
+error[E0425]: cannot find value `db2` in this scope
+    --> tests/basic_tests.rs:2251:21
+     |
+2251 |     let read_txn2 = db2.begin_read().unwrap();
+     |                     ^^^
+     |
+help: a local variable with a similar name exists
+     |
+2251 -     let read_txn2 = db2.begin_read().unwrap();
+2251 +     let read_txn2 = db.begin_read().unwrap();
+     |
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `redb` (test "basic_tests") due to 2 previous errors

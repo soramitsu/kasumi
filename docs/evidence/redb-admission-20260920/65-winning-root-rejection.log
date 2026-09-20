@@ -1,0 +1,9 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.18s
+     Running unittests src/lib.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/redb-1a01cd164be5367b)
+
+running 1 test
+test tree_store::page_store::header::test::repair_rejects_invalid_primary_root_without_legacy_rollback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 0.49s
+

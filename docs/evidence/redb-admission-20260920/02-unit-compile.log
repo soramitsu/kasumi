@@ -1,0 +1,186 @@
+   Compiling libc v0.2.186
+   Compiling cfg-if v1.0.4
+   Compiling getrandom v0.4.3
+   Compiling rand_core v0.10.1
+   Compiling rustix v1.1.4
+   Compiling errno v0.3.14
+   Compiling bitflags v2.13.1
+   Compiling redb v2.6.0
+   Compiling chacha20 v0.10.1
+   Compiling once_cell v1.21.4
+   Compiling fastrand v2.4.1
+   Compiling tempfile v3.27.0
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+   Compiling rand v0.10.2
+   Compiling uuid v1.24.0
+error[E0061]: this function takes 7 arguments but 6 arguments were supplied
+    --> src/tree_store/btree.rs:1436:19
+     |
+1436 |         let mem = TransactionalMemory::new(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+1437 |             Box::new(InMemoryBackend::new()),
+1438 |             true,
+     |             ---- argument #2 of type `std::sync::Arc<(dyn StorageAdmission + 'static)>` is missing
+     |
+note: associated function defined here
+    --> src/tree_store/page_store/page_manager.rs:533:19
+     |
+ 533 |     pub(crate) fn new(
+     |                   ^^^
+ 534 |         file: Box<dyn StorageBackend>,
+ 535 |         admission: Arc<dyn crate::StorageAdmission>,
+     |         -------------------------------------------
+help: provide the argument
+     |
+1436 |         let mem = TransactionalMemory::new(
+1437 |             Box::new(InMemoryBackend::new()),
+1438 ~             /* std::sync::Arc<(dyn StorageAdmission + 'static)> */,
+1439 ~             true,
+     |
+
+error[E0061]: this function takes 7 arguments but 6 arguments were supplied
+    --> src/tree_store/btree_base.rs:2263:19
+     |
+2263 |         let mem = TransactionalMemory::new(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+2264 |             Box::new(InMemoryBackend::new()),
+2265 |             true,
+     |             ---- argument #2 of type `std::sync::Arc<(dyn StorageAdmission + 'static)>` is missing
+     |
+note: associated function defined here
+    --> src/tree_store/page_store/page_manager.rs:533:19
+     |
+ 533 |     pub(crate) fn new(
+     |                   ^^^
+ 534 |         file: Box<dyn StorageBackend>,
+ 535 |         admission: Arc<dyn crate::StorageAdmission>,
+     |         -------------------------------------------
+help: provide the argument
+     |
+2263 |         let mem = TransactionalMemory::new(
+2264 |             Box::new(InMemoryBackend::new()),
+2265 ~             /* std::sync::Arc<(dyn StorageAdmission + 'static)> */,
+2266 ~             true,
+     |
+
+error[E0061]: this function takes 7 arguments but 6 arguments were supplied
+    --> src/tree_store/btree_cursor.rs:2433:19
+     |
+2433 |         let mem = TransactionalMemory::new(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+2434 |             Box::new(InMemoryBackend::new()),
+2435 |             true,
+     |             ---- argument #2 of type `std::sync::Arc<(dyn StorageAdmission + 'static)>` is missing
+     |
+note: associated function defined here
+    --> src/tree_store/page_store/page_manager.rs:533:19
+     |
+ 533 |     pub(crate) fn new(
+     |                   ^^^
+ 534 |         file: Box<dyn StorageBackend>,
+ 535 |         admission: Arc<dyn crate::StorageAdmission>,
+     |         -------------------------------------------
+help: provide the argument
+     |
+2433 |         let mem = TransactionalMemory::new(
+2434 |             Box::new(InMemoryBackend::new()),
+2435 ~             /* std::sync::Arc<(dyn StorageAdmission + 'static)> */,
+2436 ~             true,
+     |
+
+error[E0061]: this function takes 7 arguments but 6 arguments were supplied
+    --> src/tree_store/page_store/page_manager.rs:1742:13
+     |
+1742 |             TransactionalMemory::new(Box::new(InMemoryBackend::new()), true, 4096, None, 0, false)
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^                                   ---- argument #2 of type `std::sync::Arc<(dyn StorageAdmission + 'static)>` is missing
+     |
+note: associated function defined here
+    --> src/tree_store/page_store/page_manager.rs:533:19
+     |
+ 533 |     pub(crate) fn new(
+     |                   ^^^
+ 534 |         file: Box<dyn StorageBackend>,
+ 535 |         admission: Arc<dyn crate::StorageAdmission>,
+     |         -------------------------------------------
+help: provide the argument
+     |
+1742 |             TransactionalMemory::new(Box::new(InMemoryBackend::new()), /* std::sync::Arc<(dyn StorageAdmission + 'static)> */, true, 4096, None, 0, false)
+     |                                                                        +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+error[E0061]: this function takes 7 arguments but 6 arguments were supplied
+    --> src/tree_store/page_store/page_manager.rs:1777:19
+     |
+1777 |         let mem = TransactionalMemory::new(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+1778 |             Box::new(InMemoryBackend::new()),
+1779 |             true,
+     |             ---- argument #2 of type `std::sync::Arc<(dyn StorageAdmission + 'static)>` is missing
+     |
+note: associated function defined here
+    --> src/tree_store/page_store/page_manager.rs:533:19
+     |
+ 533 |     pub(crate) fn new(
+     |                   ^^^
+ 534 |         file: Box<dyn StorageBackend>,
+ 535 |         admission: Arc<dyn crate::StorageAdmission>,
+     |         -------------------------------------------
+help: provide the argument
+     |
+1777 |         let mem = TransactionalMemory::new(
+1778 |             Box::new(InMemoryBackend::new()),
+1779 ~             /* std::sync::Arc<(dyn StorageAdmission + 'static)> */,
+1780 ~             true,
+     |
+
+error[E0061]: this function takes 7 arguments but 6 arguments were supplied
+    --> src/tree_store/page_store/page_manager.rs:1825:19
+     |
+1825 |         let mem = TransactionalMemory::new(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+1826 |             Box::new(InMemoryBackend::new()),
+1827 |             true,
+     |             ---- argument #2 of type `std::sync::Arc<(dyn StorageAdmission + 'static)>` is missing
+     |
+note: associated function defined here
+    --> src/tree_store/page_store/page_manager.rs:533:19
+     |
+ 533 |     pub(crate) fn new(
+     |                   ^^^
+ 534 |         file: Box<dyn StorageBackend>,
+ 535 |         admission: Arc<dyn crate::StorageAdmission>,
+     |         -------------------------------------------
+help: provide the argument
+     |
+1825 |         let mem = TransactionalMemory::new(
+1826 |             Box::new(InMemoryBackend::new()),
+1827 ~             /* std::sync::Arc<(dyn StorageAdmission + 'static)> */,
+1828 ~             true,
+     |
+
+error[E0061]: this function takes 7 arguments but 6 arguments were supplied
+    --> src/tree_store/page_store/page_manager.rs:1868:19
+     |
+1868 |         let mem = TransactionalMemory::new(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+1869 |             Box::new(InMemoryBackend::new()),
+1870 |             true,
+     |             ---- argument #2 of type `std::sync::Arc<(dyn StorageAdmission + 'static)>` is missing
+     |
+note: associated function defined here
+    --> src/tree_store/page_store/page_manager.rs:533:19
+     |
+ 533 |     pub(crate) fn new(
+     |                   ^^^
+ 534 |         file: Box<dyn StorageBackend>,
+ 535 |         admission: Arc<dyn crate::StorageAdmission>,
+     |         -------------------------------------------
+help: provide the argument
+     |
+1868 |         let mem = TransactionalMemory::new(
+1869 |             Box::new(InMemoryBackend::new()),
+1870 ~             /* std::sync::Arc<(dyn StorageAdmission + 'static)> */,
+1871 ~             true,
+     |
+
+For more information about this error, try `rustc --explain E0061`.
+error: could not compile `redb` (lib test) due to 7 previous errors

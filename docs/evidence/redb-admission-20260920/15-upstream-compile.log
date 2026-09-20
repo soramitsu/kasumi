@@ -1,0 +1,27 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+warning: unused `Result` that must be used
+   --> tests/integration_tests.rs:982:5
+    |
+982 |     txn.set_quick_repair(quick_repair);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+982 |     let _ = txn.set_quick_repair(quick_repair);
+    |     +++++++
+
+warning: `redb` (test "integration_tests") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.33s
+  Executable unittests src/lib.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/redb-3b041280eaede368)
+  Executable tests/backward_compatibility.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/backward_compatibility-38c7e0472cd4a7f8)
+  Executable tests/basic_tests.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/basic_tests-5705d44c8fcfef12)
+  Executable tests/check_integrity_failure.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/check_integrity_failure-13f0324b6d0cbfb1)
+  Executable tests/check_integrity_nondurable.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/check_integrity_nondurable-4d18ea8ec82175c2)
+  Executable tests/corrupted_btree_descent.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/corrupted_btree_descent-5891c3b40518aa3f)
+  Executable tests/crash_consistency.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/crash_consistency-607dd9f3b771fd60)
+  Executable tests/cursor_tests.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/cursor_tests-18dce9f4a3cbbbf6)
+  Executable tests/integration_tests.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/integration_tests-4da02c5a9a939cc4)
+  Executable tests/multimap_tests.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/multimap_tests-972dc5a06eab40fe)
+  Executable tests/multithreading_tests.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/multithreading_tests-affe4e6fd824e3fe)

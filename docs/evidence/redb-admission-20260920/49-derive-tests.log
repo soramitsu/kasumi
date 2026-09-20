@@ -1,0 +1,136 @@
+     Locking 34 packages to latest Rust 1.90 compatible versions
+      Adding redb v2.6.0 (available: v4.2.0)
+      Adding redb v3.0.0 (available: v4.2.0)
+      Adding syn v2.0.119 (available: v3.0.6)
+   Compiling libc v0.2.189
+   Compiling getrandom v0.4.3
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling cfg-if v1.0.5
+   Compiling unicode-ident v1.0.26
+   Compiling rustix v1.1.4
+   Compiling errno v0.3.14
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+   Compiling redb v3.0.0
+   Compiling bitflags v2.13.1
+   Compiling redb v2.6.0
+   Compiling syn v2.0.119
+   Compiling uuid v1.26.0
+   Compiling fastrand v2.5.0
+   Compiling once_cell v1.21.4
+   Compiling tempfile v3.27.0
+   Compiling redb-derive v0.1.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/crates/redb-derive)
+error[E0753]: expected outer doc comment
+ --> tests/crate_attr_tests.rs:3:1
+  |
+3 | //! Tests for `#[redb(crate = "...")]`, which names the crate the implementations are generated
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+3 - //! Tests for `#[redb(crate = "...")]`, which names the crate the implementations are generated
+3 + // Tests for `#[redb(crate = "...")]`, which names the crate the implementations are generated
+  |
+
+error[E0753]: expected outer doc comment
+ --> tests/crate_attr_tests.rs:4:1
+  |
+4 | //! for when it is not reachable as `::redb`, such as deriving against two versions of redb
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+4 - //! for when it is not reachable as `::redb`, such as deriving against two versions of redb
+4 + // for when it is not reachable as `::redb`, such as deriving against two versions of redb
+  |
+
+error[E0753]: expected outer doc comment
+ --> tests/crate_attr_tests.rs:5:1
+  |
+5 | //! from the same crate.
+  | ^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+5 - //! from the same crate.
+5 + // from the same crate.
+  |
+
+error[E0753]: expected outer doc comment
+ --> tests/crate_attr_tests.rs:6:1
+  |
+6 | //!
+  | ^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+6 - //!
+6 + //
+  |
+
+error[E0753]: expected outer doc comment
+ --> tests/crate_attr_tests.rs:7:1
+  |
+7 | //! The composed type name of a struct with fields reads the field types' `TypeName`s only
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+7 - //! The composed type name of a struct with fields reads the field types' `TypeName`s only
+7 + // The composed type name of a struct with fields reads the field types' `TypeName`s only
+  |
+
+error[E0753]: expected outer doc comment
+ --> tests/crate_attr_tests.rs:8:1
+  |
+8 | //! through `TypeName::new`, `name()`, and `PartialEq`, so that it compiles against every redb
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+8 - //! through `TypeName::new`, `name()`, and `PartialEq`, so that it compiles against every redb
+8 + // through `TypeName::new`, `name()`, and `PartialEq`, so that it compiles against every redb
+  |
+
+error[E0753]: expected outer doc comment
+ --> tests/crate_attr_tests.rs:9:1
+  |
+9 | //! version exposing those -- redb 3.0 on. redb 2.6 keeps `name()` private, so the 2.6 struct
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+9 - //! version exposing those -- redb 3.0 on. redb 2.6 keeps `name()` private, so the 2.6 struct
+9 + // version exposing those -- redb 3.0 on. redb 2.6 keeps `name()` private, so the 2.6 struct
+  |
+
+error[E0753]: expected outer doc comment
+  --> tests/crate_attr_tests.rs:10:1
+   |
+10 |   //! here is a unit struct, the most that version can derive.
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+11 |
+12 | / mod old {
+13 | |     use redb_derive::{Key, Value};
+14 | |
+15 | |     #[derive(Value, Key, Debug, PartialEq, Eq, PartialOrd, Ord)]
+16 | |     #[redb(crate = "redb2_6")]
+17 | |     pub struct OldValue;
+18 | | }
+   | |_- the inner doc comment doesn't annotate this module
+   |
+help: to annotate the module, change the doc comment from inner to outer style
+   |
+10 - //! here is a unit struct, the most that version can derive.
+10 + /// here is a unit struct, the most that version can derive.
+   |
+
+For more information about this error, try `rustc --explain E0753`.
+error: could not compile `redb-derive` (test "crate_attr_tests") due to 8 previous errors

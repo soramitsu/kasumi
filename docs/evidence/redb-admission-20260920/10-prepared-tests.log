@@ -1,0 +1,200 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+warning: unused imports: `InternalTableDefinition`, `PageNumber`, and `TableType`
+ --> src/db.rs:6:36
+  |
+6 |     AllocationPolicy, BtreeHeader, InternalTableDefinition, PAGE_SIZE, PageHint, PageNumber,
+  |                                    ^^^^^^^^^^^^^^^^^^^^^^^                       ^^^^^^^^^^
+7 |     PageResolver, ShrinkPolicy, TableTree, TableType, TransactionalMemory,
+  |                                            ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `ReadOnlyTable`, `ReadableTable`, `SavepointError`, and `TableError`
+  --> src/db.rs:11:37
+   |
+11 |     CompactionError, DatabaseError, ReadOnlyTable, ReadableTable, SavepointError,
+   |                                     ^^^^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^
+12 |     StorageError, TableError,
+   |                   ^^^^^^^^^^
+
+warning: unused import: `alloc::format`
+  --> src/db.rs:16:5
+   |
+16 | use alloc::format;
+   |     ^^^^^^^^^^^^^
+
+warning: unused imports: `ALLOCATOR_STATE_TABLE_NAME`, `AllocatorStateKey`, `AllocatorStateTree`, `DATA_ALLOCATED_TABLE`, `DATA_FREED_TABLE`, `PageList`, `SYSTEM_FREED_TABLE`, `SystemTableDefinition`, and `TransactionIdWithPagination`
+  --> src/db.rs:31:5
+   |
+31 |     ALLOCATOR_STATE_TABLE_NAME, AllocatorStateKey, AllocatorStateTree, DATA_ALLOCATED_TABLE,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^
+32 |     DATA_FREED_TABLE, PageList, SYSTEM_FREED_TABLE, SystemTableDefinition,
+   |     ^^^^^^^^^^^^^^^^  ^^^^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^
+33 |     TransactionIdWithPagination,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `get_allocator_state_table` found for struct `Database` in the current scope
+   --> src/db.rs:486:39
+    |
+486 |         if let Some(tree) = Database::get_allocator_state_table(&mem)? {
+    |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `Database`
+...
+551 | pub struct Database {
+    | ------------------- associated function or constant `get_allocator_state_table` not found for this struct
+    |
+note: if you're trying to build a new `Database` consider using one of the following associated functions:
+      Database::create
+      Database::open
+   --> src/db.rs:577:5
+    |
+577 |     pub fn create(path: impl AsRef<Path>, admission: Arc<dyn crate::StorageAdmission>) -> Result<Database, DatabaseError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+583 |     pub fn open(path: impl AsRef<Path>, admission: Arc<dyn crate::StorageAdmission>) -> Result<Database, DatabaseError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `do_repair` found for struct `Database` in the current scope
+   --> src/db.rs:723:31
+    |
+551 | pub struct Database {
+    | ------------------- associated function or constant `do_repair` not found for this struct
+...
+723 |         let new_roots = Self::do_repair(&mut self.mem, &|_| {}).map_err(|err| match err {
+    |                               ^^^^^^^^^ associated function or constant not found in `Database`
+    |
+note: if you're trying to build a new `Database` consider using one of the following associated functions:
+      Database::create
+      Database::open
+   --> src/db.rs:577:5
+    |
+577 |     pub fn create(path: impl AsRef<Path>, admission: Arc<dyn crate::StorageAdmission>) -> Result<Database, DatabaseError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+583 |     pub fn open(path: impl AsRef<Path>, admission: Arc<dyn crate::StorageAdmission>) -> Result<Database, DatabaseError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `rebuild_allocator_state` found for struct `Database` in the current scope
+   --> src/db.rs:765:29
+    |
+551 | pub struct Database {
+    | ------------------- associated function or constant `rebuild_allocator_state` not found for this struct
+...
+765 |                 match Self::rebuild_allocator_state(&mut self.mem, &|_| {}) {
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `Database`
+    |
+note: if you're trying to build a new `Database` consider using one of the following associated functions:
+      Database::create
+      Database::open
+   --> src/db.rs:577:5
+    |
+577 |     pub fn create(path: impl AsRef<Path>, admission: Arc<dyn crate::StorageAdmission>) -> Result<Database, DatabaseError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+583 |     pub fn open(path: impl AsRef<Path>, admission: Arc<dyn crate::StorageAdmission>) -> Result<Database, DatabaseError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `new` found for struct `Database` in the current scope
+    --> src/db.rs:1073:19
+     |
+ 551 | pub struct Database {
+     | ------------------- associated function or constant `new` not found for this struct
+...
+1073 |         Database::new(
+     |                   ^^^ associated function or constant not found in `Database`
+     |
+note: if you're trying to build a new `Database` consider using one of the following associated functions:
+      Database::create
+      Database::open
+    --> src/db.rs:577:5
+     |
+ 577 |     pub fn create(path: impl AsRef<Path>, admission: Arc<dyn crate::StorageAdmission>) -> Result<Database, DatabaseError> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 583 |     pub fn open(path: impl AsRef<Path>, admission: Arc<dyn crate::StorageAdmission>) -> Result<Database, DatabaseError> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: items from traits can only be used if the trait is implemented and in scope
+     = note: the following trait defines an item `new`, perhaps you need to implement it:
+             candidate #1: `UniformSampler`
+
+error[E0599]: no associated function or constant named `new` found for struct `Database` in the current scope
+    --> src/db.rs:1090:19
+     |
+ 551 | pub struct Database {
+     | ------------------- associated function or constant `new` not found for this struct
+...
+1090 |         Database::new(
+     |                   ^^^ associated function or constant not found in `Database`
+     |
+note: if you're trying to build a new `Database` consider using one of the following associated functions:
+      Database::create
+      Database::open
+    --> src/db.rs:577:5
+     |
+ 577 |     pub fn create(path: impl AsRef<Path>, admission: Arc<dyn crate::StorageAdmission>) -> Result<Database, DatabaseError> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 583 |     pub fn open(path: impl AsRef<Path>, admission: Arc<dyn crate::StorageAdmission>) -> Result<Database, DatabaseError> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: items from traits can only be used if the trait is implemented and in scope
+     = note: the following trait defines an item `new`, perhaps you need to implement it:
+             candidate #1: `UniformSampler`
+
+error[E0599]: no associated function or constant named `new` found for struct `Database` in the current scope
+    --> src/db.rs:1128:19
+     |
+ 551 | pub struct Database {
+     | ------------------- associated function or constant `new` not found for this struct
+...
+1128 |         Database::new(
+     |                   ^^^ associated function or constant not found in `Database`
+     |
+note: if you're trying to build a new `Database` consider using one of the following associated functions:
+      Database::create
+      Database::open
+    --> src/db.rs:577:5
+     |
+ 577 |     pub fn create(path: impl AsRef<Path>, admission: Arc<dyn crate::StorageAdmission>) -> Result<Database, DatabaseError> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 583 |     pub fn open(path: impl AsRef<Path>, admission: Arc<dyn crate::StorageAdmission>) -> Result<Database, DatabaseError> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: items from traits can only be used if the trait is implemented and in scope
+     = note: the following trait defines an item `new`, perhaps you need to implement it:
+             candidate #1: `UniformSampler`
+
+error[E0599]: no associated function or constant named `new` found for struct `Database` in the current scope
+    --> src/db.rs:1144:19
+     |
+ 551 | pub struct Database {
+     | ------------------- associated function or constant `new` not found for this struct
+...
+1144 |         Database::new(
+     |                   ^^^ associated function or constant not found in `Database`
+     |
+note: if you're trying to build a new `Database` consider using one of the following associated functions:
+      Database::create
+      Database::open
+    --> src/db.rs:577:5
+     |
+ 577 |     pub fn create(path: impl AsRef<Path>, admission: Arc<dyn crate::StorageAdmission>) -> Result<Database, DatabaseError> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 583 |     pub fn open(path: impl AsRef<Path>, admission: Arc<dyn crate::StorageAdmission>) -> Result<Database, DatabaseError> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: items from traits can only be used if the trait is implemented and in scope
+     = note: the following trait defines an item `new`, perhaps you need to implement it:
+             candidate #1: `UniformSampler`
+
+warning: variable does not need to be mutable
+    --> src/transactions.rs:2688:13
+     |
+2688 |         let mut txn = db.begin_write().unwrap();
+     |             ----^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0599`.
+warning: `redb` (lib test) generated 5 warnings
+error: could not compile `redb` (lib test) due to 7 previous errors; 5 warnings emitted

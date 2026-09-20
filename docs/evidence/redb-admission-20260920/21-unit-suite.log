@@ -1,0 +1,167 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.73s
+     Running unittests src/lib.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/redb-3b041280eaede368)
+
+running 94 tests
+test admission::tests::construction_denial_never_grows_or_fails_owner ... ok
+test db::test::create_new_db_in_empty_file ... ok
+test db::test::open_empty_file ... ok
+test db::test::open_missing_file ... ok
+test admission::tests::explicit_close_propagates_failure_and_never_closes_backend_twice ... ok
+test admission::tests::winning_header_and_destructor_are_followed_by_no_heap_allocations ... ok
+test db::test::crash_regression4 ... ok
+test admission::tests::caught_capacity_denial_aborts_all_tables_and_keeps_pinned_read_root ... ok
+test admission::tests::explicit_close_returns_busy_owner_and_drop_does_not_reserve_checkpoint_growth ... ok
+test io::no_std::test::accepts_an_owned_message ... ok
+test io::no_std::test::display_is_the_message ... ok
+test sync::spin::test::condvar_wakes_waiter ... ok
+test sync::spin::test::mutex_debug ... ok
+test sync::spin::test::mutex_is_exclusive ... ok
+test sync::spin::test::mutex_try_lock ... ok
+test db::test::small_pages3 ... FAILED
+test db::test::small_pages ... ok
+test sync::spin::test::rwlock_readers_are_concurrent ... ok
+test sync::spin::test::rwlock_writer_is_exclusive ... ok
+test db::test::small_pages2 ... FAILED
+test transaction_tracker::test::non_durable_commit_without_freed_pages_is_not_unprocessed ... ok
+test db::test::small_pages4 ... ok
+test db::test::transient_io_error ... FAILED
+test tree_store::btree::tests::test_cycle_detection_in_btree ... ok
+test tree_store::btree::tests::test_page_path_cycle_detection ... ok
+test tree_store::btree::tests::test_verify_checksum_cycle_detection ... ok
+test tree_store::btree_base::tests::leaf_inplace_append_up_to_max_pairs ... ok
+test tree_store::btree_base::tests::leaf_inplace_insert_rejected_at_max_pairs ... ok
+test tree_store::btree_base::tests::branch_split_respects_max_keys_by_count ... ok
+test tree_store::btree_base::tests::leaf_split_respects_max_pairs ... ok
+test tree_store::btree_cursor::tests::cursor_mut_stays_parked_at_tree_edge ... ok
+test tree_store::btree_base::tests::leaf_split_respects_max_pairs_by_count ... ok
+test tree_store::btree_cursor::tests::cursor_preserves_boundary_gap_after_failed_next ... ok
+test tree_store::btree_cursor::tests::cursor_preserves_boundary_gap_after_failed_prev ... ok
+test transactions::test::transaction_id_persistence ... ok
+test tree_store::page_store::base::test::last_page ... ok
+test tree_store::page_store::base::test::reserved_bits ... ok
+test tree_store::page_store::bitmap::test::all_space_used ... ok
+test tree_store::page_store::bitmap::test::alloc ... ok
+test tree_store::page_store::bitmap::test::find_free ... ok
+test tree_store::page_store::bitmap::test::free ... ok
+test tree_store::page_store::bitmap::test::record_alloc ... ok
+test tree_store::btree_cursor::tests::poisoned_cursor_mut_re_raises ... ok
+test tree_store::page_store::bitmap::test::resize_beyond_initial_capacity ... ok
+test tree_store::page_store::bitmap::test::reuse_lowest ... ok
+test tree_store::page_store::buddy_allocator::test::alloc_large ... ok
+test transactions::test::committed_deletion_has_no_allocating_epilogue ... ok
+test tree_store::page_store::buddy_allocator::test::buddy_merge ... ok
+test tree_store::page_store::buddy_allocator::test::record_alloc_buddy ... ok
+test tree_store::page_store::cached_file::test::buffered_pages_spill_under_pressure ... ok
+test tree_store::page_store::cached_file::test::discard_write_buffer_drops_buffered_pages ... ok
+test tree_store::page_store::buddy_allocator::test::serialized_size ... ok
+test tree_store::page_store::cached_file::test::cache_leak ... ok
+test tree_store::page_store::cached_file::test::resize_preserves_cached_pages ... ok
+test tree_store::page_store::cached_file::test::write_barrier_issues_no_file_writes ... ok
+test tree_store::page_store::cached_file::test::write_buffer_budget_enforced_across_stripes ... ok
+test tree_store::page_store::cached_file::test::zero_size_cache_stays_empty_after_reclaim ... ok
+test tree_store::page_store::cached_file::test::retained_pages_do_not_starve_read_cache ... ok
+test tree_store::page_store::bitmap::test::random_pattern ... ok
+test transactions::test::discarded_allocator_state_poisons_database ... ok
+test tree_store::page_store::header::test::magic_number ... ok
+test tree_store::page_store::header::test::oversized_region_count_file_is_rejected ... ok
+test tree_store::page_store::header::test::abort_repair ... ok
+test admission::tests::commit_metadata_denial_rolls_back_before_winning_header ... ok
+test tree_store::page_store::header::test::close_on_drop ... FAILED
+test tree_store::page_store::header::test::externally_extended_file_is_rejected ... ok
+test tree_store::page_store::header::test::oversized_root_page_order_is_reported_as_corruption ... ok
+test tree_store::page_store::header::test::oversized_system_root_page_order_is_reported_as_corruption_read_only ... FAILED
+test tree_store::page_store::header::test::check_integrity_recomputes_root_lengths ... ok
+test tree_store::page_store::header::test::recovery_does_not_launder_torn_slot ... ok
+test tree_store::page_store::header::test::repair_allocator_checksums ... FAILED
+test tree_store::page_store::page_manager::test::free_merge_remarks_region_tracker ... ok
+test tree_store::page_store::page_manager::test::invalidate_allocator_state_tolerates_poison ... ok
+test tree_store::page_store::header::test::repair_empty ... ok
+test tree_store::page_store::page_manager::test::mark_page_allocated_rejects_corrupt_page_numbers ... ok
+test tree_store::page_store::page_manager::test::oversized_page_order_is_rejected ... ok
+test tree_store::page_store::header::test::truncated_file_is_rejected ... ok
+test tree_store::page_store::savepoint::test::corrupted_record_errors ... ok
+test tree_store::page_store::xxh3::test::test_empty ... ok
+test tree_store::page_store::header::test::repair_insert_reserve_regression ... ok
+test tree_store::table_tree::test::round_trip ... ok
+test tuple_types::test::width ... ok
+test tree_store::page_store::header::test::repair_falls_back_to_secondary_on_invalid_primary_root ... FAILED
+test types::tests::builtin_composites_use_internal3_and_match_legacy ... ok
+test types::tests::classification_is_readable_through_reconstruction ... ok
+test types::tests::composite_of_user_type_no_longer_collides_with_builtin ... ok
+test types::tests::legacy_matching_accepts_pre_bubbling_spelling ... ok
+test tree_store::page_store::page_manager::test::panic ... ok
+test tree_store::page_store::header::test::torn_layout_fields_recover_from_file_length ... ok
+test admission::tests::publication_and_sync_uncertainty_fences_once_and_reopens_an_atomic_root ... ok
+test tree_store::page_store::header::test::corrupt_header_layout_fields_are_rejected ... FAILED
+test db::test::dynamic_shrink ... FAILED
+test admission::tests::both_abort_forms_retain_successful_growth_and_permit_later_writes ... ok
+test tree_store::page_store::page_manager::test::out_of_regions ... ok
+
+failures:
+
+---- db::test::small_pages3 stdout ----
+
+thread 'db::test::small_pages3' (2740656) panicked at src/db.rs:1846:45:
+called `Result::unwrap()` on an `Err` value: ImmediateRequired
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- db::test::small_pages2 stdout ----
+
+thread 'db::test::small_pages2' (2740652) panicked at src/db.rs:1757:45:
+called `Result::unwrap()` on an `Err` value: ImmediateRequired
+
+---- db::test::transient_io_error stdout ----
+
+thread 'db::test::transient_io_error' (2740660) panicked at src/db.rs:1699:9:
+assertion failed: matches!(result, CommitError::Storage(StorageError::Io(_)))
+
+---- tree_store::page_store::header::test::close_on_drop stdout ----
+
+thread 'tree_store::page_store::header::test::close_on_drop' (2740786) panicked at src/tree_store/page_store/header.rs:1428:9:
+assertion `left == right` failed
+  left: 2
+ right: 0
+
+---- tree_store::page_store::header::test::oversized_system_root_page_order_is_reported_as_corruption_read_only stdout ----
+
+thread 'tree_store::page_store::header::test::oversized_system_root_page_order_is_reported_as_corruption_read_only' (2740804) panicked at src/tree_store/page_store/header.rs:1134:9:
+expected Corrupted, got RepairAborted
+
+---- tree_store::page_store::header::test::repair_allocator_checksums stdout ----
+
+thread 'tree_store::page_store::header::test::repair_allocator_checksums' (2740814) panicked at src/tree_store/page_store/header.rs:641:13:
+assertion `left == right` failed
+  left: 4
+ right: 0
+
+---- tree_store::page_store::header::test::repair_falls_back_to_secondary_on_invalid_primary_root stdout ----
+
+thread 'tree_store::page_store::header::test::repair_falls_back_to_secondary_on_invalid_primary_root' (2740822) panicked at src/tree_store/page_store/header.rs:1121:45:
+called `Option::unwrap()` on a `None` value
+
+---- tree_store::page_store::header::test::corrupt_header_layout_fields_are_rejected stdout ----
+
+thread 'tree_store::page_store::header::test::corrupt_header_layout_fields_are_rejected' (2740787) panicked at src/tree_store/page_store/header.rs:1262:69:
+called `Result::unwrap_err()` on an `Ok` value: Database
+
+---- db::test::dynamic_shrink stdout ----
+
+thread 'db::test::dynamic_shrink' (2740625) panicked at src/db.rs:1951:9:
+assertion failed: final_file_size < file_size
+
+
+failures:
+    db::test::dynamic_shrink
+    db::test::small_pages2
+    db::test::small_pages3
+    db::test::transient_io_error
+    tree_store::page_store::header::test::close_on_drop
+    tree_store::page_store::header::test::corrupt_header_layout_fields_are_rejected
+    tree_store::page_store::header::test::oversized_system_root_page_order_is_reported_as_corruption_read_only
+    tree_store::page_store::header::test::repair_allocator_checksums
+    tree_store::page_store::header::test::repair_falls_back_to_secondary_on_invalid_primary_root
+
+test result: FAILED. 85 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.71s
+
+error: test failed, to rerun pass `--lib`

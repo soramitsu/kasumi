@@ -1,0 +1,38 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+warning: variant `None` is never constructed
+   --> src/transactions.rs:385:5
+    |
+384 | enum InternalDurability {
+    |      ------------------ variant in this enum
+385 |     None,
+    |     ^^^^
+    |
+    = note: `InternalDurability` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `has_created_or_deleted` is never used
+   --> src/transactions.rs:828:8
+    |
+805 | impl SavepointTransactionState {
+    | ------------------------------ method in this implementation
+...
+828 |     fn has_created_or_deleted(&self) -> bool {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `redb` (lib test) generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.02s
+     Running unittests src/lib.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/redb-3b041280eaede368)
+
+running 9 tests
+test admission::tests::construction_denial_never_grows_or_fails_owner ... ok
+test admission::tests::explicit_close_propagates_failure_and_never_closes_backend_twice ... ok
+test admission::tests::winning_header_and_destructor_are_followed_by_no_heap_allocations ... ok
+test admission::tests::explicit_close_returns_busy_owner_and_drop_does_not_reserve_checkpoint_growth ... ok
+test admission::tests::caught_capacity_denial_aborts_all_tables_and_keeps_pinned_read_root ... ok
+test admission::tests::commit_metadata_denial_rolls_back_before_winning_header ... ok
+test admission::tests::publication_and_sync_uncertainty_fences_once_and_reopens_an_atomic_root ... ok
+test admission::tests::repeated_reopen_reclaims_deleted_pages_without_leaking_capacity ... ok
+test admission::tests::both_abort_forms_retain_successful_growth_and_permit_later_writes ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 86 filtered out; finished in 9.13s
+

@@ -1,0 +1,915 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+warning: variable does not need to be mutable
+   --> tests/integration_tests.rs:588:9
+    |
+588 |     let mut txn = db.begin_write().unwrap();
+    |         ----^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> tests/integration_tests.rs:605:9
+    |
+605 |     let mut txn = db.begin_write().unwrap();
+    |         ----^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/integration_tests.rs:655:13
+    |
+655 |         let mut txn = db.begin_write().unwrap();
+    |             ----^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/integration_tests.rs:729:9
+    |
+729 |     let mut txn = db.begin_write().unwrap();
+    |         ----^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/integration_tests.rs:981:9
+    |
+981 |     let mut txn = db.begin_write().unwrap();
+    |         ----^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `quick_repair`
+   --> tests/integration_tests.rs:980:42
+    |
+980 | fn begin_page_reuse_write(db: &Database, quick_repair: bool) -> WriteTransaction {
+    |                                          ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_quick_repair`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:1236:9
+     |
+1236 |     let mut txn = db.begin_write().unwrap();
+     |         ----^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:1244:9
+     |
+1244 |     let mut txn = db.begin_write().unwrap();
+     |         ----^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:1251:9
+     |
+1251 |     let mut txn = db.begin_write().unwrap();
+     |         ----^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:1255:9
+     |
+1255 |     let mut txn = db.begin_write().unwrap();
+     |         ----^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:1281:17
+     |
+1281 |             let mut txn = db.begin_write().unwrap();
+     |                 ----^^^
+     |                 |
+     |                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:1296:9
+     |
+1296 |     let mut txn = db.begin_write().unwrap();
+     |         ----^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:1299:9
+     |
+1299 |     let mut txn = db.begin_write().unwrap();
+     |         ----^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:1302:9
+     |
+1302 |     let mut txn = db.begin_write().unwrap();
+     |         ----^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:1333:9
+     |
+1333 |     let mut txn = db.begin_write().unwrap();
+     |         ----^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:1343:13
+     |
+1343 |         let mut txn = db.begin_write().unwrap();
+     |             ----^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:1358:9
+     |
+1358 |     let mut txn = db.begin_write().unwrap();
+     |         ----^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:1366:9
+     |
+1366 |     let mut txn = db.begin_write().unwrap();
+     |         ----^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:1851:9
+     |
+1851 |     let mut tx = db.begin_write().unwrap();
+     |         ----^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:1884:9
+     |
+1884 |     let mut tx = db.begin_write().unwrap();
+     |         ----^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:2041:9
+     |
+2041 |     let mut tx = db.begin_write().unwrap();
+     |         ----^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:2061:9
+     |
+2061 |     let mut tx = db.begin_write().unwrap();
+     |         ----^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:2070:9
+     |
+2070 |     let mut tx = db.begin_write().unwrap();
+     |         ----^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:2100:9
+     |
+2100 |     let mut tx = db.begin_write().unwrap();
+     |         ----^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:2923:9
+     |
+2923 |     let mut txn = db.begin_write().unwrap();
+     |         ----^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:2985:9
+     |
+2985 |     let mut txn = db.begin_write().unwrap();
+     |         ----^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:3046:13
+     |
+3046 |         let mut txn = db.begin_write().unwrap();
+     |             ----^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:3120:9
+     |
+3120 |     let mut write_txn = db.begin_write().unwrap();
+     |         ----^^^^^^^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:3132:9
+     |
+3132 |     let mut write_txn = db.begin_write().unwrap();
+     |         ----^^^^^^^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> tests/integration_tests.rs:3773:9
+     |
+3773 |     let mut txn = db.begin_write().unwrap();
+     |         ----^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: `redb` (test "integration_tests") generated 30 warnings (run `cargo fix --test "integration_tests" -p redb` to apply 30 suggestions)
+warning: variable does not need to be mutable
+   --> tests/check_integrity_nondurable.rs:129:13
+    |
+129 |         let mut txn = db.begin_write().unwrap();
+    |             ----^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> tests/check_integrity_nondurable.rs:168:13
+    |
+168 |         let mut txn = db.begin_write().unwrap();
+    |             ----^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/check_integrity_nondurable.rs:206:13
+    |
+206 |         let mut txn = db.begin_write().unwrap();
+    |             ----^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/check_integrity_nondurable.rs:242:13
+    |
+242 |         let mut txn = db.begin_write().unwrap();
+    |             ----^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/check_integrity_nondurable.rs:288:13
+    |
+288 |         let mut txn = db.begin_write().unwrap();
+    |             ----^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: `redb` (test "check_integrity_nondurable") generated 5 warnings (run `cargo fix --test "check_integrity_nondurable" -p redb` to apply 5 suggestions)
+warning: variable does not need to be mutable
+    --> src/db.rs:1641:13
+     |
+1641 |         let mut tx = db.begin_write().unwrap();
+     |             ----^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> src/db.rs:1740:13
+     |
+1740 |         let mut tx = db.begin_write().unwrap();
+     |             ----^^
+     |             |
+     |             help: remove this `mut`
+
+warning: `redb` (lib test) generated 2 warnings (run `cargo fix --lib -p redb --tests` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.52s
+     Running unittests src/lib.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/redb-1a01cd164be5367b)
+
+running 120 tests
+test admission::tests::caught_capacity_denial_aborts_all_tables_and_keeps_pinned_read_root ... ok
+test admission::tests::commit_metadata_denial_rolls_back_before_winning_header ... ok
+test admission::tests::construction_denial_never_grows_or_fails_owner ... ok
+test admission::tests::explicit_close_propagates_failure_and_never_closes_backend_twice ... ok
+test admission::tests::explicit_close_returns_busy_owner_and_drop_does_not_reserve_checkpoint_growth ... ok
+test admission::tests::persistent_savepoints_survive_explicit_close_but_borrowed_handles_block_it ... ok
+test admission::tests::publication_and_sync_uncertainty_fences_once_and_reopens_an_atomic_root ... ok
+test admission::tests::both_abort_forms_retain_successful_growth_and_permit_later_writes ... ok
+test admission::tests::rollback_and_savepoint_publication_do_not_allocate_after_their_fallible_work ... ok
+test admission::tests::winning_header_and_destructor_are_followed_by_no_heap_allocations ... ok
+test db::test::crash_regression4 ... ok
+test db::test::create_new_db_in_empty_file ... ok
+test admission::tests::repeated_reopen_reclaims_deleted_pages_without_leaking_capacity ... ok
+test db::test::open_empty_file ... ok
+test db::test::open_missing_file ... ok
+test db::test::small_pages ... ok
+test db::test::small_pages2 ... ok
+test db::test::small_pages3 ... ok
+test db::test::small_pages4 ... ok
+test db::test::transient_io_error ... ok
+test io::no_std::test::accepts_an_owned_message ... ok
+test io::no_std::test::display_is_the_message ... ok
+test sync::spin::test::condvar_wakes_waiter ... ok
+test sync::spin::test::mutex_debug ... ok
+test sync::spin::test::mutex_is_exclusive ... ok
+test sync::spin::test::mutex_try_lock ... ok
+test sync::spin::test::rwlock_readers_are_concurrent ... ok
+test sync::spin::test::rwlock_writer_is_exclusive ... ok
+test transactions::test::committed_deletion_has_no_allocating_epilogue ... ok
+test db::test::dynamic_shrink ... ok
+test transactions::test::transaction_id_persistence ... ok
+test tree_store::btree::tests::test_cycle_detection_in_btree ... ok
+test tree_store::btree::tests::test_page_path_cycle_detection ... ok
+test tree_store::btree::tests::test_verify_checksum_cycle_detection ... ok
+test transactions::test::discarded_allocator_state_poisons_database ... ok
+test tree_store::btree_base::tests::leaf_inplace_append_up_to_max_pairs ... ok
+test tree_store::btree_base::tests::leaf_inplace_insert_rejected_at_max_pairs ... ok
+test tree_store::btree_base::tests::leaf_split_respects_max_pairs ... ok
+test tree_store::btree_base::tests::branch_split_respects_max_keys_by_count ... ok
+test tree_store::btree_cursor::tests::cursor_mut_stays_parked_at_tree_edge ... ok
+test tree_store::btree_cursor::tests::cursor_preserves_boundary_gap_after_failed_next ... ok
+test tree_store::btree_cursor::tests::cursor_preserves_boundary_gap_after_failed_prev ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_after_rejects_unordered_keys ... ok
+test tree_store::btree_base::tests::leaf_split_respects_max_pairs_by_count ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_builds_tree_from_empty ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_descending_from_empty ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_into_leaf_middle ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_grows_multiple_levels ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_mixed_directions ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_rejects_unordered_keys ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_splits_root_leaf ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_into_middle_of_tall_tree ... ok
+test tree_store::btree_cursor::tests::poisoned_cursor_mut_re_raises ... ok
+test tree_store::btree_mutator::tests::branch_packing_fills_page_to_max_keys ... ok
+test tree_store::btree_mutator::tests::branch_packing_splits_at_max_keys ... ok
+test tree_store::page_store::base::test::last_page ... ok
+test tree_store::page_store::base::test::reserved_bits ... ok
+test tree_store::page_store::bitmap::test::all_space_used ... ok
+test tree_store::page_store::bitmap::test::alloc ... ok
+test tree_store::page_store::bitmap::test::find_free ... ok
+test tree_store::page_store::bitmap::test::free ... ok
+test tree_store::page_store::bitmap::test::random_pattern ... ok
+test tree_store::page_store::bitmap::test::record_alloc ... ok
+test tree_store::page_store::bitmap::test::resize_beyond_initial_capacity ... ok
+test tree_store::page_store::bitmap::test::reuse_lowest ... ok
+test tree_store::page_store::buddy_allocator::test::alloc_large ... ok
+test tree_store::page_store::buddy_allocator::test::buddy_merge ... ok
+test tree_store::page_store::buddy_allocator::test::record_alloc_buddy ... ok
+test tree_store::page_store::buddy_allocator::test::serialized_size ... ok
+test tree_store::page_store::cached_file::test::buffered_pages_spill_under_pressure ... ok
+test tree_store::page_store::cached_file::test::cache_leak ... ok
+test tree_store::page_store::cached_file::test::discard_write_buffer_drops_buffered_pages ... ok
+test tree_store::page_store::cached_file::test::resize_preserves_cached_pages ... ok
+test tree_store::page_store::cached_file::test::retained_pages_do_not_starve_read_cache ... ok
+test tree_store::page_store::cached_file::test::write_barrier_issues_no_file_writes ... ok
+test tree_store::page_store::cached_file::test::write_buffer_budget_enforced_across_stripes ... ok
+test tree_store::page_store::cached_file::test::zero_size_cache_stays_empty_after_reclaim ... ok
+test tree_store::page_store::header::test::abort_repair ... ok
+test tree_store::page_store::header::test::check_integrity_recomputes_root_lengths ... ok
+test tree_store::page_store::header::test::corrupt_header_layout_fields_are_rejected ... ok
+test tree_store::page_store::header::test::drop_releases_backend_without_clean_checkpoint ... ok
+test tree_store::page_store::header::test::externally_extended_file_is_rejected ... ok
+test tree_store::page_store::header::test::magic_number ... ok
+test tree_store::page_store::header::test::oversized_region_count_file_is_rejected ... ok
+test tree_store::page_store::header::test::oversized_root_page_order_is_reported_as_corruption ... ok
+test tree_store::page_store::header::test::oversized_system_root_page_order_is_reported_as_corruption_read_only ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_swaps_ancestors_in_place ... ok
+test tree_store::page_store::header::test::recovery_does_not_launder_torn_slot ... ok
+test tree_store::page_store::header::test::repair_empty ... ok
+test tree_store::page_store::header::test::repair_allocator_checksums ... ok
+test tree_store::page_store::header::test::repair_falls_back_to_secondary_on_invalid_primary_root ... ok
+test tree_store::page_store::header::test::repair_insert_reserve_regression ... ok
+test tree_store::page_store::header::test::truncated_file_is_rejected ... ok
+test tree_store::page_store::page_manager::test::free_merge_remarks_region_tracker ... ok
+test tree_store::page_store::page_manager::test::invalidate_allocator_state_tolerates_poison ... ok
+test tree_store::page_store::page_manager::test::mark_page_allocated_rejects_corrupt_page_numbers ... ok
+test tree_store::page_store::header::test::torn_layout_fields_recover_from_file_length ... ok
+test tree_store::page_store::page_manager::test::oversized_page_order_is_rejected ... ok
+test tree_store::page_store::page_manager::test::panic ... ok
+test tree_store::page_store::savepoint::test::corrupted_record_errors ... ok
+test tree_store::page_store::xxh3::test::test_empty ... ok
+test tree_store::table_tree::test::round_trip ... ok
+test tuple_types::test::width ... ok
+test types::chrono_v0_4::tests::test_date_time_fixed_offset ... ok
+test types::chrono_v0_4::tests::test_datetime_fixed_offset_table ... ok
+test types::chrono_v0_4::tests::test_fixed_offset ... ok
+test types::chrono_v0_4::tests::test_fixed_offset_table ... ok
+test types::chrono_v0_4::tests::test_naive_date ... ok
+test types::chrono_v0_4::tests::test_naive_date_table ... ok
+test types::chrono_v0_4::tests::test_naive_date_time ... ok
+test types::chrono_v0_4::tests::test_naive_datetime_table ... ok
+test types::chrono_v0_4::tests::test_naive_time ... ok
+test types::chrono_v0_4::tests::test_naive_time_table ... ok
+test types::tests::builtin_composites_use_internal3_and_match_legacy ... ok
+test types::tests::classification_is_readable_through_reconstruction ... ok
+test types::tests::composite_of_user_type_no_longer_collides_with_builtin ... ok
+test types::tests::legacy_matching_accepts_pre_bubbling_spelling ... ok
+test types::uuid::tests::test_uuid_ordering ... ok
+test types::uuid::tests::test_uuid_table ... ok
+test tree_store::page_store::page_manager::test::out_of_regions ... ok
+
+test result: ok. 120 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 41.30s
+
+     Running tests/backward_compatibility.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/backward_compatibility-2473fb5ead1411a2)
+
+running 8 tests
+test builtin_composite_does_not_alias_user_type ... ok
+test composite_of_user_type_does_not_alias_builtin ... ok
+test composite_of_user_type_created_by_redb2_6_still_opens ... ok
+test legacy_colliding_user_composite_can_still_open_as_builtin ... ok
+test mixed_width ... ok
+test container_types ... ok
+test restore_and_delete_redb2_6_persistent_savepoint ... ok
+test primitive_types ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.18s
+
+     Running tests/basic_tests.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/basic_tests-784157f2402afd9e)
+
+running 112 tests
+test array_type ... ok
+test abort ... ok
+test ascending_inserts_pack_leaves ... ok
+test bool_type ... ok
+test char_type ... ok
+test ascending_inserts_pack_leaves_across_transactions ... ok
+test create_open ... ok
+test custom_ordering ... ok
+test deferred_close_invalidates_read_transactions ... ok
+test delete ... ok
+test concurrent_write_transactions_block ... ok
+test delete_open_table ... ok
+test delete_table ... ok
+test drop_database_then_drop_write_transaction ... FAILED
+test empty_type ... ok
+test entry_borrowed_key ... ok
+test entry_and_modify ... ok
+test entry_borrowed_key_in_loop ... ok
+test entry_occupied_methods ... ok
+test entry_or_insert ... ok
+test entry_or_insert_with ... ok
+test entry_vacant_into_key ... ok
+test extract_from_if_alternating_directions ... ok
+test extract_from_if_alternating_drain ... ok
+test extract_from_if_empty ... ok
+test extract_from_if_mixed_direction_early_drop_range ... ok
+test extract_if ... ok
+test extract_from_if_next_back_large_range ... ok
+test extract_if_alternating_directions_dense_removals ... ok
+test extract_if_all_guards_survive_iteration ... ok
+test extract_if_alternating_directions_held_guards ... ok
+test extract_if_alternating_directions_partial_consumption ... ok
+test extract_if_caller_panic_does_not_poison_transaction ... ok
+test extract_if_is_lazy_until_read ... ok
+test extract_if_mixed_direction_removes_only_yielded_entries ... ok
+test extract_if_predicate_panic_poisons_transaction ... ok
+test extract_if_mostly_forward_occasional_next_back ... ok
+test extract_if_returned_guards_survive_finalize ... ok
+test f32_type ... ok
+test first_last ... ok
+test generic_array_type ... ok
+test generic_signature_lifetimes ... ok
+test i128_type ... ok
+test in_memory ... ok
+test get_mut ... ok
+test insert_overwrite ... ok
+test insert_reserve ... ok
+test is_empty ... ok
+test iter ... ok
+test len ... ok
+test list_tables ... ok
+test multiple_tables ... ok
+test multi_table_commit_writes_are_deterministic ... ok
+test no_dirty_reads ... ok
+test open_multimap_table_as_regular ... ok
+test option_type ... ok
+test owned_get_signatures ... ok
+test pop ... ok
+test range_arc ... ok
+test range_clone ... ok
+test range_empty ... ok
+test range_lifetime ... ok
+test range_signature_inference ... ok
+test read_isolation ... ok
+test packed_leaves_accept_interior_inserts ... ok
+test read_isolation2 ... ok
+test ref_get_signatures ... ok
+test read_only ... FAILED
+test rename_open_table ... ok
+test rename_table ... ok
+test reopen_table ... ok
+test retain ... ok
+test retain_collapses_to_single_entry ... ok
+test retain_coalesces_sparse_survivors ... ok
+test retain_descending_removals_stay_merged ... ok
+test retain_in_empty ... ok
+test retain_collapses_to_sparse_entries ... ok
+test retain_in_rebuilds_range_boundaries ... ok
+test retain_in_upper_boundary_does_not_duplicate_subtrees ... ok
+test retain_merges_sparse_boundary_leaf ... ok
+test retain_large_values_bounded_run ... ok
+test retain_predicate_panic_poisons_transaction ... ok
+test retain_packs_moderate_density_survivors ... ok
+test retain_rebuilds_changed_separators ... ok
+test return_write_transaction_from_function ... ok
+test retain_variable_sized_sparse_survivors_terminates ... ok
+test signature_lifetimes ... ok
+test stored_size ... ok
+test same_size_overwrite_preserves_snapshot ... ok
+test str_type ... ok
+test string_type ... ok
+test table_stats ... ok
+test tuple10_type ... ok
+test tuple11_type ... ok
+test tuple12_type ... ok
+test tuple2_type ... ok
+test tuple3_type ... ok
+test tuple4_type ... ok
+test tuple5_type ... ok
+test tuple6_type ... ok
+test tuple7_type ... ok
+test tuple8_type ... ok
+test tuple_type_function_lifetime ... ok
+test tuple9_type ... ok
+test tuple_type_lifetime ... ok
+test u8_array_serialization ... ok
+test u64_type ... ok
+test vec_fixed_width_value_type ... ok
+test vec_long_string_element ... ok
+test vec_var_width_value_type ... ok
+test vec_vec_type ... ok
+test write_transaction_keeps_database_open ... ok
+
+failures:
+
+---- drop_database_then_drop_write_transaction stdout ----
+
+thread 'drop_database_then_drop_write_transaction' (2813393) panicked at tests/basic_tests.rs:164:10:
+called `Result::unwrap()` on an `Err` value: RepairAborted
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- read_only stdout ----
+
+thread 'read_only' (2814130) panicked at tests/basic_tests.rs:97:92:
+called `Result::unwrap()` on an `Err` value: RepairAborted
+
+
+failures:
+    drop_database_then_drop_write_transaction
+    read_only
+
+test result: FAILED. 110 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.97s
+
+error: test failed, to rerun pass `--test basic_tests`
+     Running tests/check_integrity_failure.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/check_integrity_failure-34dfc8fcf65ccf94)
+
+running 1 test
+test writes_are_refused_after_a_failed_check_integrity ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/check_integrity_nondurable.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/check_integrity_nondurable-15302cea14afff7d)
+
+running 5 tests
+test check_integrity_does_not_promote_disk_corrupt_nondurable_commit ... FAILED
+test check_integrity_handles_external_extension_with_pending_commit ... FAILED
+test check_integrity_detects_truncation_after_nondurable_growth ... FAILED
+test check_integrity_preserves_nondurable_commit_that_creates_a_table ... ok
+test check_integrity_preserves_growing_nondurable_commit ... ok
+
+failures:
+
+---- check_integrity_does_not_promote_disk_corrupt_nondurable_commit stdout ----
+
+thread 'check_integrity_does_not_promote_disk_corrupt_nondurable_commit' (2814675) panicked at tests/check_integrity_nondurable.rs:152:40:
+called `Result::unwrap()` on an `Err` value: Storage(Corrupted("Primary is corrupted despite 2-phase commit"))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- check_integrity_handles_external_extension_with_pending_commit stdout ----
+
+thread 'check_integrity_handles_external_extension_with_pending_commit' (2814679) panicked at tests/check_integrity_nondurable.rs:263:9:
+assertion `left == right` failed
+  left: 6
+ right: 5
+
+---- check_integrity_detects_truncation_after_nondurable_growth stdout ----
+
+thread 'check_integrity_detects_truncation_after_nondurable_growth' (2814674) panicked at tests/check_integrity_nondurable.rs:313:110:
+called `Result::unwrap()` on an `Err` value: Storage(OwnerFailed)
+
+
+failures:
+    check_integrity_detects_truncation_after_nondurable_growth
+    check_integrity_does_not_promote_disk_corrupt_nondurable_commit
+    check_integrity_handles_external_extension_with_pending_commit
+
+test result: FAILED. 2 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s
+
+error: test failed, to rerun pass `--test check_integrity_nondurable`
+     Running tests/corrupted_btree_descent.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/corrupted_btree_descent-9eb5edc62a08264a)
+
+running 1 test
+test cyclic_branch_pointer_is_reported_rather_than_overflowing_the_stack ... FAILED
+
+failures:
+
+---- cyclic_branch_pointer_is_reported_rather_than_overflowing_the_stack stdout ----
+
+thread 'cyclic_branch_pointer_is_reported_rather_than_overflowing_the_stack' (2814721) panicked at tests/corrupted_btree_descent.rs:112:5:
+every branch page was in the system tree
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    cyclic_branch_pointer_is_reported_rather_than_overflowing_the_stack
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+error: test failed, to rerun pass `--test corrupted_btree_descent`
+     Running tests/crash_consistency.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/crash_consistency-2588a2350de9d1ac)
+
+running 1 test
+test crash_during_growing_commit_is_recoverable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.62s
+
+     Running tests/cursor_tests.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/cursor_tests-7413a67a2c513d96)
+
+running 37 tests
+test abort_discards_cursor_inserts ... ok
+test append_to_existing_table ... ok
+test bound_positions ... ok
+test bulk_load_crosses_flush_threshold ... ok
+test bulk_load_descending ... ok
+test bulk_load_large_values ... ok
+test bulk_load_into_empty_table ... ok
+test empty_and_rejected_only_cursors ... ok
+test incremental_appends_across_transactions ... ok
+test descending_load_crosses_flush_threshold ... ok
+test insert_after_unordered_keys_rejected ... ok
+test insert_into_middle_gap ... ok
+test mixed_direction_inserts_and_peeks ... ok
+test moves_apply_pending_inserts ... ok
+test moves_cross_leaf_boundaries ... ok
+test moves_on_empty_table_and_at_edges ... ok
+test moves_walk_both_directions ... ok
+test insert_into_middle_of_tall_tree ... ok
+test peeks_during_pending_inserts ... ok
+test peeks_on_empty_table_and_at_start ... ok
+test read_cursor_all_bound_positions ... ok
+test read_cursor_empty_table ... ok
+test read_cursor_generic_over_readable_table ... ok
+test read_cursor_guards_outlive_cursor ... ok
+test read_cursor_outlives_read_transaction ... ok
+test read_cursor_sees_uncommitted_writes ... ok
+test read_cursor_string_keys ... ok
+test read_cursor_keeps_transaction_alive ... ok
+test read_cursor_walks_both_directions ... ok
+test removes_apply_pending_inserts ... ok
+test removes_cross_leaf_boundaries ... ok
+test removes_from_committed_pages ... ok
+test removes_keep_the_gap_in_place ... ok
+test removes_large_values ... ok
+test removes_on_empty_table_and_at_edges ... ok
+test removes_walk_both_directions ... ok
+test unordered_keys_rejected ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.09s
+
+     Running tests/integration_tests.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/integration_tests-9ceb70f775d44818)
+
+running 109 tests
+test alias_table ... ok
+test check_integrity_after_persistent_savepoint_delete ... ok
+test check_integrity_after_persistent_savepoint_restore_and_delete ... ok
+test check_integrity_clean ... ok
+test check_integrity_clean_after_delete ... ok
+test check_integrity_ephemeral_savepoint_drop_racing_commit ... ok
+test check_integrity_preserves_non_durable_commit ... ok
+test check_integrity_with_live_read_transaction ... ok
+test check_integrity_with_live_savepoint_on_nondurable_commit ... ok
+test close_called_exactly_once_on_shutdown_io_error ... FAILED
+test close_called_exactly_once_when_open_fails ... ok
+test commit_survives_drop_without_checkpoint ... ok
+test check_integrity_with_persistent_savepoint_then_restore ... ok
+test compact_after_non_durable_commit ... ok
+test compact_after_post_commit_page_reuse ... ok
+test compact_does_not_block_on_held_write_transaction_with_savepoint ... ok
+test compact_returns_ephemeral_savepoint_error ... ok
+test compact_returns_persistent_savepoint_error ... ok
+test compact_returns_persistent_savepoint_error_after_reopen ... ok
+test compact_returns_persistent_savepoint_error_before_commit ... ok
+test compact_returns_transaction_in_progress_error ... ok
+test compaction ... ok
+test corrupted_persistent_savepoint_record ... ok
+test custom_table_type ... ok
+test database_lock ... ok
+test delete_all_tables ... ok
+test delete_table ... ok
+test delete_table_panic_after_modification ... ok
+test does_not_exist ... ok
+test dropped_write ... ok
+test durable_overwrite_does_not_write_post_commit_metadata ... FAILED
+test dynamic_growth ... ok
+test compact_does_not_grow_file ... ok
+test every_commit_writes_its_durable_state ... ok
+test explicit_close ... ok
+test extract_if_error_commit_reports_storage_failure ... FAILED
+test extract_if_error_latches ... ok
+test extract_if_next_then_next_back_panic ... ok
+test failed_reopen_preserves_staged_table ... ok
+test immediate_free ... ok
+test immediate_persistence ... ok
+test invalid_database_file ... ok
+test is_send ... ok
+test large_keys ... ok
+test large_values ... ok
+test many_pairs ... ok
+test multi_page_kv ... ok
+test ephemeral_savepoint_racing_first_open_no_leak ... ok
+test multimap_table_definition_new_panics_on_empty_name - should panic ... ok
+test multimap_value_next_back_does_not_update_len ... ok
+test no_savepoint_resurrection ... ok
+test non_durable_read_isolation ... ok
+test non_page_size_multiple ... ok
+test nondurable_free ... ok
+test nondurable_live_and_free ... ok
+test page_reuse ... ok
+test page_reuse_after_persistent_savepoint_delete ... FAILED
+test page_reuse_after_unclean_reopen ... ok
+test page_reuse_with_racing_reader ... ok
+test persistent_savepoint ... ok
+test persistent_savepoint_abort_unbounded_leak ... ok
+test persistent_savepoint_commit_is_immediately_durable ... ok
+test previous_io_error ... FAILED
+test range_alternating_direction_meets_at_leaf_boundary ... ok
+test range_mixed_direction_no_duplicates_multi_page ... ok
+test range_query ... ok
+test range_query_reversed ... ok
+test read_only_get_guard_keeps_transaction_alive ... ok
+test read_only_range_guards_keep_transaction_alive ... ok
+test read_past_eof_errors ... ok
+test regression ... ok
+test regression10 ... ok
+test regression11 ... ok
+test regression12 ... ok
+test regression13 ... ok
+test regression14 ... ok
+test regression17 ... ok
+test regression18 ... ok
+test regression19 ... ok
+test regression2 ... ok
+test regression20 ... ok
+test regression21 ... ok
+test regression22 ... ok
+test regression23 ... ok
+test regression24 ... ok
+test multimap_stats has been running for over 60 seconds
+test multimap_stats ... ok
+test regression26 ... ok
+test regression27 ... ok
+test regression3 ... ok
+test regression7 ... ok
+test regression8 ... ok
+test regression9 ... ok
+test rename_table_with_modifications_data_loss ... ok
+test restore_savepoint_abort_after_ephemeral_drop ... ok
+test restore_savepoint_abort_unbounded_leak ... ok
+test restore_savepoint_from_foreign_database_panics ... ok
+test restore_savepoint_partial_revert_commits_as_data_loss ... ok
+test savepoint ... ok
+test savepoint_restore_data_loss_pending_table_updates ... ok
+test savepoint_restore_data_loss_stale_freed_pages ... ok
+test small_db_is_small_file ... FAILED
+test stats_with_open_table ... ok
+test stats_with_renamed_open_table ... ok
+test successive_immediate_commits ... ok
+test table_definition_new_panics_on_empty_name - should panic ... ok
+test tree_balance ... ok
+test value_too_large ... ok
+test wrong_types ... ok
+test regression25 has been running for over 60 seconds
+test regression25 ... ok
+
+failures:
+
+---- close_called_exactly_once_on_shutdown_io_error stdout ----
+
+thread 'close_called_exactly_once_on_shutdown_io_error' (2815277) panicked at tests/integration_tests.rs:499:5:
+assertion failed: shutdown_ops > 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- durable_overwrite_does_not_write_post_commit_metadata stdout ----
+
+thread 'durable_overwrite_does_not_write_post_commit_metadata' (2815657) panicked at tests/integration_tests.rs:719:5:
+20 durable overwrites issued 200 backend writes
+
+---- extract_if_error_commit_reports_storage_failure stdout ----
+
+thread 'extract_if_error_commit_reports_storage_failure' (2817008) panicked at tests/integration_tests.rs:397:5:
+assertion failed: matches!(err, CommitError::Storage(StorageError::PreviousIo))
+
+---- page_reuse_after_persistent_savepoint_delete stdout ----
+
+thread 'page_reuse_after_persistent_savepoint_delete' (2822285) panicked at tests/integration_tests.rs:1079:5:
+allocated_with_savepoint=268, allocated_after_delete=282, quick_repair=false
+
+---- previous_io_error stdout ----
+
+thread 'previous_io_error' (2822939) panicked at tests/integration_tests.rs:286:5:
+assertion failed: matches!(db.begin_write().err().unwrap(),
+    TransactionError::Storage(StorageError::PreviousIo))
+
+---- small_db_is_small_file stdout ----
+
+thread 'small_db_is_small_file' (2826260) panicked at tests/integration_tests.rs:1489:5:
+File size: 77824
+
+
+failures:
+    close_called_exactly_once_on_shutdown_io_error
+    durable_overwrite_does_not_write_post_commit_metadata
+    extract_if_error_commit_reports_storage_failure
+    page_reuse_after_persistent_savepoint_delete
+    previous_io_error
+    small_db_is_small_file
+
+test result: FAILED. 103 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 230.38s
+
+error: test failed, to rerun pass `--test integration_tests`
+     Running tests/multimap_tests.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/multimap_tests-6b8ebce27655c368)
+
+running 21 tests
+test cursor_constructors ... ok
+test delete ... ok
+test get_arc_lifetime ... ok
+test efficient_storage ... ok
+test insert ... ok
+test is_empty ... ok
+test iter ... ok
+test len ... ok
+test multimap_remove_collapses_committed_subtree_to_inline ... ok
+test multimap_remove_nonexistent_value_from_subtree_does_not_churn ... ok
+test multimap_remove_subtree_backed_key ... ok
+test multimap_signature_lifetimes ... ok
+test multimap_value_next_back_subtree ... ok
+test range_arc_lifetime ... ok
+test range_lifetime ... ok
+test range_query ... ok
+test read_only_get_value_guards_keep_transaction_alive ... ok
+test read_only_range_entries_keep_transaction_alive ... ok
+test remove_all_uncommitted_subtree_collect ... ok
+test reopen_table ... ok
+test wrong_types ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.49s
+
+     Running tests/multithreading_tests.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/multithreading_tests-3356301740fc61ee)
+
+running 4 tests
+test multithreading_test::multithreaded_insert ... ok
+test multithreading_test::len ... ok
+test multithreading_test::multithreaded_re_read ... ok
+test multithreading_test::multithreaded_insert_and_remove ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+
+   Doc-tests redb
+
+running 6 tests
+test src/db.rs - db::Database (line 547) ... ok
+test src/db.rs - db::ReadOnlyDatabase (line 401) ... ok
+test src/lib.rs - (line 35) ... ok
+test src/table.rs - table::ReadableTable::lower_bound (line 732) ... ok
+test src/table.rs - table::ReadableTable::range (line 634) ... ok
+test src/table.rs - table::Table<'txn,K,V>::upper_bound_mut (line 395) ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+all doctests ran in 0.58s; merged doctests compilation took 0.37s
+error: 4 targets failed:
+    `--test basic_tests`
+    `--test check_integrity_nondurable`
+    `--test corrupted_btree_descent`
+    `--test integration_tests`

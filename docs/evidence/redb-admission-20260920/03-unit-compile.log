@@ -1,0 +1,132 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+warning: function `ensure_allocator_state_table_and_trim` is never used
+    --> src/db.rs:1339:4
+     |
+1339 | fn ensure_allocator_state_table_and_trim(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `Lowest` is never constructed
+  --> src/tree_store/page_store/page_manager.rs:81:5
+   |
+72 | pub(crate) enum AllocationPolicy {
+   |                 ---------------- variant in this enum
+...
+81 |     Lowest,
+   |     ^^^^^^
+   |
+   = note: `AllocationPolicy` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: unused `std::result::Result` that must be used
+   --> src/db.rs:880:13
+    |
+880 |             txn.set_two_phase_commit(true);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+880 |             let _ = txn.set_two_phase_commit(true);
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/db.rs:1783:9
+     |
+1783 |         tx.set_two_phase_commit(true);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1783 |         let _ = tx.set_two_phase_commit(true);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/db.rs:1791:9
+     |
+1791 |         tx.set_two_phase_commit(true);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1791 |         let _ = tx.set_two_phase_commit(true);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/db.rs:1803:9
+     |
+1803 |         tx.set_two_phase_commit(true);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1803 |         let _ = tx.set_two_phase_commit(true);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/db.rs:1811:9
+     |
+1811 |         tx.set_two_phase_commit(true);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1811 |         let _ = tx.set_two_phase_commit(true);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/db.rs:1824:9
+     |
+1824 |         tx.set_two_phase_commit(true);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1824 |         let _ = tx.set_two_phase_commit(true);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/db.rs:1834:9
+     |
+1834 |         tx.set_two_phase_commit(true);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1834 |         let _ = tx.set_two_phase_commit(true);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/db.rs:1846:9
+     |
+1846 |         tx.set_two_phase_commit(true);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1846 |         let _ = tx.set_two_phase_commit(true);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/db.rs:1861:9
+     |
+1861 |         tx.set_two_phase_commit(true);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1861 |         let _ = tx.set_two_phase_commit(true);
+     |         +++++++
+
+warning: `redb` (lib test) generated 11 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.88s
+  Executable unittests src/lib.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/redb-3b041280eaede368)

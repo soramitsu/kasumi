@@ -1,0 +1,9 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.77s
+     Running tests/check_integrity_failure.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/check_integrity_failure-34dfc8fcf65ccf94)
+
+running 1 test
+test writes_are_refused_after_a_failed_check_integrity ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+

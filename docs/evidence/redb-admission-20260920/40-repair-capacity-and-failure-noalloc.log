@@ -1,0 +1,33 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.14s
+     Running unittests src/lib.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/redb-1a01cd164be5367b)
+
+running 15 tests
+test admission::tests::construction_denial_never_grows_or_fails_owner ... ok
+test admission::tests::read_only_close_retains_busy_database_until_handles_drain ... ok
+test admission::tests::explicit_close_returns_busy_owner_and_drop_does_not_reserve_checkpoint_growth ... ok
+test admission::tests::explicit_close_propagates_failure_and_never_closes_backend_twice ... ok
+test admission::tests::caught_capacity_denial_aborts_all_tables_and_keeps_pinned_read_root ... ok
+test admission::tests::persistent_savepoints_survive_explicit_close_but_borrowed_handles_block_it ... ok
+test admission::tests::full_repair_publishes_its_allocator_snapshot_before_returning ... ok
+test admission::tests::uncertain_winning_header_failure_is_nonallocating_and_fences_once ... ok
+test admission::tests::rollback_and_savepoint_publication_do_not_allocate_after_their_fallible_work ... ok
+test admission::tests::winning_header_and_destructor_are_followed_by_no_heap_allocations ... ok
+test admission::tests::commit_metadata_denial_rolls_back_before_winning_header ... ok
+test admission::tests::publication_and_sync_uncertainty_fences_once_and_reopens_an_atomic_root ... ok
+test admission::tests::repeated_reopen_reclaims_deleted_pages_without_leaking_capacity ... ok
+test admission::tests::both_abort_forms_retain_successful_growth_and_permit_later_writes ... ok
+
+thread 'admission::tests::repair_capacity_denial_keeps_committed_root_and_can_retry' (2842491) panicked at src/admission/tests.rs:500:5:
+repair should need admitted metadata capacity: Ok(Database)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test admission::tests::repair_capacity_denial_keeps_committed_root_and_can_retry ... FAILED
+
+failures:
+
+failures:
+    admission::tests::repair_capacity_denial_keeps_committed_root_and_can_retry
+
+test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 109 filtered out; finished in 11.82s
+
+error: test failed, to rerun pass `--lib`

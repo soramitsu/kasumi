@@ -1,0 +1,167 @@
+{
+  "environment": {
+    "RUSTUP_TOOLCHAIN": "1.97.1",
+    "CARGO_TARGET_DIR": "/Users/mtakemiya/dev/kasumi-redb-admission-target",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "checks": [
+    {
+      "log": "64-checkpoint-clippy.log",
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--all-features",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 12.731
+    },
+    {
+      "log": "65-winning-root-rejection.log",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--all-features",
+        "--lib",
+        "repair_rejects_invalid_primary_root_without_legacy_rollback"
+      ],
+      "exit_code": 0,
+      "seconds": 5.988
+    },
+    {
+      "log": "66-integrity-failure.log",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--all-features",
+        "--test",
+        "check_integrity_failure"
+      ],
+      "exit_code": 0,
+      "seconds": 7.117
+    },
+    {
+      "log": "67-no-std-check.log",
+      "command": [
+        "cargo",
+        "check",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--no-default-features",
+        "--features",
+        "experimental-api-5"
+      ],
+      "exit_code": 101,
+      "seconds": 1.826
+    },
+    {
+      "log": "73-no-std-panic-abort-check.log",
+      "command": [
+        "cargo",
+        "check",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--no-default-features",
+        "--features",
+        "experimental-api-5"
+      ],
+      "environment_override": {
+        "RUSTFLAGS": "-C panic=abort"
+      },
+      "exit_code": 0,
+      "seconds": 1.74
+    },
+    {
+      "log": "74-default-all-targets-check.log",
+      "command": [
+        "cargo",
+        "check",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--all-targets"
+      ],
+      "environment_override": {},
+      "exit_code": 0,
+      "seconds": 4.843
+    },
+    {
+      "log": "75-checkpoint-fmt.log",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/Cargo.toml",
+        "--check"
+      ],
+      "environment_override": {},
+      "exit_code": 0,
+      "seconds": 0.312
+    },
+    {
+      "log": "76-checkpoint-derive-tests.log",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/crates/redb-derive/Cargo.toml",
+        "--locked",
+        "--offline"
+      ],
+      "environment_override": {},
+      "exit_code": 0,
+      "seconds": 23.875
+    },
+    {
+      "log": "77-checkpoint-derive-clippy.log",
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/crates/redb-derive/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "environment_override": {},
+      "exit_code": 0,
+      "seconds": 10.029
+    },
+    {
+      "log": "78-checkpoint-derive-fmt.log",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/crates/redb-derive/Cargo.toml",
+        "--check"
+      ],
+      "environment_override": {},
+      "exit_code": 0,
+      "seconds": 0.092
+    }
+  ]
+}

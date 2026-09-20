@@ -1,0 +1,100 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+       Fixed src/tree_store/btree.rs (3 fixes)
+       Fixed src/tree_store/page_store/buddy_allocator.rs (1 fix)
+       Fixed src/db.rs (6 fixes)
+warning: variables can be used directly in the `format!` string
+   --> src/db.rs:493:25
+    |
+493 |         let file_path = format!("{:?}", file);
+    |                         ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#uninlined_format_args
+note: the lint level is defined here
+   --> src/lib.rs:2:22
+    |
+  2 | #![deny(clippy::all, clippy::pedantic, clippy::disallowed_methods)]
+    |                      ^^^^^^^^^^^^^^^^
+    = note: `#[warn(clippy::uninlined_format_args)]` implied by `#[warn(clippy::pedantic)]`
+help: change this to
+    |
+493 -         let file_path = format!("{:?}", file);
+493 +         let file_path = format!("{file:?}");
+    |
+
+warning: variables can be used directly in the `format!` string
+   --> src/db.rs:495:9
+    |
+495 |         debug!("Opening database in read-only {:?}", file_path);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#uninlined_format_args
+help: change this to
+    |
+495 -         debug!("Opening database in read-only {:?}", file_path);
+495 +         debug!("Opening database in read-only {file_path:?}");
+    |
+
+warning: variables can be used directly in the `format!` string
+   --> src/db.rs:512:13
+    |
+512 | /             warn!(
+513 | |                 "Database {:?} not shutdown cleanly. Repair required",
+514 | |                 file_path
+515 | |             );
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#uninlined_format_args
+
+warning: variables can be used directly in the `format!` string
+    --> src/db.rs:1086:25
+     |
+1086 |         let file_path = format!("{:?}", file);
+     |                         ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#uninlined_format_args
+help: change this to
+     |
+1086 -         let file_path = format!("{:?}", file);
+1086 +         let file_path = format!("{file:?}");
+     |
+
+warning: variables can be used directly in the `format!` string
+    --> src/db.rs:1088:9
+     |
+1088 |         debug!("Opening database {:?}", file_path);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#uninlined_format_args
+help: change this to
+     |
+1088 -         debug!("Opening database {:?}", file_path);
+1088 +         debug!("Opening database {file_path:?}");
+     |
+
+warning: variables can be used directly in the `format!` string
+    --> src/db.rs:1110:13
+     |
+1110 |             warn!("Database {:?} not shutdown cleanly. Repairing", file_path);
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#uninlined_format_args
+help: change this to
+     |
+1110 -             warn!("Database {:?} not shutdown cleanly. Repairing", file_path);
+1110 +             warn!("Database {file_path:?} not shutdown cleanly. Repairing");
+     |
+
+warning: `redb` (lib) generated 6 warnings (run `cargo clippy --fix --lib -p redb -- --no-deps` to apply 6 suggestions)
+warning: the variable `i` is used as a loop counter
+   --> tests/basic_tests.rs:977:9
+    |
+977 |         for item in table.range(0..10).unwrap() {
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using: `for (i, item) in (5u64..).zip(table.range(0..10).unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#explicit_counter_loop
+    = note: `#[warn(clippy::explicit_counter_loop)]` on by default
+
+warning: `redb` (test "basic_tests") generated 1 warning
+       Fixed tests/integration_tests.rs (1 fix)
+       Fixed src/db.rs (6 fixes)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.56s

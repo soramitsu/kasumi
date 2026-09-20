@@ -1,0 +1,11 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+warning: unused import: `ReadableTable`
+ --> src/admission/tests.rs:3:73
+  |
+3 |     CloseError, CommitError, Database, DatabaseError, ReadableDatabase, ReadableTable,
+  |                                                                         ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `redb` (lib test) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.81s

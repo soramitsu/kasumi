@@ -1,0 +1,12 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+error: redb without the standard library requires panic = "abort": it cannot detect unwinding, and its Drop impls depend on being able to. Set panic = "abort" in the profile, or enable the "std" feature.
+   --> src/lib.rs:137:1
+    |
+137 | / compile_error!(
+138 | |     "redb without the standard library requires panic = \"abort\": it cannot detect unwinding, \
+139 | |      and its Drop impls depend on being able to. Set panic = \"abort\" in the profile, or enable \
+140 | |      the \"std\" feature."
+141 | | );
+    | |_^
+
+error: could not compile `redb` (lib) due to 1 previous error

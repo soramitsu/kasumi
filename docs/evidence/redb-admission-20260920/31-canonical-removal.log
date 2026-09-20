@@ -1,0 +1,18 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+error[E0609]: no field `durability` on type `&WriteTransaction`
+    --> src/transactions.rs:1144:17
+     |
+1144 |         if self.durability != InternalDurability::Immediate {
+     |                 ^^^^^^^^^^ unknown field
+     |
+     = note: available fields are: `transaction_tracker`, `mem`, `transaction_guard`, `transaction_id`, `tables` ... and 8 others
+
+error[E0433]: cannot find type `InternalDurability` in this scope
+    --> src/transactions.rs:1144:31
+     |
+1144 |         if self.durability != InternalDurability::Immediate {
+     |                               ^^^^^^^^^^^^^^^^^^ use of undeclared type `InternalDurability`
+
+Some errors have detailed explanations: E0433, E0609.
+For more information about an error, try `rustc --explain E0433`.
+error: could not compile `redb` (lib) due to 2 previous errors

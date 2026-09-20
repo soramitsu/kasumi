@@ -1,0 +1,37 @@
+    Checking libc v0.2.186
+    Checking rand_core v0.10.1
+    Checking cfg-if v1.0.4
+    Checking getrandom v0.4.3
+    Checking core-foundation-sys v0.8.7
+    Checking iana-time-zone v0.1.65
+    Checking num-traits v0.2.19
+    Checking errno v0.3.14
+    Checking bitflags v2.13.1
+    Checking rustix v1.1.4
+    Checking chrono v0.4.45
+    Checking uuid v1.24.0
+    Checking chacha20 v0.10.1
+    Checking once_cell v1.21.4
+    Checking log v0.4.33
+    Checking fastrand v2.4.1
+    Checking tempfile v3.27.0
+    Checking rand v0.10.2
+    Checking redb v2.6.0
+    Checking redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+warning: variant `Never` is never constructed
+  --> src/tree_store/page_store/page_manager.rs:66:5
+   |
+60 | pub(crate) enum ShrinkPolicy {
+   |                 ------------ variant in this enum
+...
+66 |     Never,
+   |     ^^^^^
+   |
+   = note: `ShrinkPolicy` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `redb` (lib) generated 1 warning
+       Fixed tests/integration_tests.rs (30 fixes)
+       Fixed tests/check_integrity_admitted.rs (5 fixes)
+       Fixed src/db.rs (2 fixes)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.62s

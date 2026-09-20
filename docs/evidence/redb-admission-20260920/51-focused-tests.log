@@ -1,0 +1,66 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+error[E0061]: this method takes 4 arguments but 5 arguments were supplied
+   --> src/admission/tests.rs:544:9
+    |
+544 |     mem.commit(
+    |         ^^^^^^
+...
+548 |         true,
+    |         ---- unexpected argument #4 of type `bool`
+    |
+note: method defined here
+   --> src/tree_store/page_store/page_manager.rs:889:19
+    |
+889 |     pub(crate) fn commit(
+    |                   ^^^^^^
+help: remove the extra argument
+    |
+547 -         mem.get_last_committed_transaction_id().unwrap().next(),
+548 -         true,
+547 +         mem.get_last_committed_transaction_id().unwrap().next(),
+    |
+
+error[E0061]: this method takes 4 arguments but 5 arguments were supplied
+   --> src/admission/tests.rs:656:9
+    |
+656 |     mem.commit(
+    |         ^^^^^^
+...
+660 |         true,
+    |         ---- unexpected argument #4 of type `bool`
+    |
+note: method defined here
+   --> src/tree_store/page_store/page_manager.rs:889:19
+    |
+889 |     pub(crate) fn commit(
+    |                   ^^^^^^
+help: remove the extra argument
+    |
+659 -         mem.get_last_committed_transaction_id().unwrap().next(),
+660 -         true,
+659 +         mem.get_last_committed_transaction_id().unwrap().next(),
+    |
+
+error[E0599]: no method named `len` found for struct `ReadOnlyTable<K, V>` in the current scope
+   --> src/admission/tests.rs:745:22
+    |
+745 |     assert_eq!(table.len().unwrap(), 10);
+    |                      ^^^ method not found in `ReadOnlyTable<u64, &[u8]>`
+    |
+   ::: src/table.rs:617:8
+    |
+617 |     fn len(&self) -> Result<u64>;
+    |        --- the method is available for `ReadOnlyTable<u64, &[u8]>` here
+...
+857 | pub struct ReadOnlyTable<K: Key + 'static, V: Value + 'static> {
+    | -------------------------------------------------------------- method `len` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `ReadableTableMetadata` which provides `len` is implemented but not in scope; perhaps you want to import it
+    |
+  1 + use crate::table::ReadableTableMetadata;
+    |
+
+Some errors have detailed explanations: E0061, E0599.
+For more information about an error, try `rustc --explain E0061`.
+error: could not compile `redb` (lib test) due to 3 previous errors

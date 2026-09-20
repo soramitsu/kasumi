@@ -1,0 +1,17 @@
+    Checking libc v0.2.189
+    Checking unicode-ident v1.0.26
+    Checking cfg-if v1.0.5
+    Checking getrandom v0.4.3
+    Checking proc-macro2 v1.0.107
+    Checking quote v1.0.47
+    Checking errno v0.3.14
+    Checking rustix v1.1.4
+    Checking syn v2.0.119
+    Checking uuid v1.26.0
+    Checking fastrand v2.5.0
+    Checking tempfile v3.27.0
+    Checking redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+    Checking redb v3.0.0
+    Checking redb v2.6.0
+   Compiling redb-derive v0.1.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/crates/redb-derive)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.95s

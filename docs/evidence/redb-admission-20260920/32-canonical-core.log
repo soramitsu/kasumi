@@ -1,0 +1,24 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+error[E0004]: non-exhaustive patterns: `SavepointError::ImmediateDurabilityRequired` not covered
+    --> src/db.rs:1114:35
+     |
+1114 |                 Err(err) => match err {
+     |                                   ^^^ pattern `SavepointError::ImmediateDurabilityRequired` not covered
+     |
+note: `SavepointError` defined here
+    --> src/error.rs:302:10
+     |
+ 302 | pub enum SavepointError {
+     |          ^^^^^^^^^^^^^^
+...
+ 313 |     ImmediateDurabilityRequired,
+     |     --------------------------- not covered
+     = note: the matched value is of type `SavepointError`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+     |
+1118 ~                     },
+1119 +                     SavepointError::ImmediateDurabilityRequired => todo!()
+     |
+
+For more information about this error, try `rustc --explain E0004`.
+error: could not compile `redb` (lib) due to 1 previous error

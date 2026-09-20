@@ -1,0 +1,374 @@
+   Compiling autocfg v1.5.1
+   Compiling num-traits v0.2.19
+   Compiling core-foundation-sys v0.8.7
+   Compiling iana-time-zone v0.1.65
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+   Compiling chrono v0.4.45
+   Compiling log v0.4.33
+warning: unused `Result` that must be used
+   --> tests/integration_tests.rs:982:5
+    |
+982 |     txn.set_quick_repair(quick_repair);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+982 |     let _ = txn.set_quick_repair(quick_repair);
+    |     +++++++
+
+warning: `redb` (test "integration_tests") generated 1 warning
+error[E0432]: unresolved import `redb_derive`
+ --> examples/derive_value_impl.rs:4:5
+  |
+4 | use redb_derive::{Key, Value};
+  |     ^^^^^^^^^^^ use of unresolved module or unlinked crate `redb_derive`
+  |
+  = help: if you wanted to use a crate named `redb_derive`, use `cargo add redb_derive` to add it to your `Cargo.toml`
+
+error[E0277]: the trait bound `SomeKey: Key` is not satisfied
+   --> examples/derive_value_impl.rs:12:14
+    |
+ 12 | const TABLE: TableDefinition<SomeKey, u64> = TableDefinition::new("my_data");
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `Key` is not implemented for `SomeKey`
+   --> examples/derive_value_impl.rs:7:1
+    |
+  7 | struct SomeKey {
+    | ^^^^^^^^^^^^^^
+note: there are multiple different versions of crate `redb` in the dependency graph
+   --> src/types.rs:214:1
+    |
+214 | pub trait Key: Value {
+    | ^^^^^^^^^^^^^^^^^^^^ this is the expected trait
+    |
+   ::: /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redb-2.6.0/src/types.rs:127:1
+    |
+127 | pub trait Key: Value {
+    | -------------------- this is the trait that was imported
+    = help: you can use `cargo tree` to explore your dependency tree
+    = help: the following other types implement trait `Key`:
+              &[u8; N]
+              &[u8]
+              &str
+              ()
+              (T,)
+              (T0, T1)
+              (T0, T1, T2)
+              (T0, T1, T2, T3)
+            and 29 others
+note: required by a bound in `TableDefinition`
+   --> src/db.rs:128:35
+    |
+128 | pub struct TableDefinition<'a, K: Key + 'static, V: Value + 'static> {
+    |                                   ^^^ required by this bound in `TableDefinition`
+
+error[E0277]: the trait bound `SomeKey: Key` is not satisfied
+   --> examples/derive_value_impl.rs:12:46
+    |
+ 12 | const TABLE: TableDefinition<SomeKey, u64> = TableDefinition::new("my_data");
+    |                                              ^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `Key` is not implemented for `SomeKey`
+   --> examples/derive_value_impl.rs:7:1
+    |
+  7 | struct SomeKey {
+    | ^^^^^^^^^^^^^^
+note: there are multiple different versions of crate `redb` in the dependency graph
+   --> src/types.rs:214:1
+    |
+214 | pub trait Key: Value {
+    | ^^^^^^^^^^^^^^^^^^^^ this is the expected trait
+    |
+   ::: /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redb-2.6.0/src/types.rs:127:1
+    |
+127 | pub trait Key: Value {
+    | -------------------- this is the trait that was imported
+    = help: you can use `cargo tree` to explore your dependency tree
+    = help: the following other types implement trait `Key`:
+              &[u8; N]
+              &[u8]
+              &str
+              ()
+              (T,)
+              (T0, T1)
+              (T0, T1, T2)
+              (T0, T1, T2, T3)
+            and 29 others
+note: required by a bound in `TableDefinition`
+   --> src/db.rs:128:35
+    |
+128 | pub struct TableDefinition<'a, K: Key + 'static, V: Value + 'static> {
+    |                                   ^^^ required by this bound in `TableDefinition`
+
+error[E0277]: the trait bound `SomeKey: Key` is not satisfied
+    --> examples/derive_value_impl.rs:22:46
+     |
+  22 |         let mut table = write_txn.open_table(TABLE)?;
+     |                                   ---------- ^^^^^ unsatisfied trait bound
+     |                                   |
+     |                                   required by a bound introduced by this call
+     |
+help: the trait `Key` is not implemented for `SomeKey`
+    --> examples/derive_value_impl.rs:7:1
+     |
+   7 | struct SomeKey {
+     | ^^^^^^^^^^^^^^
+note: there are multiple different versions of crate `redb` in the dependency graph
+    --> src/types.rs:214:1
+     |
+ 214 | pub trait Key: Value {
+     | ^^^^^^^^^^^^^^^^^^^^ this is the expected trait
+     |
+    ::: /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redb-2.6.0/src/types.rs:127:1
+     |
+ 127 | pub trait Key: Value {
+     | -------------------- this is the trait that was imported
+     = help: you can use `cargo tree` to explore your dependency tree
+     = help: the following other types implement trait `Key`:
+               &[u8; N]
+               &[u8]
+               &str
+               ()
+               (T,)
+               (T0, T1)
+               (T0, T1, T2)
+               (T0, T1, T2, T3)
+             and 29 others
+note: required by a bound in `WriteTransaction::open_table`
+    --> src/transactions.rs:1503:32
+     |
+1503 |     pub fn open_table<'txn, K: Key + 'static, V: Value + 'static>(
+     |                                ^^^ required by this bound in `WriteTransaction::open_table`
+
+error[E0277]: the trait bound `SomeKey: Key` is not satisfied
+   --> examples/derive_value_impl.rs:22:25
+    |
+ 22 |         let mut table = write_txn.open_table(TABLE)?;
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `Key` is not implemented for `SomeKey`
+   --> examples/derive_value_impl.rs:7:1
+    |
+  7 | struct SomeKey {
+    | ^^^^^^^^^^^^^^
+note: there are multiple different versions of crate `redb` in the dependency graph
+   --> src/types.rs:214:1
+    |
+214 | pub trait Key: Value {
+    | ^^^^^^^^^^^^^^^^^^^^ this is the expected trait
+    |
+   ::: /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redb-2.6.0/src/types.rs:127:1
+    |
+127 | pub trait Key: Value {
+    | -------------------- this is the trait that was imported
+    = help: you can use `cargo tree` to explore your dependency tree
+    = help: the following other types implement trait `Key`:
+              &[u8; N]
+              &[u8]
+              &str
+              ()
+              (T,)
+              (T0, T1)
+              (T0, T1, T2)
+              (T0, T1, T2, T3)
+            and 29 others
+note: required by a bound in `Table`
+   --> src/table.rs:76:27
+    |
+ 76 | pub struct Table<'txn, K: Key + 'static, V: Value + 'static> {
+    |                           ^^^ required by this bound in `Table`
+
+error[E0277]: the trait bound `SomeKey: Key` is not satisfied
+   --> examples/derive_value_impl.rs:22:25
+    |
+ 22 |         let mut table = write_txn.open_table(TABLE)?;
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `Key` is not implemented for `SomeKey`
+   --> examples/derive_value_impl.rs:7:1
+    |
+  7 | struct SomeKey {
+    | ^^^^^^^^^^^^^^
+note: there are multiple different versions of crate `redb` in the dependency graph
+   --> src/types.rs:214:1
+    |
+214 | pub trait Key: Value {
+    | ^^^^^^^^^^^^^^^^^^^^ this is the expected trait
+    |
+   ::: /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redb-2.6.0/src/types.rs:127:1
+    |
+127 | pub trait Key: Value {
+    | -------------------- this is the trait that was imported
+    = help: you can use `cargo tree` to explore your dependency tree
+    = help: the following other types implement trait `Key`:
+              &[u8; N]
+              &[u8]
+              &str
+              ()
+              (T,)
+              (T0, T1)
+              (T0, T1, T2)
+              (T0, T1, T2, T3)
+            and 29 others
+note: required by a bound in `Table`
+   --> src/table.rs:76:27
+    |
+ 76 | pub struct Table<'txn, K: Key + 'static, V: Value + 'static> {
+    |                           ^^^ required by this bound in `Table`
+
+error[E0599]: the method `insert` exists for struct `Table<'_, SomeKey, u64>`, but its trait bounds were not satisfied
+   --> examples/derive_value_impl.rs:23:15
+    |
+  7 | struct SomeKey {
+    | -------------- doesn't satisfy `SomeKey: Key`
+...
+ 23 |         table.insert(key.clone(), 0)?;
+    |               ^^^^^^ method cannot be called on `Table<'_, SomeKey, u64>` due to unsatisfied trait bounds
+    |
+    = note: the following trait bounds were not satisfied:
+            `SomeKey: Key`
+note: the trait `Key` must be implemented
+   --> src/types.rs:214:1
+    |
+214 | pub trait Key: Value {
+    | ^^^^^^^^^^^^^^^^^^^^
+
+error[E0277]: the trait bound `SomeKey: Key` is not satisfied
+    --> examples/derive_value_impl.rs:28:37
+     |
+  28 |     let table = read_txn.open_table(TABLE)?;
+     |                          ---------- ^^^^^ unsatisfied trait bound
+     |                          |
+     |                          required by a bound introduced by this call
+     |
+help: the trait `Key` is not implemented for `SomeKey`
+    --> examples/derive_value_impl.rs:7:1
+     |
+   7 | struct SomeKey {
+     | ^^^^^^^^^^^^^^
+note: there are multiple different versions of crate `redb` in the dependency graph
+    --> src/types.rs:214:1
+     |
+ 214 | pub trait Key: Value {
+     | ^^^^^^^^^^^^^^^^^^^^ this is the expected trait
+     |
+    ::: /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redb-2.6.0/src/types.rs:127:1
+     |
+ 127 | pub trait Key: Value {
+     | -------------------- this is the trait that was imported
+     = help: you can use `cargo tree` to explore your dependency tree
+     = help: the following other types implement trait `Key`:
+               &[u8; N]
+               &[u8]
+               &str
+               ()
+               (T,)
+               (T0, T1)
+               (T0, T1, T2)
+               (T0, T1, T2, T3)
+             and 29 others
+note: required by a bound in `ReadTransaction::open_table`
+    --> src/transactions.rs:2506:26
+     |
+2506 |     pub fn open_table<K: Key + 'static, V: Value + 'static>(
+     |                          ^^^ required by this bound in `ReadTransaction::open_table`
+
+error[E0277]: the trait bound `SomeKey: Key` is not satisfied
+   --> examples/derive_value_impl.rs:28:17
+    |
+ 28 |     let table = read_txn.open_table(TABLE)?;
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `Key` is not implemented for `SomeKey`
+   --> examples/derive_value_impl.rs:7:1
+    |
+  7 | struct SomeKey {
+    | ^^^^^^^^^^^^^^
+note: there are multiple different versions of crate `redb` in the dependency graph
+   --> src/types.rs:214:1
+    |
+214 | pub trait Key: Value {
+    | ^^^^^^^^^^^^^^^^^^^^ this is the expected trait
+    |
+   ::: /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redb-2.6.0/src/types.rs:127:1
+    |
+127 | pub trait Key: Value {
+    | -------------------- this is the trait that was imported
+    = help: you can use `cargo tree` to explore your dependency tree
+    = help: the following other types implement trait `Key`:
+              &[u8; N]
+              &[u8]
+              &str
+              ()
+              (T,)
+              (T0, T1)
+              (T0, T1, T2)
+              (T0, T1, T2, T3)
+            and 29 others
+note: required by a bound in `ReadOnlyTable`
+   --> src/table.rs:857:29
+    |
+857 | pub struct ReadOnlyTable<K: Key + 'static, V: Value + 'static> {
+    |                             ^^^ required by this bound in `ReadOnlyTable`
+
+error[E0277]: the trait bound `SomeKey: Key` is not satisfied
+   --> examples/derive_value_impl.rs:28:17
+    |
+ 28 |     let table = read_txn.open_table(TABLE)?;
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `Key` is not implemented for `SomeKey`
+   --> examples/derive_value_impl.rs:7:1
+    |
+  7 | struct SomeKey {
+    | ^^^^^^^^^^^^^^
+note: there are multiple different versions of crate `redb` in the dependency graph
+   --> src/types.rs:214:1
+    |
+214 | pub trait Key: Value {
+    | ^^^^^^^^^^^^^^^^^^^^ this is the expected trait
+    |
+   ::: /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redb-2.6.0/src/types.rs:127:1
+    |
+127 | pub trait Key: Value {
+    | -------------------- this is the trait that was imported
+    = help: you can use `cargo tree` to explore your dependency tree
+    = help: the following other types implement trait `Key`:
+              &[u8; N]
+              &[u8]
+              &str
+              ()
+              (T,)
+              (T0, T1)
+              (T0, T1, T2)
+              (T0, T1, T2, T3)
+            and 29 others
+note: required by a bound in `ReadOnlyTable`
+   --> src/table.rs:857:29
+    |
+857 | pub struct ReadOnlyTable<K: Key + 'static, V: Value + 'static> {
+    |                             ^^^ required by this bound in `ReadOnlyTable`
+
+error[E0599]: the method `get_owned` exists for struct `ReadOnlyTable<SomeKey, u64>`, but its trait bounds were not satisfied
+   --> examples/derive_value_impl.rs:29:22
+    |
+  7 | struct SomeKey {
+    | -------------- doesn't satisfy `SomeKey: Key`
+...
+ 29 |     assert_eq!(table.get_owned(&key)?.unwrap().value(), 0);
+    |                      ^^^^^^^^^ method cannot be called on `ReadOnlyTable<SomeKey, u64>` due to unsatisfied trait bounds
+    |
+    = note: the following trait bounds were not satisfied:
+            `SomeKey: Key`
+note: the trait `Key` must be implemented
+   --> src/types.rs:214:1
+    |
+214 | pub trait Key: Value {
+    | ^^^^^^^^^^^^^^^^^^^^
+
+Some errors have detailed explanations: E0277, E0432, E0599.
+For more information about an error, try `rustc --explain E0277`.
+error: could not compile `redb` (example "derive_value_impl" test) due to 11 previous errors

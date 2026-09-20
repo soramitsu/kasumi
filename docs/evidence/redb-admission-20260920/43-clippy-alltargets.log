@@ -1,0 +1,133 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+error: redundant reference in `format!` argument
+   --> src/db.rs:493:41
+    |
+493 |         let file_path = format!("{:?}", &file);
+    |                                         ^^^^^ help: remove the redundant `&`: `file`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_borrows_in_formatting
+note: the lint level is defined here
+   --> src/lib.rs:2:9
+    |
+  2 | #![deny(clippy::all, clippy::pedantic, clippy::disallowed_methods)]
+    |         ^^^^^^^^^^^
+    = note: `#[deny(clippy::useless_borrows_in_formatting)]` implied by `#[deny(clippy::all)]`
+
+error: redundant reference in `debug!` argument
+   --> src/db.rs:495:54
+    |
+495 |         debug!("Opening database in read-only {:?}", &file_path);
+    |                                                      ^^^^^^^^^^ help: remove the redundant `&`: `file_path`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_borrows_in_formatting
+
+error: redundant reference in `warn!` argument
+   --> src/db.rs:514:17
+    |
+514 |                 &file_path
+    |                 ^^^^^^^^^^ help: remove the redundant `&`: `file_path`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_borrows_in_formatting
+
+error: redundant reference in `format!` argument
+    --> src/db.rs:1086:41
+     |
+1086 |         let file_path = format!("{:?}", &file);
+     |                                         ^^^^^ help: remove the redundant `&`: `file`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_borrows_in_formatting
+
+error: redundant reference in `debug!` argument
+    --> src/db.rs:1088:41
+     |
+1088 |         debug!("Opening database {:?}", &file_path);
+     |                                         ^^^^^^^^^^ help: remove the redundant `&`: `file_path`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_borrows_in_formatting
+
+error: redundant reference in `warn!` argument
+    --> src/db.rs:1110:68
+     |
+1110 |             warn!("Database {:?} not shutdown cleanly. Repairing", &file_path);
+     |                                                                    ^^^^^^^^^^ help: remove the redundant `&`: `file_path`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_borrows_in_formatting
+
+error: casting `usize` to `u32` may truncate the value on targets with 64-bit wide pointers
+    --> src/transactions.rs:1846:34
+     |
+1846 |                 .page_size_bytes(self.mem.get_page_size() as u32);
+     |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+note: the lint level is defined here
+    --> src/lib.rs:2:22
+     |
+   2 | #![deny(clippy::all, clippy::pedantic, clippy::disallowed_methods)]
+     |                      ^^^^^^^^^^^^^^^^
+     = note: `#[deny(clippy::cast_possible_truncation)]` implied by `#[deny(clippy::pedantic)]`
+help: ... or use `try_from` and handle the error accordingly
+     |
+1846 -                 .page_size_bytes(self.mem.get_page_size() as u32);
+1846 +                 .page_size_bytes(u32::try_from(self.mem.get_page_size()));
+     |
+
+error: casting `usize` to `u32` may truncate the value on targets with 64-bit wide pointers
+    --> src/transactions.rs:1850:64
+     |
+1850 |                         .saturating_add(parent.page_size_bytes(self.mem.get_page_size() as u32));
+     |                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1850 -                         .saturating_add(parent.page_size_bytes(self.mem.get_page_size() as u32));
+1850 +                         .saturating_add(parent.page_size_bytes(u32::try_from(self.mem.get_page_size())));
+     |
+
+error: unused `self` argument
+    --> src/transactions.rs:1966:9
+     |
+1966 |         &self,
+     |         ^^^^^
+     |
+     = help: consider refactoring to an associated function
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unused_self
+     = note: `#[deny(clippy::unused_self)]` implied by `#[deny(clippy::pedantic)]`
+
+error: redundant reference in `trace!` argument
+   --> src/tree_store/btree.rs:461:13
+    |
+461 |             &self.root,
+    |             ^^^^^^^^^^ help: remove the redundant `&`: `self.root`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_borrows_in_formatting
+
+error: redundant reference in `trace!` argument
+   --> src/tree_store/btree.rs:521:51
+    |
+521 |         trace!("Btree(root={:?}): Deleting {:?}", &self.root, key);
+    |                                                   ^^^^^^^^^^ help: remove the redundant `&`: `self.root`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_borrows_in_formatting
+
+error: redundant reference in `trace!` argument
+   --> src/tree_store/btree.rs:888:13
+    |
+888 |             &self.root, key, value_length
+    |             ^^^^^^^^^^ help: remove the redundant `&`: `self.root`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_borrows_in_formatting
+
+error: unnecessary trailing comma
+   --> src/tree_store/page_store/buddy_allocator.rs:323:95
+    |
+323 | ...                   assert!(buddy_allocated, "order={order} page={page} buddy={buddy}",);
+    |                                                                                         ^ help: remove the trailing comma
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_trailing_comma
+    = note: `#[deny(clippy::unnecessary_trailing_comma)]` implied by `#[deny(clippy::pedantic)]`
+
+error: could not compile `redb` (lib) due to 13 previous errors

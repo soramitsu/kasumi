@@ -1,0 +1,6 @@
+     Locking 1 package to latest Rust 1.90 compatible version
+      Adding redb-derive v0.1.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/crates/redb-derive)
+error: failed to download `quote v1.0.46`
+
+Caused by:
+  attempting to make an HTTP request, but --offline was specified

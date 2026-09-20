@@ -1,0 +1,44 @@
+{
+  "environment": {
+    "RUSTUP_TOOLCHAIN": "1.97.1",
+    "CARGO_TARGET_DIR": "/Users/mtakemiya/dev/kasumi-redb-admission-target",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "checks": [
+    {
+      "log": "55-final-clippy-alltargets.log",
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--all-features",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 5.661
+    },
+    {
+      "log": "56-final-all-features-tests.log",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--all-features",
+        "--no-fail-fast",
+        "--",
+        "--test-threads=2"
+      ],
+      "exit_code": 101,
+      "seconds": 322.237
+    }
+  ]
+}

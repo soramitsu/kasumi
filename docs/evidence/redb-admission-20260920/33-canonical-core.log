@@ -1,0 +1,55 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+warning: unused import: `Shrink`
+ --> src/tree_store/page_store/page_manager.rs:9:86
+  |
+9 | use crate::tree_store::page_store::fast_hash::{PageNumberHashMap, PageNumberHashSet, Shrink};
+  |                                                                                      ^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `alloc::collections::BTreeMap`
+  --> src/tree_store/page_store/page_manager.rs:20:5
+   |
+20 | use alloc::collections::BTreeMap;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `write_barrier` is never used
+   --> src/tree_store/page_store/cached_file.rs:533:19
+    |
+289 | impl PagedCachedFile {
+    | -------------------- method in this implementation
+...
+533 |     pub(super) fn write_barrier(&self) {
+    |                   ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `primary_corrupted` is never used
+   --> src/tree_store/page_store/header.rs:204:19
+    |
+110 | impl UnrepairedDatabaseHeader {
+    | ----------------------------- method in this implementation
+...
+204 |     pub(super) fn primary_corrupted(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^
+
+warning: method `take_all` is never used
+   --> src/tree_store/page_store/page_manager.rs:160:8
+    |
+127 | impl UncommittedPages {
+    | --------------------- method in this implementation
+...
+160 |     fn take_all(&self) -> PageNumberHashSet {
+    |        ^^^^^^^^
+
+warning: method `take_allocated_since_commit` is never used
+   --> src/tree_store/page_store/page_manager.rs:202:19
+    |
+179 | impl PageAllocator {
+    | ------------------ method in this implementation
+...
+202 |     pub(crate) fn take_allocated_since_commit(&self) -> PageNumberHashSet {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `redb` (lib) generated 6 warnings (run `cargo fix --lib -p redb` to apply 2 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.15s
