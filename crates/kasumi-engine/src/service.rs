@@ -140,10 +140,19 @@ impl ProposalWork {
                 Err(error) => return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?),
                 Ok(Some(_)) => {}
                 Ok(None) => {
-                    let workspace = self.admission.reserve(
+                    let workspace = match self.admission.reserve(
                         crate::retirement_closure::workspace_bytes(&generation.state)?,
                         None,
-                    )?;
+                    ) {
+                        Ok(workspace) => workspace,
+                        Err(error) if error.code == ErrorCode::ResourceExhausted => {
+                            // Nothing was proposed and no retirement identity was
+                            // accepted. Local capacity pressure is a definite
+                            // request rejection, not a failed proposal child.
+                            return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
                     let registration = self._registration.clone();
                     let credential = command.context.authorization.clone();
                     struct Output {
@@ -189,7 +198,7 @@ impl ProposalWork {
             bytes.len() <= max_bytes,
             "command exceeds proposal byte budget"
         );
-        if matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
+        let response = if matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
         {
             let engine = &self.source_engine;
             let seed = kasumi_raft::RetirementLogSeed::prepare(
@@ -202,6 +211,18 @@ impl ProposalWork {
             self.group.write_retirement(bytes, seed).await
         } else {
             self.group.write(bytes).await
+        };
+        match response {
+            Err(error) if kasumi_raft::is_application_write_redirect(&error) => {
+                // Leadership changes are request outcomes. Preserve the existing
+                // uncertain-write contract: only original identity resolution
+                // settles whether an earlier attempt committed.
+                Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
+                    ErrorCode::UnknownOutcome,
+                    "write leadership changed; resolve or retry with the same idempotency key",
+                )))?)
+            }
+            outcome => outcome,
         }
     }
 }

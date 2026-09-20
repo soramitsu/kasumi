@@ -118,3 +118,125 @@ async fn cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shu
     );
     fixture.audit.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn actual_raft_leadership_redirect_does_not_poison_proposal_custody() {
+    let fixture = CredentialFixture::new().await;
+    let raft = fixture.db.group.raft();
+    raft.enable_elect(false);
+    let gate = fixture.db.proposal_gate.lock().await;
+    let batch = credential_batch("leadership-change-proposal");
+    let mut request = Box::pin(fixture.db.mutate(fixture.context.clone(), batch.clone()));
+    std::future::poll_fn(|cx| {
+        assert!(request.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+
+    // Exercise the real OpenRaft write path after its original leader observes
+    // a higher committed vote. Disable automatic elections until the response
+    // is observed; the retained request is already admitted behind the gate.
+    let metrics = raft.metrics().borrow().clone();
+    raft.append_entries(openraft::raft::AppendEntriesRequest {
+        vote: openraft::Vote::new_committed(metrics.current_term + 1, 2),
+        prev_log_id: metrics.last_applied,
+        entries: vec![],
+        leader_commit: metrics.last_applied,
+    })
+    .await
+    .unwrap();
+    raft.wait(Some(Duration::from_secs(5)))
+        .current_leader(2, "proposal fixture observed a new leader")
+        .await
+        .unwrap();
+    drop(gate);
+    assert_eq!(request.await.unwrap_err().code, ErrorCode::UnknownOutcome);
+    fixture.db.proposals.check().unwrap();
+    fixture.db.check_serving().unwrap();
+
+    // The one-voter fixture can elect itself again. The original identity has
+    // no accepted receipt and may now be retried without recreating Database.
+    raft.trigger().elect().await.unwrap();
+    raft.wait(Some(Duration::from_secs(5)))
+        .current_leader(1, "proposal fixture recovered its leader")
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .db
+            .operation_receipt(&fixture.context, &batch.idempotency_key)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let receipt = fixture
+        .db
+        .mutate(fixture.context.clone(), batch.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .db
+            .mutate(fixture.context.clone(), batch)
+            .await
+            .unwrap(),
+        receipt
+    );
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn retirement_workspace_rejection_is_definite_and_does_not_poison_custody() {
+    let fixture = CredentialFixture::new().await;
+    let prepared = retirement_input(&fixture, "retirement-workspace-pressure", u64::MAX).await;
+    let reference = prepared.request.reference().unwrap();
+    let gate = fixture.db.proposal_gate.lock().await;
+    let mut request = Box::pin(
+        fixture
+            .db
+            .submit(fixture.context.clone(), Operation::RetireSource(prepared)),
+    );
+    std::future::poll_fn(|cx| {
+        assert!(request.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    // Fill the original governor's finite operation slots after outer command
+    // admission. The actual closure workspace reservation must reject in run.
+    let mut pressure = Vec::new();
+    loop {
+        match fixture.db.admission().reserve(0, None) {
+            Ok(reservation) => pressure.push(reservation),
+            Err(error) => {
+                assert_eq!(error.code, ErrorCode::ResourceExhausted);
+                break;
+            }
+        }
+    }
+    drop(gate);
+    assert_eq!(
+        request.await.unwrap_err().code,
+        ErrorCode::ResourceExhausted
+    );
+    fixture.db.proposals.check().unwrap();
+    fixture.db.check_serving().unwrap();
+    drop(pressure);
+    assert!(
+        fixture
+            .db
+            .retirement_status(&fixture.context, &reference)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(!fixture.db.engine.generation().unwrap().state.retired);
+    fixture
+        .db
+        .mutate(
+            fixture.context.clone(),
+            credential_batch("after-workspace-rejection"),
+        )
+        .await
+        .unwrap();
+    fixture.close().await;
+}

@@ -22,6 +22,7 @@ mod snapshot_custody;
 mod snapshot_state;
 mod storage;
 mod timing;
+mod write_errors;
 
 use anyhow::{Context, Result, ensure};
 pub use command::{
@@ -50,6 +51,7 @@ use std::{
 };
 pub use storage::{LogStore, StateMachine, recovery_snapshot_bytes};
 pub use timing::server_config;
+pub use write_errors::is_application_write_redirect;
 
 #[derive(Clone, Debug)]
 pub struct RaftLimits {
