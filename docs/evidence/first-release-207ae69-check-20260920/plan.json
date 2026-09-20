@@ -1,0 +1,1174 @@
+{
+  "source": "/Users/mtakemiya/dev/kasumi-worktrees/check-207ae69-20260920",
+  "target": "/Users/mtakemiya/dev/kasumi-release-evidence/build-target",
+  "expected_head": "207ae699788086f1320047899960056fabbb77f5",
+  "expected_tree": "650f5b545d9ba3067f4e6cf2d769234ff4aebc4b",
+  "output": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-207ae69-ownership-proposals",
+  "scope": "Frozen 207ae69 successor to failed f2921f5 retired-source ownership test. Preserves every prior gate, case, deadline and relative order. Corrects test-only Tokio scheduler starvation while retaining actual core hold and all original ownership assertions/deadlines. Adds charged authority/proposal registry and original child error custody regression cases, including actual leadership redirect and definite capacity rejection. Final production/live/capacity/platform/endurance/artifact gates remain open.",
+  "gates": [
+    {
+      "name": "workspace-all-targets-check",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "check",
+        "--locked",
+        "--offline",
+        "--keep-going",
+        "-j1",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics"
+      ],
+      "required_tests": []
+    },
+    {
+      "name": "workspace-format",
+      "timeout_seconds": 300,
+      "cargo_args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "required_tests": []
+    },
+    {
+      "name": "rmcp-terminal-ownership",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--manifest-path",
+        "vendor/rmcp-3.2.0/Cargo.toml",
+        "--message-format=json-render-diagnostics",
+        "--features",
+        "transport-streamable-http-server",
+        "--lib",
+        "terminal_stateless_tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "transport::streamable_http_server::tower::terminal_stateless_tests::terminal_stateless_runs_without_any_tokio_runtime_and_preserves_context",
+        "transport::streamable_http_server::tower::terminal_stateless_tests::dropping_http_future_drops_actual_handler_and_cancels_its_context",
+        "transport::streamable_http_server::tower::terminal_stateless_tests::serving_cancellation_withholds_response_and_drops_actual_handler",
+        "transport::streamable_http_server::tower::terminal_stateless_tests::cancellation_in_the_handlers_final_poll_cannot_release_success",
+        "transport::streamable_http_server::tower::terminal_stateless_tests::handler_panic_reaches_actual_http_owner_without_detached_join_error",
+        "transport::streamable_http_server::tower::terminal_stateless_tests::outbound_requests_notifications_and_same_poll_enqueue_are_explicitly_rejected",
+        "transport::streamable_http_server::tower::terminal_stateless_tests::terminal_constructor_and_config_mutation_cannot_enable_spawned_transport",
+        "transport::streamable_http_server::tower::terminal_stateless_tests::inherited_headers_origin_protocol_and_body_limits_reject_before_dispatch",
+        "transport::streamable_http_server::tower::terminal_stateless_tests::asynchronous_inbound_messages_are_rejected_instead_of_acknowledged_and_dropped"
+      ]
+    },
+    {
+      "name": "rmcp-upstream-protocol",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--manifest-path",
+        "vendor/rmcp-3.2.0/Cargo.toml",
+        "--message-format=json-render-diagnostics",
+        "--features",
+        "client,transport-streamable-http-server,reqwest",
+        "--test",
+        "test_streamable_http_json_response",
+        "--test",
+        "test_streamable_http_standard_headers",
+        "--test",
+        "test_streamable_http_protocol_version",
+        "--test",
+        "test_stateless_protocol_version",
+        "--test",
+        "test_protocol_version_negotiation",
+        "--test",
+        "test_server_discover",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "stateless_json_response_returns_application_json",
+        "stateless_negotiated_terminal_response_returns_application_json",
+        "stateless_json_response_falls_back_to_sse_for_progress",
+        "stateless_negotiated_json_response_falls_back_to_sse_for_progress",
+        "stateless_sse_mode_default_unchanged",
+        "json_response_ignored_in_legacy_session_mode",
+        "accepts_matching_standard_headers",
+        "rejects_method_mismatch_with_32020",
+        "rejects_missing_method_header_with_32020",
+        "rejects_name_mismatch_with_32020",
+        "skips_validation_for_pre_sep_version",
+        "accepts_matching_param_header",
+        "rejects_param_mismatch_with_32020",
+        "rejects_decoded_base64_param_mismatch_with_32020",
+        "rejects_missing_param_header_with_32020",
+        "stateless_init_rejects_when_header_older_than_body",
+        "stateless_init_rejects_when_header_newer_than_body",
+        "stateless_init_accepts_when_header_matches_body",
+        "stateless_init_accepts_when_header_absent",
+        "stateless_init_naming_a_post_handshake_version_negotiates_down",
+        "stateful_init_rejects_when_header_mismatches_body",
+        "stateful_rejected_initial_posts_do_not_create_sessions",
+        "stateful_init_naming_a_post_handshake_version_opens_a_legacy_session",
+        "stateless_missing_protocol_header_returns_header_mismatch",
+        "stateless_tools_list_rejects_missing_request_meta",
+        "stateless_tools_call_rejects_missing_request_meta",
+        "stateless_request_rejects_missing_meta_protocol_version",
+        "stateless_request_rejects_missing_meta_client_capabilities",
+        "stateless_request_accepts_missing_optional_meta_client_info",
+        "seam_disabled_preserves_stateless_compatibility",
+        "seam_mixed_mode_enforces_only_stateless_routed_requests",
+        "seam_opt_in_rejects_missing_header_before_dispatch",
+        "seam_opt_in_rejects_missing_meta_before_dispatch",
+        "seam_opt_in_rejects_missing_client_capabilities_before_dispatch",
+        "seam_opt_in_dispatches_when_header_and_meta_present",
+        "seam_opt_in_rejects_older_rmcp_client_request_shape",
+        "seam_opt_in_preserves_standard_header_precedence",
+        "seam_opt_in_preserves_initialize_rules",
+        "seam_opt_in_notifications_return_202",
+        "seam_opt_in_discover_rejects_missing_header",
+        "stateless_json_init_echoes_handshake_versions_when_handler_overrides_initialize",
+        "stateless_sse_init_echoes_handshake_versions_when_handler_overrides_initialize",
+        "stateless_json_init_preserves_handler_fallback_for_unknown_version",
+        "stateless_json_init_echoes_versions_the_server_narrowed_to",
+        "stateless_json_init_does_not_agree_to_version_outside_supported_list",
+        "handshake_version_echoed_back",
+        "handshake_never_agrees_to_a_version_that_dropped_it",
+        "modern_only_server_rejects_the_handshake",
+        "unknown_version_falls_back_to_latest",
+        "narrowed_server_still_echoes_versions_it_supports",
+        "narrowed_server_does_not_agree_to_version_it_excludes",
+        "narrowed_server_caps_even_when_it_overrides_initialize",
+        "discover_request_deserializes_with_request_meta",
+        "discover_result_deserializes_to_typed_variant",
+        "discover_result_accepts_server_info_in_namespaced_metadata",
+        "discover_result_serializes_server_info_in_namespaced_metadata",
+        "discover_result_ignores_legacy_top_level_server_info",
+        "discover_result_allows_missing_or_malformed_optional_server_info",
+        "unsupported_protocol_version_error_matches_draft_schema",
+        "missing_required_capability_error_matches_draft_schema"
+      ]
+    },
+    {
+      "name": "raft-application-write-classification",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-raft",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "write_errors::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "write_errors::tests::application_redirect_recognizes_exact_type_through_anyhow_context",
+        "write_errors::tests::application_redirect_never_reclassifies_fatal_or_other_api_errors"
+      ]
+    },
+    {
+      "name": "engine-proposal-registry",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "service::proposal_jobs::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "service::proposal_jobs::tests::registry_is_bounded_and_uses_the_original_node_charge",
+        "service::proposal_jobs::tests::completed_response_retains_command_workspace_and_registration_until_consumed",
+        "service::proposal_jobs::tests::timed_out_call_retains_actual_child_and_cannot_cancel_its_effect",
+        "service::proposal_jobs::tests::cancelled_drain_preserves_prior_panic_while_later_child_remains_owned",
+        "service::proposal_jobs::tests::original_error_and_charge_survive_cancelled_caller_and_registry_drop",
+        "service::proposal_jobs::tests::definite_request_rejection_does_not_poison_proposal_custody"
+      ]
+    },
+    {
+      "name": "engine-cancelled_submit_keeps_actual_proposal_until_original_identity_is_resolvable",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "cancelled_submit_keeps_actual_proposal_until_original_identity_is_resolvable",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "service::tests::cancelled_submit_keeps_actual_proposal_until_original_identity_is_resolvable"
+      ]
+    },
+    {
+      "name": "engine-cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shutdown",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shutdown",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "service::tests::cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shutdown"
+      ]
+    },
+    {
+      "name": "engine-actual_raft_leadership_redirect_does_not_poison_proposal_custody",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "actual_raft_leadership_redirect_does_not_poison_proposal_custody",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "service::tests::actual_raft_leadership_redirect_does_not_poison_proposal_custody"
+      ]
+    },
+    {
+      "name": "engine-retirement_workspace_rejection_is_definite_and_does_not_poison_custody",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "retirement_workspace_rejection_is_definite_and_does_not_poison_custody",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "service::tests::retirement_workspace_rejection_is_definite_and_does_not_poison_custody"
+      ]
+    },
+    {
+      "name": "engine-queued_deadlines_use_admission_time_and_survive_caller_cancellation",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "queued_deadlines_use_admission_time_and_survive_caller_cancellation",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "service::tests::queued_deadlines_use_admission_time_and_survive_caller_cancellation"
+      ]
+    },
+    {
+      "name": "authority-request-child-custody",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-authority",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "service::tests::request_drain_tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "service::tests::request_drain_tests::cancelled_public_command_waiter_keeps_actual_child_until_its_receipt_commits",
+        "service::tests::request_drain_tests::acknowledgement_timeout_keeps_original_command_owner_and_actual_completion",
+        "service::tests::request_drain_tests::ordinary_command_rejection_is_preserved_without_fencing_or_failed_drain",
+        "service::tests::request_drain_tests::actual_child_panic_fences_admission_and_cancelled_drain_keeps_original_join_error",
+        "service::tests::request_drain_tests::request_registry_metadata_charge_outlives_cancelled_waiters_and_dropped_facade",
+        "service::tests::request_drain_tests::request_child_inventory_is_bounded_and_capacity_denial_does_not_fence_owner",
+        "service::tests::request_drain_tests::authority_shutdown_retains_admitted_jobs_and_returned_fences_after_waiter_cancellation",
+        "service::tests::request_drain_tests::original_signer_authorization_is_reused_when_all_native_slots_are_occupied"
+      ]
+    },
+    {
+      "name": "engine-owned-response-fence",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "owned_response_fence_retains_workspace_and_original_credential_after_adapter_return",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "service::tests::owned_response_fence_retains_workspace_and_original_credential_after_adapter_return"
+      ]
+    },
+    {
+      "name": "server-mcp-response-fencing",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "mcp::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "mcp::credential_tests::catalog_body_wait_rechecks_revoked_credential_before_http_release",
+        "mcp::credential_tests::terminal_body_is_materialized_with_its_admission_before_credential_release",
+        "mcp::credential_tests::sdk_response_keeps_original_policy_epoch_until_http_release",
+        "mcp::credential_tests::catalog_response_wait_preserves_original_expiry_after_family_renewal",
+        "mcp::credential_tests::dispatched_mutation_response_wait_reports_unknown_outcome_after_revocation",
+        "mcp::credential_tests::unexpected_streaming_response_is_rejected_before_body_handoff",
+        "mcp::credential_tests::terminal_body_limits_errors_and_length_mismatches_are_enforced_before_release",
+        "mcp::response_tests::quoted_payload_stays_within_wire_limit_without_redundant_text_copy",
+        "mcp::response_tests::literal_marker_keys_survive_tool_output_and_typed_arguments",
+        "mcp::response_tests::envelope_accounting_includes_large_request_ids_and_bounds_errors",
+        "mcp::credential_tests::sdk_terminal_transport_failure_preserves_dispatched_mutation_uncertainty"
+      ]
+    },
+    {
+      "name": "server-shared_adapter_release_audits_a_seal_after_response_encoding",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "shared_adapter_release_audits_a_seal_after_response_encoding",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "api::tests::shared_adapter_release_audits_a_seal_after_response_encoding"
+      ]
+    },
+    {
+      "name": "server-encoded_response_credential_expiry_is_audited_and_preserves_committed_receipt",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "encoded_response_credential_expiry_is_audited_and_preserves_committed_receipt",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "api::tests::encoded_response_credential_expiry_is_audited_and_preserves_committed_receipt"
+      ]
+    },
+    {
+      "name": "server-native_and_mcp_lost_committed_responses_resolve_without_reapplying",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "native_and_mcp_lost_committed_responses_resolve_without_reapplying",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "api::tests::native_and_mcp_lost_committed_responses_resolve_without_reapplying"
+      ]
+    },
+    {
+      "name": "complete-store-library",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-store",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "node_file::tests::unrelated_clean_and_unclean_redb_rejection_is_byte_exact",
+        "node_file::tests::recognized_store_recovers_after_actual_process_exit_without_close",
+        "node_file::tests::partial_envelopes_are_never_adopted_or_reinitialized",
+        "node_file::tests::existing_header_requires_exact_canonical_fields_and_checksum",
+        "node_file::tests::initialization_requires_exact_journal_owned_empty_inode",
+        "node_file::tests::offset_io_preserves_header_and_retained_backend_cannot_outlive_close",
+        "node_file::tests::canonical_header_rejects_nil_identity_without_creating_a_file",
+        "node_file::tests::validated_descriptor_handoff_never_reopens_a_substituted_path",
+        "node_file::tests::cleanup_custody_accepts_only_exact_recognized_headers_and_holds_the_inode_lock",
+        "node_store_ids::tests::immutable_identity_derivations_are_stable_and_domain_separated",
+        "storage_domains::existing_tests::missing_catalogs_and_authenticated_binding_never_provision_during_reopen",
+        "storage_domains::existing_tests::existing_catalog_admission_cannot_provision_after_waiting_for_the_open_gate",
+        "storage_domains::existing_tests::corrupt_or_authenticated_wrong_binding_is_never_repaired_by_reopen",
+        "storage_domains::existing_tests::exact_standalone_binding_reopens_after_both_domains_close_and_drain",
+        "node_file::tests::reads_enforce_payload_bounds_even_for_empty_buffers",
+        "node_file::tests::resize_drains_a_write_after_its_extent_check_before_truncating",
+        "storage_domains::tests::initial_state_rejects_unknown_records_in_either_complete_domain",
+        "storage_domains::tests::initial_state_checks_and_joint_publication_have_one_concurrent_winner",
+        "storage_domains::tests::initial_state_requires_the_exact_retained_custody_binding",
+        "storage_domains::tests::initial_state_rejects_delete_only_publications_without_consuming_initialization",
+        "storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits",
+        "storage_domains::catalog_initialization::tests::buffered_unclaimed_ticket_drains_only_unpublished_new_owners",
+        "storage_domains::catalog_initialization::tests::committed_pair_handoff_preserves_a_concurrent_borrower_through_initializer_drain",
+        "storage_domains::catalog_initialization::tests::fresh_pair_rejects_shared_partial_and_orphan_domains_without_mutation",
+        "storage_domains::catalog_initialization::tests::cancelled_receiver_keeps_preparation_registered_until_actual_provider_work_drains",
+        "storage_domains::existing_catalogs::tests::application_failure_drains_new_custody_without_changing_existing_bytes",
+        "storage_domains::existing_catalogs::tests::application_failure_preserves_borrowed_custody_and_original_deadline",
+        "storage_domains::existing_catalogs::tests::caller_cancellation_drains_only_new_domains_after_active_provider_work",
+        "storage_domains::existing_catalogs::tests::caller_cancellation_never_closes_a_borrowed_custody_owner",
+        "storage_domains::existing_catalogs::tests::buffered_existing_pair_ticket_publishes_nothing_and_drains_its_new_workers",
+        "storage_domains::existing_catalogs::tests::missing_binding_rejects_new_custody_and_leaves_every_existing_byte_unchanged",
+        "storage_domains::existing_catalogs::tests::unclaimed_borrowed_pair_and_changed_binding_never_close_its_cached_owners",
+        "single_catalog::tests::production_singletons_reject_paired_capabilities_before_provider_or_catalog_effects",
+        "single_catalog::tests::strict_singleton_creation_rejects_orphan_partial_and_existing_catalogs_without_mutation",
+        "single_catalog::tests::existing_singleton_requires_installed_catalog_and_never_repairs_cached_substitution",
+        "single_catalog::tests::buffered_singleton_success_publishes_only_on_claim_and_abandonment_preserves_borrowers",
+        "single_catalog::tests::borrowed_singleton_keeps_original_provider_clock_and_deadline",
+        "single_catalog::tests::buffered_singleton_preparation_errors_require_actual_claim_and_preserve_partial_installation",
+        "single_catalog::tests::cancelled_singleton_drain_retains_buffered_preparation_error",
+        "single_catalog::tests::cancelling_during_singleton_key_preparation_retains_actual_node_until_provider_drains",
+        "storage_domains::catalog_initialization::tests::buffered_preparation_error_requires_claim_before_registry_forgets_it",
+        "storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_unclaimed_preparation_error",
+        "storage_domains::catalog_initialization::tests::admission_reaper_reports_unclaimed_preparation_failure_before_new_work",
+        "storage_domains::existing_catalogs::tests::buffered_existing_preparation_failure_requires_claim_and_preserves_borrowed_owners",
+        "tests::dormant_store_workers_stop_cooperatively_and_external_abort_is_reported",
+        "tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner",
+        "live_trust::tests::dropped_closed_verifier_keeps_cache_fence_until_actual_background_join",
+        "live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement",
+        "node_disk::tests::duplicate_live_inode_open_requires_explicit_owner_clone",
+        "node_disk::tests::live_shrink_requires_the_only_mutable_file_owner",
+        "node_disk::tests::live_shrink_cannot_release_unmaterialized_or_unsynced_growth",
+        "node_disk::tests::live_shrink_retains_identity_and_lock_with_exact_reopen_accounting",
+        "node_disk::tests::live_shrink_failure_retains_charges_through_drop_and_fences_shared_device",
+        "backup_sessions::tests::visible_session_outcomes_require_durable_readback_before_resolution_or_cleanup",
+        "backup_sessions::tests::recovered_session_root_requires_file_and_directory_sync_before_readback"
+      ]
+    },
+    {
+      "name": "strict-store",
+      "timeout_seconds": 600,
+      "cargo_args": [
+        "clippy",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-store",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "required_tests": []
+    },
+    {
+      "name": "complete-serving-library",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-serving",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "background_work::tests::closing_cannot_cross_an_admitted_but_not_yet_spawned_worker",
+        "background_work::tests::repeated_and_concurrent_drains_preserve_original_join_error",
+        "background_work::tests::actual_child_abort_keeps_its_original_cancelled_join_error",
+        "background_work::tests::cancelled_drain_retains_exact_child_and_charge_after_all_facades_drop",
+        "background_work::tests::finished_child_remains_in_custody_until_actual_join_observation",
+        "background_work::tests::nonblocking_observation_preserves_the_active_join_waiter",
+        "background_work::tests::never_started_close_is_terminal_and_cannot_later_spawn",
+        "background_work::tests::shared_capacity_rejection_never_spawns_and_completed_cells_keep_their_charge",
+        "live_trust::background_tests::live_close_waits_for_actual_worker_registration_publication",
+        "live_trust::background_tests::close_and_capacity_reject_unpolled_work_and_success_churn_is_bounded",
+        "live_trust::background_tests::cancelled_multiworker_drain_keeps_original_failure_and_seals_registration",
+        "live_trust::background_tests::resource_owner_drops_after_actual_join_without_a_registry_cycle",
+        "background_work::tests::fallible_child_retains_original_error_after_cancelled_drain_and_facade_drop"
+      ]
+    },
+    {
+      "name": "engine-database-worker-outcomes",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "service::database_worker_outcome_tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "service::database_worker_outcome_tests::cancelled_database_drain_keeps_monitor_panic_before_pending_audit_child",
+        "service::database_worker_outcome_tests::aborted_database_monitor_retains_its_blocking_child_and_distinct_panic",
+        "service::database_worker_outcome_tests::database_audit_blocking_panic_is_terminal_and_retained",
+        "service::database_worker_outcome_tests::database_shutdown_cancels_undispatched_shared_permit_wait_before_other_tenant_drain"
+      ]
+    },
+    {
+      "name": "engine-audit-worker-outcomes",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "security_audit::jobs::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "security_audit::jobs::tests::cancelled_record_and_drain_retain_actual_blocking_panic_before_physical_reopen",
+        "security_audit::jobs::tests::cancelled_maintenance_retains_publication_panic_and_unpruned_history"
+      ]
+    },
+    {
+      "name": "engine-control-genesis",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "bootstrap::control_genesis::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "bootstrap::control_genesis::tests::replicated_genesis_requires_explicit_tag_payload_and_lifecycle_kind",
+        "bootstrap::control_genesis::tests::control_genesis_is_deterministic_bounded_and_part_of_bootstrap_identity",
+        "bootstrap::control_genesis::tests::applied_control_requires_exact_schema_and_document_without_resetting_current_routes",
+        "bootstrap::control_genesis::tests::control_genesis_rejects_wrong_storage_purpose_before_deployment_publication",
+        "bootstrap::control_genesis::tests::strict_control_reopen_rejects_partial_genesis_without_catalog_or_raft_mutation"
+      ]
+    },
+    {
+      "name": "server-serving-owner",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "serving_owner::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "serving_owner::tests::unpolled_serving_waiter_drop_retains_physical_owner_through_cancelled_drain",
+        "serving_owner::tests::serving_poll_and_drain_panics_keep_actual_owner_and_original_failures",
+        "serving_owner::tests::aborted_serving_supervisor_keeps_inventory_for_joined_cleanup_only",
+        "serving_owner::tests::unacknowledged_failure_fences_only_its_installation_and_drains_refused_replacement",
+        "serving_owner::tests::panicking_owner_destructor_retains_unavailable_census_without_respawn_churn",
+        "serving_owner::tests::serving_registration_retains_memory_without_an_inflight_operation_slot"
+      ]
+    },
+    {
+      "name": "server-retired-source",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "runtime::retired_source_tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "runtime::retired_source_tests::retired_registration_rejection_retains_new_owner_until_cancelled_waiter_drains",
+        "runtime::retired_source_tests::retired_preparation_panic_drains_only_new_custody_owner"
+      ]
+    },
+    {
+      "name": "server-serving-task-drain",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "runtime::serving_task_drain_tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "runtime::serving_task_drain_tests::cancelled_serving_drain_retains_joined_panic_and_exact_pending_owner",
+        "runtime::serving_task_drain_tests::serving_drain_keeps_every_panic_abort_and_returned_error",
+        "runtime::serving_task_drain_tests::aborted_listener_retains_http1_and_http2_requests_until_exact_nested_join",
+        "runtime::serving_task_drain_tests::required_listener_failure_interrupts_pending_startup_before_retained_owner_drain",
+        "runtime::serving_task_drain_tests::standalone_startup_without_cluster_listener_can_complete"
+      ]
+    },
+    {
+      "name": "server-control-genesis",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "control_genesis::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "control_genesis::tests::cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_drain",
+        "control_genesis::tests::failed_control_genesis_drains_actual_pair_before_returning_enrollment_error",
+        "control_genesis::tests::panicked_ha_enrollment_drains_nested_node_audit_pair_and_database_owners"
+      ]
+    },
+    {
+      "name": "server-standalone-tenant-staging",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "standalone::tenant_staging::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "standalone::tenant_staging::tests::cancelled_staging_retains_exclusive_owner_until_configuration_and_workers_finish",
+        "standalone::tenant_staging::tests::staging_replay_resolves_lost_configuration_outcome_without_replacing_keys",
+        "standalone::tenant_staging::tests::interrupted_key_creation_never_adopts_files_or_reuses_its_dispatch"
+      ]
+    },
+    {
+      "name": "server-standalone-tenant-enrollment",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "standalone::tenant_enrollment_tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "standalone::tenant_enrollment_tests::unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs",
+        "standalone::tenant_enrollment_tests::explicitly_enrolled_standalone_tenant_requires_bound_profile_and_survives_restart"
+      ]
+    },
+    {
+      "name": "server-configured-tenant-enrollment",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "administration::configured_tenant_enrollment::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "administration::configured_tenant_enrollment::tests::cancelled_preparation_of_borrowed_resident_preserves_its_original_storage_owner",
+        "administration::configured_tenant_enrollment::tests::closure_before_actual_enrollment_handoff_rejects_publication_and_preserves_borrowed_owner",
+        "administration::configured_tenant_enrollment::tests::abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state"
+      ]
+    },
+    {
+      "name": "server-runtime-lifecycle",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "runtime::lifecycle_tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "runtime::lifecycle_tests::panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtime",
+        "runtime::lifecycle_tests::rejected_cold_audit_open_drains_storage_and_releases_the_standalone_installation",
+        "runtime::lifecycle_tests::completed_runtime_shutdown_failure_retains_diagnostic_and_installation_lock",
+        "runtime::lifecycle_tests::actual_standalone_unpolled_serve_and_serving_panic_retain_installation_until_join"
+      ]
+    },
+    {
+      "name": "server-signer-runtime",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "signer_runtime::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "signer_runtime::tests::complete_domain_worker_budget_is_reserved_before_verifier_storage_open",
+        "signer_runtime::tests::renewal_shutdown_keeps_its_handle_through_cancelled_join_and_verifier_reopen",
+        "signer_runtime::tests::verifier_shutdown_joins_renewal_after_setup_owner_is_dropped",
+        "signer_runtime::tests::explicit_encrypted_verifier_initialization_never_bootstraps_runtime_trust",
+        "signer_runtime::tests::partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_reseeded",
+        "signer_runtime::tests::initialization_rejects_noninitial_and_mismatched_domains_without_publishing",
+        "signer_runtime::tests::operational_source_is_private_bounded_and_cannot_substitute_installed_trust",
+        "signer_runtime::tests::panicked_verifier_initialization_drains_each_acquired_encrypted_owner",
+        "signer_runtime::tests::cancelled_verifier_initialization_retains_physical_owner_and_unclaimed_panic"
+      ]
+    },
+    {
+      "name": "server-tls-lifecycle",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "tls::lifecycle_tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "tls::lifecycle_tests::unsupported_listener_capacity_returns_error_without_spawning_owners",
+        "tls::lifecycle_tests::accept_io_failure_drains_active_tls_request_before_releasing_node",
+        "tls::lifecycle_tests::socket_setup_failure_is_audited_and_does_not_stop_listener",
+        "tls::lifecycle_tests::reset_queued_before_listener_start_is_audited_and_next_tls_request_succeeds"
+      ]
+    },
+    {
+      "name": "server-tls-task-custody",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "tls_tasks::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "tls_tasks::tests::sealed_executor_late_spawn_preserves_the_actual_drain_waker"
+      ]
+    },
+    {
+      "name": "server-local-recovery-generation-custody",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "local_recovery::tests::failed_restored_generation_startup_retains_alternate_node_through_cancelled_drain",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "local_recovery::tests::failed_restored_generation_startup_retains_alternate_node_through_cancelled_drain"
+      ]
+    },
+    {
+      "name": "complete-client-library",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-client",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "installed_pool::tests::receipt_resolution_selects_leader_then_resolves_without_redispatch_or_renewal",
+        "installed_pool::tests::absent_receipt_after_ambiguity_never_authorizes_another_effect",
+        "lifecycle_pool::tests::installation_receipt_requires_original_identity_input_and_revision",
+        "lifecycle_pool::tests::policy_change_resolution_preserves_original_revision_and_completion_inputs"
+      ]
+    },
+    {
+      "name": "engine-custody-receipt",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "service::tests::committed_custody_with_expired_ack_recovers_only_with_fresh_authority",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "service::tests::committed_custody_with_expired_ack_recovers_only_with_fresh_authority"
+      ]
+    },
+    {
+      "name": "engine-lifecycle-exact-completion",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--test",
+        "lifecycle",
+        "--message-format=json-render-diagnostics",
+        "replicated_control_change_pins_all_partitions_freezes_issuance_and_recovers_self_revocation",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "replicated_control_change_pins_all_partitions_freezes_issuance_and_recovers_self_revocation"
+      ]
+    },
+    {
+      "name": "native-custody-receipt",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "api::tests::native_backup_proof_is_admin_only_configured_and_verified_through_secure_sdk",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "api::tests::native_backup_proof_is_admin_only_configured_and_verified_through_secure_sdk"
+      ]
+    },
+    {
+      "name": "authority-enrollment-ownership",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "authority_node_enrollment::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "authority_node_enrollment::tests::authority_enrollment_panics_drain_owned_nodes_verifier_and_both_domains",
+        "authority_node_enrollment::tests::cancelled_authority_enrollment_joins_dispatched_genesis_and_preserves_both_panics"
+      ]
+    },
+    {
+      "name": "explicit-original-voters",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "runtime::tests::replication_requires_explicit_original_voters_when_decoding_and_validating",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "runtime::tests::replication_requires_explicit_original_voters_when_decoding_and_validating"
+      ]
+    },
+    {
+      "name": "engine-audit-preproposal-outage",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "service::audit_maintenance_service::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "service::audit_maintenance_service::tests::external_archive_outage_before_proposal_preserves_hot_history_and_raft_availability",
+        "service::audit_maintenance_service::tests::encrypted_worker_drains_hot_history_when_ordinary_capacity_is_full"
+      ]
+    },
+    {
+      "name": "engine-tenant-audit-local-apply",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "state::tenant_audit::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "state::tenant_audit::tests::uncertain_preparation_reopens_the_same_encrypted_object_after_restart",
+        "state::tenant_audit::tests::uncertain_publication_keeps_hot_prefix_and_apply_never_recontacts_external_archive",
+        "state::tenant_audit::tests::authenticated_wrong_prefix_and_corrupt_ciphertext_never_prune"
+      ]
+    },
+    {
+      "name": "engine-security-audit-repeated-retention",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "security_audit::retention::tests::uncertain_publication_survives_restart_and_repeated_hot_budget_crossings_preserve_complete_history",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "security_audit::retention::tests::uncertain_publication_survives_restart_and_repeated_hot_budget_crossings_preserve_complete_history"
+      ]
+    },
+    {
+      "name": "engine-audit-snapshot-dependencies",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "state::snapshot_bundle::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "state::snapshot_bundle::tests::replacement_receives_complete_chain_and_restart_uses_local_dependencies",
+        "state::snapshot_bundle::tests::incomplete_or_corrupt_bundle_never_publishes_pruned_state",
+        "state::snapshot_bundle::tests::missing_archive_and_incorrect_totals_prevent_snapshot_completion"
+      ]
+    },
+    {
+      "name": "engine-audit-backup-source-unavailable",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--test",
+        "backup_checkpoint",
+        "--message-format=json-render-diagnostics",
+        "archived_audit_backup_is_self_contained_and_source_unavailable_restore_preserves_exact_chain",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "archived_audit_backup_is_self_contained_and_source_unavailable_restore_preserves_exact_chain"
+      ]
+    }
+  ]
+}

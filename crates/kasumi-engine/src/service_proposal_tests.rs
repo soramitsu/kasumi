@@ -123,7 +123,7 @@ async fn cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shu
 async fn actual_raft_leadership_redirect_does_not_poison_proposal_custody() {
     let fixture = CredentialFixture::new().await;
     let raft = fixture.db.group.raft();
-    raft.enable_elect(false);
+    raft.runtime_config().elect(false);
     let gate = fixture.db.proposal_gate.lock().await;
     let batch = credential_batch("leadership-change-proposal");
     let mut request = Box::pin(fixture.db.mutate(fixture.context.clone(), batch.clone()));

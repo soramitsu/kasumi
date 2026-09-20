@@ -30,6 +30,15 @@ acceptance remain open. Physical host observations in
 
 ## Latest combined checkpoint
 
+The [frozen `207ae69` successor](evidence/first-release-207ae69-check-20260920/README.md)
+failed its first compilation gate: the new shared authority request helper had
+private child-module visibility. All 45 later gates were unrun. Its process
+group drained and source stayed unchanged. The scoped correction also ensures
+the unwind guard lives inside the actual authority child. All 46 gates and 247
+mandatory cases remain required for the successor.
+
+## Preceding SDK and ownership checkpoint
+
 The [frozen `f2921f5` successor](evidence/first-release-f2921f5-check-20260920/README.md)
 passed 16 gates, including all 69 SDK cases, all 11 MCP cases, 154 store tests,
 strict store lint and all six repaired serving owner fixtures. The next

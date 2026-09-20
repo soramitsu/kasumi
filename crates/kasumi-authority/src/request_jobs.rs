@@ -1,7 +1,7 @@
 //! Exact accepted request children remain in bounded custody when their caller
 //! disappears. The registry stores no response fence or authority back-reference.
 use super::*;
-use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
+use kasumi_types::drain::{DrainCompletion, DrainReport, DrainResult};
 use std::future::Future;
 use tokio::sync::oneshot;
 
@@ -133,13 +133,13 @@ impl RequestJobs {
         let outcome = Arc::new(Mutex::new(None));
         let observed = outcome.clone();
         let (send, receive) = oneshot::channel();
-        let mut guard = ExecutionGuard {
-            requests,
-            returned: false,
-        };
         child
             .start(
                 async move {
+                    let mut guard = ExecutionGuard {
+                        requests,
+                        returned: false,
+                    };
                     let result = task.await;
                     *observed.lock().unwrap_or_else(|p| p.into_inner()) =
                         Some(result.as_ref().map(|_| ()).map_err(Clone::clone));
@@ -148,6 +148,7 @@ impl RequestJobs {
                     // No response or authority Arc is stored in the registry.
                     let _ = send.send(result);
                     guard.returned = true;
+                    drop(guard);
                 },
                 &self.budget,
             )
@@ -189,7 +190,7 @@ impl RequestJobs {
 }
 
 impl IndependentAuthority {
-    async fn accepted_request<T: Send + 'static>(
+    pub(super) async fn accepted_request<T: Send + 'static>(
         self: &Arc<Self>,
         deadline: tokio::time::Instant,
         task: impl Future<Output = Result<T>> + Send + 'static,
