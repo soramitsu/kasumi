@@ -5,10 +5,11 @@ use std::{future::Future, task::Poll};
 
 fn admission() -> Arc<NodeAdmission> {
     NodeAdmission::with_fixed_memory(
-        AdmissionConfig {
+        crate::test_utils::admission_config_with_bookkeeping(AdmissionConfig {
             max_inflight_bytes: Some(128 << 20),
             ..Default::default()
-        },
+        })
+        .unwrap(),
         1 << 30,
         1 << 20,
     )
@@ -30,7 +31,7 @@ async fn registry_is_bounded_and_uses_the_original_node_charge() {
     let jobs = Jobs::default();
     jobs.prepare(&admission).unwrap();
     assert_eq!(
-        admission.snapshot().reserved_bytes,
+        crate::test_utils::reserved_payload_bytes(&admission),
         BackgroundWorkBudget::required_bytes(MAX_PROPOSALS, 1).unwrap()
     );
     assert_eq!(admission.snapshot().inflight_operations, 0);
@@ -56,7 +57,7 @@ async fn registry_is_bounded_and_uses_the_original_node_charge() {
         release.send(()).unwrap();
     }
     jobs.drain().await.unwrap();
-    assert_eq!(admission.snapshot().reserved_bytes, 0);
+    assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
     assert!(jobs.start_task(async { Ok(()) }).is_err());
 }
 
@@ -65,7 +66,7 @@ async fn completed_response_retains_command_workspace_and_registration_until_con
     let admission = admission();
     let jobs = Jobs::default();
     jobs.prepare(&admission).unwrap();
-    let metadata = admission.snapshot().reserved_bytes;
+    let metadata = crate::test_utils::reserved_payload_bytes(&admission);
     let fence = Arc::new(WorkFence::default());
     let registration = Arc::new(fence.begin(QueryCancellation::default()).unwrap());
     let mut workspace = admission.reserve(1 << 20, None).unwrap();
@@ -82,7 +83,10 @@ async fn completed_response_retains_command_workspace_and_registration_until_con
     let response = call.wait(Duration::from_secs(5)).await.unwrap();
     jobs.check().unwrap();
     assert_eq!(response.bytes, b"terminal result");
-    assert_eq!(admission.snapshot().reserved_bytes, metadata + (1 << 20));
+    assert_eq!(
+        crate::test_utils::reserved_payload_bytes(&admission),
+        metadata + (1 << 20)
+    );
     assert_eq!(admission.snapshot().inflight_operations, 0);
     let mut drain = Box::pin(fence.drain());
     std::future::poll_fn(|cx| {
@@ -92,9 +96,12 @@ async fn completed_response_retains_command_workspace_and_registration_until_con
     .await;
     drop(response);
     drain.await;
-    assert_eq!(admission.snapshot().reserved_bytes, metadata);
+    assert_eq!(
+        crate::test_utils::reserved_payload_bytes(&admission),
+        metadata
+    );
     jobs.drain().await.unwrap();
-    assert_eq!(admission.snapshot().reserved_bytes, 0);
+    assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
 }
 
 #[tokio::test]
@@ -134,7 +141,7 @@ async fn timed_out_call_retains_actual_child_and_cannot_cancel_its_effect() {
     release.send(()).unwrap();
     jobs.drain().await.unwrap();
     assert!(effect.load(std::sync::atomic::Ordering::Acquire));
-    assert_eq!(admission.snapshot().reserved_bytes, 0);
+    assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
 }
 
 #[tokio::test]
@@ -216,7 +223,7 @@ async fn original_error_and_charge_survive_cancelled_caller_and_registry_drop() 
     let worker = Arc::downgrade(&call.worker);
     drop(call);
     drop(jobs);
-    assert!(admission.snapshot().reserved_bytes > 0);
+    assert!(crate::test_utils::reserved_payload_bytes(&admission) > 0);
     release.send(()).unwrap();
     let recovered = worker
         .upgrade()
@@ -232,7 +239,7 @@ async fn original_error_and_charge_survive_cancelled_caller_and_registry_drop() 
     assert!(Arc::ptr_eq(&failure.issues()[0], &again.issues()[0]));
     drop(recovered);
     assert!(worker.upgrade().is_none());
-    assert_eq!(admission.snapshot().reserved_bytes, 0);
+    assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
 }
 
 #[tokio::test]
@@ -262,4 +269,53 @@ async fn definite_request_rejection_does_not_poison_proposal_custody() {
         .await
         .unwrap();
     jobs.drain().await.unwrap();
+}
+
+#[tokio::test]
+async fn admission_boundary_ignores_prior_slot_and_pending_preflight_before_retained_child() {
+    let admission = admission();
+    let jobs = Jobs::default();
+    jobs.prepare(&admission).unwrap();
+    jobs.start_task(async { Ok(()) })
+        .unwrap()
+        .wait(Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(jobs.state.lock().unwrap().slots.iter().any(Option::is_some));
+
+    let (finish_preflight, preflight) = tokio::sync::oneshot::channel::<()>();
+    let (release, waiting) = tokio::sync::oneshot::channel::<()>();
+    let effect = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let accepted = effect.clone();
+    let mut request = Box::pin(async {
+        preflight.await.unwrap();
+        jobs.start_task(async move {
+            waiting.await.unwrap();
+            accepted.store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        })
+        .unwrap()
+        .wait(Duration::from_secs(5))
+        .await
+    });
+    let mut admitted = Box::pin(jobs.wait_for_admission(request.as_mut()));
+    std::future::poll_fn(|cx| {
+        assert!(admitted.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    finish_preflight.send(()).unwrap();
+    admitted.await;
+    assert!(!effect.load(std::sync::atomic::Ordering::Acquire));
+    drop(request);
+
+    let mut drain = Box::pin(jobs.drain());
+    std::future::poll_fn(|cx| {
+        assert!(drain.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    release.send(()).unwrap();
+    drain.await.unwrap();
+    assert!(effect.load(std::sync::atomic::Ordering::Acquire));
 }

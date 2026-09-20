@@ -106,6 +106,7 @@ mod tests {
             )
             .is_err()
         );
+        let before_databases = admission.snapshot().reserved_bytes;
         let mut databases = Vec::new();
         for name in ["tenant", "__kasumi_control", "manual"] {
             let store = TenantStore::initialize_catalog_fixture(
@@ -142,23 +143,23 @@ mod tests {
                 database.audit_maintenance_status().is_some(),
                 name != "manual"
             );
-            database.install_admission(admission.clone()).unwrap();
-            database.install_admission(admission.clone()).unwrap();
-            assert!(
-                database
-                    .install_admission(NodeAdmission::new(Default::default()).unwrap())
-                    .is_err()
-            );
+            assert!(Arc::ptr_eq(database.admission(), &admission));
             databases.push(database);
         }
         assert_eq!(
             admission.snapshot().reserved_bytes,
-            3 * AuditRetentionBudget::MAINTENANCE_BYTES
+            before_databases
+                + 2 * AuditRetentionBudget::MAINTENANCE_BYTES
+                + 3 * kasumi_raft::SnapshotBufferOwner::required_bytes(
+                    kasumi_raft::SNAPSHOT_BUFFER_SLOTS,
+                )
+                .unwrap()
         );
         for database in databases {
             database.shutdown().await.unwrap();
         }
         audit.shutdown().await.unwrap();
-        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        let drained = admission.snapshot();
+        assert_eq!(drained.reserved_bytes, drained.bookkeeping_bytes);
     }
 }

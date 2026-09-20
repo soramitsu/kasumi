@@ -1,0 +1,92 @@
+--- a/crates/kasumi-engine/src/staged_terminal.rs
++++ b/crates/kasumi-engine/src/staged_terminal.rs
+@@ -398,6 +398,7 @@
+ pub(crate) struct Builder {
+     table: Arc<EncryptedTable>,
+     head: StagedTerminalHead,
++    failed: bool,
+ }
+ impl Builder {
+     pub(crate) fn new(
+@@ -409,9 +410,15 @@
+         Ok(Self {
+             table: Arc::new(EncryptedTable::new(disk, limit)?),
+             head: StagedTerminalHead::empty(tenant, origin)?,
++            failed: false,
+         })
+     }
+     pub(crate) fn push(&mut self, row: &Row, state: &TenantState) -> Result<()> {
++        ensure!(!self.failed, "terminal staging builder previously failed");
++        // A failed or unwinding push may already have changed the private head
++        // or persisted the identity without its ordinal. Neither can be exposed
++        // as a verified view, even if the requested final head happens to match.
++        self.failed = true;
+         row.validate(state)?;
+         advance(&mut self.head, row)?;
+         let index = Ordinal {
+@@ -422,9 +429,11 @@
+             .insert(&id_key(&row.key), &serde_json::to_vec(row)?)?;
+         self.table
+             .insert(&ordinal_key(row.ordinal), &serde_json::to_vec(&index)?)?;
++        self.failed = false;
+         Ok(())
+     }
+     pub(crate) fn finish(self, expected: &StagedTerminalHead) -> Result<View> {
++        ensure!(!self.failed, "terminal staging builder previously failed");
+         ensure!(
+             &self.head == expected,
+             "terminal stream final root/count/bytes differ"
+--- a/crates/kasumi-engine/src/staged_terminal_tests.rs
++++ b/crates/kasumi-engine/src/staged_terminal_tests.rs
+@@ -391,3 +391,51 @@
+         assert!(row.framed_bytes().unwrap() <= used + reserved);
+     }
+ }
++
++#[test]
++fn failed_terminal_ordinal_insert_never_publishes_advanced_head() {
++    let initial = state();
++    let empty = View::empty(&initial.tenant, &initial.incarnation).unwrap();
++    let (next, pending) = stop(&initial, &empty, "partial", &applied(1));
++    let row = &pending.rows[0];
++    let mut builder = Builder::new(
++        &ScratchDisk::fixture(),
++        scratch_limit(next.limits.max_snapshot_bytes).unwrap(),
++        &next.tenant,
++        &next.incarnation,
++    )
++    .unwrap();
++    // The real second insert fails after the identity has durably committed.
++    // The authenticated head has already advanced to the requested final value.
++    builder
++        .table
++        .insert(&ordinal_key(row.ordinal), b"occupied ordinal")
++        .unwrap();
++    let error = builder.push(row, &next).unwrap_err();
++    assert!(error.to_string().contains("duplicate staged key"));
++    assert!(builder.table.get(&id_key(&row.key)).unwrap().is_some());
++    assert_eq!(builder.head, next.staged_terminal_head);
++    assert!(builder.push(row, &next).is_err());
++    assert!(builder.finish(&next.staged_terminal_head).is_err());
++}
++
++#[test]
++fn rejected_terminal_row_permanently_disqualifies_valid_prefix() {
++    let initial = state();
++    let empty = View::empty(&initial.tenant, &initial.incarnation).unwrap();
++    let (next, pending) = stop(&initial, &empty, "prefix", &applied(1));
++    let row = &pending.rows[0];
++    let mut builder = Builder::new(
++        &ScratchDisk::fixture(),
++        scratch_limit(next.limits.max_snapshot_bytes).unwrap(),
++        &next.tenant,
++        &next.incarnation,
++    )
++    .unwrap();
++    builder.push(row, &next).unwrap();
++    let mut invalid = row.clone();
++    invalid.ordinal = 0;
++    assert!(builder.push(&invalid, &next).is_err());
++    assert_eq!(builder.head, next.staged_terminal_head);
++    assert!(builder.finish(&next.staged_terminal_head).is_err());
++}

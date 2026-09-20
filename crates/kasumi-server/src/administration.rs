@@ -451,6 +451,13 @@ impl Administration {
         admission: Arc<kasumi_engine::admission::NodeAdmission>,
         credential: crate::serving_runtime::CredentialSource,
     ) -> Result<Arc<Self>> {
+        if !Arc::ptr_eq(&admission, audit.admission()) {
+            return Err(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::Conflict,
+                "administration admission differs from security audit",
+            )
+            .into());
+        }
         let mut generations = BTreeMap::new();
         for tenant in tenants {
             registry.install_retirement_source(

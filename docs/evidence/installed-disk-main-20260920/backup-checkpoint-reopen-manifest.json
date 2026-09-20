@@ -1,0 +1,17 @@
+{
+  "patch_sha256": "f82138bab8a0b6caf1e0bb508a9f719b60897d24483730c48a0f9d2675cc53aa",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/tests/backup_checkpoint.rs",
+      "before_sha256": "e4233680b39e7449363e754b412d4c18c05fdd13713ff630cfaab63987e7af60",
+      "proposed_sha256": "338773beb1d53b2ca960e09fca32e79a9fe14ced685d6582dfc8df6ce20daf0d"
+    }
+  ],
+  "source_unchanged": true,
+  "rustfmt_stdin": "passed",
+  "git_apply_check": "passed",
+  "builds": "not run",
+  "evidence": {
+    "70-result.json": "fe68d2430016ab336bf029cc7db04dce0acc33a4dd307ea33785e5c4761fe0f5"
+  }
+}

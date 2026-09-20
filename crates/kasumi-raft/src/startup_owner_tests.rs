@@ -1,10 +1,12 @@
-use crate::{SnapshotBufferOwner, startup_owner::StartedGroup};
+use crate::{
+    SnapshotBufferOwner, startup_owner::StartedGroup, startup_test_utils::LocalStartupGate,
+};
 use anyhow::Result;
 use kasumi_types::drain::{DrainCompletion, DrainReport};
 use std::{
     future::{Future, poll_fn},
     sync::{
-        Arc, Mutex, Weak,
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -27,11 +29,11 @@ pub(crate) struct FixtureGroup {
     report: DrainReport,
 }
 impl FixtureGroup {
-    pub(crate) async fn shutdown(mut self) -> Result<()> {
+    pub(crate) async fn shutdown(mut self) -> kasumi_types::drain::DrainResult {
         if let Err(error) = (&mut self.child).await {
             self.report.record("startup fixture child", 0, error.into());
         }
-        self.report.complete().map_err(Into::into)
+        self.report.complete()
     }
 }
 async fn pending<F: Future>(future: std::pin::Pin<&mut F>) {
@@ -177,28 +179,6 @@ async fn oversized_startup_is_rejected_before_polling_or_global_publication() ->
     Ok(())
 }
 
-pub(crate) struct LocalStartupGate {
-    entered: tokio::sync::Notify,
-    release: tokio::sync::Semaphore,
-    // The owner embeds this hook in test builds. Store observations behind an
-    // explicit auto-trait boundary so SnapshotBufferOwner does not recursively
-    // contain Raft's associated SnapshotData channel types while proving Send.
-    raft: Mutex<Option<Arc<dyn std::any::Any + Send + Sync>>>,
-    ownership: Mutex<Option<Weak<AtomicBool>>>,
-    router: Mutex<Option<Weak<dyn Send + Sync>>>,
-}
-impl LocalStartupGate {
-    pub(crate) async fn pause(&self, group: &crate::RaftGroup) -> Result<()> {
-        *self.raft.lock().unwrap() = Some(Arc::new(group.raft.clone()));
-        *self.ownership.lock().unwrap() = Some(Arc::downgrade(&group.ownership));
-        let router: Arc<dyn Send + Sync> = group.local_route.as_ref().unwrap().0.clone();
-        *self.router.lock().unwrap() = Some(Arc::downgrade(&router));
-        self.entered.notify_one();
-        self.release.acquire().await.unwrap().forget();
-        Err(OriginalFailure(83).into())
-    }
-}
-
 struct Backend;
 impl crate::StateMachineBackend for Backend {
     fn close_application(&self) {}
@@ -242,14 +222,7 @@ async fn cancelled_local_initialization_drains_real_group_and_breaks_router_cycl
     )
     .await?;
     let owner = SnapshotBufferOwner::fixture();
-    let gate = Arc::new(LocalStartupGate {
-        entered: Default::default(),
-        release: tokio::sync::Semaphore::new(0),
-        raft: Default::default(),
-        ownership: Default::default(),
-        router: Default::default(),
-    });
-    *owner.local_startup_gate.lock().unwrap() = Some(gate.clone());
+    let gate = LocalStartupGate::install(&owner, OriginalFailure(83).into())?;
     let mut startup = Box::pin(crate::RaftGroup::local(
         1,
         "tenant-a".into(),

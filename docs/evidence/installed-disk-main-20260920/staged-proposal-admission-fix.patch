@@ -1,0 +1,159 @@
+diff --git a/crates/kasumi-engine/src/proposal_jobs.rs b/crates/kasumi-engine/src/proposal_jobs.rs
+--- a/crates/kasumi-engine/src/proposal_jobs.rs
++++ b/crates/kasumi-engine/src/proposal_jobs.rs
+@@ -22,6 +22,8 @@
+ }
+ #[derive(Default)]
+ struct State {
++    #[cfg(test)]
++    admitted: u64,
+     slots: [Option<Arc<BackgroundWork>>; MAX_PROPOSALS],
+     budget: Option<BackgroundWorkBudget>,
+     report: DrainReport,
+@@ -153,6 +155,11 @@
+                 "proposal registry has no memory reservation",
+             )
+         })?;
++        #[cfg(test)]
++        let admitted = state
++            .admitted
++            .checked_add(1)
++            .expect("test admission sequence");
+         let worker = Arc::new(BackgroundWork::default());
+         let (sender, response) = tokio::sync::oneshot::channel();
+         let admission = self.closed.clone();
+@@ -179,7 +186,42 @@
+                 )
+             })?;
+         state.slots[slot] = Some(worker.clone());
++        #[cfg(test)]
++        {
++            state.admitted = admitted;
++        }
+         Ok(Call { worker, response })
++    }
++
++    /// Drive this request through any asynchronous preflight until this registry
++    /// owns its actual child. Tests hold the ordered proposal gate and submit no
++    /// other requests concurrently. A prior completed slot cannot satisfy this
++    /// boundary, and an initial Pending read is not mistaken for admission.
++    #[cfg(test)]
++    pub(super) async fn wait_for_admission<F: Future>(&self, mut request: std::pin::Pin<&mut F>) {
++        let before = self
++            .state
++            .lock()
++            .unwrap_or_else(|p| p.into_inner())
++            .admitted;
++        std::future::poll_fn(|cx| {
++            assert!(
++                request.as_mut().poll(cx).is_pending(),
++                "request completed before the gated proposal admission boundary"
++            );
++            if self
++                .state
++                .lock()
++                .unwrap_or_else(|p| p.into_inner())
++                .admitted
++                > before
++            {
++                std::task::Poll::Ready(())
++            } else {
++                std::task::Poll::Pending
++            }
++        })
++        .await;
+     }
+ 
+     pub(super) async fn drain(&self) -> DrainResult {
+diff --git a/crates/kasumi-engine/src/proposal_jobs_tests.rs b/crates/kasumi-engine/src/proposal_jobs_tests.rs
+--- a/crates/kasumi-engine/src/proposal_jobs_tests.rs
++++ b/crates/kasumi-engine/src/proposal_jobs_tests.rs
+@@ -270,3 +270,52 @@
+         .unwrap();
+     jobs.drain().await.unwrap();
+ }
++
++#[tokio::test]
++async fn admission_boundary_ignores_prior_slot_and_pending_preflight_before_retained_child() {
++    let admission = admission();
++    let jobs = Jobs::default();
++    jobs.prepare(&admission).unwrap();
++    jobs.start_task(async { Ok(()) })
++        .unwrap()
++        .wait(Duration::from_secs(5))
++        .await
++        .unwrap();
++    assert!(jobs.state.lock().unwrap().slots.iter().any(Option::is_some));
++
++    let (finish_preflight, preflight) = tokio::sync::oneshot::channel::<()>();
++    let (release, waiting) = tokio::sync::oneshot::channel::<()>();
++    let effect = Arc::new(std::sync::atomic::AtomicBool::new(false));
++    let accepted = effect.clone();
++    let mut request = Box::pin(async {
++        preflight.await.unwrap();
++        jobs.start_task(async move {
++            waiting.await.unwrap();
++            accepted.store(true, std::sync::atomic::Ordering::Release);
++            Ok(())
++        })
++        .unwrap()
++        .wait(Duration::from_secs(5))
++        .await
++    });
++    let mut admitted = Box::pin(jobs.wait_for_admission(request.as_mut()));
++    std::future::poll_fn(|cx| {
++        assert!(admitted.as_mut().poll(cx).is_pending());
++        Poll::Ready(())
++    })
++    .await;
++    finish_preflight.send(()).unwrap();
++    admitted.await;
++    assert!(!effect.load(std::sync::atomic::Ordering::Acquire));
++    drop(request);
++
++    let mut drain = Box::pin(jobs.drain());
++    std::future::poll_fn(|cx| {
++        assert!(drain.as_mut().poll(cx).is_pending());
++        Poll::Ready(())
++    })
++    .await;
++    release.send(()).unwrap();
++    drain.await.unwrap();
++    assert!(effect.load(std::sync::atomic::Ordering::Acquire));
++}
+diff --git a/crates/kasumi-engine/src/service_staged_stop_tests.rs b/crates/kasumi-engine/src/service_staged_stop_tests.rs
+--- a/crates/kasumi-engine/src/service_staged_stop_tests.rs
++++ b/crates/kasumi-engine/src/service_staged_stop_tests.rs
+@@ -65,11 +65,11 @@
+                 .db
+                 .stop_staged_transaction(fixture.context.clone(), request),
+         );
+-        assert!(
+-            std::future::poll_fn(|cx| Poll::Ready(pending.as_mut().poll(cx)))
+-                .await
+-                .is_pending()
+-        );
++        fixture
++            .db
++            .proposals
++            .wait_for_admission(pending.as_mut())
++            .await;
+         clock
+             .0
+             .store(base + if expired { 11 } else { 10 }, Ordering::SeqCst);
+diff --git a/crates/kasumi-engine/src/service_staging_tests.rs b/crates/kasumi-engine/src/service_staging_tests.rs
+--- a/crates/kasumi-engine/src/service_staging_tests.rs
++++ b/crates/kasumi-engine/src/service_staging_tests.rs
+@@ -120,11 +120,7 @@
+         let gate = db.proposal_gate.lock().await;
+         let mut pending =
+             Box::pin(db.finalize_staged_transaction(context.clone(), reference.clone()));
+-        assert!(
+-            std::future::poll_fn(|cx| Poll::Ready(pending.as_mut().poll(cx)))
+-                .await
+-                .is_pending()
+-        );
++        db.proposals.wait_for_admission(pending.as_mut()).await;
+         if canceled {
+             drop(pending);
+             clock.0.store(base + 99, Ordering::SeqCst);

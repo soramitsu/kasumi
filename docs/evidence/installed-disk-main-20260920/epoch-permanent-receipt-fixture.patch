@@ -1,0 +1,66 @@
+--- a/crates/kasumi-engine/tests/fixture_epoch_clock.rs
++++ b/crates/kasumi-engine/tests/fixture_epoch_clock.rs
+@@ -86,7 +86,7 @@
+ }
+ 
+ #[tokio::test]
+-async fn one_epoch_ages_commands_and_leases_without_renewing_original_credentials() {
++async fn one_epoch_expires_leases_and_credentials_but_preserves_permanent_command_identity() {
+     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+     let node = NodeStore::create_new_fixture(
+         directory.path().join("node.redb"),
+@@ -214,18 +214,46 @@
+         renewed.authorization.check_live().unwrap_err().code,
+         ErrorCode::Unauthorized
+     );
+-    assert!(
+-        database
+-            .operation_receipt(&fresh, "original-command")
+-            .await
+-            .unwrap()
+-            .is_none()
+-    );
+-    let replacement = database.mutate(fresh.clone(), batch(2)).await.unwrap();
++    // Credentials and leases expire; permanent command identity does not.
++    let stored = database
++        .operation_receipt(&fresh, "original-command")
++        .await
++        .unwrap()
++        .unwrap();
++    assert_eq!(stored.outcome, Ok(receipt.clone()));
++    assert_eq!(stored.request_digest, batch(1).digest().unwrap());
++    assert_eq!(
++        database.mutate(fresh.clone(), batch(1)).await.unwrap(),
++        receipt
++    );
++    assert_eq!(
++        database
++            .mutate(fresh.clone(), batch(2))
++            .await
++            .unwrap_err()
++            .code,
++        ErrorCode::Conflict
++    );
++    assert_eq!(
++        database.get(&fresh, "docs", "0").await.unwrap().body["version"],
++        1
++    );
++    let mut next_command = batch(2);
++    next_command.idempotency_key = "next-command".into();
++    let replacement = database.mutate(fresh.clone(), next_command).await.unwrap();
+     assert!(replacement.revision > receipt.revision);
+     assert_eq!(
+         database.get(&fresh, "docs", "0").await.unwrap().body["version"],
+         2
++    );
++    assert_eq!(
++        database
++            .operation_receipt(&fresh, "original-command")
++            .await
++            .unwrap()
++            .unwrap()
++            .outcome,
++        Ok(receipt)
+     );
+     assert_eq!(
+         original.authorization.check_live().unwrap_err().code,

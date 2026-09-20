@@ -148,13 +148,14 @@ impl crate::startup_owner::Runtime for OperatorState {
     }
 }
 
-pub(super) fn combine<T>(outcome: Result<T>, drained: Result<()>) -> Result<T> {
+pub(super) fn combine<T>(
+    outcome: Result<T>,
+    drained: kasumi_types::drain::DrainResult,
+) -> Result<T> {
     match (outcome, drained) {
-        (Err(error), Err(drain)) => {
-            Err(error.context(format!("local operator drain failed: {drain:#}")))
-        }
+        (Err(error), Err(drain)) => Err(error.context(drain)),
         (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(drain)) => Err(drain),
+        (Ok(_), Err(drain)) => Err(drain.into()),
         (Ok(value), Ok(())) => Ok(value),
     }
 }

@@ -279,13 +279,7 @@ mod tests {
             )
             .await
             .unwrap();
-            let database = Database::new_with_admission(
-                engine,
-                group,
-                store.clone(),
-                admission,
-                audit.clone(),
-            );
+            let database = Database::new(engine, group, store.clone(), audit.clone());
             let weak_database = Arc::downgrade(&database);
             let pause = Arc::new(WorkerPause {
                 entered: Default::default(),
@@ -372,10 +366,15 @@ mod tests {
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
-        let admission = NodeAdmission::new(crate::admission::AdmissionConfig {
-            max_inflight_bytes: Some(512 << 20),
-            ..Default::default()
-        })
+        let admission = NodeAdmission::new(
+            crate::test_utils::admission_config_with_bookkeeping(
+                crate::admission::AdmissionConfig {
+                    max_inflight_bytes: Some(512 << 20),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        )
         .unwrap();
         let store = TenantStore::initialize_catalog_fixture(
             node.clone(),
@@ -451,13 +450,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let database = Database::new_with_admission(
-            engine.clone(),
-            group.clone(),
-            store,
-            admission.clone(),
-            audit.clone(),
-        );
+        let database = Database::new(engine.clone(), group.clone(), store, audit.clone());
         for number in 0..50 {
             let command = Command {
                 context: RequestContext {
@@ -489,7 +482,10 @@ mod tests {
         }
         assert!(engine.generation().unwrap().state.audit_retention.hot_bytes >= 96 << 10);
         let ordinary = admission
-            .reserve((512 << 20) - admission.snapshot().reserved_bytes, None)
+            .reserve(
+                (512 << 20) - crate::test_utils::reserved_payload_bytes(&admission),
+                None,
+            )
             .unwrap();
         assert!(admission.reserve(1, None).is_err());
         let before = engine.generation().unwrap();
@@ -546,6 +542,6 @@ mod tests {
         drop(pool);
         database.shutdown().await.unwrap();
         audit.shutdown().await.unwrap();
-        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
     }
 }

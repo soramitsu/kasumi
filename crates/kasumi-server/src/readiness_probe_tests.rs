@@ -8,17 +8,20 @@ use std::{
 };
 
 fn admission() -> Arc<NodeAdmission> {
-    NodeAdmission::new(AdmissionConfig {
+    let mut config = AdmissionConfig {
         max_inflight_bytes: Some(PROBE_BYTES * 2),
         max_sample_age_ms: 60_000,
         ..Default::default()
-    })
-    .unwrap()
+    };
+    let bookkeeping = NodeAdmission::required_bookkeeping_bytes(&config).unwrap();
+    config.max_inflight_bytes = Some(bookkeeping.checked_add(PROBE_BYTES * 2).unwrap());
+    NodeAdmission::new(config).unwrap()
 }
 
 #[tokio::test]
 async fn repeated_timeouts_keep_one_actual_queued_probe_and_its_charge() {
     let admission = admission();
+    let bookkeeping = admission.snapshot().bookkeeping_bytes;
     let slot = ProbeSlot::default();
     let queued = Arc::new(AtomicUsize::new(0));
     let (reply, receiver) = tokio::sync::oneshot::channel();
@@ -53,12 +56,15 @@ async fn repeated_timeouts_keep_one_actual_queued_probe_and_its_charge() {
             .is_err()
         );
         assert_eq!(queued.load(Ordering::Acquire), 1);
-        assert_eq!(admission.snapshot().reserved_bytes, PROBE_BYTES);
+        assert_eq!(
+            admission.snapshot().reserved_bytes,
+            bookkeeping + PROBE_BYTES
+        );
         assert_eq!(admission.snapshot().inflight_operations, 0);
     }
     reply.send(()).unwrap();
     assert_eq!(slot.observe().await, Outcome::Healthy);
-    assert_eq!(admission.snapshot().reserved_bytes, 0);
+    assert_eq!(admission.snapshot().reserved_bytes, bookkeeping);
     slot.drain_after_group_shutdown().await.unwrap();
 }
 
@@ -74,6 +80,7 @@ impl std::error::Error for ProbeFailure {}
 #[tokio::test]
 async fn cancelled_probe_drain_retains_original_future_charge_and_typed_failure() {
     let admission = admission();
+    let bookkeeping = admission.snapshot().bookkeeping_bytes;
     let slot = ProbeSlot::default();
     let original = Arc::new(());
     let identity = original.clone();
@@ -91,7 +98,10 @@ async fn cancelled_probe_drain_retains_original_future_charge_and_typed_failure(
     })
     .await;
     drop(draining);
-    assert_eq!(admission.snapshot().reserved_bytes, PROBE_BYTES);
+    assert_eq!(
+        admission.snapshot().reserved_bytes,
+        bookkeeping + PROBE_BYTES
+    );
     assert!(slot.start(&admission, async { Ok(true) }).await.is_err());
     reply.send(()).unwrap();
     let failure = slot.drain_after_group_shutdown().await.unwrap_err();
@@ -104,7 +114,7 @@ async fn cancelled_probe_drain_retains_original_future_charge_and_typed_failure(
         &original,
         &issue.error().downcast_ref::<ProbeFailure>().unwrap().0
     ));
-    assert_eq!(admission.snapshot().reserved_bytes, 0);
+    assert_eq!(admission.snapshot().reserved_bytes, bookkeeping);
     let repeated = slot.drain_after_group_shutdown().await.unwrap_err();
     assert!(Arc::ptr_eq(issue, &repeated.issues()[0]));
 }
@@ -112,6 +122,7 @@ async fn cancelled_probe_drain_retains_original_future_charge_and_typed_failure(
 #[tokio::test]
 async fn panicked_probe_keeps_original_payload_and_charge_until_core_shutdown() {
     let admission = admission();
+    let bookkeeping = admission.snapshot().bookkeeping_bytes;
     let slot = ProbeSlot::default();
     let payload = Arc::new(());
     let weak = Arc::downgrade(&payload);
@@ -121,7 +132,10 @@ async fn panicked_probe_keeps_original_payload_and_charge_until_core_shutdown() 
     .await
     .unwrap();
     assert_eq!(slot.observe().await, Outcome::Failed);
-    assert_eq!(admission.snapshot().reserved_bytes, PROBE_BYTES);
+    assert_eq!(
+        admission.snapshot().reserved_bytes,
+        bookkeeping + PROBE_BYTES
+    );
     assert!(weak.upgrade().is_some());
     assert!(slot.start(&admission, async { Ok(true) }).await.is_err());
     let failure = slot.drain_after_group_shutdown().await.unwrap_err();
@@ -131,7 +145,7 @@ async fn panicked_probe_keeps_original_payload_and_charge_until_core_shutdown() 
             .downcast_ref::<crate::startup_preparation::PreparationPanic>()
             .is_some()
     );
-    assert_eq!(admission.snapshot().reserved_bytes, 0);
+    assert_eq!(admission.snapshot().reserved_bytes, bookkeeping);
     assert!(weak.upgrade().is_some());
     let repeated = slot.drain_after_group_shutdown().await.unwrap_err();
     assert!(Arc::ptr_eq(&failure.issues()[0], &repeated.issues()[0]));

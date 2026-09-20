@@ -201,8 +201,7 @@ pub async fn prepare_replicated_restore(
         replica.admission.snapshot_buffer_owner()?,
     )
     .await?;
-    let database =
-        Database::new_with_admission(engine, group, target, replica.admission, security_audit);
+    let database = Database::new(engine, group, target, security_audit);
     database.install_archive_destination(
         source.destination_alias.clone(),
         source.destination.clone(),
@@ -504,17 +503,7 @@ async fn open_replicated_inner<'a>(
         security_audit.admission().snapshot_buffer_owner()?,
     )
     .await?;
-    let database = if runtime.maintenance() {
-        Database::new_with_admission(
-            engine,
-            group,
-            store,
-            security_audit.admission().clone(),
-            security_audit,
-        )
-    } else {
-        Database::new(engine, group, store, security_audit)
-    };
+    let database = Database::new(engine, group, store, security_audit);
     Ok((database, bootstrap))
 }
 
@@ -679,7 +668,7 @@ pub async fn open_local(
         initial_limits,
         security_audit,
         None,
-        LocalRuntime::Production(None),
+        LocalRuntime::Production,
     )
     .await
 }
@@ -709,7 +698,7 @@ pub async fn open_existing_local(
     start(
         stores,
         &bytes,
-        LocalRuntime::Production(None),
+        LocalRuntime::Production,
         security_audit,
         Some(expected_incarnation),
     )
@@ -733,7 +722,7 @@ pub async fn open_local_with_incarnation(
         initial_limits,
         security_audit,
         Some(incarnation),
-        LocalRuntime::Production(None),
+        LocalRuntime::Production,
     )
     .await
 }
@@ -750,6 +739,7 @@ pub async fn open_fixture_with_epoch_clock(
     admission: Arc<crate::admission::NodeAdmission>,
     clock: Arc<kasumi_clock::EpochClock>,
 ) -> anyhow::Result<Arc<Database>> {
+    security_audit.require_admission(&admission)?;
     anyhow::ensure!(
         matches!(
             stores.application().storage_access().purpose(),
@@ -764,7 +754,7 @@ pub async fn open_fixture_with_epoch_clock(
         initial_limits,
         security_audit,
         None,
-        LocalRuntime::Fixture { admission, clock },
+        LocalRuntime::Fixture { clock },
     )
     .await
 }
@@ -774,12 +764,11 @@ pub async fn open_fixture_with_epoch_clock(
 pub(crate) mod fixtures;
 
 enum LocalRuntime {
-    Production(Option<Arc<crate::admission::NodeAdmission>>),
+    Production,
     #[cfg(any(test, feature = "test-utils"))]
     FixtureDefault,
     #[cfg(any(test, feature = "test-utils"))]
     Fixture {
-        admission: Arc<crate::admission::NodeAdmission>,
         clock: Arc<kasumi_clock::EpochClock>,
     },
 }
@@ -859,18 +848,11 @@ async fn start_prepared(
 ) -> anyhow::Result<Arc<Database>> {
     let store = stores.application().clone();
     engine.install_storage_access(&store)?;
-    let admission = match &runtime {
-        LocalRuntime::Production(Some(admission)) => admission.clone(),
-        LocalRuntime::Production(None) => security_audit.admission().clone(),
-        #[cfg(any(test, feature = "test-utils"))]
-        LocalRuntime::FixtureDefault => security_audit.admission().clone(),
-        #[cfg(any(test, feature = "test-utils"))]
-        LocalRuntime::Fixture { admission, .. } => admission.clone(),
-    };
+    let admission = security_audit.admission().clone();
     engine
         .verify_bootstrap_dependencies_owned(admission.clone())
         .await?;
-    if matches!(runtime, LocalRuntime::Production(_)) {
+    if matches!(runtime, LocalRuntime::Production) {
         engine.install_audit_maintenance(&admission)?;
     }
     let incarnation = engine.generation()?.state.incarnation.clone();
@@ -883,20 +865,13 @@ async fn start_prepared(
     )
     .await?;
     Ok(match runtime {
-        LocalRuntime::Production(_) => {
-            Database::new_with_admission(engine, group, store, admission, security_audit)
-        }
+        LocalRuntime::Production => Database::new(engine, group, store, security_audit),
         #[cfg(any(test, feature = "test-utils"))]
         LocalRuntime::FixtureDefault => Database::new(engine, group, store, security_audit),
         #[cfg(any(test, feature = "test-utils"))]
-        LocalRuntime::Fixture { admission, clock } => Database::new_fixture_with_epoch_clock(
-            engine,
-            group,
-            store,
-            admission,
-            security_audit,
-            clock,
-        )?,
+        LocalRuntime::Fixture { clock } => {
+            Database::new_fixture_with_epoch_clock(engine, group, store, security_audit, clock)?
+        }
     })
 }
 
@@ -1008,7 +983,7 @@ pub async fn restore_local(
     let database = start_prepared(
         targets,
         restored.engine,
-        LocalRuntime::Production(Some(admission)),
+        LocalRuntime::Production,
         security_audit,
     )
     .await?;

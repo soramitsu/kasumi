@@ -66,17 +66,12 @@ pub(crate) enum StartedGroup {
 }
 impl StartedGroup {
     async fn shutdown(self) -> DrainResult {
-        let result = match self {
+        match self {
             Self::Serving(group) => group.shutdown().await,
             Self::Custody(group) => group.shutdown().await,
             #[cfg(test)]
             Self::Fixture(group) => group.shutdown().await,
-        };
-        result.map_err(|error| {
-            error
-                .downcast::<DrainFailure>()
-                .expect("group shutdown returns typed drain evidence")
-        })
+        }
     }
 }
 async fn cleanup(group: Option<StartedGroup>) -> DrainResult {

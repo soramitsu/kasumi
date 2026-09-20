@@ -8,12 +8,14 @@ async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open(
     let fixture = Fixture::new();
     fixture.input.initialize().await.unwrap();
     let before = std::fs::read(&fixture.input.verifier.database_path).unwrap();
-    let admission =
-        kasumi_engine::admission::NodeAdmission::new(kasumi_engine::admission::AdmissionConfig {
-            max_inflight_bytes: Some(1024),
-            ..Default::default()
-        })
-        .unwrap();
+    let mut config = kasumi_engine::admission::AdmissionConfig {
+        max_inflight_bytes: Some(1024),
+        ..Default::default()
+    };
+    let bookkeeping =
+        kasumi_engine::admission::NodeAdmission::required_bookkeeping_bytes(&config).unwrap();
+    config.max_inflight_bytes = Some(bookkeeping.checked_add(1024).unwrap());
+    let admission = kasumi_engine::admission::NodeAdmission::new(config).unwrap();
     let domain = fixture.manifest.signing_domain(0).unwrap();
     assert!(
         fixture
@@ -52,19 +54,20 @@ async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open(
         )
         .await
         .unwrap();
+    let bookkeeping = admission.snapshot().bookkeeping_bytes;
     let expected =
         BackgroundWorkBudget::required_bytes(fixture.input.verifier.max_background_workers, 1)
             .unwrap();
-    assert_eq!(admission.snapshot().reserved_bytes, expected);
+    assert_eq!(admission.snapshot().reserved_bytes, bookkeeping + expected);
     assert_eq!(admission.snapshot().inflight_operations, 0);
     // Installed metadata must leave the sole operation slot usable.
     let request = admission.reserve(1, None).unwrap();
     assert_eq!(admission.snapshot().inflight_operations, 1);
     drop(request);
     opened.shutdown().await.unwrap();
-    assert_eq!(admission.snapshot().reserved_bytes, expected);
+    assert_eq!(admission.snapshot().reserved_bytes, bookkeeping + expected);
     drop(opened);
-    assert_eq!(admission.snapshot().reserved_bytes, 0);
+    assert_eq!(admission.snapshot().reserved_bytes, bookkeeping);
 }
 
 struct Fixture {
@@ -305,15 +308,29 @@ async fn explicit_encrypted_verifier_initialization_never_bootstraps_runtime_tru
     let f = Fixture::new();
     assert!(f.open().await.is_err());
     assert!(!f.input.verifier.database_path.exists());
-    private_files::create(&f.input.verifier.database_path, b"").unwrap();
+    // Enroll the intentionally empty fixture inode through its exact owner.
+    // Runtime rejects the missing node envelope without a raw namespace change
+    // that would independently fence the installed physical census.
+    let disk = crate::persistent_disk::open(&f.input.persistent_disk).unwrap();
+    let (root, relative) = f
+        .input
+        .persistent_disk
+        .binding(&f.input.verifier.database_path)
+        .unwrap();
+    let empty = disk
+        .create_file(root, relative, kasumi_store::DiskWork::Foreground)
+        .unwrap();
+    drop(empty);
     assert!(f.open().await.is_err());
+    assert_eq!(disk.snapshot().phase, kasumi_store::NodeDiskPhase::Open);
     assert_eq!(
         std::fs::metadata(&f.input.verifier.database_path)
             .unwrap()
             .len(),
         0
     );
-    std::fs::remove_file(&f.input.verifier.database_path).unwrap();
+    let empty = disk.open_file(root, relative).unwrap();
+    disk.delete_file(empty).unwrap();
     f.input.initialize().await.unwrap();
     assert!(
         f.input.initialize().await.is_err(),
@@ -591,20 +608,22 @@ async fn operational_source_is_private_bounded_and_cannot_substitute_installed_t
     private_files::replace(&path, &bytes).unwrap();
     installed.shutdown().await.unwrap();
     assert!(retained.check().is_err());
-    drop(installed);
-    assert!(
-        f.open().await.is_err(),
-        "retained metadata owners must drain before reopening"
-    );
-    drop(retained);
+    // Actual shutdown closed the physical node and sealed every old trust
+    // facade. Keeping either old Arc alive cannot revive it or block a fresh
+    // owner after that positive drain proof.
     let reopened = f.open().await.unwrap();
-    OperationalSignerConfig::load(&path, &domain)
+    let fresh = OperationalSignerConfig::load(&path, &domain)
         .unwrap()
         .open(&reopened)
-        .unwrap()
-        .check()
         .unwrap();
+    fresh.check().unwrap();
+    installed.shutdown().await.unwrap();
+    assert!(retained.check().is_err());
+    fresh.check().unwrap();
+    drop(installed);
+    drop(retained);
     reopened.shutdown().await.unwrap();
+    assert!(fresh.check().is_err());
 }
 
 #[tokio::test]

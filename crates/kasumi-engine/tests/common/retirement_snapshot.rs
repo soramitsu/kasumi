@@ -49,13 +49,42 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
         request.expected_source_incarnation
     );
     let router = Arc::new(InProcessRouter::default());
+    // Sharing the process memory core does not grant a different runtime facade
+    // ownership of this security ledger or permission to start a custody group.
+    let wrong_facade = kasumi_engine::admission::NodeAdmission::from_memory(
+        source.audit.admission().memory().clone(),
+    )
+    .unwrap();
+    let before_rejected_startup = wrong_facade.snapshot().reserved_bytes;
+    let rejected = kasumi_engine::RetiredCustody::open_replicated(
+        source_store.clone(),
+        1,
+        group.clone(),
+        router.clone(),
+        kasumi_raft::RaftGroupConfig::default(),
+        wrong_facade.clone(),
+        source.audit.clone(),
+    )
+    .await;
+    assert!(
+        rejected
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("node governors differ")
+    );
+    assert_eq!(
+        wrong_facade.snapshot().reserved_bytes,
+        before_rejected_startup
+    );
+    drop(wrong_facade);
     let closed = kasumi_engine::RetiredCustody::open_replicated(
         source_store.clone(),
         1,
         group.clone(),
         router.clone(),
         kasumi_raft::RaftGroupConfig::default(),
-        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        source.audit.admission().clone(),
         source.audit.clone(),
     )
     .await

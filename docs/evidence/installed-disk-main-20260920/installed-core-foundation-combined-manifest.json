@@ -1,0 +1,30 @@
+{
+  "status": "PREPARED_UNAPPLIED",
+  "layer_hashes": [
+    "0fc693756c4f2ef2e189266b93f7b0491aa9ecd4549b1aeb1c4273642c2ac4ac",
+    "35ecb13ea57223ed290e339dba3c53dd00adaebf46ab782b0ac966733a2a29d2"
+  ],
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/admission.rs",
+      "before_sha256": "addab576fcb20de9bf4f2a9f5078cc8a9d3e9653adf9b0605be736277274e713",
+      "proposed_sha256": "b3188bd8e1182a2587946ea225d7905ee59f4bba852966b7756d2b50a3313902"
+    },
+    {
+      "path": "crates/kasumi-engine/Cargo.toml",
+      "before_sha256": "af1b7073c1ba138792405d21f89af92373d12304bbebc4594bfa082cd60047a0",
+      "proposed_sha256": "6fcc23872382f679581567815842ea3e70052dedd09f4934d775738994b9d7fa"
+    },
+    {
+      "path": "crates/kasumi-engine/src/admission/installed.rs",
+      "before_sha256": null,
+      "proposed_sha256": "d2c0d35b951636ac722f2cfcc1f0d42d5a8f580b60d378a45ebfcc6054547391"
+    },
+    {
+      "path": "Cargo.lock",
+      "before_sha256": "57b0011ac527bb4d8f783c69ba9c03bb734a18cac1e8b5b5144aab9761c930af",
+      "proposed_sha256": "4701078fccfb11472c7db87c58af5fc5770d8bfe0e48c31f372f175a3f841d9f"
+    }
+  ],
+  "patch_sha256": "4b1cd460e31bb16f13f4f72cd8959cd1f137eca62dc6a9b7c3a461dfabcf22c1"
+}

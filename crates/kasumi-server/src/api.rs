@@ -459,12 +459,13 @@ mod tests {
             )
             .await
             .unwrap();
+            // The audit and its databases share this fixture's exact governor.
             let node_admission =
                 kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
             let audit = crate::runtime::SecurityAudit::initialize(
                 audit_store.clone(),
                 kasumi_types::AuditRetentionBudget::default(),
-                node_admission.clone(),
+                node_admission,
             )
             .unwrap();
             auth.install_audit(audit.clone()).unwrap();
@@ -504,10 +505,6 @@ mod tests {
             )
             .await
             .unwrap();
-            // Each fixture owns a distinct durable node; give it that node's
-            // governor instead of sharing the process-wide embedded fallback
-            // with unrelated concurrent installation tests.
-            db.install_admission(node_admission).unwrap();
             db.administer(
                 RequestContext {
                     authorization: kasumi_types::RequestAuthorization::service_identity(),

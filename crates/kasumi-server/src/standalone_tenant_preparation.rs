@@ -140,7 +140,6 @@ impl Administration {
             kasumi_engine::open_existing_local(stores.clone(), self.audit.clone(), incarnation)
                 .await?;
         prepared.resources.databases.push(database.clone());
-        database.install_admission(self.admission.clone())?;
         for (alias, destination) in &self.destinations {
             database.install_archive_destination(alias.clone(), destination.clone())?;
         }

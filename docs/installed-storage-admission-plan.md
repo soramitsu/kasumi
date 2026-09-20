@@ -1,9 +1,26 @@
 # Installed storage memory and directory admission
 
-**Status: proposed and unimplemented.** This document records the next storage
-admission slices for [the first release](first-release-plan.md). It is not evidence
-that these requirements have been implemented or qualified. Existing passing
-file-admission tests do not establish the proposed memory or directory guarantees.
+**Status: shared-memory foundation implemented; installed storage and directory
+adoption remain proposed.** The shared core, fixed reservation ledger, direct
+resident admission and separately charged runtime startup inventory now exist.
+Database construction derives its exact facade from the mandatory security audit;
+the implicit process fallback and late-install APIs are removed. Scoped admission
+tests and workspace checks are recorded in the
+[development evidence](evidence/installed-disk-main-20260920/README.md).
+This does not establish installed process-wide policy, admitted disk metadata or
+directory guarantees. The remaining slices implement those requirements for
+[the first release](first-release-plan.md).
+
+Pending source now also provides exact-policy installed MemoryCore selection and
+rejects reuse after terminal sampler failure. Production entry-point adoption and
+explicit process shutdown remain unfinished. NodeDisk retains a fixed namespace
+digest with each enrolled inode: unknown final-leaf absence may return NotFound
+after parent verification, while enrolled disappearance, raw rename and physical
+substitution fence the owner. Successful publication updates the existing digest
+before fallible durability checks. Publication preparation now holds the owner
+state lock during physical path validation. These changes do not provide the
+still-missing directory census or memory charges; their source-specific validation
+belongs in the development evidence.
 
 Work only in `/Users/mtakemiya/dev/kasumi` on `master`. Do not create or use other
 branches, worktrees, or external build/output directories. Coordinate Rust edits
@@ -19,6 +36,11 @@ installation generators are installation policy, not migration defaults.
 ## Current implementation and concrete gaps
 
 The following observations describe the source inspected on 2026-09-20:
+
+The table preserves the pre-foundation gap inventory. The admission-core and
+snapshot-inventory rows are superseded by the implemented foundation above;
+storage-owner admission, installed runtime adoption and directory work remain
+open. Subsequent prepared patches under `target` are not implemented evidence.
 
 | Area | Current behavior | Missing requirement |
 | --- | --- | --- |

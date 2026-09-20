@@ -65,11 +65,11 @@ async fn guarded_stop_queued_deadline_and_cancellation_leave_only_actual_durable
                 .db
                 .stop_staged_transaction(fixture.context.clone(), request),
         );
-        assert!(
-            std::future::poll_fn(|cx| Poll::Ready(pending.as_mut().poll(cx)))
-                .await
-                .is_pending()
-        );
+        fixture
+            .db
+            .proposals
+            .wait_for_admission(pending.as_mut())
+            .await;
         clock
             .0
             .store(base + if expired { 11 } else { 10 }, Ordering::SeqCst);

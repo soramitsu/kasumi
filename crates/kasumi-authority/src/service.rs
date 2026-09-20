@@ -822,13 +822,13 @@ impl IndependentAuthority {
         // waiter leaves every original request/response read owner installed.
         let _owners = self.request_owners.write().await;
         let _gate = self.proposal.lock().await;
-        if let Err(error) = self.group.shutdown().await {
-            // An opaque OpenRaft error is not evidence of a complete child
-            // census. Retain the authority and its exact diagnostic on retry.
-            let failure =
-                DrainFailure::retained(shutdown.report.record("authority raft", 0, error));
-            shutdown.raft_unresolved = Some(failure);
-        }
+        shutdown.raft_unresolved = match self.group.shutdown().await {
+            Ok(()) => None,
+            Err(failure) => {
+                shutdown.report.merge(&failure);
+                (failure.completion() == DrainCompletion::Retained).then_some(failure)
+            }
+        };
         shutdown
             .report
             .outcome(retained.or_else(|| shutdown.raft_unresolved.clone()))

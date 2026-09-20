@@ -54,7 +54,6 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
     )
     .await
     .unwrap();
-    database.install_admission(admission).unwrap();
     database
         .administer(
             context.clone(),

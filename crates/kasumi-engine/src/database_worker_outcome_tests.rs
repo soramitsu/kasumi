@@ -104,7 +104,7 @@ impl Fixture {
             kasumi_raft::SnapshotBufferOwner::fixture(),
         )
         .await?;
-        let database = Database::new_with_admission(engine, group, store, admission, audit.clone());
+        let database = Database::new(engine, group, store, audit.clone());
         database
             .group
             .raft()

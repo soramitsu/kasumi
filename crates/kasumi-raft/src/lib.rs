@@ -23,6 +23,8 @@ mod snapshot_state;
 mod startup_owner;
 #[cfg(test)]
 mod startup_owner_tests;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod startup_test_utils;
 mod storage;
 mod timing;
 mod write_errors;
@@ -446,7 +448,7 @@ impl RaftGroup {
         router.register(group.clone(), id, instance.raft.clone());
         instance.local_route = Some((router, group, id));
         let initialized = async {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-utils"))]
             {
                 let gate = instance
                     .snapshot_buffers
@@ -476,11 +478,7 @@ impl RaftGroup {
             let startup = instance.snapshot_buffers.record_startup_error(error);
             // This is a live group: join its SDK children before draining the
             // buffers and storage leases. The owner retains the startup issue.
-            return Err(instance
-                .shutdown()
-                .await
-                .err()
-                .unwrap_or_else(|| startup.into()));
+            return Err(instance.shutdown().await.err().unwrap_or(startup).into());
         }
         Ok(instance)
     }
@@ -706,7 +704,7 @@ impl RaftGroup {
         Ok(())
     }
 
-    pub async fn shutdown(&self) -> Result<()> {
+    pub async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
         let mut report = self.shutdown_report.lock().await;
         if let Some((router, group, id)) = &self.local_route {
             router.unregister(group, *id);
@@ -722,7 +720,7 @@ impl RaftGroup {
         // facade is now unusable because the independent buffer owner closed
         // every backing; keep the original errors while establishing completion.
         self.ownership.store(false, Ordering::Release);
-        report.complete().map_err(Into::into)
+        report.complete()
     }
 }
 

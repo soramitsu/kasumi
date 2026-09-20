@@ -1304,12 +1304,10 @@ async fn provision_databases(
         let drained = crate::startup_owner::finish(&mut pending).await;
         let fingerprint = match (configured, drained) {
             (Err(error), Err(drain)) => {
-                return Err(error.context(format!(
-                    "standalone tenant initializer drain failed: {drain:#}"
-                )));
+                return Err(error.context(drain));
             }
             (Err(error), Ok(())) => return Err(error),
-            (Ok(_), Err(drain)) => return Err(drain),
+            (Ok(_), Err(drain)) => return Err(drain.into()),
             (Ok(fingerprint), Ok(())) => fingerprint,
         };
         if tenant != crate::runtime::CONTROL_TENANT {

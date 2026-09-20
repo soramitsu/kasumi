@@ -1,0 +1,40 @@
+{
+  "status": "proposed_not_applied",
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "b2876ef782f0f5afde2d60edd234559fc6ce600f",
+  "patch_sha256": "6929e05771261c4411849c04916c97630901254094bbeb42474883fec2236f8e",
+  "files": [
+    {
+      "path": "crates/kasumi-store/src/node_disk.rs",
+      "before_sha256": "faeac15e94e1c71cc268273453081c3ce639c9ba3c3da7c39e9ec1cc1af40774",
+      "proposed_sha256": "51604f0e39650ba06b1016f1d10b131e24cbb54b26599956d80e7cb03bfe2549",
+      "actual_matches_before": true
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/census.rs",
+      "before_sha256": "bcf57ef634c3c587408cee76a3208a822285a48a70771b298decd502cb20196b",
+      "proposed_sha256": "3d0b2ab4b08195730fa5a3e9aae6de1b33e861a3aff1320e5cb37b04b510ae46",
+      "actual_matches_before": true
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/file.rs",
+      "before_sha256": "5eb77b6eed25ef6f645685da5f98cbdafcfc663add314a60c80cfac88b06059e",
+      "proposed_sha256": "b16d1530ce9d252f5b1658dab870e33bba97895467b0f1056c984195d343ae4a",
+      "actual_matches_before": true
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "before_sha256": "1965f057326979ec57dc17c2b75c0867a65462eb881ca8af39d430289a1e73fa",
+      "proposed_sha256": "8d09dd9dbbfef2fdbd353b9c2b14da1123193af3709634195ecfa28ea10b1e03",
+      "actual_matches_before": true
+    }
+  ],
+  "patch_check_exit_code": 0,
+  "rustfmt_passed": true,
+  "cargo_runs": [],
+  "actual_source_edits": false,
+  "known_pending": "No type-check or behavioral test. Metadata envelope prepared in separate node-disk-memory proposal must be rebased and recalculated.",
+  "revision": 2,
+  "new_regression_tests": 13
+}

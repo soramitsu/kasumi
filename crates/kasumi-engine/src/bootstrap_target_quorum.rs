@@ -342,13 +342,7 @@ pub async fn open_target_replica(
             config.admission.snapshot_buffer_owner()?,
         )
         .await?;
-        let database = Database::new_with_admission(
-            engine,
-            group,
-            stores.application().clone(),
-            config.admission,
-            security_audit,
-        );
+        let database = Database::new(engine, group, stores.application().clone(), security_audit);
         let owner = TargetReplica {
             database,
             bootstrap,

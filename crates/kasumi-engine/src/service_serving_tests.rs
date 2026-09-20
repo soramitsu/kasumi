@@ -230,7 +230,6 @@ impl ServingFixture {
             )
             .await
             .unwrap();
-            db.install_admission(admission).unwrap();
             self.router
                 .register(group.clone(), id, db.raft_group().raft().clone());
             self.databases.push(db);
@@ -265,8 +264,38 @@ impl ServingFixture {
         self.audits.clear();
         self.router = Arc::new(kasumi_raft::InProcessRouter::default());
     }
+    async fn drain_after_expiry(&mut self) {
+        use kasumi_types::drain::DrainCompletion;
+        for db in &self.databases {
+            assert!(db.group.check_access().is_err(), "fixture lease must be expired");
+            if let Err(failure) = db.shutdown().await {
+                assert_eq!(failure.completion(), DrainCompletion::Complete);
+                for issue in failure.issues() {
+                    let original = issue.error()
+                        .downcast_ref::<openraft::error::ShutdownError<u64, tokio::task::JoinError>>()
+                        .expect("expired storage must retain the original OpenRaft failure");
+                    assert!(original.core_join_error().is_none());
+                    let message = original.to_string();
+                    assert!(message.contains("key-access lease unavailable or expired")
+                        || message.contains("access expired before acknowledgment"), "{message}");
+                }
+                let repeated = db.shutdown().await.unwrap_err();
+                assert_eq!(repeated.completion(), DrainCompletion::Complete);
+                assert_eq!(repeated.issues().len(), failure.issues().len());
+                for issue in failure.issues() {
+                    assert!(repeated.issues().iter().any(|next| Arc::ptr_eq(issue, next)));
+                }
+            }
+        }
+        for audit in &self.audits {
+            audit.shutdown().await.unwrap();
+        }
+        self.databases.clear();
+        self.audits.clear();
+        self.router = Arc::new(kasumi_raft::InProcessRouter::default());
+    }
     async fn reopen(&mut self) {
-        self.drain().await;
+        self.drain_after_expiry().await;
         self.open(false).await;
         self.leader().await;
     }

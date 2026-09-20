@@ -1,0 +1,50 @@
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 54.46s
+     Running tests/fixture_epoch_clock.rs (target/debug/deps/fixture_epoch_clock-33ece40ab1eecda6)
+
+running 3 tests
+test fixture_epoch_rejects_a_different_audit_facade_before_bootstrap ... ok
+test fixture_epoch_rejects_production_storage_before_bootstrap ... ok
+test one_epoch_ages_commands_and_leases_without_renewing_original_credentials ... FAILED
+
+failures:
+
+---- one_epoch_ages_commands_and_leases_without_renewing_original_credentials stdout ----
+
+thread 'one_epoch_ages_commands_and_leases_without_renewing_original_credentials' (3693638) panicked at crates/kasumi-engine/tests/fixture_epoch_clock.rs:217:5:
+assertion failed: database.operation_receipt(&fresh,
+                "original-command").await.unwrap().is_none()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    one_epoch_ages_commands_and_leases_without_renewing_original_credentials
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.91s
+
+error: test failed, to rerun pass `-p kasumi-engine --test fixture_epoch_clock`
+     Running tests/response_release.rs (target/debug/deps/response_release-c25b51f8241324f4)
+
+running 1 test
+test encoded_response_is_fenced_by_policy_changes_and_actual_key_denial ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.11s
+
+     Running tests/retirement.rs (target/debug/deps/retirement-07b984c9ccd739bf)
+
+running 10 tests
+test actual_retirement_seed_reopens_through_control_domain_without_loading_source_payload ... ok
+test caller_checkpoint_observation_is_not_backup_authority ... ok
+test durable_retirement_stop_defeats_inflight_backup_verification_and_survives_restart ... ok
+test exact_retirement_seals_source_once_and_retains_proof_after_encrypted_restart ... ok
+test invisible_staged_identity_after_checkpoint_is_not_lost_by_retirement ... ok
+test permanent_retirement_quota_fails_before_backup_io_and_exact_failure_replays ... ok
+test post_checkpoint_payload_or_rejected_mutation_identity_blocks_retirement ... ok
+test retired_source_rotates_custody_without_reopening_data_or_rewriting_original_actor ... ok
+test retirement_snapshot::actual_retired_snapshot_only_replica_preserves_rotated_custody_after_encrypted_restart ... ok
+test retirement_snapshot::actual_stopped_retirement_snapshot_has_no_retired_custody_marker ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 148.08s
+
+error: 1 target failed:
+    `-p kasumi-engine --test fixture_epoch_clock`

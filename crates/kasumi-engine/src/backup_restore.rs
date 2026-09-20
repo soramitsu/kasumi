@@ -422,7 +422,10 @@ mod tests {
         assert!(task.await.unwrap().is_err());
         assert!(weak.upgrade().is_some());
         assert_eq!(admission.snapshot().inflight_operations, 1);
-        assert_eq!(admission.snapshot().reserved_bytes, 1 << 20);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            1 << 20
+        );
         release_tx.send(()).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             // Weak::upgrade can fail after the final strong count reaches zero
@@ -430,7 +433,7 @@ mod tests {
             // Observe the resource owner finishing, not only Arc availability.
             while weak.upgrade().is_some()
                 || admission.snapshot().inflight_operations != 0
-                || admission.snapshot().reserved_bytes != 0
+                || crate::test_utils::reserved_payload_bytes(&admission) != 0
             {
                 tokio::task::yield_now().await;
             }
@@ -438,6 +441,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(admission.snapshot().inflight_operations, 0);
-        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
     }
 }

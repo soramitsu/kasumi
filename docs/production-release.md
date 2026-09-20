@@ -93,6 +93,85 @@ complete combined qualification remains open. After the fatal-shutdown test
 correction, attempts 46 and 47 pass strict workspace lint and formatting again
 on unchanged inventoried source, with their actual process groups drained.
 
+The shared memory foundation now retains one core across fresh runtime facades,
+uses a fixed reservation ledger, separately charges bookkeeping and resident
+owners, and joins the actual sampler. Database construction derives mandatory
+admission from its audit; the lazy fallback and late setter are removed.
+Attempt 49 passes 24 admission regressions, 50 passes workspace compilation and
+56 passes strict workspace lint after preserving the two initializer failures
+from attempt 51. Installed process-core selection, mandatory disk-metadata
+admission and directory accounting remain open.
+
+The full engine successor, attempt 52, records **184 passed, 13 failed and one
+ignored**; its actual cancelled Raft startup/census regression passes. The ignored
+permanent-receipt capacity requirement remains unrun. Immediate replay 57
+reproduces the first nine failures. Corrections retain exact audit failures,
+wait for actual proposal-child admission before cancellation, preserve permanent
+point-history owners and establish canonical bootstrap identity in fixtures.
+Raft, custody and server startup cleanup now propagate the original typed drain
+reports and their Complete/Retained status. Compilation failures 58 and 59 are
+preserved; successor 60 passes all workspace targets/features. These are pending
+development changes, not release acceptance. Focused successor 61 passes the ten
+corrected failures and seven proposal-ownership regressions on unchanged source,
+with actual process drain. It does not rerun the three unresolved production
+failures or qualify the ignored permanent-receipt capacity case.
+
+The namespace correction now distinguishes an unknown missing leaf from
+disappearance of an enrolled file while preserving physical identity fencing.
+Attempt 63 passes all 196 enabled store tests, including 13 new namespace cases;
+the real MinIO case remains unrun. Attempt 64 passes 32 core/startup/archive cases,
+including both formerly failing archive-cache consumers, exact installed-policy
+reuse/rejection and preservation of the failed sampler's original panic. These
+attempts retain unchanged source and actual process drain. Installed selection
+still needs adoption at every production entry point.
+
+Integration attempt 53 passes both admission cases and nine backup cases, then
+fails three backup fixtures; the later fixture-clock, response-release and
+retirement targets remain unrun in that attempt. Corrected fixtures account for the second
+Database's actual proposal registry and inject remote read faults without
+unauthorized local inode replacement. Full successor 70 passes eleven backup
+cases and fails one later reopen step that incorrectly initializes an existing
+catalog. Focused successor 72 passes that corrected reopen case and all eight
+terminal-row cases. A failed staging push now permanently rejects finish, even
+when its digest has already advanced to the expected head. Attempt 69
+passes eight backup filesystem/session cases, including missing enrolled-leaf
+fencing and healthy repeated cleanup after admitted deletion. All these receipts
+record unchanged source and actual process drain.
+
+Server attempt 65 passes 37 and fails nine fixtures. Its eight typed startup-owner
+cases pass. Corrections retain one MCP membership registry across routers, reopen
+serving storage through the same physical owners after actual close, and require
+old signer facades to stay sealed while a fresh owner serves. Successor 71 passes
+all 46 selected cases on unchanged source with actual process drain; production
+identity fences remain intact. Full server qualification remains open.
+
+Public restore also fails its unchanged verification deadline while staging
+permanent rows with individual durable commits. Its original workload and deadline,
+the failed custody-capacity case and all final qualification gates remain required.
+Startup-registry repeated-error retention and abandoned target cleanup ownership
+also remain open.
+
+Raft successor 66 passes 72 selected library and all 18 integration cases on
+unchanged source with actual process drain, exercising the direct typed drain
+contract and actual-child ownership. The separately failed custody-capacity case
+is explicitly excluded and remains required; this is not a complete Raft gate.
+
+Attempt 68 reaches the three previously unrun engine integration targets: all ten
+retirement cases and response release pass, while the clock target has two passes
+and one obsolete receipt-expiry expectation. That fixture is corrected to require
+permanent outcome retention, with unchanged credential/lease expiry and simulated
+elapsed time. Successor 74 passes all three clock cases and all 32 admission/core/
+startup cases; its actual child and shared report tests cover the newly integrated
+fixed startup-scope foundation. Workspace compilation 73 and formatting 55 pass.
+The new required policy, charged fixed census and shared report views do not yet
+have production runtime/resource adapters or whole-process shutdown integration.
+
+Strict lint attempt 67 preserves one backup cleanup expression failure. Its
+semantics-preserving inspect_err correction passes strict workspace Clippy in
+75, and formatting passes in 76. Both record unchanged source and actual process
+drain. All G01–G14 and the final-source acceptance gates remain open.
+
+
 ## Latest frozen combined checkpoint
 
 The [frozen `6d969f3` attempt](evidence/first-release-6d969f3-interrupted-20260920/README.md)

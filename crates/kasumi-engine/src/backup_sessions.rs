@@ -357,10 +357,13 @@ mod work_tests {
 
     fn admission(max_bytes: u64) -> Arc<NodeAdmission> {
         NodeAdmission::with_fixed_memory(
-            crate::admission::AdmissionConfig {
-                max_inflight_bytes: Some(max_bytes),
-                ..Default::default()
-            },
+            crate::test_utils::admission_config_with_bookkeeping(
+                crate::admission::AdmissionConfig {
+                    max_inflight_bytes: Some(max_bytes),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
             1 << 30,
             0,
         )
@@ -386,7 +389,7 @@ mod work_tests {
         .await;
         assert_eq!(result.unwrap_err().code, ErrorCode::ResourceExhausted);
         assert_eq!(builds.load(Ordering::Acquire), 0);
-        assert_eq!(node.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&node), 0);
         assert_eq!(node.snapshot().inflight_operations, 0);
     }
 
@@ -412,8 +415,10 @@ mod work_tests {
     }
     impl Drop for ObservedFuture {
         fn drop(&mut self) {
-            self.bytes_at_drop
-                .store(self.node.snapshot().reserved_bytes, Ordering::Release);
+            self.bytes_at_drop.store(
+                crate::test_utils::reserved_payload_bytes(&self.node),
+                Ordering::Release,
+            );
         }
     }
     #[tokio::test]
@@ -425,7 +430,7 @@ mod work_tests {
             let bytes_at_drop = Arc::new(AtomicU64::new(0));
             let mut operation = Box::pin(admitted_session_work(&fence, &node, || {
                 assert_eq!(
-                    node.snapshot().reserved_bytes,
+                    crate::test_utils::reserved_payload_bytes(&node),
                     SESSION_WORKSPACE_BYTES + future_bytes
                 );
                 assert_eq!(node.snapshot().inflight_operations, 1);
@@ -448,7 +453,7 @@ mod work_tests {
                 })
                 .await;
                 assert_eq!(
-                    node.snapshot().reserved_bytes,
+                    crate::test_utils::reserved_payload_bytes(&node),
                     SESSION_WORKSPACE_BYTES + future_bytes
                 );
             }
@@ -457,7 +462,7 @@ mod work_tests {
                 bytes_at_drop.load(Ordering::Acquire),
                 SESSION_WORKSPACE_BYTES + future_bytes
             );
-            assert_eq!(node.snapshot().reserved_bytes, 0);
+            assert_eq!(crate::test_utils::reserved_payload_bytes(&node), 0);
             assert_eq!(node.snapshot().inflight_operations, 0);
             tokio::time::timeout(Duration::from_secs(5), fence.drain())
                 .await
@@ -476,7 +481,7 @@ mod work_tests {
         .await;
         assert_eq!(result.unwrap_err().code, ErrorCode::ResourceExhausted);
         assert_eq!(builds.load(Ordering::Acquire), 0);
-        assert_eq!(node.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&node), 0);
         assert_eq!(node.snapshot().inflight_operations, 0);
         tokio::time::timeout(Duration::from_secs(5), fence.drain())
             .await

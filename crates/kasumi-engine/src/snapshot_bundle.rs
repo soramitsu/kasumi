@@ -557,6 +557,10 @@ mod tests {
             )
             .unwrap(),
         );
+        // Both application and Control fixtures bind the same canonical
+        // genesis image before installing its permanent point-table owners.
+        let bootstrap = engine.logical_snapshot(store.scratch_disk()).unwrap();
+        let engine = Arc::new(TenantEngine::from_bootstrap(tenant, &bootstrap).unwrap());
         engine.install_storage_access(&store).unwrap();
         (directory, engine, store)
     }
@@ -924,20 +928,30 @@ mod tests {
         // This is a fixture governor with no production maintenance lanes. It
         // isolates point-stream admission, not final production node capacity.
         let maximum = 80 << 20;
-        let admission = crate::admission::NodeAdmission::new(crate::admission::AdmissionConfig {
-            max_inflight_bytes: Some(maximum),
-            ..Default::default()
-        })
+        let admission = crate::admission::NodeAdmission::new(
+            crate::test_utils::admission_config_with_bookkeeping(
+                crate::admission::AdmissionConfig {
+                    max_inflight_bytes: Some(maximum),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        )
         .unwrap();
         let image = source.snapshot(admission.clone(), 60_000).await.unwrap();
         let layout = inspect(&mut image.reader()).unwrap();
         assert_eq!(layout.kinds[21].records, 512);
         assert!(layout.bytes.checked_mul(3).unwrap() + (64 << 20) > maximum);
         assert!(layout.materialization_workspace().unwrap() < maximum);
-        let denied = crate::admission::NodeAdmission::new(crate::admission::AdmissionConfig {
-            max_inflight_bytes: Some(layout.materialization_workspace().unwrap() - 1),
-            ..Default::default()
-        })
+        let denied = crate::admission::NodeAdmission::new(
+            crate::test_utils::admission_config_with_bookkeeping(
+                crate::admission::AdmissionConfig {
+                    max_inflight_bytes: Some(layout.materialization_workspace().unwrap() - 1),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        )
         .unwrap();
         let live_files = image.disk().snapshot().live_files;
         let error = target
@@ -947,7 +961,7 @@ mod tests {
             .expect("accounted record work must be admitted before staging");
         assert_eq!(error.code, ErrorCode::ResourceExhausted);
         assert_eq!(image.disk().snapshot().live_files, live_files);
-        assert_eq!(denied.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&denied), 0);
         assert_eq!(denied.snapshot().inflight_operations, 0);
         let prepared = target
             .prepare_snapshot_restore(image.clone(), admission.clone(), 60_000)
@@ -957,7 +971,7 @@ mod tests {
         assert_eq!(prepared.image(), &image);
         assert_eq!(target.generation().unwrap().state.revision, 0);
         assert_eq!(target.generation().unwrap().terminals.head().count, 0);
-        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
         assert_eq!(admission.snapshot().inflight_operations, 0);
         source_store.shutdown().await.unwrap();
         target_store.shutdown().await.unwrap();
@@ -984,7 +998,7 @@ mod tests {
         );
         assert_eq!(prepared.image(), &image);
         assert_eq!(target.generation().unwrap().state.audit_retention, before);
-        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
         assert!(
             target
                 .prepare_snapshot_restore(
@@ -997,11 +1011,16 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(admission.snapshot().reserved_bytes, 0);
-        let denied = crate::admission::NodeAdmission::new(crate::admission::AdmissionConfig {
-            max_inflight_bytes: Some(1 << 20),
-            ..Default::default()
-        })
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+        let denied = crate::admission::NodeAdmission::new(
+            crate::test_utils::admission_config_with_bookkeeping(
+                crate::admission::AdmissionConfig {
+                    max_inflight_bytes: Some(1 << 20),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        )
         .unwrap();
         assert!(source.snapshot(denied, 60_000).await.is_err());
         source_store.shutdown().await.unwrap();

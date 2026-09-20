@@ -148,7 +148,6 @@ impl Fixture {
                 audit.clone(),
             )
             .await?;
-            database.install_admission(admission.clone())?;
             transport.register(group.clone(), id, database.raft_group().raft().clone());
             replicas.push((node, stores, audit, admission, database));
         }
@@ -227,7 +226,6 @@ impl Fixture {
             audit.clone(),
         )
         .await?;
-        resident.install_admission(admission.clone())?;
         let rcgen::CertifiedKey { cert, signing_key } =
             rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
         let identity = kasumi_transport::TlsIdentity::from_pem(

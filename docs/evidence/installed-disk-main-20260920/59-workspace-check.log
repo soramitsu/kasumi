@@ -1,0 +1,267 @@
+    Checking kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rmcp` (lib) generated 3 warnings
+    Checking kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-authority)
+error[E0308]: mismatched types
+  --> crates/kasumi-raft/tests/cluster.rs:71:9
+   |
+71 | /         self.nodes
+72 | |             .remove(&id)
+73 | |             .context("node missing")?
+74 | |             .group
+75 | |             .shutdown()
+76 | |             .await
+   | |__________________^ expected `Result<(), Error>`, found `Result<(), DrainFailure>`
+   |
+   = note: expected enum `Result<_, anyhow::Error>`
+              found enum `Result<_, DrainFailure>`
+
+error[E0277]: `?` couldn't convert the error to `DrainFailure`
+   --> crates/kasumi-raft/tests/cluster.rs:309:58
+    |
+309 |     let dir = kasumi_store::test_utils::private_tempdir()?;
+    |               -------------------------------------------^ the trait `From<std::io::Error>` is not implemented for `DrainFailure`
+    |               |
+    |               this can't be annotated with `?` because it has type `Result<_, std::io::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `DrainFailure`
+   --> crates/kasumi-raft/tests/cluster.rs:316:45
+    |
+316 |             common::store(&path, true).await?,
+    |             --------------------------------^ the trait `From<anyhow::Error>` is not implemented for `DrainFailure`
+    |             |
+    |             this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0271]: expected `{async block@crates/kasumi-raft/tests/cluster.rs:307:1: 307:60}` to be a future that resolves to `Result<(), Error>`, but it resolves to `Result<(), DrainFailure>`
+   --> crates/kasumi-raft/tests/cluster.rs:307:1
+    |
+307 | #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Result<(), Error>`, found `Result<(), DrainFailure>`
+    |
+    = note: expected enum `Result<_, anyhow::Error>`
+               found enum `Result<_, DrainFailure>`
+    = note: required for the cast from `Pin<&mut {async block@crates/kasumi-raft/tests/cluster.rs:307:1: 307:60}>` to `Pin<&mut dyn Future<Output = Result<(), anyhow::Error>>>`
+    = note: this error originates in the attribute macro `tokio::test` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `?` couldn't convert the error to `DrainFailure`
+   --> crates/kasumi-raft/tests/cluster.rs:343:58
+    |
+343 |     let dir = kasumi_store::test_utils::private_tempdir()?;
+    |               -------------------------------------------^ the trait `From<std::io::Error>` is not implemented for `DrainFailure`
+    |               |
+    |               this can't be annotated with `?` because it has type `Result<_, std::io::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `DrainFailure`
+   --> crates/kasumi-raft/tests/cluster.rs:345:49
+    |
+345 |     let store = common::store(&path, true).await?;
+    |                 --------------------------------^ the trait `From<anyhow::Error>` is not implemented for `DrainFailure`
+    |                 |
+    |                 this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `DrainFailure`
+   --> crates/kasumi-raft/tests/cluster.rs:367:15
+    |
+360 | /     group
+361 | |         .raft()
+362 | |         .wait(Some(WAIT))
+363 | |         .metrics(
+...   |
+367 | |         .await?;
+    | |              -^ the trait `From<WaitError>` is not implemented for `DrainFailure`
+    | |______________|
+    |                this can't be annotated with `?` because it has type `Result<_, WaitError>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0271]: expected `{async block@crates/kasumi-raft/tests/cluster.rs:341:1: 341:15}` to be a future that resolves to `Result<(), Error>`, but it resolves to `Result<(), DrainFailure>`
+   --> crates/kasumi-raft/tests/cluster.rs:341:1
+    |
+341 | #[tokio::test]
+    | ^^^^^^^^^^^^^^ expected `Result<(), Error>`, found `Result<(), DrainFailure>`
+    |
+    = note: expected enum `Result<_, anyhow::Error>`
+               found enum `Result<_, DrainFailure>`
+    = note: required for the cast from `Pin<&mut {async block@crates/kasumi-raft/tests/cluster.rs:341:1: 341:15}>` to `Pin<&mut dyn Future<Output = Result<(), anyhow::Error>>>`
+    = note: this error originates in the attribute macro `tokio::test` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `?` couldn't convert the error to `DrainFailure`
+   --> crates/kasumi-raft/tests/cluster.rs:461:58
+    |
+461 |     let dir = kasumi_store::test_utils::private_tempdir()?;
+    |               -------------------------------------------^ the trait `From<std::io::Error>` is not implemented for `DrainFailure`
+    |               |
+    |               this can't be annotated with `?` because it has type `Result<_, std::io::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `DrainFailure`
+   --> crates/kasumi-raft/tests/cluster.rs:463:73
+    |
+463 |     let mut child = tokio::process::Command::new(std::env::current_exe()?)
+    |                                                  -----------------------^ the trait `From<std::io::Error>` is not implemented for `DrainFailure`
+    |                                                  |
+    |                                                  this can't be annotated with `?` because it has type `Result<_, std::io::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `DrainFailure`
+   --> crates/kasumi-raft/tests/cluster.rs:470:87
+    |
+470 |     let mut lines = BufReader::new(child.stdout.take().context("child stdout missing")?).lines();
+    |                                                        -------------------------------^ the trait `From<anyhow::Error>` is not implemented for `DrainFailure`
+    |                                                        |
+    |                                                        this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `DrainFailure`
+   --> crates/kasumi-raft/tests/cluster.rs:479:11
+    |
+471 | /     tokio::time::timeout(Duration::from_secs(20), async {
+472 | |         while let Some(line) = lines.next_line().await? {
+473 | |             if line.contains("KASUMI_DURABLE_ACK") {
+474 | |                 return anyhow::Ok(());
+...   |
+478 | |     })
+479 | |     .await??;
+    | |          -^ the trait `From<Elapsed>` is not implemented for `DrainFailure`
+    | |__________|
+    |            this can't be annotated with `?` because it has type `Result<_, Elapsed>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0271]: expected `{async block@crates/kasumi-raft/tests/cluster.rs:457:1: 457:15}` to be a future that resolves to `Result<(), Error>`, but it resolves to `Result<(), DrainFailure>`
+   --> crates/kasumi-raft/tests/cluster.rs:457:1
+    |
+457 | #[tokio::test]
+    | ^^^^^^^^^^^^^^ expected `Result<(), Error>`, found `Result<(), DrainFailure>`
+    |
+    = note: expected enum `Result<_, anyhow::Error>`
+               found enum `Result<_, DrainFailure>`
+    = note: required for the cast from `Pin<&mut {async block@crates/kasumi-raft/tests/cluster.rs:457:1: 457:15}>` to `Pin<&mut dyn Future<Output = Result<(), anyhow::Error>>>`
+    = note: this error originates in the attribute macro `tokio::test` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+Some errors have detailed explanations: E0271, E0277, E0308.
+For more information about an error, try `rustc --explain E0271`.
+error: could not compile `kasumi-raft` (test "cluster") due to 13 previous errors
+warning: build failed, waiting for other jobs to finish...
+error[E0277]: `?` couldn't convert the error to `kasumi_types::drain::DrainFailure`
+  --> crates/kasumi-raft/tests/shutdown.rs:62:64
+   |
+62 |     let directory = kasumi_store::test_utils::private_tempdir()?;
+   |                     -------------------------------------------^ the trait `From<std::io::Error>` is not implemented for `kasumi_types::drain::DrainFailure`
+   |                     |
+   |                     this can't be annotated with `?` because it has type `Result<_, std::io::Error>`
+   |
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::drain::DrainFailure`
+  --> crates/kasumi-raft/tests/shutdown.rs:71:10
+   |
+67 | /         NodeStore::create_new_fixture(
+68 | |             &path,
+69 | |             kasumi_store::test_utils::NODE_STORE_ID,
+70 | |             kasumi_store::ScratchDisk::fixture(),
+71 | |         )?,
+   | |         -^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::drain::DrainFailure`
+   | |_________|
+   |           this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+   |
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::drain::DrainFailure`
+  --> crates/kasumi-raft/tests/shutdown.rs:95:44
+   |
+95 |     tokio::time::timeout(WAIT, ready).await??;
+   |     ---------------------------------------^ the trait `From<Elapsed>` is not implemented for `kasumi_types::drain::DrainFailure`
+   |     |
+   |     this can't be annotated with `?` because it has type `Result<_, Elapsed>`
+   |
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::drain::DrainFailure`
+  --> crates/kasumi-raft/tests/shutdown.rs:95:45
+   |
+95 |     tokio::time::timeout(WAIT, ready).await??;
+   |     ----------------------------------------^ the trait `From<tokio::sync::oneshot::error::RecvError>` is not implemented for `kasumi_types::drain::DrainFailure`
+   |     |
+   |     this can't be annotated with `?` because it has type `Result<_, tokio::sync::oneshot::error::RecvError>`
+   |
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0271]: expected `{async block@crates/kasumi-raft/tests/shutdown.rs:60:1: 60:60}` to be a future that resolves to `Result<(), Error>`, but it resolves to `Result<(), DrainFailure>`
+  --> crates/kasumi-raft/tests/shutdown.rs:60:1
+   |
+60 | #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Result<(), Error>`, found `Result<(), DrainFailure>`
+   |
+   = note: expected enum `Result<_, anyhow::Error>`
+              found enum `Result<_, kasumi_types::drain::DrainFailure>`
+   = note: required for the cast from `Pin<&mut {async block@crates/kasumi-raft/tests/shutdown.rs:60:1: 60:60}>` to `Pin<&mut dyn Future<Output = Result<(), anyhow::Error>>>`
+   = note: this error originates in the attribute macro `tokio::test` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+Some errors have detailed explanations: E0271, E0277.
+error: could not compile `kasumi-raft` (test "shutdown") due to 5 previous errors
+    Checking kasumi-server v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-server)
+error[E0277]: the trait bound `&state::Generation: SnapshotFixtureState` is not satisfied
+    --> crates/kasumi-engine/src/state.rs:2637:66
+     |
+2637 |         let bytes = crate::test_utils::encode_snapshot_candidate(&source, 64 << 20).unwrap();
+     |                     -------------------------------------------- ^^^^^^^ the trait `SnapshotFixtureState` is not implemented for `&state::Generation`
+     |                     |
+     |                     required by a bound introduced by this call
+     |
+note: required by a bound in `encode_snapshot_candidate`
+    --> crates/kasumi-engine/src/test_utils.rs:93:18
+     |
+  92 | pub fn encode_snapshot_candidate(
+     |        ------------------------- required by a bound in this function
+  93 |     state: &impl SnapshotFixtureState,
+     |                  ^^^^^^^^^^^^^^^^^^^^ required by this bound in `encode_snapshot_candidate`
+help: consider removing the leading `&`-reference
+     |
+2637 -         let bytes = crate::test_utils::encode_snapshot_candidate(&source, 64 << 20).unwrap();
+2637 +         let bytes = crate::test_utils::encode_snapshot_candidate(source, 64 << 20).unwrap();
+     |
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `kasumi-engine` (lib test) due to 1 previous error
+    Checking kasumi-bench v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-bench)

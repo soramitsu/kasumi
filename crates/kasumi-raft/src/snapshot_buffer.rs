@@ -107,8 +107,8 @@ pub struct SnapshotBufferOwner {
     failed: Arc<AtomicBool>,
     drain_gate: tokio::sync::Mutex<()>,
     startup: tokio::sync::Mutex<crate::startup_owner::StartupState>,
-    #[cfg(test)]
-    pub(crate) local_startup_gate: Mutex<Option<Arc<crate::startup_owner_tests::LocalStartupGate>>>,
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) local_startup_gate: Mutex<Option<Arc<crate::startup_test_utils::LocalStartupGate>>>,
     report: Mutex<DrainReport>,
     _charge: Arc<dyn Send + Sync>,
 }
@@ -148,7 +148,7 @@ impl SnapshotBufferOwner {
             failed: Arc::new(AtomicBool::new(false)),
             drain_gate: Default::default(),
             startup: Default::default(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-utils"))]
             local_startup_gate: Default::default(),
             report: Default::default(),
             _charge: charge,

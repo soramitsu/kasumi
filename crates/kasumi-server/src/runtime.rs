@@ -243,7 +243,6 @@ pub struct RuntimeConfig {
     pub serving_authorities: BTreeMap<String, crate::serving_runtime::ServingAuthorityConfig>,
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     pub signer_verifier: Option<crate::signer_runtime::SignerVerifierConfig>,
-    #[serde(default)]
     pub admission: kasumi_engine::admission::AdmissionConfig,
     #[serde(default)]
     pub backup_destinations: BTreeMap<String, crate::administration::DestinationConfig>,
@@ -1273,7 +1272,6 @@ impl NodeRuntime {
             Ok(control) => control,
             Err(error) => return Err(error),
         };
-        control.database.install_admission(admission.clone())?;
         let serving_registration = crate::serving_owner::Registration::new(crate::serving_owner::Kind::Data, config.database_id, audit.admission())?;
         retained_runtime = Some(Self {
             serving_registration: Some(serving_registration),
@@ -1417,7 +1415,6 @@ impl NodeRuntime {
                         anyhow::bail!("active standalone generation is incomplete or differs from its committed checkpoint");
                     }
                 }
-                opened.database.install_admission(admission.clone())?;
                 managed.push(crate::administration::ManagedTenant {
                     database: opened.database.clone(),
                     store: opened.store.clone(),
@@ -1520,10 +1517,10 @@ impl NodeRuntime {
                 if let Some(runtime) = retained_runtime.as_mut()
                     && let Err(cleanup) = crate::startup_owner::finish(runtime).await
                 {
-                    error = error.context(format!("partial runtime drain failed: {cleanup:#}"));
+                    error = error.context(cleanup);
                 }
                 if let Err(cleanup) = crate::startup_owner::finish(&mut pending).await {
-                    error = error.context(format!("startup resource drain failed: {cleanup:#}"));
+                    error = error.context(cleanup);
                 }
                 Err(error)
             }
@@ -2604,13 +2601,31 @@ async fn provision_local_fixture_domains(
     })
     .await;
     let drained = crate::startup_owner::finish(&mut pending).await;
-    outcome.and(drained)
+    match (outcome, drained) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(drain)) => Err(drain.into()),
+        (Err(error), Err(drain)) => Err(error.context(drain)),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use kasumi_store::test_utils::{LocalKeyProvider, ManualClock};
+
+    #[test]
+    fn runtime_config_requires_explicit_admission() {
+        let mut encoded = serde_json::to_value(example_config()).unwrap();
+        let decoded: RuntimeConfig = serde_json::from_value(encoded.clone()).unwrap();
+        decoded.validate().unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
+        encoded.as_object_mut().unwrap().remove("admission");
+        let error = serde_json::from_value::<RuntimeConfig>(encoded)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("missing field `admission`"));
+    }
 
     #[test]
     fn operator_example_is_valid_secret_free_and_rejects_inline_credentials() {
@@ -5224,16 +5239,7 @@ pub(crate) async fn open_retired_source(
             // This must wait for Complete, including retained-child retries.
             match crate::startup_owner::finish(&mut pending).await {
                 Ok(()) => Err(error),
-                Err(drain) => {
-                    if let Some(failure) = drain.downcast_ref::<kasumi_types::drain::DrainFailure>()
-                    {
-                        // A typed context keeps both the original preparation
-                        // error and each original Arc<DrainIssue> downcastable.
-                        Err(error.context(failure.clone()))
-                    } else {
-                        Err(error.context(drain))
-                    }
-                }
+                Err(drain) => Err(error.context(drain)),
             }
         }
     }

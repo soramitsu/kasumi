@@ -11,21 +11,28 @@ use kasumi_types::{Error, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdmissionConfig {
     /// None: half physical memory, limited by the Linux cgroup memory ceiling.
     /// An explicit value must not exceed that detected capacity either.
     pub high_water_bytes: Option<u64>,
     /// None: seven eighths of the high-water mark, providing hysteresis.
     pub low_water_bytes: Option<u64>,
+    /// Total reservation cap, including resident and bookkeeping charges.
     /// None: min(high-water / 4, 512 MiB).
     pub max_inflight_bytes: Option<u64>,
     pub max_inflight_operations: usize,
+    /// Fixed charge ledger capacity, including facade and resident reservations.
+    pub max_reservations: usize,
+    /// Fixed startup-owner inventory per independent runtime facade.
+    pub max_snapshot_startups: usize,
+    /// Fixed strong census of admitted startup lifecycles on this memory core.
+    pub max_startup_scopes: usize,
     pub sample_interval_ms: u64,
     pub max_sample_age_ms: u64,
 }
@@ -36,6 +43,9 @@ impl Default for AdmissionConfig {
             low_water_bytes: None,
             max_inflight_bytes: None,
             max_inflight_operations: 64,
+            max_reservations: 4096,
+            max_snapshot_startups: 64,
+            max_startup_scopes: 64,
             sample_interval_ms: 250,
             max_sample_age_ms: 1000,
         }
@@ -52,7 +62,34 @@ impl AdmissionConfig {
         Ok(high)
     }
 
+    fn resolve_budgets(&self, high: u64) -> anyhow::Result<(u64, u64)> {
+        let low = self.low_water_bytes.unwrap_or(high.saturating_mul(7) / 8);
+        let total = self.max_inflight_bytes.unwrap_or((high / 4).min(512 << 20));
+        anyhow::ensure!(
+            high > 0 && low < high && total > 0 && total <= high,
+            "invalid resolved admission budgets"
+        );
+        Ok((low, total))
+    }
+
+    /// Resolve the current total without allocating a governor or adding any
+    /// bookkeeping. Fixture storage planners add only their new retained leases.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn resolved_fixture_total_bytes(&self) -> anyhow::Result<u64> {
+        self.validate()?;
+        let high = self.resolve_high_water(physical_capacity()?)?;
+        self.resolve_budgets(high).map(|(_, total)| total)
+    }
+
     pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.max_reservations >= 3
+                && self.max_snapshot_startups > 0
+                && self.max_startup_scopes > 0,
+            "admission ledger or startup inventory capacity is invalid"
+        );
+        MemoryCore::required_bookkeeping_bytes(self)?;
+        NodeAdmission::inventory_bytes(self)?;
         anyhow::ensure!(
             self.max_inflight_operations > 0,
             "admission operation capacity is zero"
@@ -75,6 +112,9 @@ impl AdmissionConfig {
         Ok(())
     }
 }
+
+mod installed;
+pub mod startup;
 
 trait MemorySource: Send + Sync {
     fn resident_bytes(&self) -> anyhow::Result<u64>;
@@ -189,15 +229,31 @@ pub struct AdmissionSnapshot {
     pub resident_bytes: u64,
     pub high_water_bytes: u64,
     pub low_water_bytes: u64,
+    /// All charged bytes, including fixed governor and facade bookkeeping.
     pub reserved_bytes: u64,
+    pub bookkeeping_bytes: u64,
+    /// Non-operation reservations, excluding separately reported bookkeeping.
+    pub resident_reserved_bytes: u64,
+    pub live_reservations: usize,
     pub inflight_operations: usize,
     pub pressured: bool,
     pub sample_usable: bool,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChargeKind {
+    Operation,
+    Resident,
+    Bookkeeping,
+}
 struct Charge {
     bytes: u64,
-    operation: bool,
+    kind: ChargeKind,
     cancellation: Option<QueryCancellation>,
+}
+struct ChargeSlot {
+    id: u64,
+    charge: Option<Charge>,
+    next_free: Option<usize>,
 }
 struct State {
     resident: u64,
@@ -207,89 +263,535 @@ struct State {
     bytes: u64,
     operations: usize,
     next: u64,
-    charges: HashMap<u64, Charge>,
+    slots: Box<[ChargeSlot]>,
+    free: Option<usize>,
+    live: usize,
 }
-#[derive(Default)]
-struct SnapshotStartups {
-    closed: bool,
-    // Each charged owner covers its inventory entry. Weak references avoid a
-    // cycle through the owner's Reservation back to this node governor.
-    owners: Vec<Weak<kasumi_raft::SnapshotBufferOwner>>,
+impl State {
+    fn charge(&self, slot: usize, id: u64) -> Option<&Charge> {
+        self.slots
+            .get(slot)
+            .filter(|slot| slot.id == id)?
+            .charge
+            .as_ref()
+    }
+    fn charge_mut(&mut self, slot: usize, id: u64) -> Option<&mut Charge> {
+        self.slots
+            .get_mut(slot)
+            .filter(|slot| slot.id == id)?
+            .charge
+            .as_mut()
+    }
 }
-pub struct NodeAdmission {
+
+// This is an admitted workspace estimate, not an allocator-layout guarantee.
+// Charge requested storage plus an explicit allocation allowance for each fixed
+// allocation, and an explicitly configured sampler stack and probe workspace.
+const ALLOCATION_ALLOWANCE: u64 = 4096;
+const SAMPLER_STACK_BYTES: usize = 128 << 10;
+const SAMPLE_WORKSPACE_BYTES: u64 = 16 << 10;
+// std does not expose its thread control allocation layout. This is a named
+// workspace estimate for the thread name, closure, packet and synchronization
+// bookkeeping, separate from the explicitly configured stack.
+const SAMPLER_CONTROL_BYTES: u64 = 16 << 10;
+fn allocation_bytes<T>(count: usize) -> anyhow::Result<u64> {
+    u64::try_from(std::mem::size_of::<T>())?
+        .checked_mul(u64::try_from(count)?)
+        .and_then(|bytes| bytes.checked_add(ALLOCATION_ALLOWANCE))
+        .ok_or_else(|| anyhow::anyhow!("memory bookkeeping size overflow"))
+}
+fn arc_bytes<T>() -> anyhow::Result<u64> {
+    allocation_bytes::<T>(1)?
+        .checked_add((2 * std::mem::size_of::<usize>()) as u64)
+        .ok_or_else(|| anyhow::anyhow!("memory owner size overflow"))
+}
+
+/// Shared resource accounting and the bounded strong startup-scope census.
+/// Runtime admission fences remain separate; a resident lease retains this core.
+///
+/// `new` creates an independent governor for an explicit embedding policy.
+/// `installed` selects the single process-wide installed governor. Runtime
+/// facades deliberately reuse this exact core; installed NodeDisk caller wiring
+/// remains separately tracked in the storage-admission workstream.
+pub struct MemoryCore {
+    startups: Mutex<startup::Census>,
+    sampler: Option<std::thread::JoinHandle<()>>,
+    data: Arc<MemoryState>,
+}
+// The sampler owns only this data. It can never own, upgrade, or finally drop
+// the outer MemoryCore that owns its actual JoinHandle.
+struct MemoryState {
     config: AdmissionConfig,
     high: u64,
     low: u64,
     max_bytes: u64,
+    base_bytes: u64,
     memory: Arc<dyn MemorySource>,
     clock: Arc<dyn LeaseClock>,
     state: Mutex<State>,
-    snapshot_startups: Mutex<SnapshotStartups>,
-    snapshot_startup_drain: tokio::sync::Mutex<kasumi_types::drain::DrainReport>,
+    stop: Mutex<bool>,
+    wake: std::sync::Condvar,
+    sampler_failed: std::sync::atomic::AtomicBool,
 }
-impl NodeAdmission {
-    /// Reserve the complete fixed snapshot-child inventory before a group may
-    /// open. The same charge survives facade cancellation until actual drain.
-    pub fn snapshot_buffer_owner(
-        self: &Arc<Self>,
-    ) -> anyhow::Result<Arc<kasumi_raft::SnapshotBufferOwner>> {
-        let mut startups = self
-            .snapshot_startups
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        anyhow::ensure!(!startups.closed, "snapshot startup admission is closed");
-        let slots = kasumi_raft::SNAPSHOT_BUFFER_SLOTS;
-        let bytes = kasumi_raft::SnapshotBufferOwner::required_bytes(slots)?;
-        let mut charge = self.reserve(bytes, None)?;
-        charge.retain(bytes);
-        startups.owners.retain(|owner| owner.strong_count() != 0);
-        startups.owners.try_reserve(1)?;
-        let owner = kasumi_raft::SnapshotBufferOwner::new(slots, Arc::new(charge))?;
-        startups.owners.push(Arc::downgrade(&owner));
-        Ok(owner)
+struct PreparedCore {
+    config: AdmissionConfig,
+    high: u64,
+    low: u64,
+    max_bytes: u64,
+    base_bytes: u64,
+    resident: u64,
+    sampled_at: Duration,
+}
+impl MemoryCore {
+    /// Select the one installed process governor. Runtime replacements construct
+    /// a fresh NodeAdmission facade on this same retained resource core.
+    pub fn installed(config: AdmissionConfig) -> anyhow::Result<Arc<Self>> {
+        installed::select(config)
     }
-
-    /// Seal new group startup admission and resume every cancelled/unclaimed
-    /// constructor retained by this node. Already delivered groups keep their
-    /// ordinary shutdown owner; this cannot close their live snapshot buffers.
-    pub async fn drain_snapshot_startups(&self) -> kasumi_types::drain::DrainResult {
-        use kasumi_types::drain::DrainCompletion;
-        let mut report = self.snapshot_startup_drain.lock().await;
-        let count = {
-            let mut startups = self
-                .snapshot_startups
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            startups.closed = true;
-            startups.owners.len()
+    /// Explicit core injection must preserve the complete configured policy.
+    pub fn require_policy(&self, config: &AdmissionConfig) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            &self.data.config == config,
+            "installed memory admission policy differs from retained core"
+        );
+        Ok(())
+    }
+    pub fn required_bookkeeping_bytes(config: &AdmissionConfig) -> anyhow::Result<u64> {
+        let source = arc_bytes::<ProcessMemory>()?;
+        let clock = arc_bytes::<SystemLeaseClock>()?;
+        let data = arc_bytes::<MemoryState>()?;
+        let startups = startup::Census::required_bytes(config.max_startup_scopes)?;
+        arc_bytes::<Self>()?
+            .checked_add(allocation_bytes::<ChargeSlot>(config.max_reservations)?)
+            .and_then(|bytes| bytes.checked_add(data))
+            .and_then(|bytes| bytes.checked_add(startups))
+            .and_then(|bytes| bytes.checked_add(source))
+            .and_then(|bytes| bytes.checked_add(clock))
+            .and_then(|bytes| bytes.checked_add(SAMPLER_STACK_BYTES as u64))
+            .and_then(|bytes| bytes.checked_add(SAMPLE_WORKSPACE_BYTES))
+            .and_then(|bytes| bytes.checked_add(SAMPLER_CONTROL_BYTES))
+            .ok_or_else(|| anyhow::anyhow!("memory core bookkeeping overflow"))
+    }
+    fn prepare(
+        config: AdmissionConfig,
+        high: u64,
+        memory: &dyn MemorySource,
+        clock: &dyn LeaseClock,
+    ) -> anyhow::Result<PreparedCore> {
+        config.validate()?;
+        let (low, max_bytes) = config.resolve_budgets(high)?;
+        let base_bytes = Self::required_bookkeeping_bytes(&config)?;
+        let sampled_at = clock.now();
+        let resident = memory.resident_bytes()?;
+        anyhow::ensure!(
+            clock.now().saturating_sub(sampled_at)
+                < Duration::from_millis(config.max_sample_age_ms)
+                && resident <= low
+                && base_bytes <= max_bytes
+                && resident
+                    .checked_add(base_bytes)
+                    .is_some_and(|total| total < high),
+            "memory core bookkeeping admission denied"
+        );
+        // The base is accepted before allocating the fixed ledger, owner Arc,
+        // source/clock Arcs, or sampling thread. Failure publishes no core.
+        Ok(PreparedCore {
+            config,
+            high,
+            low,
+            max_bytes,
+            base_bytes,
+            resident,
+            sampled_at,
+        })
+    }
+    fn allocate(
+        prepared: PreparedCore,
+        memory: Arc<dyn MemorySource>,
+        clock: Arc<dyn LeaseClock>,
+    ) -> anyhow::Result<Arc<Self>> {
+        let startups = Mutex::new(startup::Census::allocate(
+            prepared.config.max_startup_scopes,
+        )?);
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(prepared.config.max_reservations)?;
+        for index in 0..prepared.config.max_reservations {
+            slots.push(ChargeSlot {
+                id: 0,
+                charge: None,
+                next_free: (index + 1 < prepared.config.max_reservations).then_some(index + 1),
+            });
+        }
+        let data = Arc::new(MemoryState {
+            config: prepared.config,
+            high: prepared.high,
+            low: prepared.low,
+            max_bytes: prepared.max_bytes,
+            base_bytes: prepared.base_bytes,
+            memory,
+            clock,
+            state: Mutex::new(State {
+                resident: prepared.resident,
+                sampled_at: prepared.sampled_at,
+                usable: true,
+                pressured: false,
+                bytes: prepared.base_bytes,
+                operations: 0,
+                next: 0,
+                slots: slots.into_boxed_slice(),
+                free: Some(0),
+                live: 0,
+            }),
+            stop: Mutex::new(false),
+            wake: std::sync::Condvar::new(),
+            sampler_failed: std::sync::atomic::AtomicBool::new(false),
+        });
+        drop(data.state.lock().unwrap());
+        drop(data.stop.lock().unwrap());
+        Ok(Arc::new(Self {
+            startups,
+            sampler: None,
+            data,
+        }))
+    }
+    pub fn new(config: AdmissionConfig) -> anyhow::Result<Arc<Self>> {
+        config.validate()?;
+        let high = config.resolve_high_water(physical_capacity()?)?;
+        let memory = ProcessMemory;
+        let clock = SystemLeaseClock;
+        let prepared = Self::prepare(config, high, &memory, &clock)?;
+        let mut core = Self::allocate(prepared, Arc::new(memory), Arc::new(clock))?;
+        Arc::get_mut(&mut core)
+            .expect("unpublished memory core")
+            .start_sampler()?;
+        Ok(core)
+    }
+    fn start_sampler(&mut self) -> std::io::Result<()> {
+        if self.sampler.is_some() {
+            return Err(std::io::ErrorKind::AlreadyExists.into());
+        }
+        let data = self.data.clone();
+        let interval = Duration::from_millis(data.config.sample_interval_ms);
+        let sampler = std::thread::Builder::new()
+            .name("kasumi-rss".into())
+            .stack_size(SAMPLER_STACK_BYTES)
+            .spawn(move || {
+                loop {
+                    let stopped = data.stop.lock().unwrap_or_else(|p| p.into_inner());
+                    let (stopped, _) = data
+                        .wake
+                        .wait_timeout_while(stopped, interval, |stop| !*stop)
+                        .unwrap_or_else(|p| p.into_inner());
+                    if *stopped {
+                        break;
+                    }
+                    drop(stopped);
+                    data.refresh();
+                }
+            })?;
+        self.sampler = Some(sampler);
+        Ok(())
+    }
+    #[cfg(test)]
+    fn create(
+        config: AdmissionConfig,
+        high: u64,
+        memory: Arc<dyn MemorySource>,
+        clock: Arc<dyn LeaseClock>,
+    ) -> anyhow::Result<Arc<Self>> {
+        let prepared = Self::prepare(config, high, memory.as_ref(), clock.as_ref())?;
+        Self::allocate(prepared, memory, clock)
+    }
+    #[cfg(test)]
+    fn refresh(&self) {
+        self.data.refresh();
+    }
+}
+impl Drop for MemoryCore {
+    fn drop(&mut self) {
+        *self.data.stop.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        self.data.wake.notify_one();
+        if let Some(sampler) = self.sampler.take() {
+            // The actual sampler has no outer-core reference. Its original panic
+            // outcome, if any, remains owned until this join finishes. Only then
+            // may the accounting data, base charge and thread metadata disappear.
+            drop(sampler.join());
+        }
+    }
+}
+impl MemoryState {
+    fn refresh(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        self.sample(&mut state);
+    }
+    fn sample(&self, state: &mut State) {
+        if self
+            .sampler_failed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            state.usable = false;
+            state.pressured = true;
+            return;
+        }
+        state.usable = false;
+        // The state lock remains held while recording a terminal probe panic,
+        // so no competing admission can reuse a pre-panic successful sample.
+        let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let start = self.clock.now();
+            let result = self.memory.resident_bytes();
+            (start, result, self.clock.now())
+        }));
+        let (start, result, finished) = match observed {
+            Ok(observed) => observed,
+            Err(panic) => {
+                self.sampler_failed
+                    .store(true, std::sync::atomic::Ordering::Release);
+                state.pressured = true;
+                for slot in &state.slots {
+                    if let Some(token) = slot
+                        .charge
+                        .as_ref()
+                        .and_then(|charge| charge.cancellation.as_ref())
+                    {
+                        token.cancel();
+                    }
+                }
+                std::panic::resume_unwind(panic);
+            }
         };
-        let mut retained = None;
-        for index in 0..count {
-            let owner = {
-                let startups = self
-                    .snapshot_startups
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                startups.owners[index].upgrade()
-            };
-            if let Some(owner) = owner
-                && let Err(failure) = owner.drain_startup().await
-            {
-                report.merge(&failure);
-                if failure.completion() == DrainCompletion::Retained {
-                    retained = Some(failure);
+        state.sampled_at = start;
+        if let Ok(resident) = result {
+            state.resident = resident;
+            state.usable = finished.saturating_sub(start)
+                < Duration::from_millis(self.config.max_sample_age_ms);
+            if resident >= self.high {
+                state.pressured = true;
+            } else if resident <= self.low {
+                state.pressured = false;
+            }
+        }
+        if !state.usable || state.pressured {
+            for slot in &state.slots {
+                if let Some(charge) = &slot.charge
+                    && let Some(token) = &charge.cancellation
+                {
+                    token.cancel();
                 }
             }
         }
-        self.snapshot_startups
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .owners
-            .retain(|owner| owner.strong_count() != 0);
-        report.outcome(retained)
     }
-    /// Deterministic memory observations for unit tests of ownership. This is
-    /// unavailable in library and fixture-feature builds of the database.
+    fn refresh_stale(&self, state: &mut State) {
+        if !state.usable
+            || self.clock.now().saturating_sub(state.sampled_at)
+                >= Duration::from_millis(self.config.max_sample_age_ms)
+        {
+            self.sample(state);
+        }
+    }
+    pub fn snapshot(&self) -> AdmissionSnapshot {
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut bookkeeping_bytes = self.base_bytes;
+        let mut resident_reserved_bytes = 0;
+        for charge in state.slots.iter().filter_map(|slot| slot.charge.as_ref()) {
+            match charge.kind {
+                ChargeKind::Bookkeeping => bookkeeping_bytes += charge.bytes,
+                ChargeKind::Resident => resident_reserved_bytes += charge.bytes,
+                ChargeKind::Operation => {}
+            }
+        }
+        AdmissionSnapshot {
+            resident_bytes: state.resident,
+            high_water_bytes: self.high,
+            low_water_bytes: self.low,
+            reserved_bytes: state.bytes,
+            bookkeeping_bytes,
+            resident_reserved_bytes,
+            live_reservations: state.live,
+            inflight_operations: state.operations,
+            pressured: state.pressured,
+            sample_usable: state.usable
+                && self.clock.now().saturating_sub(state.sampled_at)
+                    < Duration::from_millis(self.config.max_sample_age_ms),
+        }
+    }
+    fn check_release(&self, token: &QueryCancellation) -> Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        self.refresh_stale(&mut state);
+        if !state.usable || state.pressured {
+            token.cancel();
+        }
+        token.check()
+    }
+}
+impl MemoryCore {
+    pub fn snapshot(&self) -> AdmissionSnapshot {
+        self.data.snapshot()
+    }
+    fn check_release(&self, token: &QueryCancellation) -> Result<()> {
+        self.data.check_release(token)
+    }
+    fn reserve_kind(
+        self: &Arc<Self>,
+        bytes: u64,
+        cancellation: Option<QueryCancellation>,
+        kind: ChargeKind,
+    ) -> Result<Reservation> {
+        let mut state = self.data.state.lock().unwrap_or_else(|p| p.into_inner());
+        self.data.refresh_stale(&mut state);
+        let total = state.bytes.checked_add(bytes);
+        if !state.usable
+            || state.pressured
+            || state.free.is_none()
+            || (kind == ChargeKind::Operation
+                && state.operations >= self.data.config.max_inflight_operations)
+            || total.is_none_or(|total| {
+                total > self.data.max_bytes
+                    || state
+                        .resident
+                        .checked_add(total)
+                        .is_none_or(|observed| observed >= self.data.high)
+            })
+        {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "node memory or work admission budget exhausted",
+            ));
+        }
+        let id = state.next;
+        state.next = state
+            .next
+            .checked_add(1)
+            .ok_or_else(|| Error::new(ErrorCode::Unavailable, "admission identifier exhausted"))?;
+        let slot = state.free.expect("checked free charge slot");
+        state.free = state.slots[slot].next_free;
+        state.slots[slot] = ChargeSlot {
+            id,
+            charge: Some(Charge {
+                bytes,
+                kind,
+                cancellation,
+            }),
+            next_free: None,
+        };
+        state.bytes = total.expect("checked reservation total");
+        state.operations += usize::from(kind == ChargeKind::Operation);
+        state.live += 1;
+        Ok(Reservation {
+            core: self.clone(),
+            slot,
+            id,
+        })
+    }
+    pub fn reserve_resident(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
+        self.reserve_kind(bytes, None, ChargeKind::Resident)
+    }
+}
+
+struct SnapshotStartups {
+    closed: bool,
+    owners: Option<Box<[Option<Weak<kasumi_raft::SnapshotBufferOwner>>]>>,
+    // This covers allocated inventory capacity independently of child charges.
+    inventory: Option<Reservation>,
+}
+pub struct NodeAdmission {
+    core: Arc<MemoryCore>,
+    snapshot_startup_drain: tokio::sync::Mutex<kasumi_types::drain::DrainReport>,
+    // Report is destroyed before an inventory charge retained for its failures.
+    snapshot_startups: Mutex<SnapshotStartups>,
+    // Core-only reservation avoids facade -> charge -> facade ownership cycles.
+    _facade: Reservation,
+}
+impl NodeAdmission {
+    /// Fixed workspace estimate for a new core and its first runtime facade.
+    /// Add the intended payload allowance to this value when configuring a
+    /// small total reservation cap. Additional facades reserve their own base.
+    pub fn required_bookkeeping_bytes(config: &AdmissionConfig) -> anyhow::Result<u64> {
+        let inventory = Self::inventory_bytes(config)?;
+        MemoryCore::required_bookkeeping_bytes(config)?
+            .checked_add(arc_bytes::<Self>()?)
+            .and_then(|bytes| bytes.checked_add(inventory))
+            .ok_or_else(|| anyhow::anyhow!("node admission bookkeeping overflow"))
+    }
+    fn inventory_bytes(config: &AdmissionConfig) -> anyhow::Result<u64> {
+        // A Weak retains the owner's inline Arc allocation even after strong
+        // owners release the child reservation. Cover that retained storage too.
+        let owner = arc_bytes::<kasumi_raft::SnapshotBufferOwner>()?;
+        allocation_bytes::<Option<Weak<kasumi_raft::SnapshotBufferOwner>>>(
+            config.max_snapshot_startups,
+        )?
+        .checked_add(
+            owner
+                .checked_mul(u64::try_from(config.max_snapshot_startups)?)
+                .ok_or_else(|| anyhow::anyhow!("startup weak-owner inventory overflow"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("startup inventory overflow"))
+    }
+    /// Create a new independent runtime startup lifecycle on an existing core.
+    /// Resource equivalence does not grant security or service facade identity.
+    pub fn from_memory(core: Arc<MemoryCore>) -> anyhow::Result<Arc<Self>> {
+        let facade = core.reserve_kind(arc_bytes::<Self>()?, None, ChargeKind::Bookkeeping)?;
+        let inventory = core.reserve_kind(
+            Self::inventory_bytes(&core.data.config)?,
+            None,
+            ChargeKind::Bookkeeping,
+        )?;
+        let mut owners = Vec::new();
+        owners.try_reserve_exact(core.data.config.max_snapshot_startups)?;
+        owners.resize_with(core.data.config.max_snapshot_startups, || None);
+        let facade = Arc::new(Self {
+            core,
+            snapshot_startups: Mutex::new(SnapshotStartups {
+                closed: false,
+                owners: Some(owners.into_boxed_slice()),
+                inventory: Some(inventory),
+            }),
+            snapshot_startup_drain: Default::default(),
+            _facade: facade,
+        });
+        drop(facade.snapshot_startups.lock().unwrap());
+        Ok(facade)
+    }
+    /// Construct a fresh independent embedding governor and its runtime facade.
+    /// Installed replacements must instead reuse a core through `from_memory`.
+    pub fn new(config: AdmissionConfig) -> anyhow::Result<Arc<Self>> {
+        Self::from_memory(MemoryCore::new(config)?)
+    }
+    pub fn memory(&self) -> &Arc<MemoryCore> {
+        &self.core
+    }
+    pub fn shares_memory(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.core, &other.core)
+    }
+    pub fn snapshot(&self) -> AdmissionSnapshot {
+        self.core.snapshot()
+    }
+    pub(crate) fn check_release(&self, token: &QueryCancellation) -> Result<()> {
+        self.core.check_release(token)
+    }
+    pub fn reserve(
+        self: &Arc<Self>,
+        bytes: u64,
+        cancellation: Option<QueryCancellation>,
+    ) -> Result<Reservation> {
+        self.core
+            .reserve_kind(bytes, cancellation, ChargeKind::Operation)
+    }
+    pub fn reserve_resident(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
+        self.core.reserve_resident(bytes)
+    }
+    #[cfg(test)]
+    fn refresh(&self) {
+        self.core.refresh();
+    }
+    #[cfg(test)]
+    fn create(
+        config: AdmissionConfig,
+        high: u64,
+        memory: Arc<dyn MemorySource>,
+        clock: Arc<dyn LeaseClock>,
+    ) -> anyhow::Result<Arc<Self>> {
+        Self::from_memory(MemoryCore::create(config, high, memory, clock)?)
+    }
     #[cfg(test)]
     pub(crate) fn with_fixed_memory(
         config: AdmissionConfig,
@@ -310,230 +812,119 @@ impl NodeAdmission {
             Arc::new(SystemLeaseClock),
         )
     }
-
-    pub fn new(config: AdmissionConfig) -> anyhow::Result<Arc<Self>> {
-        config.validate()?;
-        // An explicit threshold may reduce the detected capacity, but must not
-        // bypass host/cgroup discovery or turn an impossible RAM budget into an
-        // installed governor. Probe failures remain startup failures.
-        let high = config.resolve_high_water(physical_capacity()?)?;
-        let node = Self::create(
-            config,
-            high,
-            Arc::new(ProcessMemory),
-            Arc::new(SystemLeaseClock),
-        )?;
-        let weak = Arc::downgrade(&node);
-        let interval = Duration::from_millis(node.config.sample_interval_ms);
-        // Also works for embedding callers outside Tokio. The thread holds no
-        // strong reference while asleep and exits after its final owner drops.
-        std::thread::Builder::new()
-            .name("kasumi-rss".into())
-            .spawn(move || {
-                loop {
-                    std::thread::sleep(interval);
-                    let Some(node) = weak.upgrade() else {
-                        break;
-                    };
-                    node.refresh();
-                }
-            })?;
-        Ok(node)
-    }
-    fn create(
-        config: AdmissionConfig,
-        high: u64,
-        memory: Arc<dyn MemorySource>,
-        clock: Arc<dyn LeaseClock>,
-    ) -> anyhow::Result<Arc<Self>> {
-        config.validate()?;
-        let low = config.low_water_bytes.unwrap_or(high.saturating_mul(7) / 8);
-        let max_bytes = config
-            .max_inflight_bytes
-            .unwrap_or((high / 4).min(512 << 20));
-        anyhow::ensure!(
-            high > 0 && low < high && max_bytes > 0 && max_bytes <= high,
-            "invalid resolved admission budgets"
-        );
-        let node = Arc::new(Self {
-            config,
-            high,
-            low,
-            max_bytes,
-            memory,
-            clock,
-            state: Mutex::new(State {
-                resident: 0,
-                sampled_at: Duration::ZERO,
-                usable: false,
-                pressured: true,
-                bytes: 0,
-                operations: 0,
-                next: 0,
-                charges: HashMap::new(),
-            }),
-            snapshot_startups: Default::default(),
-            snapshot_startup_drain: Default::default(),
-        });
-        node.refresh();
-        Ok(node)
-    }
-    pub(crate) fn process_default() -> Arc<Self> {
-        static DEFAULT: OnceLock<Arc<NodeAdmission>> = OnceLock::new();
-        DEFAULT
-            .get_or_init(|| {
-                Self::new(AdmissionConfig::default()).unwrap_or_else(|_| {
-                    // Construction of existing embedded API is infallible. Failure to
-                    // determine RAM must deny admission, never silently disable the gate.
-                    Self::create(
-                        AdmissionConfig {
-                            max_inflight_bytes: Some(1),
-                            ..Default::default()
-                        },
-                        1,
-                        Arc::new(ProcessMemory),
-                        Arc::new(SystemLeaseClock),
-                    )
-                    .expect("fail-closed admission configuration")
-                })
-            })
-            .clone()
-    }
-    fn refresh(&self) {
-        // Serialize probes: a delayed earlier probe cannot overwrite a newer one.
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        self.sample(&mut state);
-    }
-    fn sample(&self, state: &mut State) {
-        let start = self.clock.now();
-        let result = self.memory.resident_bytes();
-        state.sampled_at = start;
-        state.usable = false;
-        if let Ok(resident) = result {
-            state.resident = resident;
-            state.usable = self.clock.now().saturating_sub(start)
-                < Duration::from_millis(self.config.max_sample_age_ms);
-            if resident >= self.high {
-                state.pressured = true;
-            } else if resident <= self.low {
-                state.pressured = false;
-            }
-        }
-        if !state.usable || state.pressured {
-            for charge in state.charges.values() {
-                if let Some(token) = &charge.cancellation {
-                    token.cancel();
-                }
-            }
-        }
-    }
-    pub fn snapshot(&self) -> AdmissionSnapshot {
-        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        AdmissionSnapshot {
-            resident_bytes: state.resident,
-            high_water_bytes: self.high,
-            low_water_bytes: self.low,
-            reserved_bytes: state.bytes,
-            inflight_operations: state.operations,
-            pressured: state.pressured,
-            sample_usable: state.usable
-                && self.clock.now().saturating_sub(state.sampled_at)
-                    < Duration::from_millis(self.config.max_sample_age_ms),
-        }
-    }
-    /// Refresh stale measurements before releasing query data after an async
-    /// wait or suspend. The caller already owns its work/result reservation.
-    pub(crate) fn check_release(&self, token: &QueryCancellation) -> Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        if !state.usable
-            || self.clock.now().saturating_sub(state.sampled_at)
-                >= Duration::from_millis(self.config.max_sample_age_ms)
-        {
-            self.sample(&mut state);
-        }
-        if !state.usable || state.pressured {
-            token.cancel();
-        }
-        token.check()
-    }
-    /// Reserve before proposing or retaining query work. A write reservation has
-    /// no cancellation token; committed materialization never enters this method.
-    pub fn reserve(
+    pub fn snapshot_buffer_owner(
         self: &Arc<Self>,
-        bytes: u64,
-        cancellation: Option<QueryCancellation>,
-    ) -> Result<Reservation> {
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        if !state.usable
-            || self.clock.now().saturating_sub(state.sampled_at)
-                >= Duration::from_millis(self.config.max_sample_age_ms)
-        {
-            self.sample(&mut state);
+    ) -> anyhow::Result<Arc<kasumi_raft::SnapshotBufferOwner>> {
+        let mut startups = self
+            .snapshot_startups
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        anyhow::ensure!(!startups.closed, "snapshot startup admission is closed");
+        let owners = startups.owners.as_mut().expect("open facade inventory");
+        for slot in owners.iter_mut() {
+            if slot.as_ref().is_some_and(|owner| owner.strong_count() == 0) {
+                *slot = None;
+            }
         }
-        if !state.usable
-            || state.pressured
-            || state.operations >= self.config.max_inflight_operations
-            || state.bytes.saturating_add(bytes) > self.max_bytes
-            || state
-                .resident
-                .saturating_add(state.bytes)
-                .saturating_add(bytes)
-                >= self.high
-        {
-            return Err(Error::new(
-                ErrorCode::ResourceExhausted,
-                "node memory or work admission budget exhausted",
-            ));
+        let slot = owners
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or_else(|| anyhow::anyhow!("snapshot startup inventory exhausted"))?;
+        let buffers = kasumi_raft::SNAPSHOT_BUFFER_SLOTS;
+        let bytes = kasumi_raft::SnapshotBufferOwner::required_bytes(buffers)?;
+        let charge = self.reserve_resident(bytes)?;
+        let owner = kasumi_raft::SnapshotBufferOwner::new(buffers, Arc::new(charge))?;
+        *slot = Some(Arc::downgrade(&owner));
+        Ok(owner)
+    }
+    pub async fn drain_snapshot_startups(&self) -> kasumi_types::drain::DrainResult {
+        use kasumi_types::drain::DrainCompletion;
+        let mut report = self.snapshot_startup_drain.lock().await;
+        let count = {
+            let mut startups = self
+                .snapshot_startups
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            startups.closed = true;
+            startups.owners.as_ref().map_or(0, |owners| owners.len())
+        };
+        let mut retained = None;
+        for index in 0..count {
+            let owner = {
+                let startups = self
+                    .snapshot_startups
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                startups.owners.as_ref().expect("retained drain inventory")[index]
+                    .as_ref()
+                    .and_then(Weak::upgrade)
+            };
+            if let Some(owner) = owner
+                && let Err(failure) = owner.drain_startup().await
+            {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                    continue;
+                }
+            }
+            // Delivered owners are now the group's responsibility. Complete
+            // failures remain in report; their Weak entry is no longer custody.
+            self.snapshot_startups
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .owners
+                .as_mut()
+                .expect("retained drain inventory")[index] = None;
         }
-        let id = state.next;
-        state.next = state
-            .next
-            .checked_add(1)
-            .ok_or_else(|| Error::new(ErrorCode::Unavailable, "admission identifier exhausted"))?;
-        state.bytes += bytes;
-        state.operations += 1;
-        state.charges.insert(
-            id,
-            Charge {
-                bytes,
-                operation: true,
-                cancellation,
-            },
-        );
-        Ok(Reservation {
-            node: self.clone(),
-            id,
-        })
+        if retained.is_none() {
+            let (owners, inventory) = {
+                let mut startups = self
+                    .snapshot_startups
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                // Complete failures still retain report entries and their
+                // original issues. Keep the proportional envelope with them.
+                let inventory = if report.issues().is_empty() {
+                    startups.inventory.take()
+                } else {
+                    None
+                };
+                (startups.owners.take(), inventory)
+            };
+            drop(owners);
+            drop(inventory);
+        }
+        report.outcome(retained)
     }
 }
 
-/// Owned by actual work, never its timeout wrapper. Dropping a caller does not
-/// release a worker's reservation. Completed results may keep a reduced byte
-/// charge until the final cursor reference expires.
+/// Owned by actual work or resident storage, never by its timeout wrapper.
+/// Keeping this reservation alive does not keep a stopped runtime facade alive.
 pub struct Reservation {
-    node: Arc<NodeAdmission>,
+    core: Arc<MemoryCore>,
+    slot: usize,
     id: u64,
 }
 impl Reservation {
-    /// Increase the workspace of an already admitted operation after its queued
-    /// dependencies are known. This rechecks fresh pressure/byte limits without
-    /// consuming another operation slot, and leaves the old charge on failure.
     pub(crate) fn reserve_additional(&mut self, bytes: u64) -> Result<()> {
-        let mut state = self.node.state.lock().unwrap_or_else(|p| p.into_inner());
-        if !state.usable
-            || self.node.clock.now().saturating_sub(state.sampled_at)
-                >= Duration::from_millis(self.node.config.max_sample_age_ms)
-        {
-            self.node.sample(&mut state);
-        }
+        let mut state = self
+            .core
+            .data
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        self.core.data.refresh_stale(&mut state);
+        let total = state.bytes.checked_add(bytes);
         if !state.usable
             || state.pressured
-            || state.bytes.saturating_add(bytes) > self.node.max_bytes
-            || state
-                .resident
-                .saturating_add(state.bytes)
-                .saturating_add(bytes)
-                >= self.node.high
+            || total.is_none_or(|total| {
+                total > self.core.data.max_bytes
+                    || state
+                        .resident
+                        .checked_add(total)
+                        .is_none_or(|observed| observed >= self.core.data.high)
+            })
         {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
@@ -541,29 +932,29 @@ impl Reservation {
             ));
         }
         let charge = state
-            .charges
-            .get_mut(&self.id)
+            .charge_mut(self.slot, self.id)
             .ok_or_else(|| Error::new(ErrorCode::Unavailable, "admission reservation absent"))?;
         charge.bytes = charge.bytes.checked_add(bytes).ok_or_else(|| {
             Error::new(ErrorCode::ResourceExhausted, "admission workspace overflow")
         })?;
-        state.bytes += bytes;
+        state.bytes = total.expect("checked additional reservation");
         Ok(())
     }
-    /// Transfer the same operation slot to its next workspace after the previous
-    /// allocations have actually drained. Existing Arc owners continue to fence
-    /// the one charge; growth rechecks capacity and never changes it on failure.
     pub(crate) fn handoff_workspace(&self, node: &Arc<NodeAdmission>, bytes: u64) -> Result<()> {
-        if !Arc::ptr_eq(node, &self.node) {
+        if !Arc::ptr_eq(&node.core, &self.core) {
             return Err(Error::new(
                 ErrorCode::Conflict,
-                "workspace handoff changed node governor",
+                "workspace handoff changed memory governor",
             ));
         }
-        let mut state = self.node.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self
+            .core
+            .data
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let previous = state
-            .charges
-            .get(&self.id)
+            .charge(self.slot, self.id)
             .ok_or_else(|| Error::new(ErrorCode::Unavailable, "admission reservation absent"))?
             .bytes;
         let total = state
@@ -574,16 +965,14 @@ impl Reservation {
                 Error::new(ErrorCode::ResourceExhausted, "workspace handoff overflow")
             })?;
         if bytes > previous {
-            if !state.usable
-                || self.node.clock.now().saturating_sub(state.sampled_at)
-                    >= Duration::from_millis(self.node.config.max_sample_age_ms)
-            {
-                self.node.sample(&mut state);
-            }
+            self.core.data.refresh_stale(&mut state);
             if !state.usable
                 || state.pressured
-                || total > self.node.max_bytes
-                || state.resident.saturating_add(total) >= self.node.high
+                || total > self.core.data.max_bytes
+                || state
+                    .resident
+                    .checked_add(total)
+                    .is_none_or(|observed| observed >= self.core.data.high)
             {
                 return Err(Error::new(
                     ErrorCode::ResourceExhausted,
@@ -592,46 +981,60 @@ impl Reservation {
             }
         }
         state
-            .charges
-            .get_mut(&self.id)
+            .charge_mut(self.slot, self.id)
             .expect("live reservation")
             .bytes = bytes;
         state.bytes = total;
         Ok(())
     }
-
-    /// Completed computation may retain its response bytes while a nested
-    /// strict-audit proposal occupies the operation slot.
     pub(crate) fn retain_workspace(&mut self) {
         self.retain(u64::MAX);
     }
-
-    /// Keep at most `bytes` of this existing charge while releasing its in-flight
-    /// operation slot. Retained bytes can only shrink; the final owner releases
-    /// them when this reservation drops. Use for installed metadata and results
-    /// after the operation that acquired their workspace has finished.
     pub fn retain(&mut self, bytes: u64) {
-        let mut state = self.node.state.lock().unwrap_or_else(|p| p.into_inner());
-        let charge = state.charges.get_mut(&self.id).expect("live reservation");
+        let mut state = self
+            .core
+            .data
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let charge = state
+            .charge_mut(self.slot, self.id)
+            .expect("live reservation");
         let bytes = bytes.min(charge.bytes);
         let removed = charge.bytes - bytes;
-        let operation = charge.operation;
+        let operation = charge.kind == ChargeKind::Operation;
         charge.bytes = bytes;
-        charge.operation = false;
+        if operation {
+            charge.kind = ChargeKind::Resident;
+        }
         state.bytes -= removed;
         state.operations -= usize::from(operation);
     }
 }
 impl Drop for Reservation {
     fn drop(&mut self) {
-        let mut state = self.node.state.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(charge) = state.charges.remove(&self.id) {
-            state.bytes -= charge.bytes;
-            state.operations -= usize::from(charge.operation);
+        let mut state = self
+            .core
+            .data
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if state.charge(self.slot, self.id).is_none() {
+            return;
         }
+        let charge = state.slots[self.slot]
+            .charge
+            .take()
+            .expect("live reservation");
+        state.bytes -= charge.bytes;
+        state.operations -= usize::from(charge.kind == ChargeKind::Operation);
+        state.live -= 1;
+        state.slots[self.slot].next_free = state.free;
+        state.free = Some(self.slot);
+        drop(state);
+        drop(charge);
     }
 }
-
 #[derive(Default)]
 pub(crate) struct WorkFence(Mutex<FenceState>, tokio::sync::Notify);
 #[derive(Default)]
@@ -719,6 +1122,10 @@ impl Drop for CancelOnDrop {
 }
 
 #[cfg(test)]
+#[path = "admission_startup_tests.rs"]
+mod startup_integration_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -771,19 +1178,30 @@ mod tests {
             delay: AtomicU64::new(0),
             clock: clock.clone(),
         });
-        let config = AdmissionConfig {
-            high_water_bytes: Some(1000),
-            low_water_bytes: Some(600),
-            max_inflight_bytes: Some(500),
+        let mut config = AdmissionConfig {
+            high_water_bytes: None,
+            low_water_bytes: None,
+            max_inflight_bytes: None,
             max_inflight_operations: 2,
+            max_reservations: 16,
+            max_snapshot_startups: 2,
+            max_startup_scopes: 2,
             sample_interval_ms: 10,
             max_sample_age_ms: 100,
         };
+        let base = NodeAdmission::required_bookkeeping_bytes(&config).unwrap();
+        config.high_water_bytes = Some(base * 4 + 1000);
+        config.low_water_bytes = Some(600);
+        config.max_inflight_bytes = Some(base + 500);
         (
-            NodeAdmission::create(config, 1000, memory.clone(), clock.clone()).unwrap(),
+            NodeAdmission::create(config, base * 4 + 1000, memory.clone(), clock.clone()).unwrap(),
             memory,
             clock,
         )
+    }
+    fn payload_bytes(node: &NodeAdmission) -> u64 {
+        let snapshot = node.snapshot();
+        snapshot.reserved_bytes - snapshot.bookkeeping_bytes
     }
     #[test]
     fn explicit_high_water_cannot_bypass_detected_memory_capacity() {
@@ -812,6 +1230,33 @@ mod tests {
         );
     }
     #[test]
+    fn fixture_total_resolution_preserves_the_original_runtime_payload_boundary() {
+        let capacity = physical_capacity().unwrap();
+        for high in [capacity / 2, capacity] {
+            for explicit in [None, Some((high / 4).min(64 << 20))] {
+                let config = AdmissionConfig {
+                    high_water_bytes: Some(high),
+                    max_inflight_bytes: explicit,
+                    ..Default::default()
+                };
+                let total = config.resolved_fixture_total_bytes().unwrap();
+                let node = NodeAdmission::with_fixed_memory(config, high, 0).unwrap();
+                let base = node.snapshot().bookkeeping_bytes;
+                let payload = node.reserve(total - base, None).unwrap();
+                assert_eq!(node.snapshot().reserved_bytes, total);
+                assert!(node.reserve(1, None).is_err());
+                drop(payload);
+                assert_eq!(node.snapshot().reserved_bytes, base);
+            }
+        }
+        let invalid = AdmissionConfig {
+            high_water_bytes: Some(u64::MAX),
+            ..Default::default()
+        };
+        assert!(invalid.resolved_fixture_total_bytes().is_err());
+    }
+
+    #[test]
     fn workspace_handoff_preserves_slot_owner_and_checks_only_replacement_growth() {
         let (node, memory, _) = fixture();
         let (other, _, _) = fixture();
@@ -821,23 +1266,23 @@ mod tests {
         let retained = work.clone();
         assert!(node.reserve(300, None).is_err());
         work.handoff_workspace(&node, 300).unwrap();
-        assert_eq!(node.snapshot().reserved_bytes, 500);
+        assert_eq!(payload_bytes(&node), 500);
         assert_eq!(node.snapshot().inflight_operations, 2);
         assert!(work.handoff_workspace(&node, 301).is_err());
         assert!(work.handoff_workspace(&other, 1).is_err());
-        assert_eq!(node.snapshot().reserved_bytes, 500);
-        memory.rss.store(1000, Ordering::SeqCst);
+        assert_eq!(payload_bytes(&node), 500);
+        memory.rss.store(node.core.data.high, Ordering::SeqCst);
         node.refresh();
         assert!(token.is_cancelled());
         work.handoff_workspace(&node, 200).unwrap();
         assert!(work.handoff_workspace(&node, 201).is_err());
-        assert_eq!(node.snapshot().reserved_bytes, 400);
+        assert_eq!(payload_bytes(&node), 400);
         drop(work);
-        assert_eq!(node.snapshot().reserved_bytes, 400);
+        assert_eq!(payload_bytes(&node), 400);
         drop(permanent);
-        assert_eq!(node.snapshot().reserved_bytes, 200);
+        assert_eq!(payload_bytes(&node), 200);
         drop(retained);
-        assert_eq!(node.snapshot().reserved_bytes, 0);
+        assert_eq!(payload_bytes(&node), 0);
         assert_eq!(node.snapshot().inflight_operations, 0);
     }
 
@@ -847,16 +1292,16 @@ mod tests {
         let query = QueryCancellation::default();
         let query_charge = node.reserve(100, Some(query.clone())).unwrap();
         let write_charge = node.reserve(100, None).unwrap();
-        memory.rss.store(1000, Ordering::SeqCst);
+        memory.rss.store(node.core.data.high, Ordering::SeqCst);
         node.refresh();
         assert!(query.is_cancelled());
         assert!(node.reserve(1, None).is_err());
         // Pressure cancellation cannot release either still-running worker.
-        assert_eq!(node.snapshot().reserved_bytes, 200);
-        memory.rss.store(700, Ordering::SeqCst);
+        assert_eq!(payload_bytes(&node), 200);
+        memory.rss.store(node.core.data.low + 100, Ordering::SeqCst);
         node.refresh();
         assert!(node.snapshot().pressured);
-        memory.rss.store(600, Ordering::SeqCst);
+        memory.rss.store(node.core.data.low, Ordering::SeqCst);
         node.refresh();
         assert!(!node.snapshot().pressured);
         drop(query_charge);
@@ -898,7 +1343,7 @@ mod tests {
         drop(pool.applying.try_lock().unwrap());
         drop(pool.preparation.try_acquire().unwrap());
         drop(pool);
-        assert_eq!(node.snapshot().reserved_bytes, 0);
+        assert_eq!(payload_bytes(&node), 0);
     }
     #[test]
     fn retained_cursor_releases_operation_slot_but_keeps_bytes_until_last_owner() {
@@ -907,13 +1352,13 @@ mod tests {
         assert!(node.reserve(101, None).is_err());
         charge.retain(300);
         assert_eq!(node.snapshot().inflight_operations, 0);
-        assert_eq!(node.snapshot().reserved_bytes, 300);
+        assert_eq!(payload_bytes(&node), 300);
         let cursor = Arc::new(charge);
         let continuation = cursor.clone();
         drop(cursor);
-        assert_eq!(node.snapshot().reserved_bytes, 300);
+        assert_eq!(payload_bytes(&node), 300);
         drop(continuation);
-        assert_eq!(node.snapshot().reserved_bytes, 0);
+        assert_eq!(payload_bytes(&node), 0);
     }
     #[test]
     fn queued_rebuild_expands_its_existing_slot_and_rejects_growth_without_losing_charge() {
@@ -922,23 +1367,23 @@ mod tests {
         let mut rebuild = node.reserve(100, None).unwrap();
         assert!(node.reserve(1, None).is_err());
         rebuild.reserve_additional(100).unwrap();
-        assert_eq!(node.snapshot().reserved_bytes, 300);
+        assert_eq!(payload_bytes(&node), 300);
         assert_eq!(node.snapshot().inflight_operations, 2);
         assert!(rebuild.reserve_additional(201).is_err());
-        assert_eq!(node.snapshot().reserved_bytes, 300);
+        assert_eq!(payload_bytes(&node), 300);
         clock.0.store(60_000, Ordering::SeqCst);
-        memory.rss.store(1000, Ordering::SeqCst);
+        memory.rss.store(node.core.data.high, Ordering::SeqCst);
         assert!(rebuild.reserve_additional(1).is_err());
-        assert_eq!(node.snapshot().reserved_bytes, 300);
+        assert_eq!(payload_bytes(&node), 300);
         drop(rebuild);
         drop(first);
-        assert_eq!(node.snapshot().reserved_bytes, 0);
+        assert_eq!(payload_bytes(&node), 0);
     }
     #[test]
     fn suspend_invalidates_old_measurement_and_slow_or_failed_probe_denies() {
         let (node, memory, clock) = fixture();
         clock.0.store(60_000, Ordering::SeqCst);
-        memory.rss.store(1001, Ordering::SeqCst);
+        memory.rss.store(node.core.data.high + 1, Ordering::SeqCst);
         // No background thread ran during suspend: admission itself refreshes.
         assert!(node.reserve(1, None).is_err());
         memory.rss.store(100, Ordering::SeqCst);
@@ -959,11 +1404,11 @@ mod tests {
         let mut retained = node.reserve(100, Some(token.clone())).unwrap();
         retained.retain(50);
         clock.0.store(60_000, Ordering::SeqCst);
-        memory.rss.store(1001, Ordering::SeqCst);
+        memory.rss.store(node.core.data.high + 1, Ordering::SeqCst);
         assert!(node.check_release(&token).is_err());
-        assert_eq!(node.snapshot().reserved_bytes, 50);
+        assert_eq!(payload_bytes(&node), 50);
         drop(retained);
-        assert_eq!(node.snapshot().reserved_bytes, 0);
+        assert_eq!(payload_bytes(&node), 0);
     }
     #[tokio::test]
     async fn cancelled_detached_worker_keeps_semaphore_and_reservation_until_exit() {
@@ -997,10 +1442,10 @@ mod tests {
                 .is_err()
         );
         assert_eq!(slots.available_permits(), 0);
-        assert_eq!(node.snapshot().reserved_bytes, 100);
+        assert_eq!(payload_bytes(&node), 100);
         release.send(()).unwrap();
         tokio::time::timeout(Duration::from_secs(1), async {
-            while node.snapshot().reserved_bytes != 0 || slots.available_permits() != 1 {
+            while payload_bytes(&node) != 0 || slots.available_permits() != 1 {
                 tokio::task::yield_now().await;
             }
         })
@@ -1016,23 +1461,387 @@ mod tests {
         let charge =
             kasumi_raft::SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)
                 .unwrap();
-        assert_eq!(node.snapshot().reserved_bytes, charge);
+        assert_eq!(payload_bytes(&node), charge);
         let weak = Arc::downgrade(&owner);
         drop(owner);
         assert!(
             weak.upgrade().is_none(),
             "an idle inventory entry cannot retain its owner"
         );
-        assert_eq!(node.snapshot().reserved_bytes, 0);
+        assert_eq!(payload_bytes(&node), 0);
         let owner = node.snapshot_buffer_owner().unwrap();
         node.drain_snapshot_startups().await.unwrap();
         assert!(node.snapshot_buffer_owner().is_err());
-        assert_eq!(node.snapshot().reserved_bytes, charge);
+        assert_eq!(payload_bytes(&node), charge);
         drop(owner);
         node.drain_snapshot_startups().await.unwrap();
-        assert_eq!(node.snapshot().reserved_bytes, 0);
+        assert_eq!(payload_bytes(&node), 0);
     }
 
+    #[test]
+    fn resident_admission_never_consumes_an_operation_slot() {
+        let (node, memory, _) = fixture();
+        let first = node.reserve(100, None).unwrap();
+        let second = node.reserve(100, None).unwrap();
+        assert!(node.reserve(1, None).is_err());
+        let resident = node.reserve_resident(300).unwrap();
+        assert_eq!(node.snapshot().inflight_operations, 2);
+        assert_eq!(node.snapshot().resident_reserved_bytes, 300);
+        assert_eq!(payload_bytes(&node), 500);
+        assert!(node.reserve_resident(1).is_err());
+        drop(resident);
+        memory.rss.store(node.core.data.high, Ordering::SeqCst);
+        node.refresh();
+        assert!(node.reserve_resident(1).is_err());
+        assert_eq!(payload_bytes(&node), 200);
+        drop((first, second));
+    }
+
+    #[test]
+    fn fixed_charge_slots_reuse_capacity_without_forgetting_live_owners() {
+        let (node, _, _) = fixture();
+        let mut charges = Vec::new();
+        let slots = node.core.data.state.lock().unwrap().slots.as_ptr();
+        // Two slots belong to the facade and its independent inventory.
+        for _ in 2..node.core.data.config.max_reservations {
+            charges.push(node.reserve_resident(0).unwrap());
+        }
+        assert!(node.reserve_resident(0).is_err());
+        let previous = charges.pop().unwrap();
+        let previous_slot = previous.slot;
+        let previous_id = previous.id;
+        drop(previous);
+        let successor = node.reserve_resident(0).unwrap();
+        assert_eq!(successor.slot, previous_slot);
+        assert_ne!(successor.id, previous_id);
+        assert_eq!(node.core.data.state.lock().unwrap().slots.as_ptr(), slots);
+        assert!(node.reserve_resident(0).is_err());
+        drop((successor, charges));
+        assert_eq!(node.snapshot().live_reservations, 2);
+        assert_eq!(payload_bytes(&node), 0);
+    }
+
+    #[tokio::test]
+    async fn replacement_facade_preserves_resident_charge_and_has_fresh_startup_fence() {
+        let first =
+            NodeAdmission::with_fixed_memory(AdmissionConfig::default(), 1 << 30, 0).unwrap();
+        let core = first.memory().clone();
+        let retained = first.reserve_resident(1 << 20).unwrap();
+        first.drain_snapshot_startups().await.unwrap();
+        assert!(first.snapshot_buffer_owner().is_err());
+        let replacement = NodeAdmission::from_memory(core.clone()).unwrap();
+        assert!(!Arc::ptr_eq(&first, &replacement));
+        assert!(first.shares_memory(&replacement));
+        assert_eq!(core.snapshot().resident_reserved_bytes, 1 << 20);
+        let weak_facade = Arc::downgrade(&first);
+        drop(first);
+        assert!(
+            weak_facade.upgrade().is_none(),
+            "resident lease retained the stopped facade"
+        );
+        assert_eq!(core.snapshot().resident_reserved_bytes, 1 << 20);
+        let owner = replacement.snapshot_buffer_owner().unwrap();
+        replacement.drain_snapshot_startups().await.unwrap();
+        drop(owner);
+        drop(replacement);
+        assert_eq!(
+            core.snapshot().reserved_bytes,
+            core.data.base_bytes + (1 << 20)
+        );
+        drop(retained);
+        assert_eq!(core.snapshot().reserved_bytes, core.data.base_bytes);
+    }
+
+    #[tokio::test]
+    async fn empty_inventory_capacity_is_charged_until_actual_sealed_drain() {
+        let node =
+            NodeAdmission::with_fixed_memory(AdmissionConfig::default(), 1 << 30, 0).unwrap();
+        let initial = node.snapshot().bookkeeping_bytes;
+        let inventory = NodeAdmission::inventory_bytes(&node.core.data.config).unwrap();
+        let owner = node.snapshot_buffer_owner().unwrap();
+        let weak = Arc::downgrade(&owner);
+        drop(owner);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(payload_bytes(&node), 0);
+        assert_eq!(node.snapshot().bookkeeping_bytes, initial);
+        node.drain_snapshot_startups().await.unwrap();
+        assert!(node.snapshot_startups.lock().unwrap().owners.is_none());
+        assert_eq!(node.snapshot().bookkeeping_bytes, initial - inventory);
+        node.drain_snapshot_startups().await.unwrap();
+        assert_eq!(node.snapshot().bookkeeping_bytes, initial - inventory);
+    }
+
+    #[test]
+    fn fixed_bookkeeping_is_denied_before_its_allocation_when_budget_is_too_small() {
+        let mut config = AdmissionConfig::default();
+        let required = MemoryCore::required_bookkeeping_bytes(&config).unwrap();
+        config.max_inflight_bytes = Some(required - 1);
+        assert!(NodeAdmission::with_fixed_memory(config, 1 << 30, 0).is_err());
+        let config = AdmissionConfig {
+            max_reservations: usize::MAX,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+        let config = AdmissionConfig {
+            max_snapshot_startups: usize::MAX,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+        let config = AdmissionConfig {
+            max_startup_scopes: usize::MAX,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn initial_bookkeeping_obeys_the_existing_low_water_startup_fence() {
+        let config = AdmissionConfig {
+            high_water_bytes: Some(1 << 30),
+            low_water_bytes: Some(256 << 20),
+            max_inflight_bytes: Some(128 << 20),
+            ..Default::default()
+        };
+        assert!(
+            NodeAdmission::with_fixed_memory(config.clone(), 1 << 30, (256 << 20) + 1).is_err()
+        );
+        let node = NodeAdmission::with_fixed_memory(config.clone(), 1 << 30, 256 << 20).unwrap();
+        assert_eq!(
+            node.snapshot().reserved_bytes,
+            NodeAdmission::required_bookkeeping_bytes(&config).unwrap()
+        );
+        assert_eq!(
+            node.snapshot().reserved_bytes,
+            node.snapshot().bookkeeping_bytes
+        );
+        assert_eq!(node.snapshot().inflight_operations, 0);
+    }
+
+    #[tokio::test]
+    async fn exhausted_startup_inventory_denies_before_charging_another_owner() {
+        let config = AdmissionConfig {
+            max_snapshot_startups: 1,
+            ..Default::default()
+        };
+        let node = NodeAdmission::with_fixed_memory(config, 1 << 30, 0).unwrap();
+        let owner = node.snapshot_buffer_owner().unwrap();
+        let before = node.snapshot();
+        assert!(node.snapshot_buffer_owner().is_err());
+        assert_eq!(node.snapshot().reserved_bytes, before.reserved_bytes);
+        assert_eq!(node.snapshot().live_reservations, before.live_reservations);
+        assert_eq!(node.snapshot().inflight_operations, 0);
+        drop(owner);
+        let replacement = node.snapshot_buffer_owner().unwrap();
+        assert_eq!(node.snapshot().reserved_bytes, before.reserved_bytes);
+        assert_eq!(node.snapshot().live_reservations, before.live_reservations);
+        node.drain_snapshot_startups().await.unwrap();
+        assert!(node.snapshot_buffer_owner().is_err());
+        drop(replacement);
+    }
+
+    #[test]
+    fn new_inventory_policies_are_required_without_legacy_aliases() {
+        let value = serde_json::to_value(AdmissionConfig::default()).unwrap();
+        for field in [
+            "max_reservations",
+            "max_snapshot_startups",
+            "max_startup_scopes",
+        ] {
+            let mut missing = value.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<AdmissionConfig>(missing).is_err());
+        }
+        let mut unknown = value;
+        unknown["reservation_slots"] = 4096.into();
+        assert!(serde_json::from_value::<AdmissionConfig>(unknown).is_err());
+    }
+
+    #[test]
+    fn identifier_exhaustion_preserves_existing_charge_and_free_slot() {
+        let (node, _, _) = fixture();
+        let existing = node.reserve_resident(100).unwrap();
+        let before = node.snapshot();
+        let (free, slots) = {
+            let mut state = node.core.data.state.lock().unwrap();
+            state.next = u64::MAX;
+            (state.free, state.slots.as_ptr())
+        };
+        assert_eq!(
+            node.reserve_resident(1).err().unwrap().code,
+            ErrorCode::Unavailable
+        );
+        assert_eq!(node.snapshot().reserved_bytes, before.reserved_bytes);
+        assert_eq!(node.snapshot().live_reservations, before.live_reservations);
+        let state = node.core.data.state.lock().unwrap();
+        assert_eq!(state.free, free);
+        assert_eq!(state.slots.as_ptr(), slots);
+        drop(state);
+        drop(existing);
+        assert_eq!(payload_bytes(&node), 0);
+    }
+
+    #[tokio::test]
+    async fn completed_failure_keeps_original_report_and_inventory_charge_until_facade_drop() {
+        let node =
+            NodeAdmission::with_fixed_memory(AdmissionConfig::default(), 1 << 30, 0).unwrap();
+        let core = node.memory().clone();
+        let initial = node.snapshot().bookkeeping_bytes;
+        let inventory = NodeAdmission::inventory_bytes(&core.data.config).unwrap();
+        // This is the persisted retry boundary after an earlier child completed
+        // with a real typed error, before the facade completed its census.
+        let issue = node.snapshot_startup_drain.lock().await.record(
+            "completed startup",
+            0,
+            std::io::Error::from(std::io::ErrorKind::BrokenPipe).into(),
+        );
+        for _ in 0..2 {
+            let failure = node.drain_snapshot_startups().await.unwrap_err();
+            assert_eq!(
+                failure.completion(),
+                kasumi_types::drain::DrainCompletion::Complete
+            );
+            assert!(Arc::ptr_eq(&failure.issues()[0], &issue));
+            assert_eq!(node.snapshot().bookkeeping_bytes, initial);
+            let startups = node.snapshot_startups.lock().unwrap();
+            assert!(
+                startups.owners.is_none(),
+                "completed census must deallocate the box"
+            );
+            assert!(
+                startups.inventory.is_some(),
+                "original report still retains its envelope"
+            );
+        }
+        drop(issue);
+        drop(node);
+        assert_eq!(core.snapshot().reserved_bytes, core.data.base_bytes);
+        assert!(initial > inventory);
+    }
+
+    #[test]
+    fn last_reservation_waits_for_paused_sampler_and_actual_source_destruction() {
+        struct Probe {
+            pause: Arc<AtomicBool>,
+            entered: std::sync::mpsc::Sender<()>,
+            release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+            destroyed: Arc<AtomicBool>,
+        }
+        impl MemorySource for Probe {
+            fn resident_bytes(&self) -> anyhow::Result<u64> {
+                if self.pause.swap(false, Ordering::SeqCst) {
+                    self.entered.send(()).unwrap();
+                    let (lock, wake) = self.release.as_ref();
+                    drop(
+                        wake.wait_while(lock.lock().unwrap(), |released| !*released)
+                            .unwrap(),
+                    );
+                }
+                Ok(0)
+            }
+        }
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                self.destroyed.store(true, Ordering::SeqCst);
+            }
+        }
+        let (entered, observed) = std::sync::mpsc::channel();
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let destroyed = Arc::new(AtomicBool::new(false));
+        let pause = Arc::new(AtomicBool::new(false));
+        let memory = Arc::new(Probe {
+            pause: pause.clone(),
+            entered,
+            release: release.clone(),
+            destroyed: destroyed.clone(),
+        });
+        let config = AdmissionConfig {
+            sample_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut core =
+            MemoryCore::create(config, 1 << 30, memory, Arc::new(SystemLeaseClock)).unwrap();
+        Arc::get_mut(&mut core).unwrap().start_sampler().unwrap();
+        let reservation = core.reserve_resident(1).unwrap();
+        pause.store(true, Ordering::SeqCst);
+        let data = Arc::downgrade(&core.data);
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        drop(core);
+        assert!(data.upgrade().is_some());
+        assert!(!destroyed.load(Ordering::SeqCst));
+        let (dropping, started) = std::sync::mpsc::channel();
+        let (finished, completed) = std::sync::mpsc::channel();
+        let dropper = std::thread::spawn(move || {
+            dropping.send(()).unwrap();
+            drop(reservation);
+            finished.send(()).unwrap();
+        });
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        let still_waiting = matches!(
+            completed.recv_timeout(Duration::from_millis(25)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+        let was_alive = !destroyed.load(Ordering::SeqCst);
+        *release.0.lock().unwrap() = true;
+        release.1.notify_one();
+        completed.recv_timeout(Duration::from_secs(2)).unwrap();
+        dropper.join().unwrap();
+        assert!(
+            still_waiting && was_alive,
+            "final owner returned before the paused sampler drained"
+        );
+        assert!(destroyed.load(Ordering::SeqCst));
+        assert!(
+            data.upgrade().is_none(),
+            "sampler detached or retained its accounting data after join"
+        );
+    }
+
+    #[test]
+    fn sampler_panic_fences_fresh_admission_and_preserves_original_join_outcome() {
+        struct PanicProbe(std::sync::atomic::AtomicUsize);
+        impl MemorySource for PanicProbe {
+            fn resident_bytes(&self) -> anyhow::Result<u64> {
+                if self.0.fetch_add(1, Ordering::SeqCst) == 1 {
+                    std::panic::panic_any(0x51_u64);
+                }
+                Ok(0)
+            }
+        }
+        let config = AdmissionConfig {
+            sample_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut core = MemoryCore::create(
+            config,
+            1 << 30,
+            Arc::new(PanicProbe(std::sync::atomic::AtomicUsize::new(0))),
+            Arc::new(SystemLeaseClock),
+        )
+        .unwrap();
+        Arc::get_mut(&mut core).unwrap().start_sampler().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !core.sampler.as_ref().unwrap().is_finished() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(core.reserve_resident(1).is_err());
+        assert!(!core.snapshot().sample_usable);
+        core.refresh();
+        assert!(
+            core.reserve_resident(1).is_err(),
+            "a fresh successful fallback probe reopened a dead sampler"
+        );
+        let panic = Arc::get_mut(&mut core)
+            .unwrap()
+            .sampler
+            .take()
+            .unwrap()
+            .join()
+            .unwrap_err();
+        assert_eq!(panic.downcast_ref::<u64>(), Some(&0x51));
+        drop(panic);
+        drop(core);
+    }
     #[test]
     fn real_process_rss_and_physical_capacity_are_measured() {
         assert!(ProcessMemory.resident_bytes().unwrap() > 0);

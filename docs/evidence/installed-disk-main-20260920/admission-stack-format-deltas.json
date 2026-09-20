@@ -1,0 +1,5 @@
+{
+  "base_commit": "b2876ef782f0f5afde2d60edd234559fc6ce600f",
+  "comparison": "applied stack after root cargo fmt",
+  "files": []
+}

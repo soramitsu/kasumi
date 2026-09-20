@@ -1,11 +1,13 @@
 # Node memory admission and query cancellation
 
-`AdmissionConfig` controls one `NodeAdmission` shared by the control database and
-every tenant on a server. The runtime installs it before serving requests. Trusted
-embedded callers can install a governor before their first admitted operation;
-otherwise databases share one process-wide default. A governor cannot be replaced
-after use because that would discard aggregate accounting. Bootstrap paths that
-submit internal operations use `Database::new_with_admission`.
+`AdmissionConfig` controls a `MemoryCore` containing shared memory measurements
+and aggregate reservations. Each `NodeAdmission` attaches its runtime startup
+inventory to that core. The control database, tenants, and security audit within
+one runtime use the exact same `NodeAdmission` facade. `Database::new` derives
+that facade from its mandatory `SecurityAudit` before starting workers; there is
+no deferred installation or implicit default. Explicit bootstrap and custody
+arguments must match the audit facade before storage or startup work begins.
+Sharing a memory core does not make different runtime facades interchangeable.
 
 The default high-water mark is half physical RAM, reduced by Linux cgroup memory
 ceilings. The low-water mark is seven eighths of high water. The workspace budget
@@ -17,6 +19,48 @@ the host or container ceiling cannot subsequently change. Linux reads process re
 `/proc/self/statm`; macOS uses `MACH_TASK_BASIC_INFO`. Production Linux must mount
 the applicable cgroup hierarchy for automatic ceiling discovery; an explicit
 `high_water_bytes` may impose a smaller operator limit for unusual mount layouts.
+
+The byte budget includes governor bookkeeping, resident reservations and active
+workspaces. A fixed ledger holds at most `max_reservations` charges (4096 in newly
+generated default policy), including zero-byte charges. Each runtime facade has
+`max_snapshot_startups` inventory slots (64 by default). The core also has
+`max_startup_scopes` retained startup-scope slots (64 by default). These numeric policy
+fields and the enclosing runtime admission object are required in serialized
+configuration; missing fields and unknown aliases are rejected. Programmatic
+`Default` is a policy for new callers, not a configuration migration.
+
+The core admits its fixed bookkeeping before allocating the ledger or starting
+the RSS sampler. A facade separately admits its inline storage and complete
+startup inventory. `required_bookkeeping_bytes` exposes the checked workspace
+estimate for sizing a total budget. `reserve_resident` charges bytes and a ledger
+slot without consuming an operation slot; reservations retain the core rather
+than a runtime facade. Snapshot diagnostics separate bookkeeping and resident
+bytes from the total. Inventory storage remains charged through cancelled drains;
+completed failure reports retain their envelope until the facade is destroyed.
+The last core owner joins the actual sampler before releasing its accounting
+storage. Sampler panic permanently fences admission and retains its original
+payload until join. Native qualification of these workspace estimates remains
+required.
+
+The startup-scope foundation reserves fixed resource cells before invoking an
+inert resource builder. Actual children may start only after their adapter is
+retained in a charged cell. Cancellation leaves the original handles and typed
+outcomes available to repeated drain; shared report views retain their scope's
+charges. A slot is reusable only after the closed resource census positively
+completes, and generation tags prevent an old drain from retiring its replacement.
+Current server resource/diagnostic adapters and whole-process drain integration
+remain unfinished. Arbitrary panic payloads have no measured diagnostic envelope;
+they remain owned and Retained rather than being reported as bounded completion.
+
+`MemoryCore::installed` now provides one strongly retained process core. Reuse
+requires exact equality of every policy field, refuses an already failed sampler,
+and never replaces that failed core with a fresh budget. Concurrent installation
+fails with a busy result instead of allocating a queued waiter.
+`NodeAdmission::from_memory` creates a fresh runtime facade on an existing core.
+Adopting installed selection at every production entry point, mandatory disk
+metadata admission and explicit process-level sampler drain are still being
+implemented under the
+[installed-storage admission plan](installed-storage-admission-plan.md).
 
 RSS probes run every 250 ms. Measurements older than one second are refreshed
 synchronously at admission and query result release. Age is measured from probe
@@ -49,7 +93,7 @@ read audits still persist before this release gate.
 | Text writers | An additional 15,000,000-byte writer-buffer allowance on relevant client proposals; sequential collection writers use the configured Tantivy buffer. |
 | Structured/search queries | Candidate/group/result limits plus reserved candidate, sort, group and output workspace; cancellation checkpoints and a deadline. |
 | Cursor results | Tenant byte/count/age quotas plus a shared reservation of three times maximum result bytes; continuation pages reserve a separate copy allowance. Old generations are released after evaluation. |
-| Receipts and audits | Deterministic count/retention quotas, encrypted durable persistence, and resident RSS. Required audit failure prevents its associated release. |
+| Receipts and audits | Permanent command identities and outcomes in encrypted point-addressed tables under byte quotas; bounded reads and audit hot/archive budgets. Required audit failure prevents its associated release. |
 | Wrapped-key dependencies | At most 1024 retained keys and an exact catalog quota of 2 MiB minus 16 KiB, enforced before persistence; reserved header space keeps accepted key changes backup-compatible. |
 | Staged indexes and old generations | Structural sharing plus RSS observation; transient allocator usage is **not** measured exactly by reservations. |
 | Backup/recovery and incoming committed replication | Existing format/snapshot/log caps and observed RSS; these are **not** bounded by client query/workspace reservations. Recovery is not made ready before reconstruction. |

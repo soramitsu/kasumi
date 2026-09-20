@@ -1,4 +1,4 @@
-//! Explicit fixture-only codecs for arithmetic and corruption tests. These are
+//! Explicit fixture-only codecs and admission accounting helpers. These are
 //! not portable snapshots, storage capabilities, or production restore APIs.
 use crate::TenantEngine;
 pub use crate::bootstrap::fixtures::{
@@ -6,6 +6,33 @@ pub use crate::bootstrap::fixtures::{
 };
 use kasumi_store::SnapshotImage;
 use kasumi_types::{Error, ErrorCode, Result, TenantState};
+
+/// Preserve an explicit fixture payload cap while admitting the real core and
+/// its first runtime facade. An unspecified production-derived cap is unchanged.
+pub fn admission_config_with_bookkeeping(
+    mut config: crate::admission::AdmissionConfig,
+) -> anyhow::Result<crate::admission::AdmissionConfig> {
+    if let Some(payload_bytes) = config.max_inflight_bytes {
+        config.max_inflight_bytes = Some(
+            payload_bytes
+                .checked_add(crate::admission::NodeAdmission::required_bookkeeping_bytes(
+                    &config,
+                )?)
+                .ok_or_else(|| anyhow::anyhow!("fixture admission byte cap overflow"))?,
+        );
+    }
+    Ok(config)
+}
+
+/// One coherent snapshot measures operation and resident payload charges without
+/// concealing bookkeeping in the production counters or core accounting tests.
+pub fn reserved_payload_bytes(admission: &crate::admission::NodeAdmission) -> u64 {
+    let snapshot = admission.snapshot();
+    snapshot
+        .reserved_bytes
+        .checked_sub(snapshot.bookkeeping_bytes)
+        .expect("admission bookkeeping exceeds its total charge")
+}
 
 pub trait SnapshotFixture {
     fn fixture_snapshot(&self) -> Result<SnapshotImage>;

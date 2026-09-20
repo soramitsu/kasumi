@@ -391,3 +391,51 @@ fn original_begin_reservation_covers_maximum_terminal_envelope_and_counter_width
         assert!(row.framed_bytes().unwrap() <= used + reserved);
     }
 }
+
+#[test]
+fn failed_terminal_ordinal_insert_never_publishes_advanced_head() {
+    let initial = state();
+    let empty = View::empty(&initial.tenant, &initial.incarnation).unwrap();
+    let (next, pending) = stop(&initial, &empty, "partial", &applied(1));
+    let row = &pending.rows[0];
+    let mut builder = Builder::new(
+        &ScratchDisk::fixture(),
+        scratch_limit(next.limits.max_snapshot_bytes).unwrap(),
+        &next.tenant,
+        &next.incarnation,
+    )
+    .unwrap();
+    // The real second insert fails after the identity has durably committed.
+    // The authenticated head has already advanced to the requested final value.
+    builder
+        .table
+        .insert(&ordinal_key(row.ordinal), b"occupied ordinal")
+        .unwrap();
+    let error = builder.push(row, &next).unwrap_err();
+    assert!(error.to_string().contains("duplicate staged key"));
+    assert!(builder.table.get(&id_key(&row.key)).unwrap().is_some());
+    assert_eq!(builder.head, next.staged_terminal_head);
+    assert!(builder.push(row, &next).is_err());
+    assert!(builder.finish(&next.staged_terminal_head).is_err());
+}
+
+#[test]
+fn rejected_terminal_row_permanently_disqualifies_valid_prefix() {
+    let initial = state();
+    let empty = View::empty(&initial.tenant, &initial.incarnation).unwrap();
+    let (next, pending) = stop(&initial, &empty, "prefix", &applied(1));
+    let row = &pending.rows[0];
+    let mut builder = Builder::new(
+        &ScratchDisk::fixture(),
+        scratch_limit(next.limits.max_snapshot_bytes).unwrap(),
+        &next.tenant,
+        &next.incarnation,
+    )
+    .unwrap();
+    builder.push(row, &next).unwrap();
+    let mut invalid = row.clone();
+    invalid.ordinal = 0;
+    assert!(builder.push(&invalid, &next).is_err());
+    assert_eq!(builder.head, next.staged_terminal_head);
+    assert!(builder.finish(&next.staged_terminal_head).is_err());
+}

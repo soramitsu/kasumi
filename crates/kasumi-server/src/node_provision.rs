@@ -57,7 +57,7 @@ pub(crate) async fn create(
         Ok(owners) => Ok(owners),
         Err(error) => match crate::startup_owner::finish(&mut pending).await {
             Ok(()) => Err(error),
-            Err(drain) => Err(error.context(format!("node provisioning drain failed: {drain:#}"))),
+            Err(drain) => Err(error.context(drain)),
         },
     }
 }

@@ -428,11 +428,7 @@ impl AuthorityRuntime {
         if outcome.is_err()
             && let Err(cleanup) = crate::startup_owner::finish(&mut pending).await
         {
-            return outcome.map_err(|error| {
-                error.context(format!(
-                    "startup drain failed before completion: {cleanup:#}"
-                ))
-            });
+            return outcome.map_err(|error| error.context(cleanup));
         }
         outcome
     }

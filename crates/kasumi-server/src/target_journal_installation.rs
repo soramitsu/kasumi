@@ -89,7 +89,8 @@ async fn initialize_owned(config: RuntimeConfig) -> Result<Initialized> {
     let drained = crate::startup_owner::finish(&mut pending).await;
     match (prepared, drained) {
         (Ok(()), Ok(())) => Ok(Initialized),
-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(drain)) => Err(drain.into()),
         (Err(error), Err(drain)) => Err(error.context(drain)),
     }
 }

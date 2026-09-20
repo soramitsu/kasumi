@@ -1,0 +1,24 @@
+{
+  "scope": "development engine full library admission-consumer diagnostic, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-engine",
+    "--all-features",
+    "--lib",
+    "--",
+    "--test-threads=1"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "b2876ef782f0f5afde2d60edd234559fc6ce600f",
+  "process_group": 73040,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 679.8838379383087,
+  "inventoried_source_unchanged": true
+}

@@ -880,7 +880,7 @@ mod tests {
             kasumi_store::FilesystemAuditArchive::open_fixture(directory.path().join("archive"))
                 .unwrap(),
         );
-        let admission = crate::admission::NodeAdmission::process_default();
+        let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
         let disk = FaultBackend::new();
         let clock = Arc::new(ManualClock::new());
         let provider = Arc::new(LocalKeyProvider::new([84; 32]));
@@ -908,6 +908,11 @@ mod tests {
         disk.advance_clock_on_next_sync(clock.clone(), std::time::Duration::from_secs(60));
         let error = audit.record_sync(event()).unwrap_err();
         assert!(error.to_string().contains("outcome unknown"));
+        let original = error
+            .downcast_ref::<kasumi_types::drain::DrainFailure>()
+            .unwrap()
+            .issues()[0]
+            .clone();
         // Even explicit key reauthorization cannot reuse the uncertain counter.
         store.refresh_lease().await.unwrap();
         assert!(
@@ -954,7 +959,29 @@ mod tests {
         assert_eq!(first["event"]["request_id"], "cancelled-denial");
         assert_eq!(second["sequence"], 1);
         assert_eq!(second["event"]["request_id"], "after-recovery");
-        audit.shutdown().await.unwrap();
+        let drained = audit.shutdown().await.unwrap_err();
+        assert_eq!(
+            drained.completion(),
+            kasumi_types::drain::DrainCompletion::Complete
+        );
+        assert!(
+            drained
+                .issues()
+                .iter()
+                .any(|issue| Arc::ptr_eq(issue, &original))
+        );
+        assert_eq!(original.component(), "audit persistence");
+        let repeated = audit.shutdown().await.unwrap_err();
+        assert_eq!(
+            repeated.completion(),
+            kasumi_types::drain::DrainCompletion::Complete
+        );
+        assert!(
+            repeated
+                .issues()
+                .iter()
+                .any(|issue| Arc::ptr_eq(issue, &original))
+        );
         reopened.shutdown().await.unwrap();
     }
 }

@@ -101,10 +101,6 @@ impl Fixture {
         )
         .await
         .unwrap();
-        db.install_admission(
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
-        )
-        .unwrap();
         db.administer(
             context(),
             Operation::CreateCollection(CollectionDefinition {

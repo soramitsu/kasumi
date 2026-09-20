@@ -1,0 +1,29 @@
+{
+  "scope": "development fixed startup scope and admission regression plus corrected epoch receipt fixture, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-engine",
+    "--all-features",
+    "--lib",
+    "--test",
+    "fixture_epoch_clock",
+    "--",
+    "--test-threads=1",
+    "admission::",
+    "fixture_epoch_rejects",
+    "one_epoch_expires_leases_and_credentials_but_preserves_permanent_command_identity"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "b2876ef782f0f5afde2d60edd234559fc6ce600f",
+  "process_group": 99915,
+  "exit_code": 0,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 61.027135133743286,
+  "inventoried_source_unchanged": true
+}

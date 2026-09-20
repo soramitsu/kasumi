@@ -1,0 +1,295 @@
+--- a/crates/kasumi-engine/src/proposal_jobs.rs
++++ b/crates/kasumi-engine/src/proposal_jobs.rs
+@@ -53,6 +53,10 @@
+ }
+ 
+ impl Jobs {
++    fn required_bytes() -> anyhow::Result<u64> {
++        BackgroundWorkBudget::required_bytes(MAX_PROPOSALS, 1)
++    }
++
+     fn observe_locked(&self, state: &mut State) {
+         for slot in &mut state.slots {
+             let Some(worker) = slot else { continue };
+@@ -94,7 +98,7 @@
+             ));
+         }
+         if state.budget.is_none() {
+-            let bytes = BackgroundWorkBudget::required_bytes(MAX_PROPOSALS, 1).map_err(|_| {
++            let bytes = Self::required_bytes().map_err(|_| {
+                 Error::new(
+                     ErrorCode::ResourceExhausted,
+                     "proposal metadata budget overflow",
+@@ -259,6 +263,14 @@
+     }
+ }
+ 
++#[cfg(any(test, feature = "test-utils"))]
++impl super::Database {
++    /// Exact lazily retained proposal registry charge for fixture accounting.
++    pub fn fixture_proposal_metadata_bytes() -> anyhow::Result<u64> {
++        Jobs::required_bytes()
++    }
++}
++
+ impl<T> Call<T> {
+     pub(super) async fn wait(self, timeout: Duration) -> Result<T> {
+         tokio::time::timeout(timeout, async move {
+--- a/crates/kasumi-engine/tests/backup_checkpoint.rs
++++ b/crates/kasumi-engine/tests/backup_checkpoint.rs
+@@ -151,9 +151,18 @@
+     );
+     assert_eq!(
+         reserved_payload_bytes(&admission),
++        production_payload
++            + (128 << 20)
++            + snapshot_owner_bytes()
++            + Database::fixture_proposal_metadata_bytes().unwrap()
++    );
++    // Restore's mandatory audit proposal installs its own fixed registry. A
++    // successful drain releases that registry while the group facade stays live.
++    restored.shutdown().await.unwrap();
++    assert_eq!(
++        reserved_payload_bytes(&admission),
+         production_payload + (128 << 20) + snapshot_owner_bytes()
+     );
+-    restored.shutdown().await.unwrap();
+     drop(restored);
+     drop(domains);
+     drop(target);
+@@ -596,6 +605,83 @@
+     drop(directory);
+ }
+ 
++#[derive(Clone, Copy)]
++enum ObjectReadFault {
++    Missing,
++    Corrupt,
++}
++
++// Model one faulty remote response without mutating an enrolled local file.
++// The healthy destination still performs its original bounded read; only the
++// selected session/object response changes, and all other errors propagate.
++struct FaultyObjectRead {
++    inner: Arc<FilesystemBackupDestination>,
++    session: uuid::Uuid,
++    object: uuid::Uuid,
++    fault: ObjectReadFault,
++    reads: std::sync::atomic::AtomicUsize,
++}
++impl FaultyObjectRead {
++    fn new(
++        inner: Arc<FilesystemBackupDestination>,
++        session: uuid::Uuid,
++        object: uuid::Uuid,
++        fault: ObjectReadFault,
++    ) -> Self {
++        Self {
++            inner,
++            session,
++            object,
++            fault,
++            reads: std::sync::atomic::AtomicUsize::new(0),
++        }
++    }
++
++    fn assert_read(&self) {
++        assert!(self.reads.swap(0, std::sync::atomic::Ordering::Relaxed) > 0);
++    }
++}
++#[async_trait::async_trait]
++impl BackupDestination for FaultyObjectRead {
++    async fn put(&self, id: uuid::Uuid, bytes: Vec<u8>) -> anyhow::Result<()> {
++        self.inner.put(id, bytes).await
++    }
++    async fn get(&self, id: uuid::Uuid, limit: usize) -> anyhow::Result<Vec<u8>> {
++        self.inner.get(id, limit).await
++    }
++    async fn session_put(
++        &self,
++        session: uuid::Uuid,
++        slot: kasumi_store::BackupSessionSlot,
++        bytes: Vec<u8>,
++    ) -> anyhow::Result<()> {
++        self.inner.session_put(session, slot, bytes).await
++    }
++    async fn session_get(
++        &self,
++        session: uuid::Uuid,
++        slot: kasumi_store::BackupSessionSlot,
++        limit: usize,
++    ) -> anyhow::Result<Option<Vec<u8>>> {
++        let mut value = self.inner.session_get(session, slot, limit).await?;
++        if session == self.session && slot == kasumi_store::BackupSessionSlot::Object(self.object) {
++            let bytes = value
++                .as_mut()
++                .ok_or_else(|| anyhow::anyhow!("fault fixture object is missing"))?;
++            let last = bytes
++                .last_mut()
++                .ok_or_else(|| anyhow::anyhow!("fault fixture object is empty"))?;
++            self.reads
++                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++            match self.fault {
++                ObjectReadFault::Missing => value = None,
++                ObjectReadFault::Corrupt => *last ^= 1,
++            }
++        }
++        Ok(value)
++    }
++}
++
+ #[tokio::test]
+ async fn missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yield_proof() {
+     let fixture = Fixture::new().await;
+@@ -678,45 +764,28 @@
+     let page: serde_json::Value = serde_json::from_slice(&page.snapshot).unwrap();
+     let resident = page["chunks"][0]["object_id"].as_str().unwrap();
+     for object in [resident, archive.manifest.chunks[0].object_id.as_str()] {
+-        let path = fixture
+-            .directory
+-            .path()
+-            .join("backups/sessions")
+-            .join(proof.backup_id().to_string())
+-            .join("objects")
+-            .join(format!("{object}.kasumi"));
+-        let bytes = std::fs::read(&path).unwrap();
+-        std::fs::remove_file(&path).unwrap();
+-        assert_eq!(
+-            fixture
+-                .db
+-                .verify_backup_checkpoint(
+-                    context(),
+-                    fixture.destination.as_ref(),
+-                    proof.backup_id()
+-                )
+-                .await
+-                .unwrap_err()
+-                .code,
+-            ErrorCode::Unavailable
+-        );
+-        let mut corrupt = bytes.clone();
+-        *corrupt.last_mut().unwrap() ^= 1;
+-        std::fs::write(&path, corrupt).unwrap();
+-        assert_eq!(
+-            fixture
+-                .db
+-                .verify_backup_checkpoint(
+-                    context(),
+-                    fixture.destination.as_ref(),
+-                    proof.backup_id()
+-                )
+-                .await
+-                .unwrap_err()
+-                .code,
+-            ErrorCode::Corruption
+-        );
+-        std::fs::write(&path, bytes).unwrap();
++        let object = uuid::Uuid::parse_str(object).unwrap();
++        for (fault, expected) in [
++            (ObjectReadFault::Missing, ErrorCode::Unavailable),
++            (ObjectReadFault::Corrupt, ErrorCode::Corruption),
++        ] {
++            let destination = FaultyObjectRead::new(
++                fixture.destination.clone(),
++                proof.backup_id(),
++                object,
++                fault,
++            );
++            assert_eq!(
++                fixture
++                    .db
++                    .verify_backup_checkpoint(context(), &destination, proof.backup_id())
++                    .await
++                    .unwrap_err()
++                    .code,
++                expected
++            );
++            destination.assert_read();
++        }
+     }
+     assert_eq!(
+         fixture
+@@ -1298,22 +1367,20 @@
+         hex::encode(Sha256::digest(&ciphertext)),
+         head.object.ciphertext_sha256
+     );
+-    let dependency_path = fixture
+-        .directory
+-        .path()
+-        .join("backups")
+-        .join("sessions")
+-        .join(proof.backup_id().to_string())
+-        .join("objects")
+-        .join(format!("{}.kasumi", head.object.object_id));
+-    std::fs::remove_file(&dependency_path).unwrap();
++    let missing = Arc::new(FaultyObjectRead::new(
++        fixture.destination.clone(),
++        proof.backup_id(),
++        head.object.object_id,
++        ObjectReadFault::Missing,
++    ));
+     assert!(
+         fixture
+             .db
+-            .verify_backup_checkpoint_named(context(), "approved", proof.backup_id())
++            .verify_backup_checkpoint(context(), missing.as_ref(), proof.backup_id())
+             .await
+             .is_err()
+     );
++    missing.assert_read();
+     // Restore must neither consult a live source quorum nor its local cache.
+     fixture.close().await;
+     let target_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+@@ -1339,7 +1406,7 @@
+     .unwrap();
+     let source = kasumi_engine::RestoreSource {
+         destination_alias: "approved".into(),
+-        destination: fixture.destination.clone(),
++        destination: missing.clone(),
+         keys: Arc::new(LocalKeyProvider::new([0xD8; 32])),
+         timeout_ms: 60_000,
+     };
+@@ -1355,12 +1422,18 @@
+         .await
+         .is_err()
+     );
++    missing.assert_read();
+     assert!(target.scan("engine.bootstrap").unwrap().is_empty());
+-    // A valid immutable re-publication resolves the missing dependency; it does
+-    // not alter the permanent completed outcome or original source purpose.
+-    let mut corrupt = ciphertext.clone();
+-    *corrupt.last_mut().unwrap() ^= 1;
+-    objects.put(head.object.object_id, corrupt).await.unwrap();
++    let corrupt = Arc::new(FaultyObjectRead::new(
++        fixture.destination.clone(),
++        proof.backup_id(),
++        head.object.object_id,
++        ObjectReadFault::Corrupt,
++    ));
++    let source = kasumi_engine::RestoreSource {
++        destination: corrupt.clone(),
++        ..source
++    };
+     assert!(
+         kasumi_engine::restore_local(
+             &source,
+@@ -1372,12 +1445,14 @@
+         .await
+         .is_err()
+     );
++    corrupt.assert_read();
+     assert!(target.scan("engine.bootstrap").unwrap().is_empty());
+-    std::fs::remove_file(&dependency_path).unwrap();
+-    objects
+-        .put(head.object.object_id, ciphertext.clone())
+-        .await
+-        .unwrap();
++    // A later healthy response resolves the remote fault without replacing an
++    // enrolled inode or changing the authenticated completed backup graph.
++    let source = kasumi_engine::RestoreSource {
++        destination: fixture.destination.clone(),
++        ..source
++    };
+     // Source verification alone is insufficient: an independently installed
+     // target provider must also retain every original historical archive key.
+     let wrong_directory = kasumi_store::test_utils::private_tempdir().unwrap();

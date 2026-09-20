@@ -840,13 +840,16 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(admission.snapshot().reserved_bytes, 1 << 20);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            1 << 20
+        );
         assert_eq!(slots.available_permits(), 0);
         release.send(()).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), fence.drain())
             .await
             .unwrap();
-        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
         assert_eq!(slots.available_permits(), 1);
         assert_eq!(admission.snapshot().inflight_operations, 0);
     }

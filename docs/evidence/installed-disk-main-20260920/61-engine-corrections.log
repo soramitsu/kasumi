@@ -1,0 +1,30 @@
+   Compiling kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 39.02s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_engine-dc6dca13bbdbe0d0)
+
+running 17 tests
+test bootstrap::existing_tests::existing_local_reopens_the_same_committed_standalone_after_complete_shutdown ... ok
+test security_audit::retention::tests::uncertain_publication_survives_restart_and_repeated_hot_budget_crossings_preserve_complete_history ... ok
+test security_audit::tests::uncertain_audit_commit_fences_queued_writers_until_sequence_recovery ... ok
+test service::proposal_jobs::tests::admission_boundary_ignores_prior_slot_and_pending_preflight_before_retained_child ... ok
+test service::proposal_jobs::tests::cancelled_drain_preserves_prior_panic_while_later_child_remains_owned ... 
+thread 'service::proposal_jobs::tests::cancelled_drain_preserves_prior_panic_while_later_child_remains_owned' (3599699) panicked at crates/kasumi-engine/src/proposal_jobs_tests.rs:156:13:
+original proposal panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ok
+test service::proposal_jobs::tests::completed_response_retains_command_workspace_and_registration_until_consumed ... ok
+test service::proposal_jobs::tests::definite_request_rejection_does_not_poison_proposal_custody ... ok
+test service::proposal_jobs::tests::original_error_and_charge_survive_cancelled_caller_and_registry_drop ... ok
+test service::proposal_jobs::tests::registry_is_bounded_and_uses_the_original_node_charge ... ok
+test service::proposal_jobs::tests::timed_out_call_retains_actual_child_and_cannot_cancel_its_effect ... ok
+test service::tests::custody_observations_preserve_mutation_capacity_and_exhaustion_can_expand ... ok
+test service::tests::guarded_stop_queued_deadline_and_cancellation_leave_only_actual_durable_outcomes ... ok
+test service::tests::queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_durable_outcomes ... ok
+test service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly ... ok
+test state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence ... ok
+test state::snapshot_bundle::tests::control_archive_transfer_uses_exact_reserved_domain_without_application_authority ... ok
+test state::staging::capacity_tests::permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_identity_reuse ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 182 filtered out; finished in 96.04s
+

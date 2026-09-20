@@ -360,7 +360,7 @@ impl std::ops::Deref for LocalTarget {
     }
 }
 impl LocalTarget {
-    async fn shutdown(&mut self) -> Result<()> {
+    async fn shutdown(&mut self) -> kasumi_types::drain::DrainResult {
         crate::startup_owner::finish(&mut self.resources).await
     }
 }
@@ -620,8 +620,8 @@ async fn start_owned(
     .await;
     if let Err(drain) = crate::startup_owner::finish(&mut operator).await {
         return Err(match result {
-            Err(error) => error.context(format!("local operator drain failed: {drain:#}")),
-            Ok(_) => drain,
+            Err(error) => error.context(drain),
+            Ok(_) => drain.into(),
         });
     }
     result
@@ -648,8 +648,8 @@ async fn status_owned(configuration: &Path, operation: Uuid) -> Result<LocalReco
     })();
     if let Err(drain) = crate::startup_owner::finish(&mut operator).await {
         return Err(match result {
-            Err(error) => error.context(format!("local operator drain failed: {drain:#}")),
-            Ok(_) => drain,
+            Err(error) => error.context(drain),
+            Ok(_) => drain.into(),
         });
     }
     result
@@ -700,8 +700,8 @@ async fn resume_owned(configuration: &Path, operation: Uuid) -> Result<LocalReco
     .await;
     if let Err(drain) = crate::startup_owner::finish(&mut operator).await {
         return Err(match result {
-            Err(error) => error.context(format!("local operator drain failed: {drain:#}")),
-            Ok(_) => drain,
+            Err(error) => error.context(drain),
+            Ok(_) => drain.into(),
         });
     }
     result
@@ -755,8 +755,8 @@ async fn stop_owned(configuration: &Path, operation: Uuid) -> Result<LocalRecove
     .await;
     if let Err(drain) = crate::startup_owner::finish(&mut operator).await {
         return Err(match result {
-            Err(error) => error.context(format!("local operator drain failed: {drain:#}")),
-            Ok(_) => drain,
+            Err(error) => error.context(drain),
+            Ok(_) => drain.into(),
         });
     }
     result
@@ -1064,9 +1064,6 @@ impl Operator {
                     && generation.state.restored_from.as_ref() == Some(&request.checkpoint),
                 "target materialization differs from exact local recovery checkpoint"
             );
-            if initialized {
-                database.install_admission(admission)?;
-            }
             for (alias, destination) in &self.config.backup_destinations {
                 if !initialized && alias == &request.destination {
                     continue;
@@ -1088,9 +1085,7 @@ impl Operator {
                 let drained = crate::startup_owner::finish(&mut pending).await;
                 Err(match drained {
                     Ok(()) => error,
-                    Err(cleanup) => error.context(format!(
-                        "local target drain failed before completion: {cleanup:#}"
-                    )),
+                    Err(cleanup) => error.context(cleanup),
                 })
             }
         }

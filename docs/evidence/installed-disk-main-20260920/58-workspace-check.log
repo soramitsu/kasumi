@@ -1,0 +1,68 @@
+    Checking kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rmcp` (lib) generated 3 warnings
+error[E0308]: mismatched types
+   --> crates/kasumi-raft/src/lib.rs:481:24
+    |
+481 |               return Err(instance
+    |  ____________________---_^
+    | |                    |
+    | |                    arguments to this enum variant are incorrect
+482 | |                 .shutdown()
+483 | |                 .await
+484 | |                 .err()
+485 | |                 .unwrap_or_else(|| startup.into()));
+    | |__________________________________________________^ expected `Error`, found `DrainFailure`
+    |
+help: the type constructed contains `DrainFailure` due to the type of the argument passed
+   --> crates/kasumi-raft/src/lib.rs:481:20
+    |
+481 |                return Err(instance
+    |   ____________________^   -
+    |  |________________________|
+482 | ||                 .shutdown()
+483 | ||                 .await
+484 | ||                 .err()
+485 | ||                 .unwrap_or_else(|| startup.into()));
+    | ||__________________________________________________-^
+    | |___________________________________________________|
+    |                                                     this argument influences the type of `Err`
+note: tuple variant defined here
+   --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:566:4
+help: call `Into::into` on this expression to convert `DrainFailure` into `anyhow::Error`
+    |
+485 |                 .unwrap_or_else(|| startup.into()).into());
+    |                                                   +++++++
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `kasumi-raft` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `kasumi-raft` (lib test) due to 1 previous error

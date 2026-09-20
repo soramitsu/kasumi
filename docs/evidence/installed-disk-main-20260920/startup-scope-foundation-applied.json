@@ -1,0 +1,27 @@
+{
+  "patch_sha256": "143f14850359c7662adb17d595c47654cd9ad43a1ab1f21ba56b086f79631a42",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/admission.rs",
+      "before_sha256": "b3188bd8e1182a2587946ea225d7905ee59f4bba852966b7756d2b50a3313902",
+      "proposed_sha256": "77e0297d0751519c675576fcb4dbe950a3b1c7c4a075e256ee3214bfc1b82eea"
+    },
+    {
+      "path": "crates/kasumi-engine/src/admission/installed.rs",
+      "before_sha256": "d2c0d35b951636ac722f2cfcc1f0d42d5a8f580b60d378a45ebfcc6054547391",
+      "proposed_sha256": "25854dccf728c1f4a37409cac0a1589ee9e4da8181b81ab345e054882973e194"
+    },
+    {
+      "path": "crates/kasumi-engine/src/admission/startup.rs",
+      "before_sha256": null,
+      "proposed_sha256": "3336bcebe2258fcf221304a177fda6f43790ec395e9e415011863910e3b53d2d"
+    },
+    {
+      "path": "crates/kasumi-engine/src/admission/startup_tests.rs",
+      "before_sha256": null,
+      "proposed_sha256": "2d827f162e5c66c0805f02e8841d31a2b380c12bfc0b9f5793c1768406c147f7"
+    }
+  ],
+  "exact_after_hashes": true,
+  "status": "APPLIED_UNTESTED"
+}

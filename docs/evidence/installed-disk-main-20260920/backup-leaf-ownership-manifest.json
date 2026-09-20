@@ -1,0 +1,11 @@
+{
+  "status": "PREPARED_UNAPPLIED_UNCOMPILED",
+  "patch_sha256": "b5c6695983a4c3f77b3d2a03e0cd2c5f019fb81119bdbc7e627a6002ea39c7c9",
+  "files": [
+    {
+      "path": "crates/kasumi-store/src/backup_sessions_fs.rs",
+      "before_sha256": "786668ec95589be184e5d69ee5684f8cd42e8921b7411acd202f8ebffb7f378f",
+      "proposed_sha256": "e8bcc483c5abe4253c9d0ae82ae4bc13aff01539cb9cbe1b521096f1081fe12f"
+    }
+  ]
+}

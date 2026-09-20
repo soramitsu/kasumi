@@ -3,12 +3,14 @@ use kasumi_engine::admission::AdmissionConfig;
 use kasumi_raft::MembershipObserver;
 
 fn admission(bytes: u64) -> Arc<NodeAdmission> {
-    NodeAdmission::new(AdmissionConfig {
+    let mut config = AdmissionConfig {
         max_inflight_bytes: Some(bytes),
         max_sample_age_ms: 60_000,
         ..Default::default()
-    })
-    .unwrap()
+    };
+    let bookkeeping = NodeAdmission::required_bookkeeping_bytes(&config).unwrap();
+    config.max_inflight_bytes = Some(bookkeeping.checked_add(bytes).unwrap());
+    NodeAdmission::new(config).unwrap()
 }
 fn epoch() -> Epoch {
     Epoch {
@@ -188,11 +190,15 @@ fn membership_and_failure_epoch_saturation_permanently_fail_closed() {
 #[test]
 fn coverage_metadata_has_real_lifetime_charge_and_admission_rejection() {
     let admission = admission(METADATA_BYTES);
+    let bookkeeping = admission.snapshot().bookkeeping_bytes;
     let coverage = Coverage::new(&admission).unwrap();
-    assert_eq!(admission.snapshot().reserved_bytes, METADATA_BYTES);
+    assert_eq!(
+        admission.snapshot().reserved_bytes,
+        bookkeeping + METADATA_BYTES
+    );
     assert_eq!(admission.snapshot().inflight_operations, 0);
     assert!(Coverage::new(&admission).is_err());
     drop(coverage);
-    assert_eq!(admission.snapshot().reserved_bytes, 0);
+    assert_eq!(admission.snapshot().reserved_bytes, bookkeeping);
     assert!(Coverage::new(&admission).is_ok());
 }

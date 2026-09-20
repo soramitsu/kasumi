@@ -11,7 +11,7 @@ use serde_json::json;
 use std::{collections::BTreeSet, sync::Arc};
 
 #[tokio::test]
-async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_still_applies() {
+async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work_still_applies() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let node = NodeStore::create_new_fixture(
         directory.path().join("node.redb"),
@@ -19,7 +19,16 @@ async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_stil
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let audit = common::security_audit(node.clone()).await;
+    const MAX_BYTES: u64 = 256 << 20;
+    let admission = NodeAdmission::new(
+        kasumi_engine::test_utils::admission_config_with_bookkeeping(AdmissionConfig {
+            max_inflight_bytes: Some(MAX_BYTES),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let audit = common::security_audit_with_admission(node.clone(), admission.clone()).await;
     let store = TenantStore::initialize_catalog_fixture(
         node,
         "tenant".into(),
@@ -61,27 +70,20 @@ async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_stil
         .await
         .unwrap(),
         engine.clone(),
-        kasumi_raft::SnapshotBufferOwner::fixture(),
+        admission.snapshot_buffer_owner().unwrap(),
     )
     .await
     .unwrap();
     let database = Database::new(engine, group.clone(), store, audit.clone());
-    let admission = NodeAdmission::new(AdmissionConfig {
-        high_water_bytes: Some(1 << 20),
-        low_water_bytes: Some(1 << 19),
-        max_inflight_bytes: Some(1 << 18),
-        ..Default::default()
-    })
-    .unwrap();
-    assert!(admission.snapshot().pressured);
-    database.install_admission(admission.clone()).unwrap();
-    database.install_admission(admission).unwrap();
+    // Startup and audit use the same healthy facade. A real retained reservation
+    // exhausts capacity after startup; no governor is replaced or reconfigured.
+    let occupied = kasumi_engine::test_utils::reserved_payload_bytes(&admission);
+    let held_capacity = admission
+        .reserve(MAX_BYTES.checked_sub(occupied).unwrap(), None)
+        .unwrap();
     assert_eq!(
-        database
-            .install_admission(NodeAdmission::new(AdmissionConfig::default()).unwrap())
-            .unwrap_err()
-            .code,
-        ErrorCode::Conflict
+        kasumi_engine::test_utils::reserved_payload_bytes(&admission),
+        MAX_BYTES
     );
     let operation = Operation::CreateCollection(CollectionDefinition {
         retention_class: kasumi_types::CollectionRetentionClass::Operational,
@@ -146,6 +148,7 @@ async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_stil
             .code,
         ErrorCode::ResourceExhausted
     );
+    drop(held_capacity);
     database.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
 }

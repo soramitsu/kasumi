@@ -56,7 +56,6 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
     )
     .await
     .unwrap();
-    db.install_admission(node_admission).unwrap();
     let request = SchemaChangeSet {
         activation_id: "cancel".into(),
         expected_incarnation: db.engine.generation().unwrap().state.incarnation.clone(),

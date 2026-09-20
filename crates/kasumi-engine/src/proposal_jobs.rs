@@ -22,6 +22,8 @@ pub(super) struct Jobs {
 }
 #[derive(Default)]
 struct State {
+    #[cfg(test)]
+    admitted: u64,
     slots: [Option<Arc<BackgroundWork>>; MAX_PROPOSALS],
     budget: Option<BackgroundWorkBudget>,
     report: DrainReport,
@@ -51,6 +53,10 @@ impl Drop for TerminalFence {
 }
 
 impl Jobs {
+    fn required_bytes() -> anyhow::Result<u64> {
+        BackgroundWorkBudget::required_bytes(MAX_PROPOSALS, 1)
+    }
+
     fn observe_locked(&self, state: &mut State) {
         for slot in &mut state.slots {
             let Some(worker) = slot else { continue };
@@ -92,7 +98,7 @@ impl Jobs {
             ));
         }
         if state.budget.is_none() {
-            let bytes = BackgroundWorkBudget::required_bytes(MAX_PROPOSALS, 1).map_err(|_| {
+            let bytes = Self::required_bytes().map_err(|_| {
                 Error::new(
                     ErrorCode::ResourceExhausted,
                     "proposal metadata budget overflow",
@@ -153,6 +159,11 @@ impl Jobs {
                 "proposal registry has no memory reservation",
             )
         })?;
+        #[cfg(test)]
+        let admitted = state
+            .admitted
+            .checked_add(1)
+            .expect("test admission sequence");
         let worker = Arc::new(BackgroundWork::default());
         let (sender, response) = tokio::sync::oneshot::channel();
         let admission = self.closed.clone();
@@ -179,7 +190,42 @@ impl Jobs {
                 )
             })?;
         state.slots[slot] = Some(worker.clone());
+        #[cfg(test)]
+        {
+            state.admitted = admitted;
+        }
         Ok(Call { worker, response })
+    }
+
+    /// Drive this request through any asynchronous preflight until this registry
+    /// owns its actual child. Tests hold the ordered proposal gate and submit no
+    /// other requests concurrently. A prior completed slot cannot satisfy this
+    /// boundary, and an initial Pending read is not mistaken for admission.
+    #[cfg(test)]
+    pub(super) async fn wait_for_admission<F: Future>(&self, mut request: std::pin::Pin<&mut F>) {
+        let before = self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .admitted;
+        std::future::poll_fn(|cx| {
+            assert!(
+                request.as_mut().poll(cx).is_pending(),
+                "request completed before the gated proposal admission boundary"
+            );
+            if self
+                .state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .admitted
+                > before
+            {
+                std::task::Poll::Ready(())
+            } else {
+                std::task::Poll::Pending
+            }
+        })
+        .await;
     }
 
     pub(super) async fn drain(&self) -> DrainResult {
@@ -214,6 +260,14 @@ impl Jobs {
             state.budget = None;
         }
         state.report.outcome(retained)
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl super::Database {
+    /// Exact lazily retained proposal registry charge for fixture accounting.
+    pub fn fixture_proposal_metadata_bytes() -> anyhow::Result<u64> {
+        Jobs::required_bytes()
     }
 }
 

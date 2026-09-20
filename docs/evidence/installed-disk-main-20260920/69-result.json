@@ -1,0 +1,25 @@
+{
+  "scope": "development backup leaf ownership and session publication/cleanup regression, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-store",
+    "--all-features",
+    "--lib",
+    "--",
+    "--test-threads=1",
+    "backup_sessions"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "b2876ef782f0f5afde2d60edd234559fc6ce600f",
+  "process_group": 84077,
+  "exit_code": 0,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 28.364931106567383,
+  "inventoried_source_unchanged": true
+}

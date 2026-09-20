@@ -102,10 +102,7 @@ impl SignerVerifierConfig {
                 crate::startup_preparation::failure_checkpoint(database_id).await;
                 match crate::startup_owner::finish(&mut pending).await {
                     Ok(()) => Err(error),
-                    Err(drain) => {
-                        Err(error
-                            .context(format!("signer verifier storage drain failed: {drain:#}")))
-                    }
+                    Err(drain) => Err(error.context(drain)),
                 }
             }
         }
@@ -519,10 +516,9 @@ impl InitializeSignerVerifier {
         let drained = crate::startup_owner::finish(&mut pending).await;
         match (result, drained) {
             (Ok(()), Ok(())) => Ok(InitializedVerifier),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(error), Err(drain)) => Err(error.context(format!(
-                "signer verifier installation drain failed: {drain:#}"
-            ))),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), Err(drain)) => Err(drain.into()),
+            (Err(error), Err(drain)) => Err(error.context(drain)),
         }
     }
 }

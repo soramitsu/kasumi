@@ -149,7 +149,7 @@ async fn initialize_owned(config: AuthorityRuntimeConfig) -> Result<Enrolled> {
         genesis.take();
     }
     if let Err(error) = crate::startup_owner::finish(&mut pending).await {
-        report.record("authority enrollment resources", 0, error);
+        report.merge(&error);
     }
     match (result, report.complete()) {
         (Ok(()), Ok(())) => Ok(Enrolled),

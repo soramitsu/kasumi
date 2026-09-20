@@ -1,0 +1,319 @@
+--- a/crates/kasumi-server/src/serving_owner_tests.rs
++++ b/crates/kasumi-server/src/serving_owner_tests.rs
+@@ -1,6 +1,11 @@
+ use super::*;
+-use kasumi_store::{NodeStore, ScratchDisk, private_files::ExclusiveLock};
+-use std::{os::unix::fs::PermissionsExt, path::PathBuf, sync::Weak, task::Poll};
++use kasumi_store::{DiskWork, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeStore, ScratchDisk};
++use std::{
++    os::unix::fs::PermissionsExt,
++    path::{Path, PathBuf},
++    sync::Weak,
++    task::Poll,
++};
+ use tokio::sync::{Notify, oneshot};
+ 
+ struct PhysicalOwner {
+@@ -12,7 +17,7 @@
+     panic_close: bool,
+     report: DrainReport,
+     // The real installation lock outlives the worker and direct physical node.
+-    _lock: ExclusiveLock,
++    _lock: NodeDiskFile,
+ }
+ impl Owner for PhysicalOwner {
+     fn run<'a>(
+@@ -40,8 +45,14 @@
+                 }
+                 self.worker.take();
+             }
+-            assert!(Arc::strong_count(&self.node) > 0);
+-            self.report.complete()
++            let retained = match self.node.shutdown().await {
++                Ok(()) => None,
++                Err(failure) => {
++                    self.report.merge(&failure);
++                    (failure.completion() == DrainCompletion::Retained).then_some(failure)
++                }
++            };
++            self.report.outcome(retained)
+         })
+     }
+ }
+@@ -50,19 +61,35 @@
+     path: PathBuf,
+     lock: PathBuf,
+     weak: Weak<NodeStore>,
++    disk: Arc<NodeDisk>,
++    disk_config: NodeDiskConfig,
++    scratch: Arc<ScratchDisk>,
+     release: Option<oneshot::Sender<()>>,
+     entered: Arc<Notify>,
+     closing: Arc<Notify>,
++}
++fn open_lock(disk: &Arc<NodeDisk>, config: &NodeDiskConfig, path: &Path) -> Result<NodeDiskFile> {
++    let (root, relative) = config.binding(path)?;
++    Ok(disk.open_file(root, relative)?)
++}
++fn create_lock(disk: &Arc<NodeDisk>, config: &NodeDiskConfig, path: &Path) -> NodeDiskFile {
++    let (root, relative) = config.binding(path).unwrap();
++    disk.create_file(root, relative, DiskWork::Foreground)
++        .unwrap()
+ }
+ fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Registration) {
+     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+     let path = directory.path().join("serving.redb");
+     let lock = directory.path().join("installation.lock");
+-    let node = NodeStore::create_new_fixture(
++    let disk_config = crate::persistent_disk::fixture_config(directory.path());
++    let disk = crate::persistent_disk::open(&disk_config).unwrap();
++    let scratch = ScratchDisk::fixture();
++    let node = NodeStore::create_new(
+         &path,
+         kasumi_store::test_utils::NODE_STORE_ID,
+-        ScratchDisk::fixture(),
++        disk.clone(),
++        scratch.clone(),
+     )
+     .unwrap();
+     let held = node.clone();
+@@ -75,6 +102,9 @@
+     let closing = Arc::new(Notify::new());
+     let fixture = Fixture {
+         weak: Arc::downgrade(&node),
++        disk: disk.clone(),
++        disk_config: disk_config.clone(),
++        scratch,
+         _directory: directory,
+         path,
+         lock: lock.clone(),
+@@ -90,7 +120,7 @@
+         panic_run,
+         panic_close,
+         report: Default::default(),
+-        _lock: ExclusiveLock::acquire(&lock).unwrap(),
++        _lock: create_lock(&disk, &disk_config, &lock),
+     };
+     let registration = Registration::new(
+         Kind::Data,
+@@ -104,27 +134,32 @@
+     fn still_owned(&self) {
+         assert!(self.weak.upgrade().is_some());
+         assert!(
+-            NodeStore::open_existing_fixture(
++            NodeStore::open_existing(
+                 &self.path,
+                 kasumi_store::test_utils::NODE_STORE_ID,
+-                ScratchDisk::fixture()
++                self.disk.clone(),
++                self.scratch.clone(),
+             )
+             .is_err()
+         );
+-        assert!(ExclusiveLock::acquire(&self.lock).is_err());
++        assert!(open_lock(&self.disk, &self.disk_config, &self.lock).is_err());
+     }
+     fn release(&mut self) {
+         self.release.take().unwrap().send(()).unwrap();
+     }
+-    fn reopened(&self) {
++    async fn reopened(&self) {
+         assert!(self.weak.upgrade().is_none());
+-        let _lock = ExclusiveLock::acquire(&self.lock).unwrap();
+-        let _node = NodeStore::open_existing_fixture(
++        // Reuse the exact installed owners. A fixture re-census while holding
++        // this same installation lock would correctly reject that live file.
++        let _lock = open_lock(&self.disk, &self.disk_config, &self.lock).unwrap();
++        let node = NodeStore::open_existing(
+             &self.path,
+             kasumi_store::test_utils::NODE_STORE_ID,
+-            ScratchDisk::fixture(),
++            self.disk.clone(),
++            self.scratch.clone(),
+         )
+         .unwrap();
++        node.shutdown().await.unwrap();
+     }
+ }
+ async fn pending(future: &mut Pin<Box<impl Future>>) {
+@@ -158,7 +193,7 @@
+         .await
+         .unwrap()
+         .unwrap();
+-    fixture.reopened();
++    fixture.reopened().await;
+     assert!(registry.lock().unwrap().is_empty());
+ }
+ 
+@@ -201,7 +236,7 @@
+     for (original, retained) in issues.iter().zip(failure.issues()) {
+         assert!(Arc::ptr_eq(original, retained));
+     }
+-    fixture.reopened();
++    fixture.reopened().await;
+ }
+ 
+ #[tokio::test]
+@@ -255,7 +290,7 @@
+             .unwrap()
+             .issues()[0]
+     ));
+-    fixture.reopened();
++    fixture.reopened().await;
+ }
+ 
+ #[tokio::test]
+@@ -273,7 +308,7 @@
+     tokio::time::timeout(Duration::from_secs(5), prior.join())
+         .await
+         .unwrap();
+-    failed.reopened();
++    failed.reopened().await;
+     let issue = prior.state.lock().unwrap().report.issues()[0].clone();
+     assert!(check_admission(&registry, identity).is_err());
+     check_admission(&registry, uuid::Uuid::new_v4()).unwrap();
+@@ -305,7 +340,7 @@
+         .downcast_ref::<kasumi_types::drain::DrainFailure>()
+         .unwrap();
+     assert!(Arc::ptr_eq(&issue, &prior_failure.issues()[0]));
+-    refused.reopened();
++    refused.reopened().await;
+     assert!(check_admission(&registry, identity).is_err());
+     let error = drain_registry(&registry).await.unwrap_err();
+     assert!(Arc::ptr_eq(
+@@ -322,7 +357,7 @@
+ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_churn() {
+     struct DestructorPanic {
+         _node: Arc<NodeStore>,
+-        _lock: ExclusiveLock,
++        _lock: NodeDiskFile,
+     }
+     impl Owner for DestructorPanic {
+         fn run<'a>(
+@@ -332,7 +367,7 @@
+             Box::pin(async { Ok(()) })
+         }
+         fn close(&mut self) -> Pin<Box<dyn Future<Output = DrainResult> + Send + '_>> {
+-            Box::pin(async { Ok(()) })
++            Box::pin(self._node.shutdown())
+         }
+     }
+     impl Drop for DestructorPanic {
+@@ -344,10 +379,14 @@
+     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+     let path = directory.path().join("destructor.redb");
+     let lock = directory.path().join("installation.lock");
+-    let node = NodeStore::create_new_fixture(
++    let disk_config = crate::persistent_disk::fixture_config(directory.path());
++    let disk = crate::persistent_disk::open(&disk_config).unwrap();
++    let scratch = ScratchDisk::fixture();
++    let node = NodeStore::create_new(
+         &path,
+         kasumi_store::test_utils::NODE_STORE_ID,
+-        ScratchDisk::fixture(),
++        disk.clone(),
++        scratch.clone(),
+     )
+     .unwrap();
+     let registry = Arc::new(Registry::default());
+@@ -363,7 +402,7 @@
+         registration,
+         DestructorPanic {
+             _node: node,
+-            _lock: ExclusiveLock::acquire(&lock).unwrap(),
++            _lock: create_lock(&disk, &disk_config, &lock),
+         },
+         shutdown,
+     ));
+@@ -392,15 +431,18 @@
+         assert_eq!(state.report.issues().len(), 2);
+         assert!(Arc::ptr_eq(&issues[1], &state.report.issues()[1]));
+     }
+-    // Rust unwound this test owner's fields, so its physical files can reopen;
+-    // production still conservatively retains the unknown destructor census.
+-    let _lock = ExclusiveLock::acquire(&lock).unwrap();
+-    let _node = NodeStore::open_existing_fixture(
++    // close actually drained the database before the destructor panicked, and
++    // unwinding released its managed lock. The outer destructor census remains
++    // unknown and retained even though these specific files can reopen.
++    let _lock = open_lock(&disk, &disk_config, &lock).unwrap();
++    let node = NodeStore::open_existing(
+         &path,
+         kasumi_store::test_utils::NODE_STORE_ID,
+-        ScratchDisk::fixture(),
++        disk,
++        scratch,
+     )
+     .unwrap();
++    node.shutdown().await.unwrap();
+ }
+ 
+ #[test]
+--- a/crates/kasumi-server/src/signer_runtime_tests.rs
++++ b/crates/kasumi-server/src/signer_runtime_tests.rs
+@@ -308,15 +308,29 @@
+     let f = Fixture::new();
+     assert!(f.open().await.is_err());
+     assert!(!f.input.verifier.database_path.exists());
+-    private_files::create(&f.input.verifier.database_path, b"").unwrap();
++    // Enroll the intentionally empty fixture inode through its exact owner.
++    // Runtime rejects the missing node envelope without a raw namespace change
++    // that would independently fence the installed physical census.
++    let disk = crate::persistent_disk::open(&f.input.persistent_disk).unwrap();
++    let (root, relative) = f
++        .input
++        .persistent_disk
++        .binding(&f.input.verifier.database_path)
++        .unwrap();
++    let empty = disk
++        .create_file(root, relative, kasumi_store::DiskWork::Foreground)
++        .unwrap();
++    drop(empty);
+     assert!(f.open().await.is_err());
++    assert_eq!(disk.snapshot().phase, kasumi_store::NodeDiskPhase::Open);
+     assert_eq!(
+         std::fs::metadata(&f.input.verifier.database_path)
+             .unwrap()
+             .len(),
+         0
+     );
+-    std::fs::remove_file(&f.input.verifier.database_path).unwrap();
++    let empty = disk.open_file(root, relative).unwrap();
++    disk.delete_file(empty).unwrap();
+     f.input.initialize().await.unwrap();
+     assert!(
+         f.input.initialize().await.is_err(),
+@@ -594,20 +608,22 @@
+     private_files::replace(&path, &bytes).unwrap();
+     installed.shutdown().await.unwrap();
+     assert!(retained.check().is_err());
+-    drop(installed);
+-    assert!(
+-        f.open().await.is_err(),
+-        "retained metadata owners must drain before reopening"
+-    );
+-    drop(retained);
++    // Actual shutdown closed the physical node and sealed every old trust
++    // facade. Keeping either old Arc alive cannot revive it or block a fresh
++    // owner after that positive drain proof.
+     let reopened = f.open().await.unwrap();
+-    OperationalSignerConfig::load(&path, &domain)
++    let fresh = OperationalSignerConfig::load(&path, &domain)
+         .unwrap()
+         .open(&reopened)
+-        .unwrap()
+-        .check()
+-        .unwrap();
++        .unwrap();
++    fresh.check().unwrap();
++    installed.shutdown().await.unwrap();
++    assert!(retained.check().is_err());
++    fresh.check().unwrap();
++    drop(installed);
++    drop(retained);
+     reopened.shutdown().await.unwrap();
++    assert!(fresh.check().is_err());
+ }
+ 
+ #[tokio::test]

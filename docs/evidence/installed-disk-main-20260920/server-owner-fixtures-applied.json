@@ -1,0 +1,17 @@
+{
+  "patch_sha256": "b8ff6eeb8f1312cc435f8f787b5c10ade76da2957e9a531139d52c24ea9fba54",
+  "files": [
+    {
+      "path": "crates/kasumi-server/src/serving_owner_tests.rs",
+      "base_sha256": "709db5760c44e919016468fd8710998436e960b9b4911a5e1ebd03d25fd130cf",
+      "proposed_sha256": "6a00a4f19373cc69199b9afaa75e7176824f6b0208421a12891519d3b6fd15f1"
+    },
+    {
+      "path": "crates/kasumi-server/src/signer_runtime_tests.rs",
+      "base_sha256": "9a037dd5b54271d4e9015a9509dfe5fccc619dea87ea261a8ba314949c3fa3d5",
+      "proposed_sha256": "dbc6afe344417106f6f9e9b83d6cdf11dcc89782ec4a73b98e0d7b27802bed1b"
+    }
+  ],
+  "exact_after_hashes": true,
+  "status": "APPLIED_UNTESTED"
+}

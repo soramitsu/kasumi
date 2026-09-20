@@ -1,0 +1,30 @@
+{
+  "status": "target-only prepared correction; not compiled or applied",
+  "patch_sha256": "748f9ae56d9fcac8d3159caf17eb4a94bb529ef5b86207bf0da1c7ee8b831d3b",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/proposal_jobs.rs",
+      "before_sha256": "46239f2dfe42fa68adc7ba1248dd6de48900281170dad9ef58661894ec49c261",
+      "proposed_sha256": "c4daf9512939a718b5cea6b043f8af25f550ea64f1e1104c2d6bce3c6630d49d"
+    },
+    {
+      "path": "crates/kasumi-engine/tests/backup_checkpoint.rs",
+      "before_sha256": "45bd8b086d26e2f9139df7199ab0a46e6164c6bc260b487616d42be5c946cdd2",
+      "proposed_sha256": "e4233680b39e7449363e754b412d4c18c05fdd13713ff630cfaab63987e7af60"
+    }
+  ],
+  "validation": {
+    "rustfmt_stdin": "passed",
+    "git_apply_check": "passed",
+    "builds": "not run",
+    "actual_source_unchanged": true
+  },
+  "evidence": {
+    "53-engine-integration.log": "4de703bf5cfcda3ea9177e438acbdd8039753d958ae723858a44076b7c065203",
+    "53-result.json": "851a2b942480f181deaadf348aa5a60cbf3261fb4957c7f20acfa82af5b11594"
+  },
+  "gated_tests": [
+    "cargo test --offline --locked -p kasumi-engine --all-features --test backup_checkpoint -- --test-threads=1",
+    "cargo clippy --offline --locked --workspace --all-targets --all-features -- -D warnings"
+  ]
+}

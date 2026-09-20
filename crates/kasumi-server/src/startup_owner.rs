@@ -81,16 +81,16 @@ pub(crate) trait Runtime: Send + 'static {
 /// Retry only incomplete ownership. A completed failure still reports the exact
 /// errors, but never keeps a fully drained runtime in an endless cleanup loop.
 /// Every implementation also retains its report across a cancelled finish call.
-pub(crate) async fn finish(runtime: &mut impl Runtime) -> Result<()> {
+pub(crate) async fn finish(runtime: &mut impl Runtime) -> DrainResult {
     let mut report = DrainReport::default();
     let mut delay = std::time::Duration::from_secs(1);
     loop {
         match runtime.close().await {
-            Ok(()) => return report.complete().map_err(Into::into),
+            Ok(()) => return report.complete(),
             Err(error) => {
                 report.merge(&error);
                 if error.completion() == DrainCompletion::Complete {
-                    return report.complete().map_err(Into::into);
+                    return report.complete();
                 }
                 tracing::error!(error = %error, retry_after_secs = delay.as_secs(), "startup owner drain incomplete; retaining resources for retry");
                 tokio::time::sleep(delay).await;
@@ -465,7 +465,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(workers.attempts, 1);
         assert!(workers.handles.is_empty());
-        let failure = error.downcast_ref::<DrainFailure>().unwrap();
+        let failure = &error;
         assert_eq!(failure.completion(), DrainCompletion::Complete);
         let issue = failure.issues()[0].clone();
         assert!(
@@ -475,6 +475,21 @@ mod tests {
                 .unwrap()
                 .is_panic()
         );
+        let repeated = finish(&mut workers).await.unwrap_err();
+        assert_eq!(repeated.completion(), DrainCompletion::Complete);
+        assert_eq!(repeated.issues().len(), 1);
+        assert!(Arc::ptr_eq(&issue, &repeated.issues()[0]));
+        // Preparation and cleanup both failed: retain the typed original child
+        // report as context, exactly as the startup callers do.
+        let preparation = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let combined = anyhow::Error::new(preparation).context(repeated);
+        assert_eq!(
+            combined.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let propagated = combined.downcast_ref::<DrainFailure>().unwrap();
+        assert_eq!(propagated.completion(), DrainCompletion::Complete);
+        assert!(Arc::ptr_eq(&issue, &propagated.issues()[0]));
         drop(workers);
         // Error evidence remains the actual JoinError after resource owner drop.
         assert!(
@@ -537,7 +552,7 @@ mod tests {
         assert!(workers.handles.is_empty());
         assert_eq!(workers.attempts, 2);
         assert!(dropped.load(Ordering::Acquire));
-        let failure = error.downcast_ref::<DrainFailure>().unwrap();
+        let failure = &error;
         assert_eq!(failure.completion(), DrainCompletion::Complete);
         assert_eq!(failure.issues().len(), 1);
         assert!(Arc::ptr_eq(&original, &failure.issues()[0]));

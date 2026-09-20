@@ -12,6 +12,7 @@ default = []
 test-utils = ["kasumi-store/test-utils"]
 
 [dependencies]
+parking_lot = "0.12"
 kasumi-clock.workspace = true
 kasumi-serving.workspace = true
 ring = "0.17"

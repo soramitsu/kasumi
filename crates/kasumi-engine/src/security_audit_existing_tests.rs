@@ -97,7 +97,10 @@ async fn explicit_audit_creation_drains_and_strict_reopen_preserves_stream_and_s
     let before = retained(&store)?;
     assert!(installation.open(store.clone()).is_err());
     assert_eq!(retained(&store)?, before);
-    assert_eq!(installation.admission.snapshot().reserved_bytes, 0);
+    assert_eq!(
+        crate::test_utils::reserved_payload_bytes(&installation.admission),
+        0
+    );
     let audit = installation.initialize(store.clone())?;
     let stream = audit.status()?.position.stream_id;
     assert!(!stream.is_nil());
@@ -106,7 +109,10 @@ async fn explicit_audit_creation_drains_and_strict_reopen_preserves_stream_and_s
     let position = audit.status()?.position;
     assert_eq!(position.next_sequence, 1);
     close(audit, store).await;
-    assert_eq!(installation.admission.snapshot().reserved_bytes, 0);
+    assert_eq!(
+        crate::test_utils::reserved_payload_bytes(&installation.admission),
+        0
+    );
 
     // No sleeps or retries hide retained locks, key monitors or audit workers.
     let store = installation.store(false).await?;
@@ -138,7 +144,10 @@ async fn missing_empty_or_nonempty_audit_head_never_recreates_a_stream() -> Resu
         for _ in 0..2 {
             assert!(installation.open(store.clone()).is_err());
             assert_eq!(retained(&store)?, before);
-            assert_eq!(installation.admission.snapshot().reserved_bytes, 0);
+            assert_eq!(
+                crate::test_utils::reserved_payload_bytes(&installation.admission),
+                0
+            );
         }
         store.shutdown().await.unwrap();
     }
@@ -196,7 +205,10 @@ async fn corrupt_audit_head_hot_gap_and_pending_pair_fail_without_logical_mutati
             "corruption {corruption}"
         );
         assert_eq!(retained(&store)?, before);
-        assert_eq!(installation.admission.snapshot().reserved_bytes, 0);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&installation.admission),
+            0
+        );
         store.shutdown().await.unwrap();
     }
     Ok(())

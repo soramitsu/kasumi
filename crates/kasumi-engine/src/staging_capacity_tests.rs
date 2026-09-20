@@ -129,7 +129,14 @@ fn permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_i
         StagedOutcome::Expired { .. }
     ));
     assert_eq!(expired.reserved_staged_terminal_bytes, 0);
+    let expired_rows = persist_terminal_overlay(&state, &mut expired);
     validate_restored(&expired).unwrap();
+    expired_rows.validate_state(&expired).unwrap();
+    assert!(!expired.staged_transactions.contains_key(&key));
+    assert!(matches!(
+        expired_rows.get(&key).unwrap().unwrap().stage.outcome,
+        StagedOutcome::Expired { .. }
+    ));
     let (second_key, second) = stage("b");
     assert_eq!(
         replace_record(&mut state, second_key.clone(), second.clone())
@@ -145,14 +152,21 @@ fn permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_i
         state.permanent_staged_bytes + state.reserved_staged_terminal_bytes,
         state.limits.atomic.max_permanent_staged_bytes
     );
+    let previous = state.clone();
     let mut final_record = original;
     terminal(&mut final_record, failure(ErrorCode::ResourceExhausted));
     replace_record(&mut state, key.clone(), final_record.clone()).unwrap();
     assert_eq!(state.reserved_staged_terminal_bytes, 0);
+    let overlay_bytes = state.permanent_staged_bytes;
+    replace_record(&mut state, key.clone(), final_record.clone()).unwrap();
+    assert_eq!(state.permanent_staged_bytes, overlay_bytes);
+    state.revision = 1;
+    let terminal_rows = persist_terminal_overlay(&previous, &mut state);
+    assert!(!state.staged_transactions.contains_key(&key));
+    assert_eq!(terminal_rows.head().count, 1);
     state.limits.atomic.max_permanent_staged_bytes = state.permanent_staged_bytes;
     let exact = state.permanent_staged_bytes;
-    replace_record(&mut state, key.clone(), final_record.clone()).unwrap();
-    assert_eq!(state.permanent_staged_bytes, exact);
+    assert_eq!(exact, terminal_rows.head().encoded_bytes);
     assert_eq!(
         replace_record(&mut state, second_key.clone(), second.clone())
             .unwrap_err()
@@ -160,17 +174,43 @@ fn permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_i
         ErrorCode::QuotaExceeded
     );
     assert_eq!(
-        state.staged_transactions[&key].outcome,
+        terminal_rows.get(&key).unwrap().unwrap().stage.outcome,
         final_record.outcome
     );
+    assert_eq!(state.permanent_staged_bytes, exact);
     state.limits.atomic.max_permanent_staged_bytes = 3 << 30;
     validate_limits(&state.limits).unwrap();
     replace_record(&mut state, second_key, second).unwrap();
     validate_restored(&state).unwrap();
+    terminal_rows.validate_state(&state).unwrap();
+    assert!(!state.staged_transactions.contains_key(&key));
     assert_eq!(
-        state.staged_transactions[&key].outcome,
+        terminal_rows.get(&key).unwrap().unwrap().stage.outcome,
         final_record.outcome
     );
+}
+
+// The ordered apply path moves terminal overlays into their permanent owner
+// before validating a published state. Exercise that same transfer here.
+fn persist_terminal_overlay(
+    previous: &TenantState,
+    next: &mut TenantState,
+) -> crate::staged_terminal::View {
+    let owner = crate::staged_terminal::View::empty(&previous.tenant, &previous.incarnation)
+        .unwrap()
+        .fixture_owner(previous)
+        .unwrap();
+    let applied = crate::staged_terminal::AppliedIdentity {
+        incarnation: next.incarnation.clone(),
+        revision: next.revision,
+        timestamp_ms: u64::MAX,
+        command_sha256: "ab".repeat(32),
+        origin: crate::staged_terminal::AppliedOrigin::Fixture,
+    };
+    crate::staged_terminal::Pending::prepare(&owner, previous, next, &applied)
+        .unwrap()
+        .persist()
+        .unwrap()
 }
 
 #[test]

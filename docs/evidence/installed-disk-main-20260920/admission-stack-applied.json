@@ -1,0 +1,35 @@
+{
+  "status": "APPLIED_NOT_YET_COMPILED",
+  "time": "2026-09-20T10:25:30.398155+00:00",
+  "head": "b2876ef782f0f5afde2d60edd234559fc6ce600f",
+  "branch": "master",
+  "layers": [
+    {
+      "layer": "A",
+      "patch_sha256": "bb4062d4dc6e1e0de628253d0af750d88b05beadc31d752a14a1b5d531f8a890",
+      "verified": true
+    },
+    {
+      "layer": "B",
+      "patch_sha256": "6ba83067ffbc4079fbc765f949a496ef689f59ecb8cfd2f4afa4444d568a22c3",
+      "verified": true
+    },
+    {
+      "layer": "C",
+      "patch_sha256": "86ff7adb1a5648b1c80efca62d251ff2fd8758db6c887fce8cfb3850e6ff3feb",
+      "verified": true
+    },
+    {
+      "layer": "D",
+      "patch_sha256": "c8c24ae2af2c9957d278f9e15152ac7b47e8cac1d54b245f57e7dca23fd185f9",
+      "verified": true
+    },
+    {
+      "layer": "E",
+      "patch_sha256": "39564e7c4dbd8eb0921fe01642262232d8d345148f38d4cb98597054c6beb67d",
+      "verified": true
+    }
+  ],
+  "files": 48,
+  "all_final_hashes_match": true
+}

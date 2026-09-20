@@ -92,7 +92,6 @@ impl MaterialFixture {
         )
         .await
         .unwrap();
-        source_db.install_admission(source_admission).unwrap();
         source_db
             .administer(
                 context.clone(),

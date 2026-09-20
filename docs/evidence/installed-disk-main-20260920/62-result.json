@@ -1,0 +1,20 @@
+{
+  "scope": "development actual cancelled Raft startup and census regression using gate61 test binary; concurrent with gate53, not a performance measurement, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/dev/kasumi/target/debug/deps/kasumi_engine-dc6dca13bbdbe0d0",
+    "--test-threads=1",
+    "--nocapture",
+    "admission::startup_integration_tests"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "b2876ef782f0f5afde2d60edd234559fc6ce600f",
+  "binary_sha256": "bd5ff3623872258a02c606ddc3f1bfbae627004575e94d2b24f148a0710908ee",
+  "binary_unchanged": true,
+  "process_group": 81088,
+  "exit_code": 0,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 0.8034071922302246,
+  "inventoried_source_unchanged": true
+}

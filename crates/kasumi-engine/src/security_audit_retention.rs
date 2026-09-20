@@ -691,9 +691,11 @@ mod tests {
      {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let path = directory.path().join("security.redb");
+        let persistent = kasumi_store::NodeDisk::fixture_for_path(&path).unwrap();
         let provider = Arc::new(LocalKeyProvider::new([181; 32]));
         let archive = Arc::new(UncertainArchive {
-            inner: FilesystemAuditArchive::open_fixture(directory.path().join("archives")).unwrap(),
+            inner: FilesystemAuditArchive::open(directory.path().join("archives"), persistent)
+                .unwrap(),
             uncertain: AtomicBool::new(true),
             pause: AtomicBool::new(false),
             entered: tokio::sync::Notify::new(),
@@ -845,6 +847,6 @@ mod tests {
         archive.release.add_permits(1);
         shutdown.await.unwrap();
         assert!(store.check_access().is_err());
-        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
     }
 }

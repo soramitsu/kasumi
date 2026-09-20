@@ -73,7 +73,8 @@ impl Cluster {
             .context("node missing")?
             .group
             .shutdown()
-            .await
+            .await?;
+        Ok(())
     }
 
     async fn stop_all(&mut self) -> Result<()> {
@@ -335,7 +336,8 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
     )
     .await?;
     assert_eq!(backend.values(), vec![b"durable-local".to_vec()]);
-    group.shutdown().await
+    group.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -370,10 +372,7 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<
     store.check_access()?;
     assert_eq!(backend.values(), vec![b"committed".to_vec()]);
     assert!(group.check_access().is_err());
-    let failure = group.shutdown().await.unwrap_err();
-    let drain = failure
-        .downcast_ref::<kasumi_types::drain::DrainFailure>()
-        .context("typed Raft drain failure missing")?;
+    let drain = group.shutdown().await.unwrap_err();
     assert_eq!(
         drain.completion(),
         kasumi_types::drain::DrainCompletion::Complete
@@ -405,9 +404,7 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<
     ));
     assert!(original.core_join_error().is_none());
     let repeated = group.shutdown().await.unwrap_err();
-    let repeated = repeated
-        .downcast_ref::<kasumi_types::drain::DrainFailure>()
-        .unwrap();
+
     assert_eq!(
         repeated.completion(),
         kasumi_types::drain::DrainCompletion::Complete
@@ -434,7 +431,8 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<
     )
     .await?;
     assert_eq!(recovered.values(), vec![b"committed".to_vec()]);
-    reopened.shutdown().await
+    reopened.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -496,7 +494,8 @@ async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown
         backend.values(),
         vec![b"acknowledged-before-sigkill".to_vec()]
     );
-    recovered.shutdown().await
+    recovered.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

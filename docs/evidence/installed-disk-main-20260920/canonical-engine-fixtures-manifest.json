@@ -1,0 +1,24 @@
+{
+  "patch_sha256": "4692f680dae030cf2e41ba2142038763ec4bebec238aade62c7394fe81440aa8",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/state.rs",
+      "before_sha256": "c7a95b4d7f7602bc57a2868da266dd6bad62547793654158fbb1eccc72d3988d",
+      "proposed_sha256": "153c77f5e52df762bb1f6eb9fe49c3bc33df8e491a122b2f7dc49532d59821b4"
+    },
+    {
+      "path": "crates/kasumi-engine/src/snapshot_bundle.rs",
+      "before_sha256": "21466b0ab2b64be26cf8bda6e7ef9c5e432461a1658e8754342f0cd4c5981f43",
+      "proposed_sha256": "0a763ef0cc275af69468c670ea355915365863538b6cf39881b5e81cf409dacf"
+    },
+    {
+      "path": "crates/kasumi-engine/src/staging_capacity_tests.rs",
+      "before_sha256": "7da374f711f2c3dfe70f97c7a3085514412b5bcf880c733008e5099967951d46",
+      "proposed_sha256": "b81da4eec9f48a52cc98721bbca47e0f233b0f00d3f8da91e276b97b9687fd7d"
+    }
+  ],
+  "rustfmt_stdin": "passed",
+  "git_apply_check": "passed",
+  "source_unchanged": true,
+  "tests": "not run"
+}

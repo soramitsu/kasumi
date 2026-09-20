@@ -1,0 +1,32 @@
+{
+  "scope": "development server admission consumers and canonical typed startup cleanup diagnostic, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-server",
+    "--all-features",
+    "--lib",
+    "--",
+    "--test-threads=1",
+    "readiness",
+    "signer_runtime::tests",
+    "serving_owner::tests",
+    "startup_owner::tests",
+    "runtime::tests::runtime_config_requires_explicit_admission",
+    "runtime::tests::operator_example",
+    "api::tests::native_backup_proof_is_admin_only_configured_and_verified_through_secure_sdk",
+    "mcp::credential_tests"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "b2876ef782f0f5afde2d60edd234559fc6ce600f",
+  "process_group": 83406,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 174.93664813041687,
+  "inventoried_source_unchanged": true
+}

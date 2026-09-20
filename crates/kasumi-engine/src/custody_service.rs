@@ -162,6 +162,7 @@ impl RetiredCustody {
         admission: Arc<NodeAdmission>,
         audit: Arc<SecurityAudit>,
     ) -> anyhow::Result<Arc<Self>> {
+        audit.require_admission(&admission)?;
         let group = CustodyRaftGroup::open(
             node_id,
             group,
@@ -496,12 +497,11 @@ impl RetiredCustody {
         self.closing.store(true, Ordering::Release);
         self.work.seal();
         if let CustodyGroup::Closed(group) = &self.group {
-            if let Err(error) = group.shutdown().await {
-                retained = Some(DrainFailure::retained(report.record(
-                    "custody raft",
-                    0,
-                    error,
-                )));
+            if let Err(failure) = group.shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
             }
             self.work.drain().await;
             if let Err(failure) = group.custody_store().store().shutdown().await {

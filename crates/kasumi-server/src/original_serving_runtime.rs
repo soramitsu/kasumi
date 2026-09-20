@@ -172,7 +172,6 @@ impl Administration {
                     (database, None)
                 };
             let setup = (|| {
-                database.install_admission(self.admission.clone())?;
                 for (name, destination) in &self.destinations {
                     database.install_archive_destination(name.clone(), destination.clone())?;
                 }

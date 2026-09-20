@@ -1,0 +1,25 @@
+{
+  "scope": "development full backup checkpoint successor after exact proposal charge and remote fault fixture corrections, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-engine",
+    "--all-features",
+    "--test",
+    "backup_checkpoint",
+    "--",
+    "--test-threads=1"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "b2876ef782f0f5afde2d60edd234559fc6ce600f",
+  "process_group": 84254,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 451.51518726348877,
+  "inventoried_source_unchanged": true
+}

@@ -1,5 +1,6 @@
 use super::{
-    AccountedFile, DiskWork, Identity, NodeDisk, NodeDiskPhase, State, census, extent, rounded,
+    AccountedFile, DiskWork, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase, State, census,
+    extent, rounded,
 };
 use std::{
     ffi::CString,
@@ -23,8 +24,9 @@ struct Budget {
 }
 
 impl Budget {
-    fn accounted(&self) -> AccountedFile {
+    fn accounted(&self, binding: NamespaceBinding) -> AccountedFile {
         AccountedFile {
+            binding,
             bytes: self.bytes,
             pending: self.pending,
             actual_len: self.actual_len,
@@ -44,6 +46,7 @@ pub(super) struct FileOwner {
     parent: File,
     name: CString,
     identity: Identity,
+    binding: NamespaceBinding,
     budget: Mutex<Budget>,
 }
 
@@ -89,12 +92,36 @@ pub(super) struct PreparedFile<'a> {
     parent: File,
     name: CString,
     device: u64,
+    binding: NamespaceBinding,
     create: bool,
     budget: Mutex<Budget>,
 }
 
 impl PreparedFile<'_> {
     pub(super) fn execute(mut self) -> io::Result<NodeDiskFile> {
+        if self.create {
+            let result = verify_parent(
+                &self.disk.roots[&self.root],
+                &self.parent_names,
+                &self.parent,
+            )
+            .and_then(|()| {
+                require_unenrolled_target(
+                    &self.state,
+                    self.binding,
+                    &self.parent,
+                    &self.name,
+                    self.device,
+                    self.disk.unit,
+                )
+            });
+            if let Err(error) = result {
+                if error.kind() != io::ErrorKind::AlreadyExists {
+                    self.disk.fail_locked(&mut self.state);
+                }
+                return Err(error);
+            }
+        }
         let flags = libc::O_RDWR
             | libc::O_NONBLOCK
             | if self.create {
@@ -105,6 +132,26 @@ impl PreparedFile<'_> {
         let file = match census::open_at(&self.parent, &self.name, flags) {
             Ok(file) => file,
             Err(error) => {
+                // An absent final leaf is harmless only if its complete name
+                // was never enrolled and the prepared parent is still rooted.
+                if !self.create
+                    && error.kind() == io::ErrorKind::NotFound
+                    && !self
+                        .state
+                        .accounted
+                        .values()
+                        .any(|entry| entry.binding == self.binding)
+                {
+                    if let Err(error) = verify_parent(
+                        &self.disk.roots[&self.root],
+                        &self.parent_names,
+                        &self.parent,
+                    ) {
+                        self.disk.fail_locked(&mut self.state);
+                        return Err(error);
+                    }
+                    return Err(error);
+                }
                 // A create-only conflict did not mutate the existing object.
                 if !self.create || error.kind() != io::ErrorKind::AlreadyExists {
                     self.disk.fail_locked(&mut self.state);
@@ -117,6 +164,17 @@ impl PreparedFile<'_> {
             let metadata = file.metadata()?;
             census::regular_nonallocating(&metadata, self.device)?;
             let identity = Identity::of(&metadata);
+            // A live inode under a different enrolled name is substitution,
+            // never a harmless second open of its retained descriptor.
+            if !self.create
+                && self
+                    .state
+                    .accounted
+                    .get(&identity)
+                    .is_some_and(|entry| entry.binding != self.binding)
+            {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
             if self
                 .state
                 .live
@@ -136,7 +194,7 @@ impl PreparedFile<'_> {
             let (bytes, pending) = extent(&metadata, self.disk.unit)?;
             Ok((
                 identity,
-                AccountedFile::durable(bytes, pending, metadata.len()),
+                AccountedFile::durable(self.binding, bytes, pending, metadata.len()),
             ))
         })();
         let (identity, enrolled) = match inspected {
@@ -210,6 +268,7 @@ impl PreparedFile<'_> {
                 parent: self.parent,
                 name: self.name,
                 identity,
+                binding: self.binding,
                 budget: self.budget,
             });
         // SAFETY: the sole allocation was initialized exactly once above. No
@@ -232,6 +291,7 @@ pub(super) struct PreparedPublication<'a> {
     root: String,
     relative: PathBuf,
     parent_names: Box<[CString]>,
+    binding: NamespaceBinding,
 }
 
 impl PreparedPublication<'_> {
@@ -245,6 +305,7 @@ impl PreparedPublication<'_> {
             root,
             relative,
             parent_names,
+            binding,
         } = self;
         let mut renamed = false;
         let result = (|| -> io::Result<()> {
@@ -265,12 +326,22 @@ impl PreparedPublication<'_> {
                 owner.verify(actual)?;
                 let metadata = actual.metadata()?;
                 let (bytes, pending) = extent(&metadata, disk.unit)?;
-                if AccountedFile::durable(bytes, pending, metadata.len()) != budget.accounted() {
+                if AccountedFile::durable(owner.binding, bytes, pending, metadata.len())
+                    != budget.accounted(owner.binding)
+                {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
                 actual.sync_all()?;
             }
-            disk.roots[&root].verify_nonallocating()?;
+            verify_parent(&disk.roots[&root], &parent_names, &parent)?;
+            require_unenrolled_target(
+                &state,
+                binding,
+                &parent,
+                &name,
+                owner.identity.0,
+                disk.unit,
+            )?;
             #[cfg(target_os = "linux")]
             let status = unsafe {
                 libc::renameat2(
@@ -300,6 +371,14 @@ impl PreparedPublication<'_> {
             owner.relative = relative;
             owner.parent_names = parent_names;
             owner.name = name;
+            owner.binding = binding;
+            // The source name stopped owning this inode at the rename. Update
+            // the retained slot before any fallible durability step.
+            state
+                .accounted
+                .get_mut(&owner.identity)
+                .expect("validated publication enrollment")
+                .binding = binding;
             // The descriptor now belongs to the new name even if durability or
             // post-publication verification fails. Every error remains inline.
             #[cfg(test)]
@@ -318,7 +397,9 @@ impl PreparedPublication<'_> {
             owner.verify(actual)?;
             let metadata = actual.metadata()?;
             let (bytes, pending) = extent(&metadata, disk.unit)?;
-            if AccountedFile::durable(bytes, pending, metadata.len()) != budget.accounted() {
+            if AccountedFile::durable(owner.binding, bytes, pending, metadata.len())
+                != budget.accounted(owner.binding)
+            {
                 return Err(io::ErrorKind::InvalidData.into());
             }
             Ok(())
@@ -410,11 +491,12 @@ impl NodeDisk {
             .map_err(|_| io::ErrorKind::OutOfMemory)?;
         let selected = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
         let parent_names = prepare_parent_names(relative, &self.config)?;
-        let (parent, name) = census::parent(selected, relative, &self.config).map_err(|error| {
-            self.fail_locked(&mut state);
-            // Path preparation precedes every physical create/publication.
-            io::Error::other(error)
-        })?;
+        let (parent, name, binding) =
+            census::parent(selected, relative, &self.config).map_err(|error| {
+                self.fail_locked(&mut state);
+                // Path preparation precedes every physical create/publication.
+                io::Error::other(error)
+            })?;
         let budget = Mutex::new(Budget {
             file: None,
             bytes: 0,
@@ -436,6 +518,7 @@ impl NodeDisk {
             parent,
             name,
             device: selected.identity.0,
+            binding,
             create: create.is_some(),
             budget,
         })
@@ -474,12 +557,17 @@ impl NodeDisk {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let selected = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
-        let (parent, name) =
-            census::parent(selected, relative, &self.config).map_err(io::Error::other)?;
+        // Hold admission through physical path validation. On preparation
+        // failure this local guard drops before the input descriptor owner.
+        let mut state = self.lock_state();
         let parent_names = prepare_parent_names(relative, &self.config)?;
+        let (parent, name, binding) =
+            census::parent(selected, relative, &self.config).map_err(|error| {
+                self.fail_locked(&mut state);
+                io::Error::other(error)
+            })?;
         let root = root.to_owned();
         let relative = relative.to_owned();
-        let state = self.lock_state();
         let owner = match Arc::try_unwrap(file.0) {
             Ok(owner) => owner,
             Err(owner) => {
@@ -500,6 +588,7 @@ impl NodeDisk {
             root,
             relative,
             parent_names,
+            binding,
         })
     }
 
@@ -608,7 +697,7 @@ impl NodeDisk {
                                         .accounted
                                         .get_mut(&owner.identity)
                                         .expect("validated reclaimed inode") =
-                                        AccountedFile::durable(bytes, pending, len);
+                                        AccountedFile::durable(owner.binding, bytes, pending, len);
                                 } else {
                                     state.accounted.remove(&owner.identity);
                                 }
@@ -642,6 +731,60 @@ impl NodeDisk {
     }
 }
 
+// Return a conflict only after proving that the retained target still names
+// its enrolled inode. A disappeared or substituted target must fence its owner.
+fn require_unenrolled_target(
+    state: &State,
+    binding: NamespaceBinding,
+    parent: &File,
+    name: &std::ffi::CStr,
+    device: u64,
+    unit: u64,
+) -> io::Result<()> {
+    let Some((identity, enrolled)) = state
+        .accounted
+        .iter()
+        .find(|(_, entry)| entry.binding == binding)
+    else {
+        return Ok(());
+    };
+    let observed = census::open_at(parent, name, libc::O_RDONLY | libc::O_NONBLOCK)?;
+    let metadata = observed.metadata()?;
+    census::regular_nonallocating(&metadata, device)?;
+    let (bytes, pending) = extent(&metadata, unit)?;
+    if Identity::of(&metadata) != *identity
+        || metadata.len() != enrolled.actual_len
+        || enrolled.actual_len > enrolled.reserved_len
+        || bytes > enrolled.bytes
+        || (enrolled.settled
+            && *enrolled != AccountedFile::durable(binding, bytes, pending, metadata.len()))
+    {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    // An unsettled live target can retain unused growth promises or contain
+    // admitted writes not yet reflected in pending physical materialization.
+    // Verify its exact known EOF and full allowance without releasing credit.
+    Err(io::ErrorKind::AlreadyExists.into())
+}
+
+fn verify_parent(root: &census::Root, names: &[CString], retained: &File) -> io::Result<()> {
+    root.verify_nonallocating()?;
+    let mut current = root.file.try_clone()?;
+    for name in names {
+        let child = census::open_at(&current, name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+        let metadata = child.metadata()?;
+        census::directory_nonallocating(&metadata)?;
+        if metadata.dev() != root.identity.0 {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        current = child;
+    }
+    if Identity::of(&current.metadata()?) != Identity::of(&retained.metadata()?) {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    Ok(())
+}
+
 fn prepare_parent_names(
     relative: &Path,
     config: &super::NodeDiskConfig,
@@ -669,7 +812,7 @@ fn prepare_parent_names(
 
 impl FileOwner {
     fn check_enrollment(&self, state: &mut State, budget: &Budget) -> io::Result<()> {
-        if state.accounted.get(&self.identity) != Some(&budget.accounted()) {
+        if state.accounted.get(&self.identity) != Some(&budget.accounted(self.binding)) {
             self.disk.fail_locked(state);
             return Err(io::ErrorKind::InvalidData.into());
         }
@@ -682,7 +825,7 @@ impl FileOwner {
         *state
             .accounted
             .get_mut(&self.identity)
-            .expect("validated enrolled inode") = budget.accounted();
+            .expect("validated enrolled inode") = budget.accounted(self.binding);
     }
 
     #[cfg(test)]
@@ -702,22 +845,13 @@ impl FileOwner {
         })
     }
     fn verify(&self, file: &File) -> io::Result<()> {
-        let root = &self.disk.roots[&self.root];
-        root.verify_nonallocating()?;
-        let mut parent = root.file.try_clone()?;
-        for name in &self.parent_names {
-            let child = census::open_at(&parent, name, libc::O_RDONLY | libc::O_DIRECTORY)?;
-            let metadata = child.metadata()?;
-            census::directory_nonallocating(&metadata)?;
-            if metadata.dev() != root.identity.0 {
-                return Err(io::ErrorKind::InvalidData.into());
-            }
-            parent = child;
-        }
-        if Identity::of(&parent.metadata()?) != Identity::of(&self.parent.metadata()?) {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
-        let observed = census::open_at(&parent, &self.name, libc::O_RDONLY | libc::O_NONBLOCK)?;
+        verify_parent(
+            &self.disk.roots[&self.root],
+            &self.parent_names,
+            &self.parent,
+        )?;
+        let observed =
+            census::open_at(&self.parent, &self.name, libc::O_RDONLY | libc::O_NONBLOCK)?;
         let metadata = observed.metadata()?;
         census::regular_nonallocating(&metadata, self.identity.0)?;
         if Identity::of(&metadata) != self.identity

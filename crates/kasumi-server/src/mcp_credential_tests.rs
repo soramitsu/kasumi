@@ -81,6 +81,7 @@ struct Fixture {
     clock: Arc<ManualClock>,
     audit: Arc<Audit>,
     database: Arc<kasumi_engine::Database>,
+    registry: DatabaseRegistry,
     security: Arc<kasumi_engine::SecurityAudit>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
     node: Arc<NodeStore>,
@@ -107,13 +108,14 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let admission = kasumi_engine::admission::NodeAdmission::new(
-            kasumi_engine::admission::AdmissionConfig {
-                max_inflight_bytes: Some(128 << 20),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let mut config = kasumi_engine::admission::AdmissionConfig {
+            max_inflight_bytes: Some(128 << 20),
+            ..Default::default()
+        };
+        let bookkeeping =
+            kasumi_engine::admission::NodeAdmission::required_bookkeeping_bytes(&config).unwrap();
+        config.max_inflight_bytes = Some(bookkeeping.checked_add(128 << 20).unwrap());
+        let admission = kasumi_engine::admission::NodeAdmission::new(config).unwrap();
         let security = kasumi_engine::SecurityAudit::initialize(
             security_store.clone(),
             Default::default(),
@@ -148,7 +150,6 @@ impl Fixture {
         )
         .await
         .unwrap();
-        database.install_admission(admission.clone()).unwrap();
         database
             .administer(
                 Self::context(),
@@ -196,12 +197,15 @@ impl Fixture {
         let audit = Arc::new(Audit::default());
         auth.install_audit(audit.clone()).unwrap();
         auth.install_local_credentials(credentials.clone()).unwrap();
+        let registry = DatabaseRegistry::default();
+        registry.insert(database.clone()).unwrap();
         Self {
             auth,
             credentials,
             clock,
             audit,
             database,
+            registry,
             security,
             admission,
             node,
@@ -244,11 +248,9 @@ impl Fixture {
             .unwrap()
     }
     fn router(&self) -> Router {
-        let registry = DatabaseRegistry::default();
-        registry.insert(self.database.clone()).unwrap();
         router(
             McpConfig::new("https://kasumi.example/mcp".into()).unwrap(),
-            registry,
+            self.registry.clone(),
             self.auth.clone(),
         )
         .unwrap()

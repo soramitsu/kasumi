@@ -1,0 +1,319 @@
+--- a/crates/kasumi-engine/src/admission.rs
++++ b/crates/kasumi-engine/src/admission.rs
+@@ -15,7 +15,7 @@
+     time::Duration,
+ };
+ 
+-#[derive(Clone, Debug, Serialize, Deserialize)]
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct AdmissionConfig {
+     /// None: half physical memory, limited by the Linux cgroup memory ceiling.
+@@ -59,6 +59,25 @@
+         Ok(high)
+     }
+ 
++    fn resolve_budgets(&self, high: u64) -> anyhow::Result<(u64, u64)> {
++        let low = self.low_water_bytes.unwrap_or(high.saturating_mul(7) / 8);
++        let total = self.max_inflight_bytes.unwrap_or((high / 4).min(512 << 20));
++        anyhow::ensure!(
++            high > 0 && low < high && total > 0 && total <= high,
++            "invalid resolved admission budgets"
++        );
++        Ok((low, total))
++    }
++
++    /// Resolve the current total without allocating a governor or adding any
++    /// bookkeeping. Fixture storage planners add only their new retained leases.
++    #[cfg(any(test, feature = "test-utils"))]
++    pub fn resolved_fixture_total_bytes(&self) -> anyhow::Result<u64> {
++        self.validate()?;
++        let high = self.resolve_high_water(physical_capacity()?)?;
++        self.resolve_budgets(high).map(|(_, total)| total)
++    }
++
+     pub fn validate(&self) -> anyhow::Result<()> {
+         anyhow::ensure!(
+             self.max_reservations >= 3 && self.max_snapshot_startups > 0,
+@@ -88,6 +107,8 @@
+         Ok(())
+     }
+ }
++
++mod installed;
+ 
+ trait MemorySource: Send + Sync {
+     fn resident_bytes(&self) -> anyhow::Result<u64>;
+@@ -282,9 +303,10 @@
+ /// Shared resource accounting. This core has no runtime startup fence or child
+ /// owner inventory. A retained reservation keeps only this core alive.
+ ///
+-/// `new` creates an independent governor for an explicit embedding policy. A
+-/// process-wide installed-core registry and NodeDisk wiring are separate work;
+-/// callers must deliberately reuse this exact core when creating a new facade.
++/// `new` creates an independent governor for an explicit embedding policy.
++/// `installed` selects the single process-wide installed governor. Runtime
++/// facades deliberately reuse this exact core; installed NodeDisk caller wiring
++/// remains separately tracked in the storage-admission workstream.
+ pub struct MemoryCore {
+     sampler: Option<std::thread::JoinHandle<()>>,
+     data: Arc<MemoryState>,
+@@ -314,6 +336,19 @@
+     sampled_at: Duration,
+ }
+ impl MemoryCore {
++    /// Select the one installed process governor. Runtime replacements construct
++    /// a fresh NodeAdmission facade on this same retained resource core.
++    pub fn installed(config: AdmissionConfig) -> anyhow::Result<Arc<Self>> {
++        installed::select(config)
++    }
++    /// Explicit core injection must preserve the complete configured policy.
++    pub fn require_policy(&self, config: &AdmissionConfig) -> anyhow::Result<()> {
++        anyhow::ensure!(
++            &self.data.config == config,
++            "installed memory admission policy differs from retained core"
++        );
++        Ok(())
++    }
+     pub fn required_bookkeeping_bytes(config: &AdmissionConfig) -> anyhow::Result<u64> {
+         let source = arc_bytes::<ProcessMemory>()?;
+         let clock = arc_bytes::<SystemLeaseClock>()?;
+@@ -335,15 +370,8 @@
+         clock: &dyn LeaseClock,
+     ) -> anyhow::Result<PreparedCore> {
+         config.validate()?;
+-        let low = config.low_water_bytes.unwrap_or(high.saturating_mul(7) / 8);
+-        let max_bytes = config
+-            .max_inflight_bytes
+-            .unwrap_or((high / 4).min(512 << 20));
++        let (low, max_bytes) = config.resolve_budgets(high)?;
+         let base_bytes = Self::required_bookkeeping_bytes(&config)?;
+-        anyhow::ensure!(
+-            high > 0 && low < high && max_bytes > 0 && max_bytes <= high,
+-            "invalid resolved admission budgets"
+-        );
+         let sampled_at = clock.now();
+         let resident = memory.resident_bytes()?;
+         anyhow::ensure!(
+@@ -1188,6 +1216,33 @@
+         );
+     }
+     #[test]
++    fn fixture_total_resolution_preserves_the_original_runtime_payload_boundary() {
++        let capacity = physical_capacity().unwrap();
++        for high in [capacity / 2, capacity] {
++            for explicit in [None, Some((high / 4).min(64 << 20))] {
++                let config = AdmissionConfig {
++                    high_water_bytes: Some(high),
++                    max_inflight_bytes: explicit,
++                    ..Default::default()
++                };
++                let total = config.resolved_fixture_total_bytes().unwrap();
++                let node = NodeAdmission::with_fixed_memory(config, high, 0).unwrap();
++                let base = node.snapshot().bookkeeping_bytes;
++                let payload = node.reserve(total - base, None).unwrap();
++                assert_eq!(node.snapshot().reserved_bytes, total);
++                assert!(node.reserve(1, None).is_err());
++                drop(payload);
++                assert_eq!(node.snapshot().reserved_bytes, base);
++            }
++        }
++        let invalid = AdmissionConfig {
++            high_water_bytes: Some(u64::MAX),
++            ..Default::default()
++        };
++        assert!(invalid.resolved_fixture_total_bytes().is_err());
++    }
++
++    #[test]
+     fn workspace_handoff_preserves_slot_owner_and_checks_only_replacement_growth() {
+         let (node, memory, _) = fixture();
+         let (other, _, _) = fixture();
+--- a/crates/kasumi-engine/Cargo.toml
++++ b/crates/kasumi-engine/Cargo.toml
+@@ -12,6 +12,7 @@
+ test-utils = ["kasumi-store/test-utils"]
+ 
+ [dependencies]
++parking_lot = "0.12"
+ kasumi-clock.workspace = true
+ kasumi-serving.workspace = true
+ ring = "0.17"
+--- /dev/null
++++ b/crates/kasumi-engine/src/admission/installed.rs
+@@ -0,0 +1,165 @@
++//! The installed process has one RSS source and one aggregate reservation core.
++use super::{AdmissionConfig, MemoryCore};
++use std::sync::Arc;
++
++// Inline parking_lot initialization and try_lock do not allocate a parked waiter
++// before the first core's bookkeeping admission. Contention is a bounded denial.
++struct Registry(parking_lot::Mutex<Option<Arc<MemoryCore>>>);
++impl Registry {
++    const fn new() -> Self {
++        Self(parking_lot::Mutex::new(None))
++    }
++    fn select(&self, config: AdmissionConfig) -> anyhow::Result<Arc<MemoryCore>> {
++        config.validate()?;
++        let mut installed = self
++            .0
++            .try_lock()
++            .ok_or_else(|| anyhow::anyhow!("installed memory admission selection is busy"))?;
++        if let Some(core) = installed.as_ref() {
++            core.require_policy(&config)?;
++            anyhow::ensure!(
++                !core
++                    .data
++                    .sampler_failed
++                    .load(std::sync::atomic::Ordering::Acquire),
++                "installed memory sampler failed; retained core cannot be replaced"
++            );
++            return Ok(core.clone());
++        }
++        let core = MemoryCore::new(config)?;
++        *installed = Some(core.clone());
++        Ok(core)
++    }
++}
++
++pub(super) fn select(config: AdmissionConfig) -> anyhow::Result<Arc<MemoryCore>> {
++    static INSTALLED: Registry = Registry::new();
++    INSTALLED.select(config)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::admission::NodeAdmission;
++
++    #[tokio::test]
++    async fn retained_registry_reuses_core_across_sealed_runtime_facades() {
++        let registry = Registry::new();
++        let policy = AdmissionConfig::default();
++        let core = registry.select(policy.clone()).unwrap();
++        let first = NodeAdmission::from_memory(core.clone()).unwrap();
++        let resident = first.reserve_resident(1234).unwrap();
++        first.drain_snapshot_startups().await.unwrap();
++        assert!(first.snapshot_buffer_owner().is_err());
++        let next_core = registry.select(policy.clone()).unwrap();
++        assert!(Arc::ptr_eq(&core, &next_core));
++        let next = NodeAdmission::from_memory(next_core).unwrap();
++        assert!(first.shares_memory(&next));
++        assert!(!Arc::ptr_eq(&first, &next));
++        let buffer = next.snapshot_buffer_owner().unwrap();
++        drop(buffer);
++        drop(first);
++        assert_eq!(next.snapshot().resident_reserved_bytes, 1234);
++        drop(resident);
++        assert_eq!(next.snapshot().resident_reserved_bytes, 0);
++        next.drain_snapshot_startups().await.unwrap();
++        drop(next);
++        let identity = Arc::downgrade(&core);
++        drop(core);
++        let reopened = registry.select(policy).unwrap();
++        assert!(Arc::ptr_eq(&identity.upgrade().unwrap(), &reopened));
++    }
++
++    #[test]
++    fn conflicting_policy_never_replaces_or_charges_the_retained_core() {
++        let registry = Registry::new();
++        let policy = AdmissionConfig::default();
++        let core = registry.select(policy.clone()).unwrap();
++        let before = core.snapshot();
++        let variants: [fn(&mut AdmissionConfig); 8] = [
++            |v| v.high_water_bytes = Some(1 << 20),
++            |v| v.low_water_bytes = Some(1),
++            |v| v.max_inflight_bytes = Some(1 << 20),
++            |v| v.max_inflight_operations += 1,
++            |v| v.max_reservations += 1,
++            |v| v.max_snapshot_startups += 1,
++            |v| v.sample_interval_ms += 1,
++            |v| v.max_sample_age_ms += 1,
++        ];
++        for change in variants {
++            let mut incompatible = policy.clone();
++            change(&mut incompatible);
++            let error = registry.select(incompatible).err().unwrap();
++            assert!(error.to_string().contains("policy differs"));
++            assert_eq!(core.snapshot().reserved_bytes, before.reserved_bytes);
++            assert_eq!(core.snapshot().live_reservations, before.live_reservations);
++            assert!(Arc::ptr_eq(
++                &core,
++                &registry.select(policy.clone()).unwrap()
++            ));
++        }
++    }
++
++    #[test]
++    fn failed_sampler_denies_reuse_and_keeps_original_core_and_panic() {
++        use super::super::{MemorySource, SystemLeaseClock};
++        use std::sync::atomic::{AtomicUsize, Ordering};
++        use std::time::{Duration, Instant};
++        struct Probe(AtomicUsize);
++        impl MemorySource for Probe {
++            fn resident_bytes(&self) -> anyhow::Result<u64> {
++                if self.0.fetch_add(1, Ordering::SeqCst) == 1 {
++                    std::panic::panic_any(0x751_u64);
++                }
++                Ok(0)
++            }
++        }
++        let config = AdmissionConfig {
++            sample_interval_ms: 10,
++            ..Default::default()
++        };
++        let mut core = MemoryCore::create(
++            config.clone(),
++            1 << 30,
++            Arc::new(Probe(AtomicUsize::new(0))),
++            Arc::new(SystemLeaseClock),
++        )
++        .unwrap();
++        Arc::get_mut(&mut core).unwrap().start_sampler().unwrap();
++        let registry = Registry::new();
++        *registry.0.lock() = Some(core.clone());
++        let deadline = Instant::now() + Duration::from_secs(2);
++        while !core.sampler.as_ref().unwrap().is_finished() {
++            assert!(Instant::now() < deadline);
++            std::thread::yield_now();
++        }
++        let baseline = core.snapshot().reserved_bytes;
++        for _ in 0..2 {
++            let error = registry.select(config.clone()).err().unwrap();
++            assert!(error.to_string().contains("sampler failed"));
++            assert!(Arc::ptr_eq(registry.0.lock().as_ref().unwrap(), &core));
++            assert_eq!(core.snapshot().reserved_bytes, baseline);
++            assert!(NodeAdmission::from_memory(core.clone()).is_err());
++        }
++        drop(registry.0.lock().take());
++        let panic = Arc::get_mut(&mut core)
++            .unwrap()
++            .sampler
++            .take()
++            .unwrap()
++            .join()
++            .unwrap_err();
++        assert_eq!(panic.downcast_ref::<u64>(), Some(&0x751));
++    }
++
++    #[test]
++    fn concurrent_selection_is_denied_without_publishing_an_independent_core() {
++        let registry = Registry::new();
++        let held = registry.0.lock();
++        let error = registry.select(AdmissionConfig::default()).err().unwrap();
++        assert!(error.to_string().contains("selection is busy"));
++        assert!(held.is_none());
++        drop(held);
++        assert!(registry.select(AdmissionConfig::default()).is_ok());
++    }
++}
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1824,6 +1824,7 @@
+  "kasumi-types",
+  "libc",
+  "openraft",
++ "parking_lot",
+  "redb",
+  "ring",
+  "serde",

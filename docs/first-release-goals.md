@@ -75,10 +75,12 @@ contract; G14 requires the fully populated passing manifest for the final releas
 ### G02 — Physical storage ownership and admitted redb
 
 The next storage-accounting slice is specified in
-[installed storage admission](installed-storage-admission-plan.md). It remains
-unimplemented: share the durable memory governor across runtime facades, charge
-retained metadata before allocation, then account for directories and every
-affected parent during namespace mutation.
+[installed storage admission](installed-storage-admission-plan.md). The shared
+memory core, fixed reservation ledger and separately retained runtime facades are
+implemented in pending master source. The exact-policy installed-core registry is
+implemented; production entry-point adoption and mandatory retained storage-metadata
+charges remain unfinished, followed by
+directory accounting and every affected parent during namespace mutation.
 
 - Require installed `NodeDisk` at every production storage constructor. Account
   for creation, growth, write, sync, shrink, deletion and directory publication
@@ -155,6 +157,12 @@ explicit memory admission and retained worker cleanup; the 4,200-command and
 unimplemented archive/backup child registry, pre-open disk fence, output-charge
 handoff, constructor plumbing and shutdown order. A caller retaining a resource
 charge does not by itself retain the actual child outcome.
+
+The fixed startup-scope foundation is integrated in pending source. It admits
+its core census and resource cells, preserves original outcomes through canceled
+drains, and retains shared report charges. Production runtime/resource adapters
+and a complete process shutdown traversal remain unimplemented; this primitive
+does not close G07.
 
 - Materialize bounded terminal MCP responses under request ownership before the
   final credential/family check. Reject SSE. Withheld responses after mutation

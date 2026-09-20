@@ -1345,6 +1345,11 @@ fn post_rename_failures_keep_the_charge_and_return_without_allocating() {
         assert_eq!(snapshot.open_files, 0);
         assert_eq!(snapshot.persistent_files, 1);
         assert_eq!(snapshot.charged_bytes, 32 << 10);
+        let binding = NamespaceBinding::root(disk.roots["data"].identity).child(c"destination");
+        assert_eq!(
+            disk.lock_state().accounted.values().next().unwrap().binding,
+            binding
+        );
         assert!(disk.open_file("data", Path::new("destination")).is_err());
         let raw = std::fs::File::open(config.roots["data"].join("destination")).unwrap();
         raw.try_lock().unwrap();
@@ -1430,4 +1435,426 @@ fn prepared_publication_conflict_returns_inline_without_fencing_or_replacing() {
         identity
     );
     clean(&disk, &["first", "destination"]);
+}
+
+#[test]
+fn unenrolled_missing_leaf_preserves_admission_without_allocating() {
+    let (_directory, config) = installation();
+    crate::private_files::create_directory(&config.roots["data"].join("nested")).unwrap();
+    seed(&config, "retained", 32 << 10);
+    let disk = open(config);
+    let before = disk.snapshot();
+    let prepared = disk
+        .prepare_file("data", Path::new("nested/absent"), None)
+        .unwrap();
+    let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+    assert_eq!(allocations, 0);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().persistent_files, before.persistent_files);
+    let created = disk
+        .create_file("data", Path::new("nested/absent"), DiskWork::Foreground)
+        .unwrap();
+    drop(created);
+    let created = disk.open_file("data", Path::new("nested/absent")).unwrap();
+    disk.delete_file(created).unwrap();
+    let retained = disk.open_file("data", Path::new("retained")).unwrap();
+    disk.delete_file(retained).unwrap();
+}
+
+#[test]
+fn disappeared_censused_and_closed_created_names_fence_without_credit() {
+    for censused in [true, false] {
+        let (_directory, config) = installation();
+        crate::private_files::create_directory(&config.roots["data"].join("nested")).unwrap();
+        if censused {
+            seed(&config, "nested/file", 32 << 10);
+        }
+        let disk = open(config.clone());
+        if !censused {
+            let file = disk
+                .create_file("data", Path::new("nested/file"), DiskWork::Foreground)
+                .unwrap();
+            file.reserve_growth(0, 32 << 10, DiskWork::Foreground)
+                .unwrap();
+            file.grow_reserved(32 << 10).unwrap();
+            file.sync_all_and_parent().unwrap();
+            drop(file);
+        }
+        drop(disk.open_file("data", Path::new("nested/file")).unwrap());
+        let before = disk.snapshot();
+        std::fs::remove_file(config.roots["data"].join("nested/file")).unwrap();
+        let prepared = disk
+            .prepare_file("data", Path::new("nested/file"), None)
+            .unwrap();
+        let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(allocations, 0);
+        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+        assert_eq!(disk.snapshot().persistent_files, 1);
+        assert_eq!(disk.snapshot().open_files, 0);
+        disk.reconcile(&CensusCancellation::default()).unwrap();
+        assert_eq!(disk.snapshot().charged_bytes, 0);
+        assert_eq!(disk.snapshot().persistent_files, 0);
+        disk.pause().unwrap();
+    }
+}
+
+#[test]
+fn raw_rename_fences_both_missing_old_name_and_present_new_name() {
+    for keep_live in [false, true] {
+        for lookup in ["original", "moved"] {
+            let (_directory, config) = installation();
+            seed(&config, "original", 32 << 10);
+            let disk = open(config.clone());
+            let retained =
+                keep_live.then(|| disk.open_file("data", Path::new("original")).unwrap());
+            std::fs::rename(
+                config.roots["data"].join("original"),
+                config.roots["data"].join("moved"),
+            )
+            .unwrap();
+            assert!(disk.open_file("data", Path::new(lookup)).is_err());
+            assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+            assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
+            assert_eq!(disk.snapshot().persistent_files, 1);
+            drop(retained);
+            clean(&disk, &["moved"]);
+        }
+    }
+}
+
+#[test]
+fn admitted_publication_rebinds_name_and_reclaim_forgets_it() {
+    let (_directory, config) = installation();
+    crate::private_files::create_directory(&config.roots["data"].join("nested")).unwrap();
+    seed(&config, "source", 32 << 10);
+    let disk = open(config);
+    let file = disk.open_file("data", Path::new("source")).unwrap();
+    let prepared = disk
+        .prepare_publication(file, "data", Path::new("nested/published"))
+        .unwrap();
+    let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+    let file = result.unwrap();
+    assert_eq!(allocations, 0);
+    drop(file);
+    assert_eq!(
+        disk.open_file("data", Path::new("source"))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    let file = disk
+        .open_file("data", Path::new("nested/published"))
+        .unwrap();
+    disk.delete_file(file).unwrap();
+    assert_eq!(
+        disk.open_file("data", Path::new("nested/published"))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().persistent_files, 0);
+    let replacement = disk
+        .create_file("data", Path::new("nested/published"), DiskWork::Foreground)
+        .unwrap();
+    disk.delete_file(replacement).unwrap();
+}
+
+#[test]
+fn missing_enrolled_target_cannot_be_recreated_or_published_over() {
+    for publish in [false, true] {
+        let (_directory, config) = installation();
+        seed(&config, "target", 32 << 10);
+        let disk = open(config.clone());
+        let source = publish.then(|| {
+            disk.create_file("data", Path::new("source"), DiskWork::Foreground)
+                .unwrap()
+        });
+        let before = disk.snapshot();
+        std::fs::remove_file(config.roots["data"].join("target")).unwrap();
+        let (result, allocations) = if let Some(source) = source {
+            let prepared = disk
+                .prepare_publication(source, "data", Path::new("target"))
+                .unwrap();
+            crate::allocation_tests::measure(|| prepared.execute())
+        } else {
+            let prepared = disk
+                .prepare_file("data", Path::new("target"), Some(DiskWork::Foreground))
+                .unwrap();
+            crate::allocation_tests::measure(|| prepared.execute())
+        };
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(allocations, 0);
+        assert!(!config.roots["data"].join("target").exists());
+        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+        assert_eq!(disk.snapshot().persistent_files, before.persistent_files);
+        assert_eq!(disk.snapshot().open_files, 0);
+        if publish {
+            clean(&disk, &["source"]);
+        } else {
+            disk.reconcile(&CensusCancellation::default()).unwrap();
+        }
+    }
+}
+
+#[test]
+fn live_enrolled_target_conflicts_remain_healthy_and_preserve_content() {
+    for publish in [false, true] {
+        let (_directory, config) = installation();
+        seed(&config, "target", 32 << 10);
+        let disk = open(config.clone());
+        let target = disk.open_file("data", Path::new("target")).unwrap();
+        let (result, allocations) = if publish {
+            let source = disk
+                .create_file("data", Path::new("source"), DiskWork::Foreground)
+                .unwrap();
+            let prepared = disk
+                .prepare_publication(source, "data", Path::new("target"))
+                .unwrap();
+            crate::allocation_tests::measure(|| prepared.execute())
+        } else {
+            let prepared = disk
+                .prepare_file("data", Path::new("target"), Some(DiskWork::Foreground))
+                .unwrap();
+            crate::allocation_tests::measure(|| prepared.execute())
+        };
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(allocations, 0);
+        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+        assert_eq!(target.observed_len().unwrap(), 32 << 10);
+        disk.delete_file(target).unwrap();
+        if publish {
+            let source = disk.open_file("data", Path::new("source")).unwrap();
+            disk.delete_file(source).unwrap();
+        }
+    }
+}
+
+#[test]
+fn prepared_unknown_absence_revalidates_replaced_parent() {
+    let (_directory, config) = installation();
+    let parent = config.roots["data"].join("nested");
+    crate::private_files::create_directory(&parent).unwrap();
+    let disk = open(config.clone());
+    let prepared = disk
+        .prepare_file("data", Path::new("nested/absent"), None)
+        .unwrap();
+    std::fs::rename(&parent, config.roots["data"].join("moved")).unwrap();
+    crate::private_files::create_directory(&parent).unwrap();
+    let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    assert_eq!(allocations, 0);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    assert_eq!(disk.snapshot().persistent_files, 0);
+    disk.reconcile(&CensusCancellation::default()).unwrap();
+    disk.pause().unwrap();
+}
+
+#[test]
+fn replaced_parent_cannot_hide_enrolled_missing_leaf() {
+    let (_directory, config) = installation();
+    let parent = config.roots["data"].join("nested");
+    crate::private_files::create_directory(&parent).unwrap();
+    seed(&config, "nested/file", 32 << 10);
+    let disk = open(config.clone());
+    std::fs::rename(&parent, config.roots["data"].join("moved")).unwrap();
+    crate::private_files::create_directory(&parent).unwrap();
+    assert_eq!(
+        disk.open_file("data", Path::new("nested/file"))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
+    clean(&disk, &["moved/file"]);
+}
+
+#[test]
+fn publication_preparation_missing_or_symlinked_ancestor_fences() {
+    for replace_with_symlink in [false, true] {
+        let (_directory, config) = installation();
+        let parent = config.roots["data"].join("nested");
+        let moved = config.roots["data"].join("moved");
+        crate::private_files::create_directory(&parent).unwrap();
+        seed(&config, "source", 32 << 10);
+        let disk = open(config.clone());
+        let source = disk.open_file("data", Path::new("source")).unwrap();
+        std::fs::rename(&parent, &moved).unwrap();
+        if replace_with_symlink {
+            symlink(&moved, &parent).unwrap();
+        }
+        assert!(
+            disk.prepare_publication(source, "data", Path::new("nested/published"))
+                .is_err()
+        );
+        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+        assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
+        assert_eq!(disk.snapshot().open_files, 0);
+        assert!(!moved.join("published").exists());
+        if replace_with_symlink {
+            std::fs::remove_file(&parent).unwrap();
+        }
+        std::fs::rename(&moved, &parent).unwrap();
+        clean(&disk, &["source"]);
+    }
+}
+
+#[test]
+fn publication_preparation_replaced_root_fences_before_rename() {
+    let (directory, config) = installation();
+    seed(&config, "source", 32 << 10);
+    let disk = open(config.clone());
+    let source = disk.open_file("data", Path::new("source")).unwrap();
+    let root = &config.roots["data"];
+    let moved = directory.path().join("moved-root");
+    std::fs::rename(root, &moved).unwrap();
+    crate::private_files::create_directory(root).unwrap();
+    assert!(
+        disk.prepare_publication(source, "data", Path::new("published"))
+            .is_err()
+    );
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
+    assert_eq!(disk.snapshot().open_files, 0);
+    assert!(!root.join("published").exists());
+    assert!(moved.join("source").exists());
+    std::fs::remove_dir(root).unwrap();
+    std::fs::rename(&moved, root).unwrap();
+    clean(&disk, &["source"]);
+}
+
+#[test]
+fn publication_replaced_private_source_ancestor_fences_before_rename() {
+    let (_directory, config) = installation();
+    let parent = config.roots["data"].join("nested");
+    crate::private_files::create_directory(&parent).unwrap();
+    seed(&config, "nested/source", 32 << 10);
+    let disk = open(config.clone());
+    let source = disk.open_file("data", Path::new("nested/source")).unwrap();
+    std::fs::rename(&parent, config.roots["data"].join("moved")).unwrap();
+    crate::private_files::create_directory(&parent).unwrap();
+    let prepared = disk
+        .prepare_publication(source, "data", Path::new("nested/published"))
+        .unwrap();
+    let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    assert_eq!(allocations, 0);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
+    assert_eq!(disk.snapshot().open_files, 0);
+    assert!(!parent.join("published").exists());
+    clean(&disk, &["moved/source"]);
+}
+
+#[test]
+fn enrolled_target_unauthorized_growth_never_becomes_a_healthy_conflict() {
+    for publish in [false, true] {
+        for (reserved, raw_length) in [
+            (32 << 10, 48 << 10),
+            (64 << 10, 48 << 10),
+            (64 << 10, 96 << 10),
+        ] {
+            let (_directory, config) = installation();
+            seed(&config, "target", 32 << 10);
+            let disk = open(config.clone());
+            let target = disk.open_file("data", Path::new("target")).unwrap();
+            if reserved > 32 << 10 {
+                target
+                    .reserve_growth(32 << 10, reserved, DiskWork::Foreground)
+                    .unwrap();
+            }
+            let source = publish.then(|| {
+                disk.create_file("data", Path::new("source"), DiskWork::Foreground)
+                    .unwrap()
+            });
+            let before = disk.snapshot();
+            let raw = std::fs::OpenOptions::new()
+                .write(true)
+                .open(config.roots["data"].join("target"))
+                .unwrap();
+            raw.set_len(raw_length).unwrap();
+            raw.sync_all().unwrap();
+            drop(raw);
+            let (result, allocations) = if let Some(source) = source {
+                let prepared = disk
+                    .prepare_publication(source, "data", Path::new("target"))
+                    .unwrap();
+                crate::allocation_tests::measure(|| prepared.execute())
+            } else {
+                let prepared = disk
+                    .prepare_file("data", Path::new("target"), Some(DiskWork::Foreground))
+                    .unwrap();
+                crate::allocation_tests::measure(|| prepared.execute())
+            };
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+            assert_eq!(allocations, 0);
+            assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+            assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+            assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+            assert_eq!(disk.snapshot().persistent_files, before.persistent_files);
+            drop(target);
+            if publish {
+                clean(&disk, &["source", "target"]);
+            } else {
+                clean(&disk, &["target"]);
+            }
+        }
+    }
+}
+
+#[test]
+fn enrolled_target_conflict_accepts_only_actual_admitted_growth() {
+    for publish in [false, true] {
+        for materialize in [false, true] {
+            let (_directory, config) = installation();
+            seed(&config, "target", 32 << 10);
+            let disk = open(config.clone());
+            let target = disk.open_file("data", Path::new("target")).unwrap();
+            target
+                .reserve_growth(32 << 10, 64 << 10, DiskWork::Foreground)
+                .unwrap();
+            let actual_len = if materialize {
+                target.grow_reserved(48 << 10).unwrap();
+                target.write_all_at(&[73; 4096], 32 << 10).unwrap();
+                48 << 10
+            } else {
+                32 << 10
+            };
+            let source = publish.then(|| {
+                disk.create_file("data", Path::new("source"), DiskWork::Foreground)
+                    .unwrap()
+            });
+            let before = disk.snapshot();
+            let (result, allocations) = if let Some(source) = source {
+                let prepared = disk
+                    .prepare_publication(source, "data", Path::new("target"))
+                    .unwrap();
+                crate::allocation_tests::measure(|| prepared.execute())
+            } else {
+                let prepared = disk
+                    .prepare_file("data", Path::new("target"), Some(DiskWork::Foreground))
+                    .unwrap();
+                crate::allocation_tests::measure(|| prepared.execute())
+            };
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+            assert_eq!(allocations, 0);
+            assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+            assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+            assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+            assert_eq!(target.observed_len().unwrap(), actual_len);
+            target.settle_growth(actual_len).unwrap();
+            disk.delete_file(target).unwrap();
+            if publish {
+                let source = disk.open_file("data", Path::new("source")).unwrap();
+                disk.delete_file(source).unwrap();
+            }
+        }
+    }
 }

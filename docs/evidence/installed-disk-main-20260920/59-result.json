@@ -1,0 +1,22 @@
+{
+  "scope": "development combined workspace compilation diagnostic, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "check",
+    "--keep-going",
+    "--offline",
+    "--locked",
+    "--workspace",
+    "--all-targets",
+    "--all-features"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "b2876ef782f0f5afde2d60edd234559fc6ce600f",
+  "process_group": 75053,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 61.30457401275635,
+  "inventoried_source_unchanged": true
+}

@@ -1,0 +1,32 @@
+{
+  "status": "PROPOSED_UNAPPLIED_NOT_COMPILED",
+  "patch_sha256": "48162fc7d3fbf0392c6519c14a64c959b6cc7f7da5d592a3a461f8eb17877570",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/proposal_jobs.rs",
+      "base_sha256": "a79c925b180654479c57a318025ae1104e2234ddb36a427f53f4237f46061465",
+      "proposed_sha256": "46239f2dfe42fa68adc7ba1248dd6de48900281170dad9ef58661894ec49c261"
+    },
+    {
+      "path": "crates/kasumi-engine/src/proposal_jobs_tests.rs",
+      "base_sha256": "1d647486b804557e0675a35838fc1c73489ce186d4601d59aef95f6f3b73de14",
+      "proposed_sha256": "6cbe3e97e32948da9b447c61d0d8581442c01ae652c9cf483d339a8d7d6f18f6"
+    },
+    {
+      "path": "crates/kasumi-engine/src/service_staged_stop_tests.rs",
+      "base_sha256": "9547d8be57b0b3f43b8420e417a1a17468c319a8515238398b81e5829b4f799d",
+      "proposed_sha256": "9dd1187de103e6dcfc335eea741f3b1e4424e0644403480c81ce4789655e6e47"
+    },
+    {
+      "path": "crates/kasumi-engine/src/service_staging_tests.rs",
+      "base_sha256": "ce2b99a810c72f9fb010c7f4972187c7c996092914467dac76403a3f2963cd48",
+      "proposed_sha256": "3ff4ef1979d548da1dd7e0e876867b31eb2928c7d4853f1cfeabe4e0bc8c4fa5"
+    }
+  ],
+  "validation": {
+    "rustfmt_stdin": "passed",
+    "git_apply_check": "passed",
+    "actual_sources_unchanged": true,
+    "rust_build_or_tests": "not run; root coordinated source hold"
+  }
+}

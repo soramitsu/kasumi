@@ -183,13 +183,7 @@ pub async fn open_serving_target(
             config.admission.snapshot_buffer_owner()?,
         )
         .await?;
-        let database = Database::new_with_admission(
-            engine,
-            group,
-            stores.application().clone(),
-            config.admission,
-            audit,
-        );
+        let database = Database::new(engine, group, stores.application().clone(), audit);
         let owner = TargetServingReplica {
             database,
             projection,

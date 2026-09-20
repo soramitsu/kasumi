@@ -55,7 +55,6 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
     )
     .await
     .unwrap();
-    db.install_admission(node_admission).unwrap();
     db.administer(
         context.clone(),
         Operation::CreateCollection(CollectionDefinition {
@@ -121,11 +120,7 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
         let gate = db.proposal_gate.lock().await;
         let mut pending =
             Box::pin(db.finalize_staged_transaction(context.clone(), reference.clone()));
-        assert!(
-            std::future::poll_fn(|cx| Poll::Ready(pending.as_mut().poll(cx)))
-                .await
-                .is_pending()
-        );
+        db.proposals.wait_for_admission(pending.as_mut()).await;
         if canceled {
             drop(pending);
             clock.0.store(base + 99, Ordering::SeqCst);

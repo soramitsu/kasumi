@@ -206,7 +206,7 @@ impl CustodyRaftGroup {
         self.raft.trigger().snapshot().await?;
         Ok(())
     }
-    pub async fn shutdown(&self) -> Result<()> {
+    pub async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
         let mut report = self.shutdown_report.lock().await;
         if let Err(error) = self.raft.shutdown().await {
             report.record("OpenRaft custody runtime", 0, error.into());
@@ -216,6 +216,6 @@ impl CustodyRaftGroup {
         }
         self.storage_drain.wait().await;
         self.ownership.store(false, Ordering::Release);
-        report.complete().map_err(Into::into)
+        report.complete()
     }
 }

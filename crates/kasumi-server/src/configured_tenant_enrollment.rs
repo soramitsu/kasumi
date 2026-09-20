@@ -368,7 +368,7 @@ impl Administration {
             let drained = crate::startup_owner::finish(&mut prepared).await;
             return Err(match drained {
                 Ok(()) => error,
-                Err(drain) => error.context(format!("enrollment owner drain failed: {drain:#}")),
+                Err(drain) => error.context(drain),
             });
         }
         #[cfg(test)]
@@ -593,7 +593,6 @@ impl Administration {
             )
             .await?;
             prepared.resources.databases.push(opened.database.clone());
-            opened.database.install_admission(self.admission.clone())?;
             for (alias, destination) in &self.destinations {
                 opened
                     .database

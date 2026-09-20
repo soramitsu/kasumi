@@ -59,7 +59,6 @@ impl CredentialFixture {
         )
         .await
         .unwrap();
-        db.install_admission(node_admission).unwrap();
         db.administer(
             context.clone(),
             Operation::CreateCollection(CollectionDefinition {

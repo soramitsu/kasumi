@@ -58,10 +58,9 @@ async fn initialize_owned(config: RuntimeConfig) -> Result<Enrolled> {
     let drained = crate::startup_owner::finish(&mut pending).await;
     match (result, drained) {
         (Ok(()), Ok(())) => Ok(Enrolled),
-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-        (Err(error), Err(drain)) => {
-            Err(error.context(format!("node enrollment drain failed: {drain:#}")))
-        }
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(drain)) => Err(drain.into()),
+        (Err(error), Err(drain)) => Err(error.context(drain)),
     }
 }
 
@@ -271,10 +270,9 @@ pub(crate) async fn provision(
     let drained = crate::startup_owner::finish(&mut pending).await;
     match (result, drained) {
         (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-        (Err(error), Err(drain)) => {
-            Err(error.context(format!("enrollment verifier drain failed: {drain:#}")))
-        }
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(drain)) => Err(drain.into()),
+        (Err(error), Err(drain)) => Err(error.context(drain)),
     }
 }
 
@@ -353,9 +351,10 @@ async fn initialize_domain(
     let drained = crate::startup_owner::finish(&mut pending).await;
     let fingerprint = match (result, drained) {
         (Ok(fingerprint), Ok(())) => fingerprint,
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+        (Err(error), Ok(())) => return Err(error),
+        (Ok(_), Err(drain)) => return Err(drain.into()),
         (Err(error), Err(drain)) => {
-            return Err(error.context(format!("domain enrollment drain failed: {drain:#}")));
+            return Err(error.context(drain));
         }
     };
     if let Some(grant) = grant {

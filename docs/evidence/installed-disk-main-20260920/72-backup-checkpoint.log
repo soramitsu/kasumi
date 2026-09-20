@@ -1,0 +1,23 @@
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.12s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_engine-d4dda2ec4274de51)
+
+running 8 tests
+test staged_terminal::tests::durable_future_row_is_invisible_and_only_exact_original_replay_can_reuse_it ... ok
+test staged_terminal::tests::encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_replay ... ok
+test staged_terminal::tests::failed_terminal_ordinal_insert_never_publishes_advanced_head ... ok
+test staged_terminal::tests::original_begin_reservation_covers_maximum_terminal_envelope_and_counter_widths ... ok
+test staged_terminal::tests::point_admission_precedes_decoding_even_for_an_unpublished_row ... ok
+test staged_terminal::tests::rejected_terminal_row_permanently_disqualifies_valid_prefix ... ok
+test staged_terminal::tests::snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_live_views ... ok
+test staged_terminal::tests::terminal_applied_provenance_cannot_be_relabelled_across_two_restore_geneses ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 198 filtered out; finished in 6.28s
+
+     Running tests/backup_checkpoint.rs (target/debug/deps/backup_checkpoint-ea818e52aefee501)
+
+running 1 test
+test restore_hands_off_verified_workspace_with_production_and_destination_reserves ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 11.94s
+

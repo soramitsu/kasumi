@@ -24,12 +24,13 @@ fn node() -> Arc<NodeAdmission> {
     // These unit tests isolate lease ownership. They install no production
     // maintenance lanes and do not establish a production capacity gate.
     NodeAdmission::with_fixed_memory(
-        AdmissionConfig {
+        crate::test_utils::admission_config_with_bookkeeping(AdmissionConfig {
             high_water_bytes: Some(8 << 30),
             low_water_bytes: Some(7 << 30),
             max_inflight_bytes: Some(512 << 20),
             ..Default::default()
-        },
+        })
+        .unwrap(),
         8 << 30,
         0,
     )
@@ -166,7 +167,7 @@ fn publication_expires_full_roots_while_two_inflight_selections_keep_only_bounde
     let node = node();
     let clock = Arc::new(Clock::default());
     let lease = open(&engine, &node, &clock);
-    let root_bytes = node.snapshot().reserved_bytes;
+    let root_bytes = crate::test_utils::reserved_payload_bytes(&node);
     assert!(root_bytes < 64 << 10);
     let unselected =
         Arc::downgrade(&engine.generation().unwrap().state.collections["docs"].documents["d0063"]);
@@ -184,7 +185,7 @@ fn publication_expires_full_roots_while_two_inflight_selections_keep_only_bounde
             .len(),
         1
     );
-    let charged = node.snapshot().reserved_bytes;
+    let charged = crate::test_utils::reserved_payload_bytes(&node);
     let committed = write(&engine, put("d0063", 64 << 10));
     assert_eq!(committed.revision, 2);
     // No monitor tick or subsequent read is needed to revoke either page.
@@ -210,9 +211,9 @@ fn publication_expires_full_roots_while_two_inflight_selections_keep_only_bounde
             .as_bytes()[0],
         b'y'
     );
-    assert!(node.snapshot().reserved_bytes < charged);
+    assert!(crate::test_utils::reserved_payload_bytes(&node) < charged);
     assert!(
-        node.snapshot().reserved_bytes > root_bytes,
+        crate::test_utils::reserved_payload_bytes(&node) > root_bytes,
         "live page buffers lost their reservation"
     );
     assert_eq!(
@@ -226,9 +227,12 @@ fn publication_expires_full_roots_while_two_inflight_selections_keep_only_bounde
     );
     drop(page_one);
     drop(page_two);
-    assert_eq!(node.snapshot().reserved_bytes, LEASE_HANDLE_BYTES as u64);
+    assert_eq!(
+        crate::test_utils::reserved_payload_bytes(&node),
+        LEASE_HANDLE_BYTES as u64
+    );
     drop(lease);
-    assert_eq!(node.snapshot().reserved_bytes, 0);
+    assert_eq!(crate::test_utils::reserved_payload_bytes(&node), 0);
 }
 
 #[test]
@@ -320,7 +324,7 @@ fn metadata_allocation_is_charged_before_opening_and_snapshot_replace_invalidate
     engine.leases.replace(&engine.current, current);
     assert!(!lease.live());
     drop(lease);
-    assert_eq!(node.snapshot().reserved_bytes, 0);
+    assert_eq!(crate::test_utils::reserved_payload_bytes(&node), 0);
     let mut state = engine.generation().unwrap().state.clone();
     state.collections.get_mut("docs").unwrap().definition.schema =
         json!({"type":"object","description":"large schema".repeat(5000)});
@@ -329,7 +333,7 @@ fn metadata_allocation_is_charged_before_opening_and_snapshot_replace_invalidate
         .leases
         .open(&engine, &context(), 60_000, clock, 1, &node);
     assert_eq!(result.err().unwrap().code, ErrorCode::ResourceExhausted);
-    assert_eq!(node.snapshot().reserved_bytes, 0);
+    assert_eq!(crate::test_utils::reserved_payload_bytes(&node), 0);
 }
 
 #[test]

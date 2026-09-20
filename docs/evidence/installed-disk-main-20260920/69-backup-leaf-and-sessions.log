@@ -1,0 +1,16 @@
+   Compiling kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.34s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_store-da802ca493244251)
+
+running 8 tests
+test backup_sessions::filesystem::ownership_tests::missing_enrolled_leaf_fences_both_read_and_cleanup_without_releasing_credit ... ok
+test backup_sessions::filesystem::ownership_tests::missing_unknown_or_admitted_deleted_leaf_is_repeatably_absent ... ok
+test backup_sessions::tests::completion_excludes_abort_and_corrupt_publication_never_grants_cleanup ... ok
+test backup_sessions::tests::filesystem_abort_cleanup_is_bounded_repeatable_and_retains_control_and_other_namespaces ... ok
+test backup_sessions::tests::filesystem_cleanup_rejects_directory_symlink_substitution ... ok
+test backup_sessions::tests::recovered_session_root_requires_file_and_directory_sync_before_readback ... ok
+test backup_sessions::tests::session_keeps_historical_source_purpose_separate_from_current_access ... ok
+test backup_sessions::tests::visible_session_outcomes_require_durable_readback_before_resolution_or_cleanup ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 192 filtered out; finished in 21.52s
+

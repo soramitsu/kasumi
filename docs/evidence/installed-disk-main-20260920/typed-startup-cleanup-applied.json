@@ -1,0 +1,6 @@
+{
+  "branch": "master",
+  "patch_sha256": "4c57ad14841d0554eafaa17b5a2b3f3eec1986fe69a56d90e3793e18b675d109",
+  "all_before_and_after_hashes_match": true,
+  "status": "applied; compilation and behavior not yet verified"
+}

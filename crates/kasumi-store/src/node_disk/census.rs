@@ -1,4 +1,6 @@
-use super::{AccountedFile, CensusCancellation, Identity, NodeDiskConfig, extent};
+use super::{
+    AccountedFile, CensusCancellation, Identity, NamespaceBinding, NodeDiskConfig, extent,
+};
 use anyhow::{Context, Result, ensure};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -200,11 +202,12 @@ pub(super) fn parent(
     root: &Root,
     relative: &Path,
     config: &NodeDiskConfig,
-) -> Result<(File, CString)> {
+) -> Result<(File, CString, NamespaceBinding)> {
     root.verify()?;
     let mut components = relative.components().peekable();
     let mut directory_fd = root.file.try_clone()?;
     let mut depth = 0_u32;
+    let mut binding = NamespaceBinding::root(root.identity);
     while let Some(component) = components.next() {
         depth = depth
             .checked_add(1)
@@ -219,8 +222,9 @@ pub(super) fn parent(
             "persistent name exceeds budget"
         );
         let name = CString::new(name.as_bytes())?;
+        binding = binding.child(&name);
         if components.peek().is_none() {
-            return Ok((directory_fd, name));
+            return Ok((directory_fd, name, binding));
         }
         let child = open_at(&directory_fd, &name, libc::O_RDONLY | libc::O_DIRECTORY)?;
         let metadata = child.metadata()?;
@@ -235,12 +239,13 @@ pub(super) fn parent(
 }
 
 struct Cursor {
+    binding: NamespaceBinding,
     file: File,
     entries: *mut libc::DIR,
 }
 
 impl Cursor {
-    fn open(file: File) -> Result<Self> {
+    fn open(file: File, binding: NamespaceBinding) -> Result<Self> {
         // A dup shares the directory offset and would make a later census start
         // at EOF. Open a new file description anchored to this descriptor.
         let fd = open_at(&file, c".", libc::O_RDONLY | libc::O_DIRECTORY)?.into_raw_fd();
@@ -251,7 +256,11 @@ impl Cursor {
             drop(unsafe { File::from_raw_fd(fd) });
             return Err(error.into());
         }
-        Ok(Self { file, entries })
+        Ok(Self {
+            file,
+            entries,
+            binding,
+        })
     }
 
     fn next(&mut self, max_name_bytes: u32) -> Result<Option<CString>> {
@@ -307,7 +316,10 @@ pub(super) fn census(
     let mut work = 0_u64;
     for root in roots.values() {
         root.verify()?;
-        let mut stack = vec![Cursor::open(root.file.try_clone()?)?];
+        let mut stack = vec![Cursor::open(
+            root.file.try_clone()?,
+            NamespaceBinding::root(root.identity),
+        )?];
         while !stack.is_empty() {
             cancel.check()?;
             let current = stack.last_mut().expect("nonempty census stack");
@@ -324,6 +336,7 @@ pub(super) fn census(
             if name.to_bytes() == b"." || name.to_bytes() == b".." {
                 continue;
             }
+            let binding = current.binding.child(&name);
             // Open nonblocking so a substituted FIFO cannot stall a bounded census.
             let child = open_at(&current.file, &name, libc::O_RDONLY | libc::O_NONBLOCK)?;
             let metadata = child.metadata()?;
@@ -337,7 +350,7 @@ pub(super) fn census(
                     stack.len() < config.max_depth as usize,
                     "census depth exhausted"
                 );
-                stack.push(Cursor::open(child)?);
+                stack.push(Cursor::open(child, binding)?);
             } else {
                 regular(&metadata, root.identity.0)?;
                 lock(&child, libc::LOCK_EX)?;
@@ -358,7 +371,7 @@ pub(super) fn census(
                         .accounted
                         .insert(
                             Identity::of(&verified),
-                            AccountedFile::durable(bytes, pending, verified.len()),
+                            AccountedFile::durable(binding, bytes, pending, verified.len()),
                         )
                         .is_none(),
                     "persistent census repeated an enrolled physical inode"

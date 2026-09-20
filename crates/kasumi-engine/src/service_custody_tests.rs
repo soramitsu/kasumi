@@ -328,5 +328,14 @@ async fn custody_observations_preserve_mutation_capacity_and_exhaustion_can_expa
             .is_err()
     );
     drop(custody);
-    fixture.close().await;
+    fixture.db.shutdown().await.unwrap();
+    let failure = fixture.audit.shutdown().await.unwrap_err();
+    assert_eq!(failure.completion(), kasumi_types::drain::DrainCompletion::Complete);
+    let original = failure.issues().iter()
+        .find(|issue| issue.component() == "audit persistence")
+        .expect("the deliberately sealed audit keeps its original failure");
+    assert!(original.error().to_string().contains("tenant is sealed"));
+    let repeated = fixture.audit.shutdown().await.unwrap_err();
+    assert_eq!(repeated.completion(), kasumi_types::drain::DrainCompletion::Complete);
+    assert!(repeated.issues().iter().any(|issue| Arc::ptr_eq(issue, original)));
 }

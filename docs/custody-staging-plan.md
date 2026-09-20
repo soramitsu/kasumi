@@ -1,7 +1,8 @@
 # Proposed bounded custody staging
 
-Status: **proposed and unimplemented**. This document records a performance finding
-and a production design; it does not qualify the current implementation or close
+Status: **batching proposed and unimplemented**. Terminal staging now permanently
+rejects finish after a failed push; the batching, memory and task-owner design
+below remains unimplemented. This document does not qualify the release or close
 the first-release goal. Work is restricted to `/Users/mtakemiya/dev/kasumi` on
 `master`. No backwards-compatibility mode, alternate decoder, relaxed durability,
 or unadmitted production fallback is proposed.
@@ -30,9 +31,29 @@ That makes a complete staging pass perform 12,600 row commits, besides table
 creation and other snapshot work. Additional capture/decode passes can repeat
 that cost. This observation is not a benchmark of a batching implementation.
 
-At the time this proposal was written, gate29 had no terminal outcome. Its native
-qualification remains open; the authoritative eventual outcome belongs in its
-gate result and release evidence, not an inferred success in this document.
+Gate29 ultimately produced no terminal test result. Its runner failed during its
+process-liveness probe before writing the normal receipt. Independent recovery
+confirmed process drain and unchanged source; its original signal history was
+not recorded. It remains failed/unresolved in the
+[development evidence](evidence/installed-disk-main-20260920/README.md).
+
+Engine gate52 identified a second consumer of the same staging bottleneck:
+`public_restore_admits_resident_state_without_charging_permanent_stream_as_ram`
+exceeded its unchanged 60-second backup-verification deadline. The workload has
+512 permanent terminal rows, each retaining a 256-chunk manifest. The live sample
+passes through snapshot decoding, `staged_terminal::Builder::push`, and individual
+durable redb commits. Source performs two independent inserts per terminal row,
+for its identity and ordinal. This is diagnostic evidence, not a measurement of
+the proposed batching implementation. Keep this case's workload, deadline and
+production admission constraints unchanged in its successor.
+
+A separate correctness fix sets a failure latch before terminal-row validation,
+head advancement or either durable insert and clears it only after both inserts
+succeed. A failure permanently rejects further pushes and finish, so matching
+head metadata cannot publish a partially written row. Development attempt 72
+passes all eight terminal-row tests, including a real second-insert duplicate
+failure after the identity row commits and rejection after a valid prefix.
+This does not implement the admitted batch writer or qualify its performance.
 
 ## Smallest streaming change
 
@@ -56,6 +77,16 @@ physical owner, and settlement protocol. Do not reintroduce `Durability::None`,
 defer all durability to close, loosen an allocation check, or replace an I/O error
 with a capacity denial. Standalone point `insert` can retain its immediate
 one-operation transaction semantics.
+
+The engine terminal-row builder must use the same owned writer foundation with
+an explicit profile that preserves its existing 2 MiB record ceiling. The custody
+profile's 64 KiB row bound and 1 MiB transaction bound cannot silently become new
+terminal-row rejection limits. Include the identity and ordinal encodings in the
+checked workspace/byte estimate. Admit a transaction large enough for a valid
+maximum-sized row before allocating it; commit smaller batches earlier as needed.
+Every failed push must permanently disqualify the builder from successful finish,
+including failure after the identity insert but before the ordinal insert. The
+authenticated head alone is insufficient proof that both records were persisted.
 
 For rows small enough that the byte cap does not bind, one pass needs 17 command
 commits and 33 audit commits rather than 12,600. Larger records cause earlier

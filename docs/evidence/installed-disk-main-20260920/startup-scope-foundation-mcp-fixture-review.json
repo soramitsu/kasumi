@@ -1,0 +1,16 @@
+{
+  "path": "crates/kasumi-server/src/mcp_credential_tests.rs",
+  "before65_sha256": "03ccbb823ff689bfd063e95d23df28000938f6f8890f3865b470eb8e0eabcef0",
+  "reconstructed_before_sha256": "03ccbb823ff689bfd063e95d23df28000938f6f8890f3865b470eb8e0eabcef0",
+  "current_sha256": "9e91d1ca6de56ab0f99e64b7392d3337f0084803e4bd7b790fe5f6a9e9e770e3",
+  "before_matches": true,
+  "result": "no actionable defect",
+  "findings": [
+    "one DatabaseRegistry installed per actual database, retained by fixture",
+    "router clones share membership observer, route epoch, databases and retirement sources",
+    "second router no longer attempts observer rebind to a distinct node",
+    "strict production observer identity fence unchanged",
+    "no request/credential deadline or recheck assertion changed"
+  ],
+  "builds": "not run"
+}

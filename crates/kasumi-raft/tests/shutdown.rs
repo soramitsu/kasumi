@@ -140,5 +140,6 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
     )
     .await?;
     assert_eq!(recovered.values(), vec![b"acknowledged".to_vec()]);
-    group.shutdown().await
+    group.shutdown().await?;
+    Ok(())
 }

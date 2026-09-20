@@ -1,0 +1,1361 @@
+{
+  "status": "PREPARED_UNAPPLIED_UNCOMPILED",
+  "created_at_utc": "2026-09-20T10:24:35.761071+00:00",
+  "workspace": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "base_commit": "b2876ef782f0f5afde2d60edd234559fc6ce600f",
+  "ordered_layers": [
+    {
+      "layer": "A",
+      "title": "shared memory core",
+      "patch": "memory-core-foundation/foundation.patch",
+      "patch_sha256": "bb4062d4dc6e1e0de628253d0af750d88b05beadc31d752a14a1b5d531f8a890",
+      "source_manifest": "memory-core-foundation/manifest.json",
+      "source_manifest_sha256": "9b5ea417495224361b0988d0bd30adde23153a2af0bd0b071c47539aea89a635",
+      "files": [
+        {
+          "path": "crates/kasumi-engine/src/admission.rs",
+          "layer": "A",
+          "input_sha256": "b03103fffab838548140d7626e9fb8a9ef10a33233247473baf5b451cc0076e3",
+          "proposed_sha256": "a9b38aa064968e90524ed6a7f91cd6b60f2449c8c1e1eed86e081f037a148e39",
+          "exact_hunks": 18
+        },
+        {
+          "path": "crates/kasumi-engine/src/security_audit.rs",
+          "layer": "A",
+          "input_sha256": "a5a7d2873c092d8d691111e24d65f1a2a4f65908eecc56bb0181070a06e4835c",
+          "proposed_sha256": "755861515985ad8afa6e911594d986112216da789c4faf3ccb5bdf4e78423abd",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "layer": "B",
+      "title": "mandatory Database audit facade",
+      "patch": "database-admission-engine.patch",
+      "patch_sha256": "6ba83067ffbc4079fbc765f949a496ef689f59ecb8cfd2f4afa4444d568a22c3",
+      "source_manifest": "database-admission-engine.manifest.json",
+      "source_manifest_sha256": "df05339c6a2761e2227601ce8e4e26392d703758128b6bd35e0a17176268bb92",
+      "files": [
+        {
+          "path": "crates/kasumi-authority/src/target_materialization_tests.rs",
+          "layer": "B",
+          "input_sha256": "54b46ffeae91cfb569022ba12c685c19b77d71be9c6a70a41426a86ac5365f61",
+          "proposed_sha256": "4ab82417181d3b2d7651dafc3a5bf6b643fd20b874841e22be043940979084c6",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/src/audit_maintenance_service.rs",
+          "layer": "B",
+          "input_sha256": "0ed19080f343fa53eb9bd6dd40d5f95965145a7311bc6becadd8febd51c10c3b",
+          "proposed_sha256": "b2a5546d0be60dd75016b02482e04e2a8572faf6a1227b9a7decef83d791b79d",
+          "exact_hunks": 2
+        },
+        {
+          "path": "crates/kasumi-engine/src/bootstrap.rs",
+          "layer": "B",
+          "input_sha256": "24ee88344df4b156dcfec5244d6aeb4e467662be13d18862384d6cde737d8b2a",
+          "proposed_sha256": "31e7a553c70900d234978d5bf9d2ccb5cbe16b795cc3fb91dd23d34c65ba374c",
+          "exact_hunks": 11
+        },
+        {
+          "path": "crates/kasumi-engine/src/bootstrap_fixtures.rs",
+          "layer": "B",
+          "input_sha256": "5bdbe5608cc3e1184490662c1433ff0e6b7976ddcdbaf2628843d34305d89594",
+          "proposed_sha256": "1a8e58c080b4967909d7d3fc6e811e1b09905753de7fe3023b86d1cc573031ea",
+          "exact_hunks": 2
+        },
+        {
+          "path": "crates/kasumi-engine/src/bootstrap_target_quorum.rs",
+          "layer": "B",
+          "input_sha256": "7077b1e36b5ca8ec704c5ade4e04598aa2a5929733d9663a124ef1b9d6785c34",
+          "proposed_sha256": "4a5aa970287a0f3438409ac4fc8f79e4d66673e43debf0ea3e8dfff3eb4cc50a",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/src/bootstrap_target_serving.rs",
+          "layer": "B",
+          "input_sha256": "208647029240342872c184579200e0f0dc63ab6eb5bc33a0aa988887751a0720",
+          "proposed_sha256": "efcacb2b1aebedf1787cf4929a59fe962b3b303d73fba191d352546bdfac50f9",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/src/custody_service.rs",
+          "layer": "B",
+          "input_sha256": "80709788c6922904e7fc752119f192022d43555f2b719fabc2257997ddbee12d",
+          "proposed_sha256": "ea0d23c36551e1e2e10f26c871392d2bf460337a7fbab6208411be74dfe738ef",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/src/database_worker_outcome_tests.rs",
+          "layer": "B",
+          "input_sha256": "d818afb70b95c823f6c773f86b1130f6c9863a6c722f80147e2a36144db9614a",
+          "proposed_sha256": "85ac5ae0cf9f304cd3ea6dec62f05e98e1187e78e620206ca9fdaddfd6e65875",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/src/service.rs",
+          "layer": "B",
+          "input_sha256": "f55bfd0a2f68b8a8250cb6c483af1bda40614fd3f16d504b907f26b84bd1fa6c",
+          "proposed_sha256": "7217f77d0f8aae2ab6642aa7002c03c009eb375af7a9f90b201c308510a6a70e",
+          "exact_hunks": 10
+        },
+        {
+          "path": "crates/kasumi-engine/src/service_credential_tests.rs",
+          "layer": "B",
+          "input_sha256": "2b6cf76384392c1af88f3dbee35caaa89f7336f3ee2951c9be3f18065cfe9d8b",
+          "proposed_sha256": "d1c060640d164e922283d30ec34d94654ad3013ddea55f873112085bea8adef6",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/src/service_schema_tests.rs",
+          "layer": "B",
+          "input_sha256": "c68bbce4f118a4cfa665ba4f6adfe53ee690ad9402641a0f009f652eed682834",
+          "proposed_sha256": "e60cdb12fc5d566b5abbf59dd06c787377c01341353f6f9a64fde018750f9e73",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/src/service_serving_tests.rs",
+          "layer": "B",
+          "input_sha256": "8ee21f58ebedf96e29645ec10028ca58144e21eb8a874c6a0d9730bb39b62852",
+          "proposed_sha256": "317b25430f1d94a48b287315daa4b5d2f48cdf3fc8a701ef7ec694cb5a8b6165",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/src/service_staging_tests.rs",
+          "layer": "B",
+          "input_sha256": "7dfacc4686f31c6a4b0607148c9b6a6f3dfd486d1a7ee794a4d0d01c445ebec3",
+          "proposed_sha256": "ce2b99a810c72f9fb010c7f4972187c7c996092914467dac76403a3f2963cd48",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/tests/admission.rs",
+          "layer": "B",
+          "input_sha256": "34d5644387a622d5150a59a4bdf08235c94e829ad2e5f1e2a1de8c82b1259765",
+          "proposed_sha256": "c873678d040cfe30de89fee85621fc8acadb726e503cf819ee6c30d0ba40bd67",
+          "exact_hunks": 4
+        },
+        {
+          "path": "crates/kasumi-engine/tests/backup_checkpoint.rs",
+          "layer": "B",
+          "input_sha256": "73e731f43f7a1d3975676d34b259e780fcae5669ecf326cd4e7e4a1fb16a223b",
+          "proposed_sha256": "7eefd52044e8a353f2d51adf29f111d7a07c22ec43aa991469e312b3e30e46bb",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/tests/common/retirement_snapshot.rs",
+          "layer": "B",
+          "input_sha256": "5370829d23463fbe339ca33df22fc1de73cb873bbc35141d4934f0150945aa0c",
+          "proposed_sha256": "f3ddb480c668942bb84330fa83770afb951b9c14dc61950fa8fd47038e7d36d5",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/tests/fixture_epoch_clock.rs",
+          "layer": "B",
+          "input_sha256": "8cd9375a10672c40aee1bdafbab1e959735224e12e73a5ac51a8abc668e7fa37",
+          "proposed_sha256": "0bfaea45d6c9494b3537b2d3e36839196d2a824d1fd86799c5f92e584994a3a4",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/tests/response_release.rs",
+          "layer": "B",
+          "input_sha256": "4e6fa812fbcd37a9b1088506e0ea48e2205e191d409c9b42201b5a2fca5349f9",
+          "proposed_sha256": "049fb26bcb4b5fd4cbdaafaedb3d87c6078d33e019b4bc2f542a435636d765a3",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/tests/retirement.rs",
+          "layer": "B",
+          "input_sha256": "48c3b9fd719c1274da7d34f6e977345ffa660cfa2bd99c9f113582d01218970e",
+          "proposed_sha256": "2af0be7c21ae38005b3f01df5c0ecd9d980e68862c3fc71e4245435102e283db",
+          "exact_hunks": 1
+        },
+        {
+          "path": "docs/admission.md",
+          "layer": "B",
+          "input_sha256": "106a4795844fc9c8c0d0643b282eac89777fcfa7c3a860d45216463900196b77",
+          "proposed_sha256": "d68bcaaa1b63d71d630a0e1d5626d2591caa8d01fc913645fd563a867aa69a2e",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "layer": "C",
+      "title": "engine fixture bookkeeping",
+      "patch": "database-admission-engine-fixtures.patch",
+      "patch_sha256": "86ff7adb1a5648b1c80efca62d251ff2fd8758db6c887fce8cfb3850e6ff3feb",
+      "source_manifest": "database-admission-engine-fixtures.manifest.json",
+      "source_manifest_sha256": "789e3a3f4f9761850c48ea32fc30590964c5806be37379fd6b970bbb9f9c851e",
+      "files": [
+        {
+          "path": "crates/kasumi-engine/src/audit_maintenance.rs",
+          "layer": "C",
+          "input_sha256": "f5a55d9b2d6f067c63f87aa1862d89db74e3d32321f39eb3e15987d1c5b5b711",
+          "proposed_sha256": "043cd8b9a1dab2989df31729de0aa723bba71fc477dd6a40a92a6ea15accbeb7",
+          "exact_hunks": 2
+        },
+        {
+          "path": "crates/kasumi-engine/src/audit_maintenance_service.rs",
+          "layer": "C",
+          "input_sha256": "b2a5546d0be60dd75016b02482e04e2a8572faf6a1227b9a7decef83d791b79d",
+          "proposed_sha256": "7280ce8def5bdfce2a4d76e036626d9f5bfc1b8889671af64bbdf2248e0eee42",
+          "exact_hunks": 3
+        },
+        {
+          "path": "crates/kasumi-engine/src/backup_history_work.rs",
+          "layer": "C",
+          "input_sha256": "e7dcf26ddb2dd9fd7b30d58f6dd6a93dd6c705151a1b1779dba40490d87835a4",
+          "proposed_sha256": "a305c39db17d76defe52b955925542aff9751f778d62d3eba499929d36e88e1c",
+          "exact_hunks": 9
+        },
+        {
+          "path": "crates/kasumi-engine/src/backup_restore.rs",
+          "layer": "C",
+          "input_sha256": "3d6f0ba327866e18ae783ebd122641c608f83b92396121edbcbd3c7a659a1ae5",
+          "proposed_sha256": "3b68ff709be0bca37c8f2336084c90cf9d40990b765836cef79c3c37a8abfddc",
+          "exact_hunks": 3
+        },
+        {
+          "path": "crates/kasumi-engine/src/backup_sessions.rs",
+          "layer": "C",
+          "input_sha256": "0382ffbab30a0e63a6c1929e0d352f65a5ddb125430dda57399216e812895af6",
+          "proposed_sha256": "455d6da67897452b373f56435513d536d557e1bf5848ccbfbc8370d13fb085b1",
+          "exact_hunks": 7
+        },
+        {
+          "path": "crates/kasumi-engine/src/backup_verify.rs",
+          "layer": "C",
+          "input_sha256": "e542b082228f1191e933242c8cfd5ee34b26b50c8d43854970a1da35f1a61ae2",
+          "proposed_sha256": "bb0bb2feba44f713363b6edcd471d953255cb7ebddfc34062677da79950bd271",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/src/lease_retention_tests.rs",
+          "layer": "C",
+          "input_sha256": "c0cf659cff111c98f6783ad6db789904a7201104eda75131eb6e97a585a314cf",
+          "proposed_sha256": "aaf94b72934fc8ae5fbd56ef6dcc25a1f28dcde25729a78706d3c321780d433b",
+          "exact_hunks": 7
+        },
+        {
+          "path": "crates/kasumi-engine/src/proposal_jobs_tests.rs",
+          "layer": "C",
+          "input_sha256": "d2a6614605cac008c9ff2f94d64c109c09fbe36f911e6ed6e10b483e6d3afd45",
+          "proposed_sha256": "1d647486b804557e0675a35838fc1c73489ce186d4601d59aef95f6f3b73de14",
+          "exact_hunks": 9
+        },
+        {
+          "path": "crates/kasumi-engine/src/security_audit_existing_tests.rs",
+          "layer": "C",
+          "input_sha256": "15a5470bae61638734ec2573fc4e6fcbe8ce74a492083bfd3b67bac7e42da033",
+          "proposed_sha256": "59103d96dd89136d31ec29f148df692cc7d89908dde9060ddc41bee03b311b12",
+          "exact_hunks": 4
+        },
+        {
+          "path": "crates/kasumi-engine/src/security_audit_retention.rs",
+          "layer": "C",
+          "input_sha256": "c021586a53ca8272ee9f050c99b5f3faca03b4d2efa3b5646188377e5334349a",
+          "proposed_sha256": "3482c5ec0d20ebe8120b3a491ae1ea88164f24c92986e67e6d759dcd1f06d6b7",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-engine/src/service.rs",
+          "layer": "C",
+          "input_sha256": "7217f77d0f8aae2ab6642aa7002c03c009eb375af7a9f90b201c308510a6a70e",
+          "proposed_sha256": "d651f41f9acf27d77448c3447e48c9f26b21b1f308e98278ba2268c38f4d099d",
+          "exact_hunks": 2
+        },
+        {
+          "path": "crates/kasumi-engine/src/snapshot_bundle.rs",
+          "layer": "C",
+          "input_sha256": "8487112e1f6353a83c7a636bce97e87c1e4bef1f2fb38846b0b49fe6892978c5",
+          "proposed_sha256": "21466b0ab2b64be26cf8bda6e7ef9c5e432461a1658e8754342f0cd4c5981f43",
+          "exact_hunks": 5
+        },
+        {
+          "path": "crates/kasumi-engine/src/staged_reads.rs",
+          "layer": "C",
+          "input_sha256": "96e5471e3ec5dc4587060cf72445f93749a16334d0ad0cd0c8a844f01b9eafee",
+          "proposed_sha256": "b73a7b9822ee1e5a95cf89ccb8dcfc72a13798828ecba5bbe78a30be5b4e80c6",
+          "exact_hunks": 2
+        },
+        {
+          "path": "crates/kasumi-engine/src/test_utils.rs",
+          "layer": "C",
+          "input_sha256": "2ff6c9c17681de760f15a76cf8cc911e659a15e509a58f42707b66b9bbcb49af",
+          "proposed_sha256": "1907c61783cfd9efff180216f7ddbad74247e55229a41b0edbad33a77497dd9b",
+          "exact_hunks": 2
+        },
+        {
+          "path": "crates/kasumi-engine/tests/admission.rs",
+          "layer": "C",
+          "input_sha256": "c873678d040cfe30de89fee85621fc8acadb726e503cf819ee6c30d0ba40bd67",
+          "proposed_sha256": "2789a59da3bc3f465f8b16aabd21ea4e39fb7c90ee003d1a91f14d35b0b8580d",
+          "exact_hunks": 2
+        },
+        {
+          "path": "crates/kasumi-engine/tests/backup_checkpoint.rs",
+          "layer": "C",
+          "input_sha256": "7eefd52044e8a353f2d51adf29f111d7a07c22ec43aa991469e312b3e30e46bb",
+          "proposed_sha256": "45bd8b086d26e2f9139df7199ab0a46e6164c6bc260b487616d42be5c946cdd2",
+          "exact_hunks": 11
+        }
+      ]
+    },
+    {
+      "layer": "D",
+      "title": "server mandatory facade callers",
+      "patch": "database-admission-server.patch",
+      "patch_sha256": "c8c24ae2af2c9957d278f9e15152ac7b47e8cac1d54b245f57e7dca23fd185f9",
+      "source_manifest": "database-admission-server-manifest.json",
+      "source_manifest_sha256": "225b6410e426b3ecf5310d3a314ae47f24232ff81b6a73795c685eb6ffb28197",
+      "files": [
+        {
+          "path": "crates/kasumi-server/src/configured_tenant_enrollment.rs",
+          "layer": "D",
+          "input_sha256": "3107288672dcc9db46a8c9c3cf86152a3f6969dfb3831ab6bf3ecb8e9a252753",
+          "proposed_sha256": "4cd78909c34e8b421ff75d93d73d642596bca5cff597181e5cf139d15826d7c8",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-server/src/original_serving_runtime.rs",
+          "layer": "D",
+          "input_sha256": "9389dc9a06b4ecc4c31118d654e93c2ef5b5de24fd17238dbe437f3ccab51aeb",
+          "proposed_sha256": "64d7e8279574da043f665fa02f2e2cb6a472e99ad2d7e6449d18c48bbc31b172",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-server/src/runtime.rs",
+          "layer": "D",
+          "input_sha256": "52d456572136a35c690b00bc4ce41161d4e9687ff55b20971ae361cdd0971125",
+          "proposed_sha256": "b73529e217929c9a6c90683602ba91712b7d6077ff740f4ac5c80b79da7c2d07",
+          "exact_hunks": 2
+        },
+        {
+          "path": "crates/kasumi-server/src/local_recovery.rs",
+          "layer": "D",
+          "input_sha256": "4123bb4d7e1b29a9ad103b87fd97622781975f3f8467478af494085248e38dcb",
+          "proposed_sha256": "a7cf814be4b63195f35d7f68669ac49bdbd45ab1336251c72b4c65ef95134d96",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-server/src/standalone_tenant_preparation.rs",
+          "layer": "D",
+          "input_sha256": "e344bd988ab2f41473be89f69521ada0bd542801399000d7950c6fb391445fc2",
+          "proposed_sha256": "947a08d6715e89029895f7dfa28d351e78a1e7daedaa8d02640b690534b28ec8",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-server/src/runtime_retired_source_tests.rs",
+          "layer": "D",
+          "input_sha256": "57174277f71b274ee649ca3ce376e8249a11bc5a1c61b3ea8606c5295dc2ba60",
+          "proposed_sha256": "6316a97cb3794eed803f629caf98bb44a6f7303e73ea575818f70c32053eff6c",
+          "exact_hunks": 2
+        },
+        {
+          "path": "crates/kasumi-server/src/api.rs",
+          "layer": "D",
+          "input_sha256": "703b4543f748ddb2fd9a8410a8e744b71dfc6fea114b697ef55e25ed8016e747",
+          "proposed_sha256": "a3f8cecdb8ea3731dcf4ec7deff6086991ef7e34c94458786e51fb0093bc0297",
+          "exact_hunks": 2
+        },
+        {
+          "path": "crates/kasumi-server/src/mcp_credential_tests.rs",
+          "layer": "D",
+          "input_sha256": "08667511ba1c612eb0688a8c24205644000e16ea2ba1cc3132ac9b4385a66f36",
+          "proposed_sha256": "f1f7fa335be04e2ae4b8550e7c21a029f4a587ddce61d340be8c91f3b040e6f8",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-server/src/administration.rs",
+          "layer": "D",
+          "input_sha256": "2bded29945e6dd7dc6442348e7888f420756eb49804a8258b67c752ea7b94f6e",
+          "proposed_sha256": "b3a881ea9f649d79ea57619bb959d53e4a94cae6a6095408867af89505143093",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-server/src/api_backup_checkpoint_tests.rs",
+          "layer": "D",
+          "input_sha256": "7365410cbe33254d434e606e3dc813245ff765671586f249f865c421f62b5927",
+          "proposed_sha256": "67c8cb8602c6cfba228e9ad37e0f9e79907c4ee5100c652cce3a05c1dfb92d2a",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "layer": "E",
+      "title": "server fixture bookkeeping and explicit admission policy",
+      "patch": "server-admission-bookkeeping.patch",
+      "patch_sha256": "39564e7c4dbd8eb0921fe01642262232d8d345148f38d4cb98597054c6beb67d",
+      "source_manifest": "server-admission-bookkeeping-manifest.json",
+      "source_manifest_sha256": "0c038bbec380bc4ec7f3a74c59b6c31981082898efdbe927383c7418cf8fceab",
+      "files": [
+        {
+          "path": "crates/kasumi-server/src/readiness_probe_tests.rs",
+          "layer": "E",
+          "input_sha256": "269c13daf5956852f33695763bef5232329e9970a4fe1e9398f7bea170eb2c55",
+          "proposed_sha256": "96a088ef1f0472adace02444f120110e77d1df8c352f0b9c91c54563f71154c1",
+          "exact_hunks": 8
+        },
+        {
+          "path": "crates/kasumi-server/src/readiness_tests.rs",
+          "layer": "E",
+          "input_sha256": "00ccea691fcdc191f7dba7c4edc3ae1191ccb92f57483f7e2cfe3ac7c1289968",
+          "proposed_sha256": "62c3de48bc87bde0f4f68560927ede03a4842c00dafffbf7bc15558807ccfb69",
+          "exact_hunks": 2
+        },
+        {
+          "path": "crates/kasumi-server/src/signer_runtime_tests.rs",
+          "layer": "E",
+          "input_sha256": "e30e1e06248873a19fb4977ac84d66e44e20d587684fa3631ee2df672579fbd0",
+          "proposed_sha256": "9a037dd5b54271d4e9015a9509dfe5fccc619dea87ea261a8ba314949c3fa3d5",
+          "exact_hunks": 2
+        },
+        {
+          "path": "crates/kasumi-server/src/serving_owner_tests.rs",
+          "layer": "E",
+          "input_sha256": "b136d5cacc2bc2880485b077a3a2e677a72e5e06efd112b718bd7cd50e6b148e",
+          "proposed_sha256": "709db5760c44e919016468fd8710998436e960b9b4911a5e1ebd03d25fd130cf",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-server/src/mcp_credential_tests.rs",
+          "layer": "E",
+          "input_sha256": "f1f7fa335be04e2ae4b8550e7c21a029f4a587ddce61d340be8c91f3b040e6f8",
+          "proposed_sha256": "03ccbb823ff689bfd063e95d23df28000938f6f8890f3865b470eb8e0eabcef0",
+          "exact_hunks": 1
+        },
+        {
+          "path": "crates/kasumi-server/src/runtime.rs",
+          "layer": "E",
+          "input_sha256": "b73529e217929c9a6c90683602ba91712b7d6077ff740f4ac5c80b79da7c2d07",
+          "proposed_sha256": "bc74484d877dbabd351be06545dc0599edeb5ce15ca462d12f114e01bdfb6550",
+          "exact_hunks": 2
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "crates/kasumi-authority/src/target_materialization_tests.rs",
+      "actual_sha256": "54b46ffeae91cfb569022ba12c685c19b77d71be9c6a70a41426a86ac5365f61",
+      "final_sha256": "4ab82417181d3b2d7651dafc3a5bf6b643fd20b874841e22be043940979084c6",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "54b46ffeae91cfb569022ba12c685c19b77d71be9c6a70a41426a86ac5365f61",
+          "proposed_sha256": "4ab82417181d3b2d7651dafc3a5bf6b643fd20b874841e22be043940979084c6",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/admission.rs",
+      "actual_sha256": "b03103fffab838548140d7626e9fb8a9ef10a33233247473baf5b451cc0076e3",
+      "final_sha256": "a9b38aa064968e90524ed6a7f91cd6b60f2449c8c1e1eed86e081f037a148e39",
+      "transitions": [
+        {
+          "layer": "A",
+          "input_sha256": "b03103fffab838548140d7626e9fb8a9ef10a33233247473baf5b451cc0076e3",
+          "proposed_sha256": "a9b38aa064968e90524ed6a7f91cd6b60f2449c8c1e1eed86e081f037a148e39",
+          "exact_hunks": 18
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/audit_maintenance.rs",
+      "actual_sha256": "f5a55d9b2d6f067c63f87aa1862d89db74e3d32321f39eb3e15987d1c5b5b711",
+      "final_sha256": "043cd8b9a1dab2989df31729de0aa723bba71fc477dd6a40a92a6ea15accbeb7",
+      "transitions": [
+        {
+          "layer": "C",
+          "input_sha256": "f5a55d9b2d6f067c63f87aa1862d89db74e3d32321f39eb3e15987d1c5b5b711",
+          "proposed_sha256": "043cd8b9a1dab2989df31729de0aa723bba71fc477dd6a40a92a6ea15accbeb7",
+          "exact_hunks": 2
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/audit_maintenance_service.rs",
+      "actual_sha256": "0ed19080f343fa53eb9bd6dd40d5f95965145a7311bc6becadd8febd51c10c3b",
+      "final_sha256": "7280ce8def5bdfce2a4d76e036626d9f5bfc1b8889671af64bbdf2248e0eee42",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "0ed19080f343fa53eb9bd6dd40d5f95965145a7311bc6becadd8febd51c10c3b",
+          "proposed_sha256": "b2a5546d0be60dd75016b02482e04e2a8572faf6a1227b9a7decef83d791b79d",
+          "exact_hunks": 2
+        },
+        {
+          "layer": "C",
+          "input_sha256": "b2a5546d0be60dd75016b02482e04e2a8572faf6a1227b9a7decef83d791b79d",
+          "proposed_sha256": "7280ce8def5bdfce2a4d76e036626d9f5bfc1b8889671af64bbdf2248e0eee42",
+          "exact_hunks": 3
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/backup_history_work.rs",
+      "actual_sha256": "e7dcf26ddb2dd9fd7b30d58f6dd6a93dd6c705151a1b1779dba40490d87835a4",
+      "final_sha256": "a305c39db17d76defe52b955925542aff9751f778d62d3eba499929d36e88e1c",
+      "transitions": [
+        {
+          "layer": "C",
+          "input_sha256": "e7dcf26ddb2dd9fd7b30d58f6dd6a93dd6c705151a1b1779dba40490d87835a4",
+          "proposed_sha256": "a305c39db17d76defe52b955925542aff9751f778d62d3eba499929d36e88e1c",
+          "exact_hunks": 9
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/backup_restore.rs",
+      "actual_sha256": "3d6f0ba327866e18ae783ebd122641c608f83b92396121edbcbd3c7a659a1ae5",
+      "final_sha256": "3b68ff709be0bca37c8f2336084c90cf9d40990b765836cef79c3c37a8abfddc",
+      "transitions": [
+        {
+          "layer": "C",
+          "input_sha256": "3d6f0ba327866e18ae783ebd122641c608f83b92396121edbcbd3c7a659a1ae5",
+          "proposed_sha256": "3b68ff709be0bca37c8f2336084c90cf9d40990b765836cef79c3c37a8abfddc",
+          "exact_hunks": 3
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/backup_sessions.rs",
+      "actual_sha256": "0382ffbab30a0e63a6c1929e0d352f65a5ddb125430dda57399216e812895af6",
+      "final_sha256": "455d6da67897452b373f56435513d536d557e1bf5848ccbfbc8370d13fb085b1",
+      "transitions": [
+        {
+          "layer": "C",
+          "input_sha256": "0382ffbab30a0e63a6c1929e0d352f65a5ddb125430dda57399216e812895af6",
+          "proposed_sha256": "455d6da67897452b373f56435513d536d557e1bf5848ccbfbc8370d13fb085b1",
+          "exact_hunks": 7
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/backup_verify.rs",
+      "actual_sha256": "e542b082228f1191e933242c8cfd5ee34b26b50c8d43854970a1da35f1a61ae2",
+      "final_sha256": "bb0bb2feba44f713363b6edcd471d953255cb7ebddfc34062677da79950bd271",
+      "transitions": [
+        {
+          "layer": "C",
+          "input_sha256": "e542b082228f1191e933242c8cfd5ee34b26b50c8d43854970a1da35f1a61ae2",
+          "proposed_sha256": "bb0bb2feba44f713363b6edcd471d953255cb7ebddfc34062677da79950bd271",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/bootstrap.rs",
+      "actual_sha256": "24ee88344df4b156dcfec5244d6aeb4e467662be13d18862384d6cde737d8b2a",
+      "final_sha256": "31e7a553c70900d234978d5bf9d2ccb5cbe16b795cc3fb91dd23d34c65ba374c",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "24ee88344df4b156dcfec5244d6aeb4e467662be13d18862384d6cde737d8b2a",
+          "proposed_sha256": "31e7a553c70900d234978d5bf9d2ccb5cbe16b795cc3fb91dd23d34c65ba374c",
+          "exact_hunks": 11
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/bootstrap_fixtures.rs",
+      "actual_sha256": "5bdbe5608cc3e1184490662c1433ff0e6b7976ddcdbaf2628843d34305d89594",
+      "final_sha256": "1a8e58c080b4967909d7d3fc6e811e1b09905753de7fe3023b86d1cc573031ea",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "5bdbe5608cc3e1184490662c1433ff0e6b7976ddcdbaf2628843d34305d89594",
+          "proposed_sha256": "1a8e58c080b4967909d7d3fc6e811e1b09905753de7fe3023b86d1cc573031ea",
+          "exact_hunks": 2
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/bootstrap_target_quorum.rs",
+      "actual_sha256": "7077b1e36b5ca8ec704c5ade4e04598aa2a5929733d9663a124ef1b9d6785c34",
+      "final_sha256": "4a5aa970287a0f3438409ac4fc8f79e4d66673e43debf0ea3e8dfff3eb4cc50a",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "7077b1e36b5ca8ec704c5ade4e04598aa2a5929733d9663a124ef1b9d6785c34",
+          "proposed_sha256": "4a5aa970287a0f3438409ac4fc8f79e4d66673e43debf0ea3e8dfff3eb4cc50a",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/bootstrap_target_serving.rs",
+      "actual_sha256": "208647029240342872c184579200e0f0dc63ab6eb5bc33a0aa988887751a0720",
+      "final_sha256": "efcacb2b1aebedf1787cf4929a59fe962b3b303d73fba191d352546bdfac50f9",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "208647029240342872c184579200e0f0dc63ab6eb5bc33a0aa988887751a0720",
+          "proposed_sha256": "efcacb2b1aebedf1787cf4929a59fe962b3b303d73fba191d352546bdfac50f9",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/custody_service.rs",
+      "actual_sha256": "80709788c6922904e7fc752119f192022d43555f2b719fabc2257997ddbee12d",
+      "final_sha256": "ea0d23c36551e1e2e10f26c871392d2bf460337a7fbab6208411be74dfe738ef",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "80709788c6922904e7fc752119f192022d43555f2b719fabc2257997ddbee12d",
+          "proposed_sha256": "ea0d23c36551e1e2e10f26c871392d2bf460337a7fbab6208411be74dfe738ef",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/database_worker_outcome_tests.rs",
+      "actual_sha256": "d818afb70b95c823f6c773f86b1130f6c9863a6c722f80147e2a36144db9614a",
+      "final_sha256": "85ac5ae0cf9f304cd3ea6dec62f05e98e1187e78e620206ca9fdaddfd6e65875",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "d818afb70b95c823f6c773f86b1130f6c9863a6c722f80147e2a36144db9614a",
+          "proposed_sha256": "85ac5ae0cf9f304cd3ea6dec62f05e98e1187e78e620206ca9fdaddfd6e65875",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/lease_retention_tests.rs",
+      "actual_sha256": "c0cf659cff111c98f6783ad6db789904a7201104eda75131eb6e97a585a314cf",
+      "final_sha256": "aaf94b72934fc8ae5fbd56ef6dcc25a1f28dcde25729a78706d3c321780d433b",
+      "transitions": [
+        {
+          "layer": "C",
+          "input_sha256": "c0cf659cff111c98f6783ad6db789904a7201104eda75131eb6e97a585a314cf",
+          "proposed_sha256": "aaf94b72934fc8ae5fbd56ef6dcc25a1f28dcde25729a78706d3c321780d433b",
+          "exact_hunks": 7
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/proposal_jobs_tests.rs",
+      "actual_sha256": "d2a6614605cac008c9ff2f94d64c109c09fbe36f911e6ed6e10b483e6d3afd45",
+      "final_sha256": "1d647486b804557e0675a35838fc1c73489ce186d4601d59aef95f6f3b73de14",
+      "transitions": [
+        {
+          "layer": "C",
+          "input_sha256": "d2a6614605cac008c9ff2f94d64c109c09fbe36f911e6ed6e10b483e6d3afd45",
+          "proposed_sha256": "1d647486b804557e0675a35838fc1c73489ce186d4601d59aef95f6f3b73de14",
+          "exact_hunks": 9
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/security_audit.rs",
+      "actual_sha256": "a5a7d2873c092d8d691111e24d65f1a2a4f65908eecc56bb0181070a06e4835c",
+      "final_sha256": "755861515985ad8afa6e911594d986112216da789c4faf3ccb5bdf4e78423abd",
+      "transitions": [
+        {
+          "layer": "A",
+          "input_sha256": "a5a7d2873c092d8d691111e24d65f1a2a4f65908eecc56bb0181070a06e4835c",
+          "proposed_sha256": "755861515985ad8afa6e911594d986112216da789c4faf3ccb5bdf4e78423abd",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/security_audit_existing_tests.rs",
+      "actual_sha256": "15a5470bae61638734ec2573fc4e6fcbe8ce74a492083bfd3b67bac7e42da033",
+      "final_sha256": "59103d96dd89136d31ec29f148df692cc7d89908dde9060ddc41bee03b311b12",
+      "transitions": [
+        {
+          "layer": "C",
+          "input_sha256": "15a5470bae61638734ec2573fc4e6fcbe8ce74a492083bfd3b67bac7e42da033",
+          "proposed_sha256": "59103d96dd89136d31ec29f148df692cc7d89908dde9060ddc41bee03b311b12",
+          "exact_hunks": 4
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/security_audit_retention.rs",
+      "actual_sha256": "c021586a53ca8272ee9f050c99b5f3faca03b4d2efa3b5646188377e5334349a",
+      "final_sha256": "3482c5ec0d20ebe8120b3a491ae1ea88164f24c92986e67e6d759dcd1f06d6b7",
+      "transitions": [
+        {
+          "layer": "C",
+          "input_sha256": "c021586a53ca8272ee9f050c99b5f3faca03b4d2efa3b5646188377e5334349a",
+          "proposed_sha256": "3482c5ec0d20ebe8120b3a491ae1ea88164f24c92986e67e6d759dcd1f06d6b7",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/service.rs",
+      "actual_sha256": "f55bfd0a2f68b8a8250cb6c483af1bda40614fd3f16d504b907f26b84bd1fa6c",
+      "final_sha256": "d651f41f9acf27d77448c3447e48c9f26b21b1f308e98278ba2268c38f4d099d",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "f55bfd0a2f68b8a8250cb6c483af1bda40614fd3f16d504b907f26b84bd1fa6c",
+          "proposed_sha256": "7217f77d0f8aae2ab6642aa7002c03c009eb375af7a9f90b201c308510a6a70e",
+          "exact_hunks": 10
+        },
+        {
+          "layer": "C",
+          "input_sha256": "7217f77d0f8aae2ab6642aa7002c03c009eb375af7a9f90b201c308510a6a70e",
+          "proposed_sha256": "d651f41f9acf27d77448c3447e48c9f26b21b1f308e98278ba2268c38f4d099d",
+          "exact_hunks": 2
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/service_credential_tests.rs",
+      "actual_sha256": "2b6cf76384392c1af88f3dbee35caaa89f7336f3ee2951c9be3f18065cfe9d8b",
+      "final_sha256": "d1c060640d164e922283d30ec34d94654ad3013ddea55f873112085bea8adef6",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "2b6cf76384392c1af88f3dbee35caaa89f7336f3ee2951c9be3f18065cfe9d8b",
+          "proposed_sha256": "d1c060640d164e922283d30ec34d94654ad3013ddea55f873112085bea8adef6",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/service_schema_tests.rs",
+      "actual_sha256": "c68bbce4f118a4cfa665ba4f6adfe53ee690ad9402641a0f009f652eed682834",
+      "final_sha256": "e60cdb12fc5d566b5abbf59dd06c787377c01341353f6f9a64fde018750f9e73",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "c68bbce4f118a4cfa665ba4f6adfe53ee690ad9402641a0f009f652eed682834",
+          "proposed_sha256": "e60cdb12fc5d566b5abbf59dd06c787377c01341353f6f9a64fde018750f9e73",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/service_serving_tests.rs",
+      "actual_sha256": "8ee21f58ebedf96e29645ec10028ca58144e21eb8a874c6a0d9730bb39b62852",
+      "final_sha256": "317b25430f1d94a48b287315daa4b5d2f48cdf3fc8a701ef7ec694cb5a8b6165",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "8ee21f58ebedf96e29645ec10028ca58144e21eb8a874c6a0d9730bb39b62852",
+          "proposed_sha256": "317b25430f1d94a48b287315daa4b5d2f48cdf3fc8a701ef7ec694cb5a8b6165",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/service_staging_tests.rs",
+      "actual_sha256": "7dfacc4686f31c6a4b0607148c9b6a6f3dfd486d1a7ee794a4d0d01c445ebec3",
+      "final_sha256": "ce2b99a810c72f9fb010c7f4972187c7c996092914467dac76403a3f2963cd48",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "7dfacc4686f31c6a4b0607148c9b6a6f3dfd486d1a7ee794a4d0d01c445ebec3",
+          "proposed_sha256": "ce2b99a810c72f9fb010c7f4972187c7c996092914467dac76403a3f2963cd48",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/snapshot_bundle.rs",
+      "actual_sha256": "8487112e1f6353a83c7a636bce97e87c1e4bef1f2fb38846b0b49fe6892978c5",
+      "final_sha256": "21466b0ab2b64be26cf8bda6e7ef9c5e432461a1658e8754342f0cd4c5981f43",
+      "transitions": [
+        {
+          "layer": "C",
+          "input_sha256": "8487112e1f6353a83c7a636bce97e87c1e4bef1f2fb38846b0b49fe6892978c5",
+          "proposed_sha256": "21466b0ab2b64be26cf8bda6e7ef9c5e432461a1658e8754342f0cd4c5981f43",
+          "exact_hunks": 5
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/staged_reads.rs",
+      "actual_sha256": "96e5471e3ec5dc4587060cf72445f93749a16334d0ad0cd0c8a844f01b9eafee",
+      "final_sha256": "b73a7b9822ee1e5a95cf89ccb8dcfc72a13798828ecba5bbe78a30be5b4e80c6",
+      "transitions": [
+        {
+          "layer": "C",
+          "input_sha256": "96e5471e3ec5dc4587060cf72445f93749a16334d0ad0cd0c8a844f01b9eafee",
+          "proposed_sha256": "b73a7b9822ee1e5a95cf89ccb8dcfc72a13798828ecba5bbe78a30be5b4e80c6",
+          "exact_hunks": 2
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/test_utils.rs",
+      "actual_sha256": "2ff6c9c17681de760f15a76cf8cc911e659a15e509a58f42707b66b9bbcb49af",
+      "final_sha256": "1907c61783cfd9efff180216f7ddbad74247e55229a41b0edbad33a77497dd9b",
+      "transitions": [
+        {
+          "layer": "C",
+          "input_sha256": "2ff6c9c17681de760f15a76cf8cc911e659a15e509a58f42707b66b9bbcb49af",
+          "proposed_sha256": "1907c61783cfd9efff180216f7ddbad74247e55229a41b0edbad33a77497dd9b",
+          "exact_hunks": 2
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/tests/admission.rs",
+      "actual_sha256": "34d5644387a622d5150a59a4bdf08235c94e829ad2e5f1e2a1de8c82b1259765",
+      "final_sha256": "2789a59da3bc3f465f8b16aabd21ea4e39fb7c90ee003d1a91f14d35b0b8580d",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "34d5644387a622d5150a59a4bdf08235c94e829ad2e5f1e2a1de8c82b1259765",
+          "proposed_sha256": "c873678d040cfe30de89fee85621fc8acadb726e503cf819ee6c30d0ba40bd67",
+          "exact_hunks": 4
+        },
+        {
+          "layer": "C",
+          "input_sha256": "c873678d040cfe30de89fee85621fc8acadb726e503cf819ee6c30d0ba40bd67",
+          "proposed_sha256": "2789a59da3bc3f465f8b16aabd21ea4e39fb7c90ee003d1a91f14d35b0b8580d",
+          "exact_hunks": 2
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/tests/backup_checkpoint.rs",
+      "actual_sha256": "73e731f43f7a1d3975676d34b259e780fcae5669ecf326cd4e7e4a1fb16a223b",
+      "final_sha256": "45bd8b086d26e2f9139df7199ab0a46e6164c6bc260b487616d42be5c946cdd2",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "73e731f43f7a1d3975676d34b259e780fcae5669ecf326cd4e7e4a1fb16a223b",
+          "proposed_sha256": "7eefd52044e8a353f2d51adf29f111d7a07c22ec43aa991469e312b3e30e46bb",
+          "exact_hunks": 1
+        },
+        {
+          "layer": "C",
+          "input_sha256": "7eefd52044e8a353f2d51adf29f111d7a07c22ec43aa991469e312b3e30e46bb",
+          "proposed_sha256": "45bd8b086d26e2f9139df7199ab0a46e6164c6bc260b487616d42be5c946cdd2",
+          "exact_hunks": 11
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/tests/common/retirement_snapshot.rs",
+      "actual_sha256": "5370829d23463fbe339ca33df22fc1de73cb873bbc35141d4934f0150945aa0c",
+      "final_sha256": "f3ddb480c668942bb84330fa83770afb951b9c14dc61950fa8fd47038e7d36d5",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "5370829d23463fbe339ca33df22fc1de73cb873bbc35141d4934f0150945aa0c",
+          "proposed_sha256": "f3ddb480c668942bb84330fa83770afb951b9c14dc61950fa8fd47038e7d36d5",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/tests/fixture_epoch_clock.rs",
+      "actual_sha256": "8cd9375a10672c40aee1bdafbab1e959735224e12e73a5ac51a8abc668e7fa37",
+      "final_sha256": "0bfaea45d6c9494b3537b2d3e36839196d2a824d1fd86799c5f92e584994a3a4",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "8cd9375a10672c40aee1bdafbab1e959735224e12e73a5ac51a8abc668e7fa37",
+          "proposed_sha256": "0bfaea45d6c9494b3537b2d3e36839196d2a824d1fd86799c5f92e584994a3a4",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/tests/response_release.rs",
+      "actual_sha256": "4e6fa812fbcd37a9b1088506e0ea48e2205e191d409c9b42201b5a2fca5349f9",
+      "final_sha256": "049fb26bcb4b5fd4cbdaafaedb3d87c6078d33e019b4bc2f542a435636d765a3",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "4e6fa812fbcd37a9b1088506e0ea48e2205e191d409c9b42201b5a2fca5349f9",
+          "proposed_sha256": "049fb26bcb4b5fd4cbdaafaedb3d87c6078d33e019b4bc2f542a435636d765a3",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/tests/retirement.rs",
+      "actual_sha256": "48c3b9fd719c1274da7d34f6e977345ffa660cfa2bd99c9f113582d01218970e",
+      "final_sha256": "2af0be7c21ae38005b3f01df5c0ecd9d980e68862c3fc71e4245435102e283db",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "48c3b9fd719c1274da7d34f6e977345ffa660cfa2bd99c9f113582d01218970e",
+          "proposed_sha256": "2af0be7c21ae38005b3f01df5c0ecd9d980e68862c3fc71e4245435102e283db",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/administration.rs",
+      "actual_sha256": "2bded29945e6dd7dc6442348e7888f420756eb49804a8258b67c752ea7b94f6e",
+      "final_sha256": "b3a881ea9f649d79ea57619bb959d53e4a94cae6a6095408867af89505143093",
+      "transitions": [
+        {
+          "layer": "D",
+          "input_sha256": "2bded29945e6dd7dc6442348e7888f420756eb49804a8258b67c752ea7b94f6e",
+          "proposed_sha256": "b3a881ea9f649d79ea57619bb959d53e4a94cae6a6095408867af89505143093",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/api.rs",
+      "actual_sha256": "703b4543f748ddb2fd9a8410a8e744b71dfc6fea114b697ef55e25ed8016e747",
+      "final_sha256": "a3f8cecdb8ea3731dcf4ec7deff6086991ef7e34c94458786e51fb0093bc0297",
+      "transitions": [
+        {
+          "layer": "D",
+          "input_sha256": "703b4543f748ddb2fd9a8410a8e744b71dfc6fea114b697ef55e25ed8016e747",
+          "proposed_sha256": "a3f8cecdb8ea3731dcf4ec7deff6086991ef7e34c94458786e51fb0093bc0297",
+          "exact_hunks": 2
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/api_backup_checkpoint_tests.rs",
+      "actual_sha256": "7365410cbe33254d434e606e3dc813245ff765671586f249f865c421f62b5927",
+      "final_sha256": "67c8cb8602c6cfba228e9ad37e0f9e79907c4ee5100c652cce3a05c1dfb92d2a",
+      "transitions": [
+        {
+          "layer": "D",
+          "input_sha256": "7365410cbe33254d434e606e3dc813245ff765671586f249f865c421f62b5927",
+          "proposed_sha256": "67c8cb8602c6cfba228e9ad37e0f9e79907c4ee5100c652cce3a05c1dfb92d2a",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/configured_tenant_enrollment.rs",
+      "actual_sha256": "3107288672dcc9db46a8c9c3cf86152a3f6969dfb3831ab6bf3ecb8e9a252753",
+      "final_sha256": "4cd78909c34e8b421ff75d93d73d642596bca5cff597181e5cf139d15826d7c8",
+      "transitions": [
+        {
+          "layer": "D",
+          "input_sha256": "3107288672dcc9db46a8c9c3cf86152a3f6969dfb3831ab6bf3ecb8e9a252753",
+          "proposed_sha256": "4cd78909c34e8b421ff75d93d73d642596bca5cff597181e5cf139d15826d7c8",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/local_recovery.rs",
+      "actual_sha256": "4123bb4d7e1b29a9ad103b87fd97622781975f3f8467478af494085248e38dcb",
+      "final_sha256": "a7cf814be4b63195f35d7f68669ac49bdbd45ab1336251c72b4c65ef95134d96",
+      "transitions": [
+        {
+          "layer": "D",
+          "input_sha256": "4123bb4d7e1b29a9ad103b87fd97622781975f3f8467478af494085248e38dcb",
+          "proposed_sha256": "a7cf814be4b63195f35d7f68669ac49bdbd45ab1336251c72b4c65ef95134d96",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/mcp_credential_tests.rs",
+      "actual_sha256": "08667511ba1c612eb0688a8c24205644000e16ea2ba1cc3132ac9b4385a66f36",
+      "final_sha256": "03ccbb823ff689bfd063e95d23df28000938f6f8890f3865b470eb8e0eabcef0",
+      "transitions": [
+        {
+          "layer": "D",
+          "input_sha256": "08667511ba1c612eb0688a8c24205644000e16ea2ba1cc3132ac9b4385a66f36",
+          "proposed_sha256": "f1f7fa335be04e2ae4b8550e7c21a029f4a587ddce61d340be8c91f3b040e6f8",
+          "exact_hunks": 1
+        },
+        {
+          "layer": "E",
+          "input_sha256": "f1f7fa335be04e2ae4b8550e7c21a029f4a587ddce61d340be8c91f3b040e6f8",
+          "proposed_sha256": "03ccbb823ff689bfd063e95d23df28000938f6f8890f3865b470eb8e0eabcef0",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/original_serving_runtime.rs",
+      "actual_sha256": "9389dc9a06b4ecc4c31118d654e93c2ef5b5de24fd17238dbe437f3ccab51aeb",
+      "final_sha256": "64d7e8279574da043f665fa02f2e2cb6a472e99ad2d7e6449d18c48bbc31b172",
+      "transitions": [
+        {
+          "layer": "D",
+          "input_sha256": "9389dc9a06b4ecc4c31118d654e93c2ef5b5de24fd17238dbe437f3ccab51aeb",
+          "proposed_sha256": "64d7e8279574da043f665fa02f2e2cb6a472e99ad2d7e6449d18c48bbc31b172",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/readiness_probe_tests.rs",
+      "actual_sha256": "269c13daf5956852f33695763bef5232329e9970a4fe1e9398f7bea170eb2c55",
+      "final_sha256": "96a088ef1f0472adace02444f120110e77d1df8c352f0b9c91c54563f71154c1",
+      "transitions": [
+        {
+          "layer": "E",
+          "input_sha256": "269c13daf5956852f33695763bef5232329e9970a4fe1e9398f7bea170eb2c55",
+          "proposed_sha256": "96a088ef1f0472adace02444f120110e77d1df8c352f0b9c91c54563f71154c1",
+          "exact_hunks": 8
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/readiness_tests.rs",
+      "actual_sha256": "00ccea691fcdc191f7dba7c4edc3ae1191ccb92f57483f7e2cfe3ac7c1289968",
+      "final_sha256": "62c3de48bc87bde0f4f68560927ede03a4842c00dafffbf7bc15558807ccfb69",
+      "transitions": [
+        {
+          "layer": "E",
+          "input_sha256": "00ccea691fcdc191f7dba7c4edc3ae1191ccb92f57483f7e2cfe3ac7c1289968",
+          "proposed_sha256": "62c3de48bc87bde0f4f68560927ede03a4842c00dafffbf7bc15558807ccfb69",
+          "exact_hunks": 2
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime.rs",
+      "actual_sha256": "52d456572136a35c690b00bc4ce41161d4e9687ff55b20971ae361cdd0971125",
+      "final_sha256": "bc74484d877dbabd351be06545dc0599edeb5ce15ca462d12f114e01bdfb6550",
+      "transitions": [
+        {
+          "layer": "D",
+          "input_sha256": "52d456572136a35c690b00bc4ce41161d4e9687ff55b20971ae361cdd0971125",
+          "proposed_sha256": "b73529e217929c9a6c90683602ba91712b7d6077ff740f4ac5c80b79da7c2d07",
+          "exact_hunks": 2
+        },
+        {
+          "layer": "E",
+          "input_sha256": "b73529e217929c9a6c90683602ba91712b7d6077ff740f4ac5c80b79da7c2d07",
+          "proposed_sha256": "bc74484d877dbabd351be06545dc0599edeb5ce15ca462d12f114e01bdfb6550",
+          "exact_hunks": 2
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime_retired_source_tests.rs",
+      "actual_sha256": "57174277f71b274ee649ca3ce376e8249a11bc5a1c61b3ea8606c5295dc2ba60",
+      "final_sha256": "6316a97cb3794eed803f629caf98bb44a6f7303e73ea575818f70c32053eff6c",
+      "transitions": [
+        {
+          "layer": "D",
+          "input_sha256": "57174277f71b274ee649ca3ce376e8249a11bc5a1c61b3ea8606c5295dc2ba60",
+          "proposed_sha256": "6316a97cb3794eed803f629caf98bb44a6f7303e73ea575818f70c32053eff6c",
+          "exact_hunks": 2
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/serving_owner_tests.rs",
+      "actual_sha256": "b136d5cacc2bc2880485b077a3a2e677a72e5e06efd112b718bd7cd50e6b148e",
+      "final_sha256": "709db5760c44e919016468fd8710998436e960b9b4911a5e1ebd03d25fd130cf",
+      "transitions": [
+        {
+          "layer": "E",
+          "input_sha256": "b136d5cacc2bc2880485b077a3a2e677a72e5e06efd112b718bd7cd50e6b148e",
+          "proposed_sha256": "709db5760c44e919016468fd8710998436e960b9b4911a5e1ebd03d25fd130cf",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/signer_runtime_tests.rs",
+      "actual_sha256": "e30e1e06248873a19fb4977ac84d66e44e20d587684fa3631ee2df672579fbd0",
+      "final_sha256": "9a037dd5b54271d4e9015a9509dfe5fccc619dea87ea261a8ba314949c3fa3d5",
+      "transitions": [
+        {
+          "layer": "E",
+          "input_sha256": "e30e1e06248873a19fb4977ac84d66e44e20d587684fa3631ee2df672579fbd0",
+          "proposed_sha256": "9a037dd5b54271d4e9015a9509dfe5fccc619dea87ea261a8ba314949c3fa3d5",
+          "exact_hunks": 2
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/standalone_tenant_preparation.rs",
+      "actual_sha256": "e344bd988ab2f41473be89f69521ada0bd542801399000d7950c6fb391445fc2",
+      "final_sha256": "947a08d6715e89029895f7dfa28d351e78a1e7daedaa8d02640b690534b28ec8",
+      "transitions": [
+        {
+          "layer": "D",
+          "input_sha256": "e344bd988ab2f41473be89f69521ada0bd542801399000d7950c6fb391445fc2",
+          "proposed_sha256": "947a08d6715e89029895f7dfa28d351e78a1e7daedaa8d02640b690534b28ec8",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "docs/admission.md",
+      "actual_sha256": "106a4795844fc9c8c0d0643b282eac89777fcfa7c3a860d45216463900196b77",
+      "final_sha256": "d68bcaaa1b63d71d630a0e1d5626d2591caa8d01fc913645fd563a867aa69a2e",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "106a4795844fc9c8c0d0643b282eac89777fcfa7c3a860d45216463900196b77",
+          "proposed_sha256": "d68bcaaa1b63d71d630a0e1d5626d2591caa8d01fc913645fd563a867aa69a2e",
+          "exact_hunks": 1
+        }
+      ]
+    }
+  ],
+  "overlapping_paths": [
+    {
+      "path": "crates/kasumi-engine/src/audit_maintenance_service.rs",
+      "actual_sha256": "0ed19080f343fa53eb9bd6dd40d5f95965145a7311bc6becadd8febd51c10c3b",
+      "final_sha256": "7280ce8def5bdfce2a4d76e036626d9f5bfc1b8889671af64bbdf2248e0eee42",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "0ed19080f343fa53eb9bd6dd40d5f95965145a7311bc6becadd8febd51c10c3b",
+          "proposed_sha256": "b2a5546d0be60dd75016b02482e04e2a8572faf6a1227b9a7decef83d791b79d",
+          "exact_hunks": 2
+        },
+        {
+          "layer": "C",
+          "input_sha256": "b2a5546d0be60dd75016b02482e04e2a8572faf6a1227b9a7decef83d791b79d",
+          "proposed_sha256": "7280ce8def5bdfce2a4d76e036626d9f5bfc1b8889671af64bbdf2248e0eee42",
+          "exact_hunks": 3
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/src/service.rs",
+      "actual_sha256": "f55bfd0a2f68b8a8250cb6c483af1bda40614fd3f16d504b907f26b84bd1fa6c",
+      "final_sha256": "d651f41f9acf27d77448c3447e48c9f26b21b1f308e98278ba2268c38f4d099d",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "f55bfd0a2f68b8a8250cb6c483af1bda40614fd3f16d504b907f26b84bd1fa6c",
+          "proposed_sha256": "7217f77d0f8aae2ab6642aa7002c03c009eb375af7a9f90b201c308510a6a70e",
+          "exact_hunks": 10
+        },
+        {
+          "layer": "C",
+          "input_sha256": "7217f77d0f8aae2ab6642aa7002c03c009eb375af7a9f90b201c308510a6a70e",
+          "proposed_sha256": "d651f41f9acf27d77448c3447e48c9f26b21b1f308e98278ba2268c38f4d099d",
+          "exact_hunks": 2
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/tests/admission.rs",
+      "actual_sha256": "34d5644387a622d5150a59a4bdf08235c94e829ad2e5f1e2a1de8c82b1259765",
+      "final_sha256": "2789a59da3bc3f465f8b16aabd21ea4e39fb7c90ee003d1a91f14d35b0b8580d",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "34d5644387a622d5150a59a4bdf08235c94e829ad2e5f1e2a1de8c82b1259765",
+          "proposed_sha256": "c873678d040cfe30de89fee85621fc8acadb726e503cf819ee6c30d0ba40bd67",
+          "exact_hunks": 4
+        },
+        {
+          "layer": "C",
+          "input_sha256": "c873678d040cfe30de89fee85621fc8acadb726e503cf819ee6c30d0ba40bd67",
+          "proposed_sha256": "2789a59da3bc3f465f8b16aabd21ea4e39fb7c90ee003d1a91f14d35b0b8580d",
+          "exact_hunks": 2
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-engine/tests/backup_checkpoint.rs",
+      "actual_sha256": "73e731f43f7a1d3975676d34b259e780fcae5669ecf326cd4e7e4a1fb16a223b",
+      "final_sha256": "45bd8b086d26e2f9139df7199ab0a46e6164c6bc260b487616d42be5c946cdd2",
+      "transitions": [
+        {
+          "layer": "B",
+          "input_sha256": "73e731f43f7a1d3975676d34b259e780fcae5669ecf326cd4e7e4a1fb16a223b",
+          "proposed_sha256": "7eefd52044e8a353f2d51adf29f111d7a07c22ec43aa991469e312b3e30e46bb",
+          "exact_hunks": 1
+        },
+        {
+          "layer": "C",
+          "input_sha256": "7eefd52044e8a353f2d51adf29f111d7a07c22ec43aa991469e312b3e30e46bb",
+          "proposed_sha256": "45bd8b086d26e2f9139df7199ab0a46e6164c6bc260b487616d42be5c946cdd2",
+          "exact_hunks": 11
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/mcp_credential_tests.rs",
+      "actual_sha256": "08667511ba1c612eb0688a8c24205644000e16ea2ba1cc3132ac9b4385a66f36",
+      "final_sha256": "03ccbb823ff689bfd063e95d23df28000938f6f8890f3865b470eb8e0eabcef0",
+      "transitions": [
+        {
+          "layer": "D",
+          "input_sha256": "08667511ba1c612eb0688a8c24205644000e16ea2ba1cc3132ac9b4385a66f36",
+          "proposed_sha256": "f1f7fa335be04e2ae4b8550e7c21a029f4a587ddce61d340be8c91f3b040e6f8",
+          "exact_hunks": 1
+        },
+        {
+          "layer": "E",
+          "input_sha256": "f1f7fa335be04e2ae4b8550e7c21a029f4a587ddce61d340be8c91f3b040e6f8",
+          "proposed_sha256": "03ccbb823ff689bfd063e95d23df28000938f6f8890f3865b470eb8e0eabcef0",
+          "exact_hunks": 1
+        }
+      ]
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime.rs",
+      "actual_sha256": "52d456572136a35c690b00bc4ce41161d4e9687ff55b20971ae361cdd0971125",
+      "final_sha256": "bc74484d877dbabd351be06545dc0599edeb5ce15ca462d12f114e01bdfb6550",
+      "transitions": [
+        {
+          "layer": "D",
+          "input_sha256": "52d456572136a35c690b00bc4ce41161d4e9687ff55b20971ae361cdd0971125",
+          "proposed_sha256": "b73529e217929c9a6c90683602ba91712b7d6077ff740f4ac5c80b79da7c2d07",
+          "exact_hunks": 2
+        },
+        {
+          "layer": "E",
+          "input_sha256": "b73529e217929c9a6c90683602ba91712b7d6077ff740f4ac5c80b79da7c2d07",
+          "proposed_sha256": "bc74484d877dbabd351be06545dc0599edeb5ce15ca462d12f114e01bdfb6550",
+          "exact_hunks": 2
+        }
+      ]
+    }
+  ],
+  "combined_patch": "admission-stack.combined.patch",
+  "combined_patch_sha256": "d4547a4fbbab94f10bfdfacda8461dd3ef9de60f7cda2b3923d1fb9859767a05",
+  "validation": {
+    "exact_virtual_hunks": "passed without offset or fuzz",
+    "every_input_and_output_hash": "matches owning layer manifest",
+    "combined_git_apply_check": {
+      "argv": [
+        "git",
+        "apply",
+        "--check",
+        "target/installed-disk-validation/admission-stack.combined.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "actual_source_and_patch_inputs_unchanged": true,
+    "source_and_index_clean_before_and_after": true,
+    "builds_and_tests": "not run"
+  },
+  "post_application_checks": {
+    "status": "recommended_not_run",
+    "coordination": "Root owns build process, deadlines, target directories, source freeze and process-group drain evidence. These commands do not replace release-wide or platform qualification.",
+    "checks": [
+      {
+        "purpose": "Compile all direct API consumers and required configuration fields",
+        "argv": [
+          "cargo",
+          "check",
+          "--locked",
+          "--workspace",
+          "--all-targets",
+          "--all-features"
+        ]
+      },
+      {
+        "purpose": "Run deterministic shared-core accounting, RSS, startup inventory, report, and actual sampler lifetime tests first",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "kasumi-engine",
+          "--all-features",
+          "--lib",
+          "admission::tests::",
+          "--",
+          "--test-threads=1"
+        ]
+      },
+      {
+        "purpose": "Run every changed engine unit fixture and constructor consumer, including worker, snapshot, lease, audit, proposal, and bootstrap modules",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "kasumi-engine",
+          "--all-features",
+          "--lib",
+          "--",
+          "--test-threads=1"
+        ]
+      },
+      {
+        "purpose": "Run directly changed engine integration targets: committed Raft bypass, clock binding, encoded response admission, production backup budgets, and custody identity/reopen",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "kasumi-engine",
+          "--all-features",
+          "--test",
+          "admission",
+          "--test",
+          "fixture_epoch_clock",
+          "--test",
+          "response_release",
+          "--test",
+          "backup_checkpoint",
+          "--test",
+          "retirement",
+          "--",
+          "--test-threads=1"
+        ]
+      },
+      {
+        "purpose": "Exercise authority target materialization fixture after mandatory audit facade conversion",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "kasumi-authority",
+          "--all-features",
+          "--lib",
+          "--",
+          "--test-threads=1"
+        ]
+      },
+      {
+        "purpose": "Exercise server configuration omission, startup/custody, API, MCP, readiness, signer, serving-owner and runtime fixture conversions",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "kasumi-server",
+          "--all-features",
+          "--lib",
+          "--",
+          "--test-threads=1"
+        ]
+      },
+      {
+        "purpose": "Enforce workspace lint after all new field/API consumers compile",
+        "argv": [
+          "cargo",
+          "clippy",
+          "--locked",
+          "--workspace",
+          "--all-targets",
+          "--all-features",
+          "--",
+          "-D",
+          "warnings"
+        ]
+      },
+      {
+        "purpose": "Enforce repository formatting on installed source",
+        "argv": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ]
+      }
+    ]
+  },
+  "independent_review": {
+    "engine_fixture_patch_sha256": "86ff7adb1a5648b1c80efca62d251ff2fd8758db6c887fce8cfb3850e6ff3feb",
+    "reviewer": "/root/disk_callers_continuation",
+    "result": "approved; no actionable defect; all 16 actual/intermediate/proposed hashes independently verified"
+  }
+}

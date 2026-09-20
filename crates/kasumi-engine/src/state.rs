@@ -2626,12 +2626,23 @@ mod restore_budget_tests {
             )
             .unwrap()
             .unwrap();
-        let mut source = engine.generation().unwrap().state.clone();
-        source.limits.max_snapshot_bytes =
-            crate::test_utils::encode_snapshot_candidate(&source, 64 << 20)
+        let current = engine.generation().unwrap();
+        let mut state = current.state.clone();
+        // Keep the original resident-state budget; permanent receipts have a
+        // separate bound, but the recoverable image must include their owner.
+        state.limits.max_snapshot_bytes =
+            crate::test_utils::encode_snapshot_candidate(&state, 64 << 20)
                 .unwrap()
                 .len() as u64
                 + 20;
+        let source = engine
+            .prepare_state(
+                state,
+                current.receipts.clone(),
+                current.terminals.clone(),
+                current.target_resolutions.clone(),
+            )
+            .unwrap();
         let bytes = crate::test_utils::encode_snapshot_candidate(&source, 64 << 20).unwrap();
         engine.restore_candidate(&bytes).unwrap(); // Source itself is a valid recoverable snapshot.
         let outcome = TenantEngine::restored_bootstrap(
@@ -2639,9 +2650,9 @@ mod restore_budget_tests {
             "tenant",
             uuid::Uuid::new_v4().to_string(),
             FullBackupCheckpoint {
-                tenant: source.tenant.clone(),
-                source_incarnation: source.incarnation.clone(),
-                revision: source.revision,
+                tenant: source.state.tenant.clone(),
+                source_incarnation: source.state.incarnation.clone(),
+                revision: source.state.revision,
                 resident_sha256: bytes.sha256().to_owned(),
                 backup_id: uuid::Uuid::new_v4(),
                 manifest_ciphertext_sha256: "00".repeat(32),

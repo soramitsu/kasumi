@@ -63,7 +63,7 @@ pub(crate) mod target_service;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
@@ -420,7 +420,7 @@ pub struct Database {
     archive_destinations: Mutex<BTreeMap<String, Arc<dyn BackupDestination>>>,
     query_slots: Arc<tokio::sync::Semaphore>,
     clock: Arc<dyn LeaseClock>,
-    admission: OnceLock<Arc<NodeAdmission>>,
+    admission: Arc<NodeAdmission>,
     work: Arc<WorkFence>,
     security_audit: Arc<SecurityAudit>,
     audit_work: Arc<WorkFence>,
@@ -682,25 +682,8 @@ impl Database {
         Ok(fence)
     }
 
-    /// Bootstrap paths with internal operations (such as restore auditing) must
-    /// install the server's shared governor before submitting those operations.
-    pub fn new_with_admission(
-        engine: Arc<TenantEngine>,
-        group: RaftGroup,
-        store: Arc<TenantStore>,
-        admission: Arc<NodeAdmission>,
-        security_audit: Arc<SecurityAudit>,
-    ) -> Arc<Self> {
-        Self::new_inner(
-            engine,
-            group,
-            store,
-            Some(admission),
-            security_audit,
-            DatabaseClocks::default(),
-        )
-    }
-
+    /// Every database uses its security ledger's exact installed node governor.
+    /// The governor is present before any background worker starts.
     pub fn new(
         engine: Arc<TenantEngine>,
         group: RaftGroup,
@@ -711,7 +694,6 @@ impl Database {
             engine,
             group,
             store,
-            None,
             security_audit,
             DatabaseClocks::default(),
         )
@@ -725,7 +707,6 @@ impl Database {
         engine: Arc<TenantEngine>,
         group: RaftGroup,
         store: Arc<TenantStore>,
-        admission: Arc<NodeAdmission>,
         security_audit: Arc<SecurityAudit>,
         clock: Arc<kasumi_clock::EpochClock>,
     ) -> anyhow::Result<Arc<Self>> {
@@ -745,7 +726,6 @@ impl Database {
             engine,
             group,
             store,
-            Some(admission),
             security_audit,
             clocks,
         ))
@@ -755,7 +735,6 @@ impl Database {
         engine: Arc<TenantEngine>,
         group: RaftGroup,
         store: Arc<TenantStore>,
-        admission: Option<Arc<NodeAdmission>>,
         security_audit: Arc<SecurityAudit>,
         clocks: DatabaseClocks,
     ) -> Arc<Self> {
@@ -775,7 +754,7 @@ impl Database {
             archive_destinations: Mutex::new(BTreeMap::new()),
             query_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             clock: clocks.elapsed,
-            admission: admission.map(OnceLock::from).unwrap_or_default(),
+            admission: security_audit.admission().clone(),
             work: Arc::new(WorkFence::default()),
             security_audit,
             audit_work: Arc::new(WorkFence::default()),
@@ -806,28 +785,8 @@ impl Database {
         database
     }
 
-    /// Install one node-wide governor before the first admitted operation. Every
-    /// tenant and the control group on a server must share the same instance.
-    pub fn install_admission(&self, admission: Arc<NodeAdmission>) -> Result<()> {
-        match self.admission.set(admission) {
-            Ok(()) => Ok(()),
-            Err(admission)
-                if self
-                    .admission
-                    .get()
-                    .is_some_and(|current| Arc::ptr_eq(current, &admission)) =>
-            {
-                Ok(())
-            }
-            Err(_) => Err(Error::new(
-                ErrorCode::Conflict,
-                "admission already configured or in use",
-            )),
-        }
-    }
-
-    fn admission(&self) -> &Arc<NodeAdmission> {
-        self.admission.get_or_init(NodeAdmission::process_default)
+    pub(crate) fn admission(&self) -> &Arc<NodeAdmission> {
+        &self.admission
     }
 
     pub fn engine(&self) -> &Arc<TenantEngine> {
@@ -904,12 +863,11 @@ impl Database {
                 return report.outcome(Some(failure));
             }
         }
-        if let Err(error) = self.group.shutdown().await {
-            retained = Some(DrainFailure::retained(report.record(
-                "database raft",
-                0,
-                error,
-            )));
+        if let Err(failure) = self.group.shutdown().await {
+            report.merge(&failure);
+            if failure.completion() == DrainCompletion::Retained {
+                retained = Some(failure);
+            }
         }
         {
             let mut worker = self.audit_worker.lock().await;
@@ -1070,10 +1028,8 @@ impl Database {
                                 if db.engine.generation().is_err() {
                                     db.work.seal();
                                 }
-                                let pressured = db.admission.get().is_some_and(|node| {
-                                    let status = node.snapshot();
-                                    status.pressured || !status.sample_usable
-                                });
+                                let status = db.admission.snapshot();
+                                let pressured = status.pressured || !status.sample_usable;
                                 let now = db.clock.now();
                                 db.cursors.lock().unwrap_or_else(|p| p.into_inner()).retain(
                                     |_, c| !pressured && now.saturating_sub(c.created) < c.ttl,
@@ -2577,7 +2533,7 @@ mod tests {
         assert!(output.response.is_err());
         assert!(weak.upgrade().is_none());
         assert_eq!(slots.available_permits(), 1);
-        assert_eq!(admission.snapshot().reserved_bytes, 1024);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 1024);
         let mut draining = Box::pin(fence.drain());
         assert!(
             std::future::poll_fn(|cx| Poll::Ready(draining.as_mut().poll(cx)))
@@ -2587,6 +2543,6 @@ mod tests {
         // Represents a disconnected caller abandoning a completed task output.
         drop(output);
         draining.await;
-        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
     }
 }

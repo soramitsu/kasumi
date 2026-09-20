@@ -1,0 +1,19 @@
+--- a/crates/kasumi-engine/tests/backup_checkpoint.rs
++++ b/crates/kasumi-engine/tests/backup_checkpoint.rs
+@@ -172,14 +172,14 @@
+         fixture.store.scratch_disk().clone(),
+     )
+     .unwrap();
+-    let target = TenantStore::initialize_catalog_fixture(
++    let target = TenantStore::open_existing_fixture(
+         node,
+         "checkpoint".into(),
+         Arc::new(LocalKeyProvider::new([0xD8; 32])),
+     )
+     .await
+     .unwrap();
+-    let domains = kasumi_store::test_utils::initialize_custody_fixture(
++    let domains = kasumi_store::test_utils::open_existing_custody_fixture(
+         target,
+         Arc::new(LocalKeyProvider::new([241; 32])),
+     )

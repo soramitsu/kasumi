@@ -1,0 +1,345 @@
+--- a/crates/kasumi-server/src/startup_owner.rs
++++ b/crates/kasumi-server/src/startup_owner.rs
+@@ -81,16 +81,16 @@
+ /// Retry only incomplete ownership. A completed failure still reports the exact
+ /// errors, but never keeps a fully drained runtime in an endless cleanup loop.
+ /// Every implementation also retains its report across a cancelled finish call.
+-pub(crate) async fn finish(runtime: &mut impl Runtime) -> Result<()> {
++pub(crate) async fn finish(runtime: &mut impl Runtime) -> DrainResult {
+     let mut report = DrainReport::default();
+     let mut delay = std::time::Duration::from_secs(1);
+     loop {
+         match runtime.close().await {
+-            Ok(()) => return report.complete().map_err(Into::into),
++            Ok(()) => return report.complete(),
+             Err(error) => {
+                 report.merge(&error);
+                 if error.completion() == DrainCompletion::Complete {
+-                    return report.complete().map_err(Into::into);
++                    return report.complete();
+                 }
+                 tracing::error!(error = %error, retry_after_secs = delay.as_secs(), "startup owner drain incomplete; retaining resources for retry");
+                 tokio::time::sleep(delay).await;
+@@ -465,7 +465,7 @@
+             .unwrap_err();
+         assert_eq!(workers.attempts, 1);
+         assert!(workers.handles.is_empty());
+-        let failure = error.downcast_ref::<DrainFailure>().unwrap();
++        let failure = &error;
+         assert_eq!(failure.completion(), DrainCompletion::Complete);
+         let issue = failure.issues()[0].clone();
+         assert!(
+@@ -475,6 +475,21 @@
+                 .unwrap()
+                 .is_panic()
+         );
++        let repeated = finish(&mut workers).await.unwrap_err();
++        assert_eq!(repeated.completion(), DrainCompletion::Complete);
++        assert_eq!(repeated.issues().len(), 1);
++        assert!(Arc::ptr_eq(&issue, &repeated.issues()[0]));
++        // Preparation and cleanup both failed: retain the typed original child
++        // report as context, exactly as the startup callers do.
++        let preparation = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
++        let combined = anyhow::Error::new(preparation).context(repeated);
++        assert_eq!(
++            combined.downcast_ref::<std::io::Error>().unwrap().kind(),
++            std::io::ErrorKind::PermissionDenied
++        );
++        let propagated = combined.downcast_ref::<DrainFailure>().unwrap();
++        assert_eq!(propagated.completion(), DrainCompletion::Complete);
++        assert!(Arc::ptr_eq(&issue, &propagated.issues()[0]));
+         drop(workers);
+         // Error evidence remains the actual JoinError after resource owner drop.
+         assert!(
+@@ -537,7 +552,7 @@
+         assert!(workers.handles.is_empty());
+         assert_eq!(workers.attempts, 2);
+         assert!(dropped.load(Ordering::Acquire));
+-        let failure = error.downcast_ref::<DrainFailure>().unwrap();
++        let failure = &error;
+         assert_eq!(failure.completion(), DrainCompletion::Complete);
+         assert_eq!(failure.issues().len(), 1);
+         assert!(Arc::ptr_eq(&original, &failure.issues()[0]));
+--- a/crates/kasumi-server/src/configured_tenant_enrollment.rs
++++ b/crates/kasumi-server/src/configured_tenant_enrollment.rs
+@@ -368,7 +368,7 @@
+             let drained = crate::startup_owner::finish(&mut prepared).await;
+             return Err(match drained {
+                 Ok(()) => error,
+-                Err(drain) => error.context(format!("enrollment owner drain failed: {drain:#}")),
++                Err(drain) => error.context(drain),
+             });
+         }
+         #[cfg(test)]
+--- a/crates/kasumi-server/src/data_node_enrollment.rs
++++ b/crates/kasumi-server/src/data_node_enrollment.rs
+@@ -58,10 +58,9 @@
+     let drained = crate::startup_owner::finish(&mut pending).await;
+     match (result, drained) {
+         (Ok(()), Ok(())) => Ok(Enrolled),
+-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+-        (Err(error), Err(drain)) => {
+-            Err(error.context(format!("node enrollment drain failed: {drain:#}")))
+-        }
++        (Err(error), Ok(())) => Err(error),
++        (Ok(()), Err(drain)) => Err(drain.into()),
++        (Err(error), Err(drain)) => Err(error.context(drain)),
+     }
+ }
+ 
+@@ -271,10 +270,9 @@
+     let drained = crate::startup_owner::finish(&mut pending).await;
+     match (result, drained) {
+         (Ok(()), Ok(())) => Ok(()),
+-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+-        (Err(error), Err(drain)) => {
+-            Err(error.context(format!("enrollment verifier drain failed: {drain:#}")))
+-        }
++        (Err(error), Ok(())) => Err(error),
++        (Ok(()), Err(drain)) => Err(drain.into()),
++        (Err(error), Err(drain)) => Err(error.context(drain)),
+     }
+ }
+ 
+@@ -353,9 +351,10 @@
+     let drained = crate::startup_owner::finish(&mut pending).await;
+     let fingerprint = match (result, drained) {
+         (Ok(fingerprint), Ok(())) => fingerprint,
+-        (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
++        (Err(error), Ok(())) => return Err(error),
++        (Ok(_), Err(drain)) => return Err(drain.into()),
+         (Err(error), Err(drain)) => {
+-            return Err(error.context(format!("domain enrollment drain failed: {drain:#}")));
++            return Err(error.context(drain));
+         }
+     };
+     if let Some(grant) = grant {
+--- a/crates/kasumi-server/src/runtime.rs
++++ b/crates/kasumi-server/src/runtime.rs
+@@ -1517,10 +1517,10 @@
+                 if let Some(runtime) = retained_runtime.as_mut()
+                     && let Err(cleanup) = crate::startup_owner::finish(runtime).await
+                 {
+-                    error = error.context(format!("partial runtime drain failed: {cleanup:#}"));
++                    error = error.context(cleanup);
+                 }
+                 if let Err(cleanup) = crate::startup_owner::finish(&mut pending).await {
+-                    error = error.context(format!("startup resource drain failed: {cleanup:#}"));
++                    error = error.context(cleanup);
+                 }
+                 Err(error)
+             }
+@@ -2601,7 +2601,12 @@
+     })
+     .await;
+     let drained = crate::startup_owner::finish(&mut pending).await;
+-    outcome.and(drained)
++    match (outcome, drained) {
++        (Ok(()), Ok(())) => Ok(()),
++        (Err(error), Ok(())) => Err(error),
++        (Ok(()), Err(drain)) => Err(drain.into()),
++        (Err(error), Err(drain)) => Err(error.context(drain)),
++    }
+ }
+ 
+ #[cfg(test)]
+@@ -5234,16 +5239,7 @@
+             // This must wait for Complete, including retained-child retries.
+             match crate::startup_owner::finish(&mut pending).await {
+                 Ok(()) => Err(error),
+-                Err(drain) => {
+-                    if let Some(failure) = drain.downcast_ref::<kasumi_types::drain::DrainFailure>()
+-                    {
+-                        // A typed context keeps both the original preparation
+-                        // error and each original Arc<DrainIssue> downcastable.
+-                        Err(error.context(failure.clone()))
+-                    } else {
+-                        Err(error.context(drain))
+-                    }
+-                }
++                Err(drain) => Err(error.context(drain)),
+             }
+         }
+     }
+--- a/crates/kasumi-server/src/local_recovery.rs
++++ b/crates/kasumi-server/src/local_recovery.rs
+@@ -360,7 +360,7 @@
+     }
+ }
+ impl LocalTarget {
+-    async fn shutdown(&mut self) -> Result<()> {
++    async fn shutdown(&mut self) -> kasumi_types::drain::DrainResult {
+         crate::startup_owner::finish(&mut self.resources).await
+     }
+ }
+@@ -620,8 +620,8 @@
+     .await;
+     if let Err(drain) = crate::startup_owner::finish(&mut operator).await {
+         return Err(match result {
+-            Err(error) => error.context(format!("local operator drain failed: {drain:#}")),
+-            Ok(_) => drain,
++            Err(error) => error.context(drain),
++            Ok(_) => drain.into(),
+         });
+     }
+     result
+@@ -648,8 +648,8 @@
+     })();
+     if let Err(drain) = crate::startup_owner::finish(&mut operator).await {
+         return Err(match result {
+-            Err(error) => error.context(format!("local operator drain failed: {drain:#}")),
+-            Ok(_) => drain,
++            Err(error) => error.context(drain),
++            Ok(_) => drain.into(),
+         });
+     }
+     result
+@@ -700,8 +700,8 @@
+     .await;
+     if let Err(drain) = crate::startup_owner::finish(&mut operator).await {
+         return Err(match result {
+-            Err(error) => error.context(format!("local operator drain failed: {drain:#}")),
+-            Ok(_) => drain,
++            Err(error) => error.context(drain),
++            Ok(_) => drain.into(),
+         });
+     }
+     result
+@@ -755,8 +755,8 @@
+     .await;
+     if let Err(drain) = crate::startup_owner::finish(&mut operator).await {
+         return Err(match result {
+-            Err(error) => error.context(format!("local operator drain failed: {drain:#}")),
+-            Ok(_) => drain,
++            Err(error) => error.context(drain),
++            Ok(_) => drain.into(),
+         });
+     }
+     result
+@@ -1085,9 +1085,7 @@
+                 let drained = crate::startup_owner::finish(&mut pending).await;
+                 Err(match drained {
+                     Ok(()) => error,
+-                    Err(cleanup) => error.context(format!(
+-                        "local target drain failed before completion: {cleanup:#}"
+-                    )),
++                    Err(cleanup) => error.context(cleanup),
+                 })
+             }
+         }
+--- a/crates/kasumi-server/src/node_provision.rs
++++ b/crates/kasumi-server/src/node_provision.rs
+@@ -57,7 +57,7 @@
+         Ok(owners) => Ok(owners),
+         Err(error) => match crate::startup_owner::finish(&mut pending).await {
+             Ok(()) => Err(error),
+-            Err(drain) => Err(error.context(format!("node provisioning drain failed: {drain:#}"))),
++            Err(drain) => Err(error.context(drain)),
+         },
+     }
+ }
+--- a/crates/kasumi-server/src/standalone_operator.rs
++++ b/crates/kasumi-server/src/standalone_operator.rs
+@@ -148,13 +148,14 @@
+     }
+ }
+ 
+-pub(super) fn combine<T>(outcome: Result<T>, drained: Result<()>) -> Result<T> {
++pub(super) fn combine<T>(
++    outcome: Result<T>,
++    drained: kasumi_types::drain::DrainResult,
++) -> Result<T> {
+     match (outcome, drained) {
+-        (Err(error), Err(drain)) => {
+-            Err(error.context(format!("local operator drain failed: {drain:#}")))
+-        }
++        (Err(error), Err(drain)) => Err(error.context(drain)),
+         (Err(error), Ok(())) => Err(error),
+-        (Ok(_), Err(drain)) => Err(drain),
++        (Ok(_), Err(drain)) => Err(drain.into()),
+         (Ok(value), Ok(())) => Ok(value),
+     }
+ }
+--- a/crates/kasumi-server/src/signer_runtime.rs
++++ b/crates/kasumi-server/src/signer_runtime.rs
+@@ -102,10 +102,7 @@
+                 crate::startup_preparation::failure_checkpoint(database_id).await;
+                 match crate::startup_owner::finish(&mut pending).await {
+                     Ok(()) => Err(error),
+-                    Err(drain) => {
+-                        Err(error
+-                            .context(format!("signer verifier storage drain failed: {drain:#}")))
+-                    }
++                    Err(drain) => Err(error.context(drain)),
+                 }
+             }
+         }
+@@ -519,10 +516,9 @@
+         let drained = crate::startup_owner::finish(&mut pending).await;
+         match (result, drained) {
+             (Ok(()), Ok(())) => Ok(InitializedVerifier),
+-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+-            (Err(error), Err(drain)) => Err(error.context(format!(
+-                "signer verifier installation drain failed: {drain:#}"
+-            ))),
++            (Err(error), Ok(())) => Err(error),
++            (Ok(()), Err(drain)) => Err(drain.into()),
++            (Err(error), Err(drain)) => Err(error.context(drain)),
+         }
+     }
+ }
+--- a/crates/kasumi-server/src/authority_runtime.rs
++++ b/crates/kasumi-server/src/authority_runtime.rs
+@@ -428,11 +428,7 @@
+         if outcome.is_err()
+             && let Err(cleanup) = crate::startup_owner::finish(&mut pending).await
+         {
+-            return outcome.map_err(|error| {
+-                error.context(format!(
+-                    "startup drain failed before completion: {cleanup:#}"
+-                ))
+-            });
++            return outcome.map_err(|error| error.context(cleanup));
+         }
+         outcome
+     }
+--- a/crates/kasumi-server/src/standalone.rs
++++ b/crates/kasumi-server/src/standalone.rs
+@@ -1304,12 +1304,10 @@
+         let drained = crate::startup_owner::finish(&mut pending).await;
+         let fingerprint = match (configured, drained) {
+             (Err(error), Err(drain)) => {
+-                return Err(error.context(format!(
+-                    "standalone tenant initializer drain failed: {drain:#}"
+-                )));
++                return Err(error.context(drain));
+             }
+             (Err(error), Ok(())) => return Err(error),
+-            (Ok(_), Err(drain)) => return Err(drain),
++            (Ok(_), Err(drain)) => return Err(drain.into()),
+             (Ok(fingerprint), Ok(())) => fingerprint,
+         };
+         if tenant != crate::runtime::CONTROL_TENANT {
+--- a/crates/kasumi-server/src/authority_node_enrollment.rs
++++ b/crates/kasumi-server/src/authority_node_enrollment.rs
+@@ -149,7 +149,7 @@
+         genesis.take();
+     }
+     if let Err(error) = crate::startup_owner::finish(&mut pending).await {
+-        report.record("authority enrollment resources", 0, error);
++        report.merge(&error);
+     }
+     match (result, report.complete()) {
+         (Ok(()), Ok(())) => Ok(Enrolled),
+--- a/crates/kasumi-server/src/target_journal_installation.rs
++++ b/crates/kasumi-server/src/target_journal_installation.rs
+@@ -89,7 +89,8 @@
+     let drained = crate::startup_owner::finish(&mut pending).await;
+     match (prepared, drained) {
+         (Ok(()), Ok(())) => Ok(Initialized),
+-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
++        (Err(error), Ok(())) => Err(error),
++        (Ok(()), Err(drain)) => Err(drain.into()),
+         (Err(error), Err(drain)) => Err(error.context(drain)),
+     }
+ }

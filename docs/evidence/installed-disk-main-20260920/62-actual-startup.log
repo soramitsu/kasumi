@@ -1,0 +1,6 @@
+
+running 1 test
+test admission::startup_integration_tests::cancelled_local_startup_and_node_census_keep_actual_group_and_charges_until_join ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 198 filtered out; finished in 0.55s
+

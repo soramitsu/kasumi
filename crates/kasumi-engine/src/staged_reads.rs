@@ -283,12 +283,15 @@ mod tests {
         let initial = metadata_workspace(&state, &context, &scope, None).unwrap();
         // This isolates read admission; no production maintenance lane is
         // installed and this fixture is not a production capacity acceptance.
-        let node = NodeAdmission::new(AdmissionConfig {
-            high_water_bytes: Some(8 << 30),
-            low_water_bytes: Some(7 << 30),
-            max_inflight_bytes: Some(POINT_READ_BYTES + initial),
-            ..Default::default()
-        })
+        let node = NodeAdmission::new(
+            crate::test_utils::admission_config_with_bookkeeping(AdmissionConfig {
+                high_water_bytes: Some(8 << 30),
+                low_water_bytes: Some(7 << 30),
+                max_inflight_bytes: Some(POINT_READ_BYTES + initial),
+                ..Default::default()
+            })
+            .unwrap(),
+        )
         .unwrap();
         let mut reservation = node.reserve(POINT_READ_BYTES, None).unwrap();
         state.policy.grants.extend((0..1024).map(|i| Grant {
@@ -302,8 +305,11 @@ mod tests {
             reservation.reserve_additional(required).unwrap_err().code,
             ErrorCode::ResourceExhausted
         );
-        assert_eq!(node.snapshot().reserved_bytes, POINT_READ_BYTES);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&node),
+            POINT_READ_BYTES
+        );
         drop(reservation);
-        assert_eq!(node.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&node), 0);
     }
 }

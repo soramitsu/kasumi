@@ -86,7 +86,7 @@ fn query() -> QueryRequest {
 }
 
 #[tokio::test]
-async fn one_epoch_ages_commands_and_leases_without_renewing_original_credentials() {
+async fn one_epoch_expires_leases_and_credentials_but_preserves_permanent_command_identity() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let node = NodeStore::create_new_fixture(
         directory.path().join("node.redb"),
@@ -214,18 +214,46 @@ async fn one_epoch_ages_commands_and_leases_without_renewing_original_credential
         renewed.authorization.check_live().unwrap_err().code,
         ErrorCode::Unauthorized
     );
-    assert!(
-        database
-            .operation_receipt(&fresh, "original-command")
-            .await
-            .unwrap()
-            .is_none()
+    // Credentials and leases expire; permanent command identity does not.
+    let stored = database
+        .operation_receipt(&fresh, "original-command")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.outcome, Ok(receipt.clone()));
+    assert_eq!(stored.request_digest, batch(1).digest().unwrap());
+    assert_eq!(
+        database.mutate(fresh.clone(), batch(1)).await.unwrap(),
+        receipt
     );
-    let replacement = database.mutate(fresh.clone(), batch(2)).await.unwrap();
+    assert_eq!(
+        database
+            .mutate(fresh.clone(), batch(2))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        database.get(&fresh, "docs", "0").await.unwrap().body["version"],
+        1
+    );
+    let mut next_command = batch(2);
+    next_command.idempotency_key = "next-command".into();
+    let replacement = database.mutate(fresh.clone(), next_command).await.unwrap();
     assert!(replacement.revision > receipt.revision);
     assert_eq!(
         database.get(&fresh, "docs", "0").await.unwrap().body["version"],
         2
+    );
+    assert_eq!(
+        database
+            .operation_receipt(&fresh, "original-command")
+            .await
+            .unwrap()
+            .unwrap()
+            .outcome,
+        Ok(receipt)
     );
     assert_eq!(
         original.authorization.check_live().unwrap_err().code,
@@ -276,6 +304,65 @@ async fn fixture_epoch_rejects_production_storage_before_bootstrap() {
             .unwrap()
             .to_string()
             .contains("cannot open production storage")
+    );
+    assert!(store.get("engine.deployment", b"mode").unwrap().is_none());
+    assert!(
+        store
+            .get("engine.bootstrap", b"manifest")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        stores
+            .custody()
+            .store()
+            .get("raft.meta", b"node_id")
+            .unwrap()
+            .is_none()
+    );
+    store.shutdown().await.unwrap();
+    stores.custody().store().shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn fixture_epoch_rejects_a_different_audit_facade_before_bootstrap() {
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let node = NodeStore::create_new_fixture(
+        directory.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+    let admission = NodeAdmission::new(Default::default()).unwrap();
+    let audit = audit(node.clone(), admission).await;
+    let store = TenantStore::initialize_catalog_fixture(
+        node,
+        "clock-fixture".into(),
+        Arc::new(LocalKeyProvider::new([206; 32])),
+    )
+    .await
+    .unwrap();
+    let stores =
+        initialize_custody_fixture(store.clone(), Arc::new(LocalKeyProvider::new([207; 32])))
+            .await
+            .unwrap();
+    let epoch = Arc::new(EpochClock::new(Arc::new(ManualClock::new()), Arc::new(Wall)).unwrap());
+    let result = open_fixture_with_epoch_clock(
+        stores.clone(),
+        policy(),
+        Limits::default(),
+        audit.clone(),
+        NodeAdmission::new(Default::default()).unwrap(),
+        epoch,
+    )
+    .await;
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("node governors differ")
     );
     assert!(store.get("engine.deployment", b"mode").unwrap().is_none());
     assert!(

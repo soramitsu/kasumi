@@ -1,0 +1,399 @@
+diff --git a/crates/kasumi-engine/src/admission.rs b/crates/kasumi-engine/src/admission.rs
+--- a/crates/kasumi-engine/src/admission.rs
++++ b/crates/kasumi-engine/src/admission.rs
+@@ -1081,6 +1081,10 @@
+ }
+ 
+ #[cfg(test)]
++#[path = "admission_startup_tests.rs"]
++mod startup_integration_tests;
++
++#[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+diff --git a/crates/kasumi-engine/src/admission_startup_tests.rs b/crates/kasumi-engine/src/admission_startup_tests.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-engine/src/admission_startup_tests.rs
+@@ -0,0 +1,185 @@
++//! Exercise the facade census through a real, cancelled Raft constructor.
++use super::*;
++use kasumi_raft::{RaftGroup, SnapshotBufferOwner, startup_test_utils::LocalStartupGate};
++use kasumi_types::drain::DrainCompletion;
++use std::{future::Future, task::Poll};
++
++const WAIT: Duration = Duration::from_secs(10);
++
++#[derive(Debug)]
++struct OriginalStartupFailure(u64);
++impl std::fmt::Display for OriginalStartupFailure {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(f, "node census startup failure {}", self.0)
++    }
++}
++impl std::error::Error for OriginalStartupFailure {}
++
++struct Backend;
++impl kasumi_raft::StateMachineBackend for Backend {
++    fn close_application(&self) {}
++    fn apply(
++        &self,
++        _: &kasumi_raft::AppliedEntryContext,
++        bytes: &[u8],
++    ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
++        Ok(kasumi_raft::AppliedResponse::application(bytes.to_vec()))
++    }
++    fn capture_snapshot(&self) -> anyhow::Result<kasumi_raft::CapturedSnapshot> {
++        Ok(kasumi_raft::CapturedSnapshot::new(None, |_| Ok(())))
++    }
++    fn validate_snapshot(
++        &self,
++        _: &mut dyn std::io::Read,
++    ) -> anyhow::Result<Option<kasumi_raft::RetiredSnapshotState>> {
++        Ok(None)
++    }
++    fn prepare_restore<'a>(
++        &'a self,
++        _: &kasumi_raft::SnapshotRestoreContext,
++        _: &mut dyn std::io::Read,
++    ) -> anyhow::Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
++        anyhow::bail!("empty startup fixture has no snapshot")
++    }
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_until_join()
++-> anyhow::Result<()> {
++    let config = AdmissionConfig::default();
++    let core_base = MemoryCore::required_bookkeeping_bytes(&config)?;
++    let admission = NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
++    let core = admission.memory().clone();
++    let baseline = admission.snapshot();
++    let owner = admission.snapshot_buffer_owner()?;
++    let owner_bytes = SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)?;
++    let owner_weak = Arc::downgrade(&owner);
++    let gate = LocalStartupGate::install(&owner, OriginalStartupFailure(211).into())?;
++    let directory = kasumi_store::test_utils::private_tempdir()?;
++    let stores = kasumi_store::TenantStorageSet::initialize_catalogs_fixture(
++        kasumi_store::NodeStore::create_new_fixture(
++            directory.path().join("cancelled-node-startup.redb"),
++            kasumi_store::test_utils::NODE_STORE_ID,
++            kasumi_store::ScratchDisk::fixture(),
++        )?,
++        "cancelled-startup".into(),
++        Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([19; 32])),
++        Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
++    )
++    .await?;
++    let mut startup = Box::pin(RaftGroup::local(
++        1,
++        "cancelled-startup".into(),
++        stores.clone(),
++        Arc::new(Backend),
++        owner.clone(),
++    ));
++    tokio::select! {
++        result = &mut startup => panic!("startup finished before fixture gate: {}", result.is_ok()),
++        result = tokio::time::timeout(WAIT, gate.entered()) => result?,
++    }
++    assert!(gate.claim_is_live());
++    assert!(gate.router_is_alive());
++    drop(startup);
++    drop(owner);
++    assert!(
++        owner_weak.upgrade().is_some(),
++        "abandoned startup lost global custody"
++    );
++    let mut census = Box::pin(admission.drain_snapshot_startups());
++    let first_poll = std::future::poll_fn(|cx| Poll::Ready(census.as_mut().poll(cx))).await;
++    assert!(first_poll.is_pending());
++    drop(census);
++    assert!(
++        admission.snapshot_buffer_owner().is_err(),
++        "cancelled census reopened admission"
++    );
++    let pending = admission.snapshot();
++    assert_eq!(pending.bookkeeping_bytes, baseline.bookkeeping_bytes);
++    assert_eq!(
++        pending.reserved_bytes,
++        baseline.reserved_bytes + owner_bytes
++    );
++    assert_eq!(pending.resident_reserved_bytes, owner_bytes);
++    assert_eq!(pending.inflight_operations, 0);
++    assert!(gate.claim_is_live());
++    assert!(owner_weak.upgrade().is_some());
++    gate.release();
++    let failure = tokio::time::timeout(WAIT, admission.drain_snapshot_startups())
++        .await?
++        .unwrap_err();
++    assert_eq!(failure.completion(), DrainCompletion::Complete);
++    let original = failure
++        .issues()
++        .iter()
++        .find(|issue| {
++            issue
++                .error()
++                .downcast_ref::<OriginalStartupFailure>()
++                .is_some()
++        })
++        .expect("actual initializer failure retained")
++        .clone();
++    assert_eq!(
++        original
++            .error()
++            .downcast_ref::<OriginalStartupFailure>()
++            .unwrap()
++            .0,
++        211
++    );
++    assert!(!gate.claim_is_live());
++    assert!(!gate.router_is_alive());
++    let raft = gate.raft().expect("actual OpenRaft observer captured");
++    assert!(raft.metrics().borrow().running_state.is_err());
++    tokio::time::timeout(WAIT, raft.shutdown()).await??;
++    drop(raft);
++    drop(gate);
++    assert!(
++        owner_weak.upgrade().is_none(),
++        "drained owner charge still retained"
++    );
++    let completed = admission.snapshot();
++    // The completed error report keeps its inventory envelope; only the actual
++    // child's resident owner charge is released at successful census completion.
++    assert_eq!(completed.bookkeeping_bytes, baseline.bookkeeping_bytes);
++    assert_eq!(completed.reserved_bytes, baseline.reserved_bytes);
++    assert_eq!(completed.resident_reserved_bytes, 0);
++    for _ in 0..2 {
++        let repeated = admission.drain_snapshot_startups().await.unwrap_err();
++        assert_eq!(repeated.completion(), DrainCompletion::Complete);
++        assert!(
++            repeated
++                .issues()
++                .iter()
++                .any(|issue| Arc::ptr_eq(issue, &original))
++        );
++        assert_eq!(admission.snapshot().reserved_bytes, baseline.reserved_bytes);
++    }
++    let facade_weak = Arc::downgrade(&admission);
++    drop(failure);
++    drop(original);
++    drop(admission);
++    assert!(facade_weak.upgrade().is_none());
++    assert_eq!(core.snapshot().reserved_bytes, core_base);
++    // The old facade remains sealed; a fresh facade shares accounting and a
++    // real group can reopen the exact same storage only after actual join.
++    let replacement = NodeAdmission::from_memory(core.clone())?;
++    let reopened = tokio::time::timeout(
++        WAIT,
++        RaftGroup::local(
++            1,
++            "cancelled-startup".into(),
++            stores,
++            Arc::new(Backend),
++            replacement.snapshot_buffer_owner()?,
++        ),
++    )
++    .await??;
++    tokio::time::timeout(WAIT, reopened.shutdown()).await??;
++    drop(reopened);
++    replacement.drain_snapshot_startups().await?;
++    drop(replacement);
++    assert_eq!(core.snapshot().reserved_bytes, core_base);
++    Ok(())
++}
+diff --git a/crates/kasumi-raft/src/lib.rs b/crates/kasumi-raft/src/lib.rs
+--- a/crates/kasumi-raft/src/lib.rs
++++ b/crates/kasumi-raft/src/lib.rs
+@@ -23,6 +23,8 @@
+ mod startup_owner;
+ #[cfg(test)]
+ mod startup_owner_tests;
++#[cfg(any(test, feature = "test-utils"))]
++pub mod startup_test_utils;
+ mod storage;
+ mod timing;
+ mod write_errors;
+@@ -446,7 +448,7 @@
+         router.register(group.clone(), id, instance.raft.clone());
+         instance.local_route = Some((router, group, id));
+         let initialized = async {
+-            #[cfg(test)]
++            #[cfg(any(test, feature = "test-utils"))]
+             {
+                 let gate = instance
+                     .snapshot_buffers
+diff --git a/crates/kasumi-raft/src/snapshot_buffer.rs b/crates/kasumi-raft/src/snapshot_buffer.rs
+--- a/crates/kasumi-raft/src/snapshot_buffer.rs
++++ b/crates/kasumi-raft/src/snapshot_buffer.rs
+@@ -107,8 +107,8 @@
+     failed: Arc<AtomicBool>,
+     drain_gate: tokio::sync::Mutex<()>,
+     startup: tokio::sync::Mutex<crate::startup_owner::StartupState>,
+-    #[cfg(test)]
+-    pub(crate) local_startup_gate: Mutex<Option<Arc<crate::startup_owner_tests::LocalStartupGate>>>,
++    #[cfg(any(test, feature = "test-utils"))]
++    pub(crate) local_startup_gate: Mutex<Option<Arc<crate::startup_test_utils::LocalStartupGate>>>,
+     report: Mutex<DrainReport>,
+     _charge: Arc<dyn Send + Sync>,
+ }
+@@ -148,7 +148,7 @@
+             failed: Arc::new(AtomicBool::new(false)),
+             drain_gate: Default::default(),
+             startup: Default::default(),
+-            #[cfg(test)]
++            #[cfg(any(test, feature = "test-utils"))]
+             local_startup_gate: Default::default(),
+             report: Default::default(),
+             _charge: charge,
+diff --git a/crates/kasumi-raft/src/startup_owner_tests.rs b/crates/kasumi-raft/src/startup_owner_tests.rs
+--- a/crates/kasumi-raft/src/startup_owner_tests.rs
++++ b/crates/kasumi-raft/src/startup_owner_tests.rs
+@@ -1,10 +1,12 @@
+-use crate::{SnapshotBufferOwner, startup_owner::StartedGroup};
++use crate::{
++    SnapshotBufferOwner, startup_owner::StartedGroup, startup_test_utils::LocalStartupGate,
++};
+ use anyhow::Result;
+ use kasumi_types::drain::{DrainCompletion, DrainReport};
+ use std::{
+     future::{Future, poll_fn},
+     sync::{
+-        Arc, Mutex, Weak,
++        Arc,
+         atomic::{AtomicBool, Ordering},
+         mpsc,
+     },
+@@ -177,28 +179,6 @@
+     Ok(())
+ }
+ 
+-pub(crate) struct LocalStartupGate {
+-    entered: tokio::sync::Notify,
+-    release: tokio::sync::Semaphore,
+-    // The owner embeds this hook in test builds. Store observations behind an
+-    // explicit auto-trait boundary so SnapshotBufferOwner does not recursively
+-    // contain Raft's associated SnapshotData channel types while proving Send.
+-    raft: Mutex<Option<Arc<dyn std::any::Any + Send + Sync>>>,
+-    ownership: Mutex<Option<Weak<AtomicBool>>>,
+-    router: Mutex<Option<Weak<dyn Send + Sync>>>,
+-}
+-impl LocalStartupGate {
+-    pub(crate) async fn pause(&self, group: &crate::RaftGroup) -> Result<()> {
+-        *self.raft.lock().unwrap() = Some(Arc::new(group.raft.clone()));
+-        *self.ownership.lock().unwrap() = Some(Arc::downgrade(&group.ownership));
+-        let router: Arc<dyn Send + Sync> = group.local_route.as_ref().unwrap().0.clone();
+-        *self.router.lock().unwrap() = Some(Arc::downgrade(&router));
+-        self.entered.notify_one();
+-        self.release.acquire().await.unwrap().forget();
+-        Err(OriginalFailure(83).into())
+-    }
+-}
+-
+ struct Backend;
+ impl crate::StateMachineBackend for Backend {
+     fn close_application(&self) {}
+@@ -242,14 +222,7 @@
+     )
+     .await?;
+     let owner = SnapshotBufferOwner::fixture();
+-    let gate = Arc::new(LocalStartupGate {
+-        entered: Default::default(),
+-        release: tokio::sync::Semaphore::new(0),
+-        raft: Default::default(),
+-        ownership: Default::default(),
+-        router: Default::default(),
+-    });
+-    *owner.local_startup_gate.lock().unwrap() = Some(gate.clone());
++    let gate = LocalStartupGate::install(&owner, OriginalFailure(83).into())?;
+     let mut startup = Box::pin(crate::RaftGroup::local(
+         1,
+         "tenant-a".into(),
+diff --git a/crates/kasumi-raft/src/startup_test_utils.rs b/crates/kasumi-raft/src/startup_test_utils.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-raft/src/startup_test_utils.rs
+@@ -0,0 +1,83 @@
++//! Fixture-only control over an actual local group's initialization boundary.
++//! No runtime configuration enables this gate; the trusted fixture installs it
++//! directly on the already admitted snapshot owner before constructing a group.
++use crate::SnapshotBufferOwner;
++use anyhow::{Result, ensure};
++use std::sync::{
++    Arc, Mutex, Weak,
++    atomic::{AtomicBool, Ordering},
++};
++
++pub struct LocalStartupGate {
++    pub(crate) entered: tokio::sync::Notify,
++    pub(crate) release: tokio::sync::Semaphore,
++    // Keep the erased observer boundary: embedding a concrete Raft here would
++    // make SnapshotBufferOwner's associated SnapshotData Send proof recursive.
++    pub(crate) raft: Mutex<Option<Arc<dyn std::any::Any + Send + Sync>>>,
++    pub(crate) ownership: Mutex<Option<Weak<AtomicBool>>>,
++    pub(crate) router: Mutex<Option<Weak<dyn Send + Sync>>>,
++    error: Mutex<Option<anyhow::Error>>,
++}
++impl LocalStartupGate {
++    pub fn install(owner: &SnapshotBufferOwner, error: anyhow::Error) -> Result<Arc<Self>> {
++        let mut installed = owner.local_startup_gate.lock().unwrap();
++        ensure!(
++            installed.is_none(),
++            "local startup fixture gate already installed"
++        );
++        let gate = Arc::new(Self {
++            entered: Default::default(),
++            release: tokio::sync::Semaphore::new(0),
++            raft: Default::default(),
++            ownership: Default::default(),
++            router: Default::default(),
++            error: Mutex::new(Some(error)),
++        });
++        *installed = Some(gate.clone());
++        Ok(gate)
++    }
++    pub async fn entered(&self) {
++        self.entered.notified().await;
++    }
++    pub fn release(&self) {
++        self.release.add_permits(1);
++    }
++    pub fn claim_is_live(&self) -> bool {
++        self.ownership
++            .lock()
++            .unwrap()
++            .as_ref()
++            .and_then(Weak::upgrade)
++            .is_some_and(|claim| claim.load(Ordering::Acquire))
++    }
++    pub fn router_is_alive(&self) -> bool {
++        self.router
++            .lock()
++            .unwrap()
++            .as_ref()
++            .and_then(Weak::upgrade)
++            .is_some()
++    }
++    pub fn raft(&self) -> Option<crate::Raft> {
++        self.raft
++            .lock()
++            .unwrap()
++            .as_ref()
++            .and_then(|raft| raft.downcast_ref::<crate::Raft>())
++            .cloned()
++    }
++    pub(crate) async fn pause(&self, group: &crate::RaftGroup) -> Result<()> {
++        *self.raft.lock().unwrap() = Some(Arc::new(group.raft.clone()));
++        *self.ownership.lock().unwrap() = Some(Arc::downgrade(&group.ownership));
++        let router: Arc<dyn Send + Sync> = group.local_route.as_ref().unwrap().0.clone();
++        *self.router.lock().unwrap() = Some(Arc::downgrade(&router));
++        self.entered.notify_one();
++        self.release.acquire().await.unwrap().forget();
++        Err(self
++            .error
++            .lock()
++            .unwrap()
++            .take()
++            .expect("fixture gate is used once"))
++    }
++}

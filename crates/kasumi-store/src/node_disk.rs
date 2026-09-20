@@ -179,10 +179,38 @@ impl Identity {
     }
 }
 
+/// Fixed retained namespace identity. Component framing and distinct domains
+/// prevent ambiguous concatenations; hashing never allocates. This binds a
+/// closed inode to its enrolled name without retaining another path allocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NamespaceBinding([u8; 32]);
+
+impl NamespaceBinding {
+    fn root(identity: Identity) -> Self {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(b"kasumi-node-disk-root-v1\0");
+        hash.update(identity.0.to_le_bytes());
+        hash.update(identity.1.to_le_bytes());
+        Self(hash.finalize().into())
+    }
+
+    fn child(self, name: &std::ffi::CStr) -> Self {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(b"kasumi-node-disk-child-v1\0");
+        hash.update(self.0);
+        hash.update((name.to_bytes().len() as u64).to_le_bytes());
+        hash.update(name.to_bytes());
+        Self(hash.finalize().into())
+    }
+}
+
 /// The admitted physical identity survives descriptor close. Reservations and
 /// observed extents update this existing entry without allocating during I/O.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct AccountedFile {
+    binding: NamespaceBinding,
     bytes: u64,
     pending: u64,
     actual_len: u64,
@@ -191,8 +219,9 @@ struct AccountedFile {
 }
 
 impl AccountedFile {
-    fn durable(bytes: u64, pending: u64, len: u64) -> Self {
+    fn durable(binding: NamespaceBinding, bytes: u64, pending: u64, len: u64) -> Self {
         Self {
+            binding,
             bytes,
             pending,
             actual_len: len,

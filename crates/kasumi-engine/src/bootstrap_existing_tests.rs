@@ -290,7 +290,7 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
         StorageAccess::security_audit(),
     )
     .await?;
-    let audit = SecurityAudit::initialize(
+    let audit = SecurityAudit::open(
         audit_store,
         Default::default(),
         crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?,

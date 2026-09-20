@@ -1,0 +1,30 @@
+{
+  "scope": "development engine integration targets unrun after gate53 backup failure, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--no-fail-fast",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-engine",
+    "--all-features",
+    "--test",
+    "fixture_epoch_clock",
+    "--test",
+    "response_release",
+    "--test",
+    "retirement",
+    "--",
+    "--test-threads=1"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "b2876ef782f0f5afde2d60edd234559fc6ce600f",
+  "process_group": 94741,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 217.0757019519806,
+  "inventoried_source_unchanged": true
+}

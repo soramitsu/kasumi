@@ -398,6 +398,7 @@ impl View {
 pub(crate) struct Builder {
     table: Arc<EncryptedTable>,
     head: StagedTerminalHead,
+    failed: bool,
 }
 impl Builder {
     pub(crate) fn new(
@@ -409,9 +410,15 @@ impl Builder {
         Ok(Self {
             table: Arc::new(EncryptedTable::new(disk, limit)?),
             head: StagedTerminalHead::empty(tenant, origin)?,
+            failed: false,
         })
     }
     pub(crate) fn push(&mut self, row: &Row, state: &TenantState) -> Result<()> {
+        ensure!(!self.failed, "terminal staging builder previously failed");
+        // A failed or unwinding push may already have changed the private head
+        // or persisted the identity without its ordinal. Neither can be exposed
+        // as a verified view, even if the requested final head happens to match.
+        self.failed = true;
         row.validate(state)?;
         advance(&mut self.head, row)?;
         let index = Ordinal {
@@ -422,9 +429,11 @@ impl Builder {
             .insert(&id_key(&row.key), &serde_json::to_vec(row)?)?;
         self.table
             .insert(&ordinal_key(row.ordinal), &serde_json::to_vec(&index)?)?;
+        self.failed = false;
         Ok(())
     }
     pub(crate) fn finish(self, expected: &StagedTerminalHead) -> Result<View> {
+        ensure!(!self.failed, "terminal staging builder previously failed");
         ensure!(
             &self.head == expected,
             "terminal stream final root/count/bytes differ"

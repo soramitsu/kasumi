@@ -63,10 +63,11 @@ mod tests {
 
     fn governor(maximum: u64) -> Arc<NodeAdmission> {
         NodeAdmission::with_fixed_memory(
-            AdmissionConfig {
+            crate::test_utils::admission_config_with_bookkeeping(AdmissionConfig {
                 max_inflight_bytes: Some(maximum),
                 ..Default::default()
-            },
+            })
+            .unwrap(),
             2 << 30,
             0,
         )
@@ -100,9 +101,9 @@ mod tests {
             kasumi_types::ErrorCode::ResourceExhausted
         );
         assert!(!entered);
-        assert_eq!(denied.snapshot().reserved_bytes, retained);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&denied), retained);
         drop(reservation);
-        assert_eq!(denied.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&denied), 0);
 
         let admitted = governor(peak);
         let reservation = admitted.reserve(retained, None).unwrap();
@@ -113,7 +114,7 @@ mod tests {
             retained,
             &mut || Ok(()),
             |body, check| {
-                assert_eq!(admitted.snapshot().reserved_bytes, peak);
+                assert_eq!(crate::test_utils::reserved_payload_bytes(&admitted), peak);
                 assert_eq!(
                     body.documents[0].body["dense"].as_array().unwrap().len(),
                     8192
@@ -122,9 +123,12 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(admitted.snapshot().reserved_bytes, retained);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admitted),
+            retained
+        );
         drop(reservation);
-        assert_eq!(admitted.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admitted), 0);
     }
 
     #[test]
@@ -146,9 +150,9 @@ mod tests {
             )
             .is_err()
         );
-        assert_eq!(admission.snapshot().reserved_bytes, peak);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), peak);
         drop(reservation);
-        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
 
         let bytes = body();
         let peak = workspace(&bytes, retained, &mut || Ok(())).unwrap();
@@ -165,9 +169,9 @@ mod tests {
             )
         }));
         assert!(result.is_err());
-        assert_eq!(admission.snapshot().reserved_bytes, peak);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), peak);
         drop(reservation);
-        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
     }
 
     #[tokio::test]
@@ -239,7 +243,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(admission.snapshot().reserved_bytes, peak);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), peak);
         assert_eq!(slots.available_permits(), 0);
 
         release_body.send(()).unwrap();
@@ -247,7 +251,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(admission.snapshot().reserved_bytes, retained);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            retained
+        );
         assert_eq!(slots.available_permits(), 0);
         assert!(
             tokio::time::timeout(Duration::from_millis(25), fence.drain())
@@ -259,7 +266,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), fence.drain())
             .await
             .unwrap();
-        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
         assert_eq!(admission.snapshot().inflight_operations, 0);
         assert_eq!(slots.available_permits(), 1);
     }

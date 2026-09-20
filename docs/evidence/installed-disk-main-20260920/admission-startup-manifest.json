@@ -1,0 +1,66 @@
+{
+  "status": "PREPARED_UNAPPLIED_UNCOMPILED",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/admission.rs",
+      "before_sha256": "d659fb66f08a42e2c41923b7331a50c978aa4534640e70fee56ba08ce74cd780",
+      "proposed_sha256": "addab576fcb20de9bf4f2a9f5078cc8a9d3e9653adf9b0605be736277274e713",
+      "new_file": false
+    },
+    {
+      "path": "crates/kasumi-engine/src/admission_startup_tests.rs",
+      "before_sha256": null,
+      "proposed_sha256": "41709086068b5aafda3dcc5ff548f88e24c93315ffab9fa336d85ae5ae1acbba",
+      "new_file": true
+    },
+    {
+      "path": "crates/kasumi-raft/src/lib.rs",
+      "before_sha256": "7b0bd74841a56563db06a3a0a59b53df2f0720d5f3fd3f9cff3dde3b65b2d8c9",
+      "proposed_sha256": "6b32f2ccb97d462d036337df670c43c10cb2ac1e9fbb944c91910c4cd17c271f",
+      "new_file": false
+    },
+    {
+      "path": "crates/kasumi-raft/src/snapshot_buffer.rs",
+      "before_sha256": "61d03c9be4af87f6ebd77f1ab892e7fc278c16f8c9affc15e312e4de6249d490",
+      "proposed_sha256": "473d3b0bef3bd4bb16fc7364048161f0c6585d1fa0dffca10e2e1b0e2f563de8",
+      "new_file": false
+    },
+    {
+      "path": "crates/kasumi-raft/src/startup_owner_tests.rs",
+      "before_sha256": "80873adbd1550aa2d8a6ba1966a2c7f1d951097a4cc326f9b25108840cb0dd07",
+      "proposed_sha256": "b5c1fb72dab1a8a5529e3b5e2e19433dcaba509beb27591396b612b19dbb3d8e",
+      "new_file": false
+    },
+    {
+      "path": "crates/kasumi-raft/src/startup_test_utils.rs",
+      "before_sha256": null,
+      "proposed_sha256": "6bb448ce48a0ddd2119a9024a99854a2ce3a7fd6ee6decbbe7d3c5c137c9db17",
+      "new_file": true
+    }
+  ],
+  "patch_sha256": "fa08242033bd50f7d5c2c6959bde0f45411be58af228f79f7667cf5eb2376afb",
+  "validation": {
+    "rustfmt_stdin": "all six proposed Rust sources parsed/formatted",
+    "git_apply_check": "passed against installed A-E plus root two AdmissionConfig initializer fixes",
+    "actual_source_hashes_unchanged": true,
+    "builds_tests": "not run"
+  },
+  "coverage": {
+    "actual_constructor": "RaftGroup::local after real OpenRaft creation and router registration",
+    "cancellations": [
+      "constructor future dropped after gate entered",
+      "first NodeAdmission census future dropped after confirmed Poll::Pending"
+    ],
+    "evidence": [
+      "original typed initializer error and repeated DrainIssue Arc identity",
+      "Complete only after actual SDK/group shutdown",
+      "claim/router lifetime while pending and after drain",
+      "owner, facade, inventory and shared core byte lifetimes",
+      "same storage reopens through fresh facade on exact shared core"
+    ],
+    "not_covered": [
+      "typed Retained census outcome through actual unresolved startup",
+      "native platform memory accounting qualification"
+    ]
+  }
+}

@@ -1824,6 +1824,7 @@ dependencies = [
  "kasumi-types",
  "libc",
  "openraft",
+ "parking_lot",
  "redb",
  "ring",
  "serde",

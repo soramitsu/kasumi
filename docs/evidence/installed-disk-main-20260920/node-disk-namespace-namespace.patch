@@ -1,0 +1,961 @@
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -179,10 +179,38 @@
+     }
+ }
+ 
++/// Fixed retained namespace identity. Component framing and distinct domains
++/// prevent ambiguous concatenations; hashing never allocates. This binds a
++/// closed inode to its enrolled name without retaining another path allocation.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++struct NamespaceBinding([u8; 32]);
++
++impl NamespaceBinding {
++    fn root(identity: Identity) -> Self {
++        use sha2::{Digest, Sha256};
++        let mut hash = Sha256::new();
++        hash.update(b"kasumi-node-disk-root-v1\0");
++        hash.update(identity.0.to_le_bytes());
++        hash.update(identity.1.to_le_bytes());
++        Self(hash.finalize().into())
++    }
++
++    fn child(self, name: &std::ffi::CStr) -> Self {
++        use sha2::{Digest, Sha256};
++        let mut hash = Sha256::new();
++        hash.update(b"kasumi-node-disk-child-v1\0");
++        hash.update(self.0);
++        hash.update((name.to_bytes().len() as u64).to_le_bytes());
++        hash.update(name.to_bytes());
++        Self(hash.finalize().into())
++    }
++}
++
+ /// The admitted physical identity survives descriptor close. Reservations and
+ /// observed extents update this existing entry without allocating during I/O.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ struct AccountedFile {
++    binding: NamespaceBinding,
+     bytes: u64,
+     pending: u64,
+     actual_len: u64,
+@@ -191,8 +219,9 @@
+ }
+ 
+ impl AccountedFile {
+-    fn durable(bytes: u64, pending: u64, len: u64) -> Self {
++    fn durable(binding: NamespaceBinding, bytes: u64, pending: u64, len: u64) -> Self {
+         Self {
++            binding,
+             bytes,
+             pending,
+             actual_len: len,
+--- a/crates/kasumi-store/src/node_disk/census.rs
++++ b/crates/kasumi-store/src/node_disk/census.rs
+@@ -1,4 +1,6 @@
+-use super::{AccountedFile, CensusCancellation, Identity, NodeDiskConfig, extent};
++use super::{
++    AccountedFile, CensusCancellation, Identity, NamespaceBinding, NodeDiskConfig, extent,
++};
+ use anyhow::{Context, Result, ensure};
+ use std::{
+     collections::{BTreeMap, HashMap},
+@@ -200,11 +202,12 @@
+     root: &Root,
+     relative: &Path,
+     config: &NodeDiskConfig,
+-) -> Result<(File, CString)> {
++) -> Result<(File, CString, NamespaceBinding)> {
+     root.verify()?;
+     let mut components = relative.components().peekable();
+     let mut directory_fd = root.file.try_clone()?;
+     let mut depth = 0_u32;
++    let mut binding = NamespaceBinding::root(root.identity);
+     while let Some(component) = components.next() {
+         depth = depth
+             .checked_add(1)
+@@ -219,8 +222,9 @@
+             "persistent name exceeds budget"
+         );
+         let name = CString::new(name.as_bytes())?;
++        binding = binding.child(&name);
+         if components.peek().is_none() {
+-            return Ok((directory_fd, name));
++            return Ok((directory_fd, name, binding));
+         }
+         let child = open_at(&directory_fd, &name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+         let metadata = child.metadata()?;
+@@ -235,12 +239,13 @@
+ }
+ 
+ struct Cursor {
++    binding: NamespaceBinding,
+     file: File,
+     entries: *mut libc::DIR,
+ }
+ 
+ impl Cursor {
+-    fn open(file: File) -> Result<Self> {
++    fn open(file: File, binding: NamespaceBinding) -> Result<Self> {
+         // A dup shares the directory offset and would make a later census start
+         // at EOF. Open a new file description anchored to this descriptor.
+         let fd = open_at(&file, c".", libc::O_RDONLY | libc::O_DIRECTORY)?.into_raw_fd();
+@@ -251,7 +256,11 @@
+             drop(unsafe { File::from_raw_fd(fd) });
+             return Err(error.into());
+         }
+-        Ok(Self { file, entries })
++        Ok(Self {
++            file,
++            entries,
++            binding,
++        })
+     }
+ 
+     fn next(&mut self, max_name_bytes: u32) -> Result<Option<CString>> {
+@@ -307,7 +316,10 @@
+     let mut work = 0_u64;
+     for root in roots.values() {
+         root.verify()?;
+-        let mut stack = vec![Cursor::open(root.file.try_clone()?)?];
++        let mut stack = vec![Cursor::open(
++            root.file.try_clone()?,
++            NamespaceBinding::root(root.identity),
++        )?];
+         while !stack.is_empty() {
+             cancel.check()?;
+             let current = stack.last_mut().expect("nonempty census stack");
+@@ -324,6 +336,7 @@
+             if name.to_bytes() == b"." || name.to_bytes() == b".." {
+                 continue;
+             }
++            let binding = current.binding.child(&name);
+             // Open nonblocking so a substituted FIFO cannot stall a bounded census.
+             let child = open_at(&current.file, &name, libc::O_RDONLY | libc::O_NONBLOCK)?;
+             let metadata = child.metadata()?;
+@@ -337,7 +350,7 @@
+                     stack.len() < config.max_depth as usize,
+                     "census depth exhausted"
+                 );
+-                stack.push(Cursor::open(child)?);
++                stack.push(Cursor::open(child, binding)?);
+             } else {
+                 regular(&metadata, root.identity.0)?;
+                 lock(&child, libc::LOCK_EX)?;
+@@ -358,7 +371,7 @@
+                         .accounted
+                         .insert(
+                             Identity::of(&verified),
+-                            AccountedFile::durable(bytes, pending, verified.len()),
++                            AccountedFile::durable(binding, bytes, pending, verified.len()),
+                         )
+                         .is_none(),
+                     "persistent census repeated an enrolled physical inode"
+--- a/crates/kasumi-store/src/node_disk/file.rs
++++ b/crates/kasumi-store/src/node_disk/file.rs
+@@ -1,5 +1,6 @@
+ use super::{
+-    AccountedFile, DiskWork, Identity, NodeDisk, NodeDiskPhase, State, census, extent, rounded,
++    AccountedFile, DiskWork, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase, State, census,
++    extent, rounded,
+ };
+ use std::{
+     ffi::CString,
+@@ -23,8 +24,9 @@
+ }
+ 
+ impl Budget {
+-    fn accounted(&self) -> AccountedFile {
++    fn accounted(&self, binding: NamespaceBinding) -> AccountedFile {
+         AccountedFile {
++            binding,
+             bytes: self.bytes,
+             pending: self.pending,
+             actual_len: self.actual_len,
+@@ -44,6 +46,7 @@
+     parent: File,
+     name: CString,
+     identity: Identity,
++    binding: NamespaceBinding,
+     budget: Mutex<Budget>,
+ }
+ 
+@@ -89,12 +92,36 @@
+     parent: File,
+     name: CString,
+     device: u64,
++    binding: NamespaceBinding,
+     create: bool,
+     budget: Mutex<Budget>,
+ }
+ 
+ impl PreparedFile<'_> {
+     pub(super) fn execute(mut self) -> io::Result<NodeDiskFile> {
++        if self.create {
++            let result = verify_parent(
++                &self.disk.roots[&self.root],
++                &self.parent_names,
++                &self.parent,
++            )
++            .and_then(|()| {
++                require_unenrolled_target(
++                    &self.state,
++                    self.binding,
++                    &self.parent,
++                    &self.name,
++                    self.device,
++                    self.disk.unit,
++                )
++            });
++            if let Err(error) = result {
++                if error.kind() != io::ErrorKind::AlreadyExists {
++                    self.disk.fail_locked(&mut self.state);
++                }
++                return Err(error);
++            }
++        }
+         let flags = libc::O_RDWR
+             | libc::O_NONBLOCK
+             | if self.create {
+@@ -105,6 +132,26 @@
+         let file = match census::open_at(&self.parent, &self.name, flags) {
+             Ok(file) => file,
+             Err(error) => {
++                // An absent final leaf is harmless only if its complete name
++                // was never enrolled and the prepared parent is still rooted.
++                if !self.create
++                    && error.kind() == io::ErrorKind::NotFound
++                    && !self
++                        .state
++                        .accounted
++                        .values()
++                        .any(|entry| entry.binding == self.binding)
++                {
++                    if let Err(error) = verify_parent(
++                        &self.disk.roots[&self.root],
++                        &self.parent_names,
++                        &self.parent,
++                    ) {
++                        self.disk.fail_locked(&mut self.state);
++                        return Err(error);
++                    }
++                    return Err(error);
++                }
+                 // A create-only conflict did not mutate the existing object.
+                 if !self.create || error.kind() != io::ErrorKind::AlreadyExists {
+                     self.disk.fail_locked(&mut self.state);
+@@ -117,6 +164,17 @@
+             let metadata = file.metadata()?;
+             census::regular_nonallocating(&metadata, self.device)?;
+             let identity = Identity::of(&metadata);
++            // A live inode under a different enrolled name is substitution,
++            // never a harmless second open of its retained descriptor.
++            if !self.create
++                && self
++                    .state
++                    .accounted
++                    .get(&identity)
++                    .is_some_and(|entry| entry.binding != self.binding)
++            {
++                return Err(io::ErrorKind::InvalidData.into());
++            }
+             if self
+                 .state
+                 .live
+@@ -136,7 +194,7 @@
+             let (bytes, pending) = extent(&metadata, self.disk.unit)?;
+             Ok((
+                 identity,
+-                AccountedFile::durable(bytes, pending, metadata.len()),
++                AccountedFile::durable(self.binding, bytes, pending, metadata.len()),
+             ))
+         })();
+         let (identity, enrolled) = match inspected {
+@@ -210,6 +268,7 @@
+                 parent: self.parent,
+                 name: self.name,
+                 identity,
++                binding: self.binding,
+                 budget: self.budget,
+             });
+         // SAFETY: the sole allocation was initialized exactly once above. No
+@@ -232,6 +291,7 @@
+     root: String,
+     relative: PathBuf,
+     parent_names: Box<[CString]>,
++    binding: NamespaceBinding,
+ }
+ 
+ impl PreparedPublication<'_> {
+@@ -245,6 +305,7 @@
+             root,
+             relative,
+             parent_names,
++            binding,
+         } = self;
+         let mut renamed = false;
+         let result = (|| -> io::Result<()> {
+@@ -265,12 +326,22 @@
+                 owner.verify(actual)?;
+                 let metadata = actual.metadata()?;
+                 let (bytes, pending) = extent(&metadata, disk.unit)?;
+-                if AccountedFile::durable(bytes, pending, metadata.len()) != budget.accounted() {
++                if AccountedFile::durable(owner.binding, bytes, pending, metadata.len())
++                    != budget.accounted(owner.binding)
++                {
+                     return Err(io::ErrorKind::InvalidData.into());
+                 }
+                 actual.sync_all()?;
+             }
+-            disk.roots[&root].verify_nonallocating()?;
++            verify_parent(&disk.roots[&root], &parent_names, &parent)?;
++            require_unenrolled_target(
++                &state,
++                binding,
++                &parent,
++                &name,
++                owner.identity.0,
++                disk.unit,
++            )?;
+             #[cfg(target_os = "linux")]
+             let status = unsafe {
+                 libc::renameat2(
+@@ -300,6 +371,14 @@
+             owner.relative = relative;
+             owner.parent_names = parent_names;
+             owner.name = name;
++            owner.binding = binding;
++            // The source name stopped owning this inode at the rename. Update
++            // the retained slot before any fallible durability step.
++            state
++                .accounted
++                .get_mut(&owner.identity)
++                .expect("validated publication enrollment")
++                .binding = binding;
+             // The descriptor now belongs to the new name even if durability or
+             // post-publication verification fails. Every error remains inline.
+             #[cfg(test)]
+@@ -318,7 +397,9 @@
+             owner.verify(actual)?;
+             let metadata = actual.metadata()?;
+             let (bytes, pending) = extent(&metadata, disk.unit)?;
+-            if AccountedFile::durable(bytes, pending, metadata.len()) != budget.accounted() {
++            if AccountedFile::durable(owner.binding, bytes, pending, metadata.len())
++                != budget.accounted(owner.binding)
++            {
+                 return Err(io::ErrorKind::InvalidData.into());
+             }
+             Ok(())
+@@ -410,11 +491,12 @@
+             .map_err(|_| io::ErrorKind::OutOfMemory)?;
+         let selected = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
+         let parent_names = prepare_parent_names(relative, &self.config)?;
+-        let (parent, name) = census::parent(selected, relative, &self.config).map_err(|error| {
+-            self.fail_locked(&mut state);
+-            // Path preparation precedes every physical create/publication.
+-            io::Error::other(error)
+-        })?;
++        let (parent, name, binding) =
++            census::parent(selected, relative, &self.config).map_err(|error| {
++                self.fail_locked(&mut state);
++                // Path preparation precedes every physical create/publication.
++                io::Error::other(error)
++            })?;
+         let budget = Mutex::new(Budget {
+             file: None,
+             bytes: 0,
+@@ -436,6 +518,7 @@
+             parent,
+             name,
+             device: selected.identity.0,
++            binding,
+             create: create.is_some(),
+             budget,
+         })
+@@ -474,12 +557,17 @@
+             return Err(io::ErrorKind::InvalidInput.into());
+         }
+         let selected = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
+-        let (parent, name) =
+-            census::parent(selected, relative, &self.config).map_err(io::Error::other)?;
++        // Hold admission through physical path validation. On preparation
++        // failure this local guard drops before the input descriptor owner.
++        let mut state = self.lock_state();
+         let parent_names = prepare_parent_names(relative, &self.config)?;
++        let (parent, name, binding) =
++            census::parent(selected, relative, &self.config).map_err(|error| {
++                self.fail_locked(&mut state);
++                io::Error::other(error)
++            })?;
+         let root = root.to_owned();
+         let relative = relative.to_owned();
+-        let state = self.lock_state();
+         let owner = match Arc::try_unwrap(file.0) {
+             Ok(owner) => owner,
+             Err(owner) => {
+@@ -500,6 +588,7 @@
+             root,
+             relative,
+             parent_names,
++            binding,
+         })
+     }
+ 
+@@ -608,7 +697,7 @@
+                                         .accounted
+                                         .get_mut(&owner.identity)
+                                         .expect("validated reclaimed inode") =
+-                                        AccountedFile::durable(bytes, pending, len);
++                                        AccountedFile::durable(owner.binding, bytes, pending, len);
+                                 } else {
+                                     state.accounted.remove(&owner.identity);
+                                 }
+@@ -642,6 +731,60 @@
+     }
+ }
+ 
++// Return a conflict only after proving that the retained target still names
++// its enrolled inode. A disappeared or substituted target must fence its owner.
++fn require_unenrolled_target(
++    state: &State,
++    binding: NamespaceBinding,
++    parent: &File,
++    name: &std::ffi::CStr,
++    device: u64,
++    unit: u64,
++) -> io::Result<()> {
++    let Some((identity, enrolled)) = state
++        .accounted
++        .iter()
++        .find(|(_, entry)| entry.binding == binding)
++    else {
++        return Ok(());
++    };
++    let observed = census::open_at(parent, name, libc::O_RDONLY | libc::O_NONBLOCK)?;
++    let metadata = observed.metadata()?;
++    census::regular_nonallocating(&metadata, device)?;
++    let (bytes, pending) = extent(&metadata, unit)?;
++    if Identity::of(&metadata) != *identity
++        || metadata.len() != enrolled.actual_len
++        || enrolled.actual_len > enrolled.reserved_len
++        || bytes > enrolled.bytes
++        || (enrolled.settled
++            && *enrolled != AccountedFile::durable(binding, bytes, pending, metadata.len()))
++    {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    // An unsettled live target can retain unused growth promises or contain
++    // admitted writes not yet reflected in pending physical materialization.
++    // Verify its exact known EOF and full allowance without releasing credit.
++    Err(io::ErrorKind::AlreadyExists.into())
++}
++
++fn verify_parent(root: &census::Root, names: &[CString], retained: &File) -> io::Result<()> {
++    root.verify_nonallocating()?;
++    let mut current = root.file.try_clone()?;
++    for name in names {
++        let child = census::open_at(&current, name, libc::O_RDONLY | libc::O_DIRECTORY)?;
++        let metadata = child.metadata()?;
++        census::directory_nonallocating(&metadata)?;
++        if metadata.dev() != root.identity.0 {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        current = child;
++    }
++    if Identity::of(&current.metadata()?) != Identity::of(&retained.metadata()?) {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    Ok(())
++}
++
+ fn prepare_parent_names(
+     relative: &Path,
+     config: &super::NodeDiskConfig,
+@@ -669,7 +812,7 @@
+ 
+ impl FileOwner {
+     fn check_enrollment(&self, state: &mut State, budget: &Budget) -> io::Result<()> {
+-        if state.accounted.get(&self.identity) != Some(&budget.accounted()) {
++        if state.accounted.get(&self.identity) != Some(&budget.accounted(self.binding)) {
+             self.disk.fail_locked(state);
+             return Err(io::ErrorKind::InvalidData.into());
+         }
+@@ -682,7 +825,7 @@
+         *state
+             .accounted
+             .get_mut(&self.identity)
+-            .expect("validated enrolled inode") = budget.accounted();
++            .expect("validated enrolled inode") = budget.accounted(self.binding);
+     }
+ 
+     #[cfg(test)]
+@@ -702,22 +845,13 @@
+         })
+     }
+     fn verify(&self, file: &File) -> io::Result<()> {
+-        let root = &self.disk.roots[&self.root];
+-        root.verify_nonallocating()?;
+-        let mut parent = root.file.try_clone()?;
+-        for name in &self.parent_names {
+-            let child = census::open_at(&parent, name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+-            let metadata = child.metadata()?;
+-            census::directory_nonallocating(&metadata)?;
+-            if metadata.dev() != root.identity.0 {
+-                return Err(io::ErrorKind::InvalidData.into());
+-            }
+-            parent = child;
+-        }
+-        if Identity::of(&parent.metadata()?) != Identity::of(&self.parent.metadata()?) {
+-            return Err(io::ErrorKind::InvalidData.into());
+-        }
+-        let observed = census::open_at(&parent, &self.name, libc::O_RDONLY | libc::O_NONBLOCK)?;
++        verify_parent(
++            &self.disk.roots[&self.root],
++            &self.parent_names,
++            &self.parent,
++        )?;
++        let observed =
++            census::open_at(&self.parent, &self.name, libc::O_RDONLY | libc::O_NONBLOCK)?;
+         let metadata = observed.metadata()?;
+         census::regular_nonallocating(&metadata, self.identity.0)?;
+         if Identity::of(&metadata) != self.identity
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -1345,6 +1345,11 @@
+         assert_eq!(snapshot.open_files, 0);
+         assert_eq!(snapshot.persistent_files, 1);
+         assert_eq!(snapshot.charged_bytes, 32 << 10);
++        let binding = NamespaceBinding::root(disk.roots["data"].identity).child(c"destination");
++        assert_eq!(
++            disk.lock_state().accounted.values().next().unwrap().binding,
++            binding
++        );
+         assert!(disk.open_file("data", Path::new("destination")).is_err());
+         let raw = std::fs::File::open(config.roots["data"].join("destination")).unwrap();
+         raw.try_lock().unwrap();
+@@ -1431,3 +1436,425 @@
+     );
+     clean(&disk, &["first", "destination"]);
+ }
++
++#[test]
++fn unenrolled_missing_leaf_preserves_admission_without_allocating() {
++    let (_directory, config) = installation();
++    crate::private_files::create_directory(&config.roots["data"].join("nested")).unwrap();
++    seed(&config, "retained", 32 << 10);
++    let disk = open(config);
++    let before = disk.snapshot();
++    let prepared = disk
++        .prepare_file("data", Path::new("nested/absent"), None)
++        .unwrap();
++    let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
++    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
++    assert_eq!(allocations, 0);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(disk.snapshot().persistent_files, before.persistent_files);
++    let created = disk
++        .create_file("data", Path::new("nested/absent"), DiskWork::Foreground)
++        .unwrap();
++    drop(created);
++    let created = disk.open_file("data", Path::new("nested/absent")).unwrap();
++    disk.delete_file(created).unwrap();
++    let retained = disk.open_file("data", Path::new("retained")).unwrap();
++    disk.delete_file(retained).unwrap();
++}
++
++#[test]
++fn disappeared_censused_and_closed_created_names_fence_without_credit() {
++    for censused in [true, false] {
++        let (_directory, config) = installation();
++        crate::private_files::create_directory(&config.roots["data"].join("nested")).unwrap();
++        if censused {
++            seed(&config, "nested/file", 32 << 10);
++        }
++        let disk = open(config.clone());
++        if !censused {
++            let file = disk
++                .create_file("data", Path::new("nested/file"), DiskWork::Foreground)
++                .unwrap();
++            file.reserve_growth(0, 32 << 10, DiskWork::Foreground)
++                .unwrap();
++            file.grow_reserved(32 << 10).unwrap();
++            file.sync_all_and_parent().unwrap();
++            drop(file);
++        }
++        drop(disk.open_file("data", Path::new("nested/file")).unwrap());
++        let before = disk.snapshot();
++        std::fs::remove_file(config.roots["data"].join("nested/file")).unwrap();
++        let prepared = disk
++            .prepare_file("data", Path::new("nested/file"), None)
++            .unwrap();
++        let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
++        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
++        assert_eq!(allocations, 0);
++        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++        assert_eq!(disk.snapshot().persistent_files, 1);
++        assert_eq!(disk.snapshot().open_files, 0);
++        disk.reconcile(&CensusCancellation::default()).unwrap();
++        assert_eq!(disk.snapshot().charged_bytes, 0);
++        assert_eq!(disk.snapshot().persistent_files, 0);
++        disk.pause().unwrap();
++    }
++}
++
++#[test]
++fn raw_rename_fences_both_missing_old_name_and_present_new_name() {
++    for keep_live in [false, true] {
++        for lookup in ["original", "moved"] {
++            let (_directory, config) = installation();
++            seed(&config, "original", 32 << 10);
++            let disk = open(config.clone());
++            let retained =
++                keep_live.then(|| disk.open_file("data", Path::new("original")).unwrap());
++            std::fs::rename(
++                config.roots["data"].join("original"),
++                config.roots["data"].join("moved"),
++            )
++            .unwrap();
++            assert!(disk.open_file("data", Path::new(lookup)).is_err());
++            assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++            assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++            assert_eq!(disk.snapshot().persistent_files, 1);
++            drop(retained);
++            clean(&disk, &["moved"]);
++        }
++    }
++}
++
++#[test]
++fn admitted_publication_rebinds_name_and_reclaim_forgets_it() {
++    let (_directory, config) = installation();
++    crate::private_files::create_directory(&config.roots["data"].join("nested")).unwrap();
++    seed(&config, "source", 32 << 10);
++    let disk = open(config);
++    let file = disk.open_file("data", Path::new("source")).unwrap();
++    let prepared = disk
++        .prepare_publication(file, "data", Path::new("nested/published"))
++        .unwrap();
++    let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
++    let file = result.unwrap();
++    assert_eq!(allocations, 0);
++    drop(file);
++    assert_eq!(
++        disk.open_file("data", Path::new("source"))
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::NotFound
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    let file = disk
++        .open_file("data", Path::new("nested/published"))
++        .unwrap();
++    disk.delete_file(file).unwrap();
++    assert_eq!(
++        disk.open_file("data", Path::new("nested/published"))
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::NotFound
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    assert_eq!(disk.snapshot().persistent_files, 0);
++    let replacement = disk
++        .create_file("data", Path::new("nested/published"), DiskWork::Foreground)
++        .unwrap();
++    disk.delete_file(replacement).unwrap();
++}
++
++#[test]
++fn missing_enrolled_target_cannot_be_recreated_or_published_over() {
++    for publish in [false, true] {
++        let (_directory, config) = installation();
++        seed(&config, "target", 32 << 10);
++        let disk = open(config.clone());
++        let source = publish.then(|| {
++            disk.create_file("data", Path::new("source"), DiskWork::Foreground)
++                .unwrap()
++        });
++        let before = disk.snapshot();
++        std::fs::remove_file(config.roots["data"].join("target")).unwrap();
++        let (result, allocations) = if let Some(source) = source {
++            let prepared = disk
++                .prepare_publication(source, "data", Path::new("target"))
++                .unwrap();
++            crate::allocation_tests::measure(|| prepared.execute())
++        } else {
++            let prepared = disk
++                .prepare_file("data", Path::new("target"), Some(DiskWork::Foreground))
++                .unwrap();
++            crate::allocation_tests::measure(|| prepared.execute())
++        };
++        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
++        assert_eq!(allocations, 0);
++        assert!(!config.roots["data"].join("target").exists());
++        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++        assert_eq!(disk.snapshot().persistent_files, before.persistent_files);
++        assert_eq!(disk.snapshot().open_files, 0);
++        if publish {
++            clean(&disk, &["source"]);
++        } else {
++            disk.reconcile(&CensusCancellation::default()).unwrap();
++        }
++    }
++}
++
++#[test]
++fn live_enrolled_target_conflicts_remain_healthy_and_preserve_content() {
++    for publish in [false, true] {
++        let (_directory, config) = installation();
++        seed(&config, "target", 32 << 10);
++        let disk = open(config.clone());
++        let target = disk.open_file("data", Path::new("target")).unwrap();
++        let (result, allocations) = if publish {
++            let source = disk
++                .create_file("data", Path::new("source"), DiskWork::Foreground)
++                .unwrap();
++            let prepared = disk
++                .prepare_publication(source, "data", Path::new("target"))
++                .unwrap();
++            crate::allocation_tests::measure(|| prepared.execute())
++        } else {
++            let prepared = disk
++                .prepare_file("data", Path::new("target"), Some(DiskWork::Foreground))
++                .unwrap();
++            crate::allocation_tests::measure(|| prepared.execute())
++        };
++        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
++        assert_eq!(allocations, 0);
++        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++        assert_eq!(target.observed_len().unwrap(), 32 << 10);
++        disk.delete_file(target).unwrap();
++        if publish {
++            let source = disk.open_file("data", Path::new("source")).unwrap();
++            disk.delete_file(source).unwrap();
++        }
++    }
++}
++
++#[test]
++fn prepared_unknown_absence_revalidates_replaced_parent() {
++    let (_directory, config) = installation();
++    let parent = config.roots["data"].join("nested");
++    crate::private_files::create_directory(&parent).unwrap();
++    let disk = open(config.clone());
++    let prepared = disk
++        .prepare_file("data", Path::new("nested/absent"), None)
++        .unwrap();
++    std::fs::rename(&parent, config.roots["data"].join("moved")).unwrap();
++    crate::private_files::create_directory(&parent).unwrap();
++    let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
++    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
++    assert_eq!(allocations, 0);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert_eq!(disk.snapshot().persistent_files, 0);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    disk.pause().unwrap();
++}
++
++#[test]
++fn replaced_parent_cannot_hide_enrolled_missing_leaf() {
++    let (_directory, config) = installation();
++    let parent = config.roots["data"].join("nested");
++    crate::private_files::create_directory(&parent).unwrap();
++    seed(&config, "nested/file", 32 << 10);
++    let disk = open(config.clone());
++    std::fs::rename(&parent, config.roots["data"].join("moved")).unwrap();
++    crate::private_files::create_directory(&parent).unwrap();
++    assert_eq!(
++        disk.open_file("data", Path::new("nested/file"))
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::NotFound
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    clean(&disk, &["moved/file"]);
++}
++
++#[test]
++fn publication_preparation_missing_or_symlinked_ancestor_fences() {
++    for replace_with_symlink in [false, true] {
++        let (_directory, config) = installation();
++        let parent = config.roots["data"].join("nested");
++        let moved = config.roots["data"].join("moved");
++        crate::private_files::create_directory(&parent).unwrap();
++        seed(&config, "source", 32 << 10);
++        let disk = open(config.clone());
++        let source = disk.open_file("data", Path::new("source")).unwrap();
++        std::fs::rename(&parent, &moved).unwrap();
++        if replace_with_symlink {
++            symlink(&moved, &parent).unwrap();
++        }
++        assert!(
++            disk.prepare_publication(source, "data", Path::new("nested/published"))
++                .is_err()
++        );
++        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++        assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++        assert_eq!(disk.snapshot().open_files, 0);
++        assert!(!moved.join("published").exists());
++        if replace_with_symlink {
++            std::fs::remove_file(&parent).unwrap();
++        }
++        std::fs::rename(&moved, &parent).unwrap();
++        clean(&disk, &["source"]);
++    }
++}
++
++#[test]
++fn publication_preparation_replaced_root_fences_before_rename() {
++    let (directory, config) = installation();
++    seed(&config, "source", 32 << 10);
++    let disk = open(config.clone());
++    let source = disk.open_file("data", Path::new("source")).unwrap();
++    let root = &config.roots["data"];
++    let moved = directory.path().join("moved-root");
++    std::fs::rename(root, &moved).unwrap();
++    crate::private_files::create_directory(root).unwrap();
++    assert!(
++        disk.prepare_publication(source, "data", Path::new("published"))
++            .is_err()
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(disk.snapshot().open_files, 0);
++    assert!(!root.join("published").exists());
++    assert!(moved.join("source").exists());
++    std::fs::remove_dir(root).unwrap();
++    std::fs::rename(&moved, root).unwrap();
++    clean(&disk, &["source"]);
++}
++
++#[test]
++fn publication_replaced_private_source_ancestor_fences_before_rename() {
++    let (_directory, config) = installation();
++    let parent = config.roots["data"].join("nested");
++    crate::private_files::create_directory(&parent).unwrap();
++    seed(&config, "nested/source", 32 << 10);
++    let disk = open(config.clone());
++    let source = disk.open_file("data", Path::new("nested/source")).unwrap();
++    std::fs::rename(&parent, config.roots["data"].join("moved")).unwrap();
++    crate::private_files::create_directory(&parent).unwrap();
++    let prepared = disk
++        .prepare_publication(source, "data", Path::new("nested/published"))
++        .unwrap();
++    let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
++    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
++    assert_eq!(allocations, 0);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(disk.snapshot().open_files, 0);
++    assert!(!parent.join("published").exists());
++    clean(&disk, &["moved/source"]);
++}
++
++#[test]
++fn enrolled_target_unauthorized_growth_never_becomes_a_healthy_conflict() {
++    for publish in [false, true] {
++        for (reserved, raw_length) in [
++            (32 << 10, 48 << 10),
++            (64 << 10, 48 << 10),
++            (64 << 10, 96 << 10),
++        ] {
++            let (_directory, config) = installation();
++            seed(&config, "target", 32 << 10);
++            let disk = open(config.clone());
++            let target = disk.open_file("data", Path::new("target")).unwrap();
++            if reserved > 32 << 10 {
++                target
++                    .reserve_growth(32 << 10, reserved, DiskWork::Foreground)
++                    .unwrap();
++            }
++            let source = publish.then(|| {
++                disk.create_file("data", Path::new("source"), DiskWork::Foreground)
++                    .unwrap()
++            });
++            let before = disk.snapshot();
++            let raw = std::fs::OpenOptions::new()
++                .write(true)
++                .open(config.roots["data"].join("target"))
++                .unwrap();
++            raw.set_len(raw_length).unwrap();
++            raw.sync_all().unwrap();
++            drop(raw);
++            let (result, allocations) = if let Some(source) = source {
++                let prepared = disk
++                    .prepare_publication(source, "data", Path::new("target"))
++                    .unwrap();
++                crate::allocation_tests::measure(|| prepared.execute())
++            } else {
++                let prepared = disk
++                    .prepare_file("data", Path::new("target"), Some(DiskWork::Foreground))
++                    .unwrap();
++                crate::allocation_tests::measure(|| prepared.execute())
++            };
++            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
++            assert_eq!(allocations, 0);
++            assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++            assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++            assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
++            assert_eq!(disk.snapshot().persistent_files, before.persistent_files);
++            drop(target);
++            if publish {
++                clean(&disk, &["source", "target"]);
++            } else {
++                clean(&disk, &["target"]);
++            }
++        }
++    }
++}
++
++#[test]
++fn enrolled_target_conflict_accepts_only_actual_admitted_growth() {
++    for publish in [false, true] {
++        for materialize in [false, true] {
++            let (_directory, config) = installation();
++            seed(&config, "target", 32 << 10);
++            let disk = open(config.clone());
++            let target = disk.open_file("data", Path::new("target")).unwrap();
++            target
++                .reserve_growth(32 << 10, 64 << 10, DiskWork::Foreground)
++                .unwrap();
++            let actual_len = if materialize {
++                target.grow_reserved(48 << 10).unwrap();
++                target.write_all_at(&[73; 4096], 32 << 10).unwrap();
++                48 << 10
++            } else {
++                32 << 10
++            };
++            let source = publish.then(|| {
++                disk.create_file("data", Path::new("source"), DiskWork::Foreground)
++                    .unwrap()
++            });
++            let before = disk.snapshot();
++            let (result, allocations) = if let Some(source) = source {
++                let prepared = disk
++                    .prepare_publication(source, "data", Path::new("target"))
++                    .unwrap();
++                crate::allocation_tests::measure(|| prepared.execute())
++            } else {
++                let prepared = disk
++                    .prepare_file("data", Path::new("target"), Some(DiskWork::Foreground))
++                    .unwrap();
++                crate::allocation_tests::measure(|| prepared.execute())
++            };
++            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
++            assert_eq!(allocations, 0);
++            assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++            assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++            assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
++            assert_eq!(target.observed_len().unwrap(), actual_len);
++            target.settle_growth(actual_len).unwrap();
++            disk.delete_file(target).unwrap();
++            if publish {
++                let source = disk.open_file("data", Path::new("source")).unwrap();
++                disk.delete_file(source).unwrap();
++            }
++        }
++    }
++}

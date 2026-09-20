@@ -60,7 +60,7 @@ mod tests {
         let second = NodeAuditMaintenance::install(&admission).unwrap();
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(
-            admission.snapshot().reserved_bytes,
+            crate::test_utils::reserved_payload_bytes(&admission),
             NodeAuditMaintenance::WORKSPACE_BYTES
         );
         assert_eq!(admission.snapshot().inflight_operations, 0);
@@ -72,11 +72,11 @@ mod tests {
         drop(first);
         drop(second);
         assert_eq!(
-            admission.snapshot().reserved_bytes,
+            crate::test_utils::reserved_payload_bytes(&admission),
             NodeAuditMaintenance::WORKSPACE_BYTES
         );
         drop(permit);
         drop(worker);
-        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
     }
 }

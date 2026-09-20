@@ -1,0 +1,27 @@
+{
+  "scope": "development Raft typed drain library and integration regression; excludes separately failed unresolved custody-capacity case, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-raft",
+    "--all-features",
+    "--lib",
+    "--tests",
+    "--",
+    "--test-threads=1",
+    "--skip",
+    "custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "b2876ef782f0f5afde2d60edd234559fc6ce600f",
+  "process_group": 94069,
+  "exit_code": 0,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 441.5048530101776,
+  "inventoried_source_unchanged": true
+}

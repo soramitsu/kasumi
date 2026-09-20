@@ -1,0 +1,12 @@
+{
+  "patch_sha256": "11917cf077c77b4cc56ee9c5af4a428cf4b1fb14c7859d58a2830a15a6d0abd6",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/tests/fixture_epoch_clock.rs",
+      "before_sha256": "0bfaea45d6c9494b3537b2d3e36839196d2a824d1fd86799c5f92e584994a3a4",
+      "proposed_sha256": "3f7f85b26d5ccee17ae6978cf5339eb40f3c528cb77646dc5033c5cb778f0f82"
+    }
+  ],
+  "exact_after_hashes": true,
+  "status": "APPLIED_UNTESTED"
+}
