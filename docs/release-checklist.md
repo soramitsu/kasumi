@@ -4,6 +4,10 @@ Kasumi is **not yet certified for production release**. This checklist covers th
 combined credential, Control lifecycle, target recovery, schema admission,
 streaming, standalone, HA maintenance and retention implementation. The precise
 implementation status is tracked in [the active ledger](production-release.md).
+The [approved plan](first-release-plan.md) is tracked through
+[fourteen workstream goals](first-release-goals.md). Backward compatibility is
+forbidden for this first release: remove superseded paths and explicitly reject
+unsupported APIs, configuration and storage formats.
 
 ## Required release evidence
 
@@ -22,7 +26,7 @@ implementation status is tracked in [the active ledger](production-release.md).
 - [ ] Actual encrypted source-unavailable recovery passes every durable phase,
   crash and cancellation point, exact activation winner, lineage, permanent stop,
   physical deletion, ownership drain and unrelated-file isolation checks.
-- [ ] A real 3 GiB incompressible tenant passes standalone and HA snapshot,
+- [ ] An incompressible corpus exceeding 3 GiB passes standalone and HA snapshot,
   compaction, restart, replacement, filesystem/S3 backup and restore with bounded
   maintenance memory. Coherent reads use a substantially smaller retention budget.
 - [ ] Audit hot-budget crossings preserve verified immutable contiguous archives;
@@ -31,12 +35,21 @@ implementation status is tracked in [the active ledger](production-release.md).
 - [ ] Backup completion uncertainty, abort ownership, repeated namespace cleanup
   and delayed uploads preserve completed backups, archives and permanent tombstones.
 - [ ] The final fifteen-case million-document matrix, concurrency workloads and a
-  genuine 24-hour HA soak pass with zero unexpected errors or integrity mismatches.
+  genuine 86,400-second HA soak pass with zero unexpected errors or integrity
+  mismatches, including credential renewal, archival, backup and membership
+  maintenance and production providers for production claims.
 - [ ] Actual OpenBao/MinIO interoperability, protected health/readiness/metrics,
   structured logging, capacity and failure/backlog measurements are recorded.
 - [ ] Linux binaries, macOS ARM64 development binaries, OCI images, systemd units,
   source archives, checksums, SBOM, third-party notices and reproducible workflows
   are usable. Fresh-install examples and maintenance/recovery runbooks match them.
+- [ ] Actual packages and both Linux OCI architectures pass smoke tests,
+  repeatable assembly and independent reproducible builds; dependency and image
+  SBOMs, contribution/security guidance and measured operating limits are present.
+- [ ] Final acceptance verification above candidate packaging binds every
+  required gate, complete workload samples and drained test processes to the
+  exact source/tree/lockfile/configuration/patch/binary hashes. Missing, failed,
+  shortened or mismatched evidence rejects the release.
 
 ## Evidence interpretation
 

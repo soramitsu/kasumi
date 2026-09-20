@@ -13,7 +13,42 @@ request owners, and canonical planned recovery are integrated in source. Persist
 disk admission, native reservations, complete HA/local lifecycle, and final live,
 capacity, platform, endurance and artifact gates remain open.
 
+The [approved completion plan](first-release-plan.md) and
+[fourteen workstream goals](first-release-goals.md) define the remaining work
+and its dependency order. Backward compatibility is forbidden for this first
+release. No goal closes without implementation, final-source validation and
+usable release artifacts or operating documentation.
+
 ## Latest combined checkpoint
+
+The [frozen `be2667d` cohort](evidence/first-release-be2667d-check-20260919/README.md)
+**failed after eight passing gates**: workspace compilation, formatting,
+complete store library (150 passed, zero failed, two ignored), strict store lint,
+complete serving library (23 passed), database-worker outcomes (four passed),
+audit-worker outcomes (two passed), and corrected Control genesis (five passed).
+All 55 mandatory store cases passed, including the seven new NodeDisk and
+filesystem-backup cases. The ignored store entries remain the live MinIO test
+and the subprocess helper exercised by its passing parent. These are scoped
+results, not full workspace tests or strict workspace lint.
+
+The ninth gate, `server-serving-owner`, passed one case and failed five ownership
+fixtures with `operator material must be owner-only`. The fixtures created
+installation directories without the required private permissions. Correct their
+setup and validate the ownership assertions on a newly frozen source; keep
+production permission enforcement unchanged. All **22 later gates were unrun**,
+including the five audit gates. All nine dispatched process groups drained and
+the frozen source remained unchanged. Original logs, manifests and hashes remain
+preserved. The original evidence's scope text still says "Prepared only"; its
+terminal gate records and failed status establish that the run actually executed.
+That original evidence is not rewritten to correct its stale scope text.
+
+This run used source `be2667d804e483dce2b3bcc408ecb7cb7f3ae66a`, tree
+`5cc19f163e7f0b7b53ef53da9dfc998578ba0f20`. Later integration source and pending MCP
+changes are not qualified by it. Persistent NodeDisk admission, recoverable redb
+capacity handling and all final production, platform, live, capacity, performance,
+endurance and artifact gates remain open.
+
+## Preceding combined checkpoint
 
 The [frozen `32825cf` cohort](evidence/first-release-32825cf-check-20260919/README.md)
 **failed** after seven passing gates: workspace compilation and formatting,
@@ -29,7 +64,7 @@ The next gate, engine Control genesis, passed four tests and failed
 Its fixture inadvertently selected the permitted `NodeControl` purpose for the
 reserved tenant; the production purpose check remained intact. Source correction
 `d14c4b3` explicitly supplies and asserts the wrong purpose. The failed log remains
-preserved, and the corrected test requires a new frozen run.
+preserved. Its correction subsequently passed in the `be2667d` cohort above.
 
 All 18 later gates in the 26-gate/124-case plan were withheld. Server ownership,
 TLS/lifecycle, SDK/native receipts, authority enrollment and explicit-voter gates
@@ -39,14 +74,13 @@ preserved. These scoped results do not qualify final production, platform, live,
 capacity, performance, endurance or artifact gates.
 
 Source successors add exclusive NodeDisk acquisition and verified live shrink
-(`9c8309c`) and durable filesystem backup outcome readback (`db4b123`). Their new
-regressions remain **UNRUN** pending the successor cohort. Frozen `be2667d` also
-includes the audit outage correction, whose independent review is source-only.
-Its prepared 31-gate/141-case plan retains every previous command, deadline and
-required case, adds the seven storage cases and ten audit cases, and binds the
-new source/tree. Preparing the plan does not execute it. NodeDisk is still an
-unwired primitive; production persistent disk admission and recoverable redb
-quota handling remain open.
+(`9c8309c`) and durable filesystem backup outcome readback (`db4b123`). Their seven
+new storage regressions passed in `be2667d`. That successor also includes the
+audit outage correction; its five audit gates requiring ten cases were withheld
+after the ownership failure. The 31-gate/141-case plan retains every previous
+command, deadline and required case and binds the successor source/tree. These
+results do not establish installed production disk admission or recoverable redb
+quota handling.
 
 ## Contract
 
@@ -98,7 +132,7 @@ it does not make their interfaces or formats part of the release contract.
   automatic fresh admission and maintenance under load.
 - [ ] Source-quorum-absent recovery, exact phased crash/cancellation outcomes,
   cleanup isolation, permanent stops and immutable lineage.
-- [ ] Real 3 GiB incompressible standalone/HA tenant, snapshots, compaction,
+- [ ] Incompressible standalone/HA corpus exceeding 3 GiB, snapshots, compaction,
   restart, member replacement, filesystem/S3 backup/restore and bounded workspaces.
 - [ ] Repeated audit cap crossings, archive failure/recovery, old administrative
   ceiling crossings, member replacement and GC/delayed-upload races.
@@ -131,7 +165,8 @@ gates above. Source-only changes and failed attempts remain explicitly identifie
    with the real TLS canonical coordinator and source-unavailable phase faults.
 4. Complete persistent node disk admission and native reservations, then validate
    canonical `KASUMIT7` permanent receipts, history archival and streaming
-   snapshots/restores under actual 3 GiB pressure. Scratch or payload limits do not establish disk capacity.
+   snapshots/restores under actual pressure exceeding 3 GiB. Scratch or payload
+   limits do not establish disk capacity.
 5. Complete standalone and HA maintenance, secure credential/key/TLS lifecycle,
    actual provider interoperability and replacement-member recovery. Earlier
    small standalone and native branch diagnostics remain historical evidence.

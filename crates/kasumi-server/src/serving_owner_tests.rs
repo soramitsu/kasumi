@@ -1,6 +1,6 @@
 use super::*;
 use kasumi_store::{NodeStore, ScratchDisk, private_files::ExclusiveLock};
-use std::{path::PathBuf, sync::Weak, task::Poll};
+use std::{os::unix::fs::PermissionsExt, path::PathBuf, sync::Weak, task::Poll};
 use tokio::sync::{Notify, oneshot};
 
 struct PhysicalOwner {
@@ -56,6 +56,7 @@ struct Fixture {
 }
 fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Registration) {
     let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let path = directory.path().join("serving.redb");
     let lock = directory.path().join("installation.lock");
     let node = NodeStore::create_new(
@@ -340,6 +341,7 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
         }
     }
     let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let path = directory.path().join("destructor.redb");
     let lock = directory.path().join("installation.lock");
     let node = NodeStore::create_new(
