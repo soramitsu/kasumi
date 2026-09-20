@@ -170,6 +170,8 @@ pub struct NodeDisk {
     #[cfg(test)]
     available_error: AtomicBool,
     #[cfg(test)]
+    // Prepare fixture synchronization as well: Darwin's std mutex creates its
+    // native mutex lazily, and these hooks first run inside measured I/O/Drop.
     after_file_close: Mutex<Option<file::ClosePause>>,
     #[cfg(test)]
     shrink_failure: Mutex<Option<file::ShrinkFailure>>,
@@ -270,6 +272,13 @@ impl NodeDisk {
             #[cfg(test)]
             parent_sync_failure: AtomicBool::new(false),
         });
+        #[cfg(test)]
+        {
+            // First-use allocation belongs to acquisition, never a publication
+            // or descriptor destructor, even for dormant fault-injection hooks.
+            drop(disk.after_file_close.lock().unwrap());
+            drop(disk.shrink_failure.lock().unwrap());
+        }
         let mut promises = disk.device.lock();
         let next = promises
             .checked_add(totals.pending)

@@ -1,0 +1,112 @@
+{
+  "authority-request-child-custody.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/authority-request-child-custody.log",
+    "sha256": "5d15861c296c662d2b1d5a42a49e81ffd873e1b2e1515982cfc1e905776c3ef3",
+    "bytes": 415568
+  },
+  "complete-store-library.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/complete-store-library.log",
+    "sha256": "e9c03ec711d38148463a4dcffa94595875401bd85e5ed40ad7ca800d376efc1e",
+    "bytes": 190926
+  },
+  "engine-actual_raft_leadership_redirect_does_not_poison_proposal_custody.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/engine-actual_raft_leadership_redirect_does_not_poison_proposal_custody.log",
+    "sha256": "1463ac4774b0fd63b18514b6a46ccb74dbe320ac60bbf442b9d3ca519b5a8a6f",
+    "bytes": 381795
+  },
+  "engine-cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shutdown.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/engine-cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shutdown.log",
+    "sha256": "e9a8c1734321007f11be2be8aaea01666dbfb29bf2356805775e33629bd04dd2",
+    "bytes": 381807
+  },
+  "engine-cancelled_submit_keeps_actual_proposal_until_original_identity_is_resolvable.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/engine-cancelled_submit_keeps_actual_proposal_until_original_identity_is_resolvable.log",
+    "sha256": "2f9465ddde911659107f5d7375aeba6f925f30f46c0ef1151ea59eed971543e1",
+    "bytes": 381807
+  },
+  "engine-owned-response-fence.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/engine-owned-response-fence.log",
+    "sha256": "7b8c0e86b9745d3e8795e82b242f68884ee875496c610013663fb6b6fe806deb",
+    "bytes": 381814
+  },
+  "engine-proposal-registry.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/engine-proposal-registry.log",
+    "sha256": "9761e200e6343f03934ae93a87a7aced077bce37818c248b11355d2551be5603",
+    "bytes": 383814
+  },
+  "engine-queued_deadlines_use_admission_time_and_survive_caller_cancellation.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/engine-queued_deadlines_use_admission_time_and_survive_caller_cancellation.log",
+    "sha256": "367ed1f3f8dc9d3551c4ffc8dde3c230128844d5e313393c5ed283636b86a309",
+    "bytes": 381798
+  },
+  "engine-retirement_workspace_rejection_is_definite_and_does_not_poison_custody.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/engine-retirement_workspace_rejection_is_definite_and_does_not_poison_custody.log",
+    "sha256": "fca74a628af31e3651dc0df5f7bed1e062076c04ac825f32c7e5a21101909933",
+    "bytes": 381801
+  },
+  "evidence.json": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/evidence.json",
+    "sha256": "ba601c303ec508d71b632688cc76d72665a6602fe5cf0bd16f44307a20798540",
+    "bytes": 5910555
+  },
+  "plan.json": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/plan.json",
+    "sha256": "d89fc59014bd5e8b4d5e8af0537718bd288e8c6019e12ee51d4597f29285bd98",
+    "bytes": 47986
+  },
+  "raft-application-write-classification.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/raft-application-write-classification.log",
+    "sha256": "39f520b61f4813c5cc1cd85bf264544baa845d74ff8259a8d6bf043793108e4b",
+    "bytes": 207833
+  },
+  "rmcp-terminal-ownership.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/rmcp-terminal-ownership.log",
+    "sha256": "d3cc271631a316c4b58de650de8a65c6776d2714d38452024f2498b497fdb737",
+    "bytes": 150852
+  },
+  "rmcp-upstream-protocol.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/rmcp-upstream-protocol.log",
+    "sha256": "d7638a1f7bbea3ef4c0d52389e86e9b15cbcb90fbe28460406d9d7a2db3bdb8f",
+    "bytes": 190451
+  },
+  "runner.py": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/runner.py",
+    "sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f",
+    "bytes": 10765
+  },
+  "server-encoded_response_credential_expiry_is_audited_and_preserves_committed_receipt.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/server-encoded_response_credential_expiry_is_audited_and_preserves_committed_receipt.log",
+    "sha256": "8a7e9e38413f18248f2a1e040cc239dea5d4b8e189df885c43412b4f0970c6ed",
+    "bytes": 447215
+  },
+  "server-mcp-response-fencing.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/server-mcp-response-fencing.log",
+    "sha256": "44f2bbfc7ef1eef0caf3002858cd3eac7c95f3f021b492bcf7af51fe4b40a1ff",
+    "bytes": 450291
+  },
+  "server-native_and_mcp_lost_committed_responses_resolve_without_reapplying.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/server-native_and_mcp_lost_committed_responses_resolve_without_reapplying.log",
+    "sha256": "36fce675cdf57f97235de763f5659817f36a88aaf158d49e64104a6bfe271a86",
+    "bytes": 447204
+  },
+  "server-shared_adapter_release_audits_a_seal_after_response_encoding.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/server-shared_adapter_release_audits_a_seal_after_response_encoding.log",
+    "sha256": "d20ded4a956bb2d2878900379023e696f740ae17a09994b66d2c65803ba187af",
+    "bytes": 447198
+  },
+  "source-before.json": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/source-before.json",
+    "sha256": "acc81110979231ede79bfbac916f03ea15e400f1c8d96cbce7baa80688220e72",
+    "bytes": 375758
+  },
+  "workspace-all-targets-check.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/workspace-all-targets-check.log",
+    "sha256": "0c8865ddd9a1bd533e880bd7b1121fa711d242da5e7a48cff5018ab3dd73573c",
+    "bytes": 495873
+  },
+  "workspace-format.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-c681ba3-ownership-disk-startup/workspace-format.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  }
+}

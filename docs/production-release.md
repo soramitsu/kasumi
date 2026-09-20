@@ -30,6 +30,16 @@ acceptance remain open. Physical host observations in
 
 ## Latest combined checkpoint
 
+The [frozen `c681ba3` successor](evidence/first-release-c681ba3-check-20260920/README.md)
+passed 17 gates before the store library reported 154 passes and three failed
+allocation assertions. All 29 later gates were unrun; all 18 process groups
+drained and source remained unchanged. The correction prepares dormant test
+mutexes before the measured physical I/O and destructor boundaries. The full
+47-gate, 252-mandatory-case successor remains required, including the unrun
+Control genesis stack correction.
+
+## Preceding proposal and authority checkpoint
+
 The [frozen `5233e96` successor](evidence/first-release-5233e96-check-20260920/README.md)
 passed 26 gates, including proposal/authority custody, all MCP response fences,
 complete store/serving libraries and the corrected retired-source ownership
