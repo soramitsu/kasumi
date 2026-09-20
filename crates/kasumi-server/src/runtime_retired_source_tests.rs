@@ -53,12 +53,20 @@ pub(super) async fn after_open(
         .unwrap()
         .raft()
         .external_request(move |_| {
-            let _ = entered.send(());
-            // The test guard releases this on assertion failure as well as success.
-            // A timeout is an actual test failure, never simulated completion.
-            released.recv_timeout(Duration::from_secs(20)).unwrap();
+            // Block the actual core while allowing Tokio to hand this worker's
+            // local queue to another executor thread. Otherwise the oneshot can
+            // wake the opener into this blocked worker's non-stealable LIFO slot,
+            // starving the test's own entry acknowledgement until its deadline.
+            tokio::task::block_in_place(|| {
+                let _ = entered.send(());
+                // The guard releases on assertion failure as well as success.
+                // The original core hold and observation deadlines are unchanged.
+                released.recv_timeout(Duration::from_secs(20)).unwrap();
+            });
         });
-    tokio::time::timeout(Duration::from_secs(10), entry).await??;
+    tokio::time::timeout(Duration::from_secs(10), entry)
+        .await
+        .context("retired core entry acknowledgement timed out")??;
     selected.entered.notify_one();
     Ok(())
 }
@@ -319,7 +327,9 @@ async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter
         Poll::Ready(())
     })
     .await;
-    tokio::time::timeout(Duration::from_secs(10), observation.entered.notified()).await?;
+    tokio::time::timeout(Duration::from_secs(10), observation.entered.notified())
+        .await
+        .context("retired startup fixture did not acknowledge core entry")?;
     // The actual duplicate registration has failed once cleanup closes request
     // admission. Its core remains blocked, so no error/RecoveringControl may return.
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -332,7 +342,8 @@ async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter
             tokio::task::yield_now().await;
         }
     })
-    .await?;
+    .await
+    .context("rejected retired registration did not close request admission")?;
     std::future::poll_fn(|cx| {
         assert!(opening.as_mut().poll(cx).is_pending());
         Poll::Ready(())
@@ -362,7 +373,8 @@ async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter
     );
     release.release();
     let error = tokio::time::timeout(Duration::from_secs(10), NodeRuntime::drain_startups())
-        .await?
+        .await
+        .context("retired startup ownership did not drain after core release")?
         .unwrap_err();
     assert!(
         error.to_string().contains("group already registered"),

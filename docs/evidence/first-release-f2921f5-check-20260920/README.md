@@ -5,8 +5,9 @@ Native macOS ARM64 / Rust 1.97.1 ran clean source `f2921f5` against the
 `server-retired-source`, passed its preparation-panic case but failed
 `retired_registration_rejection_retains_new_owner_until_cancelled_waiter_drains`
 with `deadline has elapsed`. The remaining 21 gates were not dispatched.
-The original failing log does not identify the elapsed phase; a separately
-retained diagnostic reproduction will establish that before correction.
+The original failing log does not identify the elapsed phase. The separately
+retained [diagnostic reproduction](../first-release-f2921f5-retired-source-diagnostic-20260920/README.md)
+identifies the fixture's core-entry acknowledgement wait before correction.
 
 Passing scope includes workspace all-targets/features compilation and formatting,
 9 terminal SDK ownership tests, 60 upstream SDK protocol tests, all 11 MCP
