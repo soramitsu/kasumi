@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/kasumi-clock", "crates/kasumi-types", "crates/kasumi-serving", "crates/kasumi-authority", "crates/kasumi-store", "crates/kasumi-query", "crates/kasumi-raft", "crates/kasumi-engine", "crates/kasumi-transport", "crates/kasumi-client", "crates/kasumi-server", "crates/kasumi-bench"]
-exclude = ["vendor/bitmaps-3.2.1", "vendor/lru-0.16.4", "vendor/serde_json-1.0.151"]
+exclude = ["vendor/bitmaps-3.2.1", "vendor/lru-0.16.4", "vendor/serde_json-1.0.151", "vendor/rmcp-3.2.0"]
 
 [workspace.package]
 version = "0.1.0"
@@ -43,3 +43,4 @@ codegen-units = 1
 bitmaps = { path = "vendor/bitmaps-3.2.1" }
 lru = { path = "vendor/lru-0.16.4" }
 serde_json = { path = "vendor/serde_json-1.0.151" }
+rmcp = { path = "vendor/rmcp-3.2.0" }

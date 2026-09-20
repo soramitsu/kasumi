@@ -26,7 +26,7 @@ use rmcp::{
     },
     service::RequestContext as McpRequestContext,
     transport::streamable_http_server::{
-        StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
+        StreamableHttpServerConfig, StreamableHttpService, TerminalTransportFailure,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -210,6 +210,19 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
                 Ok(fence) => fence,
                 Err(error) => return rejected(&state, invocation.release_error(error)),
             };
+            if response
+                .extensions()
+                .get::<TerminalTransportFailure>()
+                .is_some()
+            {
+                return rejected(
+                    &state,
+                    invocation.release_error(Error::new(
+                        ErrorCode::Unavailable,
+                        "MCP terminal transport withheld the response",
+                    )),
+                );
+            }
             if response.status() == StatusCode::FORBIDDEN {
                 let _ = state
                     .auth
@@ -348,16 +361,15 @@ pub fn router(
         .with_allowed_origins(state.origins.clone())
         .with_max_request_body_bytes(MAX_REQUEST_BYTES);
     let handler_auth = state.auth.clone();
-    let service = StreamableHttpService::new(
+    let service = StreamableHttpService::new_terminal_stateless(
         move || {
             Ok(KasumiMcp {
                 registry: registry.clone(),
                 auth: handler_auth.clone(),
             })
         },
-        Arc::new(NeverSessionManager::default()),
         sdk_config,
-    );
+    )?;
     let protected = Router::new()
         .route_service("/mcp", service)
         .route_layer(middleware::from_fn_with_state(state, authenticate));

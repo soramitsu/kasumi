@@ -395,7 +395,7 @@ async fn catalog_body_wait_rechecks_revoked_credential_before_http_release() {
     release.send(()).unwrap();
     let (status, body) = decoded(running.await.unwrap().unwrap()).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert_eq!(body, json!({"error":"unauthorized"}));
+    assert_eq!(body, json!({"error":"UNAUTHORIZED"}));
     fixture.assert_one_denial();
     fixture.close().await;
 }
@@ -434,7 +434,7 @@ async fn terminal_body_is_materialized_with_its_admission_before_credential_rele
     release.send(()).unwrap();
     let (status, body) = decoded(running.await.unwrap().unwrap()).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert_eq!(body, json!({"error":"unauthorized"}));
+    assert_eq!(body, json!({"error":"UNAUTHORIZED"}));
     assert_eq!(fixture.admission.snapshot().reserved_bytes, baseline);
     fixture.assert_one_denial();
     fixture.close().await;
@@ -475,7 +475,7 @@ async fn sdk_response_keeps_original_policy_epoch_until_http_release() {
     gate.release.notify_one();
     let (status, body) = decoded(running.await.unwrap().unwrap()).await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body, json!({"error":"conflict"}));
+    assert_eq!(body, json!({"error":"CONFLICT"}));
     assert_eq!(fixture.admission.snapshot().reserved_bytes, baseline);
     fixture.close().await;
 }
@@ -512,7 +512,7 @@ async fn catalog_response_wait_preserves_original_expiry_after_family_renewal() 
     gate.release.notify_one();
     let (status, body) = decoded(running.await.unwrap().unwrap()).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert_eq!(body, json!({"error":"unauthorized"}));
+    assert_eq!(body, json!({"error":"UNAUTHORIZED"}));
     fixture.assert_one_denial();
     let (status, body) = decoded(
         fixture
@@ -564,7 +564,7 @@ async fn dispatched_mutation_response_wait_reports_unknown_outcome_after_revocat
     gate.release.notify_one();
     let (status, body) = decoded(running.await.unwrap().unwrap()).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(body, json!({"error":"unknown_outcome"}));
+    assert_eq!(body, json!({"error":"UNKNOWN_OUTCOME"}));
     fixture.assert_one_denial();
     let retained = fixture
         .database
@@ -665,7 +665,7 @@ async fn unexpected_streaming_response_is_rejected_before_body_handoff() {
         )
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(body, json!({"error":"unavailable"}));
+        assert_eq!(body, json!({"error":"UNAVAILABLE"}));
     }
     // Empty/protocol error responses still use their original status and body.
     let app = Router::new()
@@ -720,21 +720,21 @@ async fn terminal_body_limits_errors_and_length_mismatches_are_enforced_before_r
                     MAX_RESPONSE_BYTES + 1
                 ])))),
             },
-            "resource_exhausted",
+            "RESOURCE_EXHAUSTED",
         ),
         (
             DeclaredBody {
                 declared: 1,
                 frame: Some(Ok(Frame::data(Bytes::from_static(b"{}")))),
             },
-            "unavailable",
+            "UNAVAILABLE",
         ),
         (
             DeclaredBody {
                 declared: 1,
                 frame: Some(Err(std::io::Error::other("injected response body failure"))),
             },
-            "unavailable",
+            "UNAVAILABLE",
         ),
     ] {
         let response = fixture
@@ -760,7 +760,7 @@ async fn terminal_body_limits_errors_and_length_mismatches_are_enforced_before_r
         decoded(response).await,
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            json!({"error":"resource_exhausted"})
+            json!({"error":"RESOURCE_EXHAUSTED"})
         )
     );
     // Once a mutation is dispatched, even body failure must retain uncertainty.
@@ -779,9 +779,54 @@ async fn terminal_body_limits_errors_and_length_mismatches_are_enforced_before_r
         decoded(response).await,
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            json!({"error":"unknown_outcome"})
+            json!({"error":"UNKNOWN_OUTCOME"})
         )
     );
     assert_eq!(fixture.admission.snapshot().reserved_bytes, baseline);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn sdk_terminal_transport_failure_preserves_dispatched_mutation_uncertainty() {
+    let fixture = Fixture::new().await;
+    let issued = fixture.issue();
+    for dispatched in [false, true] {
+        for failure in [
+            TerminalTransportFailure::Cancelled,
+            TerminalTransportFailure::UnsupportedPeerTraffic,
+        ] {
+            let app = Router::new()
+                .route(
+                    "/mcp",
+                    axum::routing::post(
+                        move |axum::Extension(invocation): axum::Extension<Verified>| async move {
+                            invocation
+                                .mutation_dispatched
+                                .store(dispatched, Ordering::Release);
+                            let mut response =
+                                Json(json!({"must_not_escape":"SDK transport rejection"}))
+                                    .into_response();
+                            response.extensions_mut().insert(failure);
+                            response
+                        },
+                    ),
+                )
+                .layer(middleware::from_fn_with_state(
+                    fixture.http_auth(),
+                    authenticate,
+                ));
+            let (status, body) = decoded(
+                app.oneshot(request(&issued.token, "tools/list", json!({})))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(
+                body,
+                json!({"error":if dispatched { "UNKNOWN_OUTCOME" } else { "UNAVAILABLE" }})
+            );
+        }
+    }
     fixture.close().await;
 }
