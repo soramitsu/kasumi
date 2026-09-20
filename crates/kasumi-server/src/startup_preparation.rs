@@ -26,12 +26,15 @@ impl std::error::Error for PreparationPanic {}
 /// The caller must retain pending resources and any partial runtime outside
 /// `preparing`, then drain those exact owners on every returned error. The caught
 /// future is never polled again after unwinding; its mutable state is not reused.
-pub(crate) async fn capture<T>(
+pub(crate) fn capture<T>(
     component: &'static str,
     preparing: impl Future<Output = Result<T>>,
-) -> Result<T> {
-    let mut preparing = std::pin::pin!(preparing);
-    std::future::poll_fn(|cx| {
+) -> impl Future<Output = Result<T>> {
+    // Box before constructing the returned future. Keeping a large preparation
+    // inline in an async wrapper duplicates its state in each enclosing startup
+    // layer and can overflow a normal executor thread before the first poll.
+    let mut preparing = Box::pin(preparing);
+    std::future::poll_fn(move |cx| {
         match std::panic::catch_unwind(AssertUnwindSafe(|| preparing.as_mut().poll(cx))) {
             Ok(result) => result,
             Err(payload) => Poll::Ready(Err(PreparationPanic {
@@ -41,7 +44,6 @@ pub(crate) async fn capture<T>(
             .into())),
         }
     })
-    .await
 }
 
 #[cfg(test)]
@@ -115,6 +117,19 @@ mod tests {
             pause.release.notified().await;
         }
     }
+    #[tokio::test]
+    async fn nested_preparation_keeps_large_captured_state_off_the_executor_stack() {
+        let payload = [31_u8; 128 << 10];
+        let inner = capture("inner", async move {
+            tokio::task::yield_now().await;
+            Ok(std::hint::black_box(payload)[(128 << 10) - 1])
+        });
+        assert!(std::mem::size_of_val(&inner) < 1024);
+        let outer = capture("outer", inner);
+        assert!(std::mem::size_of_val(&outer) < 1024);
+        assert_eq!(outer.await.unwrap(), 31);
+    }
+
     #[tokio::test]
     async fn preparation_panic_keeps_original_payload_without_exposing_it() {
         #[derive(Debug, PartialEq)]
