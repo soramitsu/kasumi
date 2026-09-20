@@ -4,8 +4,9 @@ The published `rmcp` 3.2.0 archive has SHA-256
 `42b6914fac0be956fe704a38239c3f44a9f841d1b06a5713d2f638065593f5b5`.
 Its `.cargo_vcs_info.json` names upstream revision
 `51ccb42993d6eb5075399672ce7a0c21a0e55eea` and path `crates/rmcp`.
-The complete published source, original lockfile, Apache-2.0 license and notices
-are retained. `patch-manifest.json` fixes every resulting source digest.
+The complete published source and original lockfile are retained. The archive
+omits its license file despite declaring Apache-2.0; `LICENSE` is copied from
+[the exact upstream revision](https://raw.githubusercontent.com/modelcontextprotocol/rust-sdk/51ccb42993d6eb5075399672ce7a0c21a0e55eea/LICENSE). `patch-manifest.json` fixes every resulting source digest.
 
 ## Reviewed ownership problem
 
