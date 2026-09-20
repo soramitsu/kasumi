@@ -1,0 +1,34 @@
+{
+  "engine-owned-response-fence.log": {
+    "bytes": 383567,
+    "sha256": "7c21de0c36bc503b7981808aceab8bd38b7b6c217f4782fc33e2c5a29ad1bfcf"
+  },
+  "evidence.json": {
+    "bytes": 1334313,
+    "sha256": "50deb11f57ce95ce3c809916cb2970f798c74d22c4b09288186e6a4d5ca6a0f5"
+  },
+  "plan.json": {
+    "bytes": 34132,
+    "sha256": "75150222468dc13142847a656e50a8923c90a320143aa240549cdcddc1e30965"
+  },
+  "runner.py": {
+    "bytes": 10765,
+    "sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f"
+  },
+  "server-mcp-response-fencing.log": {
+    "bytes": 452676,
+    "sha256": "20027a24b0b83a2d037548027d1fb7939bcec3682f4b076b42a0964706c54306"
+  },
+  "source-before.json": {
+    "bytes": 338865,
+    "sha256": "78e598b39cc96f35d764b562a8b7414cb47c0e3ac918afb7fe8ac2fa1c6384e4"
+  },
+  "workspace-all-targets-check.log": {
+    "bytes": 494541,
+    "sha256": "d4c8102c7f3a62b4a356b2ef2bdb3fbedde5396963ac877717f4824fb5b35733"
+  },
+  "workspace-format.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

@@ -19,7 +19,26 @@ and its dependency order. Backward compatibility is forbidden for this first
 release. No goal closes without implementation, final-source validation and
 usable release artifacts or operating documentation.
 
+The [acceptance manifest verifier](release-acceptance-manifest.md) now validates
+the fixed native/domain/artifact roster, complete workload samples, process
+ownership and source identities. It deliberately rejects every domain whose
+semantic adapter remains unimplemented. The Python tooling suite passes 66
+tests, including counterexamples and remote-interpreter provenance. This is
+scoped tooling progress: G11, live runners, all final native gates and release
+acceptance remain open. Physical host observations in
+[Linux acceptance](linux-acceptance.md) are not resource reservations.
+
 ## Latest combined checkpoint
+
+The [frozen `b5001b1` successor](evidence/first-release-b5001b1-check-20260920/README.md)
+passed workspace compilation, formatting and the new engine owned-response-fence
+regression. The next MCP gate passed three existing tests and failed seven new
+tests whose assertions expected lower-case errors while the API emits upper-case
+ErrorCode values. All 32 later gates were unrun. All dispatched process groups
+drained and source remained unchanged. Corrected assertions require a new frozen
+successor; production serialization and the original retained cohort are unchanged.
+
+## Preceding compiler checkpoint
 
 The [frozen `e9f39b2` successor](evidence/first-release-e9f39b2-check-20260920/README.md)
 failed its first workspace all-targets/features compilation gate after 154.208

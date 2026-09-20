@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -207,15 +208,15 @@ def run_gate(name, command, source, output, environment, timeout_seconds=14400):
     }
 
 
-def functional_gates(jobs):
+def functional_gates(jobs, python_executable):
     cargo = ["cargo", "+" + TOOLCHAIN]
     locked = ["--locked", "-j", str(jobs)]
     encoded = ["--message-format=json-render-diagnostics"]
     return [
         ("toolchain", ["rustc", "+" + TOOLCHAIN, "-Vv"]),
         ("format", cargo + ["fmt", "--all", "--", "--check"]),
-        ("python", [sys.executable, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py", "-v"]),
-        ("dependency-patches", [sys.executable, "scripts/check_dependency_patches.py"]),
+        ("python", [python_executable, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py", "-v"]),
+        ("dependency-patches", [python_executable, "scripts/check_dependency_patches.py"]),
         ("bitmaps", cargo + ["test", "--manifest-path", "vendor/bitmaps-3.2.1/Cargo.toml"] + locked + encoded),
         ("lru", cargo + ["test", "--manifest-path", "vendor/lru-0.16.4/Cargo.toml"] + locked + encoded),
         ("serde-json-default", cargo + ["test", "--manifest-path", "vendor/serde_json-1.0.151/Cargo.toml"] + locked + encoded),
@@ -305,12 +306,17 @@ def main():
         "jobs": args.jobs,
         "gate_timeout_seconds": args.gate_timeout_seconds,
         "python_version": sys.version,
-        "python_executable_sha256": sha256(sys.executable),
+        "python_executable": {"path": os.path.abspath(sys.executable),
+                              "sha256": sha256(sys.executable), "artifact": "tools/python"},
         "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "status": "running", "gates": [],
     }
     write_json(output / "evidence.json", record)
     try:
+        (output / "tools").mkdir()
+        shutil.copyfile(sys.executable, output / record["python_executable"]["artifact"])
+        if sha256(output / record["python_executable"]["artifact"]) != record["python_executable"]["sha256"]:
+            raise ValueError("Python interpreter changed before evidence capture")
         archive = output / "source.tar"
         subprocess.run(["git", "-C", str(repository), "archive", "--format=tar", "--output=" + str(archive), commit], check=True)
         record["source_archive_sha256"] = sha256(archive)
@@ -327,7 +333,7 @@ def main():
                            PYTHONDONTWRITEBYTECODE="1", SOURCE_DATE_EPOCH=git("show", "-s", "--format=%ct", commit))
         record["build_environment"] = {name: environment.get(name) for name in
                                        ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CC", "CXX", "AR", "SOURCE_DATE_EPOCH"]}
-        for name, command in functional_gates(args.jobs):
+        for name, command in functional_gates(args.jobs, record["python_executable"]["path"]):
             print("Running " + name + " (" + str(output / (name + ".log")) + ")", flush=True)
             result = run_gate(name, command, source, output, environment, args.gate_timeout_seconds)
             if name in ("production-features", "network-features") and re.search(r"kasumi-[^\n]*\btest-utils\b", (output / result["log"]).read_text()):

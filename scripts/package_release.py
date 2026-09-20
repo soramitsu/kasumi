@@ -66,7 +66,14 @@ def verify_evidence(directory):
     timeout = record.get("gate_timeout_seconds")
     if type(timeout) is not int or not 1 <= timeout <= 86400:
         raise ValueError("recorded functional timeout is missing or invalid")
-    expected = dict(functional_gates(jobs))
+    interpreter = record.get("python_executable")
+    if (not isinstance(interpreter, dict) or set(interpreter) != {"path", "sha256", "artifact"}
+            or not isinstance(interpreter["path"], str) or not Path(interpreter["path"]).is_absolute()
+            or not isinstance(interpreter["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", interpreter["sha256"]) is None):
+        raise ValueError("recorded Python interpreter identity is missing or invalid")
+    verify_file(directory, interpreter["artifact"], interpreter["sha256"])
+    expected = dict(functional_gates(jobs, interpreter["path"]))
     required = set(expected)
     if {g["name"] for g in gates} != required or len(gates) != len(required):
         raise ValueError("functional gate set differs from this packaging contract")
@@ -79,7 +86,10 @@ def verify_evidence(directory):
         if not gate.get("resources") or not gate.get("resources_sha256"):
             raise ValueError("gate resource evidence is missing; rerun frozen gates")
         verify_file(directory, gate["resources"], gate["resources_sha256"])
-        verify_process_receipt(directory, gate, timeout)
+        process = verify_process_receipt(directory, gate, timeout)
+        if gate["name"] in {"python", "dependency-patches"} and process["executable"] != {
+                "path": interpreter["path"], "sha256": interpreter["sha256"]}:
+            raise ValueError("Python gate did not execute the recorded interpreter")
     source = directory / "source"
     inputs = record.get("runner_inputs")
     if not isinstance(inputs, dict) or set(inputs) != {"scripts/release_gate.py", "scripts/gate_process.py"}:
@@ -116,6 +126,15 @@ def verify_process_receipt(directory, gate, timeout):
         raise ValueError("gate process evidence is missing; rerun frozen gates")
     path = verify_file(directory, gate["process"], gate["process_sha256"])
     process = json.loads(path.read_text())
+    executable = process.get("executable")
+    if (not isinstance(executable, dict) or set(executable) != {"path", "sha256"}
+            or not isinstance(executable["path"], str) or not Path(executable["path"]).is_absolute()
+            or not isinstance(executable["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", executable["sha256"]) is None
+            or not isinstance(gate.get("command"), list) or not gate["command"]
+            or (Path(gate["command"][0]).is_absolute() and gate["command"][0] != executable["path"])
+            or Path(gate["command"][0]).name != Path(executable["path"]).name):
+        raise ValueError("gate executable identity is missing or differs from the command")
     cleanup = process.get("cleanup")
     group = process.get("process_group")
     if (process.get("status") != "passed" or process.get("outputs_stable") is not True
@@ -132,6 +151,7 @@ def verify_process_receipt(directory, gate, timeout):
             or cleanup.get("signals") != [] or cleanup.get("errors") != []
             or cleanup.get("process_returncode") != 0 or gate.get("process_cleanup") != cleanup):
         raise ValueError("gate process did not finish with exact drained ownership")
+    return process
 
 
 def verify_architecture(path, target):

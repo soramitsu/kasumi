@@ -2,11 +2,42 @@
 from __future__ import annotations
 
 import os
+import hashlib
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
 import time
+
+
+def executable_identity(command, source, environment):
+    """Resolve once against the child's working directory and PATH.
+
+    Preserve the invoked basename (Rustup uses it to select its tool). The
+    observed hash follows the executable's symlink, but dispatch never performs
+    a second PATH search that could select another binary.
+    """
+    if not command or not isinstance(command[0], str) or not command[0]:
+        raise ValueError("gate executable is absent")
+    source = Path(source).resolve(strict=True)
+    if os.path.dirname(command[0]):
+        selected = Path(command[0])
+        if not selected.is_absolute():
+            selected = source / selected
+    else:
+        search = os.pathsep.join(str(Path(entry) if Path(entry).is_absolute() else source / entry)
+                                 for entry in environment.get("PATH", os.defpath).split(os.pathsep))
+        found = shutil.which(command[0], path=search)
+        if found is None:
+            raise FileNotFoundError("gate executable was not found")
+        selected = Path(found)
+    selected = Path(os.path.abspath(selected))
+    if not selected.is_file() or not os.access(selected, os.X_OK):
+        raise ValueError("gate executable is not an executable regular file")
+    with selected.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    return {"path": str(selected), "sha256": digest}
 
 
 def group_members(group):
@@ -103,6 +134,7 @@ def run(command, source, environment, stream, timeout_seconds, observe):
     process = None
     started = time.monotonic()
     record = {"status": "running", "command": command, "timeout_seconds": timeout_seconds,
+              "executable": None,
               "process_group": None, "process_exit_code": None, "exit_code": None,
               "timed_out": False, "received_signals": received, "error": None, "cleanup": None}
     try:
@@ -110,7 +142,10 @@ def run(command, source, environment, stream, timeout_seconds, observe):
             signal.signal(number, interrupted)
         observe(record)
         if not received:
+            record["executable"] = executable_identity(command, source, environment)
+            observe(record)
             process = subprocess.Popen(command, cwd=source, env=environment,
+                                       executable=record["executable"]["path"],
                                        stdout=stream, stderr=subprocess.STDOUT,
                                        start_new_session=True)
             record["process_group"] = process.pid
@@ -138,6 +173,13 @@ def run(command, source, environment, stream, timeout_seconds, observe):
                 record["cleanup"] = {"group": None, "before": [], "after": [],
                                      "signals": [], "errors": [], "drained": True}
             cleanup = record["cleanup"]
+            if record["executable"] is not None:
+                try:
+                    after = executable_identity([record["executable"]["path"]], source, environment)
+                    if after != record["executable"]:
+                        raise ValueError("gate executable changed during execution")
+                except (OSError, ValueError) as error:
+                    record["error"] = record["error"] or repr(error)
             if record["timed_out"]:
                 record["exit_code"] = 124
             elif received:

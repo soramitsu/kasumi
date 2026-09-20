@@ -14,6 +14,51 @@ import release_gate
 
 
 class ReleaseGateTests(unittest.TestCase):
+    def test_dispatch_retains_selected_executable_and_its_hash(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            command = [sys.executable, "-c", "pass"]
+            result = release_gate.run_gate("identity", command, root, root, os.environ.copy())
+            receipt = json.loads((root / result["process"]).read_text())
+            self.assertEqual(receipt["executable"], {"path": os.path.abspath(sys.executable),
+                                                    "sha256": release_gate.sha256(sys.executable)})
+            self.assertEqual(result["exit_code"], 0)
+
+    def test_child_path_is_resolved_once_from_its_working_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "bin").mkdir()
+            interpreter = root / "bin/fixture-python"
+            interpreter.symlink_to(sys.executable)
+            environment = {**os.environ, "PATH": "bin"}
+            result = release_gate.run_gate("relative-path", ["fixture-python", "-c", "pass"],
+                                           root, root, environment)
+            receipt = json.loads((root / result["process"]).read_text())
+            self.assertEqual(receipt["executable"]["path"], str(root.resolve() / "bin/fixture-python"))
+            self.assertEqual(receipt["executable"]["sha256"], release_gate.sha256(sys.executable))
+            self.assertEqual(result["exit_code"], 0)
+
+    def test_executable_substitution_after_dispatch_cannot_pass(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity = release_gate.gate_process.executable_identity
+            count = 0
+
+            def replaced(*args):
+                nonlocal count
+                count += 1
+                result = identity(*args)
+                if count == 2:
+                    result["sha256"] = "0" * 64
+                return result
+
+            with patch.object(release_gate.gate_process, "executable_identity", replaced):
+                result = release_gate.run_gate("changed-executable", [sys.executable, "-c", "pass"],
+                                               root, root, os.environ.copy())
+            self.assertEqual(result["exit_code"], 125)
+            self.assertTrue(result["process_cleanup"]["drained"])
+            self.assertIn("executable changed", result["process_error"])
+
     def test_child_oom_counters_survive_failed_gate_without_claiming_private_peak(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
