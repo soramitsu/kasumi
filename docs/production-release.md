@@ -30,6 +30,22 @@ acceptance remain open. Physical host observations in
 
 ## Latest combined checkpoint
 
+The [frozen `5233e96` successor](evidence/first-release-5233e96-check-20260920/README.md)
+passed 26 gates, including proposal/authority custody, all MCP response fences,
+complete store/serving libraries and the corrected retired-source ownership
+case. The next Control genesis gate aborted with a stack overflow in its first
+case. All 19 later gates were unrun. All 27 dispatched process groups drained;
+source stayed unchanged and 13 preserved executables were rehashed. The original
+46-gate, 247-mandatory-case cohort and all deadlines remain required.
+
+Source-only disk-owner progress additionally prepares path verification before
+I/O, avoids heap-allocated errors in the physical publication path, and adds
+explicit durable settlement plus allocation-counting regressions. It is not in
+the frozen `5233e96` source and has not yet passed its successor tests. Installed
+constructor integration and G02 remain open.
+
+## Preceding authority compilation checkpoint
+
 The [frozen `207ae69` successor](evidence/first-release-207ae69-check-20260920/README.md)
 failed its first compilation gate: the new shared authority request helper had
 private child-module visibility. All 45 later gates were unrun. Its process

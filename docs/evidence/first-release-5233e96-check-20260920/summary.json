@@ -1,0 +1,67 @@
+{
+  "source": "5233e967d9b37a05eafc5fafd54f68f9645ee607",
+  "tree": "e26d51a0bf5974321e16df8471c6aaaebcdc331d",
+  "source_unchanged": true,
+  "status": "failed",
+  "gates": {
+    "passed": 26,
+    "failed": 1,
+    "not_run": 19
+  },
+  "dispatched_groups": 27,
+  "preserved_executables": {
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/fb50f5d396ea10d6b464526147c6ae305ccdfe0901d1f0cc1ddc9ff547ca64bb-rmcp-be9a77413837ead2": {
+      "sha256": "fb50f5d396ea10d6b464526147c6ae305ccdfe0901d1f0cc1ddc9ff547ca64bb",
+      "bytes": 31408024
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/74c94524f2a93b7812a73154071a856aabaa9e6e8a9c3df627cdc24729247be8-test_streamable_http_protocol_version-ef160af2be92561d": {
+      "sha256": "74c94524f2a93b7812a73154071a856aabaa9e6e8a9c3df627cdc24729247be8",
+      "bytes": 45248888
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/efad382ebe2ae4b8a694953d224389450dc332c9780b4396109c8153c71b5561-test_protocol_version_negotiation-548906498a439f3f": {
+      "sha256": "efad382ebe2ae4b8a694953d224389450dc332c9780b4396109c8153c71b5561",
+      "bytes": 29361584
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/fa63cf027fe422d9ba1a50e688fc03fb52fb28b5175d4dd80453313c374d3316-test_server_discover-f747e2bbdcd3c73e": {
+      "sha256": "fa63cf027fe422d9ba1a50e688fc03fb52fb28b5175d4dd80453313c374d3316",
+      "bytes": 8827528
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/6083593ffacc68438f1814f35ae2ef7d9c1a59c8c79d748348ffd41b54abc0eb-test_stateless_protocol_version-187dc3bc4e722d88": {
+      "sha256": "6083593ffacc68438f1814f35ae2ef7d9c1a59c8c79d748348ffd41b54abc0eb",
+      "bytes": 44028848
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/9c0c0f98995005dd9fdec95ed2a151b4e8a0fd3e660f1357daf2c527ee452067-test_streamable_http_json_response-a419c25f75fcf63d": {
+      "sha256": "9c0c0f98995005dd9fdec95ed2a151b4e8a0fd3e660f1357daf2c527ee452067",
+      "bytes": 45009248
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/f3aa7379ebacc599bd6bb34480a2316f0d1dc834949e714f6de325623bfdf871-test_streamable_http_standard_headers-3af1267ffc35ddba": {
+      "sha256": "f3aa7379ebacc599bd6bb34480a2316f0d1dc834949e714f6de325623bfdf871",
+      "bytes": 37071864
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/2962daac1db4ca5214fc00169bfe8257108527f97a5dc9c4fe269a256cabd994-kasumi_raft-e65e0685d1bb4325": {
+      "sha256": "2962daac1db4ca5214fc00169bfe8257108527f97a5dc9c4fe269a256cabd994",
+      "bytes": 46107792
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/85a1014d9db254e80fe77e530022adc1b04c3f6914feb565d05ba4fe5c0daad3-kasumi_engine-beab15cb9b18300f": {
+      "sha256": "85a1014d9db254e80fe77e530022adc1b04c3f6914feb565d05ba4fe5c0daad3",
+      "bytes": 187924176
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/92c63819dc055a0e808114b3a9ce9f1ebdd4e70dd819ec9b1fea7ce51da6288b-kasumi_authority-18c067e31ed9db59": {
+      "sha256": "92c63819dc055a0e808114b3a9ce9f1ebdd4e70dd819ec9b1fea7ce51da6288b",
+      "bytes": 195863424
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/8b457292ae3393310a73fcfd46910679b09e4131a9fb52827391b9a2be9bbe19-kasumi_server-56e77547c1375cd4": {
+      "sha256": "8b457292ae3393310a73fcfd46910679b09e4131a9fb52827391b9a2be9bbe19",
+      "bytes": 331264448
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/e988f6d73235b7fe5c7452ab54d8f0d7012ac2c08ae8a100da6f1270609b55f8-kasumi_store-c910e15433394175": {
+      "sha256": "e988f6d73235b7fe5c7452ab54d8f0d7012ac2c08ae8a100da6f1270609b55f8",
+      "bytes": 49371568
+    },
+    "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-5233e96-ownership-proposals/preserved-executables/5754d3979d2bf7a8b8be9adb5e895ddfd80ec48e68833419f41abcc53a779314-kasumi_serving-ab3ea266bdba1c03": {
+      "sha256": "5754d3979d2bf7a8b8be9adb5e895ddfd80ec48e68833419f41abcc53a779314",
+      "bytes": 12419040
+    }
+  },
+  "scope": "Scoped native macOS ARM64 Rust 1.97.1 run; failure and all later unrun gates retained. No final release qualification."
+}
