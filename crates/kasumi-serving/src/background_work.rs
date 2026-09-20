@@ -234,6 +234,26 @@ impl BackgroundWork {
         owners.insert(id, owner);
         Ok(())
     }
+    /// Retain an infrastructure failure in the same custody cell as the exact
+    /// child handle. Expected request rejections belong in the caller's normal
+    /// response; an Err here is a failed worker and is reported by typed drain.
+    pub fn start_result(
+        self: &Arc<Self>,
+        task: impl Future<Output = Result<()>> + Send + 'static,
+        budget: &BackgroundWorkBudget,
+    ) -> Result<()> {
+        let cell = self.clone();
+        self.start(
+            async move {
+                if let Err(error) = task.await {
+                    let mut state = cell.state.lock().unwrap_or_else(|p| p.into_inner());
+                    state.report.record("background work result", 0, error);
+                    cell.closed.store(true, Ordering::Release);
+                }
+            },
+            budget,
+        )
+    }
     /// Try one actual join observation without waiting. No helper task exists;
     /// unfinished or contended child handles remain owned by the custody entry.
     pub fn observed(&self) -> Option<DrainResult> {

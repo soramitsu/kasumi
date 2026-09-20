@@ -5,6 +5,69 @@ use std::{future::Future, task::Poll, time::Duration};
 fn budget(slots: usize) -> BackgroundWorkBudget {
     BackgroundWorkBudget::new(slots, Arc::new(())).unwrap()
 }
+
+#[tokio::test]
+async fn fallible_child_retains_original_error_after_cancelled_drain_and_facade_drop() {
+    #[derive(Debug)]
+    struct OriginalFailure(Arc<()>);
+    impl std::fmt::Display for OriginalFailure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("original fallible child error")
+        }
+    }
+    impl std::error::Error for OriginalFailure {}
+
+    let identity = Arc::new(());
+    let original = OriginalFailure(identity.clone());
+    let worker = Arc::new(BackgroundWork::default());
+    let (release, waiting) = tokio::sync::oneshot::channel();
+    worker
+        .start_result(
+            async move {
+                waiting.await.unwrap();
+                Err(original.into())
+            },
+            &budget(1),
+        )
+        .unwrap();
+    let id = worker.state.lock().unwrap().custody.unwrap();
+    let mut draining = Box::pin(worker.drain());
+    std::future::poll_fn(|cx| {
+        assert!(draining.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(draining);
+    drop(worker);
+    release.send(()).unwrap();
+    let recovered = custody().lock().unwrap().get(&id).unwrap().cell.clone();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while recovered.observed().is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(recovered.is_closed());
+    // Observing the join cannot erase a normal error before its typed report.
+    assert!(custody().lock().unwrap().contains_key(&id));
+    let first = recovered.drain().await.unwrap_err();
+    assert_eq!(first.completion(), DrainCompletion::Complete);
+    assert_eq!(first.issues().len(), 1);
+    let actual = first.issues()[0]
+        .error()
+        .downcast_ref::<OriginalFailure>()
+        .unwrap();
+    assert!(Arc::ptr_eq(&identity, &actual.0));
+    assert!(!custody().lock().unwrap().contains_key(&id));
+    let repeated = recovered.drain().await.unwrap_err();
+    assert!(Arc::ptr_eq(&first.issues()[0], &repeated.issues()[0]));
+    assert!(
+        recovered
+            .start_result(async { Ok(()) }, &budget(1))
+            .is_err()
+    );
+}
 #[tokio::test]
 async fn closing_cannot_cross_an_admitted_but_not_yet_spawned_worker() {
     let worker = Arc::new(BackgroundWork::default());
