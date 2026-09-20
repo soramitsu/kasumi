@@ -226,6 +226,14 @@ def functional_gates(jobs, python_executable):
          "--features", "raw_value"] + locked + encoded),
         ("serde-json-combined", cargo + ["test", "--manifest-path", "vendor/serde_json-1.0.151/Cargo.toml",
          "--features", "arbitrary_precision,raw_value,float_roundtrip,preserve_order"] + locked + encoded),
+        ("rmcp-terminal-ownership", cargo + ["test", "--manifest-path", "vendor/rmcp-3.2.0/Cargo.toml",
+         "--features", "transport-streamable-http-server", "--lib"] + locked + encoded
+         + ["terminal_stateless_tests"]),
+        ("rmcp-upstream-protocol", cargo + ["test", "--manifest-path", "vendor/rmcp-3.2.0/Cargo.toml",
+         "--features", "client,transport-streamable-http-server,reqwest",
+         "--test", "test_streamable_http_json_response", "--test", "test_streamable_http_standard_headers",
+         "--test", "test_streamable_http_protocol_version", "--test", "test_stateless_protocol_version",
+         "--test", "test_protocol_version_negotiation", "--test", "test_server_discover"] + locked + encoded),
         ("workspace", cargo + ["test", "--workspace", "--all-features", "--all-targets", "--no-fail-fast"]
          + locked + encoded + ["--", "--test-threads=2"]),
         ("workspace-docs", cargo + ["test", "--workspace", "--all-features", "--doc", "--no-fail-fast"]

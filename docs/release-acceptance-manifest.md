@@ -98,13 +98,17 @@ The platform identifiers are exactly:
 - `aarch64-apple-darwin`
 
 Each primary build reuses `package_release.verify_evidence`. Its complete
-17-gate roster and commands come from frozen `release_gate.functional_gates`:
+19-gate roster and commands come from frozen `release_gate.functional_gates`:
 toolchain, formatting, Python checks, patch provenance, all retained patched
 dependency variants, full workspace/all features/all targets, doctests,
 strict Clippy, network feature isolation/build, and fixture-free production
-feature isolation/build. All 51 native functional gates must pass. Native
+feature isolation/build. All 57 native functional gates must pass. Native
 executable headers and actual `kasumid`, `kasumictl`, and `kasumi-authority`
 hashes are checked.
+
+The rmcp gates include all new terminal-ownership regressions and six upstream
+protocol/header/JSON/discovery suites. This minimum functional roster does not
+by itself complete dependency review or qualify untested upstream features.
 
 A candidate has `platform`, `primary`, and `independent`. Its `primary` object
 has `functional` (reference to the original `evidence.json`), `host`, `build_id`,
