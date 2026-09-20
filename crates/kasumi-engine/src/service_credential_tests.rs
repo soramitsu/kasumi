@@ -125,6 +125,42 @@ fn credential_batch(id: &str) -> MutationBatch {
     }
 }
 
+#[tokio::test]
+async fn owned_response_fence_retains_workspace_and_original_credential_after_adapter_return() {
+    let fixture = CredentialFixture::new().await;
+    let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));
+    let context = fixture.credential(clock.clone());
+    let before = fixture.db.admission().snapshot();
+    let owners = Arc::strong_count(&fixture.db);
+    let fence = {
+        let adapter_database = fixture.db.clone();
+        adapter_database.owned_response_fence(&context).unwrap()
+    };
+    assert_eq!(Arc::strong_count(&fixture.db), owners + 1);
+    let retained = fixture.db.admission().snapshot();
+    assert!(retained.reserved_bytes > before.reserved_bytes);
+    assert_eq!(retained.inflight_operations, before.inflight_operations);
+    fence.check().unwrap();
+
+    // A later adapter invocation may obtain fresh authority. The retained body
+    // still belongs to the first invocation and must keep its original expiry.
+    clock.0.store(1000, Ordering::SeqCst);
+    let renewed = fixture.credential(clock);
+    renewed.authorization.check_live().unwrap();
+    assert_eq!(fence.check().unwrap_err().code, ErrorCode::Unauthorized);
+    assert_eq!(
+        fixture.db.admission().snapshot().reserved_bytes,
+        retained.reserved_bytes
+    );
+    drop(fence);
+    assert_eq!(Arc::strong_count(&fixture.db), owners);
+    assert_eq!(
+        fixture.db.admission().snapshot().reserved_bytes,
+        before.reserved_bytes
+    );
+    fixture.close().await;
+}
+
 #[test]
 fn replicated_credential_admission_uses_only_captured_time_after_local_expiry() {
     struct Wall;

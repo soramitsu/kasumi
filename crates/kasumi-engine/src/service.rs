@@ -444,7 +444,7 @@ impl Drop for BackgroundWorkerExit {
 /// Capture before the operation, and check after constructing its final payload.
 /// This is an additional release gate, not authorization to read tenant state.
 pub struct ResponseFence<'a> {
-    database: &'a Database,
+    database: ResponseDatabase<'a>,
     context: RequestContext,
     policy_epoch: u64,
     cancellation: QueryCancellation,
@@ -454,6 +454,22 @@ pub struct ResponseFence<'a> {
     _workspace: Reservation,
 }
 
+enum ResponseDatabase<'a> {
+    Borrowed(&'a Database),
+    Owned(Arc<Database>),
+}
+
+impl std::ops::Deref for ResponseDatabase<'_> {
+    type Target = Database;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(database) => database,
+            Self::Owned(database) => database,
+        }
+    }
+}
+
 fn staged_stop_acknowledgement(_error: Error) -> Error {
     Error::new(
         ErrorCode::UnknownOutcome,
@@ -461,7 +477,43 @@ fn staged_stop_acknowledgement(_error: Error) -> Error {
     )
 }
 
-impl ResponseFence<'_> {
+impl<'a> ResponseFence<'a> {
+    fn capture(database: ResponseDatabase<'a>, context: &RequestContext) -> Result<Self> {
+        context.authorization.check_live()?;
+        database.access()?;
+        let generation = database.engine.generation()?;
+        crate::state::authorize_resource(&generation.state, context)?;
+        if generation.state.tenant != context.tenant {
+            return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
+        }
+        // Retain a bounded response workspace through adapter serialization.
+        // The engine operation owns its separate execution slot, so release
+        // this reservation's temporary slot while keeping its byte charge.
+        let bytes = generation
+            .state
+            .limits
+            .max_result_bytes
+            .max(generation.state.limits.max_document_bytes)
+            .max(320 << 10)
+            .saturating_add(64 << 10)
+            .saturating_mul(3) as u64;
+        let cancellation = QueryCancellation::default();
+        let mut workspace = database
+            .admission()
+            .reserve(bytes, Some(cancellation.clone()))?;
+        workspace.retain(bytes);
+        Ok(Self {
+            database,
+            context: context.clone(),
+            policy_epoch: generation.state.policy_epoch,
+            cancellation,
+            read_admission: None,
+            schema_admission: None,
+            snapshot_lease: None,
+            _workspace: workspace,
+        })
+    }
+
     /// Bind the exact retained snapshot through final transport handoff. The
     /// handle carries expiry and identity only; it owns no document or ID roots.
     pub async fn bind_snapshot_lease(&mut self, lease_id: &str) -> Result<()> {
@@ -548,39 +600,17 @@ impl Database {
     /// and response serialization. It never replaces that call's RBAC checks,
     /// quorum barrier, strict audit, or operation-receipt semantics.
     pub fn response_fence(&self, context: &RequestContext) -> Result<ResponseFence<'_>> {
-        context.authorization.check_live()?;
-        self.access()?;
-        let generation = self.engine.generation()?;
-        crate::state::authorize_resource(&generation.state, context)?;
-        if generation.state.tenant != context.tenant {
-            return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
-        }
-        // Retain a bounded response workspace through adapter serialization.
-        // The engine operation owns its separate execution slot, so release
-        // this reservation's temporary slot while keeping its byte charge.
-        let bytes = generation
-            .state
-            .limits
-            .max_result_bytes
-            .max(generation.state.limits.max_document_bytes)
-            .max(320 << 10)
-            .saturating_add(64 << 10)
-            .saturating_mul(3) as u64;
-        let cancellation = QueryCancellation::default();
-        let mut workspace = self
-            .admission()
-            .reserve(bytes, Some(cancellation.clone()))?;
-        workspace.retain(bytes);
-        Ok(ResponseFence {
-            database: self,
-            context: context.clone(),
-            policy_epoch: generation.state.policy_epoch,
-            cancellation,
-            read_admission: None,
-            schema_admission: None,
-            snapshot_lease: None,
-            _workspace: workspace,
-        })
+        ResponseFence::capture(ResponseDatabase::Borrowed(self), context)
+    }
+
+    /// Retain this database and the original response admission through adapters
+    /// whose response body outlives the engine call. Capturing an owned fence
+    /// does not renew authorization or replace the original cancellation token.
+    pub fn owned_response_fence(
+        self: &Arc<Self>,
+        context: &RequestContext,
+    ) -> Result<ResponseFence<'static>> {
+        ResponseFence::capture(ResponseDatabase::Owned(self.clone()), context)
     }
 
     /// Retains exactly this stop attempt's authority dependencies through final

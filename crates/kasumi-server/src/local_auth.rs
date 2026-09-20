@@ -143,6 +143,21 @@ pub struct LocalCredentials {
     mutation: Mutex<()>,
 }
 impl LocalCredentials {
+    #[cfg(test)]
+    pub(crate) fn with_test_clock(
+        store: Arc<TenantStore>,
+        signer_file: PathBuf,
+        issuer: String,
+        audience: String,
+        clock: Arc<EpochClock>,
+    ) -> Result<Arc<Self>> {
+        let mut credentials = Self::open(store, signer_file, issuer, audience)?;
+        Arc::get_mut(&mut credentials)
+            .context("new test credential manager was shared")?
+            .clock = clock;
+        Ok(credentials)
+    }
+
     pub fn open(
         store: Arc<TenantStore>,
         signer_file: PathBuf,

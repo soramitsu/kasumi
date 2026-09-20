@@ -1,0 +1,52 @@
+{
+  "status": "failed",
+  "source": "e9f39b20c6354dde382997bb76b841302f0f5491",
+  "tree": "a8afb23fcd988248fad75ce28de77f834d26856e",
+  "gate_status_counts": {
+    "failed": 1,
+    "not_run": 30
+  },
+  "source_unchanged": true,
+  "all_dispatched_process_groups_drained": true,
+  "completed_gates": [
+    {
+      "name": "workspace-all-targets-check",
+      "status": "failed",
+      "duration_seconds": 154.208,
+      "process_exit_code": 101
+    }
+  ],
+  "unrun_gates": [
+    "workspace-format",
+    "complete-store-library",
+    "strict-store",
+    "complete-serving-library",
+    "engine-database-worker-outcomes",
+    "engine-audit-worker-outcomes",
+    "engine-control-genesis",
+    "server-serving-owner",
+    "server-retired-source",
+    "server-serving-task-drain",
+    "server-control-genesis",
+    "server-standalone-tenant-staging",
+    "server-standalone-tenant-enrollment",
+    "server-configured-tenant-enrollment",
+    "server-runtime-lifecycle",
+    "server-signer-runtime",
+    "server-tls-lifecycle",
+    "server-tls-task-custody",
+    "server-local-recovery-generation-custody",
+    "complete-client-library",
+    "engine-custody-receipt",
+    "engine-lifecycle-exact-completion",
+    "native-custody-receipt",
+    "authority-enrollment-ownership",
+    "explicit-original-voters",
+    "engine-audit-preproposal-outage",
+    "engine-tenant-audit-local-apply",
+    "engine-security-audit-repeated-retention",
+    "engine-audit-snapshot-dependencies",
+    "engine-audit-backup-source-unavailable"
+  ],
+  "release_accepted": false
+}

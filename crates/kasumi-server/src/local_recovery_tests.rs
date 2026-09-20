@@ -25,7 +25,7 @@ impl Drop for CleanupSyncFailure {
         }
     }
 }
-pub(super) fn before_cleanup_parent_sync(path: &Path) -> Result<()> {
+pub(super) fn before_cleanup_parent_sync(path: &Path) -> anyhow::Result<()> {
     let mut failure = CLEANUP_SYNC_FAILURE.lock().unwrap();
     if let Some((selected, remaining)) = failure.as_mut()
         && selected == path

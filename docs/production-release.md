@@ -21,6 +21,17 @@ usable release artifacts or operating documentation.
 
 ## Latest combined checkpoint
 
+The [frozen `e9f39b2` successor](evidence/first-release-e9f39b2-check-20260920/README.md)
+failed its first workspace all-targets/features compilation gate after 154.208
+seconds on native macOS ARM64 with Rust 1.97.1. The previously integrated local
+cleanup fixture has an ambiguous `Result` alias. All 30 later gates were unrun;
+the process group drained and source remained unchanged. The pending correction
+selects `anyhow::Result<()>` explicitly. Its private-directory ownership fixture
+repair still requires execution on a passing successor. Pending MCP and owned
+response-fence changes are excluded from this frozen source.
+
+## Preceding ownership checkpoint
+
 The [frozen `be2667d` cohort](evidence/first-release-be2667d-check-20260919/README.md)
 **failed after eight passing gates**: workspace compilation, formatting,
 complete store library (150 passed, zero failed, two ignored), strict store lint,
