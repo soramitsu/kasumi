@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="design/brand/kasumi-logo-with-katakana.svg" alt="KASUMI — カスミ" width="480">
+  <img src="design/brand/kasumi-logo-with-katakana.svg?v=2" alt="KASUMI — カスミ" width="480">
 </p>
 
 # Kasumi
