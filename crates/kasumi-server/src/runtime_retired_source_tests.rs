@@ -173,7 +173,7 @@ impl Fixture {
             .wait(Some(Duration::from_secs(10)))
             .current_leader(1, "retirement fixture source leader")
             .await?;
-        let expected_fingerprint = persisted_bootstrap_fingerprint(replicas[0].1.application())?;
+        let expected_fingerprint = persisted_replicated_bootstrap_fingerprint(&replicas[0].1)?;
         let binding = replicas[0]
             .1
             .custody()

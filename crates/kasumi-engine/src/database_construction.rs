@@ -21,6 +21,7 @@ impl DatabaseConstruction {
         let memory = audit.admission().memory();
         memory.require_store_memory(audit.store())?;
         memory.require_store_memory(stores.application())?;
+        memory.require_store_memory(stores.custody().store())?;
         Ok(Self {
             stores,
             audit,
@@ -98,7 +99,7 @@ impl DatabaseConstruction {
         Database::finish_construction(
             engine,
             group,
-            self.stores.application().clone(),
+            self.stores,
             self.audit,
             self.clocks,
             embedded,

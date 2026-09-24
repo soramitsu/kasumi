@@ -159,6 +159,19 @@ impl CustodyStore {
     pub fn binding(&self) -> &StorageBinding {
         &self.binding
     }
+
+    /// Read the immutable custody deployment without an application provider.
+    /// The current paired writer's byte ceiling is enforced before decrypting,
+    /// and the plaintext remains charged while the returned owner is retained.
+    pub fn deployment_binding(&self) -> Result<Option<AdmittedDeploymentBinding>> {
+        let _access = AccessGuard(&self.store);
+        self.store.check_access()?;
+        let state = self.store.state.read();
+        self.store.require_access(&state)?;
+        let tx = self.store.node.db.begin_read()?;
+        self.store.deployment_at(&tx, &state)
+    }
+
     pub fn store(&self) -> &Arc<TenantStore> {
         &self.store
     }

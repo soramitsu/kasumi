@@ -9,9 +9,10 @@ pub mod tables;
 
 pub use core::{
     AdmissionError, AdmittedValue, BackendCloseEntry, BackendCloseOutcome,
-    BackendNativeDisposition, Core, CoreError, CoreOpenFailure, FileBackend, FileBackendOpenError,
-    MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_TABLE_BYTES, MAX_VALUE_BYTES, Operation, OwnerFailed,
-    ReadSnapshot, ResidentLease, StorageAdmission, StorageBackend,
+    BackendNativeDisposition, Core, CoreError, CoreOpenFailure, CorePanic, FileBackend,
+    FileBackendOpenError, NamedFileIdentity, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_TABLE_BYTES,
+    MAX_VALUE_BYTES, Operation, OwnerFailed, ReadSnapshot, ResidentLease, StorageAdmission,
+    StorageBackend,
 };
 pub use retained::*;
 pub use tables::*;

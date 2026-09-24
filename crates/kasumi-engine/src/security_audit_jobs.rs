@@ -151,7 +151,7 @@ mod tests {
             .unwrap();
         let weak = Arc::downgrade(&node);
         let store =
-            TenantStore::initialize_catalog_fixture(node, SECURITY_TENANT.into(), provider.clone())
+            TenantStore::initialize_catalog_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
                 .await
                 .unwrap();
         let audit =
@@ -205,6 +205,7 @@ mod tests {
         ));
         assert!(audit.record_sync(event(1)).is_err());
         assert!(audit.writer.jobs.lock().await.handles.is_empty());
+        node.shutdown().await.unwrap();
         drop(audit);
         drop(store);
         assert!(weak.upgrade().is_none());
@@ -260,7 +261,7 @@ mod tests {
             .unwrap();
         let weak = Arc::downgrade(&node);
         let store =
-            TenantStore::initialize_catalog_fixture(node, SECURITY_TENANT.into(), provider.clone())
+            TenantStore::initialize_catalog_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
                 .await
                 .unwrap();
         let archive = Arc::new(PanickingArchive {
@@ -329,6 +330,7 @@ mod tests {
             &failure.issues()[0],
             &audit.shutdown().await.unwrap_err().issues()[0]
         ));
+        node.shutdown().await.unwrap();
         drop(audit);
         drop(store);
         assert!(weak.upgrade().is_none());

@@ -141,7 +141,7 @@ impl Administration {
                         bootstrap,
                     } = opened;
                     let fingerprint =
-                        crate::runtime::persisted_bootstrap_fingerprint(stores.application())?;
+                        crate::runtime::persisted_replicated_bootstrap_fingerprint(&stores)?;
                     let store = stores.application().clone();
                     if let Err(error) = network.register_group_with_bootstrap(
                         group.clone(),
@@ -247,7 +247,8 @@ impl Administration {
         }
         let network = self.cluster.as_ref().context("replication unavailable")?;
         let group = format!("{tenant}/{}", bootstrap.incarnation);
-        let expected = crate::runtime::persisted_bootstrap_fingerprint(&current.store)?;
+        let expected =
+            crate::runtime::persisted_replicated_bootstrap_fingerprint(current.database.stores())?;
         for member in bootstrap.voters.keys() {
             ensure!(
                 network.bootstrap_fingerprint(*member, &group).await? == expected,

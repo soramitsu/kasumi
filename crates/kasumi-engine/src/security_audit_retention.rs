@@ -724,10 +724,11 @@ mod tests {
             crate::test_utils::reserved_payload_bytes(&admission),
             metadata
         );
+        let node = storage
+            .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap();
         let store = TenantStore::initialize_catalog_fixture(
-            storage
-                .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
-                .unwrap(),
+            node.clone(),
             SECURITY_TENANT.into(),
             provider.clone(),
         )
@@ -754,6 +755,7 @@ mod tests {
         // identity is recovered from encrypted local metadata, never regenerated.
         archive.read(&pending.object).await.unwrap();
         audit.shutdown().await.unwrap();
+        node.shutdown().await.unwrap();
         drop(audit);
         drop(store);
 

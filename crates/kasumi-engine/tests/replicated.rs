@@ -3,7 +3,7 @@ mod common;
 
 use kasumi_engine::{Database, ReplicaPlacement, ReplicatedBootstrap, initialize_replicated};
 use kasumi_raft::{Config, InProcessRouter};
-use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
+use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
 use std::{
@@ -56,7 +56,7 @@ async fn store(
     physical: &common::PhysicalFixture,
     path: &std::path::Path,
     create: bool,
-) -> (Arc<TenantStore>, Arc<kasumi_engine::SecurityAudit>) {
+) -> (Arc<TenantStore>, Arc<kasumi_engine::SecurityAudit>, Arc<NodeStore>) {
     let node = (if create {
         physical
             .storage
@@ -74,25 +74,26 @@ async fn store(
     };
     let store = if create {
         TenantStore::initialize_catalog_fixture(
-            node,
+            node.clone(),
             "tenant-a".into(),
             Arc::new(LocalKeyProvider::new([43; 32])),
         )
         .await
     } else {
         TenantStore::open_existing_fixture(
-            node,
+            node.clone(),
             "tenant-a".into(),
             Arc::new(LocalKeyProvider::new([43; 32])),
         )
         .await
     }
     .unwrap();
-    (store, audit)
+    (store, audit, node)
 }
 async fn shutdown_nodes(
     nodes: &mut BTreeMap<u64, Arc<Database>>,
     audits: &mut BTreeMap<u64, Arc<kasumi_engine::SecurityAudit>>,
+    node_owners: &mut BTreeMap<u64, Arc<NodeStore>>,
     router: &InProcessRouter,
     group: &str,
 ) {
@@ -105,6 +106,10 @@ async fn shutdown_nodes(
         audit.shutdown().await.unwrap();
     }
     audits.clear();
+    for node in node_owners.values() {
+        node.shutdown().await.unwrap();
+    }
+    node_owners.clear();
 }
 async fn leader(nodes: &BTreeMap<u64, Arc<Database>>, exclude: Option<u64>) -> u64 {
     tokio::time::timeout(Duration::from_secs(10), async {

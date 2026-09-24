@@ -10,10 +10,13 @@ use std::{collections::BTreeSet, sync::Arc};
 async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work_still_applies() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     const MAX_BYTES: u64 = 256 << 20;
+    const NATIVE_HEADROOM: u64 = kasumi_engine::test_utils::NATIVE_RAFT_HEADROOM_BYTES;
     let physical = common::PhysicalFixture::new(
         &directory.path().join("node.kv"),
         kasumi_engine::test_utils::admission_config_with_bookkeeping(AdmissionConfig {
-            max_inflight_bytes: Some(MAX_BYTES),
+            // Production installs one charged native escrow and one separate
+            // operation-protected free reserve on this same memory core.
+            max_inflight_bytes: Some(MAX_BYTES + 2 * NATIVE_HEADROOM),
             ..Default::default()
         })
         .unwrap(),
@@ -59,6 +62,7 @@ async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work
         kasumi_engine::test_utils::open_fixture(stores, policy, Limits::default(), audit.clone())
             .await
             .unwrap();
+    kasumi_engine::test_utils::install_fixture_native_maintenance(&database, &admission).unwrap();
     let group = database.raft_group().clone();
     // Startup and audit use the same healthy facade. A real retained reservation
     // exhausts capacity after startup; no governor is replaced or reconfigured.
@@ -66,11 +70,14 @@ async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work
         .checked_sub(physical.initial_disk_metadata_bytes)
         .unwrap();
     let held_capacity = admission
-        .reserve(MAX_BYTES.checked_sub(occupied).unwrap(), None)
+        .reserve(
+            (MAX_BYTES + NATIVE_HEADROOM).checked_sub(occupied).unwrap(),
+            None,
+        )
         .unwrap();
     assert_eq!(
         kasumi_engine::test_utils::reserved_payload_bytes(&admission),
-        MAX_BYTES + physical.initial_disk_metadata_bytes
+        MAX_BYTES + NATIVE_HEADROOM + physical.initial_disk_metadata_bytes
     );
     let operation = Operation::CreateCollection(CollectionDefinition {
         retention_class: kasumi_types::CollectionRetentionClass::Operational,

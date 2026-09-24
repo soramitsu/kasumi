@@ -206,6 +206,18 @@ pub fn reserved_payload_bytes(admission: &crate::admission::NodeAdmission) -> u6
         .expect("admission bookkeeping exceeds its total charge")
 }
 
+/// The same installed native-KV and ordinary-operation protection used by
+/// production Raft owners, exposed for a fixture that exercises saturation.
+pub const NATIVE_RAFT_HEADROOM_BYTES: u64 =
+    crate::audit_maintenance::NodeAuditMaintenance::WORKSPACE_BYTES;
+
+pub fn install_fixture_native_maintenance(
+    database: &std::sync::Arc<crate::Database>,
+    admission: &std::sync::Arc<crate::admission::NodeAdmission>,
+) -> Result<()> {
+    database.engine().install_audit_maintenance(admission)
+}
+
 pub trait SnapshotFixture {
     fn fixture_snapshot(
         &self,

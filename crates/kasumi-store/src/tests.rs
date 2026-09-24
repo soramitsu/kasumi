@@ -3,6 +3,103 @@ use crate::test_utils::{FaultBackend, LocalKeyProvider, ManualClock};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+struct FailingNodeSetupBackend {
+    inner: kasumi_kv::backends::InMemoryBackend,
+    syncs: std::sync::atomic::AtomicUsize,
+    closes: std::sync::atomic::AtomicUsize,
+}
+
+impl FailingNodeSetupBackend {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            inner: kasumi_kv::backends::InMemoryBackend::new(),
+            syncs: std::sync::atomic::AtomicUsize::new(0),
+            closes: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+}
+
+impl kasumi_kv::StorageBackend for FailingNodeSetupBackend {
+    fn len(&self) -> std::io::Result<u64> {
+        kasumi_kv::StorageBackend::len(&self.inner)
+    }
+    fn read(&self, at: u64, out: &mut [u8]) -> std::io::Result<()> {
+        kasumi_kv::StorageBackend::read(&self.inner, at, out)
+    }
+    fn write(&self, at: u64, bytes: &[u8]) -> std::io::Result<()> {
+        kasumi_kv::StorageBackend::write(&self.inner, at, bytes)
+    }
+    fn set_len(&self, length: u64) -> std::io::Result<()> {
+        kasumi_kv::StorageBackend::set_len(&self.inner, length)
+    }
+    fn sync_data(&self) -> std::io::Result<()> {
+        if self.syncs.fetch_add(1, Ordering::AcqRel) == 1 {
+            return Err(std::io::Error::other("injected table setup sync failure"));
+        }
+        kasumi_kv::StorageBackend::sync_data(&self.inner)
+    }
+    fn close(&self) -> kasumi_kv::BackendCloseOutcome {
+        self.closes.fetch_add(1, Ordering::AcqRel);
+        kasumi_kv::StorageBackend::close(&self.inner)
+    }
+}
+
+#[test]
+fn failed_node_table_setup_observes_the_original_native_close() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory);
+    let backend = FailingNodeSetupBackend::new();
+    let error = NodeStore::open_with_backend(
+        backend.clone(),
+        crate::test_utils::storage_admission(),
+        scratch,
+    )
+    .err()
+    .expect("the table setup sync is injected to fail");
+    let failure = error.downcast_ref::<NodeStoreSetupFailure>().unwrap();
+    assert!(
+        failure
+            .original_error()
+            .unwrap()
+            .to_string()
+            .contains("injected table setup sync failure")
+    );
+    failure.with_close_report(|report| {
+        assert_eq!(
+            report.native_disposition(),
+            BackendNativeDisposition::Drained
+        );
+        assert_eq!(
+            report.settlement(),
+            DatabaseCloseSettlement::DrainedWithFailure
+        );
+    });
+    assert_eq!(backend.closes.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn failed_node_setup_keeps_the_original_panic_and_closes() {
+    let database = Database::builder(crate::test_utils::storage_admission())
+        .create_with_backend(kasumi_kv::backends::InMemoryBackend::new())
+        .unwrap();
+    let error = NodeStore::finish_setup(database, |_| panic!("injected setup panic"))
+        .err()
+        .expect("setup panicked");
+    let failure = error.downcast_ref::<NodeStoreSetupFailure>().unwrap();
+    assert_eq!(
+        failure.with_panic_payload(|payload| payload.downcast_ref::<&str>().copied()),
+        Some(Some("injected setup panic"))
+    );
+    failure.with_close_report(|report| {
+        assert_eq!(
+            report.native_disposition(),
+            BackendNativeDisposition::Drained
+        );
+        assert_eq!(report.settlement(), DatabaseCloseSettlement::Settled);
+    });
+}
+
 async fn fixture(
     fixture_memory: Arc<dyn crate::NodeDiskMemoryAdmission>,
     fixture_scratch: std::sync::Arc<crate::ScratchDisk>,

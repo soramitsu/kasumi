@@ -35,13 +35,27 @@ and reserves resident index/workspace and physical growth before allocation or
 I/O. `Core::create_with_backend` creates an empty payload or reopens an existing
 one; strict create/open constructors are also available.
 
-For standalone files, `FileBackend::open` keeps a new file's parent directory
-open until the initial headers and directory have both synced. An existing
-path is directory-synced before `open` or `open_existing` returns, including
-after an uncertain creation attempt. A directory sync error leaves creation
-uncertain; reopen the exact path to resolve it. `from_file` relies on its caller
+Direct `Core` and `Builder` constructors explicitly close their backend when
+opening fails. A clean native drain returns the original error. If close fails
+or cannot enter, `CoreError::OpeningFailure` retains the original error, the
+first close report, and any backend whose drain is unproved. Its `retry_close`
+method retries only a close that never entered. Callers must keep the failure
+report when native drain remains unproved. A callback panic remains inspectable
+as `CorePanic`; a panic during close is recorded with the failed opening and
+does not trigger a second close attempt.
+
+For standalone files, `FileBackend::create_new` keeps a new file's parent
+directory open until the initial headers and directory have both synced. It
+fails with `EEXIST` if another owner inserts the name before acquisition; it
+never adopts that file. An existing path is directory-synced before
+`open_existing` returns, including after an uncertain creation attempt. A
+directory sync error leaves creation uncertain; reopen only through the
+original owner's namespace to resolve it. `from_file` relies on its caller
 to own and sync the surrounding namespace. Filesystems without directory sync
-support cause the named open or create to fail.
+support cause the named open or create to fail. Named opens use the held parent
+directory and reject final symlinks. A failed named open returns
+`FileBackendOpenError`, which preserves the original I/O error and any parent
+directory close report.
 
 `Core::commit(&[Operation])` publishes one atomic batch across named ordered
 tables. `Core::snapshot()` pins a generation. `get_admitted`, `next_admitted`,
@@ -77,3 +91,9 @@ release.
 
 Run `cargo test -p kasumi-kv --locked` and
 `cargo clippy -p kasumi-kv --all-targets --locked -- -D warnings`.
+
+Named-path acquisition still requires the caller to own the surrounding
+namespace. `open_existing` does not accept an expected inode identity, and a
+held parent descriptor alone cannot prevent another actor from renaming the
+directory or replacing the leaf name. These paths are not a complete adversarial
+namespace-custody boundary.

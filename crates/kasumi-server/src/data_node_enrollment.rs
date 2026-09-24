@@ -349,7 +349,7 @@ async fn initialize_domain(
                 .as_ref()
                 .context("replication missing")?
                 .node_id,
-            stores,
+            stores.clone(),
             &bootstrap,
             network,
             kasumi_raft::server_config(),
@@ -368,7 +368,7 @@ async fn initialize_domain(
         if let Some(grant) = grant {
             grant.check()?;
         }
-        crate::runtime::persisted_bootstrap_fingerprint(&app)
+        crate::runtime::persisted_replicated_bootstrap_fingerprint(&stores)
     })
     .await;
     let drained = crate::startup_owner::finish(&mut pending).await;

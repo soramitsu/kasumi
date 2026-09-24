@@ -1182,7 +1182,9 @@ impl Administration {
         let fingerprint = target
             .bootstrap
             .as_ref()
-            .map(|_| crate::runtime::persisted_bootstrap_fingerprint(&target.store))
+            .map(|_| {
+                crate::runtime::persisted_replicated_bootstrap_fingerprint(target.database.stores())
+            })
             .transpose()?;
         for peer in &route.voters {
             let ready = if let Some(network) = &self.cluster {

@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    NodeDiskMemoryAdmission,
+    CATALOG, NodeDiskMemoryAdmission, NodeStore, NodeStoreOpeningFailure, RECORDS, ScratchDisk,
     test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry},
 };
 use std::{
@@ -332,10 +332,20 @@ impl PausedRegistrationMemory {
         std::sync::mpsc::Receiver<()>,
         std::sync::mpsc::Sender<()>,
     ) {
+        Self::with_slots(16)
+    }
+
+    fn with_slots(
+        slots: usize,
+    ) -> (
+        Arc<Self>,
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
         let (entered, observe) = std::sync::mpsc::channel();
         let (resume, release) = std::sync::mpsc::channel();
         let owner = Arc::new(Self {
-            census: crate::StorageCensus::allocate(16).unwrap(),
+            census: crate::StorageCensus::allocate(slots).unwrap(),
             backing: TestDiskMemory::new(256 << 20, 4096),
             pause_next: AtomicBool::new(false),
             fail_next: AtomicBool::new(false),
@@ -1603,4 +1613,281 @@ fn private_opening_arc_is_admitted_before_any_prepared_owner_allocation() {
     assert_eq!(memory.snapshot().used_bytes, baseline.used_bytes);
     assert_eq!(disk.snapshot().open_files, 0);
     assert!(!path.exists());
+}
+
+#[test]
+fn failed_pre_descriptor_acquisition_retires_the_registered_opening() {
+    let directory = private_tempdir().unwrap();
+    let configured_path = directory.path().join("configured.kv");
+    let outside = private_tempdir().unwrap();
+    let outside_path = outside.path().join("outside.kv");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&configured_path, &memory);
+    let initial_bytes = memory.snapshot().used_bytes;
+    let opening =
+        RegisteredNodeOpening::prepare(&outside_path, ID, disk.clone(), NodeOpeningMode::Create)
+            .unwrap();
+
+    assert_eq!(opening.open(), NodeOpeningPhase::FileAcquisition);
+    assert!(matches!(
+        opening.report().acquisition(),
+        kasumi_kv::TerminalObservation::Returned(Err(_))
+    ));
+    assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
+    assert_eq!(memory.snapshot().used_bytes, initial_bytes);
+    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().open_files, 0);
+    assert!(!outside_path.exists());
+}
+
+#[test]
+fn failed_existing_name_acquisition_retires_the_registered_opening() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("existing.kv");
+    std::fs::write(&path, b"unowned existing bytes").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let opening =
+        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
+
+    assert_eq!(opening.open(), NodeOpeningPhase::FileAcquisition);
+    assert!(matches!(
+        opening.report().acquisition(),
+        kasumi_kv::TerminalObservation::Returned(Err(_))
+    ));
+    assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
+    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().open_files, 0);
+    assert_eq!(std::fs::read(&path).unwrap(), b"unowned existing bytes");
+}
+
+#[tokio::test]
+async fn production_node_create_reopen_and_shutdown_use_registered_owner() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("production-node-cutover.kv");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let scratch_directory = private_tempdir().unwrap();
+    let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+
+    let node = NodeStore::create_new(&path, ID, disk.clone(), scratch.clone()).unwrap();
+    assert_eq!(memory.storage_census().snapshot().databases, 1);
+    {
+        let tx = node.db.begin_read().unwrap();
+        tx.open_table(CATALOG).unwrap();
+        tx.open_table(RECORDS).unwrap();
+    }
+    node.shutdown().await.unwrap();
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
+    drop(node);
+
+    let reopened = NodeStore::open_existing(&path, ID, disk, scratch).unwrap();
+    assert_eq!(memory.storage_census().snapshot().databases, 1);
+    reopened.shutdown().await.unwrap();
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
+}
+
+#[tokio::test]
+async fn production_catalog_read_registers_child_and_retains_original_table_failure() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("production-catalog-reader.kv");
+    let (memory, entered, resume) = PausedRegistrationMemory::new();
+    let disk = retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
+    let scratch_directory = private_tempdir().unwrap();
+    let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let node = NodeStore::create_new(&path, ID, disk.clone(), scratch).unwrap();
+    assert!(node.catalog("tenant").unwrap().is_none());
+    assert_eq!(memory.storage_census().snapshot().readers, 0);
+
+    memory.pause_next.store(true, Ordering::Release);
+    let worker_node = node.clone();
+    let worker = std::thread::spawn(move || {
+        worker_node
+            .catalog("tenant")
+            .err()
+            .expect("injected reader admission denial fails catalog read")
+    });
+    entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    memory.fail_next.store(true, Ordering::Release);
+    resume.send(()).unwrap();
+    let failure = worker
+        .join()
+        .unwrap()
+        .downcast::<crate::NodeCatalogReadFailure>()
+        .expect("registered catalog failure retains the exact child");
+    assert_eq!(failure.stage(), "begin");
+    let reader_id = failure.reader().id();
+    assert_eq!(memory.storage_census().snapshot().readers, 1);
+    assert!(matches!(
+        failure.reader().report().tables(),
+        TerminalObservation::Returned(Err(_))
+    ));
+    drop(failure);
+    let reader = RegisteredNodeRead::retained(memory.clone(), reader_id)
+        .expect("census kept the failed reader after error facade drop");
+    assert_eq!(reader.phase(), NodeReadPhase::Failed);
+    assert!(matches!(
+        reader.report().tables(),
+        TerminalObservation::Returned(Err(_))
+    ));
+    assert_eq!(reader.finish(), NodeReadPhase::Finished);
+    assert_eq!(reader.retire(), StorageCensusDisposition::Retired);
+    let opening_id = node.registered_opening_id().unwrap();
+    let close = node.shutdown().await.unwrap_err();
+    assert_eq!(
+        close.completion(),
+        kasumi_types::drain::DrainCompletion::Retained
+    );
+    assert_eq!(memory.storage_census().snapshot().databases, 1);
+    let opening = RegisteredNodeOpening::retained(memory.clone(), opening_id).unwrap();
+    assert_eq!(
+        opening.report().engine().settlement(),
+        DatabaseOpenSettlement::DrainedWithFailure
+    );
+}
+
+#[tokio::test]
+async fn queued_production_catalog_reader_is_cancelled_with_registered_custody() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("production-queued-reader.kv");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let scratch_directory = private_tempdir().unwrap();
+    let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let reader = node.db.queue_registered_read().unwrap();
+    let reader_id = reader.id();
+    assert_eq!(memory.storage_census().snapshot().readers, 1);
+    node.db.stop();
+    assert_eq!(reader.begin(), NodeReadPhase::Cancelled);
+    drop(reader);
+    let reader = RegisteredNodeRead::retained(memory.clone(), reader_id)
+        .expect("queued child survives its original facade");
+    assert_eq!(reader.phase(), NodeReadPhase::Cancelled);
+    assert!(matches!(
+        reader.report().begin(),
+        TerminalObservation::NotEntered
+    ));
+    assert_eq!(reader.retire(), StorageCensusDisposition::Retired);
+    node.shutdown().await.unwrap();
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
+}
+
+#[tokio::test]
+async fn production_catalog_decode_failure_retires_its_clean_registered_reader() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("production-corrupt-catalog.kv");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let scratch_directory = private_tempdir().unwrap();
+    let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let wrapped = crate::WrappedKey {
+        provider: "fixture".into(),
+        key_ref: "catalog".into(),
+        ciphertext: "opaque".into(),
+        version: 1,
+        context: None,
+    };
+    let catalog = crate::KeyCatalog {
+        format: 1,
+        catalog_id: Uuid::from_u128(1),
+        tenant: "tenant".into(),
+        purpose: crate::StoragePurpose::LocalFixture,
+        active: "current".into(),
+        keys: std::collections::BTreeMap::from([
+            ("index".into(), wrapped.clone()),
+            ("current".into(), wrapped),
+        ]),
+    };
+    node.save_catalog("tenant", &catalog).unwrap();
+    assert!(node.catalog("tenant").unwrap() == Some(catalog));
+    assert_eq!(memory.storage_census().snapshot().readers, 0);
+    let tx = node.db.begin_write().unwrap();
+    tx.open_table(CATALOG)
+        .unwrap()
+        .insert(crate::tenant_hash("tenant").as_slice(), b"{".as_slice())
+        .unwrap();
+    tx.commit().unwrap();
+
+    let error = node.catalog("tenant").err().unwrap();
+    assert!(format!("{error:#}").contains("invalid key catalog"));
+    assert_eq!(memory.storage_census().snapshot().readers, 0);
+    node.shutdown().await.unwrap();
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
+}
+
+#[tokio::test]
+async fn production_node_post_open_failure_retains_exact_registered_custody() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("production-node-table-denied.kv");
+    let (memory, _, _) = PausedRegistrationMemory::with_slots(1);
+    let disk = retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
+    let scratch_directory = private_tempdir().unwrap();
+    let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+
+    let error = NodeStore::create_new(&path, ID, disk, scratch)
+        .err()
+        .expect("child census denial must fail setup")
+        .downcast::<NodeStoreOpeningFailure>()
+        .expect("production failure retains typed custody");
+    assert_eq!(error.custody().phase(), NodeStartupPhase::Failed);
+    assert!(error.custody().local_error().is_some());
+    assert_eq!(memory.storage_census().snapshot().databases, 1);
+    assert_eq!(memory.storage_census().snapshot().writers, 0);
+    let opening_id = error.opening_id();
+    assert_eq!(
+        error.custody().opening().report().engine().settlement(),
+        DatabaseOpenSettlement::Closed
+    );
+    drop(error);
+    let retained = RegisteredNodeOpening::retained(memory.clone(), opening_id)
+        .expect("the exact post-open owner survives facade drop");
+    assert_eq!(
+        retained.report().engine().settlement(),
+        DatabaseOpenSettlement::Closed
+    );
+    assert!(matches!(
+        retained.report().ready_publication(),
+        kasumi_kv::TerminalObservation::NotEntered
+    ));
+}
+
+#[tokio::test]
+async fn production_node_rejects_wrong_identity_with_recoverable_failed_opening_id() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("production-node-wrong-id.kv");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let scratch_directory = private_tempdir().unwrap();
+    let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+
+    let node = NodeStore::create_new(&path, ID, disk.clone(), scratch.clone()).unwrap();
+    node.shutdown().await.unwrap();
+    drop(node);
+    let other_id = Uuid::from_u128(ID.as_u128() + 1);
+    let error = NodeStore::open_existing(&path, other_id, disk, scratch)
+        .err()
+        .unwrap()
+        .downcast::<NodeStoreOpeningFailure>()
+        .unwrap();
+    let opening_id = error.opening_id();
+    assert_eq!(memory.storage_census().snapshot().databases, 1);
+    assert!(matches!(
+        error.custody().opening().report().acquisition(),
+        kasumi_kv::TerminalObservation::Returned(Err(_))
+    ));
+    drop(error);
+    let retained = RegisteredNodeOpening::retained(memory.clone(), opening_id)
+        .expect("the exact failed opening survives a dropped error facade");
+    assert!(matches!(
+        retained.report().acquisition(),
+        kasumi_kv::TerminalObservation::Returned(Err(_))
+    ));
 }

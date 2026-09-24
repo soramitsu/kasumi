@@ -184,6 +184,7 @@ impl NodeFile {
         }
         Ok(())
     }
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn create_new(path: &Path, id: Uuid, disk: Arc<NodeDisk>) -> Result<Arc<Self>> {
         ensure!(!id.is_nil(), "node store identity is nil");
         let (root, relative) = disk.binding(path)?;
@@ -193,6 +194,7 @@ impl NodeFile {
         Ok(owner)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn initialize_owned_empty(
         path: &Path,
         identity: &FileIdentity,
@@ -215,6 +217,7 @@ impl NodeFile {
         Ok(owner)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn open_existing(
         path: &Path,
         expected_id: Uuid,
@@ -306,6 +309,7 @@ impl NodeFile {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
@@ -605,14 +609,17 @@ impl StorageBackend for NodeBackend {
                     }
                 }
             },
-            FileState::Prepared | FileState::Closed => {
+            FileState::Prepared | FileState::Acquiring | FileState::Closed => {
+                // Acquisition held this write lock until it either stored an
+                // Owned file or returned. No descriptor escaped into this
+                // NodeFile; NodeDisk retains any failed partial acquisition.
                 *guard = FileState::Closed;
                 BackendCloseOutcome::drained(Ok(()))
             }
             FileState::FailedTransferred => {
                 BackendCloseOutcome::drained(Err(io::ErrorKind::BrokenPipe.into()))
             }
-            FileState::Acquiring | FileState::Transferring(_) => {
+            FileState::Transferring(_) => {
                 BackendCloseOutcome::retained(io::ErrorKind::Other.into())
             }
         }

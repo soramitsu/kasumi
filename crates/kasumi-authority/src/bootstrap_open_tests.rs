@@ -6,6 +6,7 @@ type RetainedRows = Vec<Vec<(Vec<u8>, Vec<u8>)>>;
 struct InstalledFixture {
     physical: PhysicalFixture,
     stores: Arc<TenantStorageSet>,
+    node: Arc<NodeStore>,
     installation: AuthorityInstallation,
     bootstrap: crate::AuthorityBootstrap,
     settings: AuthorityNodeSettings,
@@ -40,7 +41,7 @@ impl InstalledFixture {
             kasumi_store::test_utils::NODE_STORE_ID,
         )?;
         let stores = TenantStorageSet::initialize_catalogs(
-            node,
+            node.clone(),
             installation.tenant(),
             Arc::new(LocalKeyProvider::new([31; 32])),
             Arc::new(LocalKeyProvider::new([32; 32])),
@@ -50,6 +51,7 @@ impl InstalledFixture {
         Ok(Self {
             physical,
             stores,
+            node,
             installation,
             bootstrap,
             settings,
@@ -140,24 +142,27 @@ impl InstalledFixture {
     }
     async fn close(&self) {
         self.stores.shutdown().await.unwrap();
+        self.node.shutdown().await.unwrap();
     }
     async fn reopen(self) -> anyhow::Result<Self> {
         self.close().await;
         let Self {
             physical,
             stores,
+            node,
             installation,
             bootstrap,
             settings,
             signing,
         } = self;
         drop(stores);
+        drop(node);
         let node = physical.open_existing(
             physical.path("authority.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )?;
         let stores = TenantStorageSet::open_existing(
-            node,
+            node.clone(),
             installation.tenant(),
             Arc::new(LocalKeyProvider::new([31; 32])),
             Arc::new(LocalKeyProvider::new([32; 32])),
@@ -167,6 +172,7 @@ impl InstalledFixture {
         Ok(Self {
             physical,
             stores,
+            node,
             installation,
             bootstrap,
             settings,

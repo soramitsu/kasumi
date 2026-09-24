@@ -1,58 +1,33 @@
-# BOI first-release state contract
+# BOI Core first-release state contract
 
-BOI Core uses one dedicated Kasumi tenant. Its native credential and collection
-policy grant the Core principal access to that tenant only. Provision two
-collections before starting Core; a missing collection is a deployment failure,
-not a reason for the application to create or adopt another tenant.
+BOI Core uses one dedicated Kasumi tenant bound to its independently signed client profile, tenant, incarnation, principal, and credential family. It uses one native Iroha dataspace, is2; these Kasumi collections are application state within BOI Core.
 
-| Collection | Write mode | Document | Purpose |
-| --- | --- | --- | --- |
-| `boi_core_owner` | `append_only` | `owner` | Permanent first-owner marker |
-| `boi_core_state` | `mutable` | `central-state` | One versioned `CentralState` |
+Provision 14 collections before Core starts. The append-only collections use archivable-history retention; mutable collections use operational retention. Every collection enables strict read audit. Native Admin readback must prove their exact definitions, write modes, limits, and policy grants. Missing or foreign collections fail admission; Core does not create or adopt another tenant.
 
-Both use `retention_class: "operational"`, no indexes, and explicit JSON
-Schema Draft 2020-12 definitions. The owner schema is:
+| Collection | Write mode | Contents |
+| --- | --- | --- |
+| boi_core_owner | append_only | Exactly id=owner, schema boi.core-owner.v1, owner boi-core.is2 |
+| boi_core_policy | mutable | Exactly id=policy, schema boi.core-policy.v1, retail policy and state schema version |
+| boi_core_uids | append_only | UID entities |
+| boi_core_wallets | mutable | Wallet entities |
+| boi_core_dynamic_wallet_bindings | mutable | Dynamic wallet bindings |
+| boi_core_payments | append_only | Payment entities |
+| boi_core_payment_idempotency | append_only | Payment idempotency entities |
+| boi_core_ledger_payment_intents | append_only | Ledger payment intents |
+| boi_core_ledger_payment_receipts | append_only | Ledger payment receipts |
+| boi_core_ledger_payment_claims | mutable | Ledger payment claims |
+| boi_core_client_payment_quotes | append_only | Client payment quotes |
+| boi_core_client_payment_idempotency | append_only | Client idempotency entities |
+| boi_core_client_payment_receipts | append_only | Client payment receipts |
+| boi_core_settlements | append_only | Settlement entities |
 
-```json
-{"type":"object","required":["schema","owner"],"additionalProperties":false,
- "properties":{"schema":{"const":"boi.core-owner.v1"},
-               "owner":{"const":"boi-core.is2"}}}
-```
+Entity documents use schema boi.core-entity.v1, owner boi-core.is2, a typed kind and key, and one value. Core validates the reconstructed CentralState on read. Schema validation alone does not authenticate the writer; tenant policy and the bound credential authorize writes.
 
-The state schema is:
+Startup and each mutation use a coherent native snapshot lease. Core scans all 14 collections in pages of at most 256 rows while retaining one generation; it limits each collection to 10,000 rows and hydrated state to 64 MiB. The lease preserves one incarnation, policy/schema epoch, and collection data epochs across every page. A partial page, changed authority, expired lease, or retained-root budget failure aborts hydration. Core closes the lease and starts again from a new one rather than combining generations. Kasumi's native per-page cap remains 1,000 rows and 8 MiB of encoded result.
 
-```json
-{"type":"object","required":["schema","owner","state"],"additionalProperties":false,
- "properties":{"schema":{"const":"boi.central-state.v1"},
-               "owner":{"const":"boi-core.is2"},
-               "state":{"type":"object"}}}
-```
+An empty tenant may be claimed only by one mutation that proves every collection empty and creates the append-only owner marker and policy document with absent preconditions. An established tenant must have exactly one owner and policy document; a missing marker or foreign state fails closed. Later mutations submit only changed entity documents using exact versions or absent preconditions. Every batch carries a snapshot identity assertion plus all 14 collection epochs. The batch is bounded by 256 operations and 8 MiB. A committed mixed Put/Delete receipt reports each target path at one global revision, and exact replay returns the same receipt.
 
-Core checks the exact owner and schema strings and validates its full
-`CentralState` on every read. Schema validation alone does not authenticate the
-writer: Kasumi tenant policy and the bound credential do that. On startup, Core
-uses one `ReadSnapshotRequest` containing exact reads of both named documents
-and complete, bounded queries of both collections (`allow_scan: true`,
-`limit: 2`). A query exceeding its limit fails rather than returning a partial
-inventory. Exactly one owner marker and one state document is the only
-established state. Both collections empty is the only initial state; one missing
-document, another ID, or a malformed body fails closed.
-
-The authorized initial claim is one `MutationBatch` with a fresh
-`idempotency_key`, the snapshot's read assertions (including both collection
-epochs), and two `Put` operations with `Precondition::Absent`. Kasumi commits
-both documents in one ordered mutation or neither. A competing claim conflicts.
-Subsequent state replacements use `Precondition::Version` from the exact
-coherent read, retain the owner marker, and include any dependent snapshot
-assertions. Core never uses `Precondition::Any` for this document.
-
-For an uncertain write, resolve the **original** batch with
-`KasumiClientPool::resolve_mutation`, the independently expected
-`MutationReceiptScope`, and its exact body/read set/preconditions. An absent
-receipt is unknown, not permission to issue a different claim. Read back both
-documents after any committed result. The retained receipt and state survive
-snapshot recovery; the owner marker cannot be overwritten or deleted through
-the data API.
+For an uncertain write, Core resolves the original batch with KasumiClientPool::resolve_mutation and its independently expected MutationReceiptScope. An absent receipt is unknown, not permission to issue another batch. Core checks the result and reads state back after commit. The owner marker cannot be overwritten or deleted through the data API.
 
 Load the installed native profile with `ClientProfile::load_with_sha256` and
 compare its digest to an independently signed deployment value. Call
@@ -63,17 +38,10 @@ standalone node, a one-member `KasumiClientPool` uses
 `profile.bearer_file`; it reloads the credential on each invocation. This
 profile does not supply a signed multi-member data route.
 
-The default and maximum `max_document_bytes` is 1 MiB. BOI must enforce a
-bounded serialized size for the complete `boi_core_state` document, including
-its schema and owner fields, below the installed document limit. Keep
-`max_batch_bytes` and `max_result_bytes` at their 8 MiB defaults, and test
-actual encoded request and snapshot sizes. A 6 MiB state cannot fit in this
-single-document contract; increasing `max_document_bytes` above 1 MiB is
-rejected by the native validator.
-
-Kasumi does not hide or delete application documents at a TTL. BOI payment
-claim expiry remains a field in `CentralState` and is enforced by Core's state
-transition rules. If a transition needs Kasumi's trusted leader admission time,
-bind its observed document version and use `ReadAssertion::Before` or
-`ReadAssertion::NotBefore` in that same mutation batch. Receipt resolution is
-read-only and does not reinterpret an old deadline.
+Each document is capped at 1 MiB; batch and result limits are at most 8 MiB.
+Core checks actual encoded request and snapshot sizes against the installed
+limits. Payment-claim expiry remains application state rather than Kasumi TTL.
+Transitions needing trusted leader time use bounded snapshot time and
+`ReadAssertion::Before` or `ReadAssertion::NotBefore` in the same mutation
+batch. Receipt resolution is read-only and does not reinterpret an old
+deadline.

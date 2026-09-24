@@ -352,6 +352,54 @@ impl RegisteredNodeOpening {
         };
         Ok(DatabaseOwner::close_locked(&mut state))
     }
+    // The legacy store transaction surface is still used by encrypted catalog
+    // and Raft adapters. The database remains owned by this registered opening;
+    // accepted handles keep close busy until their exact work settles. These
+    // methods are crate-private and must be replaced by registered children
+    // before final G02 acceptance.
+    pub(crate) fn seal_store_transactions(&self) {
+        self.registration
+            .owner()
+            .stopped
+            .store(true, Ordering::Release);
+    }
+
+    pub(crate) fn begin_store_read(
+        &self,
+    ) -> Result<kasumi_kv::ReadTransaction, kasumi_kv::TransactionError> {
+        let owner = self.registration.owner();
+        if owner.stopped.load(Ordering::Acquire) {
+            return Err(kasumi_kv::StorageError::DatabaseClosed.into());
+        }
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed.into());
+        }
+        state
+            .engine
+            .database()
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+            .begin_read()
+    }
+
+    pub(crate) fn begin_store_write(
+        &self,
+    ) -> Result<kasumi_kv::WriteTransaction, kasumi_kv::TransactionError> {
+        let owner = self.registration.owner();
+        if owner.stopped.load(Ordering::Acquire) {
+            return Err(kasumi_kv::StorageError::DatabaseClosed.into());
+        }
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed.into());
+        }
+        state
+            .engine
+            .database()
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+            .begin_write()
+    }
+
     /// Fixed, closed operation shape with no user callback or raw transaction
     /// escape. The actual queued request is registered before any serial wait.
     /// Once registration succeeds, even a concurrent close returns the exact

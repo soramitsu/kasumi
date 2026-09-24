@@ -647,6 +647,48 @@ async fn paired_deployment_read_checks_domains_and_charge() -> Result<()> {
 }
 
 #[tokio::test]
+async fn custody_deployment_read_retains_writer_bounded_charge_without_application() -> Result<()> {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir()?;
+    let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let directory = crate::test_utils::private_tempdir()?;
+    let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
+        directory.path().join("custody-deployment.kv"),
+        crate::test_utils::NODE_STORE_ID,
+        memory.clone(),
+        scratch,
+    )?)
+    .await?;
+    assert!(stores.custody().deployment_binding()?.is_none());
+
+    let binding = vec![b'x'; (1 << 20) + 1];
+    assert!(binding.len() <= MAX_DEPLOYMENT_BINDING_BYTES);
+    let put = WriteOp::put(DEPLOYMENT_NS, DEPLOYMENT_KEY, binding.clone());
+    stores.write_batch(std::slice::from_ref(&put), std::slice::from_ref(&put))?;
+    let before = memory.snapshot().used_bytes;
+    let admitted = stores
+        .custody()
+        .deployment_binding()?
+        .expect("custody deployment binding");
+    assert_eq!(admitted.as_bytes(), binding);
+    assert!(memory.snapshot().used_bytes > before);
+    drop(admitted);
+    assert_eq!(memory.snapshot().used_bytes, before);
+
+    // The retired reader is allowed to retain custody alone. An application
+    // row cannot substitute for the independently encrypted custody value.
+    stores.write_batch(&[WriteOp::delete(DEPLOYMENT_NS, DEPLOYMENT_KEY)], &[])?;
+    let retained = stores
+        .custody()
+        .deployment_binding()?
+        .expect("retained custody deployment binding");
+    assert_eq!(retained.as_bytes(), binding);
+    drop(retained);
+    stores.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn paired_deployment_read_accepts_exact_current_writer_boundary() -> Result<()> {
     let memory = crate::test_utils::TestDiskMemory::new(1 << 30, 4096);
     let scratch_directory = crate::test_utils::private_tempdir()?;

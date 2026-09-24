@@ -174,6 +174,7 @@ mod tests {
             database.shutdown().await.unwrap();
         }
         audit.shutdown().await.unwrap();
+        node.shutdown().await.unwrap();
         drop(audit);
         drop(node);
         let drained = admission.snapshot();

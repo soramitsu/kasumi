@@ -107,6 +107,7 @@ struct Fixture {
     router: Arc<InProcessRouter>,
     services: Vec<Arc<IndependentAuthority>>,
     stores: Vec<Arc<TenantStorageSet>>,
+    nodes: BTreeMap<u64, Arc<NodeStore>>,
     clock: Arc<Clock>,
     epoch: Arc<EpochClock>,
     installation: AuthorityInstallation,
@@ -220,6 +221,7 @@ impl Fixture {
         let readiness = Arc::new(TestMaintenanceTransport::default());
         let mut services = Vec::new();
         let mut stores = Vec::new();
+        let mut nodes = BTreeMap::new();
         let mut physical = BTreeMap::new();
         for id in 1..=3 {
             let storage = PhysicalFixture::new().unwrap();
@@ -230,7 +232,7 @@ impl Fixture {
                 )
                 .unwrap();
             let store = TenantStorageSet::initialize_catalogs(
-                node,
+                node.clone(),
                 installation.tenant(),
                 Arc::new(LocalKeyProvider::new([id as u8; 32])),
                 Arc::new(LocalKeyProvider::new([id as u8 + 10; 32])),
@@ -282,6 +284,7 @@ impl Fixture {
                 .unwrap();
             services.push(service);
             stores.push(store);
+            nodes.insert(id, node);
             physical.insert(id, storage);
         }
         let fixture = Self {
@@ -289,6 +292,7 @@ impl Fixture {
             router,
             services,
             stores,
+            nodes,
             clock,
             epoch,
             installation,
@@ -403,6 +407,9 @@ impl Fixture {
         for store in &self.stores {
             store.shutdown().await.unwrap();
         }
+        for node in self.nodes.values() {
+            node.shutdown().await.unwrap();
+        }
     }
     async fn reopen(&mut self) {
         for service in &self.services {
@@ -411,9 +418,13 @@ impl Fixture {
         for store in &self.stores {
             store.shutdown().await.unwrap();
         }
+        for node in self.nodes.values() {
+            node.shutdown().await.unwrap();
+        }
         let member_ids: Vec<_> = self.services.iter().map(|s| s.local_node_id).collect();
         self.services.clear();
         self.stores.clear();
+        self.nodes.clear();
         self.router = Arc::new(InProcessRouter::default());
         self.readiness = Arc::new(TestMaintenanceTransport::default());
         for id in member_ids {
@@ -424,7 +435,7 @@ impl Fixture {
                 )
                 .unwrap();
             let stores = TenantStorageSet::open_existing(
-                node,
+                node.clone(),
                 self.installation.tenant(),
                 Arc::new(LocalKeyProvider::new([id as u8; 32])),
                 Arc::new(LocalKeyProvider::new([id as u8 + 10; 32])),
@@ -472,6 +483,7 @@ impl Fixture {
                 .unwrap();
             self.services.push(service);
             self.stores.push(stores);
+            self.nodes.insert(id, node);
         }
         // A local linearizable barrier can pass while a current voter has
         // already started a higher-term election. Learners and removed nodes
@@ -900,6 +912,7 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     assert!(kasumi_store::StorageAccess::serving(gate).is_err());
     assert_eq!(provider.probe_count(), probes);
     stores.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(stores);
     drop(node);
     let reopened = storage
@@ -921,12 +934,17 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     // Even a fixture-enabled embedding cannot reinterpret a serving catalog as
     // an unleased fixture. The persisted purpose is required, without defaults.
     assert!(
-        kasumi_store::TenantStore::open_existing_fixture(reopened, "city".into(), provider.clone())
-            .await
-            .is_err()
+        kasumi_store::TenantStore::open_existing_fixture(
+            reopened.clone(),
+            "city".into(),
+            provider.clone(),
+        )
+        .await
+        .is_err()
     );
     assert_eq!(provider.probe_count(), probes);
     custody.store().shutdown().await.unwrap();
+    reopened.shutdown().await.unwrap();
     fixture.close().await;
 }
 

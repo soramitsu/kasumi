@@ -2,7 +2,7 @@ use kasumi_engine::test_utils::{SnapshotFixture, snapshot_accounted_bytes};
 mod common;
 use kasumi_engine::{Database, SecurityAudit};
 use kasumi_store::BackupDestination;
-use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
+use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
 use std::{collections::BTreeSet, sync::Arc};
@@ -31,7 +31,7 @@ async fn open(
     path: &std::path::Path,
     limits: Limits,
     create: bool,
-) -> (Arc<Database>, Arc<SecurityAudit>) {
+) -> (Arc<Database>, Arc<SecurityAudit>, Arc<NodeStore>) {
     let node = (if create {
         physical
             .storage
@@ -49,14 +49,14 @@ async fn open(
     };
     let store = if create {
         TenantStore::initialize_catalog_fixture(
-            node,
+            node.clone(),
             "history".into(),
             Arc::new(LocalKeyProvider::new([0xD3; 32])),
         )
         .await
     } else {
         TenantStore::open_existing_fixture(
-            node,
+            node.clone(),
             "history".into(),
             Arc::new(LocalKeyProvider::new([0xD3; 32])),
         )
@@ -80,7 +80,7 @@ async fn open(
     let db = kasumi_engine::test_utils::open_fixture(domains, policy(), limits, audit.clone())
         .await
         .unwrap();
-    (db, audit)
+    (db, audit, node)
 }
 async fn collection(db: &Database, name: &str, retention_class: CollectionRetentionClass) {
     db.administer(
@@ -140,7 +140,7 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
     let mut limits = Limits::default();
     limits.history.max_feed_events = 4;
     let physical = common::PhysicalFixture::new(&root.path().join("node.kv"), Default::default());
-    let (db, audit) = open(&physical, &root.path().join("node.kv"), limits, true).await;
+    let (db, audit, node) = open(&physical, &root.path().join("node.kv"), limits, true).await;
     collection(&db, "docs", CollectionRetentionClass::Operational).await;
     let receipt = db.mutate(context(), batch("first", 0, 3)).await.unwrap();
     assert_eq!(
@@ -207,9 +207,10 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(db);
     drop(audit);
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &root.path().join("node.kv"),
         Limits::default(),
@@ -325,6 +326,7 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -339,7 +341,7 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         )
         .unwrap(),
     );
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &root.path().join("node.kv"),
         Limits::default(),
@@ -540,9 +542,10 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(db);
     drop(audit);
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &root.path().join("node.kv"),
         Limits::default(),
@@ -613,6 +616,7 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -647,7 +651,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         )
         .unwrap(),
     );
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &root.path().join("source.kv"),
         Limits::default(),
@@ -800,6 +804,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(db);
     drop(audit);
     external_change(&physical.storage.persistent, || {
@@ -815,7 +820,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     let restored_audit =
         common::security_audit(node.clone(), physical.storage.admission.clone()).await;
     let target = TenantStore::initialize_catalog_fixture(
-        node,
+        node.clone(),
         "history".into(),
         Arc::new(LocalKeyProvider::new([0xD3; 32])),
     )
@@ -905,6 +910,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         .unwrap();
     restored.shutdown().await.unwrap();
     restored_audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(restored);
     drop(restored_audit);
 
@@ -1020,7 +1026,7 @@ struct PendingDestination {
 async fn scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_deletions() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical = common::PhysicalFixture::new(&root.path().join("node.kv"), Default::default());
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &root.path().join("node.kv"),
         Limits::default(),
@@ -1113,6 +1119,7 @@ async fn scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_d
     assert_eq!(next.after_sequence, 3);
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }
 
 #[async_trait::async_trait]
@@ -1149,7 +1156,7 @@ async fn shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restar
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = root.path().join("node.kv");
     let physical = common::PhysicalFixture::new(&path, Default::default());
-    let (db, audit) = open(&physical, &path, Limits::default(), true).await;
+    let (db, audit, node) = open(&physical, &path, Limits::default(), true).await;
     collection(&db, "docs", CollectionRetentionClass::ArchivableHistory).await;
     let cutoff = db
         .mutate(context(), batch("seed", 0, 1))
@@ -1188,9 +1195,10 @@ async fn shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restar
         .unwrap();
     assert!(task.await.unwrap().is_err());
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(db);
     drop(audit);
-    let (db, audit) = open(&physical, &path, Limits::default(), false).await;
+    let (db, audit, node) = open(&physical, &path, Limits::default(), false).await;
     assert_eq!(
         db.get(&context(), "docs", "r0000").await.unwrap().version,
         cutoff
@@ -1228,4 +1236,5 @@ async fn shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restar
         .unwrap();
     assert!(backup.await.unwrap().is_err());
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }

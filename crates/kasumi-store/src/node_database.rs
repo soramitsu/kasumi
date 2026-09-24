@@ -1,4 +1,8 @@
 //! A stopped node retains the exact database owner until accepted transactions end.
+use crate::{
+    NodeDiskMemoryAdmission, RegisteredNodeOpening, RegisteredNodeRead, StorageCensusDisposition,
+    StorageOwnerId,
+};
 use kasumi_kv::{Database, ReadTransaction, TransactionError, WriteTransaction};
 use kasumi_types::drain::{DrainFailure, DrainReport, DrainResult};
 use parking_lot::Mutex;
@@ -14,6 +18,9 @@ use std::{
 
 struct State {
     database: Option<Arc<Database>>,
+    registered: Option<Arc<RegisteredNodeOpening>>,
+    retirement: Option<(Arc<dyn NodeDiskMemoryAdmission>, StorageOwnerId)>,
+    registered_provider: Option<Arc<dyn NodeDiskMemoryAdmission>>,
     busy: DrainReport,
     terminal: DrainReport,
     interrupted: Option<DrainFailure>,
@@ -40,6 +47,10 @@ pub(crate) struct NodeDatabase {
     stopped: AtomicBool,
     state: Mutex<State>,
 }
+enum Accepted {
+    Direct(Arc<Database>),
+    Registered(Arc<RegisteredNodeOpening>),
+}
 
 impl NodeDatabase {
     pub(crate) fn new(database: Database, component: &'static str) -> Self {
@@ -48,6 +59,9 @@ impl NodeDatabase {
             stopped: AtomicBool::new(false),
             state: Mutex::new(State {
                 database: Some(Arc::new(database)),
+                registered: None,
+                retirement: None,
+                registered_provider: None,
                 busy: DrainReport::default(),
                 terminal: DrainReport::default(),
                 interrupted: None,
@@ -55,33 +69,95 @@ impl NodeDatabase {
         }
     }
 
-    fn accepted(&self) -> Result<Arc<Database>, TransactionError> {
+    pub(crate) fn new_registered(
+        opening: RegisteredNodeOpening,
+        provider: Arc<dyn NodeDiskMemoryAdmission>,
+        component: &'static str,
+    ) -> Self {
+        Self {
+            component,
+            stopped: AtomicBool::new(false),
+            state: Mutex::new(State {
+                database: None,
+                registered: Some(Arc::new(opening)),
+                retirement: None,
+                registered_provider: Some(provider),
+                busy: DrainReport::default(),
+                terminal: DrainReport::default(),
+                interrupted: None,
+            }),
+        }
+    }
+
+    fn accepted(&self) -> Result<Accepted, TransactionError> {
         let state = self.state.lock();
         if self.stopped.load(Ordering::Acquire) {
             return Err(kasumi_kv::StorageError::DatabaseClosed.into());
         }
+        if let Some(opening) = &state.registered {
+            return Ok(Accepted::Registered(opening.clone()));
+        }
         state
             .database
-            .clone()
+            .as_ref()
+            .cloned()
+            .map(Accepted::Direct)
             .ok_or_else(|| kasumi_kv::StorageError::DatabaseClosed.into())
     }
 
     pub(crate) fn begin_read(&self) -> Result<ReadTransaction, TransactionError> {
-        self.accepted()?.begin_read()
+        match self.accepted()? {
+            Accepted::Direct(database) => database.begin_read(),
+            Accepted::Registered(opening) => opening.begin_store_read(),
+        }
     }
 
     pub(crate) fn begin_write(&self) -> Result<WriteTransaction, TransactionError> {
-        // A queued writer keeps an Arc, never this state mutex. Close can report
-        // retained ownership promptly while the original writer remains queued.
-        self.accepted()?.begin_write()
+        match self.accepted()? {
+            Accepted::Direct(database) => database.begin_write(),
+            Accepted::Registered(opening) => opening.begin_store_write(),
+        }
+    }
+
+    /// A fixed read has a census child before its transaction begins. No raw
+    /// transaction can escape through this installed-node path.
+    pub(crate) fn queue_registered_read(&self) -> std::io::Result<RegisteredNodeRead> {
+        let opening = {
+            let state = self.state.lock();
+            if self.stopped.load(Ordering::Acquire) {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            state
+                .registered
+                .as_ref()
+                .cloned()
+                .ok_or(std::io::ErrorKind::InvalidInput)?
+        };
+        opening.queue_read()
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn has_fixture_direct_database(&self) -> bool {
+        self.state.lock().database.is_some()
     }
 
     pub(crate) fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
+        if let Some(opening) = self.state.lock().registered.as_ref() {
+            opening.seal_store_transactions();
+        }
     }
 
     pub(crate) fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
+    }
+    pub(crate) fn registered_opening_id(&self) -> Option<StorageOwnerId> {
+        let state = self.state.lock();
+        state
+            .registered
+            .as_ref()
+            .map(|opening| opening.id())
+            .or_else(|| state.retirement.as_ref().map(|(_, id)| *id))
     }
 
     pub(crate) fn close(&self) -> DrainResult {
@@ -89,6 +165,121 @@ impl NodeDatabase {
         let mut state = self.state.lock();
         if let Some(failure) = &state.interrupted {
             return Err(failure.clone());
+        }
+        if let Some((provider, id)) = state.retirement.take() {
+            match provider.storage_census().drain_owner(id) {
+                StorageCensusDisposition::Retired => return state.terminal.complete(),
+                StorageCensusDisposition::Retained => {
+                    state.retirement = Some((provider, id));
+                    let issue = state.busy.record(
+                        self.component,
+                        0,
+                        anyhow::anyhow!(
+                            "registered node opening retirement still owns physical custody"
+                        ),
+                    );
+                    return Err(DrainFailure::retained(issue));
+                }
+                StorageCensusDisposition::Stale => {
+                    let issue = state.terminal.record(
+                        self.component,
+                        0,
+                        anyhow::anyhow!(
+                            "registered node opening owner disappeared before retirement"
+                        ),
+                    );
+                    let failure = DrainFailure::retained(issue);
+                    state.interrupted = Some(failure.clone());
+                    return Err(failure);
+                }
+            }
+        }
+        if let Some(opening) = state.registered.as_ref() {
+            let id = opening.id();
+            let settlement = std::panic::catch_unwind(AssertUnwindSafe(|| opening.close()));
+            match settlement {
+                Ok(Ok(kasumi_kv::DatabaseOpenSettlement::Closed)) => {
+                    let opening = state
+                        .registered
+                        .take()
+                        .expect("registered opening retained");
+                    let opening = match Arc::try_unwrap(opening) {
+                        Ok(opening) => opening,
+                        Err(opening) => {
+                            state.registered = Some(opening);
+                            let issue = state.busy.record(
+                                self.component,
+                                0,
+                                anyhow::anyhow!(
+                                    "accepted registered database callers are still live"
+                                ),
+                            );
+                            return Err(DrainFailure::retained(issue));
+                        }
+                    };
+                    let provider = state
+                        .registered_provider
+                        .take()
+                        .expect("registered opening has exact installed provider");
+                    match opening.retire() {
+                        StorageCensusDisposition::Retired => return state.terminal.complete(),
+                        StorageCensusDisposition::Retained => {
+                            state.retirement = Some((provider, id));
+                            let issue = state.busy.record(
+                                self.component,
+                                0,
+                                anyhow::anyhow!(
+                                    "registered node opening retirement still owns physical custody"
+                                ),
+                            );
+                            return Err(DrainFailure::retained(issue));
+                        }
+                        StorageCensusDisposition::Stale => {
+                            let issue = state.terminal.record(
+                                self.component,
+                                0,
+                                anyhow::anyhow!(
+                                    "registered node opening owner disappeared before retirement"
+                                ),
+                            );
+                            let failure = DrainFailure::retained(issue);
+                            state.interrupted = Some(failure.clone());
+                            return Err(failure);
+                        }
+                    }
+                }
+                Ok(Ok(kasumi_kv::DatabaseOpenSettlement::WaitingForTransactions)) | Ok(Err(_)) => {
+                    let issue = state.busy.record(
+                        self.component,
+                        0,
+                        anyhow::anyhow!("registered node opening is waiting for admitted work"),
+                    );
+                    return Err(DrainFailure::retained(issue));
+                }
+                Ok(Ok(other)) => {
+                    // An entered failed/uncertain close is terminal. The same
+                    // opening and original report remain in this node and in
+                    // the installed census; no second physical close is issued.
+                    let issue = state.terminal.record(
+                        self.component,
+                        0,
+                        anyhow::anyhow!("registered node opening {id:?} close settled {other:?}"),
+                    );
+                    let failure = DrainFailure::retained(issue);
+                    state.interrupted = Some(failure.clone());
+                    return Err(failure);
+                }
+                Err(payload) => {
+                    let issue = state.terminal.record(
+                        self.component,
+                        1,
+                        ClosePanic(Mutex::new(payload)).into(),
+                    );
+                    let failure = DrainFailure::retained(issue);
+                    state.interrupted = Some(failure.clone());
+                    return Err(failure);
+                }
+            }
         }
         let Some(database) = state.database.take() else {
             return state.terminal.complete();

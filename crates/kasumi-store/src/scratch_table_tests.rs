@@ -1,6 +1,7 @@
 use super::*;
 use crate::allocation_tests::measure;
 use kasumi_types::drain::DrainCompletion;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn owner(disk: &Arc<ScratchDisk>, limit: u64) -> (Arc<Owner>, Backend) {
     let owner = Arc::new(Owner(Mutex::new(Some(
@@ -8,6 +9,125 @@ fn owner(disk: &Arc<ScratchDisk>, limit: u64) -> (Arc<Owner>, Backend) {
     ))));
     owner.check_owner().unwrap();
     (owner.clone(), Backend(owner))
+}
+
+#[test]
+fn dropping_a_table_observes_native_close_before_returning_scratch_credit() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory);
+    let table = EncryptedTable::new(&disk, 8 << 20).unwrap();
+    table.insert(b"identity", b"value").unwrap();
+    assert_eq!(disk.snapshot().live_files, 1);
+    drop(table);
+    assert_eq!(disk.snapshot().live_files, 0);
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+}
+
+#[test]
+fn batch_outliving_table_observes_close_after_its_transaction_ends() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory);
+    let table = EncryptedTable::new(&disk, 8 << 20).unwrap();
+    let mut batch = table.begin_batch().unwrap();
+    batch.insert(b"identity", b"value").unwrap();
+    drop(table);
+    assert_eq!(disk.snapshot().live_files, 1);
+    batch.commit().unwrap();
+    assert_eq!(disk.snapshot().live_files, 0);
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+}
+
+#[test]
+fn failed_bootstrap_closes_the_exact_spool_before_returning() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory);
+    // The native header fits, but creating the first table needs another frame.
+    let (owner, backend) = owner(&disk, 8 << 10);
+    let database = kasumi_kv::Database::builder(owner.clone())
+        .create_with_backend(backend)
+        .unwrap();
+    let error = EncryptedTable::initialize(database).err().unwrap();
+    let setup = error.downcast_ref::<ScratchTableSetupFailure>().unwrap();
+    assert!(
+        setup
+            .original
+            .downcast_ref::<kasumi_kv::CommitError>()
+            .is_some()
+    );
+    assert!(setup.close.is_ok());
+    assert!(owner.0.lock().unwrap().is_none());
+    assert_eq!(disk.snapshot().live_files, 0);
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+}
+
+struct FailSecondSync {
+    backend: Backend,
+    syncs: Arc<AtomicUsize>,
+}
+
+impl StorageBackend for FailSecondSync {
+    fn len(&self) -> io::Result<u64> {
+        self.backend.len()
+    }
+    fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
+        self.backend.read(offset, out)
+    }
+    fn set_len(&self, length: u64) -> io::Result<()> {
+        self.backend.set_len(length)
+    }
+    fn sync_data(&self) -> io::Result<()> {
+        if self.syncs.fetch_add(1, Ordering::SeqCst) == 1 {
+            return Err(io::Error::other("injected bootstrap sync failure"));
+        }
+        self.backend.sync_data()
+    }
+    fn write(&self, offset: u64, bytes: &[u8]) -> io::Result<()> {
+        self.backend.write(offset, bytes)
+    }
+    fn close(&self) -> kasumi_kv::BackendCloseOutcome {
+        self.backend.close()
+    }
+}
+
+#[test]
+fn failed_bootstrap_retains_unproved_close_and_original_outcomes() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory);
+    let (owner, backend) = owner(&disk, 8 << 20);
+    let syncs = Arc::new(AtomicUsize::new(0));
+    let database = kasumi_kv::Database::builder(owner.clone())
+        .create_with_backend(FailSecondSync {
+            backend,
+            syncs: syncs.clone(),
+        })
+        .unwrap();
+    let error = EncryptedTable::initialize(database).err().unwrap();
+    let setup = error.downcast_ref::<ScratchTableSetupFailure>().unwrap();
+    assert!(
+        setup
+            .original
+            .downcast_ref::<kasumi_kv::CommitError>()
+            .is_some()
+    );
+    let first = setup.close.as_ref().unwrap_err();
+    assert_eq!(first.completion(), DrainCompletion::Retained);
+    let second = setup.retry_close().unwrap_err();
+    assert!(Arc::ptr_eq(&first.issues()[0], &second.issues()[0]));
+    assert_eq!(syncs.load(Ordering::SeqCst), 2);
+    let charged = disk.snapshot().charged_bytes;
+    assert!(charged > 0);
+    assert_eq!(disk.snapshot().live_files, 1);
+    drop(error);
+    assert_eq!(disk.snapshot().charged_bytes, charged);
+    assert_eq!(disk.snapshot().live_files, 1);
+    assert!(owner.0.lock().unwrap().is_some());
+    drop(owner);
+    assert_eq!(disk.snapshot().charged_bytes, charged);
+    assert_eq!(disk.snapshot().live_files, 1);
 }
 
 #[test]
@@ -202,7 +322,7 @@ fn accepted_transaction_keeps_scratch_close_retained_until_actual_drain() {
         ScratchDisk::isolated_fixture(scratch_directory.path(), 16 << 20, fixture_memory.clone());
     let table = EncryptedTable::new(&disk, 8 << 20).unwrap();
     table.insert(b"key", b"value").unwrap();
-    let read = table.database.begin_read().unwrap();
+    let read = table.owner.database().begin_read().unwrap();
     let charged = disk.snapshot().charged_bytes;
     let first = table.close().unwrap_err();
     let second = table.close().unwrap_err();
@@ -229,7 +349,12 @@ fn explicit_scratch_close_retains_original_physical_failure_on_retry() {
         .create_with_backend(backend)
         .unwrap();
     let table = EncryptedTable {
-        database: crate::node_database::NodeDatabase::new(database, "encrypted scratch table"),
+        owner: Arc::new(ScratchTableDatabase {
+            database: Some(crate::node_database::NodeDatabase::new(
+                database,
+                "encrypted scratch table",
+            )),
+        }),
     };
     let before = disk.snapshot();
     let address = {

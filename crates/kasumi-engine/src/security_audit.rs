@@ -617,6 +617,7 @@ mod tests {
         pause.release.notify_one();
         repeated.await.unwrap();
         assert!(audit.writer.worker.lock().await.is_none());
+        node.shutdown().await.unwrap();
         drop(audit);
         drop(store);
         drop(node);
@@ -733,6 +734,7 @@ mod tests {
             repeated.await.unwrap();
             blocker.await.unwrap();
             assert!(store.check_access().is_err());
+            node.shutdown().await.unwrap();
             drop(audit);
             drop(store);
             drop(node);
@@ -837,6 +839,7 @@ mod tests {
         other.request_id = "third-denial".into();
         third.record(other).await.unwrap();
         third.shutdown().await.unwrap();
+        node.shutdown().await.unwrap();
         drop(retained);
         drop(third);
         drop(store);

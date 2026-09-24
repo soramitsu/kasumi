@@ -2,7 +2,7 @@
 use kasumi_engine::test_utils::{SnapshotFixture, snapshot_accounted_bytes};
 mod common;
 use kasumi_engine::{Database, SecurityAudit};
-use kasumi_store::{TenantStorageSet, test_utils::LocalKeyProvider};
+use kasumi_store::{NodeStore, TenantStorageSet, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
 use std::{collections::BTreeSet, path::Path, sync::Arc};
@@ -21,7 +21,7 @@ async fn open(
     path: &Path,
     limits: Limits,
     create: bool,
-) -> (Arc<Database>, Arc<SecurityAudit>) {
+) -> (Arc<Database>, Arc<SecurityAudit>, Arc<NodeStore>) {
     let node = (if create {
         physical
             .storage
@@ -39,7 +39,7 @@ async fn open(
     };
     let stores = if create {
         TenantStorageSet::initialize_catalogs_fixture(
-            node,
+            node.clone(),
             context().tenant,
             Arc::new(LocalKeyProvider::new([0x95; 32])),
             Arc::new(LocalKeyProvider::new([0x96; 32])),
@@ -47,7 +47,7 @@ async fn open(
         .await
     } else {
         TenantStorageSet::open_existing_fixture(
-            node,
+            node.clone(),
             context().tenant,
             Arc::new(LocalKeyProvider::new([0x95; 32])),
             Arc::new(LocalKeyProvider::new([0x96; 32])),
@@ -99,11 +99,12 @@ async fn open(
         }
         set_authority(&db, "initial", true).await;
     }
-    (db, audit)
+    (db, audit, node)
 }
-async fn close(db: Arc<Database>, audit: Arc<SecurityAudit>) {
+async fn close(db: Arc<Database>, audit: Arc<SecurityAudit>, node: Arc<NodeStore>) {
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }
 async fn set_authority(db: &Database, id: &str, enabled: bool) {
     db.mutate(
@@ -203,7 +204,7 @@ async fn missing_stop_has_no_upload_lease_and_defeats_delayed_begin_after_encryp
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = directory.path().join("node.kv");
     let physical = common::PhysicalFixture::new(&path, Default::default());
-    let (db, audit) = open(&physical, &path, Limits::default(), true).await;
+    let (db, audit, node) = open(&physical, &path, Limits::default(), true).await;
     let (original, chunk) = original(&db, "missing");
     let saved = db
         .stop_staged_transaction(context(), stop(&db, &original))
@@ -218,8 +219,8 @@ async fn missing_stop_has_no_upload_lease_and_defeats_delayed_begin_after_encryp
         .unwrap()
         .remove("expires_at_ms");
     assert!(serde_json::from_value::<StagedTransactionStatus>(invalid_wire).is_err());
-    close(db, audit).await;
-    let (db, audit) = open(&physical, &path, Limits::default(), false).await;
+    close(db, audit, node).await;
+    let (db, audit, node) = open(&physical, &path, Limits::default(), false).await;
     set_authority(&db, "fresh-current-authority", true).await;
     let recovered = db
         .stop_staged_transaction(context(), stop(&db, &original))
@@ -258,7 +259,7 @@ async fn missing_stop_has_no_upload_lease_and_defeats_delayed_begin_after_encryp
         ErrorCode::Conflict
     );
     assert!(db.get(&context(), "docs", "missing").await.is_err());
-    close(db, audit).await;
+    close(db, audit, node).await;
 }
 
 #[tokio::test]
@@ -268,7 +269,7 @@ async fn upload_stop_clears_payload_and_permanent_capacity_is_checked_without_ac
     limits.atomic.max_active_transactions = 1;
     let physical =
         common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
-    let (db, audit) = open(&physical, &directory.path().join("node.kv"), limits, true).await;
+    let (db, audit, node) = open(&physical, &directory.path().join("node.kv"), limits, true).await;
     let (first, chunk) = original(&db, "uploading");
     upload(&db, &first, &chunk).await;
     let (never, _) = original(&db, "never-started");
@@ -338,7 +339,7 @@ async fn upload_stop_clears_payload_and_permanent_capacity_is_checked_without_ac
             .code,
         ErrorCode::NotFound
     );
-    close(db, audit).await;
+    close(db, audit, node).await;
 }
 
 #[tokio::test]
@@ -346,7 +347,7 @@ async fn committed_original_survives_receipt_absence_admission_failure_and_fresh
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
         common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &directory.path().join("node.kv"),
         Limits::default(),
@@ -391,7 +392,7 @@ async fn committed_original_survives_receipt_absence_admission_failure_and_fresh
         db.get(&context(), "docs", "committed").await.unwrap().body["exact_minor_units"],
         "100"
     );
-    close(db, audit).await;
+    close(db, audit, node).await;
 }
 
 #[tokio::test]
@@ -400,7 +401,7 @@ async fn stale_authority_cannot_create_stop_and_retained_terminal_release_checks
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
         common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &directory.path().join("node.kv"),
         Limits::default(),
@@ -446,7 +447,7 @@ async fn stale_authority_cannot_create_stop_and_retained_terminal_release_checks
         ErrorCode::Forbidden
     );
     assert!(matches!(stopped.outcome, StagedOutcome::Aborted { .. }));
-    close(db, audit).await;
+    close(db, audit, node).await;
 }
 
 #[tokio::test]
@@ -454,7 +455,7 @@ async fn final_response_fence_rechecks_authority_and_preserves_accepted_stop() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
         common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &directory.path().join("node.kv"),
         Limits::default(),
@@ -479,7 +480,7 @@ async fn final_response_fence_rechecks_authority_and_preserves_accepted_stop() {
         .await
         .unwrap();
     assert_eq!(recovered.outcome, accepted.outcome);
-    close(db, audit).await;
+    close(db, audit, node).await;
 }
 
 #[tokio::test]
@@ -487,7 +488,7 @@ async fn concurrent_original_and_stop_keep_exactly_one_permanent_outcome() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
         common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &directory.path().join("node.kv"),
         Limits::default(),
@@ -520,7 +521,7 @@ async fn concurrent_original_and_stop_keep_exactly_one_permanent_outcome() {
             other => panic!("unexpected terminal outcome: {other:?}"),
         }
     }
-    close(db, audit).await;
+    close(db, audit, node).await;
 }
 
 #[tokio::test]
@@ -528,7 +529,7 @@ async fn malformed_fresh_admission_and_changed_manifest_cannot_accept_or_rebind_
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
         common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &directory.path().join("node.kv"),
         Limits::default(),
@@ -588,7 +589,7 @@ async fn malformed_fresh_admission_and_changed_manifest_cannot_accept_or_rebind_
             .outcome,
         accepted.outcome
     );
-    close(db, audit).await;
+    close(db, audit, node).await;
 }
 
 #[tokio::test]
@@ -596,7 +597,7 @@ async fn stopped_resolution_preserves_original_failed_finalize() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
         common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &directory.path().join("node.kv"),
         Limits::default(),
@@ -629,7 +630,7 @@ async fn stopped_resolution_preserves_original_failed_finalize() {
             .await
             .is_err()
     );
-    close(db, audit).await;
+    close(db, audit, node).await;
 }
 
 #[tokio::test]
@@ -637,7 +638,7 @@ async fn retained_snapshot_quota_rejects_missing_stop_without_leaving_partial_id
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
         common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &directory.path().join("node.kv"),
         Limits::default(),
@@ -695,7 +696,7 @@ async fn retained_snapshot_quota_rejects_missing_stop_without_leaving_partial_id
             .code,
         ErrorCode::NotFound
     );
-    close(db, audit).await;
+    close(db, audit, node).await;
 }
 
 #[tokio::test]
@@ -703,7 +704,7 @@ async fn guarded_stop_orders_more_than_one_small_batch_of_authority_dependencies
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
         common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &directory.path().join("node.kv"),
         Limits::default(),
@@ -785,7 +786,7 @@ async fn guarded_stop_orders_more_than_one_small_batch_of_authority_dependencies
             .outcome,
         StagedOutcome::Aborted { .. }
     ));
-    close(db, audit).await;
+    close(db, audit, node).await;
 }
 
 #[tokio::test]
@@ -793,7 +794,7 @@ async fn encrypted_restore_preserves_original_stage_scope_without_reviving_histo
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
         common::PhysicalFixture::new(&directory.path().join("source.kv"), Default::default());
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &directory.path().join("source.kv"),
         Limits::default(),
@@ -822,7 +823,7 @@ async fn encrypted_restore_preserves_original_stage_scope_without_reviving_histo
         .await
         .unwrap();
     let source_incarnation = live.scope.incarnation.clone();
-    close(db.clone(), audit.clone()).await;
+    close(db.clone(), audit.clone(), node.clone()).await;
     drop(db);
     drop(audit);
     let node = physical
@@ -1019,5 +1020,5 @@ async fn encrypted_restore_preserves_original_stage_scope_without_reviving_histo
         }
     );
     assert_eq!(stopped.transaction.scope.incarnation, source_incarnation);
-    close(db, audit).await;
+    close(db, audit, node).await;
 }

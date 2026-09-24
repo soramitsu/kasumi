@@ -3,6 +3,7 @@
 // queue, materialization and release boundaries under a deterministic clock.
 struct ServingFixture {
     storage: Vec<crate::test_utils::FixtureStorage>,
+    nodes: Vec<Arc<kasumi_store::NodeStore>>,
     databases: Vec<Arc<Database>>,
     audits: Vec<Arc<SecurityAudit>>,
     signer: Arc<kasumi_serving::AuthoritySigner>,
@@ -80,6 +81,7 @@ impl ServingFixture {
         let mut fixture = Self {
             directory,
             storage,
+            nodes: vec![],
             databases: vec![],
             audits: vec![],
             signer,
@@ -164,6 +166,7 @@ impl ServingFixture {
                 storage.open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
             })
             .unwrap();
+            self.nodes.push(node.clone());
             let audit_store = (if create {
                 TenantStore::initialize_catalog(
                     node.clone(),
@@ -303,6 +306,9 @@ impl ServingFixture {
         }
         self.databases.clear();
         self.audits.clear();
+        for node in self.nodes.drain(..) {
+            node.shutdown().await.unwrap();
+        }
         self.router = Arc::new(kasumi_raft::InProcessRouter::default());
     }
     async fn drain_after_expiry(&mut self) {
@@ -371,6 +377,9 @@ impl ServingFixture {
         }
         self.databases.clear();
         self.audits.clear();
+        for node in self.nodes.drain(..) {
+            node.shutdown().await.unwrap();
+        }
         self.router = Arc::new(kasumi_raft::InProcessRouter::default());
     }
     async fn reopen(&mut self, phase: &str) {

@@ -12,6 +12,7 @@ struct Installation {
     storage: crate::test_utils::FixtureStorage,
     metadata_bytes: u64,
     admission: Arc<NodeAdmission>,
+    node: std::sync::Mutex<Option<Arc<kasumi_store::NodeStore>>>,
     _directory: tempfile::TempDir,
 }
 impl Installation {
@@ -52,6 +53,7 @@ impl Installation {
             storage,
             metadata_bytes,
             admission,
+            node: std::sync::Mutex::new(None),
         })
     }
     async fn store(&self, create: bool) -> Result<Arc<TenantStore>> {
@@ -60,6 +62,7 @@ impl Installation {
         } else {
             self.storage.open_existing(&self.path, self.id)?
         };
+        *self.node.lock().unwrap() = Some(node.clone());
         let provider = Arc::new(FileKeyProvider::open(&self.keys)?);
         if create {
             TenantStore::initialize_catalog(
@@ -85,6 +88,15 @@ impl Installation {
     fn open(&self, store: Arc<TenantStore>) -> Result<Arc<SecurityAudit>> {
         SecurityAudit::open(store, Default::default(), self.admission.clone())
     }
+    async fn shutdown_node(&self) {
+        let node = self.node.lock().unwrap().take().unwrap();
+        node.shutdown().await.unwrap();
+    }
+    async fn close(&self, audit: Arc<SecurityAudit>, store: Arc<TenantStore>) {
+        audit.shutdown().await.unwrap();
+        store.shutdown().await.unwrap();
+        self.shutdown_node().await;
+    }
 }
 fn event() -> SecurityEvent {
     SecurityEvent {
@@ -107,13 +119,6 @@ fn retained(store: &TenantStore) -> Result<Vec<LogicalRecords>> {
     .map(|namespace| store.scan(namespace))
     .collect()
 }
-async fn close(audit: Arc<SecurityAudit>, store: Arc<TenantStore>) {
-    audit.shutdown().await.unwrap();
-    store.shutdown().await.unwrap();
-    drop(audit);
-    drop(store);
-}
-
 #[tokio::test]
 async fn explicit_audit_creation_drains_and_strict_reopen_preserves_stream_and_sequence()
 -> Result<()> {
@@ -134,7 +139,7 @@ async fn explicit_audit_creation_drains_and_strict_reopen_preserves_stream_and_s
     audit.record(event()).await?;
     let position = audit.status()?.position;
     assert_eq!(position.next_sequence, 1);
-    close(audit, store).await;
+    installation.close(audit, store).await;
     assert_eq!(
         crate::test_utils::reserved_payload_bytes(&installation.admission),
         installation.metadata_bytes
@@ -150,7 +155,7 @@ async fn explicit_audit_creation_drains_and_strict_reopen_preserves_stream_and_s
     audit.record(event()).await?;
     assert_eq!(audit.status()?.position.stream_id, stream);
     assert_eq!(audit.status()?.position.next_sequence, 2);
-    close(audit, store).await;
+    installation.close(audit, store).await;
     Ok(())
 }
 
@@ -163,7 +168,7 @@ async fn missing_empty_or_nonempty_audit_head_never_recreates_a_stream() -> Resu
         if has_event {
             audit.record(event()).await?;
         }
-        close(audit, store).await;
+        installation.close(audit, store).await;
         let store = installation.store(false).await?;
         store.write_batch(&[WriteOp::delete("security.audit.meta", b"head")])?;
         let before = retained(&store)?;
@@ -177,6 +182,7 @@ async fn missing_empty_or_nonempty_audit_head_never_recreates_a_stream() -> Resu
             );
         }
         store.shutdown().await.unwrap();
+        installation.shutdown_node().await;
     }
     Ok(())
 }
@@ -188,7 +194,7 @@ async fn corrupt_audit_head_hot_gap_and_pending_pair_fail_without_logical_mutati
         let store = installation.store(true).await?;
         let audit = installation.initialize(store.clone())?;
         audit.record(event()).await?;
-        close(audit, store).await;
+        installation.close(audit, store).await;
         let store = installation.store(false).await?;
         let head = store.get("security.audit.meta", b"head")?.unwrap();
         let mut changed: serde_json::Value = serde_json::from_slice(&head)?;
@@ -238,6 +244,7 @@ async fn corrupt_audit_head_hot_gap_and_pending_pair_fail_without_logical_mutati
             installed_bytes
         );
         store.shutdown().await.unwrap();
+        installation.shutdown_node().await;
     }
     Ok(())
 }
@@ -251,6 +258,6 @@ async fn live_audit_reopen_rejects_deleted_head_instead_of_reusing_cached_writer
     let before = retained(&store)?;
     assert!(installation.open(store.clone()).is_err());
     assert_eq!(retained(&store)?, before);
-    close(audit, store).await;
+    installation.close(audit, store).await;
     Ok(())
 }

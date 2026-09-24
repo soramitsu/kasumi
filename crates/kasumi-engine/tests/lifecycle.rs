@@ -9,7 +9,7 @@ use kasumi_engine::{
 };
 use kasumi_raft::{Config, InProcessRouter, StateMachineBackend};
 use kasumi_serving::{ControlTrust, control_stop_for, digest};
-use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
+use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use std::{
@@ -27,6 +27,7 @@ struct Fixture {
     bootstrap: ReplicatedBootstrap,
     nodes: BTreeMap<u64, Arc<Database>>,
     audits: BTreeMap<u64, Arc<kasumi_engine::SecurityAudit>>,
+    node_owners: BTreeMap<u64, Arc<NodeStore>>,
     signer: LifecycleSigner,
     partition_keys: BTreeMap<String, kasumi_serving::GenerationSigner>,
     installation: LifecycleInstallation,
@@ -167,6 +168,7 @@ impl Fixture {
             bootstrap,
             nodes: BTreeMap::new(),
             audits: BTreeMap::new(),
+            node_owners: BTreeMap::new(),
             signer,
             partition_keys,
             installation,
@@ -232,7 +234,7 @@ impl Fixture {
             };
             let store = (if create {
                 TenantStore::initialize_catalog_fixture_with_access(
-                    node,
+                    node.clone(),
                     "__kasumi_control".into(),
                     Arc::new(LocalKeyProvider::new([43; 32])),
                     kasumi_store::StorageAccess::node_control(),
@@ -240,7 +242,7 @@ impl Fixture {
                 .await
             } else {
                 TenantStore::open_existing_fixture_with_access(
-                    node,
+                    node.clone(),
                     "__kasumi_control".into(),
                     Arc::new(LocalKeyProvider::new([43; 32])),
                     kasumi_store::StorageAccess::node_control(),
@@ -286,6 +288,7 @@ impl Fixture {
                 .register(id, db.raft_group().raft().metrics());
             self.nodes.insert(id, db);
             self.audits.insert(id, audit);
+            self.node_owners.insert(id, node);
         }
         initialize_replicated(&self.nodes[&1], &self.bootstrap)
             .await
@@ -543,6 +546,10 @@ impl Fixture {
             audit.shutdown().await.unwrap();
         }
         self.audits.clear();
+        for node in self.node_owners.values() {
+            node.shutdown().await.unwrap();
+        }
+        self.node_owners.clear();
     }
 
     fn diagnostics(&self) -> String {

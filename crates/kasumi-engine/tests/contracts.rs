@@ -400,44 +400,108 @@ fn append_only_mode_rejects_overwrite_delete_and_schema_weakening_atomically() {
 }
 
 #[test]
-fn boi_first_owner_and_state_commit_atomically_then_survive_snapshot_with_version_cas() {
+fn boi_first_owner_and_policy_claim_spans_fourteen_collections_and_survives_snapshot() {
     let db = engine(false, Limits::default());
-    for (revision, name, write_mode, schema) in [
+    let collection_modes = [
+        ("boi_core_owner", CollectionWriteMode::AppendOnly),
+        ("boi_core_policy", CollectionWriteMode::Mutable),
+        ("boi_core_uids", CollectionWriteMode::AppendOnly),
+        ("boi_core_wallets", CollectionWriteMode::Mutable),
         (
-            1,
-            "boi_core_owner",
-            CollectionWriteMode::AppendOnly,
-            json!({"type":"object", "required":["schema","owner"], "additionalProperties":false,
-                   "properties":{"schema":{"const":"boi.core-owner.v1"},
-                                 "owner":{"const":"boi-core.is2"}}}),
-        ),
-        (
-            2,
-            "boi_core_state",
+            "boi_core_dynamic_wallet_bindings",
             CollectionWriteMode::Mutable,
-            json!({"type":"object", "required":["schema","owner","state"],
-                   "additionalProperties":false,
-                   "properties":{"schema":{"const":"boi.central-state.v1"},
-                                 "owner":{"const":"boi-core.is2"},
-                                 "state":{"type":"object"}}}),
         ),
-    ] {
-        db.apply_command(
-            &db.disk,
-            revision,
-            command(Operation::CreateCollection(CollectionDefinition {
-                name: name.into(),
-                write_mode,
-                retention_class: CollectionRetentionClass::Operational,
-                schema,
-                indexes: vec![],
-                strict_read_audit: false,
-            })),
-        )
+        ("boi_core_payments", CollectionWriteMode::AppendOnly),
+        (
+            "boi_core_payment_idempotency",
+            CollectionWriteMode::AppendOnly,
+        ),
+        (
+            "boi_core_ledger_payment_intents",
+            CollectionWriteMode::AppendOnly,
+        ),
+        (
+            "boi_core_ledger_payment_receipts",
+            CollectionWriteMode::AppendOnly,
+        ),
+        (
+            "boi_core_ledger_payment_claims",
+            CollectionWriteMode::Mutable,
+        ),
+        (
+            "boi_core_client_payment_quotes",
+            CollectionWriteMode::AppendOnly,
+        ),
+        (
+            "boi_core_client_payment_idempotency",
+            CollectionWriteMode::AppendOnly,
+        ),
+        (
+            "boi_core_client_payment_receipts",
+            CollectionWriteMode::AppendOnly,
+        ),
+        ("boi_core_settlements", CollectionWriteMode::AppendOnly),
+    ];
+    let changes = collection_modes
+        .into_iter()
+        .map(|(name, write_mode)| {
+            let schema = match name {
+                "boi_core_owner" => json!({"type":"object", "required":["schema","owner"],
+                    "additionalProperties":false, "properties":{
+                        "schema":{"const":"boi.core-owner.v1"},
+                        "owner":{"const":"boi-core.is2"}}}),
+                "boi_core_policy" => json!({"type":"object",
+                    "required":["schema","owner","retail_policy","state_schema_version"],
+                    "additionalProperties":false, "properties":{
+                        "schema":{"const":"boi.core-policy.v1"},
+                        "owner":{"const":"boi-core.is2"},
+                        "retail_policy":{"type":"object"},
+                        "state_schema_version":{"type":"string"}}}),
+                _ => json!({"type":"object", "required":["schema","owner","kind","key","value"],
+                    "additionalProperties":false, "properties":{
+                        "schema":{"const":"boi.core-entity.v1"},
+                        "owner":{"const":"boi-core.is2"},
+                        "kind":{"type":"string"},
+                        "key":{"type":"string"},
+                        "value":{"type":"object"}}}),
+            };
+            SchemaChange::Create {
+                definition: CollectionDefinition {
+                    name: name.into(),
+                    write_mode,
+                    retention_class: if write_mode == CollectionWriteMode::AppendOnly {
+                        CollectionRetentionClass::ArchivableHistory
+                    } else {
+                        CollectionRetentionClass::Operational
+                    },
+                    schema,
+                    indexes: vec![],
+                    strict_read_audit: true,
+                },
+            }
+        })
+        .collect();
+    let generation = db.generation().unwrap();
+    let activation = SchemaChangeSet {
+        activation_id: "boi-first-release-schema".into(),
+        expected_incarnation: generation.state.incarnation.clone(),
+        expected_schema_epoch: generation.state.schema_epoch,
+        read_set: vec![],
+        changes,
+    };
+    drop(generation);
+    db.apply_command(&db.disk, 1, command(Operation::ActivateSchema(activation)))
         .unwrap()
         .unwrap();
-    }
     let generation = db.generation().unwrap();
+    assert_eq!(generation.state.collections.len(), 14);
+    assert!(
+        generation
+            .state
+            .collections
+            .values()
+            .all(|collection| collection.documents.is_empty())
+    );
     let mut initial = batch(
         "boi-initialize",
         vec![
@@ -448,39 +512,26 @@ fn boi_first_owner_and_state_commit_atomically_then_survive_snapshot_with_versio
                 expected: Precondition::Absent,
             },
             Mutation::Put {
-                collection: "boi_core_state".into(),
-                id: "central-state".into(),
-                body: json!({"schema":"boi.central-state.v1", "owner":"boi-core.is2",
-                             "state":{"payments":[]}}),
+                collection: "boi_core_policy".into(),
+                id: "policy".into(),
+                body: json!({"schema":"boi.core-policy.v1", "owner":"boi-core.is2",
+                             "retail_policy":{}, "state_schema_version":"1"}),
                 expected: Precondition::Absent,
             },
         ],
     );
-    initial.read_set = vec![
-        ReadAssertion::Snapshot {
-            incarnation: generation.state.incarnation.clone(),
-            policy_epoch: generation.state.policy_epoch,
-            schema_epoch: generation.state.schema_epoch,
-        },
-        ReadAssertion::Collection {
-            collection: "boi_core_owner".into(),
-            data_epoch: generation.state.collections["boi_core_owner"].data_epoch,
-        },
-        ReadAssertion::Collection {
-            collection: "boi_core_state".into(),
-            data_epoch: generation.state.collections["boi_core_state"].data_epoch,
-        },
-    ];
+    initial.read_set = boi_snapshot_assertions(&generation.state);
+    assert_eq!(initial.read_set.len(), 15);
     drop(generation);
     let mut malformed = initial.clone();
-    malformed.idempotency_key = "boi-malformed-initial-state".into();
+    malformed.idempotency_key = "boi-malformed-initial-policy".into();
     let Mutation::Put { body, .. } = &mut malformed.operations[1] else {
         unreachable!()
     };
-    *body = json!({"schema":"boi.central-state.v1", "owner":"boi-core.is2",
-                   "state":[]});
+    *body = json!({"schema":"boi.core-policy.v1", "owner":"boi-core.is2",
+                   "retail_policy":[], "state_schema_version":"1"});
     assert_eq!(
-        db.apply_command(&db.disk, 3, command(Operation::Mutate(malformed)))
+        db.apply_command(&db.disk, 2, command(Operation::Mutate(malformed)))
             .unwrap()
             .unwrap_err()
             .code,
@@ -493,51 +544,76 @@ fn boi_first_owner_and_state_commit_atomically_then_survive_snapshot_with_versio
             .contains_key("owner")
     );
     assert!(
-        !generation.state.collections["boi_core_state"]
+        !generation.state.collections["boi_core_policy"]
             .documents
-            .contains_key("central-state")
+            .contains_key("policy")
     );
     drop(generation);
     let initial_receipt = db
-        .apply_command(&db.disk, 4, command(Operation::Mutate(initial.clone())))
+        .apply_command(&db.disk, 3, command(Operation::Mutate(initial.clone())))
         .unwrap()
         .unwrap();
     let generation = db.generation().unwrap();
     assert_eq!(
         generation.state.collections["boi_core_owner"].documents["owner"].version,
-        4
+        3
     );
     assert_eq!(
-        generation.state.collections["boi_core_state"].documents["central-state"].version,
-        4
+        generation.state.collections["boi_core_policy"].documents["policy"].version,
+        3
     );
     drop(generation);
 
     let mut other_claim = initial.clone();
     other_claim.idempotency_key = "boi-other-owner".into();
     assert_eq!(
-        db.apply_command(&db.disk, 5, command(Operation::Mutate(other_claim)))
+        db.apply_command(&db.disk, 4, command(Operation::Mutate(other_claim)))
             .unwrap()
             .unwrap_err()
             .code,
         ErrorCode::Conflict
     );
-    let update = batch(
-        "boi-payment-1",
+    let generation = db.generation().unwrap();
+    let mut create_wallet = batch(
+        "boi-wallet-create",
         vec![Mutation::Put {
-            collection: "boi_core_state".into(),
-            id: "central-state".into(),
-            body: json!({"schema":"boi.central-state.v1", "owner":"boi-core.is2",
-                         "state":{"payments":["payment-1"]}}),
-            expected: Precondition::Version(4),
+            collection: "boi_core_wallets".into(),
+            id: "wallet-1".into(),
+            body: json!({"schema":"boi.core-entity.v1", "owner":"boi-core.is2",
+                         "kind":"wallet", "key":"wallet-1", "value":{"balance":1}}),
+            expected: Precondition::Absent,
         }],
     );
+    create_wallet.read_set = boi_snapshot_assertions(&generation.state);
+    drop(generation);
+    let create_receipt = db
+        .apply_command(
+            &db.disk,
+            5,
+            command(Operation::Mutate(create_wallet.clone())),
+        )
+        .unwrap()
+        .unwrap();
+    let generation = db.generation().unwrap();
+    let mut update = batch(
+        "boi-wallet-update",
+        vec![Mutation::Put {
+            collection: "boi_core_wallets".into(),
+            id: "wallet-1".into(),
+            body: json!({"schema":"boi.core-entity.v1", "owner":"boi-core.is2",
+                         "kind":"wallet", "key":"wallet-1", "value":{"balance":2}}),
+            expected: Precondition::Version(5),
+        }],
+    );
+    update.read_set = boi_snapshot_assertions(&generation.state);
+    drop(generation);
     let update_receipt = db
         .apply_command(&db.disk, 6, command(Operation::Mutate(update.clone())))
         .unwrap()
         .unwrap();
     let mut stale = update.clone();
-    stale.idempotency_key = "boi-stale-payment".into();
+    stale.idempotency_key = "boi-stale-wallet".into();
+    stale.read_set = boi_snapshot_assertions(&db.generation().unwrap().state);
     assert_eq!(
         db.apply_command(&db.disk, 7, command(Operation::Mutate(stale)))
             .unwrap()
@@ -550,15 +626,15 @@ fn boi_first_owner_and_state_commit_atomically_then_survive_snapshot_with_versio
     let recovered = db.generation().unwrap();
     assert_eq!(
         recovered.state.collections["boi_core_owner"].documents["owner"].version,
-        4
+        3
     );
     assert_eq!(
-        recovered.state.collections["boi_core_state"].documents["central-state"].version,
-        6
+        recovered.state.collections["boi_core_policy"].documents["policy"].version,
+        3
     );
     assert_eq!(
-        recovered.state.collections["boi_core_state"].documents["central-state"].body["state"]["payments"],
-        json!(["payment-1"])
+        recovered.state.collections["boi_core_wallets"].documents["wallet-1"].body["value"]["balance"],
+        json!(2)
     );
     drop(recovered);
     assert_eq!(
@@ -568,12 +644,37 @@ fn boi_first_owner_and_state_commit_atomically_then_survive_snapshot_with_versio
         initial_receipt
     );
     assert_eq!(
-        db.apply_command(&db.disk, 9, command(Operation::Mutate(update)))
+        db.apply_command(&db.disk, 9, command(Operation::Mutate(create_wallet)))
+            .unwrap()
+            .unwrap(),
+        create_receipt
+    );
+    assert_eq!(
+        db.apply_command(&db.disk, 10, command(Operation::Mutate(update)))
             .unwrap()
             .unwrap(),
         update_receipt
     );
 }
+
+fn boi_snapshot_assertions(state: &TenantState) -> Vec<ReadAssertion> {
+    std::iter::once(ReadAssertion::Snapshot {
+        incarnation: state.incarnation.clone(),
+        policy_epoch: state.policy_epoch,
+        schema_epoch: state.schema_epoch,
+    })
+    .chain(
+        state
+            .collections
+            .iter()
+            .map(|(collection, state)| ReadAssertion::Collection {
+                collection: collection.clone(),
+                data_epoch: state.data_epoch,
+            }),
+    )
+    .collect()
+}
+
 fn put(id: &str, email: &str, expected: Precondition) -> Mutation {
     Mutation::Put {
         collection: "people".into(),
@@ -1131,6 +1232,45 @@ async fn database(
         .await
         .unwrap();
     (dir, physical, db, key, store, audit)
+}
+
+#[tokio::test]
+async fn mixed_put_delete_receipt_reports_one_revision_for_every_target_and_replay() {
+    let (_dir, _physical, db, _key, _store, audit) = database(false).await;
+    let seeded = db
+        .mutate(
+            context("owner"),
+            batch("mixed-seed", vec![put("old", "old", Precondition::Absent)]),
+        )
+        .await
+        .unwrap();
+    let mixed = batch(
+        "mixed-targets",
+        vec![
+            put("new", "new", Precondition::Absent),
+            Mutation::Delete {
+                collection: "people".into(),
+                id: "old".into(),
+                expected: Precondition::Version(seeded.revision),
+            },
+        ],
+    );
+    let receipt = db.mutate(context("owner"), mixed.clone()).await.unwrap();
+    assert_eq!(receipt.versions.len(), 2);
+    assert_eq!(receipt.versions.get("/people/new"), Some(&receipt.revision));
+    assert_eq!(receipt.versions.get("/people/old"), Some(&receipt.revision));
+    assert_eq!(db.mutate(context("owner"), mixed).await.unwrap(), receipt);
+    assert_eq!(
+        db.operation_receipt(&context("owner"), "mixed-targets")
+            .await
+            .unwrap()
+            .unwrap()
+            .outcome
+            .unwrap(),
+        receipt
+    );
+    db.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]

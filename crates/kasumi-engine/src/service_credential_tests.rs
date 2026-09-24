@@ -1,5 +1,6 @@
 struct CredentialFixture {
     storage: crate::test_utils::FixtureStorage,
+    node: Arc<kasumi_store::NodeStore>,
     db: Arc<Database>,
     audit: Arc<SecurityAudit>,
     context: RequestContext,
@@ -44,7 +45,7 @@ impl CredentialFixture {
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
             request_id: "expiry-test".into(),
         };
-        let store = TenantStore::initialize_catalog_fixture(node, context.tenant.clone(), provider)
+        let store = TenantStore::initialize_catalog_fixture(node.clone(), context.tenant.clone(), provider)
             .await
             .unwrap();
         let policy = Policy {
@@ -84,6 +85,7 @@ impl CredentialFixture {
         Self {
             _directory: directory,
             storage,
+            node,
             db,
             audit,
             context,
@@ -92,6 +94,7 @@ impl CredentialFixture {
     async fn close(self) {
         self.db.shutdown().await.unwrap();
         self.audit.shutdown().await.unwrap();
+        self.node.shutdown().await.unwrap();
     }
     fn credential(&self, clock: Arc<dyn LeaseClock>) -> RequestContext {
         self.credential_with_validity(clock, 1000)

@@ -122,7 +122,7 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         )
         .unwrap();
     let target = TenantStore::initialize_catalog_fixture(
-        node,
+        node.clone(),
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
     )
@@ -167,6 +167,9 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         fixture.reserved_payload(),
         production_payload + (128 << 20) + snapshot_owner_bytes()
     );
+    domains.custody().store().shutdown().await.unwrap();
+    target.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(restored);
     drop(domains);
     drop(target);
@@ -179,7 +182,7 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         )
         .unwrap();
     let target = TenantStore::open_existing_fixture(
-        node,
+        node.clone(),
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
     )
@@ -204,6 +207,7 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         production_payload + (128 << 20) + snapshot_owner_bytes()
     );
     reopened.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(reopened);
     drop(destination_workspace);
     assert_eq!(fixture.reserved_payload(), production_payload);
@@ -375,6 +379,7 @@ struct Fixture {
     db: Arc<Database>,
     audit: Arc<SecurityAudit>,
     store: Arc<TenantStore>,
+    node: Arc<NodeStore>,
     destination: Arc<FilesystemBackupDestination>,
 }
 impl Fixture {
@@ -415,7 +420,7 @@ impl Fixture {
             .unwrap();
         let audit = common::security_audit(node.clone(), admission.clone()).await;
         let store = TenantStore::initialize_catalog_fixture(
-            node,
+            node.clone(),
             "checkpoint".into(),
             Arc::new(LocalKeyProvider::new([0xD8; 32])),
         )
@@ -465,6 +470,7 @@ impl Fixture {
             db,
             audit,
             store,
+            node,
             destination,
         }
     }
@@ -492,6 +498,7 @@ impl Fixture {
     async fn close(&self) {
         self.db.shutdown().await.unwrap();
         self.audit.shutdown().await.unwrap();
+        self.node.shutdown().await.unwrap();
     }
 }
 
@@ -587,11 +594,13 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
         db,
         audit,
         store,
+        node,
         ..
     } = fixture;
     drop(db);
     drop(audit);
     drop(store);
+    drop(node);
     let node = physical
         .storage
         .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
@@ -627,6 +636,7 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(db);
     drop(audit);
     drop(directory);
@@ -1266,7 +1276,7 @@ async fn local_restore_binds_exact_source_purpose_even_without_cold_archives() {
         )
         .unwrap();
     let target = TenantStore::initialize_catalog_fixture(
-        node,
+        node.clone(),
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
     )
@@ -1314,6 +1324,7 @@ async fn local_restore_binds_exact_source_purpose_even_without_cold_archives() {
     .await
     .unwrap();
     restored.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     fixture.close().await;
 }
 
@@ -1503,7 +1514,7 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     let wrong_audit =
         common::security_audit(wrong_node.clone(), wrong_physical.storage.admission.clone()).await;
     let wrong_store = TenantStore::initialize_catalog_fixture(
-        wrong_node,
+        wrong_node.clone(),
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0x47; 32])),
     )
@@ -1529,6 +1540,7 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     assert!(wrong_store.scan("engine.bootstrap").unwrap().is_empty());
     wrong_store.shutdown().await.unwrap();
     wrong_audit.shutdown().await.unwrap();
+    wrong_node.shutdown().await.unwrap();
     let restored = kasumi_engine::restore_local(
         &source,
         domains,
@@ -1594,7 +1606,7 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
         common::existing_security_audit(node.clone(), target_physical.storage.admission.clone())
             .await;
     let reopened_store = TenantStore::open_existing_fixture(
-        node,
+        node.clone(),
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
     )
@@ -1657,4 +1669,5 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     assert_eq!(prepared.incarnation(), target_incarnation.to_string());
     reopened.shutdown().await.unwrap();
     reopened_audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }

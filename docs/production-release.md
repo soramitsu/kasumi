@@ -16,10 +16,17 @@ capacity, platform, endurance and artifact gates remain open.
 
 The 2026-09-24 native KV direction replaces the earlier redb-backed G02
 target; [its active criteria](native-kv-goal.md) forbid old-format migration
-and fallback. The current native crate passes 34 unit and six crash/recovery
-integration tests plus strict crate Clippy. Its close-custody, failed-owner
-read, named-file directory sync, and same-host reopen gaps have focused fixes
-and regressions; full downstream reruns remain in progress. The G01
+and fallback. The current native crate passes 43 unit and seven crash/recovery
+integration tests. Its close-custody, failed-owner read, named-file directory
+sync, final-symlink, and same-host reopen gaps have focused fixes and
+regressions. Production node creation/reopen now uses one registered opening;
+failed pre-descriptor acquisitions can retire it cleanly. Scratch tables now
+observe close on final drop and retain failed bootstrap custody. The combined
+final-source workspace Clippy and test gates remain to run. A first full
+workspace test run passed 67 authority and 290 engine library cases, then
+failed one Raft capacity fixture; that fixture now passes focused with the
+production native reserve installed. Full downstream reruns remain in progress.
+The G01
 current-byte bootstrap-manifest engine and server fingerprint cases each
 pass **1/1** after an in-progress native KV read-bound mismatch was corrected.
 Full-source suites are pending. The latest seven-case G09 Control lifecycle

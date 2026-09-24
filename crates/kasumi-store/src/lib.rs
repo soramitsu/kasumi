@@ -106,10 +106,21 @@ use chacha20poly1305::{
     aead::{Aead, Payload},
 };
 use hmac::{Hmac, Mac};
-use kasumi_kv::{Database, TableDefinition};
+use kasumi_kv::TableDefinition;
+#[cfg(any(test, feature = "test-utils"))]
+use kasumi_kv::{
+    BackendNativeDisposition, Database, DatabaseCloseReport, DatabaseCloseSettlement,
+    RetainedDatabase,
+};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(any(test, feature = "test-utils"))]
+use std::{
+    any::Any,
+    fmt,
+    panic::{AssertUnwindSafe, catch_unwind},
+};
 use tokio::sync::{Mutex as AsyncMutex, watch};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
@@ -195,6 +206,260 @@ impl InitializerRegistry {
     }
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+enum NodeStoreSetupCause {
+    Error(anyhow::Error),
+    Panicked(Mutex<Box<dyn Any + Send>>),
+}
+
+/// A failed node setup retains its original error or panic and the exact
+/// database close observation. An unproved native owner is never dropped into
+/// an implicit backend close.
+#[must_use]
+#[cfg(any(test, feature = "test-utils"))]
+pub struct NodeStoreSetupFailure {
+    cause: NodeStoreSetupCause,
+    owner: Mutex<Option<RetainedDatabase>>,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl NodeStoreSetupFailure {
+    fn new(database: Database, cause: NodeStoreSetupCause) -> Self {
+        let mut owner = database.retain();
+        owner.close();
+        Self {
+            cause,
+            owner: Mutex::new(Some(owner)),
+        }
+    }
+
+    pub fn original_error(&self) -> Option<&anyhow::Error> {
+        match &self.cause {
+            NodeStoreSetupCause::Error(error) => Some(error),
+            NodeStoreSetupCause::Panicked(_) => None,
+        }
+    }
+
+    pub fn with_panic_payload<R>(&self, inspect: impl FnOnce(&(dyn Any + Send)) -> R) -> Option<R> {
+        match &self.cause {
+            NodeStoreSetupCause::Panicked(payload) => Some(inspect(payload.lock().as_ref())),
+            NodeStoreSetupCause::Error(_) => None,
+        }
+    }
+
+    pub fn with_close_report<R>(&self, inspect: impl FnOnce(DatabaseCloseReport<'_>) -> R) -> R {
+        let guard = self.owner.lock();
+        inspect(
+            guard
+                .as_ref()
+                .expect("original setup owner retained")
+                .report(),
+        )
+    }
+
+    /// Only a close that stopped before native entry can advance here. Entered
+    /// results and panics remain the first, terminal observation.
+    pub fn retry_close(&self) -> DatabaseCloseSettlement {
+        let mut guard = self.owner.lock();
+        guard
+            .as_mut()
+            .expect("original setup owner retained")
+            .close()
+            .settlement()
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl fmt::Debug for NodeStoreSetupFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NodeStoreSetupFailure")
+            .field("cause", &self.to_string())
+            .field(
+                "settlement",
+                &self.with_close_report(|report| report.settlement()),
+            )
+            .finish()
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl fmt::Display for NodeStoreSetupFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.cause {
+            NodeStoreSetupCause::Error(error) => write!(formatter, "node setup failed: {error}"),
+            NodeStoreSetupCause::Panicked(_) => formatter.write_str("node setup panicked"),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl std::error::Error for NodeStoreSetupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original_error().map(|error| error.as_ref())
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl Drop for NodeStoreSetupFailure {
+    fn drop(&mut self) {
+        let Some(owner) = self.owner.get_mut().take() else {
+            return;
+        };
+        if owner.report().native_disposition() != BackendNativeDisposition::Drained {
+            // The caller discarded the failure while native drain was unproved.
+            // Forget the exact owner instead of triggering an implicit close.
+            std::mem::forget(owner);
+        }
+    }
+}
+
+/// A failed installed node startup keeps the same registered physical owner,
+/// child census handle and original opening reports available to the caller.
+/// Dropping this facade does not delete the independent storage-census cell.
+pub struct NodeStoreOpeningFailure {
+    custody: NodeStartupFailureCustody,
+    close_error: Option<std::io::Error>,
+}
+impl NodeStoreOpeningFailure {
+    pub fn opening_id(&self) -> StorageOwnerId {
+        self.custody.opening().id()
+    }
+    pub fn custody(&self) -> &NodeStartupFailureCustody {
+        &self.custody
+    }
+    pub fn close_error(&self) -> Option<&std::io::Error> {
+        self.close_error.as_ref()
+    }
+    pub fn into_custody(self) -> NodeStartupFailureCustody {
+        self.custody
+    }
+}
+impl std::fmt::Debug for NodeStoreOpeningFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeStoreOpeningFailure")
+            .field("opening_id", &self.opening_id())
+            .field("phase", &self.custody.phase())
+            .field("child_id", &self.custody.child_id())
+            .field("child_disposition", &self.custody.child_disposition())
+            .field("close_error", &self.close_error)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Display for NodeStoreOpeningFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "node startup {:?} retained registered opening {:?}",
+            self.custody.phase(),
+            self.opening_id()
+        )
+    }
+}
+impl std::error::Error for NodeStoreOpeningFailure {}
+
+/// A failed fixed catalog read keeps its exact registered child and original
+/// read/close observations. Dropping this facade leaves the census cell intact.
+pub struct NodeCatalogReadFailure {
+    reader: RegisteredNodeRead,
+    stage: &'static str,
+    access: Option<NodeReadAccessError>,
+    validation_error: Option<anyhow::Error>,
+}
+impl NodeCatalogReadFailure {
+    pub fn reader(&self) -> &RegisteredNodeRead {
+        &self.reader
+    }
+    pub fn into_reader(self) -> RegisteredNodeRead {
+        self.reader
+    }
+    pub fn stage(&self) -> &'static str {
+        self.stage
+    }
+    pub fn validation_error(&self) -> Option<&anyhow::Error> {
+        self.validation_error.as_ref()
+    }
+}
+impl std::fmt::Debug for NodeCatalogReadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeCatalogReadFailure")
+            .field("reader_id", &self.reader.id())
+            .field("stage", &self.stage)
+            .field("reader_phase", &self.reader.phase())
+            .field("access", &self.access)
+            .field("validation_error", &self.validation_error)
+            .finish()
+    }
+}
+impl std::fmt::Display for NodeCatalogReadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "registered catalog read {:?} failed at {}",
+            self.reader.id(),
+            self.stage
+        )
+    }
+}
+impl std::error::Error for NodeCatalogReadFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.access
+            .as_ref()
+            .map(|error| error as &(dyn std::error::Error + 'static))
+            .or_else(|| {
+                self.validation_error
+                    .as_ref()
+                    .map(|error| error.as_ref() as _)
+            })
+    }
+}
+
+/// Retirement is separate from closing the child transaction. Keep the exact
+/// provider/ID when census disposal is still pending after a clean read.
+pub struct NodeCatalogReadRetirement {
+    provider: Arc<dyn NodeDiskMemoryAdmission>,
+    id: StorageOwnerId,
+    disposition: StorageCensusDisposition,
+    validation_error: Option<anyhow::Error>,
+}
+impl NodeCatalogReadRetirement {
+    pub fn id(&self) -> StorageOwnerId {
+        self.id
+    }
+    pub fn disposition(&self) -> StorageCensusDisposition {
+        self.disposition
+    }
+    pub fn validation_error(&self) -> Option<&anyhow::Error> {
+        self.validation_error.as_ref()
+    }
+    pub fn retry_retirement(&self) -> StorageCensusDisposition {
+        self.provider.storage_census().drain_owner(self.id)
+    }
+}
+impl std::fmt::Debug for NodeCatalogReadRetirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeCatalogReadRetirement")
+            .field("id", &self.id)
+            .field("disposition", &self.disposition)
+            .field("validation_error", &self.validation_error)
+            .finish()
+    }
+}
+impl std::fmt::Display for NodeCatalogReadRetirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "registered catalog reader {:?} retirement {:?}",
+            self.id, self.disposition
+        )
+    }
+}
+impl std::error::Error for NodeCatalogReadRetirement {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.validation_error.as_ref().map(|error| error.as_ref())
+    }
+}
+
 pub struct NodeStore {
     db: node_database::NodeDatabase,
     persistent_disk: Option<Arc<NodeDisk>>,
@@ -227,13 +492,12 @@ impl NodeStore {
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
-        ensure!(
-            Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
-            "persistent and scratch disks require the same installed memory admission"
-        );
-        Self::initialize(
-            node_file::NodeFile::create_new(path.as_ref(), node_store_id, persistent_disk)?,
+        Self::start_registered(
+            path.as_ref(),
+            node_store_id,
+            persistent_disk,
             scratch_disk,
+            NodeOpeningMode::Create,
         )
     }
 
@@ -246,28 +510,119 @@ impl NodeStore {
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
+        Self::start_registered(
+            path.as_ref(),
+            node_store_id,
+            persistent_disk,
+            scratch_disk,
+            NodeOpeningMode::OwnedEmpty(expected_file.clone()),
+        )
+    }
+
+    /// Reopen only the exact recognized installed payload through the same
+    /// registered owner used for table verification and later close.
+    pub fn open_existing(
+        path: impl AsRef<Path>,
+        expected_id: Uuid,
+        persistent_disk: Arc<NodeDisk>,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
+        Self::start_registered(
+            path.as_ref(),
+            expected_id,
+            persistent_disk,
+            scratch_disk,
+            NodeOpeningMode::Existing,
+        )
+    }
+
+    fn start_registered(
+        path: &Path,
+        id: Uuid,
+        persistent_disk: Arc<NodeDisk>,
+        scratch_disk: Arc<ScratchDisk>,
+        mode: NodeOpeningMode,
+    ) -> Result<Arc<Self>> {
         ensure!(
             Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
             "persistent and scratch disks require the same installed memory admission"
         );
-        Self::initialize(
-            node_file::NodeFile::initialize_owned_empty(
-                path.as_ref(),
-                expected_file,
-                node_store_id,
-                persistent_disk,
-            )?,
+        let provider = persistent_disk.memory().clone();
+        let mut startup = RegisteredNodeStartup::prepare(path, id, persistent_disk.clone(), mode)?;
+        if startup.advance() != NodeStartupPhase::Ready {
+            let close_error = startup.close_failed().err();
+            let custody = startup.into_failed_custody().map_err(|_| {
+                anyhow::anyhow!("failed startup did not retain exact closing custody")
+            })?;
+            return Err(NodeStoreOpeningFailure {
+                custody,
+                close_error,
+            }
+            .into());
+        }
+        let opening = startup
+            .into_opening()
+            .map_err(|_| anyhow::anyhow!("ready registered startup lost its opening"))?;
+        Ok(Arc::new(Self {
+            db: node_database::NodeDatabase::new_registered(opening, provider, "node database"),
+            persistent_disk: Some(persistent_disk),
+            scratch_disk,
+            path: Some(path.to_owned()),
+            tenants: AsyncMutex::new(HashMap::new()),
+            initializers: AsyncMutex::new(InitializerRegistry::default()),
+            shutdown_report: AsyncMutex::new(DrainReport::default()),
+        }))
+    }
+
+    /// Synthetic fixtures keep their direct, test-only owner so unrelated
+    /// suites can model an implicit process-exit drop. Installed production
+    /// constructors above always use the registered opening and explicit close.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn create_new_fixture_direct(
+        path: &Path,
+        id: Uuid,
+        persistent_disk: Arc<NodeDisk>,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
+        ensure!(
+            Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
+            "persistent and scratch disks require the same installed memory admission"
+        );
+        Self::initialize_fixture(
+            node_file::NodeFile::create_new(path, id, persistent_disk)?,
             scratch_disk,
         )
     }
 
-    fn initialize(
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn initialize_owned_empty_fixture_direct(
+        path: &Path,
+        expected_file: &private_files::FileIdentity,
+        id: Uuid,
+        persistent_disk: Arc<NodeDisk>,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
+        ensure!(
+            Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
+            "persistent and scratch disks require the same installed memory admission"
+        );
+        Self::initialize_fixture(
+            node_file::NodeFile::initialize_owned_empty(path, expected_file, id, persistent_disk)?,
+            scratch_disk,
+        )
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    fn initialize_fixture(
         file: Arc<node_file::NodeFile>,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
         let db = Database::builder(file.clone()).create_with_backend(file.backend())?;
-        Self::initialize_tables(&db)?;
-        file.publish_ready()?;
+        let db = Self::finish_setup(db, |db| {
+            Self::initialize_tables(db)?;
+            file.publish_ready()?;
+            Ok(())
+        })?;
         Ok(Self::installed(
             db,
             Some(file.path().to_owned()),
@@ -276,12 +631,9 @@ impl NodeStore {
         ))
     }
 
-    /// Reject unknown/partial files and a different installed UUID before the engine
-    /// can write. The exact locked descriptor survives validation and recovery.
-    /// A recognized owned payload may need storage recovery even if a
-    /// later table, tenant, or bootstrap check rejects its logical contents.
-    pub fn open_existing(
-        path: impl AsRef<Path>,
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn open_existing_fixture_direct(
+        path: &Path,
         expected_id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
@@ -290,13 +642,14 @@ impl NodeStore {
             Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
             "persistent and scratch disks require the same installed memory admission"
         );
-        let file = node_file::NodeFile::open_existing(path.as_ref(), expected_id, persistent_disk)?;
+        let file = node_file::NodeFile::open_existing(path, expected_id, persistent_disk)?;
         let db = Database::builder(file.clone()).create_with_backend(file.backend())?;
-        {
+        let db = Self::finish_setup(db, |db| {
             let tx = db.begin_read()?;
             tx.open_table(CATALOG)?;
             tx.open_table(RECORDS)?;
-        }
+            Ok(())
+        })?;
         Ok(Self::installed(
             db,
             Some(file.path().to_owned()),
@@ -312,8 +665,33 @@ impl NodeStore {
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
         let db = Database::builder(admission).create_with_backend(backend)?;
-        Self::initialize_tables(&db)?;
+        let db = Self::finish_setup(db, Self::initialize_tables)?;
         Ok(Self::installed(db, None, None, scratch_disk))
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn finish_setup(
+        database: Database,
+        setup: impl FnOnce(&Database) -> Result<()>,
+    ) -> Result<Database> {
+        match catch_unwind(AssertUnwindSafe(|| setup(&database))) {
+            Ok(Ok(())) => Ok(database),
+            Ok(Err(error)) => {
+                Err(NodeStoreSetupFailure::new(database, NodeStoreSetupCause::Error(error)).into())
+            }
+            Err(payload) => Err(NodeStoreSetupFailure::new(
+                database,
+                NodeStoreSetupCause::Panicked(Mutex::new(payload)),
+            )
+            .into()),
+        }
+    }
+
+    /// Exact installed census owner for this node's database and close report.
+    /// A retained close can be inspected through `RegisteredNodeOpening::retained`
+    /// on the same installed memory provider and this ID.
+    pub fn registered_opening_id(&self) -> Option<StorageOwnerId> {
+        self.db.registered_opening_id()
     }
 
     /// Every production node has one mandatory installed physical owner.
@@ -351,6 +729,7 @@ impl NodeStore {
         &self.scratch_disk
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     fn initialize_tables(db: &Database) -> Result<()> {
         let tx = db.begin_write()?;
         {
@@ -361,6 +740,7 @@ impl NodeStore {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     fn installed(
         db: Database,
         path: Option<PathBuf>,
@@ -379,52 +759,107 @@ impl NodeStore {
     }
 
     fn catalog(&self, tenant: &str) -> Result<Option<KeyCatalog>> {
-        Self::catalog_at(&self.db.begin_read()?, tenant)
+        // Synthetic process-exit fixtures intentionally have a direct backend;
+        // an installed production node always has a registered opening.
+        #[cfg(any(test, feature = "test-utils"))]
+        if self.db.has_fixture_direct_database() {
+            return Self::catalog_at(&self.db.begin_read()?, tenant);
+        }
+
+        let reader = self.db.queue_registered_read()?;
+        if reader.begin() != NodeReadPhase::Active {
+            return Err(NodeCatalogReadFailure {
+                reader,
+                stage: "begin",
+                access: None,
+                validation_error: None,
+            }
+            .into());
+        }
+        let bytes = match reader.catalog_bytes(tenant_hash(tenant), MAX_KEY_CATALOG_BYTES) {
+            Ok(bytes) => bytes,
+            Err(access) => {
+                return Err(NodeCatalogReadFailure {
+                    reader,
+                    stage: "catalog bytes",
+                    access: Some(access),
+                    validation_error: None,
+                }
+                .into());
+            }
+        };
+        let decoded = bytes
+            .as_ref()
+            .map(|bytes| Self::catalog_from_bytes(bytes.as_bytes(), tenant))
+            .transpose();
+        drop(bytes);
+        if reader.finish() != NodeReadPhase::Finished {
+            return Err(NodeCatalogReadFailure {
+                reader,
+                stage: "finish",
+                access: None,
+                validation_error: decoded.err(),
+            }
+            .into());
+        }
+        let id = reader.id();
+        let disposition = reader.retire();
+        if disposition != StorageCensusDisposition::Retired {
+            return Err(NodeCatalogReadRetirement {
+                provider: self.persistent_disk().memory().clone(),
+                id,
+                disposition,
+                validation_error: decoded.err(),
+            }
+            .into());
+        }
+        decoded
     }
 
     fn catalog_at(tx: &kasumi_kv::ReadTransaction, tenant: &str) -> Result<Option<KeyCatalog>> {
         let table = tx.open_table(CATALOG)?;
         table
             .get(tenant_hash(tenant).as_slice())?
-            .map(|v| {
-                ensure!(
-                    v.value().len() <= MAX_KEY_CATALOG_BYTES,
-                    "key catalog byte quota exceeded"
-                );
-                let catalog: KeyCatalog =
-                    serde_json::from_slice(v.value()).context("invalid key catalog")?;
-                catalog.validate(tenant)?;
-                // Compare the current writer's exact bytes without retaining
-                // a second, potentially 2 MiB copy of wrapped-key metadata.
-                struct Exact<'a> {
-                    original: &'a [u8],
-                    offset: usize,
-                }
-                impl std::io::Write for Exact<'_> {
-                    fn write(&mut self, encoded: &[u8]) -> std::io::Result<usize> {
-                        let end = self
-                            .offset
-                            .checked_add(encoded.len())
-                            .ok_or_else(|| std::io::Error::other("noncanonical key catalog"))?;
-                        if self.original.get(self.offset..end) != Some(encoded) {
-                            return Err(std::io::Error::other("noncanonical key catalog"));
-                        }
-                        self.offset = end;
-                        Ok(encoded.len())
-                    }
-                    fn flush(&mut self) -> std::io::Result<()> {
-                        Ok(())
-                    }
-                }
-                let mut exact = Exact {
-                    original: v.value(),
-                    offset: 0,
-                };
-                serde_json::to_writer(&mut exact, &catalog).context("noncanonical key catalog")?;
-                ensure!(exact.offset == v.value().len(), "noncanonical key catalog");
-                Ok(catalog)
-            })
+            .map(|v| Self::catalog_from_bytes(v.value(), tenant))
             .transpose()
+    }
+
+    fn catalog_from_bytes(bytes: &[u8], tenant: &str) -> Result<KeyCatalog> {
+        ensure!(
+            bytes.len() <= MAX_KEY_CATALOG_BYTES,
+            "key catalog byte quota exceeded"
+        );
+        let catalog: KeyCatalog = serde_json::from_slice(bytes).context("invalid key catalog")?;
+        catalog.validate(tenant)?;
+        // Compare the current writer's exact bytes without retaining a second,
+        // potentially 2 MiB copy of wrapped-key metadata.
+        struct Exact<'a> {
+            original: &'a [u8],
+            offset: usize,
+        }
+        impl std::io::Write for Exact<'_> {
+            fn write(&mut self, encoded: &[u8]) -> std::io::Result<usize> {
+                let end = self
+                    .offset
+                    .checked_add(encoded.len())
+                    .ok_or_else(|| std::io::Error::other("noncanonical key catalog"))?;
+                if self.original.get(self.offset..end) != Some(encoded) {
+                    return Err(std::io::Error::other("noncanonical key catalog"));
+                }
+                self.offset = end;
+                Ok(encoded.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut exact = Exact {
+            original: bytes,
+            offset: 0,
+        };
+        serde_json::to_writer(&mut exact, &catalog).context("noncanonical key catalog")?;
+        ensure!(exact.offset == bytes.len(), "noncanonical key catalog");
+        Ok(catalog)
     }
 
     fn save_catalog(&self, tenant: &str, catalog: &KeyCatalog) -> Result<()> {

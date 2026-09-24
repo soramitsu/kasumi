@@ -3,8 +3,9 @@
 use crate::{EncryptedSpool, ScratchDisk};
 use anyhow::{Result, ensure};
 use kasumi_kv::{AdmissionError, OwnerFailed, StorageAdmission, StorageBackend, TableDefinition};
-use kasumi_types::drain::DrainResult;
+use kasumi_types::drain::{DrainCompletion, DrainResult};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("staged");
 
@@ -146,14 +147,94 @@ impl StorageBackend for Backend {
         outcome
     }
 }
+struct ScratchTableDatabase {
+    database: Option<crate::node_database::NodeDatabase>,
+}
+
+impl ScratchTableDatabase {
+    fn database(&self) -> &crate::node_database::NodeDatabase {
+        self.database.as_ref().expect("scratch database owner")
+    }
+
+    fn close(&self) -> DrainResult {
+        self.database().close()
+    }
+}
+
+impl Drop for ScratchTableDatabase {
+    fn drop(&mut self) {
+        let Some(database) = self.database.take() else {
+            return;
+        };
+        // This is the last table or batch owner. A retained result, including
+        // an unexpected unwind, cannot authorize implicit descriptor destruction
+        // or return its scratch charge. Keep the exact physical owner alive.
+        let drained = match catch_unwind(AssertUnwindSafe(|| database.close())) {
+            Ok(Ok(())) => true,
+            Ok(Err(failure)) => failure.completion() == DrainCompletion::Complete,
+            Err(_) => false,
+        };
+        if drained {
+            drop(database);
+        } else {
+            std::mem::forget(database);
+        }
+    }
+}
+
+struct ScratchTableSetupFailure {
+    original: anyhow::Error,
+    close: DrainResult,
+    retained: Option<Arc<ScratchTableDatabase>>,
+}
+
+impl std::fmt::Debug for ScratchTableSetupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ScratchTableSetupFailure")
+            .field("original", &self.original)
+            .field("close", &self.close)
+            .field("retained", &self.retained.is_some())
+            .finish()
+    }
+}
+
+impl std::fmt::Display for ScratchTableSetupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "scratch table setup failed: {}", self.original)?;
+        if let Err(close) = &self.close {
+            write!(formatter, "; close: {close}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ScratchTableSetupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.original.as_ref())
+    }
+}
+
+impl ScratchTableSetupFailure {
+    #[cfg(test)]
+    fn retry_close(&self) -> DrainResult {
+        self.retained
+            .as_ref()
+            .map_or_else(|| self.close.clone(), |owner| owner.close())
+    }
+}
+
 pub struct EncryptedTable {
-    database: crate::node_database::NodeDatabase,
+    owner: Arc<ScratchTableDatabase>,
 }
 /// An unpublished, bounded staging transaction. A healthy dropped transaction
 /// aborts its pending writes; a committed batch remains private until its caller
 /// publishes the enclosing verified namespace.
 pub struct EncryptedTableBatch {
     transaction: kasumi_kv::WriteTransaction,
+    // The transaction drops before this owner. If the table is gone, the last
+    // batch still gets an observed close after its write settles or aborts.
+    _owner: Arc<ScratchTableDatabase>,
     bytes: usize,
     entries: usize,
     failed: bool,
@@ -200,21 +281,47 @@ impl EncryptedTable {
         )?))));
         let database =
             kasumi_kv::Database::builder(owner.clone()).create_with_backend(Backend(owner))?;
-        let tx = database.begin_write()?;
-        tx.open_table(TABLE)?;
-        tx.commit()?;
-        Ok(Self {
-            database: crate::node_database::NodeDatabase::new(database, "encrypted scratch table"),
-        })
+        Self::initialize(database)
+    }
+
+    fn initialize(database: kasumi_kv::Database) -> Result<Self> {
+        let table = Self {
+            owner: Arc::new(ScratchTableDatabase {
+                database: Some(crate::node_database::NodeDatabase::new(
+                    database,
+                    "encrypted scratch table",
+                )),
+            }),
+        };
+        let setup = (|| -> Result<()> {
+            let tx = table.owner.database().begin_write()?;
+            tx.open_table(TABLE)?;
+            tx.commit()?;
+            Ok(())
+        })();
+        if let Err(original) = setup {
+            let close = table.close();
+            let retained = close.as_ref().err().and_then(|failure| {
+                (failure.completion() == DrainCompletion::Retained).then(|| table.owner.clone())
+            });
+            return Err(ScratchTableSetupFailure {
+                original,
+                close,
+                retained,
+            }
+            .into());
+        }
+        Ok(table)
     }
     /// Fence new transactions and retain the exact database while accepted
     /// readers or writers drain. Repeated calls preserve the original outcome.
     pub fn close(&self) -> DrainResult {
-        self.database.close()
+        self.owner.close()
     }
     pub fn begin_batch(&self) -> Result<EncryptedTableBatch> {
         Ok(EncryptedTableBatch {
-            transaction: self.database.begin_write()?,
+            transaction: self.owner.database().begin_write()?,
+            _owner: self.owner.clone(),
             bytes: 0,
             entries: 0,
             failed: false,
@@ -225,7 +332,7 @@ impl EncryptedTable {
             key.len() <= 4096 && value.len() <= 32 << 20,
             "staged record exceeds limit"
         );
-        let tx = self.database.begin_write()?;
+        let tx = self.owner.database().begin_write()?;
         {
             let mut table = tx.open_table(TABLE)?;
             ensure!(table.insert(key, value)?.is_none(), "duplicate staged key");
@@ -234,7 +341,7 @@ impl EncryptedTable {
         Ok(())
     }
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let tx = self.database.begin_read()?;
+        let tx = self.owner.database().begin_read()?;
         let table = tx.open_table(TABLE)?;
         Ok(table.get(key)?.map(|v| v.value().to_vec()))
     }
@@ -245,7 +352,7 @@ impl EncryptedTable {
             key.len() <= 4096 && value.len() <= 32 << 20,
             "staged record exceeds limit"
         );
-        let tx = self.database.begin_write()?;
+        let tx = self.owner.database().begin_write()?;
         {
             tx.open_table(TABLE)?.insert(key, value)?;
         }
@@ -253,7 +360,7 @@ impl EncryptedTable {
         Ok(())
     }
     pub fn visit(&self, mut visitor: impl FnMut(&[u8], &[u8]) -> Result<()>) -> Result<()> {
-        let tx = self.database.begin_read()?;
+        let tx = self.owner.database().begin_read()?;
         let table = tx.open_table(TABLE)?;
         for entry in table.iter()? {
             let (key, value) = entry?;

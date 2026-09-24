@@ -185,11 +185,13 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
     let CredentialFixture {
         _directory: directory,
         storage,
+        node: original_node,
         db,
         audit,
         context,
     } = fixture;
     audit.shutdown().await.unwrap();
+    original_node.shutdown().await.unwrap();
     drop(db);
     drop(audit);
     let node = storage
@@ -211,7 +213,7 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
         storage.admission.clone(),
     )
     .unwrap();
-    let application = TenantStore::open_existing_fixture(node, context.tenant.clone(), provider)
+    let application = TenantStore::open_existing_fixture(node.clone(), context.tenant.clone(), provider)
         .await
         .unwrap();
     let stores = kasumi_store::test_utils::open_existing_custody_fixture(
@@ -249,6 +251,7 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }
 
 #[tokio::test]

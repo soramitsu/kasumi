@@ -13,7 +13,11 @@ async fn journal(
     id: u64,
     path: &std::path::Path,
     create: bool,
-) -> (Arc<kasumi_engine::TargetJournal>, Arc<TenantStore>) {
+) -> (
+    Arc<kasumi_engine::TargetJournal>,
+    Arc<TenantStore>,
+    Arc<NodeStore>,
+) {
     let installation = kasumi_engine::TargetJournalInstallation {
         root: f.control.root.clone(),
         node: nodes().into_iter().find(|node| node.node_id == id).unwrap(),
@@ -33,9 +37,9 @@ async fn journal(
     let provider = Arc::new(LocalKeyProvider::new([239; 32]));
     let access = StorageAccess::target_journal(&installation.root, &installation.node).unwrap();
     let store = if create {
-        TenantStore::initialize_catalog(node, name, provider, access).await
+        TenantStore::initialize_catalog(node.clone(), name, provider, access).await
     } else {
-        TenantStore::open_existing(node, name, provider, access).await
+        TenantStore::open_existing(node.clone(), name, provider, access).await
     }
     .unwrap();
     let limits = TargetJournalLimits {
@@ -57,7 +61,7 @@ async fn journal(
         )
     }
     .unwrap();
-    (journal, store)
+    (journal, store, node)
 }
 
 pub(super) async fn record_follower_projection(
@@ -66,7 +70,7 @@ pub(super) async fn record_follower_projection(
     proof: &kasumi_engine::VerifiedTargetActivation,
     input_digest: &str,
 ) {
-    let (journal, store) = journal(f, follower.id, &journal_path(f, follower.id), true).await;
+    let (journal, store, node) = journal(f, follower.id, &journal_path(f, follower.id), true).await;
     journal.prepare(&follower.operation, input_digest).unwrap();
     let projection = journal
         .record_activation(&follower.operation, proof, &f.signers[&follower.id])
@@ -79,6 +83,7 @@ pub(super) async fn record_follower_projection(
     drop(projection);
     drop(journal);
     store.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }
 
 struct Serving {
@@ -90,6 +95,8 @@ struct Serving {
     gate: Arc<ServingGate>,
     journal: Arc<kasumi_engine::TargetJournal>,
     journal_store: Arc<TenantStore>,
+    journal_node: Arc<NodeStore>,
+    node: Arc<NodeStore>,
 }
 impl Serving {
     async fn open(
@@ -103,7 +110,7 @@ impl Serving {
         } else {
             journal_path(f, id)
         };
-        let (journal, journal_store) = journal(f, id, &path, false).await;
+        let (journal, journal_store, journal_node) = journal(f, id, &path, false).await;
         let projection = Arc::new(
             journal
                 .serving_projection("city", f.target.incarnation)
@@ -137,6 +144,7 @@ impl Serving {
             .unwrap();
         fence.check().unwrap();
         let gate = ServingGate::new(attempt.verify(lease).unwrap()).unwrap();
+        f.shutdown_target_node(id).await;
         let node = f.physical[&id]
             .open_existing(
                 f.physical[&id].path(format!("target-{id}.kv")),
@@ -151,7 +159,7 @@ impl Serving {
             .unwrap();
         let audit = audit(node.clone(), f.physical[&id].admission.clone(), true).await;
         let stores = TenantStorageSet::open_existing(
-            node,
+            node.clone(),
             "city".into(),
             Arc::new(LocalKeyProvider::new([61; 32])),
             Arc::new(LocalKeyProvider::new([221; 32])),
@@ -191,6 +199,8 @@ impl Serving {
             gate,
             journal,
             journal_store,
+            journal_node,
+            node,
         }
     }
     async fn close(mut self, f: &MaterialFixture, router: &InProcessRouter) {
@@ -210,6 +220,8 @@ impl Serving {
         drop(self.gate);
         drop(self.journal);
         self.journal_store.shutdown().await.unwrap();
+        self.node.shutdown().await.unwrap();
+        self.journal_node.shutdown().await.unwrap();
     }
 }
 

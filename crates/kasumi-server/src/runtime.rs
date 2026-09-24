@@ -1269,7 +1269,7 @@ impl NodeRuntime {
             if config.mode == DeploymentMode::Replicated {
                 let enrolled = crate::node_enrollment::tenant_record(audit.store(), CONTROL_TENANT)?
                     .context("Control enrollment receipt is missing")?;
-                ensure!(enrolled.bootstrap_sha256.as_ref() == Some(&persisted_bootstrap_fingerprint(control_stores.application())?),
+                ensure!(enrolled.bootstrap_sha256.as_ref() == Some(&persisted_replicated_bootstrap_fingerprint(&control_stores)?),
                     "installed Control bootstrap differs from its enrollment receipt");
             }
             Self::open_database(
@@ -1413,7 +1413,11 @@ impl NodeRuntime {
                 runtime.startup_stores.push(stores.custody().store().clone());
                 if crate::node_enrollment::required(&config) && active.is_none() {
                     let enrolled = crate::node_enrollment::tenant_record(runtime.audit.store(), &tenant.tenant)?.context("enrollment disappeared during startup")?;
-                    ensure!(enrolled.bootstrap_sha256.as_ref() == Some(&persisted_bootstrap_fingerprint(stores.application())?), "installed bootstrap differs from its enrollment receipt");
+                    ensure!(enrolled.bootstrap_sha256.as_ref() == Some(&if config.mode == DeploymentMode::Replicated {
+                        persisted_replicated_bootstrap_fingerprint(&stores)?
+                    } else {
+                        persisted_bootstrap_fingerprint(stores.application())?
+                    }), "installed bootstrap differs from its enrollment receipt");
                 }
                 let opened = Self::open_database(
                     &config,
@@ -1584,7 +1588,7 @@ impl NodeRuntime {
                     .as_ref()
                     .context("replication configuration missing")?;
                 let network = cluster.context("cluster transport missing")?;
-                let fingerprint = persisted_bootstrap_fingerprint(&store)?;
+                let fingerprint = persisted_replicated_bootstrap_fingerprint(&stores)?;
                 let opened = kasumi_engine::open_existing_replicated(
                     replication.node_id,
                     stores.clone(),
@@ -2134,6 +2138,20 @@ pub(crate) fn persisted_bootstrap_fingerprint(store: &TenantStore) -> Result<Str
     initial_bootstrap_fingerprint(tenant, &binding, &digest)
 }
 
+/// Replicated enrollment hashes the same admitted two-domain binding that the
+/// engine opens. A one-sided or divergent installation cannot receive a
+/// bootstrap fingerprint from a single application row.
+pub(crate) fn persisted_replicated_bootstrap_fingerprint(
+    stores: &TenantStorageSet,
+) -> Result<String> {
+    let binding = stores
+        .deployment_binding()?
+        .context("immutable replicated deployment binding missing")?;
+    let store = stores.application();
+    let digest = kasumi_engine::persisted_bootstrap_digest(store)?;
+    initial_bootstrap_fingerprint(store.tenant(), binding.as_bytes(), &digest)
+}
+
 /// A retired source no longer has an application provider. The custody commit
 /// retains the exact initial application digest beside the deployment binding.
 fn decode_retired_custody_bootstrap_digest(bytes: &[u8]) -> Result<String> {
@@ -2678,6 +2696,104 @@ mod tests {
         );
         assert!(decode_retired_custody_bootstrap_digest(&alternate).is_err());
         assert_eq!(decode_retired_custody_bootstrap_digest(&canonical)?, digest);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn paired_replicated_fingerprint_rejects_orphan_and_divergent_custody() -> Result<()> {
+        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let physical =
+            crate::runtime_storage_fixtures::physical(directory.path(), Default::default())?;
+        let node = physical.create_new(
+            directory.path().join("persistent/node.kv"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )?;
+        let stores = TenantStorageSet::initialize_catalogs_fixture(
+            node.clone(),
+            "acme".into(),
+            Arc::new(LocalKeyProvider::new([34; 32])),
+            Arc::new(LocalKeyProvider::new([35; 32])),
+        )
+        .await?;
+        let config = example_config(kasumi_store::DirectoryPolicy::fixture())?;
+        let tenant = &config.tenants[0];
+        let bootstrap = config
+            .bootstrap(
+                &tenant.initial_policy,
+                &tenant.initial_limits,
+                tenant.incarnation.as_deref(),
+            )?
+            .context("replicated fixture bootstrap missing")?;
+        let binding = serde_json::to_vec(&("replicated", &bootstrap))?;
+        let digest = "a".repeat(64);
+        let manifest =
+            format!(r#"{{"format":2,"bytes":1,"chunks":1,"digest":"{digest}"}}"#).into_bytes();
+        stores.write_batch(
+            &[
+                kasumi_store::WriteOp::put("engine.deployment", b"mode", binding.as_slice()),
+                kasumi_store::WriteOp::put("engine.bootstrap", b"manifest", manifest.as_slice()),
+            ],
+            &[kasumi_store::WriteOp::put(
+                "engine.deployment",
+                b"mode",
+                binding.as_slice(),
+            )],
+        )?;
+        let expected = initial_bootstrap_fingerprint("acme", &binding, &digest)?;
+        assert_eq!(
+            persisted_replicated_bootstrap_fingerprint(&stores)?,
+            expected
+        );
+
+        // The application row and bootstrap manifest stay valid throughout.
+        // The former single-domain hash would still match an enrollment receipt.
+        stores
+            .custody()
+            .store()
+            .write_batch(&[kasumi_store::WriteOp::delete("engine.deployment", b"mode")])?;
+        let orphan = persisted_replicated_bootstrap_fingerprint(&stores).unwrap_err();
+        assert!(format!("{orphan:#}").contains("absent from one domain"));
+        assert_eq!(
+            persisted_bootstrap_fingerprint(stores.application())?,
+            expected
+        );
+        assert_eq!(
+            stores.application().get("engine.deployment", b"mode")?,
+            Some(binding.clone())
+        );
+        assert_eq!(
+            stores.application().get("engine.bootstrap", b"manifest")?,
+            Some(manifest.clone())
+        );
+
+        let mut substituted = bootstrap;
+        substituted.incarnation = Uuid::new_v4().to_string();
+        let different_binding = serde_json::to_vec(&("replicated", &substituted))?;
+        stores
+            .custody()
+            .store()
+            .write_batch(&[kasumi_store::WriteOp::put(
+                "engine.deployment",
+                b"mode",
+                different_binding,
+            )])?;
+        let divergent = persisted_replicated_bootstrap_fingerprint(&stores).unwrap_err();
+        assert!(format!("{divergent:#}").contains("differs across domains"));
+        assert_eq!(
+            persisted_bootstrap_fingerprint(stores.application())?,
+            expected
+        );
+        assert_eq!(
+            stores.application().get("engine.deployment", b"mode")?,
+            Some(binding)
+        );
+        assert_eq!(
+            stores.application().get("engine.bootstrap", b"manifest")?,
+            Some(manifest)
+        );
+        stores.shutdown().await?;
+        node.drain_initializers().await?;
+        node.shutdown().await?;
         Ok(())
     }
 

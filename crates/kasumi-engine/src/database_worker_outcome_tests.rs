@@ -139,6 +139,7 @@ impl Fixture {
         drop(self.database);
         assert!(weak.upgrade().is_none());
         drop(self.audit);
+        self.node.shutdown().await?;
         drop(self.node);
         let node = self
             .storage
@@ -151,6 +152,7 @@ impl Fixture {
         .await?;
         assert_eq!(store.get("worker-test", b"marker")?.unwrap(), b"durable");
         store.shutdown().await?;
+        node.shutdown().await?;
         drop(store);
         drop(node);
         drop(self.directory);

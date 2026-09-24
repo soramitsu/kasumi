@@ -119,12 +119,40 @@ A later all-target/all-feature workspace check and strict Clippy pass on
 separate pinned development source, with formatting passing after a one-line
 fixture correction. A shared-checkout full server run aborts in a standalone
 enrollment test stack overflow; its source is not frozen as a final gate.
-Production registered-owner cutover, a direct native KV failed-opening close
-custody gap, G01 typed allocation ownership and other readers remain open.
-The G01 deployment admission candidate and its
-structural preparse revision remain held because retained typed allocation
-ownership and several installed readers are not yet covered. Source-bound logs and reviews are in the
-integration evidence ledger; every G01–G14 goal remains open.
+The later G01 target quorum/serving cutover now reads its deployment pair
+through one admitted native snapshot and removes the obsolete 256-KiB read cap.
+Its two focused tests, including a valid 4,096-grant writer value above that cap,
+pass on a source that changed during the run; this is a development checkpoint.
+The later G01 database owner retains the paired storage set; server replicated
+fingerprint callers now read the same admitted pair, with an orphan/divergent
+custody regression passing 1/1. A strict current-writer schema preflight and
+streaming canonical-byte comparison are applied. Existing replicated engine
+tests pass 8/8 and Control genesis tests pass 5/5 on focused checkpoints.
+The preflight does not yet charge derived Serde typed allocations or retain a
+typed owner. A custody-only charged reader is applied, but retired startup
+still uses an uncharged derived typed decode. An incarnation-only cutover is
+held because it would skip semantic validation; current-writer adversarial
+probes confirm five such invalid inputs. A source-pinned audit confirms that
+the fingerprint, engine open and registration still observe paired rows,
+manifest and chunks in separate snapshots; atomic identity and write-once
+enforcement remain open. The older structural-preparse candidate remains
+held, while the newer production scanner is an applied prerequisite, not G01
+completion.
+The production `NodeStore` registered-opening cutover is applied and independently
+reviewed, with a 424-case serial store checkpoint passing. An independently
+reviewed production catalog point-read child is applied and passes 3/3 focused
+cases on an unchanged source checkpoint. A reviewed strict-create native-file
+cutover removes the EEXIST adoption fallback and obsolete ambiguous `open` API.
+The combined applied store library then passes 434 runnable cases, with one
+shared-checkout test-file change during validation, so it is not a final gate.
+Other production raw transaction children, typed catalog allocation accounting,
+uncharged plaintext returned by tenant reads, and named existing-file identity
+remain open. A source-pinned breaking admitted-value design maps the affected
+production callers; a narrower point-read candidate is held after review for
+full-maximum reservation before missing or tiny reads. A later combined workspace
+all-target/all-feature check passes on its unchanged pinned source; source-bound
+logs and reviews are in the integration evidence ledger. Every G01–G14 goal
+remains open.
 G11 declared functional-evidence export and mode-preserving tar readback pass
 their 149-test Python checkpoint. Native workflow tar/producer uploads, exact
 Cargo executable and compiled-feature replay, and the downloaded-tar collector

@@ -18,6 +18,8 @@ use std::{
 
 #[path = "backup_restore.rs"]
 mod backup_restore;
+#[path = "deployment_preflight.rs"]
+mod deployment_preflight;
 pub use backup_restore::RestoreSource;
 #[path = "bootstrap_publication.rs"]
 mod publication;
@@ -376,13 +378,19 @@ impl ReplicaRuntime<'_> {
 }
 
 fn decode_current_replicated_deployment(bytes: &[u8]) -> anyhow::Result<ReplicatedBootstrap> {
+    let _inventory = deployment_preflight::inspect_current_deployment(
+        bytes,
+        kasumi_store::MAX_DEPLOYMENT_BINDING_BYTES,
+    )
+    .map_err(anyhow::Error::msg)?;
     let (tag, bootstrap): (String, ReplicatedBootstrap) = serde_json::from_slice(bytes)?;
     anyhow::ensure!(tag == "replicated", "unsupported replicated deployment tag");
     bootstrap.validate()?;
-    anyhow::ensure!(
-        serde_json::to_vec(&("replicated", &bootstrap))? == bytes,
-        "noncanonical replicated deployment binding"
-    );
+    crate::current_json::require_current_writer_bytes(
+        bytes,
+        &("replicated", &bootstrap),
+        "replicated deployment binding",
+    )?;
     Ok(bootstrap)
 }
 
@@ -521,12 +529,12 @@ pub async fn initialize_replicated(
         "closed target initialization required"
     );
     let binding = serde_json::to_vec(&("replicated", bootstrap))?;
+    let installed = database
+        .stores()
+        .deployment_binding()?
+        .ok_or_else(|| anyhow::anyhow!("replicated deployment binding is absent"))?;
     anyhow::ensure!(
-        database
-            .store()
-            .get("engine.deployment", b"mode")?
-            .as_deref()
-            == Some(binding.as_slice()),
+        installed.as_bytes() == binding,
         "replicated bootstrap does not match this database"
     );
     let group = database.raft_group();

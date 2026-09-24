@@ -186,6 +186,8 @@ async fn installed_empty_journal_reopens_only_its_exact_node_after_owner_drain()
         installed,
         admission,
     } = f;
+    store.shutdown().await?;
+    node.shutdown().await?;
     drop(store);
     drop(node);
     let path = directory.path().join("persistent/journal.kv");
@@ -210,6 +212,8 @@ async fn installed_empty_journal_reopens_only_its_exact_node_after_owner_drain()
     )?;
     assert_eq!(store.get(NS, b"metadata")?, Some(original));
     journal.shutdown().await.unwrap();
+    store.shutdown().await?;
+    node.shutdown().await?;
     Ok(())
 }
 

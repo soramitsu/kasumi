@@ -77,13 +77,14 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
     let owner_bytes = SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)?;
     let owner_weak = Arc::downgrade(&owner);
     let gate = LocalStartupGate::install(&owner, OriginalStartupFailure(211).into())?;
-    let stores = kasumi_store::TenantStorageSet::initialize_catalogs_fixture(
-        storage.create_new(
+    let node = storage.create_new(
             directory
                 .path()
                 .join("persistent/cancelled-node-startup.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
-        )?,
+        )?;
+    let stores = kasumi_store::TenantStorageSet::initialize_catalogs_fixture(
+        node.clone(),
         "cancelled-startup".into(),
         Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([19; 32])),
         Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
@@ -220,6 +221,7 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
     .await??;
     tokio::time::timeout(WAIT, reopened.shutdown()).await??;
     drop(reopened);
+    node.shutdown().await?;
     replacement.drain_snapshot_startups().await?;
     drop(replacement);
     assert_eq!(core.snapshot().reserved_bytes, core_base + metadata_bytes);

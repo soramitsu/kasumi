@@ -532,7 +532,7 @@ impl Administration {
                 };
                 self.require_resident_proposal(&resident, &proposal)?;
                 let fingerprint =
-                    crate::runtime::persisted_bootstrap_fingerprint(stores.application())?;
+                    crate::runtime::persisted_replicated_bootstrap_fingerprint(&stores)?;
                 stores.application().write_batch(&[WriteOp::put(
                     "runtime.provisioning",
                     b"prepared",
@@ -601,8 +601,7 @@ impl Administration {
             let record = node_enrollment::tenant_record(self.audit.store(), name)?
                 .context("prepared enrollment disappeared")?;
             record.require_proposal(&proposal)?;
-            let fingerprint =
-                crate::runtime::persisted_bootstrap_fingerprint(stores.application())?;
+            let fingerprint = crate::runtime::persisted_replicated_bootstrap_fingerprint(&stores)?;
             ensure!(
                 record.stage == Stage::Prepared
                     && record.bootstrap_sha256.as_ref() == Some(&fingerprint),

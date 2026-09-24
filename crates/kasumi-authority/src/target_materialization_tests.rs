@@ -269,6 +269,7 @@ struct MaterialFixture {
     physical: BTreeMap<u64, PhysicalFixture>,
     _source_physical: PhysicalFixture,
     target_files: std::sync::Mutex<BTreeSet<u64>>,
+    target_nodes: std::sync::Mutex<BTreeMap<u64, Arc<NodeStore>>>,
 }
 impl MaterialFixture {
     async fn new() -> Self {
@@ -281,9 +282,10 @@ impl MaterialFixture {
         let source_admission = source_physical.admission.clone();
         let security = audit(node.clone(), source_admission.clone(), false).await;
         let sourcekey = Arc::new(LocalKeyProvider::new([51; 32]));
-        let app = TenantStore::initialize_catalog_fixture(node, "city".into(), sourcekey.clone())
-            .await
-            .unwrap();
+        let app =
+            TenantStore::initialize_catalog_fixture(node.clone(), "city".into(), sourcekey.clone())
+                .await
+                .unwrap();
         let stores = kasumi_store::test_utils::initialize_custody_fixture(
             app,
             Arc::new(LocalKeyProvider::new([211; 32])),
@@ -363,6 +365,7 @@ impl MaterialFixture {
         drop(source_db);
         security.shutdown().await.unwrap();
         drop(security);
+        node.shutdown().await.unwrap();
         let source_id = Uuid::parse_str(&target.checkpoint.source_incarnation).unwrap();
         super::activation_gate_tests::exact_administrative(
             &issuer,
@@ -435,6 +438,7 @@ impl MaterialFixture {
             intent,
             signers,
             target_files: Default::default(),
+            target_nodes: Default::default(),
             physical: (1..=3)
                 .map(|id| (id, PhysicalFixture::new().unwrap()))
                 .collect(),
@@ -523,6 +527,9 @@ impl MaterialFixture {
         // The helper's actual opener is under the same opaque gate; each tested
         // materialization still explicitly obtains its registered operation.
         let first_creation = self.target_files.lock().unwrap().insert(id);
+        if !first_creation {
+            self.shutdown_target_node(id).await;
+        }
         let node = {
             let path = self.physical[&id].path(format!("target-{id}.kv"));
             if first_creation {
@@ -532,6 +539,7 @@ impl MaterialFixture {
             }
             .unwrap()
         };
+        self.target_nodes.lock().unwrap().insert(id, node.clone());
         let security = audit(
             node.clone(),
             self.physical[&id].admission.clone(),
@@ -559,6 +567,12 @@ impl MaterialFixture {
         }
         .unwrap();
         (scope, stores, security)
+    }
+    async fn shutdown_target_node(&self, id: u64) {
+        let node = { self.target_nodes.lock().unwrap().remove(&id) };
+        if let Some(node) = node {
+            node.shutdown().await.unwrap();
+        }
     }
     fn config(&self, id: u64) -> TargetMaterializationConfig {
         TargetMaterializationConfig {
@@ -1035,6 +1049,8 @@ impl MaterialFixture {
             t.stores.custody().store().shutdown().await.unwrap();
             drop(t.stores);
             t.audit.shutdown().await.unwrap();
+            drop(t.audit);
+            self.shutdown_target_node(t.id).await;
         }
     }
 }
@@ -1291,10 +1307,11 @@ async fn exercise_target_activation(maintenance: bool) {
         &journal_installation.node.verifier,
     )
     .unwrap();
+    let journal_node = f.physical[&projected_node_id]
+        .create_new(&journal_path, journal_file_id)
+        .unwrap();
     let journal_store = TenantStore::initialize_catalog(
-        f.physical[&projected_node_id]
-            .create_new(&journal_path, journal_file_id)
-            .unwrap(),
+        journal_node.clone(),
         journal_tenant.clone(),
         journal_provider.clone(),
         journal_access.clone(),
@@ -1423,13 +1440,16 @@ async fn exercise_target_activation(maintenance: bool) {
     drop(projected);
     drop(journal);
     journal_store.shutdown().await.unwrap();
+    journal_node.shutdown().await.unwrap();
     drop(journal_store);
+    drop(journal_node);
     // Reopen only the separately encrypted journal, independently of all app
     // providers. Exact signatures survive restart; substituted facts fail closed.
+    let journal_node = f.physical[&projected_node_id]
+        .open_existing(&journal_path, journal_file_id)
+        .unwrap();
     let journal_store = TenantStore::open_existing(
-        f.physical[&projected_node_id]
-            .open_existing(&journal_path, journal_file_id)
-            .unwrap(),
+        journal_node.clone(),
         journal_tenant.clone(),
         journal_provider.clone(),
         journal_access.clone(),
@@ -1503,6 +1523,7 @@ async fn exercise_target_activation(maintenance: bool) {
     drop(projection);
     drop(journal);
     journal_store.shutdown().await.unwrap();
+    journal_node.shutdown().await.unwrap();
     drop(journal_store);
     // A lifecycle-gated handle never turns into an ordinary data route.
     assert!(selected.owner.database().check_serving().is_err());
@@ -1831,6 +1852,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     let unrelated = f.physical[&1]
         .create_new(&file_path, Uuid::new_v4())
         .unwrap();
+    unrelated.shutdown().await.unwrap();
     drop(unrelated);
     let unrelated_bytes = std::fs::read(&file_path).unwrap();
     assert!(
@@ -1982,10 +2004,11 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     scope.drain().await;
     drop(journal);
     store.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(store);
     drop(node);
     let node = f.physical[&1].open_existing(path, file_id).unwrap();
-    let store = TenantStore::open_existing(node, tenant, provider, access)
+    let store = TenantStore::open_existing(node.clone(), tenant, provider, access)
         .await
         .unwrap();
     let reopened = TargetJournal::open_existing(
@@ -2073,6 +2096,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         terminal
     );
     store.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(store);
     drop(issuer);
     f.close().await;
@@ -2180,6 +2204,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         panic!("original durable file dispatch lost catalog initialization permission")
     };
     target.drain_initializers().await.unwrap();
+    target.shutdown().await.unwrap();
     drop(target);
     let before = std::fs::read(&path).unwrap();
     let MaterializationNode::Existing(target) = journal
@@ -2201,6 +2226,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         .is_err()
     );
     target.drain_initializers().await.unwrap();
+    target.shutdown().await.unwrap();
     drop(target);
     assert_eq!(std::fs::read(&path).unwrap(), before);
     // Even absence after an earlier creation cannot turn a replay into a creator.
@@ -2218,6 +2244,8 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     scope.drain().await;
     journal.shutdown().await.unwrap();
     drop(journal);
+    store.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(node);
     f.issuer.close().await;
 }

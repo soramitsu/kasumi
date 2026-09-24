@@ -2341,7 +2341,7 @@ fn apply_mutations(
     Ok(WriteReceipt { revision, versions })
 }
 
-fn validate_read_assertions(
+pub(crate) fn validate_read_assertions(
     state: &TenantState,
     assertions: &[&ReadAssertion],
     evaluated_at_ms: u64,

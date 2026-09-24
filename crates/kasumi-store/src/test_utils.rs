@@ -166,7 +166,7 @@ impl crate::NodeStore {
             "persistent and scratch disks require the same installed memory admission"
         );
         let db = kasumi_kv::Database::builder(storage_admission).create_with_backend(backend)?;
-        Self::initialize_tables(&db)?;
+        let db = Self::finish_setup(db, Self::initialize_tables)?;
         Ok(Self::installed(db, None, Some(persistent), scratch))
     }
 
@@ -179,7 +179,7 @@ impl crate::NodeStore {
         let disk = retry_disk_registry(|| {
             crate::NodeDisk::fixture_for_path(path.as_ref(), memory.clone())
         })?;
-        Self::create_new(path, id, disk, scratch)
+        Self::create_new_fixture_direct(path.as_ref(), id, disk, scratch)
     }
 
     pub fn open_existing_fixture(
@@ -191,7 +191,7 @@ impl crate::NodeStore {
         let disk = retry_disk_registry(|| {
             crate::NodeDisk::fixture_for_path(path.as_ref(), memory.clone())
         })?;
-        Self::open_existing(path, id, disk, scratch)
+        Self::open_existing_fixture_direct(path.as_ref(), id, disk, scratch)
     }
 
     pub fn initialize_owned_empty_fixture(
@@ -204,7 +204,7 @@ impl crate::NodeStore {
         let disk = retry_disk_registry(|| {
             crate::NodeDisk::fixture_for_path(path.as_ref(), memory.clone())
         })?;
-        Self::initialize_owned_empty(path, identity, id, disk, scratch)
+        Self::initialize_owned_empty_fixture_direct(path.as_ref(), identity, id, disk, scratch)
     }
 
     pub fn claim_cleanup_fixture(

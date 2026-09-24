@@ -171,6 +171,7 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
     assert!(error.denial_audit_attempted());
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(db);
     drop(store);
     drop(audit);
@@ -180,11 +181,12 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
         .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
         .unwrap();
     let service =
-        TenantStore::open_existing_fixture(reopened, SECURITY_TENANT.into(), service_provider)
+        TenantStore::open_existing_fixture(reopened.clone(), SECURITY_TENANT.into(), service_provider)
             .await
             .unwrap();
     assert_eq!(service.scan("security.audit").unwrap().len(), 12);
     service.shutdown().await.unwrap();
+    reopened.shutdown().await.unwrap();
 }
 
 #[test]
@@ -238,6 +240,7 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
         db.shutdown().await.unwrap();
         assert_eq!(audit.store().scan("security.audit").unwrap().len(), 1);
         audit.shutdown().await.unwrap();
+        node.shutdown().await.unwrap();
         drop(db);
         drop(store);
         drop(audit);
@@ -248,11 +251,12 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
             .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
         let service =
-            TenantStore::open_existing_fixture(reopened, SECURITY_TENANT.into(), service_provider)
+            TenantStore::open_existing_fixture(reopened.clone(), SECURITY_TENANT.into(), service_provider)
                 .await
                 .unwrap();
         assert_eq!(service.scan("security.audit").unwrap().len(), 1);
         service.shutdown().await.unwrap();
+        reopened.shutdown().await.unwrap();
     });
 }
 
@@ -435,8 +439,10 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     assert_eq!(entries.len(), 3);
     let last: Value = serde_json::from_slice(&entries[2].1).unwrap();
     assert_eq!(last["event"]["kind"], "tenant_sealed");
+    target_domains.custody().store().shutdown().await.unwrap();
     target_store.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    target_node.shutdown().await.unwrap();
     drop(target_store);
     drop(target_domains);
     drop(audit);
@@ -445,13 +451,15 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
         .storage
         .open_existing(&target_path, kasumi_store::test_utils::NODE_STORE_ID)
         .unwrap();
-    let service = TenantStore::open_existing_fixture(reopened, SECURITY_TENANT.into(), service_key)
+    let service = TenantStore::open_existing_fixture(reopened.clone(), SECURITY_TENANT.into(), service_key)
         .await
         .unwrap();
     assert_eq!(service.scan("security.audit").unwrap().len(), 3);
     service.shutdown().await.unwrap();
+    reopened.shutdown().await.unwrap();
     source.shutdown().await.unwrap();
     source_audit.shutdown().await.unwrap();
+    source_node.shutdown().await.unwrap();
     drop(source);
     drop(source_store);
     drop(source_audit);

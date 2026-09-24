@@ -23,7 +23,7 @@ mod service_allocation_tests;
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
 use kasumi_query::QueryCancellation;
 use kasumi_raft::RaftGroup;
-use kasumi_store::{BackupDestination, TenantStore};
+use kasumi_store::{BackupDestination, TenantStorageSet, TenantStore};
 use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
@@ -476,6 +476,7 @@ fn attach_trusted_leader_time(
 pub struct Database {
     engine: Arc<TenantEngine>,
     group: RaftGroup,
+    stores: Arc<TenantStorageSet>,
     store: Arc<TenantStore>,
     cursors: Mutex<HashMap<String, Cursor>>,
     archive_destinations: Mutex<BTreeMap<String, Arc<dyn BackupDestination>>>,
@@ -749,16 +750,18 @@ impl Database {
     fn finish_construction(
         engine: Arc<TenantEngine>,
         group: RaftGroup,
-        store: Arc<TenantStore>,
+        stores: Arc<TenantStorageSet>,
         security_audit: Arc<SecurityAudit>,
         clocks: DatabaseClocks,
         embedded: bool,
     ) -> Arc<Self> {
         // Raft construction has already selected local or replicated semantics.
         // Do not infer that mode from a second application-only storage read.
+        let store = stores.application().clone();
         let database = Arc::new(Self {
             engine,
             group,
+            stores,
             store,
             cursors: Mutex::new(HashMap::new()),
             archive_destinations: Mutex::new(BTreeMap::new()),
@@ -807,6 +810,9 @@ impl Database {
     }
     pub fn raft_group(&self) -> &RaftGroup {
         &self.group
+    }
+    pub fn stores(&self) -> &Arc<TenantStorageSet> {
+        &self.stores
     }
     /// Stop admission, drain background work, and release owned keys and state.
     /// Retained application handles still own this database/store; drop them
@@ -1830,12 +1836,18 @@ impl Database {
                 }
                 Some(metrics.current_term)
             };
-            if self.engine.generation()?.state.revision != response.revision {
-                return Err(Error::new(
-                    ErrorCode::Conflict,
-                    "snapshot changed before trusted time witness",
-                ));
-            }
+            // Strict read auditing (including this request's own confirmed
+            // audit) advances the tenant revision without changing the data
+            // observed by the snapshot. Fence the exact snapshot read set
+            // instead: authority epochs, point versions, and query collection
+            // epochs still reject a concurrent change to the result.
+            let read_set = response.read_assertions();
+            crate::state::validate_read_assertions(
+                &self.engine.generation()?.state,
+                &read_set.iter().collect::<Vec<_>>(),
+                0,
+                read_set.len(),
+            )?;
             let now = self
                 .command_clock
                 .lock()
@@ -2671,15 +2683,85 @@ mod tests {
                 .await
         });
         pause.entered.notified().await;
-        db.mutate(context.clone(), batch("competing", base + 23))
-            .await
-            .unwrap();
+        db.mutate(
+            context.clone(),
+            MutationBatch {
+                idempotency_key: "competing".into(),
+                read_set: vec![ReadAssertion::Before {
+                    not_after_ms: base + 23,
+                }],
+                operations: vec![Mutation::Put {
+                    collection: "docs".into(),
+                    id: "accepted".into(),
+                    body: json!({"value":2}),
+                    expected: Precondition::Version(
+                        exact.documents[0].document.as_ref().unwrap().version,
+                    ),
+                }],
+            },
+        )
+        .await
+        .unwrap();
         pause.resume.notify_one();
         assert_eq!(
             pending.await.unwrap().unwrap_err().code,
             ErrorCode::Conflict
         );
         *db.bounded_read_pause.lock().unwrap() = None;
+        let before_audit = db.engine.generation().unwrap().state.revision;
+        let strict = db
+            .read_snapshot(&context, read(base + 23, base + 23))
+            .await
+            .unwrap();
+        assert_eq!(strict.trusted_leader_time_ms, Some(base + 23));
+        assert!(db.engine.generation().unwrap().state.revision > before_audit);
+        let strict_read_set = strict.read_assertions();
+        crate::state::validate_read_assertions(
+            &db.engine.generation().unwrap().state,
+            &strict_read_set.iter().collect::<Vec<_>>(),
+            0,
+            strict_read_set.len(),
+        )
+        .unwrap();
+        // A second strict read also advances the revision solely for audit.
+        db.read_snapshot(&context, read(base + 23, base + 23))
+            .await
+            .unwrap();
+        crate::state::validate_read_assertions(
+            &db.engine.generation().unwrap().state,
+            &strict_read_set.iter().collect::<Vec<_>>(),
+            0,
+            strict_read_set.len(),
+        )
+        .unwrap();
+        db.mutate(
+            context.clone(),
+            MutationBatch {
+                idempotency_key: "change-after-strict-read".into(),
+                read_set: vec![],
+                operations: vec![Mutation::Put {
+                    collection: "docs".into(),
+                    id: "accepted".into(),
+                    body: json!({"value":3}),
+                    expected: Precondition::Version(
+                        strict.documents[0].document.as_ref().unwrap().version,
+                    ),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            crate::state::validate_read_assertions(
+                &db.engine.generation().unwrap().state,
+                &strict_read_set.iter().collect::<Vec<_>>(),
+                0,
+                strict_read_set.len(),
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::Conflict
+        );
         db.shutdown().await.unwrap();
     }
 

@@ -326,6 +326,7 @@ mod tests {
             audit.shutdown().await.unwrap();
             drop(database);
             assert!(weak_database.upgrade().is_none());
+            node.shutdown().await.unwrap();
             drop(store);
             drop(audit);
             drop(node);
@@ -409,7 +410,7 @@ mod tests {
             )
             .unwrap();
         let audit_store = TenantStore::initialize_catalog_fixture(
-            node,
+            node.clone(),
             crate::SECURITY_TENANT.into(),
             Arc::new(LocalKeyProvider::new([42; 32])),
         )
@@ -571,6 +572,7 @@ mod tests {
         drop(store);
         drop(audit);
         drop(engine);
+        node.shutdown().await.unwrap();
         assert_eq!(
             crate::test_utils::reserved_payload_bytes(&admission),
             metadata_bytes

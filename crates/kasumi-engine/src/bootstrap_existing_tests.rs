@@ -69,6 +69,7 @@ impl Installation {
     async fn shutdown(&self) {
         self.stores.shutdown().await.unwrap();
         self.audit.shutdown().await.unwrap();
+        self.node.shutdown().await.unwrap();
     }
     fn seed_bootstrap(&self) -> anyhow::Result<()> {
         bind_deployment(&self.stores, b"local-v1")?;

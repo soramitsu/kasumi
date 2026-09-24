@@ -40,13 +40,14 @@ impl Fixture {
         let storage = PhysicalFixture::new().unwrap();
         let mut settings = self.settings.clone();
         settings.resource_budget_bytes = resource_budget_bytes;
+        let node = storage
+            .create_new(
+                storage.path("authority-4.kv"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
         let stores = TenantStorageSet::initialize_catalogs(
-            storage
-                .create_new(
-                    storage.path("authority-4.kv"),
-                    kasumi_store::test_utils::NODE_STORE_ID,
-                )
-                .unwrap(),
+            node.clone(),
             self.installation.tenant(),
             Arc::new(LocalKeyProvider::new([4; 32])),
             Arc::new(LocalKeyProvider::new([14; 32])),
@@ -98,6 +99,7 @@ impl Fixture {
             .unwrap();
         self.services.push(service);
         self.stores.push(stores);
+        self.nodes.insert(id, node);
         self.physical.insert(id, storage);
     }
 }

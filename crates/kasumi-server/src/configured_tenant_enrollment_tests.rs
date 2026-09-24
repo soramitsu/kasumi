@@ -292,8 +292,8 @@ async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_r
         .await?;
     let installed = manager.configured(&request.tenant)?;
     assert_eq!(
-        Some(crate::runtime::persisted_bootstrap_fingerprint(
-            &installed.store
+        Some(crate::runtime::persisted_replicated_bootstrap_fingerprint(
+            installed.database.stores()
         )?),
         record.bootstrap_sha256
     );

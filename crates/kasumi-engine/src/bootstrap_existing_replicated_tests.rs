@@ -436,7 +436,7 @@ async fn paired_bootstrap_readers_reject_orphan_divergence_and_alternate_bytes_w
         Ok(_) => panic!("equal alternate bytes must fail"),
         Err(error) => error,
     };
-    assert!(format!("{error:#}").contains("noncanonical replicated deployment binding"));
+    assert!(format!("{error:#}").contains("trailing deployment bytes"));
     assert_eq!(retained(&fixture.stores)?, noncanonical);
     drop(fixture.close().await);
     Ok(())
@@ -464,14 +464,16 @@ async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descri
     };
     replace(&serde_json::to_vec(&("local", &installed))?)?;
     fixture
-        .reject(1, expected, "unsupported replicated deployment tag")
+        .reject(1, expected, "unsupported deployment field or enum")
         .await?;
     replace(b"{")?;
-    fixture.reject(1, expected, "invalid type").await?;
+    fixture
+        .reject(1, expected, "unexpected deployment token")
+        .await?;
     let canonical = std::str::from_utf8(&binding)?;
     replace(canonical.replace("\"1\":", "\"01\":").as_bytes())?;
     fixture
-        .reject(1, expected, "noncanonical or duplicate object key")
+        .reject(1, expected, "invalid numeric map key")
         .await?;
 
     for field in 0..5 {
@@ -510,7 +512,7 @@ async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descri
     );
     replace(&whitespace)?;
     fixture
-        .reject(1, expected, "noncanonical replicated deployment binding")
+        .reject(1, expected, "trailing deployment bytes")
         .await?;
     replace(&binding)?;
     let restored = installed_replicated_bootstrap(&fixture.stores, expected)?;
@@ -588,7 +590,7 @@ async fn target_deployment_requires_paired_current_writer_bytes() -> anyhow::Res
         panic!("target reader accepted equivalent alternate deployment bytes");
     };
     assert!(
-        format!("{error:#}").contains("noncanonical replicated deployment binding"),
+        format!("{error:#}").contains("trailing deployment bytes"),
         "{error:#}"
     );
     assert_eq!(retained(&fixture.stores)?, before);
@@ -655,6 +657,38 @@ async fn leader(nodes: &BTreeMap<u64, Arc<Database>>) -> anyhow::Result<u64> {
         }
     })
     .await?)
+}
+
+#[tokio::test]
+async fn initialize_replicated_rejects_missing_custody_binding_before_membership()
+-> anyhow::Result<()> {
+    let fixture = Replica::new().await?;
+    let installed = bootstrap();
+    let router = Arc::new(InProcessRouter::default());
+    let database = fixtures::open_fixture_replicated(
+        1,
+        fixture.stores.clone(),
+        &installed,
+        router,
+        raft_config(),
+        fixture.audit.clone(),
+    )
+    .await?;
+    assert!(!database.raft_group().raft().is_initialized().await?);
+    fixture
+        .stores
+        .custody()
+        .store()
+        .write_batch(&[WriteOp::delete("engine.deployment", b"mode")])?;
+    let error = initialize_replicated(&database, &installed)
+        .await
+        .expect_err("one-sided deployment authorized first membership");
+    assert!(format!("{error:#}").contains("required deployment binding"));
+    assert!(!database.raft_group().raft().is_initialized().await?);
+    database.shutdown().await?;
+    drop(database);
+    drop(fixture.close().await);
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

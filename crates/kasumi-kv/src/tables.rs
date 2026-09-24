@@ -22,6 +22,18 @@ use std::sync::{Arc, Condvar, Mutex};
 const TABLE_TYPES: &str = "__kasumi_kv_table_types";
 const MAX_TABLE_VALUE_BYTES: usize = MAX_VALUE_BYTES;
 
+pub struct RetainedBackendOwner(Option<Arc<dyn std::any::Any + Send + Sync>>);
+
+impl Drop for RetainedBackendOwner {
+    fn drop(&mut self) {
+        if let Some(owner) = self.0.take() {
+            // An entered close did not prove native drain. Dropping the last
+            // owner here could invoke an unobserved destructor close.
+            std::mem::forget(owner);
+        }
+    }
+}
+
 /// Errors visible to storage callers. A retained owner stays in this error
 /// when the backend cannot prove that native resources were drained.
 pub enum StorageError {
@@ -31,7 +43,7 @@ pub enum StorageError {
     Core(CoreError),
     RetainedOwner {
         error: io::Error,
-        _owner: Arc<dyn std::any::Any + Send + Sync>,
+        _owner: RetainedBackendOwner,
     },
 }
 
@@ -584,7 +596,7 @@ impl Database {
                 });
                 Err(CloseError::Storage(StorageError::RetainedOwner {
                     error,
-                    _owner: self.inner.clone(),
+                    _owner: RetainedBackendOwner(Some(self.inner.clone())),
                 }))
             }
         }
@@ -1226,6 +1238,7 @@ impl<K: TableCodec, V: TableCodec> Iterator for TableRange<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     const BYTES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("records");
     const INTEGERS: TableDefinition<u64, u64> = TableDefinition::new("records");
@@ -1276,6 +1289,56 @@ mod tests {
         fn close(&self) -> BackendCloseOutcome {
             BackendCloseOutcome::drained(Ok(()))
         }
+    }
+
+    struct UnprovedCloseBackend {
+        inner: MemoryBackend,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl Drop for UnprovedCloseBackend {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    impl StorageBackend for UnprovedCloseBackend {
+        fn len(&self) -> io::Result<u64> {
+            self.inner.len()
+        }
+        fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
+            self.inner.read(at, out)
+        }
+        fn write(&self, at: u64, data: &[u8]) -> io::Result<()> {
+            self.inner.write(at, data)
+        }
+        fn set_len(&self, length: u64) -> io::Result<()> {
+            self.inner.set_len(length)
+        }
+        fn sync_data(&self) -> io::Result<()> {
+            self.inner.sync_data()
+        }
+        fn close(&self) -> BackendCloseOutcome {
+            BackendCloseOutcome::retained_result(Ok(()))
+        }
+    }
+
+    #[test]
+    fn unproved_consuming_close_never_drops_its_backend_implicitly() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let database = Database::builder(Arc::new(AllowAll))
+            .create_with_backend(UnprovedCloseBackend {
+                inner: MemoryBackend::default(),
+                drops: drops.clone(),
+            })
+            .unwrap();
+        let error = database.close().expect_err("native drain is unproved");
+        assert!(matches!(
+            &error,
+            CloseError::Storage(StorageError::RetainedOwner { .. })
+        ));
+        drop(error);
+        assert_eq!(drops.load(Ordering::Acquire), 0);
     }
 
     #[derive(Default)]
