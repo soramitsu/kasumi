@@ -695,6 +695,7 @@ fn tools() -> &'static Vec<Tool> {
         let read_expected = json!({"oneOf":[object(json!({"kind":{"const":"absent"}}),json!(["kind"])),object(json!({"kind":{"const":"version"},"version":{"type":"integer","minimum":0}}),json!(["kind","version"]))]});
         let read_assertion = json!({"oneOf":[
             object(json!({"kind":{"const":"before"},"not_after_ms":{"type":"integer","minimum":0}}),json!(["kind","not_after_ms"])),
+            object(json!({"kind":{"const":"not_before"},"not_before_ms":{"type":"integer","minimum":0}}),json!(["kind","not_before_ms"])),
             object(json!({"kind":{"const":"snapshot"},"incarnation":name,"policy_epoch":{"type":"integer","minimum":0},"schema_epoch":{"type":"integer","minimum":0}}),json!(["kind","incarnation","policy_epoch","schema_epoch"])),
             object(json!({"kind":{"const":"document"},"collection":name,"id":name,"expected":read_expected}),json!(["kind","collection","id","expected"])),
             object(json!({"kind":{"const":"collection"},"collection":name,"data_epoch":{"type":"integer","minimum":0}}),json!(["kind","collection","data_epoch"]))

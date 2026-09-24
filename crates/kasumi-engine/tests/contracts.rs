@@ -179,6 +179,86 @@ fn conditional_batches_fence_dependencies_and_phantoms_but_not_audits_or_replays
 }
 
 #[test]
+fn not_before_uses_the_inclusive_leader_stamp_on_every_replica_and_retains_replays() {
+    let mut observations = Vec::new();
+    for _ in 0..2 {
+        let db = engine(false, Limits::default());
+        db.apply_command(
+            &db.disk,
+            1,
+            command(Operation::CreateCollection(definition())),
+        )
+        .unwrap()
+        .unwrap();
+        db.apply_command(
+            &db.disk,
+            2,
+            command(Operation::Mutate(batch(
+                "lease-seed",
+                vec![put("lease", "first-owner", Precondition::Absent)],
+            ))),
+        )
+        .unwrap()
+        .unwrap();
+
+        let mut reclaim = batch(
+            "reclaim-too-early",
+            vec![put("lease", "second-owner", Precondition::Version(2))],
+        );
+        reclaim.read_set = vec![
+            ReadAssertion::Document {
+                collection: "people".into(),
+                id: "lease".into(),
+                expected: ReadPrecondition::Version(2),
+            },
+            ReadAssertion::NotBefore {
+                not_before_ms: 2_000,
+            },
+            ReadAssertion::Before {
+                not_after_ms: 2_000,
+            },
+        ];
+        let mut early = command(Operation::Mutate(reclaim.clone()));
+        early.timestamp_ms = 1_999;
+        let denied = db.apply_command(&db.disk, 3, early).unwrap().unwrap_err();
+        assert_eq!(denied.code, ErrorCode::Conflict);
+        assert_eq!(
+            db.generation().unwrap().state.collections["people"].documents["lease"].body["email"],
+            "first-owner"
+        );
+
+        // A rejected receipt is permanent: advancing admission time cannot
+        // reinterpret the original idempotency key as a new operation.
+        let mut retry = command(Operation::Mutate(reclaim.clone()));
+        retry.timestamp_ms = 2_000;
+        assert_eq!(
+            db.apply_command(&db.disk, 4, retry).unwrap().unwrap_err(),
+            denied
+        );
+
+        reclaim.idempotency_key = "reclaim-at-bound".into();
+        let mut admitted = command(Operation::Mutate(reclaim.clone()));
+        admitted.timestamp_ms = 2_000;
+        let receipt = db.apply_command(&db.disk, 5, admitted).unwrap().unwrap();
+        assert_eq!(
+            db.generation().unwrap().state.collections["people"].documents["lease"].body["email"],
+            "second-owner"
+        );
+
+        // Exact receipt resolution precedes the original read assertions,
+        // even if a replay arrives with a different leader timestamp.
+        let mut replay = command(Operation::Mutate(reclaim));
+        replay.timestamp_ms = 1_999;
+        assert_eq!(
+            db.apply_command(&db.disk, 6, replay).unwrap().unwrap(),
+            receipt
+        );
+        observations.push((denied, receipt));
+    }
+    assert_eq!(observations[0], observations[1]);
+}
+
+#[test]
 fn read_assertions_block_write_skew_and_require_read_authority() {
     let db = engine(false, Limits::default());
     db.apply_command(
@@ -316,6 +396,182 @@ fn append_only_mode_rejects_overwrite_delete_and_schema_weakening_atomically() {
     assert_eq!(
         db.generation().unwrap().state.collections["people"].data_epoch,
         2
+    );
+}
+
+#[test]
+fn boi_first_owner_and_state_commit_atomically_then_survive_snapshot_with_version_cas() {
+    let db = engine(false, Limits::default());
+    for (revision, name, write_mode, schema) in [
+        (
+            1,
+            "boi_core_owner",
+            CollectionWriteMode::AppendOnly,
+            json!({"type":"object", "required":["schema","owner"], "additionalProperties":false,
+                   "properties":{"schema":{"const":"boi.core-owner.v1"},
+                                 "owner":{"const":"boi-core.is2"}}}),
+        ),
+        (
+            2,
+            "boi_core_state",
+            CollectionWriteMode::Mutable,
+            json!({"type":"object", "required":["schema","owner","state"],
+                   "additionalProperties":false,
+                   "properties":{"schema":{"const":"boi.central-state.v1"},
+                                 "owner":{"const":"boi-core.is2"},
+                                 "state":{"type":"object"}}}),
+        ),
+    ] {
+        db.apply_command(
+            &db.disk,
+            revision,
+            command(Operation::CreateCollection(CollectionDefinition {
+                name: name.into(),
+                write_mode,
+                retention_class: CollectionRetentionClass::Operational,
+                schema,
+                indexes: vec![],
+                strict_read_audit: false,
+            })),
+        )
+        .unwrap()
+        .unwrap();
+    }
+    let generation = db.generation().unwrap();
+    let mut initial = batch(
+        "boi-initialize",
+        vec![
+            Mutation::Put {
+                collection: "boi_core_owner".into(),
+                id: "owner".into(),
+                body: json!({"schema":"boi.core-owner.v1", "owner":"boi-core.is2"}),
+                expected: Precondition::Absent,
+            },
+            Mutation::Put {
+                collection: "boi_core_state".into(),
+                id: "central-state".into(),
+                body: json!({"schema":"boi.central-state.v1", "owner":"boi-core.is2",
+                             "state":{"payments":[]}}),
+                expected: Precondition::Absent,
+            },
+        ],
+    );
+    initial.read_set = vec![
+        ReadAssertion::Snapshot {
+            incarnation: generation.state.incarnation.clone(),
+            policy_epoch: generation.state.policy_epoch,
+            schema_epoch: generation.state.schema_epoch,
+        },
+        ReadAssertion::Collection {
+            collection: "boi_core_owner".into(),
+            data_epoch: generation.state.collections["boi_core_owner"].data_epoch,
+        },
+        ReadAssertion::Collection {
+            collection: "boi_core_state".into(),
+            data_epoch: generation.state.collections["boi_core_state"].data_epoch,
+        },
+    ];
+    drop(generation);
+    let mut malformed = initial.clone();
+    malformed.idempotency_key = "boi-malformed-initial-state".into();
+    let Mutation::Put { body, .. } = &mut malformed.operations[1] else {
+        unreachable!()
+    };
+    *body = json!({"schema":"boi.central-state.v1", "owner":"boi-core.is2",
+                   "state":[]});
+    assert_eq!(
+        db.apply_command(&db.disk, 3, command(Operation::Mutate(malformed)))
+            .unwrap()
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaViolation
+    );
+    let generation = db.generation().unwrap();
+    assert!(
+        !generation.state.collections["boi_core_owner"]
+            .documents
+            .contains_key("owner")
+    );
+    assert!(
+        !generation.state.collections["boi_core_state"]
+            .documents
+            .contains_key("central-state")
+    );
+    drop(generation);
+    let initial_receipt = db
+        .apply_command(&db.disk, 4, command(Operation::Mutate(initial.clone())))
+        .unwrap()
+        .unwrap();
+    let generation = db.generation().unwrap();
+    assert_eq!(
+        generation.state.collections["boi_core_owner"].documents["owner"].version,
+        4
+    );
+    assert_eq!(
+        generation.state.collections["boi_core_state"].documents["central-state"].version,
+        4
+    );
+    drop(generation);
+
+    let mut other_claim = initial.clone();
+    other_claim.idempotency_key = "boi-other-owner".into();
+    assert_eq!(
+        db.apply_command(&db.disk, 5, command(Operation::Mutate(other_claim)))
+            .unwrap()
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let update = batch(
+        "boi-payment-1",
+        vec![Mutation::Put {
+            collection: "boi_core_state".into(),
+            id: "central-state".into(),
+            body: json!({"schema":"boi.central-state.v1", "owner":"boi-core.is2",
+                         "state":{"payments":["payment-1"]}}),
+            expected: Precondition::Version(4),
+        }],
+    );
+    let update_receipt = db
+        .apply_command(&db.disk, 6, command(Operation::Mutate(update.clone())))
+        .unwrap()
+        .unwrap();
+    let mut stale = update.clone();
+    stale.idempotency_key = "boi-stale-payment".into();
+    assert_eq!(
+        db.apply_command(&db.disk, 7, command(Operation::Mutate(stale)))
+            .unwrap()
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let snapshot = db.fixture_snapshot(&db.disk).unwrap();
+    db.fixture_restore(&snapshot).unwrap();
+    let recovered = db.generation().unwrap();
+    assert_eq!(
+        recovered.state.collections["boi_core_owner"].documents["owner"].version,
+        4
+    );
+    assert_eq!(
+        recovered.state.collections["boi_core_state"].documents["central-state"].version,
+        6
+    );
+    assert_eq!(
+        recovered.state.collections["boi_core_state"].documents["central-state"].body["state"]["payments"],
+        json!(["payment-1"])
+    );
+    drop(recovered);
+    assert_eq!(
+        db.apply_command(&db.disk, 8, command(Operation::Mutate(initial)))
+            .unwrap()
+            .unwrap(),
+        initial_receipt
+    );
+    assert_eq!(
+        db.apply_command(&db.disk, 9, command(Operation::Mutate(update)))
+            .unwrap()
+            .unwrap(),
+        update_receipt
     );
 }
 fn put(id: &str, email: &str, expected: Precondition) -> Mutation {
@@ -965,6 +1221,7 @@ async fn coherent_snapshot_reads_span_collections_under_concurrent_commits_and_s
                         )
                         .unwrap(),
                     ],
+                    time_bounds: None,
                 },
             )
             .await
@@ -992,6 +1249,7 @@ async fn coherent_snapshot_reads_span_collections_under_concurrent_commits_and_s
                     id: "a".into(),
                 }],
                 queries: Vec::new(),
+                time_bounds: None,
             },
         )
         .await
@@ -1024,6 +1282,7 @@ async fn snapshot_reads_reject_partial_queries_cursors_and_foreign_authority() {
     let mut request = ReadSnapshotRequest {
         documents: Vec::new(),
         queries: vec![query()],
+        time_bounds: None,
     };
     assert_eq!(
         db.read_snapshot(&context("owner"), request.clone())

@@ -1,4 +1,121 @@
 #[tokio::test]
+async fn native_policy_limits_readback_is_admin_scoped_and_exact() {
+    let fixture = Fixture::new().await;
+    let admin = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
+    let token = fixture.token("person", "tenant-a", "kasumi:admin");
+    let read_only = fixture.token("person", "tenant-a", "kasumi:read");
+    let other_tenant = fixture.token("person", "other", "kasumi:admin");
+    let request = kasumi_types::ReadPolicyLimits {
+        tenant: "tenant-a".into(),
+        expected_incarnation: fixture.incarnation.to_string(),
+    };
+    let wire = |request: &kasumi_types::ReadPolicyLimits| proto::ReadPolicyLimitsRequest {
+        request_json: serde_json::to_vec(request).unwrap(),
+    };
+    assert_eq!(
+        admin
+            .read_policy_limits(native(wire(&request), &read_only))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    assert!(
+        admin
+            .read_policy_limits(native(wire(&request), &other_tenant))
+            .await
+            .is_err()
+    );
+    let mut wrong = request.clone();
+    wrong.tenant = "other".into();
+    assert_eq!(
+        admin
+            .read_policy_limits(native(wire(&wrong), &token))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    wrong = request.clone();
+    wrong.expected_incarnation = uuid::Uuid::new_v4().to_string();
+    assert!(
+        admin
+            .read_policy_limits(native(wire(&wrong), &token))
+            .await
+            .is_err()
+    );
+
+    let before: kasumi_types::PolicyLimitsSnapshot = serde_json::from_slice(
+        &admin
+            .read_policy_limits(native(wire(&request), &token))
+            .await
+            .unwrap()
+            .into_inner()
+            .response_json,
+    )
+    .unwrap();
+    assert_eq!(before.tenant, "tenant-a");
+    assert_eq!(before.incarnation, fixture.incarnation.to_string());
+    let mut limits = before.limits.clone();
+    limits.max_document_bytes = 512 << 10;
+    admin
+        .set_limits(native(
+            proto::SetLimitsRequest {
+                limits_json: serde_json::to_vec(&limits).unwrap(),
+            },
+            &token,
+        ))
+        .await
+        .unwrap();
+    let mut policy = before.policy.clone();
+    policy.strict_read_audit = true;
+    admin
+        .set_policy(native(
+            proto::SetPolicyRequest {
+                policy_json: serde_json::to_vec(&policy).unwrap(),
+            },
+            &token,
+        ))
+        .await
+        .unwrap();
+    let after: kasumi_types::PolicyLimitsSnapshot = serde_json::from_slice(
+        &admin
+            .read_policy_limits(native(wire(&request), &token))
+            .await
+            .unwrap()
+            .into_inner()
+            .response_json,
+    )
+    .unwrap();
+    assert!(after.revision > before.revision);
+    assert!(after.policy_epoch > before.policy_epoch);
+    assert_eq!(
+        serde_json::to_value(after.policy).unwrap(),
+        serde_json::to_value(policy).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(after.limits).unwrap(),
+        serde_json::to_value(&limits).unwrap()
+    );
+    let mut oversized = limits;
+    oversized.max_document_bytes = (1 << 20) + 1;
+    assert_eq!(
+        admin
+            .set_limits(native(
+                proto::SetLimitsRequest {
+                    limits_json: serde_json::to_vec(&oversized).unwrap(),
+                },
+                &token,
+            ))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::InvalidArgument
+    );
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn native_schema_activation_is_atomic_scoped_permanent_and_private() {
     let fixture = Fixture::new().await;
     let token = fixture.token(

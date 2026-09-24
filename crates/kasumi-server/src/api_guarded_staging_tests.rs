@@ -188,6 +188,7 @@ async fn guarded_stop_secure_sdk_preserves_exact_identity_and_native_authority()
                     id: "result".into(),
                 }],
                 queries: vec![],
+                time_bounds: None,
             },
             &snapshot_options(std::time::Duration::from_secs(4)),
         )

@@ -93,6 +93,7 @@ async fn native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallb
                     id: "a".into(),
                 }],
                 queries: vec![],
+                time_bounds: None,
             },
             &snapshot_options(std::time::Duration::from_secs(4)),
         )

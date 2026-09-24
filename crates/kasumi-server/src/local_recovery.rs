@@ -1562,6 +1562,7 @@ impl Operator {
             ensure!(
                 existing.family_id == journal.target_family
                     && existing.tenant == request.tenant
+                    && existing.principal == request.source_principal
                     && existing.resource == resource,
                 "recovery profile path is occupied by unrelated credentials"
             );
@@ -1620,14 +1621,15 @@ impl Operator {
             private_files::create(&bearer_file, token.token.as_bytes())?;
         }
         let profile = crate::standalone::ClientProfile {
-            format: 1,
+            format: 2,
             family_id: journal.target_family,
             tenant: journal.status.request.tenant.clone(),
+            principal: request.source_principal.clone(),
             resource,
             native_endpoint: format!("https://localhost:{}", self.config.native.listen.port()),
             administrative_members: std::collections::BTreeMap::from([(
                 1,
-                crate::serving_runtime::AuthorityEndpoint {
+                kasumi_client::ProfileAuthorityEndpoint {
                     endpoint: format!("https://localhost:{}", self.config.admin.listen.port()),
                     certificate_pins: std::collections::BTreeSet::from([hex::encode(
                         self.config.admin.tls.load()?.certificate_pin(),
@@ -1635,7 +1637,7 @@ impl Operator {
                 },
             )]),
             mcp_endpoint: self.config.mcp.protocol.public_url.clone(),
-            identity: crate::runtime::TlsFiles {
+            identity: kasumi_client::ProfileTlsFiles {
                 certificate: root.join("profiles/client.pem"),
                 private_key: root.join("profiles/client-key.pem"),
             },

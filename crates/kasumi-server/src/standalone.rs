@@ -8,6 +8,7 @@ use crate::{
     serving_runtime::TenantServingConfig,
 };
 use anyhow::{Context, Result, ensure};
+use kasumi_client::{ProfileAuthorityEndpoint, ProfileTlsFiles};
 use kasumi_store::{
     DiskWork, FileKeyProvider, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeStore, StorageAccess,
     TenantStore, private_files,
@@ -250,77 +251,23 @@ pub(crate) fn installation_root(config: &RuntimeConfig) -> Result<&Path> {
     Ok(root)
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ClientProfile {
-    pub format: u32,
-    pub family_id: Uuid,
-    pub tenant: String,
-    pub resource: CredentialResource,
-    pub native_endpoint: String,
-    #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
-    pub administrative_members: BTreeMap<u64, crate::serving_runtime::AuthorityEndpoint>,
-    pub mcp_endpoint: String,
-    pub identity: TlsFiles,
-    pub server_ca: PathBuf,
-    pub native_certificate_pin: String,
-    pub bearer_file: PathBuf,
-}
-impl ClientProfile {
-    pub fn load(path: &Path) -> Result<Self> {
-        let profile: Self = serde_json::from_slice(&private_files::read(path, 128 << 10)?)?;
-        ensure!(
-            profile.format == 1 && !profile.family_id.is_nil(),
-            "unsupported client profile"
-        );
-        profile.resource.validate()?;
-        crate::installed_clients::validate(&profile.administrative_members)?;
-        kasumi_types::validate_name(&profile.tenant)?;
-        Ok(profile)
-    }
-    pub fn administrative_member(&self) -> Result<&crate::serving_runtime::AuthorityEndpoint> {
-        crate::installed_clients::validate(&self.administrative_members)?;
-        ensure!(
-            self.administrative_members.len() == 1,
-            "this member-specific operation requires a profile with exactly one administrative member"
-        );
-        Ok(self.administrative_members.values().next().unwrap())
-    }
-    pub fn administrative_connections(
-        &self,
-    ) -> Result<BTreeMap<u64, kasumi_client::KasumiClientConfig>> {
-        crate::installed_clients::connections(
-            &self.administrative_members,
-            &self.identity,
-            &self.server_ca,
-        )
-    }
-    pub fn connection(&self, administrative: bool) -> Result<kasumi_client::KasumiClientConfig> {
-        if administrative {
-            self.administrative_member()?;
-            return Ok(self
-                .administrative_connections()?
-                .into_values()
-                .next()
-                .unwrap());
+pub use kasumi_client::ClientProfile;
+
+impl From<TlsFiles> for ProfileTlsFiles {
+    fn from(files: TlsFiles) -> Self {
+        Self {
+            certificate: files.certificate,
+            private_key: files.private_key,
         }
-        Ok(kasumi_client::KasumiClientConfig {
-            endpoint: self.native_endpoint.clone(),
-            identity: self.identity.load()?,
-            trusted_ca_pem: crate::runtime::read_bounded(&self.server_ca, 1 << 20)?,
-            server_certificate_pins: BTreeSet::from([crate::runtime::parse_certificate_pin(
-                &self.native_certificate_pin,
-            )?]),
-        })
     }
-    pub fn bearer(&self) -> Result<zeroize::Zeroizing<String>> {
-        let bytes = private_files::read(&self.bearer_file, 16 << 10)?;
-        let token = std::str::from_utf8(&bytes)?;
-        ensure!(
-            !token.is_empty() && !token.contains(char::is_whitespace),
-            "invalid credential file"
-        );
-        Ok(zeroize::Zeroizing::new(token.into()))
+}
+
+impl From<ProfileTlsFiles> for TlsFiles {
+    fn from(files: ProfileTlsFiles) -> Self {
+        Self {
+            certificate: files.certificate,
+            private_key: files.private_key,
+        }
     }
 }
 
@@ -595,7 +542,7 @@ async fn recover_administrator_owned(
             let issued = credentials.create(
                 CreateCredential {
                     family_id: Uuid::new_v4(),
-                    principal,
+                    principal: principal.clone(),
                     tenant: tenant.into(),
                     resource: resource.clone(),
                     scopes: BTreeSet::from([
@@ -617,6 +564,7 @@ async fn recover_administrator_owned(
             private_files::create(&token_path, issued.token.as_bytes())?;
             let profile = ClientProfile {
                 tenant: tenant.into(),
+                principal,
                 resource,
                 family_id: issued.family_id,
                 bearer_file: token_path,
@@ -1377,20 +1325,21 @@ async fn initialize_owned(
                 let bearer_file = profiles.join(format!("{name}.token"));
                 private_files::create(&bearer_file, issued.token.as_bytes())?;
                 let profile = ClientProfile {
-                    format: 1,
+                    format: 2,
                     family_id: issued.family_id,
                     tenant: tenant.into(),
+                    principal: "administrator".into(),
                     resource,
                     native_endpoint: format!("https://localhost:{}", network.native_listen.port()),
                     administrative_members: BTreeMap::from([(
                         1,
-                        crate::serving_runtime::AuthorityEndpoint {
+                        ProfileAuthorityEndpoint {
                             endpoint: format!("https://localhost:{}", network.admin_listen.port()),
                             certificate_pins: BTreeSet::from([admin_pin.clone()]),
                         },
                     )]),
                     mcp_endpoint: network.mcp_public_url.clone(),
-                    identity: client_identity.clone(),
+                    identity: client_identity.clone().into(),
                     server_ca: tls.join("ca.pem"),
                     native_certificate_pin: native_pin.clone(),
                     bearer_file,

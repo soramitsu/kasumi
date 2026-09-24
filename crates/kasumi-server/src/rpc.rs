@@ -958,6 +958,33 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         ))
     }
 
+    async fn read_policy_limits(
+        &self,
+        request: Request<ReadPolicyLimitsRequest>,
+    ) -> Result<Response<ReadPolicyLimitsResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let request: kasumi_types::ReadPolicyLimits =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = self.database(&context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let snapshot = database
+            .read_policy_limits(&context, request)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = ReadPolicyLimitsResponse {
+            response_json: encode_json(&snapshot).map_err(status)?,
+        };
+        Ok(Response::new(
+            release_response(&self.auth, &context, fence, response, false)
+                .await
+                .map_err(status)?,
+        ))
+    }
+
     async fn activate_schema(
         &self,
         request: Request<SchemaChangeSetRequest>,

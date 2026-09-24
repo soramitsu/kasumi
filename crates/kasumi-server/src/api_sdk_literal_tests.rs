@@ -132,6 +132,22 @@ async fn native_sdk_query_feed_schema_preserve_literal_values_and_admission() {
         deadline: tokio::time::Instant::now() + Duration::from_secs(10),
     };
 
+    let policy_limits = admin
+        .read_policy_limits(
+            bearer,
+            &kasumi_types::ReadPolicyLimits {
+                tenant: "tenant-a".into(),
+                expected_incarnation: fixture.incarnation.to_string(),
+            },
+            &options(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(policy_limits.tenant, "tenant-a");
+    assert_eq!(policy_limits.incarnation, fixture.incarnation.to_string());
+    assert_eq!(policy_limits.limits.max_document_bytes, 1 << 20);
+    drop(policy_limits);
+
     // Construct literal objects directly. No stock Value decoder is allowed to
     // pre-transform the expected payload before the SDK's byte boundary.
     let payload = json!({

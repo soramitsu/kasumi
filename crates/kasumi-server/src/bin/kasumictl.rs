@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail, ensure};
 use kasumi_server::{
     api::MAX_REQUEST_BYTES,
     rpc::proto::{
-        CollectionDefinitionRequest, ManagementRequest, ReadSchemaRequest,
+        CollectionDefinitionRequest, ManagementRequest, ReadPolicyLimitsRequest, ReadSchemaRequest,
         SchemaActivationStatusRequest, SchemaChangeSetRequest, SetLimitsRequest, SetPolicyRequest,
         SetSuspendedRequest,
     },
@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
     }
     let [flag, path, operation, rest @ ..] = arguments.as_slice() else {
         bail!(
-            "usage: kasumictl --config <client.json> activate-schema|read-schema|schema-status|create-collection|replace-collection|set-policy|set-limits <operation.json>, or suspend|resume, or manage <command.json>, or authority-maintenance <request.json>"
+            "usage: kasumictl --config <client.json> activate-schema|read-schema|read-policy-limits|schema-status|create-collection|replace-collection|set-policy|set-limits <operation.json>, or suspend|resume, or manage <command.json>, or authority-maintenance <request.json>"
         );
     };
     ensure!(flag == "--config", "first argument must be --config");
@@ -91,8 +91,8 @@ async fn main() -> Result<()> {
     }
     let payload = match (operation.as_str(), rest) {
         (
-            "activate-schema" | "read-schema" | "schema-status" | "create-collection"
-            | "replace-collection" | "set-policy" | "set-limits" | "manage",
+            "activate-schema" | "read-schema" | "read-policy-limits" | "schema-status"
+            | "create-collection" | "replace-collection" | "set-policy" | "set-limits" | "manage",
             [file],
         ) => Some(read_json(file)?),
         ("suspend" | "resume", []) => None,
@@ -106,6 +106,9 @@ async fn main() -> Result<()> {
             }
             "read-schema" => {
                 serde_json::from_slice::<kasumi_types::ReadSchema>(bytes)?;
+            }
+            "read-policy-limits" => {
+                serde_json::from_slice::<kasumi_types::ReadPolicyLimits>(bytes)?;
             }
             "schema-status" => {
                 serde_json::from_slice::<kasumi_types::SchemaActivationRef>(bytes)?;
@@ -125,12 +128,32 @@ async fn main() -> Result<()> {
             _ => unreachable!(),
         }
     }
+    let expected_policy_limits = if operation == "read-policy-limits" {
+        Some(serde_json::from_slice::<kasumi_types::ReadPolicyLimits>(
+            payload.as_deref().unwrap(),
+        )?)
+    } else {
+        None
+    };
     let (mut client, authorization) = AdminClientConfig::load(path)?.connect().await?;
-    if matches!(operation.as_str(), "read-schema" | "schema-status") {
+    if matches!(
+        operation.as_str(),
+        "read-schema" | "read-policy-limits" | "schema-status"
+    ) {
         let result = if operation == "read-schema" {
             client
                 .read_schema(request(
                     ReadSchemaRequest {
+                        request_json: payload.unwrap(),
+                    },
+                    &authorization,
+                ))
+                .await
+                .map(|response| response.into_inner().response_json)
+        } else if operation == "read-policy-limits" {
+            client
+                .read_policy_limits(request(
+                    ReadPolicyLimitsRequest {
                         request_json: payload.unwrap(),
                     },
                     &authorization,
@@ -150,10 +173,20 @@ async fn main() -> Result<()> {
         }
         .map_err(|status| {
             leader_hint(&status);
-            anyhow::anyhow!("schema observation failed ({})", status.code())
+            anyhow::anyhow!("administrative observation failed ({})", status.code())
         })?;
-        let result: serde_json::Value = serde_json::from_slice(&result)?;
-        println!("{}", serde_json::to_string(&result)?);
+        if let Some(expected) = expected_policy_limits {
+            let snapshot: kasumi_types::PolicyLimitsSnapshot = serde_json::from_slice(&result)?;
+            ensure!(
+                snapshot.tenant == expected.tenant
+                    && snapshot.incarnation == expected.expected_incarnation,
+                "policy/limits readback identity differs from the requested database"
+            );
+            println!("{}", serde_json::to_string(&snapshot)?);
+        } else {
+            let result: serde_json::Value = serde_json::from_slice(&result)?;
+            println!("{}", serde_json::to_string(&result)?);
+        }
         return Ok(());
     }
     if operation == "manage" {

@@ -151,6 +151,7 @@ pub(crate) fn prepare_points(
             points: documents.to_vec(),
             queries: vec![],
             lease: Some((**lease).clone()),
+            time_bounds: None,
         },
         "/kasumi.v1.KasumiData/ReadSnapshotPage",
         call,

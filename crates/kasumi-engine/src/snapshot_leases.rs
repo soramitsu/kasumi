@@ -204,6 +204,7 @@ impl Database {
         let snapshot = ReadSnapshotRequest {
             documents: request.documents,
             queries: vec![],
+            time_bounds: None,
         };
         let work = SnapshotWork {
             generation: self

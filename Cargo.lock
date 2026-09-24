@@ -1783,12 +1783,14 @@ dependencies = [
  "kasumi-serving",
  "kasumi-transport",
  "kasumi-types",
+ "libc",
  "prost",
  "prost-build",
  "protoc-bin-vendored",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tonic",
@@ -1797,6 +1799,7 @@ dependencies = [
  "tower-service",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -1981,6 +1984,24 @@ dependencies = [
  "tokio-rustls",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "kasumi-taira-journal"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hex",
+ "kasumi-client",
+ "kasumi-transport",
+ "kasumi-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

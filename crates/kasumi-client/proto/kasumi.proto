@@ -73,6 +73,7 @@ service KasumiAdmin {
   rpc AbortBackupSession(BackupSessionJsonRequest) returns (BackupSessionJsonResponse);
   rpc CleanupBackupSession(BackupSessionJsonRequest) returns (BackupSessionJsonResponse);
   rpc ReadSchema(ReadSchemaRequest) returns (ReadSchemaResponse);
+  rpc ReadPolicyLimits(ReadPolicyLimitsRequest) returns (ReadPolicyLimitsResponse);
   rpc ActivateSchema(SchemaChangeSetRequest) returns (WriteReceipt);
   rpc SchemaActivationStatus(SchemaActivationStatusRequest) returns (SchemaActivationStatusResponse);
   rpc ArchiveHistory(ArchiveHistoryRequest) returns (WriteReceipt);
@@ -105,6 +106,8 @@ message ArchiveHistoryRequest { bytes request_json = 1; }
 message SchemaChangeSetRequest { bytes request_json = 1; }
 message ReadSchemaRequest { bytes request_json = 1; }
 message ReadSchemaResponse { bytes response_json = 1; }
+message ReadPolicyLimitsRequest { bytes request_json = 1; }
+message ReadPolicyLimitsResponse { bytes response_json = 1; }
 message SchemaActivationStatusRequest { bytes request_json = 1; }
 message SchemaActivationStatusResponse { bytes response_json = 1; }
 message BeginStagedTransactionRequest { bytes request_json = 1; }

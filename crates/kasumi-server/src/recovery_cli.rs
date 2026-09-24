@@ -263,9 +263,10 @@ mod tests {
         )
         .unwrap();
         let mut profile = ClientProfile {
-            format: 1,
+            format: 2,
             family_id: Uuid::new_v4(),
             tenant: crate::runtime::CONTROL_TENANT.into(),
+            principal: "administrator".into(),
             resource: CredentialResource::Control {
                 incarnation: Uuid::new_v4(),
             },
@@ -275,14 +276,14 @@ mod tests {
                 .map(|id| {
                     (
                         id,
-                        crate::serving_runtime::AuthorityEndpoint {
+                        kasumi_client::ProfileAuthorityEndpoint {
                             endpoint: format!("https://localhost:{}", 9500 + id),
                             certificate_pins: BTreeSet::from(["ab".repeat(32)]),
                         },
                     )
                 })
                 .collect(),
-            identity: crate::runtime::TlsFiles {
+            identity: kasumi_client::ProfileTlsFiles {
                 certificate: certificate.clone(),
                 private_key: key,
             },
