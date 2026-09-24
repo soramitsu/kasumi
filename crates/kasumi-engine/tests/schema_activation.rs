@@ -123,6 +123,623 @@ fn unique(mut definition: CollectionDefinition) -> CollectionDefinition {
 }
 
 #[test]
+#[ignore = "requires BOI_COLLECTIONS_DIR from the pinned BOI source checkout"]
+fn pinned_boi_collection_files_activate_as_one_native_schema_bundle() {
+    let directory = std::path::PathBuf::from(
+        std::env::var("BOI_COLLECTIONS_DIR").expect("BOI_COLLECTIONS_DIR must be explicit"),
+    );
+    assert!(directory.is_absolute(), "collection path must be absolute");
+    let expected = std::collections::BTreeMap::from([
+        ("boi_core_owner", CollectionWriteMode::AppendOnly),
+        ("boi_core_policy", CollectionWriteMode::Mutable),
+        ("boi_core_uids", CollectionWriteMode::AppendOnly),
+        ("boi_core_wallets", CollectionWriteMode::Mutable),
+        (
+            "boi_core_dynamic_wallet_bindings",
+            CollectionWriteMode::Mutable,
+        ),
+        ("boi_core_payments", CollectionWriteMode::AppendOnly),
+        (
+            "boi_core_payment_idempotency",
+            CollectionWriteMode::AppendOnly,
+        ),
+        (
+            "boi_core_ledger_payment_intents",
+            CollectionWriteMode::AppendOnly,
+        ),
+        (
+            "boi_core_ledger_payment_receipts",
+            CollectionWriteMode::AppendOnly,
+        ),
+        (
+            "boi_core_ledger_payment_claims",
+            CollectionWriteMode::Mutable,
+        ),
+        (
+            "boi_core_client_payment_quotes",
+            CollectionWriteMode::AppendOnly,
+        ),
+        (
+            "boi_core_client_payment_idempotency",
+            CollectionWriteMode::AppendOnly,
+        ),
+        (
+            "boi_core_client_payment_receipts",
+            CollectionWriteMode::AppendOnly,
+        ),
+        ("boi_core_settlements", CollectionWriteMode::AppendOnly),
+    ]);
+    let supplied = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|value| value == "json"))
+        .collect::<Vec<_>>();
+    assert_eq!(supplied.len(), expected.len(), "exact BOI schema file set");
+    let mut definitions = Vec::new();
+    for (name, mode) in expected {
+        let path = directory.join(format!("{name}.collection.json"));
+        let definition: CollectionDefinition =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(definition.name, name);
+        assert_eq!(definition.write_mode, mode);
+        assert!(definition.strict_read_audit);
+        assert_eq!(
+            definition.retention_class,
+            if mode == CollectionWriteMode::AppendOnly {
+                CollectionRetentionClass::ArchivableHistory
+            } else {
+                CollectionRetentionClass::Operational
+            }
+        );
+        definitions.push(definition);
+    }
+    let db = engine(Limits::default());
+    let receipt = apply(
+        &db,
+        Operation::ActivateSchema(request(
+            &db,
+            "boi-first-release-14-collections",
+            definitions
+                .iter()
+                .cloned()
+                .map(|definition| SchemaChange::Create { definition })
+                .collect(),
+        )),
+    )
+    .unwrap();
+    let generation = db.generation().unwrap();
+    assert_eq!(generation.state.schema_epoch, 1);
+    assert_eq!(generation.state.collections.len(), 14);
+    assert_eq!(receipt.revision, generation.state.revision);
+    for definition in definitions {
+        let installed = &generation.state.collections[&definition.name].definition;
+        assert_eq!(
+            serde_json::to_value(installed).unwrap(),
+            serde_json::to_value(definition).unwrap()
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires FI_AUTH_COLLECTIONS_DIR from the pinned FI Core source checkout"]
+fn pinned_fi_auth_collection_files_activate_as_one_native_schema_bundle() {
+    let directory = std::path::PathBuf::from(
+        std::env::var("FI_AUTH_COLLECTIONS_DIR").expect("FI_AUTH_COLLECTIONS_DIR must be explicit"),
+    );
+    let expected = [
+        ("fi_auth_admin_actions", CollectionWriteMode::Mutable),
+        ("fi_auth_consumed", CollectionWriteMode::AppendOnly),
+        ("fi_auth_devices", CollectionWriteMode::Mutable),
+        ("fi_auth_invite_delivery", CollectionWriteMode::Mutable),
+        ("fi_auth_ephemeral", CollectionWriteMode::Mutable),
+        ("fi_auth_mfa", CollectionWriteMode::Mutable),
+        ("fi_auth_rate_limits", CollectionWriteMode::Mutable),
+        ("fi_auth_recovery", CollectionWriteMode::Mutable),
+        ("fi_auth_users", CollectionWriteMode::Mutable),
+    ];
+    let supplied = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("fi_auth_") && name.ends_with(".collection.json")
+                })
+        })
+        .count();
+    assert_eq!(supplied, expected.len(), "exact FI auth schema file set");
+    let definitions = expected
+        .into_iter()
+        .map(|(name, mode)| {
+            let path = directory.join(format!("{name}.collection.json"));
+            let definition: CollectionDefinition =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(definition.name, name);
+            assert_eq!(definition.write_mode, mode);
+            assert!(definition.strict_read_audit);
+            assert_eq!(
+                definition.retention_class,
+                if mode == CollectionWriteMode::AppendOnly {
+                    CollectionRetentionClass::ArchivableHistory
+                } else {
+                    CollectionRetentionClass::Operational
+                }
+            );
+            definition
+        })
+        .collect::<Vec<_>>();
+    let invite = definitions
+        .iter()
+        .find(|definition| definition.name == "fi_auth_invite_delivery")
+        .unwrap();
+    let mut sample = json!({
+        "schema": "fi.auth-record.v1",
+        "fi_id": "leumi.is2",
+        "kind": "invite_delivery",
+        "subject_sha256": "a".repeat(64),
+        "group_sha256": null,
+        "expires_at_ms": null,
+        "payload": {
+            "schema": "fi.invite-delivery.v1",
+            "fi_id": "leumi.is2",
+            "action_sha256": "b".repeat(64),
+            "invite_sha256": "c".repeat(64),
+            "delivery_id": "d".repeat(64),
+            "sealed": {"key_id": "k1", "ciphertext_base64": "A".repeat(64)},
+            "state": {"status": "PENDING"},
+            "created_at_ms": 1000,
+            "updated_at_ms": 1000,
+            "invite_expires_at_ms": 2000
+        }
+    });
+    kasumi_query::validate_document(invite, &sample).unwrap();
+    sample["payload"]["state"] = json!({
+        "status": "CLAIMED",
+        "claim_id": "claim-1",
+        "lease_until_ms": 1500
+    });
+    sample["payload"]["updated_at_ms"] = json!(1100);
+    kasumi_query::validate_document(invite, &sample).unwrap();
+    sample["payload"]["fi_id"] = json!("hapoalim.is2");
+    // The shared FI schema validates an approved FI identity; the signed
+    // tenant binding and service readback enforce equality to the local FI.
+    kasumi_query::validate_document(invite, &sample).unwrap();
+    sample["payload"]["fi_id"] = json!("leumi.is");
+    assert!(kasumi_query::validate_document(invite, &sample).is_err());
+    let db = engine(Limits::default());
+    let receipt = apply(
+        &db,
+        Operation::ActivateSchema(request(
+            &db,
+            "fi-auth-first-release-9-collections",
+            definitions
+                .iter()
+                .cloned()
+                .map(|definition| SchemaChange::Create { definition })
+                .collect(),
+        )),
+    )
+    .unwrap();
+    let generation = db.generation().unwrap();
+    assert_eq!(generation.state.schema_epoch, 1);
+    assert_eq!(generation.state.collections.len(), 9);
+    assert_eq!(receipt.revision, generation.state.revision);
+    for definition in definitions {
+        let installed = &generation.state.collections[&definition.name].definition;
+        assert_eq!(
+            serde_json::to_value(installed).unwrap(),
+            serde_json::to_value(definition).unwrap()
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires KYC_COLLECTIONS_DIR rendered from an independently pinned FI identity"]
+fn pinned_kyc_collection_files_activate_as_one_native_schema_bundle() {
+    let directory = std::path::PathBuf::from(
+        std::env::var("KYC_COLLECTIONS_DIR").expect("KYC_COLLECTIONS_DIR must be explicit"),
+    );
+    let expected = [
+        ("kyc_vault_owner", CollectionWriteMode::AppendOnly),
+        (
+            "kyc_encrypted_resource_chunks",
+            CollectionWriteMode::Mutable,
+        ),
+        ("kyc_document_seals", CollectionWriteMode::Mutable),
+        ("kyc_submissions", CollectionWriteMode::Mutable),
+        ("kyc_submission_index", CollectionWriteMode::Mutable),
+        ("kyc_user_pending_submissions", CollectionWriteMode::Mutable),
+        ("kyc_audit_evidence", CollectionWriteMode::AppendOnly),
+        ("kyc_audit_outbox", CollectionWriteMode::Mutable),
+        ("kyc_idempotency", CollectionWriteMode::AppendOnly),
+        ("kyc_recovery_requests", CollectionWriteMode::AppendOnly),
+    ];
+    let supplied = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|value| value == "json"))
+        .count();
+    assert_eq!(supplied, expected.len(), "exact KYC schema file set");
+    let definitions = expected
+        .into_iter()
+        .map(|(name, mode)| {
+            let path = directory.join(format!("{name}.collection.json"));
+            let definition: CollectionDefinition =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(definition.name, name);
+            assert_eq!(definition.write_mode, mode);
+            assert!(definition.strict_read_audit);
+            assert_eq!(
+                definition.retention_class,
+                if mode == CollectionWriteMode::AppendOnly {
+                    CollectionRetentionClass::ArchivableHistory
+                } else {
+                    CollectionRetentionClass::Operational
+                }
+            );
+            definition
+        })
+        .collect::<Vec<_>>();
+    let submission = definitions
+        .iter()
+        .find(|definition| definition.name == "kyc_submissions")
+        .unwrap();
+    let mut sample = json!({
+        "schema": "kyc.sealed-submission.v1",
+        "fi_id": "leumi.is2",
+        "owner_hash": "a".repeat(64),
+        "record": {},
+        "document_seals": [{"id": format!("seal-{}", "b".repeat(64)), "sha256": "c".repeat(64)}]
+    });
+    kasumi_query::validate_document(submission, &sample).unwrap();
+    sample["document_seals"][0]["sha256"] = json!("tampered");
+    assert!(kasumi_query::validate_document(submission, &sample).is_err());
+    sample["document_seals"][0]["sha256"] = json!("c".repeat(64));
+    sample["fi_id"] = json!("hapoalim.is2");
+    assert!(kasumi_query::validate_document(submission, &sample).is_err());
+    let outbox = definitions
+        .iter()
+        .find(|definition| definition.name == "kyc_audit_outbox")
+        .unwrap();
+    let cursor = json!({
+        "schema": "kyc.audit-scan-cursor.v1",
+        "fi_id": "leumi.is2",
+        "after_id": null,
+    });
+    kasumi_query::validate_document(outbox, &cursor).unwrap();
+    let marker = json!({
+        "schema": "kyc.audit-outbox.v1",
+        "fi_id": "leumi.is2",
+        "event_id": "event-1",
+        "delivered": false,
+    });
+    kasumi_query::validate_document(outbox, &marker).unwrap();
+    let mut cross_fi = cursor.clone();
+    cross_fi["fi_id"] = json!("hapoalim.is2");
+    assert!(kasumi_query::validate_document(outbox, &cross_fi).is_err());
+    let mut invalid_resume = cursor.clone();
+    invalid_resume["after_id"] = json!("event-not-a-hash");
+    assert!(kasumi_query::validate_document(outbox, &invalid_resume).is_err());
+    let evidence = definitions
+        .iter()
+        .find(|definition| definition.name == "kyc_audit_evidence")
+        .unwrap();
+    let valid_evidence = json!({
+        "schema":"kyc.audit-evidence.v1", "fi_id":"leumi.is2",
+        "event":{"event_id":"e1"}, "event_sha256":"a".repeat(64),
+        "account_id_header_base64":null
+    });
+    kasumi_query::validate_document(evidence, &valid_evidence).unwrap();
+    let mut invalid_evidence = valid_evidence.clone();
+    invalid_evidence["event_sha256"] = json!("not-a-hash");
+    assert!(kasumi_query::validate_document(evidence, &invalid_evidence).is_err());
+    let idempotency = definitions
+        .iter()
+        .find(|definition| definition.name == "kyc_idempotency")
+        .unwrap();
+    let claim = json!({
+        "schema":"kyc.idempotency.v1", "fi_id":"leumi.is2",
+        "scope":"kyc_submission", "key_sha256":"a".repeat(64),
+        "request_sha256":"b".repeat(64),
+        "resource_id":"729153da-ad5b-4dfa-8c37-2665507007aa",
+        "created_at":"2026-09-24T00:00:00Z"
+    });
+    kasumi_query::validate_document(idempotency, &claim).unwrap();
+    let mut wrong_scope = claim.clone();
+    wrong_scope["scope"] = json!("legacy_recovery");
+    assert!(kasumi_query::validate_document(idempotency, &wrong_scope).is_err());
+    let db = engine(Limits::default());
+    let receipt = apply(
+        &db,
+        Operation::ActivateSchema(request(
+            &db,
+            "kyc-first-release-9-collections",
+            definitions
+                .iter()
+                .cloned()
+                .map(|definition| SchemaChange::Create { definition })
+                .collect(),
+        )),
+    )
+    .unwrap();
+    let generation = db.generation().unwrap();
+    assert_eq!(generation.state.schema_epoch, 1);
+    assert_eq!(generation.state.collections.len(), 9);
+    assert_eq!(receipt.revision, generation.state.revision);
+    for definition in definitions {
+        let installed = &generation.state.collections[&definition.name].definition;
+        assert_eq!(
+            serde_json::to_value(installed).unwrap(),
+            serde_json::to_value(definition).unwrap()
+        );
+    }
+    let low = format!("event-{}", "0".repeat(64));
+    let high = format!("event-{}", "f".repeat(64));
+    let behind = format!("event-{}", "8".repeat(64));
+    let marker = |event_id: &str| {
+        json!({
+            "schema": "kyc.audit-outbox.v1", "fi_id": "leumi.is2",
+            "event_id": event_id, "delivered": true
+        })
+    };
+    let bootstrap = apply(
+        &db,
+        Operation::Mutate(MutationBatch {
+            idempotency_key: "kyc-owner-cursor-bootstrap".into(),
+            read_set: vec![],
+            operations: vec![
+                Mutation::Put {
+                    collection: "kyc_vault_owner".into(),
+                    id: "owner".into(),
+                    body: json!({"schema":"kyc.vault-owner.v1","fi_id":"leumi.is2"}),
+                    expected: Precondition::Absent,
+                },
+                Mutation::Put {
+                    collection: "kyc_audit_outbox".into(),
+                    id: "scan-cursor".into(),
+                    body: cursor.clone(),
+                    expected: Precondition::Absent,
+                },
+            ],
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        bootstrap.versions["/kyc_vault_owner/owner"],
+        bootstrap.revision
+    );
+    assert_eq!(
+        bootstrap.versions["/kyc_audit_outbox/scan-cursor"],
+        bootstrap.revision
+    );
+    mutate(
+        &db,
+        "kyc-audit-markers",
+        vec![
+            Mutation::Put {
+                collection: "kyc_audit_outbox".into(),
+                id: low.clone(),
+                body: marker("low"),
+                expected: Precondition::Absent,
+            },
+            Mutation::Put {
+                collection: "kyc_audit_outbox".into(),
+                id: high.clone(),
+                body: marker("high"),
+                expected: Precondition::Absent,
+            },
+        ],
+    );
+    let before = db.generation().unwrap();
+    let outbox = &before.state.collections["kyc_audit_outbox"];
+    let cursor_version = outbox.documents["scan-cursor"].version;
+    let advance = |id: &str, epoch: u64, version: u64, after_id: Option<String>| {
+        let state = db.generation().unwrap();
+        MutationBatch {
+            idempotency_key: id.into(),
+            read_set: vec![
+                ReadAssertion::Snapshot {
+                    incarnation: state.state.incarnation.clone(),
+                    policy_epoch: state.state.policy_epoch,
+                    schema_epoch: state.state.schema_epoch,
+                },
+                ReadAssertion::Document {
+                    collection: "kyc_audit_outbox".into(),
+                    id: "scan-cursor".into(),
+                    expected: ReadPrecondition::Version(version),
+                },
+                ReadAssertion::Collection {
+                    collection: "kyc_audit_outbox".into(),
+                    data_epoch: epoch,
+                },
+            ],
+            operations: vec![Mutation::Put {
+                collection: "kyc_audit_outbox".into(),
+                id: "scan-cursor".into(),
+                body: json!({"schema":"kyc.audit-scan-cursor.v1","fi_id":"leumi.is2","after_id":after_id}),
+                expected: Precondition::Version(version),
+            }],
+        }
+    };
+    apply(
+        &db,
+        Operation::Mutate(advance(
+            "cursor-after-high",
+            outbox.data_epoch,
+            cursor_version,
+            Some(high.clone()),
+        )),
+    )
+    .unwrap();
+    let committed = db.generation().unwrap();
+    let committed_outbox = &committed.state.collections["kyc_audit_outbox"];
+    let committed_version = committed_outbox.documents["scan-cursor"].version;
+    let stale_epoch = committed_outbox.data_epoch;
+    drop(committed);
+    mutate(
+        &db,
+        "insert-behind-cursor",
+        vec![Mutation::Put {
+            collection: "kyc_audit_outbox".into(),
+            id: behind.clone(),
+            body: marker("behind"),
+            expected: Precondition::Absent,
+        }],
+    );
+    let restarted = db.generation().unwrap();
+    assert_eq!(
+        restarted.state.collections["kyc_audit_outbox"].documents["scan-cursor"].body["after_id"],
+        json!(high)
+    );
+    assert!(
+        restarted.state.collections["kyc_audit_outbox"]
+            .documents
+            .keys()
+            .filter(|id| *id > &high)
+            .all(|id| id == "scan-cursor")
+    );
+    assert_eq!(
+        apply(
+            &db,
+            Operation::Mutate(advance("stale-wrap", stale_epoch, committed_version, None))
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::Conflict,
+        "insertion during a scan must fence cursor advancement"
+    );
+    let fresh_epoch = restarted.state.collections["kyc_audit_outbox"].data_epoch;
+    drop(restarted);
+    apply(
+        &db,
+        Operation::Mutate(advance("cursor-wrap", fresh_epoch, committed_version, None)),
+    )
+    .unwrap();
+    let after_wrap = db.generation().unwrap();
+    assert_eq!(
+        after_wrap.state.collections["kyc_audit_outbox"].documents["scan-cursor"].body["after_id"],
+        json!(null)
+    );
+    let ids = after_wrap.state.collections["kyc_audit_outbox"]
+        .documents
+        .keys()
+        .filter(|id| id.starts_with("event-"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec![low, behind, high],
+        "fresh scan after restart/wrap must see the inserted marker"
+    );
+}
+
+#[test]
+#[ignore = "requires FI_GOVERNANCE_COLLECTIONS_DIR from the pinned FI Core source checkout"]
+fn pinned_fi_governance_collection_files_activate_as_one_native_schema_bundle() {
+    let directory = std::path::PathBuf::from(
+        std::env::var("FI_GOVERNANCE_COLLECTIONS_DIR")
+            .expect("FI_GOVERNANCE_COLLECTIONS_DIR must be explicit"),
+    );
+    let expected = [
+        ("fi_governance_controls", CollectionWriteMode::Mutable),
+        (
+            "fi_governance_dataspace_profiles",
+            CollectionWriteMode::Mutable,
+        ),
+        ("fi_governance_fee_events", CollectionWriteMode::AppendOnly),
+        ("fi_governance_fee_inflows", CollectionWriteMode::AppendOnly),
+        (
+            "fi_governance_fee_instruction_claims",
+            CollectionWriteMode::AppendOnly,
+        ),
+        (
+            "fi_governance_fee_policies",
+            CollectionWriteMode::AppendOnly,
+        ),
+        ("fi_governance_fee_state", CollectionWriteMode::Mutable),
+        ("fi_governance_fi_registry", CollectionWriteMode::Mutable),
+        ("fi_governance_idempotency", CollectionWriteMode::Mutable),
+        (
+            "fi_governance_provisioning_jobs",
+            CollectionWriteMode::Mutable,
+        ),
+        ("fi_governance_settlement", CollectionWriteMode::Mutable),
+        ("fi_governance_two_tier", CollectionWriteMode::Mutable),
+        ("fi_merchant_records", CollectionWriteMode::Mutable),
+        ("fi_consumer_cases", CollectionWriteMode::Mutable),
+        ("fi_consumer_legal_cases", CollectionWriteMode::Mutable),
+        ("fi_compliance_cases", CollectionWriteMode::Mutable),
+        ("fi_compliance_events", CollectionWriteMode::AppendOnly),
+    ];
+    let supplied = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    (name.starts_with("fi_governance_")
+                        || name.starts_with("fi_merchant_")
+                        || name.starts_with("fi_consumer_")
+                        || name.starts_with("fi_compliance_"))
+                        && name.ends_with(".collection.json")
+                })
+        })
+        .count();
+    assert_eq!(
+        supplied,
+        expected.len(),
+        "exact FI governance schema file set"
+    );
+    let definitions = expected
+        .into_iter()
+        .map(|(name, mode)| {
+            let path = directory.join(format!("{name}.collection.json"));
+            let definition: CollectionDefinition =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(definition.name, name);
+            assert_eq!(definition.write_mode, mode);
+            assert!(definition.strict_read_audit);
+            assert_eq!(
+                definition.retention_class,
+                if mode == CollectionWriteMode::AppendOnly {
+                    CollectionRetentionClass::ArchivableHistory
+                } else {
+                    CollectionRetentionClass::Operational
+                }
+            );
+            definition
+        })
+        .collect::<Vec<_>>();
+    let db = engine(Limits::default());
+    let receipt = apply(
+        &db,
+        Operation::ActivateSchema(request(
+            &db,
+            "fi-governance-first-release-17-collections",
+            definitions
+                .iter()
+                .cloned()
+                .map(|definition| SchemaChange::Create { definition })
+                .collect(),
+        )),
+    )
+    .unwrap();
+    let generation = db.generation().unwrap();
+    assert_eq!(generation.state.schema_epoch, 1);
+    assert_eq!(generation.state.collections.len(), 17);
+    assert_eq!(receipt.revision, generation.state.revision);
+    for definition in definitions {
+        let installed = &generation.state.collections[&definition.name].definition;
+        assert_eq!(
+            serde_json::to_value(installed).unwrap(),
+            serde_json::to_value(definition).unwrap()
+        );
+    }
+}
+
+#[test]
 fn atomic_bundle_publishes_all_indexes_once_and_preserves_read_generations() {
     let db = engine(Limits::default());
     let install = creates(&db, "install", &["journal", "balances"]);

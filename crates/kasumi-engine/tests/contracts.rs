@@ -1134,6 +1134,45 @@ async fn database(
 }
 
 #[tokio::test]
+async fn mixed_put_delete_receipt_reports_one_revision_for_every_target_and_replay() {
+    let (_dir, _physical, db, _key, _store, audit) = database(false).await;
+    let seeded = db
+        .mutate(
+            context("owner"),
+            batch("mixed-seed", vec![put("old", "old", Precondition::Absent)]),
+        )
+        .await
+        .unwrap();
+    let mixed = batch(
+        "mixed-targets",
+        vec![
+            put("new", "new", Precondition::Absent),
+            Mutation::Delete {
+                collection: "people".into(),
+                id: "old".into(),
+                expected: Precondition::Version(seeded.revision),
+            },
+        ],
+    );
+    let receipt = db.mutate(context("owner"), mixed.clone()).await.unwrap();
+    assert_eq!(receipt.versions.len(), 2);
+    assert_eq!(receipt.versions.get("/people/new"), Some(&receipt.revision));
+    assert_eq!(receipt.versions.get("/people/old"), Some(&receipt.revision));
+    assert_eq!(db.mutate(context("owner"), mixed).await.unwrap(), receipt);
+    assert_eq!(
+        db.operation_receipt(&context("owner"), "mixed-targets")
+            .await
+            .unwrap()
+            .unwrap()
+            .outcome
+            .unwrap(),
+        receipt
+    );
+    db.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn actual_raft_writes_queries_and_snapshot_pagination() {
     let (_dir, _physical, db, _key, _store, audit) = database(false).await;
     db.mutate(
