@@ -1,0 +1,164 @@
+{
+  "controls": {
+    "redb-allocator-payload-shapes-root-review/receipt.json": "8406251595248ba351c584af868f9b93e8cb9257de3e413f04612ec809dc7688",
+    "redb-allocator-payload-shapes/manifest.json": "e78a1d2eebfd9174f73c9f7285f7526b0dc784c24250543768d9a7c03ae4205a"
+  },
+  "files": {
+    "162-allocator-payload-shapes-applied.json": {
+      "bytes": 1982,
+      "sha256": "bb6025e81c3d817e861aaf9c735d68d415ed6a05ab70020b0cc7f97c34bc004c"
+    },
+    "162-result.json": {
+      "bytes": 767,
+      "sha256": "aef50e9cee3f95de9adb8f7cf6a37abec32f818265c4b207fc0eacc1ae8dbbd4"
+    },
+    "162-source-after.json": {
+      "bytes": 158686,
+      "sha256": "7778c30105ea54b8f22baef3580a57fc72e838d27f3a967b02c32e9f81bce44b"
+    },
+    "162-source-before.json": {
+      "bytes": 158686,
+      "sha256": "7778c30105ea54b8f22baef3580a57fc72e838d27f3a967b02c32e9f81bce44b"
+    },
+    "162-vendor-canonical-allocator-payloads.log": {
+      "bytes": 63866,
+      "sha256": "9d5839aee97150c566817b26b9602d5493130024117178f1f30d0f1810efa128"
+    },
+    "163-result.json": {
+      "bytes": 711,
+      "sha256": "5d82a64f2f7539808be1194fe49532a7ac8e0a7133e4142b9c8aae2c1728669e"
+    },
+    "163-source-after.json": {
+      "bytes": 158686,
+      "sha256": "7778c30105ea54b8f22baef3580a57fc72e838d27f3a967b02c32e9f81bce44b"
+    },
+    "163-source-before.json": {
+      "bytes": 158686,
+      "sha256": "7778c30105ea54b8f22baef3580a57fc72e838d27f3a967b02c32e9f81bce44b"
+    },
+    "163-vendor-strict-clippy.log": {
+      "bytes": 146,
+      "sha256": "439605d20396fa084009e9411ba41b79fa1b363b49422350d7c11365cd5ef4f1"
+    },
+    "164-result.json": {
+      "bytes": 1206,
+      "sha256": "a5e882ffce69d3a57fca7ac0c00d27ae3b4673ade34785e256fdbecd6bbbf87f"
+    },
+    "164-source-after.json": {
+      "bytes": 158686,
+      "sha256": "7778c30105ea54b8f22baef3580a57fc72e838d27f3a967b02c32e9f81bce44b"
+    },
+    "164-source-before.json": {
+      "bytes": 158686,
+      "sha256": "7778c30105ea54b8f22baef3580a57fc72e838d27f3a967b02c32e9f81bce44b"
+    },
+    "164-vendor-feature-public-integration.log": {
+      "bytes": 27439,
+      "sha256": "081814d6a62241355f98438854b49d6b1b75b10d5f46d09ecf729646318e4b2b"
+    },
+    "redb-allocator-payload-shapes-root-review/receipt.json": {
+      "bytes": 474,
+      "sha256": "8406251595248ba351c584af868f9b93e8cb9257de3e413f04612ec809dc7688"
+    },
+    "redb-allocator-payload-shapes-root-review/review.md": {
+      "bytes": 1567,
+      "sha256": "372fdd61b115624b8cd136430fca4817ba6643a6d9b1ed92583623afe11b3426"
+    },
+    "redb-allocator-payload-shapes/README.md": {
+      "bytes": 4978,
+      "sha256": "e25df8de56d01db4eed02bf00a01bf10b7a85c315753fdf619f2cc3051c7f526"
+    },
+    "redb-allocator-payload-shapes/base-snapshot.json": {
+      "bytes": 481,
+      "sha256": "648f68c50705859d19bfd960caba28a7398a3786eaf176a71ed8f233d8dc0c13"
+    },
+    "redb-allocator-payload-shapes/base/vendor/redb-4.2.0/src/allocator_state_key_tests.rs": {
+      "bytes": 7451,
+      "sha256": "b57f485716c730beeea59136ca46bbf51b6223ecb010bfbcc3891506b6ed7953"
+    },
+    "redb-allocator-payload-shapes/base/vendor/redb-4.2.0/src/tree_store/allocator_state.rs": {
+      "bytes": 8469,
+      "sha256": "300e62c37286e48719318534454f2953de1b3b6bcd1140fa428c634d1e976790"
+    },
+    "redb-allocator-payload-shapes/base/vendor/redb-4.2.0/src/tree_store/page_store/mod.rs": {
+      "bytes": 919,
+      "sha256": "842420b03df7877e6e57dc09b714d0cb1b122958dde2accd3526365b8cd1b30e"
+    },
+    "redb-allocator-payload-shapes/base/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs": {
+      "bytes": 63146,
+      "sha256": "1a4e62e43fba843b71b91f1567995c903a8dded5b8cf57dad0561da7f1202159"
+    },
+    "redb-allocator-payload-shapes/freeze.py": {
+      "bytes": 4468,
+      "sha256": "499d8ca1e2b88c633d2317117f22675dc784f6439c84857c6ec091d93b41b710"
+    },
+    "redb-allocator-payload-shapes/git-apply-check.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "redb-allocator-payload-shapes/manifest.json": {
+      "bytes": 7994,
+      "sha256": "e78a1d2eebfd9174f73c9f7285f7526b0dc784c24250543768d9a7c03ae4205a"
+    },
+    "redb-allocator-payload-shapes/payload-shapes.patch": {
+      "bytes": 37041,
+      "sha256": "6b2e9c49d20f1fee3d345c764a9566bd929eeee30ea9c9dbc3d6742edf414235"
+    },
+    "redb-allocator-payload-shapes/producer-invariants.md": {
+      "bytes": 3187,
+      "sha256": "a5826125fd76bae1708d249970605e577139dc2aec5132c70a2106d65db8da7d"
+    },
+    "redb-allocator-payload-shapes/proposed/vendor/redb-4.2.0/src/allocator_state_key_tests.rs": {
+      "bytes": 11047,
+      "sha256": "264a6ff593652d087671d91c967735d093228dfc957f165617ceb0bc2d3d1968"
+    },
+    "redb-allocator-payload-shapes/proposed/vendor/redb-4.2.0/src/tree_store/allocator_state.rs": {
+      "bytes": 11265,
+      "sha256": "6e34c9e08eff6ec3bca28629a0c1d6294dcf4999885006f08301741c416e4147"
+    },
+    "redb-allocator-payload-shapes/proposed/vendor/redb-4.2.0/src/tree_store/page_store/allocator_snapshot.rs": {
+      "bytes": 22593,
+      "sha256": "81622f3608ac4576520ee8854b2ddaa10ee396cfece7d8a26963e0580a6d363c"
+    },
+    "redb-allocator-payload-shapes/proposed/vendor/redb-4.2.0/src/tree_store/page_store/mod.rs": {
+      "bytes": 1007,
+      "sha256": "d120df8081dba0415d34e7719cf4b126cf267aa9f638e095db2e662b32eb9574"
+    },
+    "redb-allocator-payload-shapes/proposed/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs": {
+      "bytes": 63461,
+      "sha256": "e33035e264daca748c6d3f90bf95b95763d6e9e14a0ad593187e29a87bc18f80"
+    },
+    "redb-allocator-payload-shapes/target-rustfmt-check.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "run162.py": {
+      "bytes": 3801,
+      "sha256": "7550adde0e2b3705305f5d83c14fe5d4f0729a4487c17dd8f61a5365b6ded423"
+    },
+    "run163.py": {
+      "bytes": 3700,
+      "sha256": "6de75e48c78aefc90dc41a5f964dc0c2a916b6297ac3cc3e46627fe6298fbe0d"
+    },
+    "run164.py": {
+      "bytes": 4150,
+      "sha256": "d249fe4c485bd6acf8b5b4d7749d540d30c906399fab5707c3502ff8a91753be"
+    }
+  },
+  "package_roots": [
+    "redb-allocator-payload-shapes",
+    "redb-allocator-payload-shapes-root-review"
+  ],
+  "terminal_runs": {
+    "162": {
+      "result_sha256": "aef50e9cee3f95de9adb8f7cf6a37abec32f818265c4b207fc0eacc1ae8dbbd4"
+    },
+    "163": {
+      "result_sha256": "5d82a64f2f7539808be1194fe49532a7ac8e0a7133e4142b9c8aae2c1728669e"
+    },
+    "164": {
+      "result_sha256": "a5e882ffce69d3a57fca7ac0c00d27ae3b4673ade34785e256fdbecd6bbbf87f"
+    }
+  },
+  "unfinished_census_session_admission_provenance_excluded": true
+}

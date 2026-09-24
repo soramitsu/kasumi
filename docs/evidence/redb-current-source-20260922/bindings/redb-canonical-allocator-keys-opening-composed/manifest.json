@@ -1,0 +1,207 @@
+{
+  "status": "target-only-composed-not-applied-not-compiled-not-tested",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "created_at_utc": "2026-09-22T06:34:17.494642+00:00",
+  "patch_sha256": "50da013eb32a9733053eb5e3fc1a1ea61a2a507312e82fddf168d35443f9db1f",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+      "base_sha256": null,
+      "proposed_sha256": "b57f485716c730beeea59136ca46bbf51b6223ecb010bfbcc3891506b6ed7953",
+      "base_bytes": 0,
+      "proposed_bytes": 7451,
+      "original_canonical_reverse_restores_exact_base": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/db.rs",
+      "base_sha256": "a23d91671c6ae073977142fb4c795d104d8fb9ae67447ed497237f60b59c2ad6",
+      "proposed_sha256": "87491f49056422c24c23848d9b1aec7d4466794963ea863cb46eb812364d3a9c",
+      "base_bytes": 67817,
+      "proposed_bytes": 69082,
+      "original_canonical_reverse_restores_exact_base": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "base_sha256": "d15b62d4b66210badcd91d83919342e372b2a5aa83aa0e86d440241a3e741e7e",
+      "proposed_sha256": "88228e7ca070c01954aa91833b702bda50446a554e53e279e22b50675da463a8",
+      "base_bytes": 95885,
+      "proposed_bytes": 96429,
+      "original_canonical_reverse_restores_exact_base": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/allocator_state.rs",
+      "base_sha256": null,
+      "proposed_sha256": "300e62c37286e48719318534454f2953de1b3b6bcd1140fa428c634d1e976790",
+      "base_bytes": 0,
+      "proposed_bytes": 8469,
+      "original_canonical_reverse_restores_exact_base": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/mod.rs",
+      "base_sha256": "fc05270f898544dcf01d613572febec8e5341946f9bc897f481af04a31e83b33",
+      "proposed_sha256": "47bef3e465fab0329c3c25a97ec26bffc70d35be64d3ab02a58903488b7ebc9c",
+      "base_bytes": 1515,
+      "proposed_bytes": 1599,
+      "original_canonical_reverse_restores_exact_base": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "base_sha256": "c1de3401967294278a636b50b76c7e2b86e73aa2a43ae672c2f82f607eddd374",
+      "proposed_sha256": "1a4e62e43fba843b71b91f1567995c903a8dded5b8cf57dad0561da7f1202159",
+      "base_bytes": 63034,
+      "proposed_bytes": 63146,
+      "original_canonical_reverse_restores_exact_base": true
+    }
+  ],
+  "original_canonical_patch_sha256": "a61e1c3d9ac6bfef19a4f33b669d9355c59fca38af02234817244a8ad02551d4",
+  "original_canonical_manifest_sha256": "dfb57d416da63f2c9caf3d42b84bc96c6759686f14934ae60f22f113f0022930",
+  "opening_patch_sha256": "a28a3b438ed3138afb1c0faec7daab045f0812800ebf696b8ce8a93d86fd3cef",
+  "opening_manifest_sha256": "68b2961e38a11b99e5e2a6c7b58d764f3b72ce29324f70808e31af9f32659075",
+  "opening_files_preserved": [
+    {
+      "path": "vendor/redb-4.2.0/src/db.rs",
+      "applied_opening_sha256": "a23d91671c6ae073977142fb4c795d104d8fb9ae67447ed497237f60b59c2ad6",
+      "composed_sha256": "87491f49056422c24c23848d9b1aec7d4466794963ea863cb46eb812364d3a9c",
+      "opening_changes_preserved": "original_canonical_reverse_restores_exact_base"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/lib.rs",
+      "applied_opening_sha256": "8460da21c47cc89b62bb0b91728b488a143b796eda20f4b682c2908e6f3987b8",
+      "composed_sha256": "8460da21c47cc89b62bb0b91728b488a143b796eda20f4b682c2908e6f3987b8",
+      "opening_changes_preserved": "unchanged_file"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_opening.rs",
+      "applied_opening_sha256": "7a496f7d3355a377d40f8e7a7bff7f80608bc9c729de807b52d58fa5ef941f8b",
+      "composed_sha256": "7a496f7d3355a377d40f8e7a7bff7f80608bc9c729de807b52d58fa5ef941f8b",
+      "opening_changes_preserved": "unchanged_file"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_opening_tests.rs",
+      "applied_opening_sha256": "bb894a5852ef4bb044e5d14de33eabdb037844ba1ff253ba8de73285c6aad081",
+      "composed_sha256": "bb894a5852ef4bb044e5d14de33eabdb037844ba1ff253ba8de73285c6aad081",
+      "opening_changes_preserved": "unchanged_file"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_transaction.rs",
+      "applied_opening_sha256": "7dcc471bacab91d6ca1e0119e46b664cf194a87adbfc33deca6e1d6906ee7ee3",
+      "composed_sha256": "7dcc471bacab91d6ca1e0119e46b664cf194a87adbfc33deca6e1d6906ee7ee3",
+      "opening_changes_preserved": "unchanged_file"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "applied_opening_sha256": "d15b62d4b66210badcd91d83919342e372b2a5aa83aa0e86d440241a3e741e7e",
+      "composed_sha256": "88228e7ca070c01954aa91833b702bda50446a554e53e279e22b50675da463a8",
+      "opening_changes_preserved": "original_canonical_reverse_restores_exact_base"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/mod.rs",
+      "applied_opening_sha256": "fc05270f898544dcf01d613572febec8e5341946f9bc897f481af04a31e83b33",
+      "composed_sha256": "47bef3e465fab0329c3c25a97ec26bffc70d35be64d3ab02a58903488b7ebc9c",
+      "opening_changes_preserved": "original_canonical_reverse_restores_exact_base"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+      "applied_opening_sha256": "0341e792cb1da6e1f6e3c0f99617533ec5492065f8e75cf463a3efd07a0ea180",
+      "composed_sha256": "0341e792cb1da6e1f6e3c0f99617533ec5492065f8e75cf463a3efd07a0ea180",
+      "opening_changes_preserved": "unchanged_file"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/mod.rs",
+      "applied_opening_sha256": "842420b03df7877e6e57dc09b714d0cb1b122958dde2accd3526365b8cd1b30e",
+      "composed_sha256": "842420b03df7877e6e57dc09b714d0cb1b122958dde2accd3526365b8cd1b30e",
+      "opening_changes_preserved": "unchanged_file"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "applied_opening_sha256": "c1de3401967294278a636b50b76c7e2b86e73aa2a43ae672c2f82f607eddd374",
+      "composed_sha256": "1a4e62e43fba843b71b91f1567995c903a8dded5b8cf57dad0561da7f1202159",
+      "opening_changes_preserved": "original_canonical_reverse_restores_exact_base"
+    }
+  ],
+  "prepared_tests": [
+    {
+      "path": "vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+      "name": "allocator_keys_have_only_exact_canonical_tags_width_and_padding",
+      "status": "prepared-unexecuted"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+      "name": "obsolete_unknown_and_aliased_allocator_keys_never_repair_or_mutate_on_open",
+      "status": "prepared-unexecuted"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+      "name": "malformed_allocator_transaction_stamp_is_corruption_before_stale_repair",
+      "status": "prepared-unexecuted"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+      "name": "integrity_rejects_noncanonical_allocator_keys_without_storage_writes",
+      "status": "prepared-unexecuted"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+      "name": "exact_canonical_stale_allocator_stamp_still_uses_verified_repair",
+      "status": "prepared-unexecuted"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/allocator_state.rs",
+      "name": "allocator_raw_leaf_geometry_is_checked_before_key_or_value_access",
+      "status": "prepared-unexecuted"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/allocator_state.rs",
+      "name": "allocator_raw_walk_rejects_bad_branch_separator_and_cycle_without_comparison",
+      "status": "prepared-unexecuted"
+    }
+  ],
+  "static_checks": [
+    {
+      "name": "target-rustfmt-check",
+      "argv": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-allocator-keys-opening-composed/proposed/vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-allocator-keys-opening-composed/proposed/vendor/redb-4.2.0/src/db.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-allocator-keys-opening-composed/proposed/vendor/redb-4.2.0/src/transactions.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-allocator-keys-opening-composed/proposed/vendor/redb-4.2.0/src/tree_store/allocator_state.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-allocator-keys-opening-composed/proposed/vendor/redb-4.2.0/src/tree_store/mod.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-allocator-keys-opening-composed/proposed/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs"
+      ],
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "git-apply-check",
+      "argv": [
+        "git",
+        "apply",
+        "--check",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-allocator-keys-opening-composed/canonical-keys.patch"
+      ],
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "target_forward_composition_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "target_reverse_composition_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "readme_sha256": "52650faff2dcdac57e2ad82149f771466895448b1dac2cbb3dc4cfc14928758a",
+  "canonical_key_scope_sha256": "653bb659cf235c9311611b2df4301104851038ab2908da9bb67db13dd3f4f242",
+  "opening_peer_review_sha256": "25643ae6c79e3514515c3c25c19659814e393c7777f3b820b5e46c7011b4bf24",
+  "freeze_script_sha256": "58cce84200ab39023ae889cd5a6139108706050b323cb96e17a31f80b0ad3535",
+  "actual_source_unchanged": true,
+  "remaining_limits": [
+    "Value::from_bytes remains an infallible internal interface behind mandatory input prevalidation",
+    "Buddy/tracker value payload and region-index/layout validation remain separate",
+    "Raw traversal cache/ancestor guards/stack are not total memory qualification",
+    "Branch separator correspondence to child key ranges remains separate",
+    "No Cargo/native tests executed"
+  ]
+}

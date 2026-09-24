@@ -1,0 +1,30 @@
+test_complete_workspace_and_selected_sibling_are_verified (test_check_dependency_patches.DependencyPatchTests.test_complete_workspace_and_selected_sibling_are_verified) ... ok
+test_directory_symlink_cannot_hide_matching_subtree (test_check_dependency_patches.DependencyPatchTests.test_directory_symlink_cannot_hide_matching_subtree) ... ok
+test_duplicate_json_key_is_not_silently_accepted (test_check_dependency_patches.DependencyPatchTests.test_duplicate_json_key_is_not_silently_accepted) ... ok
+test_empty_directories_do_not_change_fresh_checkout_qualification (test_check_dependency_patches.DependencyPatchTests.test_empty_directories_do_not_change_fresh_checkout_qualification) ... ok
+test_executable_mode_change_is_rejected_with_unchanged_bytes (test_check_dependency_patches.DependencyPatchTests.test_executable_mode_change_is_rejected_with_unchanged_bytes) ... ok
+test_extra_dangling_symlink_is_rejected (test_check_dependency_patches.DependencyPatchTests.test_extra_dangling_symlink_is_rejected) ... ok
+test_extra_hidden_vendor_file_is_rejected (test_check_dependency_patches.DependencyPatchTests.test_extra_hidden_vendor_file_is_rejected) ... ok
+test_file_symlink_is_rejected_even_when_target_bytes_match (test_check_dependency_patches.DependencyPatchTests.test_file_symlink_is_rejected_even_when_target_bytes_match) ... ok
+test_metadata_cannot_rewrite_the_policy_while_preserving_package_paths (test_check_dependency_patches.DependencyPatchTests.test_metadata_cannot_rewrite_the_policy_while_preserving_package_paths) ... ok
+test_missing_ignored_workspace_lockfile_is_rejected (test_check_dependency_patches.DependencyPatchTests.test_missing_ignored_workspace_lockfile_is_rejected) ... ok
+test_missing_patch_is_rejected_even_if_metadata_still_names_local_source (test_check_dependency_patches.DependencyPatchTests.test_missing_patch_is_rejected_even_if_metadata_still_names_local_source) ... ok
+test_old_manifest_format_has_no_fallback (test_check_dependency_patches.DependencyPatchTests.test_old_manifest_format_has_no_fallback) ... ok
+test_registry_copy_of_selected_macro_is_rejected (test_check_dependency_patches.DependencyPatchTests.test_registry_copy_of_selected_macro_is_rejected) ... ok
+test_selected_package_requires_source_version_path_and_resolution (test_check_dependency_patches.DependencyPatchTests.test_selected_package_requires_source_version_path_and_resolution) ... ok
+test_source_change_cannot_be_hidden_by_unchanged_cargo_metadata (test_check_dependency_patches.DependencyPatchTests.test_source_change_cannot_be_hidden_by_unchanged_cargo_metadata) ... ok
+test_special_vendor_entry_is_rejected (test_check_dependency_patches.DependencyPatchTests.test_special_vendor_entry_is_rejected) ... ok
+test_unrecorded_local_patch_is_rejected (test_check_dependency_patches.DependencyPatchTests.test_unrecorded_local_patch_is_rejected) ... ok
+test_wrong_patch_manifest_path_is_rejected (test_check_dependency_patches.DependencyPatchTests.test_wrong_patch_manifest_path_is_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 18 tests in 0.095s
+
+OK
+verified bitmaps 3.2.1 (vendor/bitmaps-3.2.1)
+verified lru 0.16.4 (vendor/lru-0.16.4)
+verified serde_json 1.0.151 (vendor/serde_json-1.0.151)
+verified rmcp 3.2.0 (vendor/rmcp-3.2.0)
+verified redb 4.2.0 (vendor/redb-4.2.0)
+verified openraft 0.9.25 (vendor/openraft-0.9.25/openraft)
+verified openraft-macros 0.9.25 (vendor/openraft-0.9.25/macros)

@@ -1,0 +1,20 @@
+{
+  "status": "DESIGN_DIRECTION_SUPPORTED_IMPLEMENTATION_REVIEW_REQUIRED",
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "candidate_manifest_sha256": "16b112ad641fd9dadaeac0274418d5d319400a972fda8123548ba331ed39de66",
+  "candidate_patch_sha256": "d7392ce6c5e0cd411af096ba65351c0ba16f2aaafc1d0f09db034dcad2f941f1",
+  "readme_sha256": "3a82f90e53526dbe15f18d5f31e57c336a5eb62b579c351635bd125f3c41e39f",
+  "read_inputs": {
+    "target/installed-disk-validation/backup-namespace-admission/proposed/crates/kasumi-store/src/backup_sessions_fs.rs": "7a61e83bfdde914fc8281057d81a303a0f080dbe749b027cf6ccf1b60bd9e39b",
+    "target/installed-disk-validation/backup-namespace-admission/proposed/crates/kasumi-store/src/node_disk.rs": "7749f918e54e2edb36b9a0e3e2ef7c65b76c79199444cb92e2b542f7ebe3c89e",
+    "target/installed-disk-validation/backup-namespace-admission/proposed/crates/kasumi-store/src/node_disk/directory.rs": "6500420c036c95826f6a47ef9818a1163b8739dced1a7c7a25dec168b449f253",
+    "target/installed-disk-validation/backup-namespace-admission/proposed/crates/kasumi-store/src/node_disk/batch.rs": "be6156d78d543fbef347ec325dfd7f14ca526cdec258bd79836a584f72649a62",
+    "target/installed-disk-validation/backup-namespace-admission/candidate-03-call-envelope-review.json": "280c1ec2b846c10c7bf136f78e4c63427458d653bebfd425dbba128ee9dbca1b",
+    "crates/kasumi-store/src/backup_sessions.rs": "554165c3d5f6258a33c0416565b3147bca116813f4a5dee42974dbe5389c7d25"
+  },
+  "actual_source_edits": false,
+  "candidate_edits": false,
+  "cargo_native_or_formatter_execution": false,
+  "whole_call_memory_admission_claimed": false
+}

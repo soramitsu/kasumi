@@ -1,0 +1,470 @@
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: unneeded unit expression
+   --> crates/kasumi-store/src/node_disk/batch.rs:487:21
+    |
+487 |                     ()
+    |                     ^^ help: remove the final `()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unused_unit
+    = note: `-D clippy::unused-unit` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::unused_unit)]`
+
+error: field `names` is never read
+  --> crates/kasumi-store/src/node_disk/batch.rs:36:5
+   |
+33 | struct Part {
+   |        ---- field in this struct
+...
+36 |     names: Box<[CString]>,
+   |     ^^^^^
+   |
+   = note: `-D dead-code` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: method `cancel` is never used
+   --> crates/kasumi-store/src/node_disk/batch.rs:209:19
+    |
+ 97 | impl NamespaceAdmission {
+    | ----------------------- method in this implementation
+...
+209 |     pub(crate) fn cancel(mut self) -> io::Result<()> {
+    |                   ^^^^^^
+
+error: call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes
+   --> crates/kasumi-store/src/node_disk/batch.rs:326:13
+    |
+326 |             drop(state.namespace_claim.take());
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: argument has type `std::option::Option<node_disk::batch::ClaimRecord>`
+   --> crates/kasumi-store/src/node_disk/batch.rs:326:18
+    |
+326 |             drop(state.namespace_claim.take());
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#drop_non_drop
+    = note: `-D clippy::drop-non-drop` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::drop_non_drop)]`
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-store/src/node_disk/directory/managed.rs:899:5
+    |
+899 | /     if let Some(work) = work {
+900 | |         if !precharged {
+901 | |             disk.reserve(state, disk.config.directory_policy.extent_bytes, work)?;
+902 | |         }
+903 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+899 ~     if let Some(work) = work
+900 ~         && !precharged {
+901 |             disk.reserve(state, disk.config.directory_policy.extent_bytes, work)?;
+902 ~         }
+    |
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-store/src/node_disk/file.rs:205:17
+    |
+205 | /                 if self.create && error.kind() == io::ErrorKind::AlreadyExists {
+206 | |                     if let Err(rollback) = transition
+207 | |                         .take()
+208 | |                         .expect("prepared creation parent")
+...   |
+214 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+205 ~                 if self.create && error.kind() == io::ErrorKind::AlreadyExists
+206 ~                     && let Err(rollback) = transition
+207 |                         .take()
+...
+212 |                         return Err(rollback);
+213 ~                     }
+    |
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/kasumi-store/src/node_disk/namespace.rs:363:45
+    |
+363 |             census::directory_nonallocating(&metadata)?;
+    |                                             ^^^^^^^^^ help: change this to: `metadata`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+    = note: `-D clippy::needless-borrow` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_borrow)]`
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/kasumi-store/src/node_disk/namespace.rs:364:29
+    |
+364 |             if Identity::of(&metadata) != change.identity {
+    |                             ^^^^^^^^^ help: change this to: `metadata`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/kasumi-store/src/node_disk/namespace.rs:367:53
+    |
+367 |             let observed = census::directory_extent(&metadata)?;
+    |                                                     ^^^^^^^^^ help: change this to: `metadata`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-store/src/node_disk.rs:506:9
+    |
+506 | /         if let Registration::Preparing(prepared) = &self.entry().registration {
+507 | |             if prepared.streams.outstanding() != 0 {
+...   |
+514 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+506 ~         if let Registration::Preparing(prepared) = &self.entry().registration
+507 ~             && prepared.streams.outstanding() != 0 {
+508 |                 // The pre-effect registry node remains the actual owner of all
+...
+512 |                 return;
+513 ~             }
+    |
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-store/src/node_disk.rs:885:9
+    |
+885 | /         if let Some(operation) = &mut state.pending_directory {
+886 | |             if let Err(error) = operation.close_resources() {
+887 | |                 self.fail_locked(&mut state);
+888 | |                 return Err(error.into());
+889 | |             }
+890 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+885 ~         if let Some(operation) = &mut state.pending_directory
+886 ~             && let Err(error) = operation.close_resources() {
+887 |                 self.fail_locked(&mut state);
+888 |                 return Err(error.into());
+889 ~             }
+    |
+
+error: call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes
+   --> crates/kasumi-store/src/node_disk.rs:953:9
+    |
+953 |         drop(state.namespace_claim.take());
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: argument has type `std::option::Option<node_disk::batch::ClaimRecord>`
+   --> crates/kasumi-store/src/node_disk.rs:953:14
+    |
+953 |         drop(state.namespace_claim.take());
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#drop_non_drop
+
+error: unneeded unit expression
+   --> crates/kasumi-store/src/node_disk/batch.rs:487:21
+    |
+487 |                     ()
+    |                     ^^ help: remove the final `()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unused_unit
+    = note: `-D clippy::unused-unit` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::unused_unit)]`
+
+error: call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes
+   --> crates/kasumi-store/src/node_disk/batch.rs:326:13
+    |
+326 |             drop(state.namespace_claim.take());
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: argument has type `std::option::Option<node_disk::batch::ClaimRecord>`
+   --> crates/kasumi-store/src/node_disk/batch.rs:326:18
+    |
+326 |             drop(state.namespace_claim.take());
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#drop_non_drop
+    = note: `-D clippy::drop-non-drop` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::drop_non_drop)]`
+
+error: casting to the same type is unnecessary (`u64` -> `u64`)
+   --> crates/kasumi-store/src/node_disk/directory/cursor/tests.rs:226:28
+    |
+226 |     (result.st_dev as u64, result.st_ino as u64) == (identity.0, identity.1)
+    |                            ^^^^^^^^^^^^^^^^^^^^ help: try: `{ result.st_ino }`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_cast
+    = note: `-D clippy::unnecessary-cast` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::unnecessary_cast)]`
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-store/src/node_disk/directory/managed.rs:899:5
+    |
+899 | /     if let Some(work) = work {
+900 | |         if !precharged {
+901 | |             disk.reserve(state, disk.config.directory_policy.extent_bytes, work)?;
+902 | |         }
+903 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+899 ~     if let Some(work) = work
+900 ~         && !precharged {
+901 |             disk.reserve(state, disk.config.directory_policy.extent_bytes, work)?;
+902 ~         }
+    |
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-store/src/node_disk/file.rs:205:17
+    |
+205 | /                 if self.create && error.kind() == io::ErrorKind::AlreadyExists {
+206 | |                     if let Err(rollback) = transition
+207 | |                         .take()
+208 | |                         .expect("prepared creation parent")
+...   |
+214 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+205 ~                 if self.create && error.kind() == io::ErrorKind::AlreadyExists
+206 ~                     && let Err(rollback) = transition
+207 |                         .take()
+...
+212 |                         return Err(rollback);
+213 ~                     }
+    |
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/kasumi-store/src/node_disk/namespace.rs:363:45
+    |
+363 |             census::directory_nonallocating(&metadata)?;
+    |                                             ^^^^^^^^^ help: change this to: `metadata`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+    = note: `-D clippy::needless-borrow` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_borrow)]`
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/kasumi-store/src/node_disk/namespace.rs:364:29
+    |
+364 |             if Identity::of(&metadata) != change.identity {
+    |                             ^^^^^^^^^ help: change this to: `metadata`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/kasumi-store/src/node_disk/namespace.rs:367:53
+    |
+367 |             let observed = census::directory_extent(&metadata)?;
+    |                                                     ^^^^^^^^^ help: change this to: `metadata`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+
+error: this operation has no effect
+   --> crates/kasumi-store/src/node_disk/tests.rs:182:47
+    |
+182 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+    |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op
+    = note: `-D clippy::identity-op` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::identity_op)]`
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/kasumi-store/src/node_disk/tests.rs:182:64
+    |
+182 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+    |                                                                ^^^^^ help: change this to: `disk`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/kasumi-store/src/node_disk/tests.rs:183:65
+    |
+183 |     assert_eq!(disk.snapshot().pending_bytes, namespace_pending(&disk));
+    |                                                                 ^^^^^ help: change this to: `disk`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+
+error: this operation has no effect
+   --> crates/kasumi-store/src/node_disk/tests.rs:258:47
+    |
+258 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+    |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op
+
+error: this operation has no effect
+   --> crates/kasumi-store/src/node_disk/tests.rs:358:47
+    |
+358 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+    |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op
+
+error: this operation has no effect
+   --> crates/kasumi-store/src/node_disk/tests.rs:663:47
+    |
+663 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+    |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op
+
+error: this operation has no effect
+    --> crates/kasumi-store/src/node_disk/tests.rs:1090:47
+     |
+1090 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op
+
+error: this operation has no effect
+    --> crates/kasumi-store/src/node_disk/tests.rs:1167:47
+     |
+1167 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op
+
+error: this operation has no effect
+    --> crates/kasumi-store/src/node_disk/tests.rs:1201:47
+     |
+1201 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op
+
+error: this operation has no effect
+    --> crates/kasumi-store/src/node_disk/tests.rs:1254:47
+     |
+1254 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op
+
+error: this operation has no effect
+    --> crates/kasumi-store/src/node_disk/tests.rs:1516:47
+     |
+1516 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op
+
+error: this operation has no effect
+    --> crates/kasumi-store/src/node_disk/tests.rs:1626:51
+     |
+1626 |         assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op
+
+error: this operation has no effect
+    --> crates/kasumi-store/src/node_disk/tests.rs:1722:51
+     |
+1722 |         assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op
+
+error: this operation has no effect
+    --> crates/kasumi-store/src/node_disk/tests.rs:2518:45
+     |
+2518 |             assert_eq!(after.charged_bytes, namespace_charge(&disk) + (0));
+     |                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-store/src/node_disk.rs:506:9
+    |
+506 | /         if let Registration::Preparing(prepared) = &self.entry().registration {
+507 | |             if prepared.streams.outstanding() != 0 {
+...   |
+514 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+506 ~         if let Registration::Preparing(prepared) = &self.entry().registration
+507 ~             && prepared.streams.outstanding() != 0 {
+508 |                 // The pre-effect registry node remains the actual owner of all
+...
+512 |                 return;
+513 ~             }
+    |
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-store/src/node_disk.rs:885:9
+    |
+885 | /         if let Some(operation) = &mut state.pending_directory {
+886 | |             if let Err(error) = operation.close_resources() {
+887 | |                 self.fail_locked(&mut state);
+888 | |                 return Err(error.into());
+889 | |             }
+890 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+885 ~         if let Some(operation) = &mut state.pending_directory
+886 ~             && let Err(error) = operation.close_resources() {
+887 |                 self.fail_locked(&mut state);
+888 |                 return Err(error.into());
+889 ~             }
+    |
+
+error: call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes
+   --> crates/kasumi-store/src/node_disk.rs:953:9
+    |
+953 |         drop(state.namespace_claim.take());
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: argument has type `std::option::Option<node_disk::batch::ClaimRecord>`
+   --> crates/kasumi-store/src/node_disk.rs:953:14
+    |
+953 |         drop(state.namespace_claim.take());
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#drop_non_drop
+

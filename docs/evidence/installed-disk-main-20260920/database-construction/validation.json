@@ -1,0 +1,48 @@
+{
+  "status": "TARGET_ONLY_VIRTUAL_APPLY_AND_FORMAT_VALIDATED_NOT_COMPILED",
+  "patch_sha256": "05d511887c479d3ac8e94e64a39d6c81ce6b905d78d6c538bfa9e313d54849b2",
+  "check_exit_code": 0,
+  "apply_exit_code": 0,
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/service.rs",
+      "virtual_result_sha256": "36776210c0f104f79a0fa4d4988b699f23b70585a8ed7c4c2f253b7c2c8a88b9"
+    },
+    {
+      "path": "crates/kasumi-engine/src/database_construction.rs",
+      "virtual_result_sha256": "8ce17e3db2245836fa7bb69a69f4a8a7dc5a4e67c54c5d9963d2537b5f621578"
+    },
+    {
+      "path": "crates/kasumi-engine/src/database_construction_tests.rs",
+      "virtual_result_sha256": "949fb779eb5a56a1adab16c7899db1e30ace2c2a1f64c086da9a29d13ac2128d"
+    },
+    {
+      "path": "crates/kasumi-engine/src/bootstrap.rs",
+      "virtual_result_sha256": "28bb4938ec9bbbd1a49950bb1041f2d23e8ff3c342328d51e60f8a5581e5c011"
+    },
+    {
+      "path": "crates/kasumi-engine/src/bootstrap_fixtures.rs",
+      "virtual_result_sha256": "3b0b5048bf9c1dc02cc839c0f65824319057d30af257b4968bb188411b35b74c"
+    },
+    {
+      "path": "crates/kasumi-engine/src/bootstrap_target_quorum.rs",
+      "virtual_result_sha256": "e75f2be60a01219ccb301bc7d8bb84ff7692c0f019e8743edab309b8f9eb3e5f"
+    },
+    {
+      "path": "crates/kasumi-engine/src/bootstrap_target_serving.rs",
+      "virtual_result_sha256": "102d5038d9b73969c382cfcc412032b70728e47df04eafdc91320745d8f01c65"
+    },
+    {
+      "path": "crates/kasumi-engine/src/audit_maintenance_service.rs",
+      "virtual_result_sha256": "eefc19b54640b98192dc402689190e58d2a7d3810791f97d9d04159912a5a80d"
+    },
+    {
+      "path": "crates/kasumi-engine/src/database_worker_outcome_tests.rs",
+      "virtual_result_sha256": "6b261b616b8e92bbfddf529debc24d75a312564b04b72bc6e9e7957cfcd240fa"
+    },
+    {
+      "path": "crates/kasumi-engine/tests/admission.rs",
+      "virtual_result_sha256": "eb85baf8632d4fb6ff592576417e7756b98bc14bccac721aa85dad3a883ba6b1"
+    }
+  ]
+}

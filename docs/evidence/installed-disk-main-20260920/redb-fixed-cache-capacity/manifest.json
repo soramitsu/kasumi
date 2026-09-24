@@ -1,0 +1,57 @@
+{
+  "status": "FROZEN_TARGET_ONLY_UNCOMPILED_UNEXECUTED",
+  "patch_sha256": "7ebe5c6ce81537ad3a862620ea45608ff31cf7aad524d3542417c5400ee26304",
+  "readme_sha256": "876727b1693c3fa7a6dc3cd990fa0110f64382784db73167957beb59f2d249d3",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/admission/tests.rs",
+      "before_sha256": "2d4581f62015ea68b09a4f5bd79709c06a28e1263c0f56a25b4c022788e825fc",
+      "proposed_sha256": "82351c92ff8b8dc69b76e640407980f30590641d1c3df0292aa147e4b071b3ab"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/admission.rs",
+      "before_sha256": "aceee2036eb30fce2ade997106f2b61e28f04bf2d4616180ef9cb9388cfc0817",
+      "proposed_sha256": "89b088b56bea18ad301e7e27dafc221bc9167c7aea261eb2b3eed00b1e2f87e2"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/cache_admission_tests.rs",
+      "before_sha256": null,
+      "proposed_sha256": "27c2223eaba3309b670123043612119d6b04ad18883caaca75f659d6c5351531"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/error.rs",
+      "before_sha256": "cced646dec3856bd7abe427a04eb328303a526b8a8335ab96f375611ad347686",
+      "proposed_sha256": "e134fde5d4de21029e056e0af5ca7f965b73de894642b0c811b1d4eb59a5610c"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_transaction.rs",
+      "before_sha256": "98efcb4039728e7cc18178e1b9c000f411555dc836dfafec29b9645732880315",
+      "proposed_sha256": "35f5219e1e1ac8cf3881da54b17ba84a29b28ed05b27815dd928a478f0216155"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "before_sha256": "d8b20ab61cd6864d7704312c868d66e729a4bab6f54a55993cd9257850a8b8ff",
+      "proposed_sha256": "93185fb48ede21d8a580597a4b7beb56d1afb5ccd4aa54bacd53d26169bfc23f"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+      "before_sha256": "18b42bf9c2d434f8d205d2088dc352af2cd8a40e3e0ddc0edfeff4390f349b72",
+      "proposed_sha256": "d792d02add8e7a1aa78eabb67df98e4438fd5e1547dec42667a2b366ac7d2c9b"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/lru_cache.rs",
+      "before_sha256": "3dad9116b06284f993544620885cc57ef7b382f0fc77152eb88e363e68450189",
+      "proposed_sha256": "e7394f69a279823f4db942a4a7db405579092e86dcfa07ffa761cf4c2914e3d4"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "before_sha256": "18b9ce3ad0f872557950838d11f92c408d1b984902add06b5f154e2c7fb9696b",
+      "proposed_sha256": "bafa9256bdf1cc0a46dc5721aca3226a7f4da05a190a2bf18c484592561c4614"
+    }
+  ],
+  "git_apply_check_exit": 0,
+  "prepared_tests": 6,
+  "cargo_or_rustc_run": false,
+  "actual_source_edits": false,
+  "overlap": "retained_transaction.rs must explicitly stack with root positive-settlement disposal; this package uses unchanged actual source"
+}

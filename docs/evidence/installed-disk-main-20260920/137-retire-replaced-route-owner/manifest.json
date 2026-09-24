@@ -1,0 +1,14 @@
+{
+  "status": "FROZEN_SINGLE_LINE_CORRECTION",
+  "source": "crates/kasumi-engine/tests/common/recovery_control.rs",
+  "before_sha256": "5a404fabbd2cbbff1eb5d3c90a842dd617c898ae2e26504ed7595c45949dd27b",
+  "after_sha256": "167f7cbab53a537c917b098352b9588f30112fffc66a89dac0a99c9eb7d142a7",
+  "original137_result_sha256": "4feb98f6c5f8dc96a14b972eeedfd3b3174128e1c9da620b4edf143df04f1d02",
+  "original137_log_sha256": "fa97439b2d30e58c5b852f0fafc9aa788250f0c65ce766fdc96b1b3bb755a478",
+  "files": {
+    "README.md": "431d4ef107202575a13ad8e771eadd8e6de1190e1ff259fc6cab2bdea0e7350f",
+    "base/crates/kasumi-engine/tests/common/recovery_control.rs": "5a404fabbd2cbbff1eb5d3c90a842dd617c898ae2e26504ed7595c45949dd27b",
+    "correction.patch": "052591e4c3b744ede02bf40495d223bdb9f05493f552c81238bb613004e81411",
+    "proposed/crates/kasumi-engine/tests/common/recovery_control.rs": "167f7cbab53a537c917b098352b9588f30112fffc66a89dac0a99c9eb7d142a7"
+  }
+}

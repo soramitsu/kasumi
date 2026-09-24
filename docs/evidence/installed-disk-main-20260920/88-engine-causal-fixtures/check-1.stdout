@@ -1,0 +1,4 @@
+40	30	crates/kasumi-engine/tests/common/recovery_control.rs
+47	22	crates/kasumi-engine/tests/history.rs
+64	7	crates/kasumi-engine/tests/lifecycle.rs
+3	0	crates/kasumi-engine/tests/schema_activation.rs

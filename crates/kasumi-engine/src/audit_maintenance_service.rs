@@ -180,7 +180,7 @@ impl Database {
 mod tests {
     use super::*;
     use kasumi_store::{
-        AuditArchiveDestination, FilesystemAuditArchive, NodeStore, PreparedAuditSegment,
+        AuditArchiveDestination, FilesystemAuditArchive, PreparedAuditSegment,
         test_utils::LocalKeyProvider,
     };
     use std::future::Future;
@@ -211,15 +211,20 @@ mod tests {
     async fn tenant_audit_worker_keeps_its_owner_through_cancelled_shutdown() {
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-            let path = directory.path().join("node.redb");
-            let node = NodeStore::create_new_fixture(
-                &path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
+            let (persistent_config, scratch_config) =
+                crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
+            let storage = crate::test_utils::FixtureStorage::open(
+                &persistent_config,
+                &scratch_config,
+                Default::default(),
             )
             .unwrap();
+            let path = directory.path().join("persistent/node.redb");
+            let node = storage
+                .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+                .unwrap();
             let weak_node = Arc::downgrade(&node);
-            let admission = NodeAdmission::new(Default::default()).unwrap();
+            let admission = storage.admission.clone();
             let provider = Arc::new(LocalKeyProvider::new([51; 32]));
             let store = TenantStore::initialize_catalog_fixture(
                 node.clone(),
@@ -270,16 +275,12 @@ mod tests {
             )
             .await
             .unwrap();
-            let group = RaftGroup::local(
-                1,
-                format!("tenant/{incarnation}"),
-                stores,
-                engine.clone(),
-                kasumi_raft::SnapshotBufferOwner::fixture(),
-            )
-            .await
-            .unwrap();
-            let database = Database::new(engine, group, store.clone(), audit.clone());
+            let database =
+                crate::service::construction::DatabaseConstruction::new(stores, audit.clone())
+                    .unwrap()
+                    .start_local(engine, 1, format!("tenant/{incarnation}"))
+                    .await
+                    .unwrap();
             let weak_database = Arc::downgrade(&database);
             let pause = Arc::new(WorkerPause {
                 entered: Default::default(),
@@ -329,12 +330,9 @@ mod tests {
             drop(node);
             assert!(weak_node.upgrade().is_none());
             // No delay or lock retry is allowed to hide a surviving file owner.
-            let reopened = NodeStore::open_existing_fixture(
-                &path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-            .unwrap();
+            let reopened = storage
+                .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+                .unwrap();
             let store = TenantStore::open_existing_fixture(reopened, "tenant".into(), provider)
                 .await
                 .unwrap();
@@ -360,22 +358,28 @@ mod tests {
 
     async fn worker_drains_hot_history(outage: bool) {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-        let node = NodeStore::create_new_fixture(
-            directory.path().join("node.redb"),
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+        let (persistent_config, scratch_config) =
+            crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
+        let metadata_bytes =
+            crate::test_utils::isolated_disk_metadata_bytes(&persistent_config, &scratch_config)
+                .unwrap();
+        let config = crate::test_utils::admission_config_with_bookkeeping(
+            crate::admission::AdmissionConfig {
+                max_inflight_bytes: Some(512 << 20),
+                ..Default::default()
+            },
         )
         .unwrap();
-        let admission = NodeAdmission::new(
-            crate::test_utils::admission_config_with_bookkeeping(
-                crate::admission::AdmissionConfig {
-                    max_inflight_bytes: Some(512 << 20),
-                    ..Default::default()
-                },
+        let storage =
+            crate::test_utils::FixtureStorage::open(&persistent_config, &scratch_config, config)
+                .unwrap();
+        let admission = storage.admission.clone();
+        let node = storage
+            .create_new(
+                directory.path().join("persistent/node.redb"),
+                kasumi_store::test_utils::NODE_STORE_ID,
             )
-            .unwrap(),
-        )
-        .unwrap();
+            .unwrap();
         let store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             "tenant".into(),
@@ -384,14 +388,19 @@ mod tests {
         .await
         .unwrap();
         let archive = Arc::new(UncertainArchive {
-            inner: FilesystemAuditArchive::open_fixture(directory.path().join("external")).unwrap(),
+            inner: FilesystemAuditArchive::open(
+                directory.path().join("persistent/external"),
+                storage.persistent.clone(),
+            )
+            .unwrap(),
             fail: AtomicBool::new(outage),
         });
         store
             .install_tenant_audit_archive(
                 Arc::new(
-                    FilesystemAuditArchive::open_fixture(
-                        directory.path().join("tenant-audit-archives"),
+                    FilesystemAuditArchive::open(
+                        directory.path().join("persistent/tenant-audit-archives"),
+                        storage.persistent.clone(),
                     )
                     .unwrap(),
                 ),
@@ -441,16 +450,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let group = RaftGroup::local(
-            1,
-            format!("tenant/{incarnation}"),
-            stores,
-            engine.clone(),
-            kasumi_raft::SnapshotBufferOwner::fixture(),
-        )
-        .await
-        .unwrap();
-        let database = Database::new(engine.clone(), group.clone(), store, audit.clone());
+        let database =
+            crate::service::construction::DatabaseConstruction::new(stores, audit.clone())
+                .unwrap()
+                .start_local(engine.clone(), 1, format!("tenant/{incarnation}"))
+                .await
+                .unwrap();
+        let group = database.raft_group().clone();
         for number in 0..50 {
             let command = Command {
                 context: RequestContext {
@@ -483,7 +489,8 @@ mod tests {
         assert!(engine.generation().unwrap().state.audit_retention.hot_bytes >= 96 << 10);
         let ordinary = admission
             .reserve(
-                (512 << 20) - crate::test_utils::reserved_payload_bytes(&admission),
+                (512 << 20) + metadata_bytes
+                    - crate::test_utils::reserved_payload_bytes(&admission),
                 None,
             )
             .unwrap();
@@ -542,6 +549,19 @@ mod tests {
         drop(pool);
         database.shutdown().await.unwrap();
         audit.shutdown().await.unwrap();
-        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            metadata_bytes
+                + kasumi_raft::SnapshotBufferOwner::required_bytes(
+                    kasumi_raft::SNAPSHOT_BUFFER_SLOTS
+                )
+                .unwrap()
+        );
+        drop(group);
+        drop(database);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            metadata_bytes
+        );
     }
 }

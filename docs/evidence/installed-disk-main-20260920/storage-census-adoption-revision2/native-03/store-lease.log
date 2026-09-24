@@ -1,0 +1,54 @@
+
+running 3 tests
+test disk_memory::tests::installed_lease_cannot_return_bytes_or_slot_before_actual_box_deallocation ... ok
+test disk_memory::tests::mandatory_opaque_lease_preserves_inline_layout_and_provider_denial_accounting ... ok
+test disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind ... 
+thread 'disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind' (5951286) panicked at crates/kasumi-store/src/disk_memory_tests.rs:112:9:
+original token destructor panic
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: <kasumi_store::disk_memory::tests::PanickingToken as core::ops::drop::Drop>::drop
+             at ./crates/kasumi-store/src/disk_memory_tests.rs:112:9
+   3: core::ptr::drop_glue::<kasumi_store::disk_memory::tests::PanickingToken>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ptr/mod.rs:825:1
+   4: core::mem::drop::<kasumi_store::disk_memory::tests::PanickingToken>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/mem/mod.rs:1004:1
+   5: <kasumi_store::disk_memory::tests::PanickingToken as kasumi_store::disk_memory::RetireLease>::retire
+             at ./crates/kasumi-store/src/disk_memory.rs:33:9
+   6: <kasumi_store::disk_memory::DiskMemoryLease as core::ops::drop::Drop>::drop
+             at ./crates/kasumi-store/src/disk_memory.rs:47:25
+   7: core::ptr::drop_glue::<kasumi_store::disk_memory::DiskMemoryLease>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ptr/mod.rs:825:1
+   8: core::mem::drop::<kasumi_store::disk_memory::DiskMemoryLease>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/mem/mod.rs:1004:1
+   9: kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}::{closure#0}
+             at ./crates/kasumi-store/src/disk_memory_tests.rs:130:56
+  10: kasumi_store::allocation_tests::observe_deallocation::<(), kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}::{closure#0}>
+             at ./crates/kasumi-store/src/allocation_tests.rs:157:5
+  11: kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}
+             at ./crates/kasumi-store/src/disk_memory_tests.rs:130:9
+  12: <core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  13: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  14: ___rust_try
+  15: std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  16: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  17: kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind
+             at ./crates/kasumi-store/src/disk_memory_tests.rs:129:17
+  18: kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}
+             at ./crates/kasumi-store/src/disk_memory_tests.rs:117:79
+  19: <kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  20: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.03s
+

@@ -1,0 +1,278 @@
+--- a/crates/kasumi-store/src/backup_session_admission_tests.rs
++++ b/crates/kasumi-store/src/backup_session_admission_tests.rs
+@@ -264,3 +264,53 @@
+         assert_eq!(disk.snapshot().charged_bytes, config.max_bytes);
+     }
+ }
++
++#[test]
++fn session_claim_acquires_or_rejects_without_owned_path_allocations() {
++    let temporary = private_tempdir().unwrap();
++    let disk = open(temporary.path(), 2);
++    let first = Directory::open(temporary.path(), disk.clone()).unwrap();
++    let second = Directory::open(temporary.path(), disk.clone()).unwrap();
++    let session = Uuid::from_bytes([0x11; 16]);
++    for (session, slot) in [
++        (Uuid::nil(), BackupSessionSlot::Intent),
++        (session, BackupSessionSlot::Object(Uuid::nil())),
++    ] {
++        let (result, allocations) =
++            crate::allocation_tests::measure(|| first.claim_session_namespace(session, slot));
++        assert_eq!(
++            result.err().unwrap().kind(),
++            std::io::ErrorKind::InvalidInput
++        );
++        assert_eq!(allocations, 0);
++    }
++    let (claim, allocations) = crate::allocation_tests::measure(|| {
++        first.claim_session_namespace(session, BackupSessionSlot::Intent)
++    });
++    let claim = claim.unwrap();
++    assert_eq!(allocations, 0);
++    let (busy, allocations) = crate::allocation_tests::measure(|| {
++        second.claim_session_namespace(session, BackupSessionSlot::Outcome)
++    });
++    assert_eq!(busy.err().unwrap().kind(), std::io::ErrorKind::WouldBlock);
++    assert_eq!(allocations, 0);
++    // The public error conversion has a separate returned-diagnostic lifetime;
++    // contention adds no path allocation beyond that exact conversion.
++    let (_, error_allocations) = crate::allocation_tests::measure(|| {
++        anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::WouldBlock))
++    });
++    let (busy, allocations) = crate::allocation_tests::measure(|| {
++        second.put(session, BackupSessionSlot::Outcome, b"busy")
++    });
++    assert!(busy.is_err());
++    assert_eq!(allocations, error_allocations);
++    assert!(!temporary.path().join("sessions").exists());
++    drop(claim);
++    // A header rejection occurs after claim acquisition and must return the lane.
++    assert!(first.put(session, BackupSessionSlot::Intent, b"").is_err());
++    let claim = second
++        .claim_session_namespace(session, BackupSessionSlot::Intent)
++        .unwrap();
++    drop(claim);
++    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
++}
+--- a/crates/kasumi-store/src/backup_sessions_fs.rs
++++ b/crates/kasumi-store/src/backup_sessions_fs.rs
+@@ -179,14 +179,26 @@
+         }
+         Ok((published, reserve.is_some()))
+     }
++    // The accepted claim is the first owned operation resource. UUID formatting
++    // and both path components live on the stack while State is acquired.
++    fn claim_session_namespace(
++        &self,
++        session: Uuid,
++        slot: BackupSessionSlot,
++    ) -> std::io::Result<crate::node_disk::NamespaceClaim> {
++        if session.is_nil() || matches!(slot, BackupSessionSlot::Object(id) if id.is_nil()) {
++            return Err(std::io::ErrorKind::InvalidInput.into());
++        }
++        let mut name = [0_u8; 37];
++        session.hyphenated().encode_lower(&mut name[..36]);
++        let name = std::ffi::CStr::from_bytes_with_nul(&name)
++            .map_err(|_| std::io::ErrorKind::InvalidInput)?;
++        self.0.claim_descendants(&[c"sessions", name])
++    }
+     pub fn put(&self, session_id: Uuid, slot: BackupSessionSlot, bytes: &[u8]) -> Result<()> {
+-        slot.relative(session_id)?;
+-        // Claim before classification; another wrapper cannot publish between a
+-        // published-name absence and reserve-name observation and cause a new
+-        // reserve to be recreated next to an already published terminal.
+-        let claim_path = self.2.join("sessions").join(session_id.to_string());
+-        let (claim_root, claim_relative) = self.1.binding(&claim_path)?;
+-        let claim = self.1.claim_namespace(claim_root, claim_relative)?;
++        // Hold the physical claim across both terminal classification reads and
++        // final publication. All owned paths below retire before this witness.
++        let claim = self.claim_session_namespace(session_id, slot)?;
+         let terminal_slot = match slot {
+             BackupSessionSlot::Intent => Some(Terminal::Intent),
+             BackupSessionSlot::Outcome => Some(Terminal::Outcome),
+--- a/crates/kasumi-store/src/node_disk/batch/tests.rs
++++ b/crates/kasumi-store/src/node_disk/batch/tests.rs
+@@ -318,3 +318,49 @@
+     );
+     assert_eq!(disk.snapshot().persistent_files, 1);
+ }
++
++#[test]
++fn descendant_claim_uses_retained_prefix_and_exact_component_limits() {
++    let (_directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let root = disk.open_directory("fixture", Path::new("")).unwrap();
++    let nested = root.create_child(c"nested", DiskWork::Foreground).unwrap();
++    let uuid = c"11111111-1111-1111-1111-111111111111";
++    let names = [c"sessions", uuid];
++    let base = NamespaceBinding::root(disk.roots["fixture"].identity);
++    let root_claim = root.claim_descendants(&names).unwrap();
++    assert_eq!(root_claim.binding, base.child(names[0]).child(names[1]));
++    assert!(Arc::ptr_eq(&root_claim.disk, &disk));
++    drop(root_claim);
++    let nested_claim = nested.claim_descendants(&names).unwrap();
++    assert_eq!(
++        nested_claim.binding,
++        base.child(c"nested").child(names[0]).child(names[1])
++    );
++    drop(nested_claim);
++    for name in [c"", c".", c"..", c"bad/name"] {
++        assert_eq!(
++            root.claim_descendants(&[name]).err().unwrap().kind(),
++            io::ErrorKind::InvalidInput
++        );
++    }
++    let boundary = CString::new(vec![b'x'; config.max_name_bytes as usize]).unwrap();
++    drop(root.claim_descendants(&[&boundary]).unwrap());
++    let overflow = CString::new(vec![b'x'; config.max_name_bytes as usize + 1]).unwrap();
++    assert_eq!(
++        root.claim_descendants(&[&overflow]).err().unwrap().kind(),
++        io::ErrorKind::InvalidInput
++    );
++    let names = vec![c"x"; config.max_depth as usize - 1];
++    drop(root.claim_descendants(&names).unwrap());
++    assert_eq!(
++        nested.claim_descendants(&names).err().unwrap().kind(),
++        io::ErrorKind::InvalidInput
++    );
++    let names = vec![c"x"; config.max_depth as usize];
++    assert_eq!(
++        root.claim_descendants(&names).err().unwrap().kind(),
++        io::ErrorKind::InvalidInput
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++}
+--- a/crates/kasumi-store/src/node_disk/batch.rs
++++ b/crates/kasumi-store/src/node_disk/batch.rs
+@@ -292,8 +292,9 @@
+         .map_or(0, |b| b.reserved_children(parent))
+ }
+ 
+-/// A single physical namespace mutation lane. Admission is nonblocking: no
+-/// native writer waits while retaining an unregistered thread or descriptor.
++/// A single physical namespace mutation lane. After the existing State lock,
++/// claim contention returns WouldBlock. This bounds admitted path work; worker,
++/// ciphertext and stack admission require their own caller envelope.
+ /// The witness lives from classification through final immutable publication.
+ pub(super) struct ClaimRecord {
+     id: u64,
+@@ -319,8 +320,9 @@
+             && state.namespace_batch.is_none()
+             && state.pending_directory.is_none()
+         {
+-            // The caller declares this witness before every operation resource,
+-            // so those resources actually retire before this lane is credited.
++            // Session put declares this witness before its owned paths and
++            // directory/file owners, which retire before this lane is credited.
++            // Returned errors and caller-owned inputs have separate lifetimes.
+             drop(state.namespace_claim.take());
+         } else {
+             state
+@@ -334,12 +336,11 @@
+ }
+ 
+ impl NodeDisk {
+-    pub(crate) fn claim_namespace(
++    pub(super) fn claim_binding_namespace(
+         self: &Arc<Self>,
+-        root: &str,
+-        relative: &Path,
++        state: &mut State,
++        binding: NamespaceBinding,
+     ) -> io::Result<NamespaceClaim> {
+-        let mut state = self.lock_state();
+         if state.phase != NodeDiskPhase::Open || !self.device.lock().admission_ready() {
+             return Err(io::ErrorKind::InvalidData.into());
+         }
+@@ -349,17 +350,6 @@
+         {
+             return Err(io::ErrorKind::WouldBlock.into());
+         }
+-        let root = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
+-        let names =
+-            super::directory::names(relative, self.config.max_depth, self.config.max_name_bytes)?;
+-        if names.is_empty() {
+-            return Err(io::ErrorKind::InvalidInput.into());
+-        }
+-        let binding = names
+-            .iter()
+-            .fold(NamespaceBinding::root(root.identity), |binding, name| {
+-                binding.child(name)
+-            });
+         let id = state
+             .namespace_batch_generation
+             .checked_add(1)
+--- a/crates/kasumi-store/src/node_disk/directory/managed.rs
++++ b/crates/kasumi-store/src/node_disk/directory/managed.rs
+@@ -310,6 +310,58 @@
+ }
+ 
+ impl NodeDiskDirectory {
++    /// Claim descendant namespace work without allocating names or opening FDs.
++    /// Caller components may live on its stack. The retained directory and its
++    /// installed names supply the prefix; physical verification follows under
++    /// the claim in the ordinary tracked operation protocol.
++    pub(crate) fn claim_descendants(
++        &self,
++        names: &[&CStr],
++    ) -> io::Result<super::super::batch::NamespaceClaim> {
++        let owner = self.owner();
++        let disk = &owner.disk;
++        let mut state = disk.lock_state();
++        if names.is_empty()
++            || owner
++                .names
++                .len()
++                .checked_add(names.len())
++                .is_none_or(|depth| depth >= disk.config.max_depth as usize)
++        {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        let root = disk
++            .roots
++            .get(&owner.root)
++            .ok_or(io::ErrorKind::InvalidData)?;
++        let prefix = owner
++            .names
++            .iter()
++            .fold(NamespaceBinding::root(root.identity), |binding, name| {
++                binding.child(name)
++            });
++        let Some(AccountedInode::Directory(entry)) = state.accounted.get(&owner.identity) else {
++            return Err(io::ErrorKind::InvalidData.into());
++        };
++        if entry.binding != prefix || !entry.settled {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        let mut binding = prefix;
++        for name in names {
++            let bytes = name.to_bytes();
++            if bytes.is_empty()
++                || bytes == b"."
++                || bytes == b".."
++                || bytes.contains(&b'/')
++                || bytes.len() > disk.config.max_name_bytes as usize
++            {
++                return Err(io::ErrorKind::InvalidInput.into());
++            }
++            binding = binding.child(name);
++        }
++        disk.claim_binding_namespace(&mut state, binding)
++    }
++
+     /// Open an exact enrolled child. An unknown final absence is healthy; an
+     /// unaccounted existing object or changed ancestry fences this owner.
+     pub fn open_child(&self, name: &CStr) -> io::Result<Self> {
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -29,7 +29,9 @@
+ mod namespace;
+ #[cfg(test)]
+ mod tests;
+-pub(crate) use batch::{MAX_NAMESPACE_PARTS, NamespaceAdmission, NamespacePart, NamespacePartKind};
++pub(crate) use batch::{
++    MAX_NAMESPACE_PARTS, NamespaceAdmission, NamespaceClaim, NamespacePart, NamespacePartKind,
++};
+ use census::{Root, census, open_roots};
+ pub use directory::{
+     NodeDiskDirectory, NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor,

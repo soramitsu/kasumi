@@ -33,6 +33,35 @@ impl StorageAdmission for Owner {
     fn check_owner(&self) -> std::result::Result<(), OwnerFailed> {
         self.with(|_| Ok(())).map_err(|_| OwnerFailed)
     }
+    fn reserve_workspace(
+        &self,
+        bytes: u64,
+    ) -> std::result::Result<Box<dyn redb::ResidentLease>, AdmissionError> {
+        self.with(|spool| {
+            let bytes = crate::disk_memory::add(
+                bytes,
+                crate::disk_memory::allocation::<crate::DiskMemoryLease>(1)
+                    .map_err(|_| io::ErrorKind::OutOfMemory)?,
+            )
+            .map_err(|_| io::ErrorKind::OutOfMemory)?;
+            let lease = match spool.disk().memory().clone().reserve_installed(bytes) {
+                Ok(lease) => lease,
+                Err(error) if error.kind() == io::ErrorKind::OutOfMemory => return Err(error),
+                Err(error) => {
+                    spool.owner_failed();
+                    return Err(error);
+                }
+            };
+            Ok(Box::new(lease) as Box<dyn redb::ResidentLease>)
+        })
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::OutOfMemory {
+                AdmissionError::CapacityDenied
+            } else {
+                AdmissionError::OwnerFailed
+            }
+        })
+    }
     fn reserve_growth(
         &self,
         current: u64,
@@ -98,7 +127,7 @@ impl StorageBackend for Backend {
             spool.write_all(bytes)
         })
     }
-    fn close(&self) -> io::Result<()> {
+    fn close(&self) -> redb::BackendCloseOutcome {
         let mut owner = self.0.0.lock().unwrap_or_else(|poisoned| {
             let owner = poisoned.into_inner();
             if let Some(spool) = owner.as_ref() {
@@ -106,11 +135,64 @@ impl StorageBackend for Backend {
             }
             owner
         });
-        owner.take().map_or(Ok(()), EncryptedSpool::close)
+        let Some(spool) = owner.as_mut() else {
+            // Only a positively drained prior call removes this exact spool.
+            return redb::BackendCloseOutcome::drained(Ok(()));
+        };
+        let outcome = spool.close_once();
+        if outcome.native_disposition() == redb::BackendNativeDisposition::Drained {
+            // Native retirement precedes key/buffer retirement and its charge.
+            // An uncertain close keeps the original spool installed here.
+            drop(owner.take());
+        }
+        outcome
     }
 }
 pub struct EncryptedTable {
     database: crate::node_database::NodeDatabase,
+}
+/// An unpublished, bounded staging transaction. A healthy dropped transaction
+/// aborts its pending writes; a committed batch remains private until its caller
+/// publishes the enclosing verified namespace.
+pub struct EncryptedTableBatch {
+    transaction: redb::WriteTransaction,
+    bytes: usize,
+    entries: usize,
+    failed: bool,
+}
+impl EncryptedTableBatch {
+    pub const MAX_BYTES: usize = 4 << 20;
+    pub const MAX_ENTRIES: usize = 16;
+
+    pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+        ensure!(!self.failed, "staging batch previously failed");
+        self.failed = true;
+        ensure!(
+            key.len() <= 4096 && value.len() <= 32 << 20,
+            "staged record exceeds limit"
+        );
+        let bytes = self
+            .bytes
+            .checked_add(key.len())
+            .and_then(|n| n.checked_add(value.len()))
+            .ok_or_else(|| anyhow::anyhow!("staging batch byte overflow"))?;
+        ensure!(
+            bytes <= Self::MAX_BYTES && self.entries < Self::MAX_ENTRIES,
+            "staging batch capacity exceeded"
+        );
+        let mut table = self.transaction.open_table(TABLE)?;
+        ensure!(table.insert(key, value)?.is_none(), "duplicate staged key");
+        self.bytes = bytes;
+        self.entries += 1;
+        self.failed = false;
+        Ok(())
+    }
+
+    pub fn commit(self) -> Result<()> {
+        ensure!(!self.failed, "staging batch previously failed");
+        self.transaction.commit()?;
+        Ok(())
+    }
 }
 impl EncryptedTable {
     pub fn new(disk: &Arc<ScratchDisk>, max_disk_bytes: u64) -> Result<Self> {
@@ -132,6 +214,14 @@ impl EncryptedTable {
     /// readers or writers drain. Repeated calls preserve the original outcome.
     pub fn close(&self) -> DrainResult {
         self.database.close()
+    }
+    pub fn begin_batch(&self) -> Result<EncryptedTableBatch> {
+        Ok(EncryptedTableBatch {
+            transaction: self.database.begin_write()?,
+            bytes: 0,
+            entries: 0,
+            failed: false,
+        })
     }
     pub fn insert(&self, key: &[u8], value: &[u8]) -> Result<()> {
         ensure!(

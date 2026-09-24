@@ -1,0 +1,19 @@
+{
+  "schema": "kasumi-custody-fenced-observation-test-correction-v1",
+  "base_manifest": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/manifest.json",
+  "base_manifest_sha256": "83ab0cf18c5ee3d5b4b00309c4073200faa1d753254b9f871da2837018b4faec",
+  "original_store_log_sha256": "55149d9f0db83d3f780415947b773b44058378ddb23409ac6f5a91a75509ddff",
+  "files": [
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "before": "24e8ec5be11eebdc87183e2a33a151577d6cba09a7096ee52b0dd32205337912",
+      "after": "a2f306309fd6f71e47571f2aa5e0a771dd9afdfeacdf8cef9fbc0d41d0807d53"
+    }
+  ],
+  "patch_sha256": "4a2019bd47ea64e00321030e7afaca8b890b99d32045f47c58f4ae4078d6eb26",
+  "apply_readback_matches": true,
+  "actual_source_modified": false,
+  "native_dispatched": false,
+  "reason": "Failed FileOwner::check intentionally refuses verification descriptor acquisition. The two fixtures now assert the managed observation fails without allocation, then use external fixture metadata to verify the exact same inode and original expected EOF. All fault variants, charge/pending/device/fence/drop/census assertions remain.",
+  "expected_test_inventory_unchanged": true
+}

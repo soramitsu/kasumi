@@ -1,0 +1,13 @@
+{
+  "name": "engine-provider",
+  "pid": 48966,
+  "pgid": 48966,
+  "command": [
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/engine-test-binary",
+    "admission::disk_memory::",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+  "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/engine-provider.log"
+}

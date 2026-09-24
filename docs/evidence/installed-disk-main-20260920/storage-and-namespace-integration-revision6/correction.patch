@@ -1,0 +1,97 @@
+diff --git a/crates/kasumi-store/src/audit_archive_owned.rs b/crates/kasumi-store/src/audit_archive_owned.rs
+--- a/crates/kasumi-store/src/audit_archive_owned.rs
++++ b/crates/kasumi-store/src/audit_archive_owned.rs
+@@ -212,11 +212,27 @@
+                 kasumi_types::drain::DrainCompletion::Complete
+             );
+         }
+-        assert_eq!(archive.disk.snapshot().open_files, 0);
+-        archive
+-            .disk
+-            .reconcile(&crate::CensusCancellation::default())
++        let disk = archive.disk.clone();
++        assert_eq!(disk.snapshot().open_files, 0);
++        assert_eq!(disk.snapshot().open_directories, 1);
++        let retained_charge = disk.snapshot().charged_bytes;
++        assert!(
++            disk.reconcile(&crate::CensusCancellation::default())
++                .is_err()
++        );
++        assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
++        assert_eq!(disk.snapshot().charged_bytes, retained_charge);
++        // The retained directory is a real operational owner. Reconciliation
++        // waits until it closes, then the same installed disk may reopen it.
++        drop(archive);
++        assert_eq!(disk.snapshot().open_directories, 0);
++        disk.reconcile(&crate::CensusCancellation::default())
+             .unwrap();
++        let archive = FilesystemAuditArchive::open(&root, disk.clone())
++            .unwrap()
++            .with_publication_observer(observer.clone());
++        assert!(Arc::ptr_eq(&archive.disk, &disk));
++        assert_eq!(private_files::file_identity(&final_path).unwrap(), original);
+         archive.publish(&segment).await.unwrap();
+         observer.fault.store(4, Ordering::Release);
+         assert!(archive.publish(&segment).await.is_err());
+diff --git a/crates/kasumi-store/src/backup_sessions.rs b/crates/kasumi-store/src/backup_sessions.rs
+--- a/crates/kasumi-store/src/backup_sessions.rs
++++ b/crates/kasumi-store/src/backup_sessions.rs
+@@ -720,6 +720,9 @@
+                     }
+                 };
+                 let directory = dir.path().join(format!("backup/sessions/{id}"));
++                let reserve = directory.join("outcome.reserve");
++                let reserve_identity = crate::private_files::file_identity(&reserve).unwrap();
++                let reserve_length = std::fs::metadata(&reserve).unwrap().len();
+                 let fault = fail(
+                     &directory,
+                     "outcome.kasumi",
+@@ -735,8 +738,15 @@
+                 );
+                 // The actual link exists even though its publication returned
+                 // failure. Visibility alone cannot produce a verified outcome.
++                let published = directory.join("outcome.kasumi");
++                let physical = std::fs::read(&published).unwrap();
+                 assert_eq!(
+-                    std::fs::read(directory.join("outcome.kasumi")).unwrap(),
++                    crate::private_files::file_identity(&published).unwrap(),
++                    reserve_identity
++                );
++                assert_eq!(std::fs::metadata(&published).unwrap().len(), reserve_length);
++                assert_eq!(
++                    filesystem::test_sync::decode_outcome(&physical, id, bytes.len()).unwrap(),
+                     bytes
+                 );
+                 assert!(
+@@ -762,6 +772,11 @@
+                 .unwrap()
+                 .unwrap();
+                 assert_eq!(verified.outcome(), Some(&outcome));
++                assert_eq!(std::fs::read(&published).unwrap(), physical);
++                assert_eq!(
++                    crate::private_files::file_identity(&published).unwrap(),
++                    reserve_identity
++                );
+                 if complete {
+                     assert!(verified.aborted().is_err());
+                 } else {
+diff --git a/crates/kasumi-store/src/backup_sessions_fs.rs b/crates/kasumi-store/src/backup_sessions_fs.rs
+--- a/crates/kasumi-store/src/backup_sessions_fs.rs
++++ b/crates/kasumi-store/src/backup_sessions_fs.rs
+@@ -542,6 +542,16 @@
+         os::unix::fs::MetadataExt,
+         sync::{Mutex, OnceLock},
+     };
++
++    // Inspect physical bytes without consuming an injected durable-read fault.
++    // The canonical decoder checks the full extent, header, digest and zero tail.
++    pub(crate) fn decode_outcome(
++        bytes: &[u8],
++        session: Uuid,
++        limit: usize,
++    ) -> std::io::Result<&[u8]> {
++        terminal::decode(bytes, session, Terminal::Outcome, limit)
++    }
+ 
+     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+     pub(crate) enum Point {

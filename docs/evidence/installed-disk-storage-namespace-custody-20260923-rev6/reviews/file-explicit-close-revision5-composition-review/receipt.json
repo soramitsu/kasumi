@@ -1,0 +1,94 @@
+{
+  "at_utc": "2026-09-22T23:43:26.952019+00:00",
+  "scope": "Source-only review of five explicit-close files composed into revision5; no native approval",
+  "candidate_manifest_sha256": "ce3e396af747696be59d6c1a77452bba0a1e95d15d8d8b1bd817047245167cca",
+  "composed_manifest_sha256": "64a8b440408c734c05b442aafbb9fa969862d78662178b8029a287dd66578b2e",
+  "combined_patch_sha256": "f240092b164897c61be4d21c5a395d78f2c1a9d5d253a101af7306b4ed365ed6",
+  "all_75_composed_file_hashes_verified": true,
+  "owned_checks": [
+    {
+      "path": "crates/kasumi-store/src/node_disk/file.rs",
+      "candidate_after": "b5177c9abfa8d5e416ba69373d120c58c65ae059f1d7922ed8ce7f343874ce95",
+      "composed_after": "b5177c9abfa8d5e416ba69373d120c58c65ae059f1d7922ed8ce7f343874ce95",
+      "exact_candidate": true
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/file/custody.rs",
+      "candidate_after": "621c0ff78a8fb29b3c9d868c221ab4dd1269388f43caf42a957debe624e15af8",
+      "composed_after": "621c0ff78a8fb29b3c9d868c221ab4dd1269388f43caf42a957debe624e15af8",
+      "exact_candidate": true
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "candidate_after": "1314c78d8906872f8feff13c9f1ac61270b4db1888346f2883d228d0d9115f78",
+      "composed_after": "478b43ab3013b55532bfc8cb24cba90098fa43043d31a109e98cd3a026d83719",
+      "exact_candidate": false
+    },
+    {
+      "path": "crates/kasumi-store/src/node_file.rs",
+      "candidate_after": "47f330f5ba8b407fa110e0e375ef8327d8324e802ba2c328f658f9459149324a",
+      "composed_after": "47f330f5ba8b407fa110e0e375ef8327d8324e802ba2c328f658f9459149324a",
+      "exact_candidate": true
+    },
+    {
+      "path": "crates/kasumi-store/src/node_file/tests.rs",
+      "candidate_after": "45d38920188561145efc108b8db5a99ea9435b15df36b55f4276c3600122779c",
+      "composed_after": "45d38920188561145efc108b8db5a99ea9435b15df36b55f4276c3600122779c",
+      "exact_candidate": true
+    }
+  ],
+  "merged_tests_proof": {
+    "applied_exact_existing_fixture_correction_sha256": "4a2019bd47ea64e00321030e7afaca8b890b99d32045f47c58f4ae4078d6eb26",
+    "argv": [
+      "git",
+      "apply",
+      "--directory=target/installed-disk-validation/file-explicit-close-revision5-composition-review/readback",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/custody-fenced-observation-fixture-correction/correction.patch"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": "",
+    "result_exact_composed_tests": true
+  },
+  "seven_new_names": [
+    "node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages",
+    "node_disk::tests::explicit_file_close_drains_original_resources_before_credit_and_closed_calls",
+    "node_disk::tests::explicit_owner_failure_or_unsettled_extent_cannot_report_positive_close",
+    "node_disk::tests::explicit_unknown_data_close_keeps_exact_owner_error_and_never_retries_integer",
+    "node_disk::tests::explicit_unknown_parent_close_keeps_registration_and_original_diagnostic",
+    "node_file::tests::backend_close_preserves_busy_owner_then_retires_before_positive_idempotent_close",
+    "node_file::tests::backend_close_reports_native_error_and_keeps_exact_file_and_original_outcome"
+  ],
+  "expected338_names_bound_by_plan_sha256": "16d0d2514abd94b0582bf6930ca2f80312866cfc9fa69f7bd6720fd6d0caee08",
+  "focused12_names": [
+    "node_disk::namespace::tests::file_custody_rejects_a_replaced_intermediate_ancestor_even_when_final_inode_survives",
+    "node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages",
+    "node_disk::tests::explicit_file_close_drains_original_resources_before_credit_and_closed_calls",
+    "node_disk::tests::explicit_owner_failure_or_unsettled_extent_cannot_report_positive_close",
+    "node_disk::tests::explicit_unknown_data_close_keeps_exact_owner_error_and_never_retries_integer",
+    "node_disk::tests::explicit_unknown_parent_close_keeps_registration_and_original_diagnostic",
+    "node_disk::tests::live_shrink_failure_retains_charges_through_drop_and_fences_shared_device",
+    "node_disk::tests::unknown_filesystem_observation_fences_scratch_until_a_drained_census",
+    "node_file::tests::backend_close_preserves_busy_owner_then_retires_before_positive_idempotent_close",
+    "node_file::tests::backend_close_reports_native_error_and_keeps_exact_file_and_original_outcome",
+    "node_file::tests::offset_io_preserves_header_and_retained_backend_cannot_outlive_close",
+    "node_file::tests::validated_descriptor_handoff_never_reopens_a_substituted_path"
+  ],
+  "actual_owned_source_before": {
+    "crates/kasumi-store/src/node_disk/file.rs": "24934b329c935269f578118d70a4e2e9e108f6cf62c3e68455d232aee51843e5",
+    "crates/kasumi-store/src/node_disk/tests.rs": "9825a52cea3a3392bf16a5dd5f7f737370c64b833bc8a50026a073071c8cf1f4",
+    "crates/kasumi-store/src/node_file.rs": "67e5f88753eaf38c1a2b83ffc5b6cba7c8165a55ed0c86caaca93a924d35d1ca",
+    "crates/kasumi-store/src/node_file/tests.rs": "24cd6c283df426e8e3a26672a0ee29c04d5c3308bd7fb48b6410ca644b901bc3"
+  },
+  "actual_owned_source_after": {
+    "crates/kasumi-store/src/node_disk/file.rs": "24934b329c935269f578118d70a4e2e9e108f6cf62c3e68455d232aee51843e5",
+    "crates/kasumi-store/src/node_disk/tests.rs": "9825a52cea3a3392bf16a5dd5f7f737370c64b833bc8a50026a073071c8cf1f4",
+    "crates/kasumi-store/src/node_file.rs": "67e5f88753eaf38c1a2b83ffc5b6cba7c8165a55ed0c86caaca93a924d35d1ca",
+    "crates/kasumi-store/src/node_file/tests.rs": "24cd6c283df426e8e3a26672a0ee29c04d5c3308bd7fb48b6410ca644b901bc3"
+  },
+  "finding": "PASS: four files exactly equal independent candidate; node_disk/tests.rs equals the independently reviewed candidate plus exactly the two separately frozen existing-test corrections. EOF additions and all assertions are preserved. All75 combined proposed hashes verify. No actual source or native changed by this review.",
+  "qualifications": [
+    "Compilation, focused runtime, full-store and workspace gates pending; source readback is not native evidence.",
+    "The candidate retains the documented original-vs-projected outcome distinction and failed-backend acknowledgment/recovery availability gap."
+  ]
+}

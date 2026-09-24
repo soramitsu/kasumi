@@ -1,0 +1,57 @@
+1000e8314: 97ff6c2c    	bl	0x1000c33c4 <<std::sync::poison::mutex::Mutex<[core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>; 3]>>::lock>
+1000e8324: 94006cf4    	bl	0x1001036f4 <<core::result::Result<std::sync::poison::mutex::MutexGuard<[core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>; 3]>, std::sync::poison::PoisonError<std::sync::poison::mutex::MutexGuard<[core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>; 3]>>>>::unwrap_or_else::<<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate::{closure#0}>>
+1000e833c: 97ff6d20    	bl	0x1000c37bc <<std::sync::poison::mutex::MutexGuard<[core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>; 3]> as core::ops::deref::Deref>::deref>
+1000e8344: 14000008    	b	0x1000e8364 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x7c>
+1000e834c: 97fed26f    	bl	0x10009cd08 <core::ptr::drop_glue::<std::sync::poison::mutex::MutexGuard<[core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>; 3]>>>
+1000e8350: 140000a6    	b	0x1000e85e8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x300>
+1000e8360: 17fffffa    	b	0x1000e8348 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x60>
+1000e8370: 97fdf2ed    	bl	0x100064f24 <<u64>::checked_sub>
+1000e837c: 14000001    	b	0x1000e8380 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x98>
+1000e8388: 947f68ca    	bl	0x1020c26b0 <<core::option::Option<u64> as core::ops::try_trait::Try>::branch>
+1000e8394: 14000001    	b	0x1000e8398 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0xb0>
+1000e83b0: 14000001    	b	0x1000e83b4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0xcc>
+1000e83b8: 940097fb    	bl	0x10010e3a4 <<core::option::Option<lifecycle::bootstrap_vote_probe::CandidateMetrics> as core::ops::try_trait::FromResidual<core::option::Option<core::convert::Infallible>>>::from_residual>
+1000e83bc: 1400008a    	b	0x1000e85e4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x2fc>
+1000e83d4: 94008aea    	bl	0x10010af7c <<[core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>]>::get::<usize>>
+1000e83dc: 14000001    	b	0x1000e83e0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0xf8>
+1000e83e4: 940097c9    	bl	0x10010e308 <<core::option::Option<&core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>> as core::ops::try_trait::Try>::branch>
+1000e83ec: 14000001    	b	0x1000e83f0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x108>
+1000e840c: 14000001    	b	0x1000e8410 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x128>
+1000e8414: 940097e4    	bl	0x10010e3a4 <<core::option::Option<lifecycle::bootstrap_vote_probe::CandidateMetrics> as core::ops::try_trait::FromResidual<core::option::Option<core::convert::Infallible>>>::from_residual>
+1000e8418: 14000072    	b	0x1000e85e0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x2f8>
+1000e8424: 94009542    	bl	0x10010d92c <<core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>>::as_ref>
+1000e842c: 14000001    	b	0x1000e8430 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x148>
+1000e8434: 940097c5    	bl	0x10010e348 <<core::option::Option<&tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>> as core::ops::try_trait::Try>::branch>
+1000e843c: 14000001    	b	0x1000e8440 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x158>
+1000e845c: 14000001    	b	0x1000e8460 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x178>
+1000e8464: 940097d0    	bl	0x10010e3a4 <<core::option::Option<lifecycle::bootstrap_vote_probe::CandidateMetrics> as core::ops::try_trait::FromResidual<core::option::Option<core::convert::Infallible>>>::from_residual>
+1000e8468: 1400005a    	b	0x1000e85d0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x2e8>
+1000e8474: 943baedd    	bl	0x100fd3fe8 <<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>::borrow>
+1000e8480: 14000001    	b	0x1000e8484 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x19c>
+1000e849c: 943baf26    	bl	0x100fd4134 <<tokio::sync::watch::Ref<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>> as core::ops::deref::Deref>::deref>
+1000e84a4: 14000008    	b	0x1000e84c4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x1dc>
+1000e84ac: 9433b08e    	bl	0x100dd46e4 <core::ptr::drop_glue::<tokio::sync::watch::Ref<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>>
+1000e84b0: 17ffffa6    	b	0x1000e8348 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x60>
+1000e84c0: 17fffffa    	b	0x1000e84a8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x1c0>
+1000e84d4: 943baf18    	bl	0x100fd4134 <<tokio::sync::watch::Ref<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>> as core::ops::deref::Deref>::deref>
+1000e84dc: 14000001    	b	0x1000e84e0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x1f8>
+1000e84f8: 943baf0f    	bl	0x100fd4134 <<tokio::sync::watch::Ref<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>> as core::ops::deref::Deref>::deref>
+1000e8500: 14000001    	b	0x1000e8504 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x21c>
+1000e8514: 943baf08    	bl	0x100fd4134 <<tokio::sync::watch::Ref<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>> as core::ops::deref::Deref>::deref>
+1000e851c: 14000001    	b	0x1000e8520 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x238>
+1000e8538: 943baeff    	bl	0x100fd4134 <<tokio::sync::watch::Ref<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>> as core::ops::deref::Deref>::deref>
+1000e8540: 14000001    	b	0x1000e8544 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x25c>
+1000e854c: 943c1f9e    	bl	0x100ff03c4 <<core::result::Result<(), openraft::error::Fatal<u64>>>::is_ok>
+1000e8554: 14000001    	b	0x1000e8558 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x270>
+1000e85a0: 948a9c5e    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e85a8: 9433b04f    	bl	0x100dd46e4 <core::ptr::drop_glue::<tokio::sync::watch::Ref<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>>
+1000e85ac: 14000001    	b	0x1000e85b0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x2c8>
+1000e85b4: 97fed1d5    	bl	0x10009cd08 <core::ptr::drop_glue::<std::sync::poison::mutex::MutexGuard<[core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>; 3]>>>
+1000e85b8: 14000001    	b	0x1000e85bc <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x2d4>
+1000e85cc: 948a9a2a    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+1000e85d0: 14000001    	b	0x1000e85d4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x2ec>
+1000e85d8: 97fed1cc    	bl	0x10009cd08 <core::ptr::drop_glue::<std::sync::poison::mutex::MutexGuard<[core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>; 3]>>>
+1000e85dc: 17fffff8    	b	0x1000e85bc <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x2d4>
+1000e85e0: 17fffffd    	b	0x1000e85d4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x2ec>
+1000e85e4: 17fffffc    	b	0x1000e85d4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate+0x2ec>
+1000e85ec: 948a9b8e    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>

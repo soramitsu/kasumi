@@ -1,0 +1,13 @@
+{
+  "reviewer": "authority_materialization_repair",
+  "verdict": "NO_BLOCKING_FINDING_STATIC_ONLY",
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "patch_sha256": "8e96155d16c4021d20fae2c6d8f8ef3b052ea8d6de522f6e6c6cf5812a09a74d",
+  "manifest_sha256": "2704b3b6f7e7b16ed4f6e6a6c494e307356cb39bcbdcc54b964cacb9a23d9f8d",
+  "review_sha256": "7724f3e113643f5466b0e8cf2b0d89e54c5aa85845ea1665c5a8ae366cfeb5fc",
+  "exact_proposed_and_actual_source_baselines_match": true,
+  "revision1_test_lock_finding_fixed": true,
+  "actual_source_modified": false,
+  "cargo_or_tests_run": false
+}

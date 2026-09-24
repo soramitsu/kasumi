@@ -1,0 +1,26 @@
+{
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "status": "TARGET_ONLY_UNCOMPILED",
+  "patch_sha256": "6bf815e71c839cb1105a27573b330dc5a6ff0a3a02462f49e0350701886a8bb4",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/retained_transaction.rs",
+      "before_sha256": "98efcb4039728e7cc18178e1b9c000f411555dc836dfafec29b9645732880315",
+      "proposed_sha256": "f17dee8c8c30bd8a3eae7923a2e2e6b6741f514be0249a230f0e43d01ad2f01d"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_transaction_tests.rs",
+      "before_sha256": "77df073be144489dad365603bd200f7eb54b107cab41a95ef3d937c9a00c1a09",
+      "proposed_sha256": "9591e6bfcfdc5691e2c810c059946c011241a655d7a1968608a2782f5fb519a3"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "before_sha256": "d8b20ab61cd6864d7704312c868d66e729a4bab6f54a55993cd9257850a8b8ff",
+      "proposed_sha256": "69e0f0fb35968efa3561ef1e79bdc63649f0b0b530f7ff446b460a7a6ba12fb5"
+    }
+  ],
+  "new_tests": 2,
+  "existing_tests_strengthened": "success/abort/capacity keep original reports through actual disposal and reuse; all five uncertain cases reject disposal unchanged",
+  "scope": "positive terminal settlement permits separate one-shot disposal, retaining original terminal/rollback and any disposal panic; writer guard last after other fields; production census and adoption remain open"
+}

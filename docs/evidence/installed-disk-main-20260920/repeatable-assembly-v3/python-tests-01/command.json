@@ -1,0 +1,10 @@
+{
+  "command": [
+    "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+    "-B",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/repeatable-assembly-v3/python-tests-01/test-owned.py"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "runner_sha256": "0c8a3455eac9ed5b8787fa58d5156df3aa05517d7189d3a8c9c173595c9dcc58",
+  "scope": "Actual synthetic process unit tests; no native qualification or Cargo execution"
+}

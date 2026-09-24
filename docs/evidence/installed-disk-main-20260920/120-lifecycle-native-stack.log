@@ -1,0 +1,16 @@
+(lldb) target create "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+Current executable set to '/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0' (arm64).
+(lldb) settings set -- target.run-args  "--test-threads=1" "--nocapture" "--exact" "recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation"
+(lldb) run
+
+running 1 test
+test recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 101.81s
+
+Process 32366 launched: '/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0' (arm64)
+Process 32366 exited with status = 0 (0x00000000)
+(lldb) process status
+Process 32366 exited with status = 0 (0x00000000) 
+(lldb) thread backtrace all -c 48
+error: Command requires a process which is currently stopped.

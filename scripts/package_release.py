@@ -16,12 +16,15 @@ from pathlib import Path
 import re
 import shutil
 import struct
-import subprocess
 import sys
 import tarfile
 import tomllib
 
-from release_gate import TOOLCHAIN, functional_gates, inventory, sha256, write_json
+import gate_process
+import assembly_inputs
+
+from release_gate import (FORBIDDEN_FIXTURE_FEATURES, TOOLCHAIN, compiler_artifact_messages, compiler_executable_identity,
+                          functional_gates, inventory, record_compiled_package, sha256, write_json)
 
 TARGETS = {"aarch64-unknown-linux-gnu": ("elf", 183),
            "x86_64-unknown-linux-gnu": ("elf", 62),
@@ -52,6 +55,60 @@ def verify_file(root, relative, digest):
     if sha256(path) != digest:
         raise ValueError("artifact changed: " + str(relative))
     return path
+
+
+def verify_compiler_executables(directory, gate, process):
+    """Replay Cargo's emitted executable roster against the retained receipt.
+
+    The original absolute paths are anchored by the process's source working
+    directory. Replaying them lexically lets a transported run be checked after
+    its original build root no longer exists on the consuming host.
+    """
+    recorded = gate.get("executables")
+    working_directory = process.get("working_directory")
+    if (not isinstance(recorded, dict) or not isinstance(working_directory, str)
+            or not Path(working_directory).is_absolute()
+            or Path(working_directory).name != "source"
+            or os.path.normpath(working_directory) != working_directory):
+        raise ValueError("functional compiler-artifact custody is malformed")
+    original_target = Path(working_directory).parent / "target"
+    emitted = {}
+    compiled_packages = {}
+    for message in compiler_artifact_messages(owned_file(directory, gate["log"])):
+        record_compiled_package(compiled_packages, message)
+        raw = message.get("executable")
+        if raw is None:
+            continue
+        if not isinstance(raw, str) or not Path(raw).is_absolute() or os.path.normpath(raw) != raw:
+            raise ValueError("compiler-artifact executable path is malformed")
+        path = Path(raw)
+        if not path.is_relative_to(original_target) or path == original_target:
+            raise ValueError("compiler-artifact executable is outside the owned target")
+        relative = path.relative_to(original_target).as_posix()
+        identity = compiler_executable_identity(message)
+        if relative in emitted:
+            raise ValueError("duplicate compiler-artifact executable identity")
+        emitted[relative] = identity
+    if gate.get("compiled_packages") != compiled_packages:
+        raise ValueError("compiler-artifact package inventory differs from its log")
+    if gate["name"] in {"production", "network-driver"} and any(
+            set(package["features"]) & FORBIDDEN_FIXTURE_FEATURES
+            for package in compiled_packages.values()):
+        raise ValueError("fixture feature was compiled into a release executable")
+    if set(recorded) != set(emitted):
+        raise ValueError("compiler-artifact executable set differs from its receipt")
+    for relative, identity in emitted.items():
+        artifact = recorded[relative]
+        if (not isinstance(artifact, dict)
+                or set(artifact) != {"target", "test", "package_id", "sha256", "bytes"}
+                or any(artifact[field] != value for field, value in identity.items())
+                or not isinstance(artifact["sha256"], str)
+                or re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"]) is None
+                or type(artifact["bytes"]) is not int or artifact["bytes"] < 0):
+            raise ValueError("compiler-artifact executable receipt differs from its log")
+        path = verify_file(Path(directory) / "target", relative, artifact["sha256"])
+        if path.stat().st_size != artifact["bytes"] or not path.stat().st_mode & 0o111:
+            raise ValueError("compiler-artifact executable bytes or mode differ")
 
 
 def verify_evidence(directory):
@@ -87,6 +144,7 @@ def verify_evidence(directory):
             raise ValueError("gate resource evidence is missing; rerun frozen gates")
         verify_file(directory, gate["resources"], gate["resources_sha256"])
         process = verify_process_receipt(directory, gate, timeout)
+        verify_compiler_executables(directory, gate, process)
         if gate["name"] in {"python", "dependency-patches"} and process["executable"] != {
                 "path": interpreter["path"], "sha256": interpreter["sha256"]}:
             raise ValueError("Python gate did not execute the recorded interpreter")
@@ -250,11 +308,199 @@ def verify_registry_notices(package, files, checksum):
                 raise ValueError("cached dependency notice differs from locked crate")
 
 
-def build_inventory(source, output, record, production, target, epoch):
+METADATA_SCHEMA = "kasumi-package-metadata-v1"
+METADATA_TIMEOUT_SECONDS = 600
+MAX_METADATA_BYTES = 64 << 20
+
+
+def metadata_command(executable, target):
+    if target not in TARGETS or not Path(executable).is_absolute():
+        raise ValueError("metadata requires a native target and absolute executable")
+    return [str(executable), "metadata", "--locked", "--offline",
+            "--format-version", "1", "--no-default-features", "--filter-platform", target]
+
+
+def _metadata_bytes(path):
+    with Path(path).open("rb") as stream:
+        data = stream.read(MAX_METADATA_BYTES + 1)
+    if len(data) > MAX_METADATA_BYTES:
+        raise ValueError("metadata JSON exceeds work limit")
+    return data
+
+
+def _metadata_json(data):
+    if len(data) > MAX_METADATA_BYTES:
+        raise ValueError("metadata JSON exceeds work limit")
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate metadata JSON key")
+            result[key] = value
+        return result
+    return json.loads(data, object_pairs_hook=pairs,
+                      parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite metadata JSON")))
+
+
+def _metadata_ref(directory, name):
+    path = owned_file(directory, name)
+    return {"path": name, "sha256": sha256(path), "bytes": path.stat().st_size}
+
+
+def _metadata_reference(directory, value):
+    if (not isinstance(value, dict) or set(value) != {"path", "sha256", "bytes"}
+            or not isinstance(value["path"], str) or not isinstance(value["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is None
+            or type(value["bytes"]) is not int or value["bytes"] < 0):
+        raise ValueError("invalid metadata file reference")
+    path = verify_file(directory, value["path"], value["sha256"])
+    if path.stat().st_size != value["bytes"]:
+        raise ValueError("metadata file length changed")
+    return path
+
+
+def verify_metadata_capture(directory, target, expected_source_files):
+    """Consume only the exact successfully drained metadata invocation.
+
+    This verifies the runner's observed transcript, not an authenticated remote
+    producer or a complete repeatable-assembly domain. It never executes Cargo.
+    """
+    directory = Path(directory).resolve(strict=True)
+    attempt_path = owned_file(directory, "attempt.json")
+    attempt_bytes = _metadata_bytes(attempt_path)
+    record = _metadata_json(attempt_bytes)
+    fields = {"schema", "status", "target", "source_root", "source_before", "source_after",
+              "command", "timeout_seconds", "executable", "process", "stdout", "stderr", "error"}
+    if not isinstance(record, dict) or set(record) != fields:
+        raise ValueError("metadata attempt fields differ")
+    if (record["schema"] != METADATA_SCHEMA or record["status"] != "passed"
+            or record["target"] != target or record["error"] is not None
+            or record["timeout_seconds"] != METADATA_TIMEOUT_SECONDS
+            or not isinstance(record["source_root"], str)
+            or not Path(record["source_root"]).is_absolute()):
+        raise ValueError("metadata attempt did not pass exact contract")
+    refs = {name: record[name] for name in
+            ("source_before", "source_after", "executable", "process", "stdout", "stderr")}
+    paths = {name: _metadata_reference(directory, ref) for name, ref in refs.items()}
+    expected_paths = {"source_before": "source-before.json", "source_after": "source-after.json",
+                      "executable": "executable", "process": "process.json",
+                      "stdout": "stdout.json", "stderr": "stderr.log"}
+    if any(refs[name]["path"] != path for name, path in expected_paths.items()):
+        raise ValueError("metadata custody paths differ")
+    for name in ("source_before", "source_after"):
+        if _metadata_json(_metadata_bytes(paths[name])) != expected_source_files:
+            raise ValueError("metadata source differs from frozen input")
+    process = _metadata_json(_metadata_bytes(paths["process"]))
+    executed = process.get("executable")
+    if (not isinstance(executed, dict) or set(executed) != {"path", "sha256"}
+            or executed["sha256"] != refs["executable"]["sha256"]):
+        raise ValueError("metadata process executable differs from retained bytes")
+    command = metadata_command(executed["path"], target)
+    if record["command"] != command or process.get("command") != command:
+        raise ValueError("metadata command differs from frozen contract")
+    if process.get("working_directory") != record["source_root"]:
+        raise ValueError("metadata process working directory differs from frozen source")
+    gate = {"command": command, "process": refs["process"]["path"],
+            "process_sha256": refs["process"]["sha256"],
+            "process_cleanup": process.get("cleanup"), "timeout_seconds": METADATA_TIMEOUT_SECONDS,
+            "timed_out": process.get("timed_out"), "received_signals": process.get("received_signals"),
+            "process_error": process.get("error")}
+    verify_process_receipt(directory, gate, METADATA_TIMEOUT_SECONDS)
+    if process.get("stdout") != refs["stdout"] or process.get("stderr") != refs["stderr"]:
+        raise ValueError("metadata outputs do not belong to the drained process")
+    raw = _metadata_bytes(paths["stdout"])
+    if hashlib.sha256(raw).hexdigest() != refs["stdout"]["sha256"]:
+        raise ValueError("metadata changed before parsing")
+    metadata = _metadata_json(raw)
+    if (not isinstance(metadata, dict) or metadata.get("version") != 1
+            or type(metadata.get("version")) is not int
+            or not isinstance(metadata.get("packages"), list)
+            or not isinstance(metadata.get("workspace_members"), list)
+            or not isinstance(metadata.get("resolve"), dict)):
+        raise ValueError("Cargo metadata document is incomplete")
+    for ref in refs.values():
+        _metadata_reference(directory, ref)
+    if _metadata_bytes(attempt_path) != attempt_bytes:
+        raise ValueError("metadata attempt changed during verification")
+    return metadata
+
+
+def capture_metadata(source, directory, target, expected_source_files, native_inputs):
+    """Own the original input-producing process and preserve every failed attempt.
+
+    The directory is exclusive and never reused. SIGKILL cannot run cleanup;
+    the persisted running receipt retains the actual process group for explicit
+    recovery and can never pass verify_metadata_capture.
+    """
+    source = Path(source).resolve(strict=True)
+    directory = Path(directory)
+    if not directory.is_absolute() or directory.resolve().is_relative_to(source):
+        raise ValueError("metadata custody requires an absolute directory outside source")
+    directory.mkdir(exist_ok=False)
+    record = {"schema": METADATA_SCHEMA, "status": "running", "target": target,
+              "source_root": str(source), "source_before": None, "source_after": None,
+              "command": None, "timeout_seconds": METADATA_TIMEOUT_SECONDS,
+              "executable": None, "process": None, "stdout": None, "stderr": None, "error": None}
+    attempt_path = directory / "attempt.json"
+    write_json(attempt_path, record)
+    try:
+        before = inventory(source)
+        write_json(directory / "source-before.json", before)
+        record["source_before"] = _metadata_ref(directory, "source-before.json")
+        if before != expected_source_files:
+            raise ValueError("metadata source differs before dispatch")
+        environment = assembly_inputs.environment(native_inputs, directory)
+        executable = gate_process.executable_identity([native_inputs["tools"]["cargo"]["path"]], source, environment)
+        command = metadata_command(executable["path"], target)
+        record["command"] = command
+        with Path(executable["path"]).open("rb") as original, (directory / "executable").open("xb") as retained:
+            shutil.copyfileobj(original, retained)
+            retained.flush()
+            os.fsync(retained.fileno())
+        record["executable"] = _metadata_ref(directory, "executable")
+        if record["executable"]["sha256"] != executable["sha256"]:
+            raise ValueError("metadata executable changed before dispatch")
+        write_json(attempt_path, record)
+        with (directory / "stdout.json").open("xb") as stdout, (directory / "stderr.log").open("xb") as stderr:
+            process = gate_process.run(command, source, environment, stdout, METADATA_TIMEOUT_SECONDS,
+                                       lambda value: write_json(directory / "process.json", value),
+                                       stderr=stderr)
+        stable = process["cleanup"]["drained"] and not process["cleanup"]["errors"]
+        process["outputs_stable"] = stable
+        # Bind exact drained files into the original process receipt. An
+        # unresolved process keeps its raw files but gets no terminal hashes.
+        if stable:
+            record["stdout"] = _metadata_ref(directory, "stdout.json")
+            record["stderr"] = _metadata_ref(directory, "stderr.log")
+            process["stdout"] = record["stdout"]
+            process["stderr"] = record["stderr"]
+        write_json(directory / "process.json", process)
+        record["process"] = _metadata_ref(directory, "process.json")
+        if not stable or process["status"] != "passed":
+            raise ValueError("metadata process failed or retained uncertain ownership")
+        if process["executable"] != executable:
+            raise ValueError("metadata dispatched executable identity changed")
+        after = inventory(source)
+        write_json(directory / "source-after.json", after)
+        record["source_after"] = _metadata_ref(directory, "source-after.json")
+        if after != before:
+            raise ValueError("metadata changed frozen source inputs")
+        record["status"] = "passed"
+        write_json(attempt_path, record)
+        return verify_metadata_capture(directory, target, expected_source_files)
+    except BaseException as error:
+        record["status"] = "failed"
+        record["error"] = repr(error)
+        write_json(attempt_path, record)
+        raise
+
+
+def build_inventory(source, output, record, production, target, epoch, native_inputs, declared_files):
     """Map Cargo-reported compiled packages to exact locked crate sources."""
-    command = ["cargo", "+" + TOOLCHAIN, "metadata", "--locked", "--format-version", "1",
-               "--no-default-features", "--filter-platform", target]
-    metadata = json.loads(subprocess.check_output(command, cwd=source))
+    metadata = capture_metadata(source, output.parent / "metadata-custody", target,
+                                json.loads((source.parent / "source-files.json").read_text()), native_inputs)
+    consumed = assembly_inputs.consumed(native_inputs, source, metadata, declared_files)
+    write_json(output.parent / "consumed-inputs.json", consumed)
     packages = {p["id"]: p for p in metadata["packages"]}
     compiled = production["compiled_packages"]
     if not set(compiled).issubset(packages):
@@ -335,13 +581,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path, help="exclusive new directory outside evidence/source")
+    parser.add_argument("--native-inputs", required=True, type=Path, help="exact native tool/runtime/host input declaration")
     args = parser.parse_args()
+    native_inputs = assembly_inputs.validate_declaration(_metadata_json(_metadata_bytes(args.native_inputs)))
+    declared_files = assembly_inputs.observe(native_inputs)
     evidence = args.evidence.resolve(strict=True)
     if not args.output.is_absolute() or args.output.resolve().is_relative_to(evidence):
         parser.error("output must be absolute and outside frozen evidence")
     record, production, target, binaries = verify_evidence(evidence)
     source = evidence / "source"
-    for tool in ("package_release.py", "release_gate.py", "gate_process.py"):
+    if native_inputs["target"] != target:
+        raise ValueError("native input target differs from candidate")
+    if Path(sys.executable).resolve(strict=True) != Path(native_inputs["tools"]["python"]["path"]):
+        raise ValueError("packager interpreter differs from declaration")
+    for tool in ("package_release.py", "release_gate.py", "gate_process.py", "assembly_inputs.py"):
         verify_file(source, "scripts/" + tool, sha256(Path(__file__).resolve().parent / tool))
     epoch = int(record["build_environment"]["SOURCE_DATE_EPOCH"])
     if not 0 <= epoch <= 0xFFFFFFFF:
@@ -360,7 +613,7 @@ def main():
     for name in ("LICENSE", "NOTICE", "SECURITY.md", "CONTRIBUTING.md"):
         shutil.copyfile(owned_file(source, name), package / name)
     shutil.copytree(source / "release/systemd", package / "systemd")
-    build_inventory(source, package, record, production, target, epoch)
+    build_inventory(source, package, record, production, target, epoch, native_inputs, declared_files)
     if inventory(source) != json.loads((evidence / "source-files.json").read_text()):
         raise ValueError("packaging changed frozen source inputs")
     write_json(package / "provenance.json", {"schema": 1, "source_commit": record["source_commit"],
@@ -381,6 +634,9 @@ def main():
     with (args.output / "SHA256SUMS").open("x") as checksums:
         for path in paths:
             checksums.write(sha256(path) + "  " + path.name + "\n")
+    if assembly_inputs.observe(native_inputs) != declared_files:
+        raise ValueError("assembly changed declared runtime/dependency inputs")
+    write_json(args.output / "declared-inputs.json", declared_files)
     print("Candidate artifacts: " + str(args.output))
     return 0
 

@@ -1,0 +1,10 @@
+10011f8b8: 942ffded    	bl	0x100d1f06c <<alloc::sync::Arc<kasumi_engine::state::Generation> as core::ops::deref::Deref>::deref>
+10011f8c8: 940b1a1f    	bl	0x1003e6144 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::state::Generation>>>
+10011f8e8: 94189545    	bl	0x100744dfc <<core::option::Option<kasumi_types::lifecycle::LifecycleControlState>>::as_ref>
+10011f8fc: 97ffb698    	bl	0x10010d35c <<core::option::Option<&kasumi_types::lifecycle::LifecycleControlState>>::and_then::<&kasumi_types::lifecycle::LifecycleIntent, lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}::{closure#0}>>
+10011f914: 942ffdd6    	bl	0x100d1f06c <<alloc::sync::Arc<kasumi_engine::state::Generation> as core::ops::deref::Deref>::deref>
+10011f934: 97ffb5c9    	bl	0x10010d058 <<core::option::Option<&kasumi_types::lifecycle::LifecycleIntent>>::map::<(uuid::Uuid, kasumi_types::lifecycle::LifecyclePhase, u64, u64, u64), lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}::{closure#1}>>
+10011f958: 9489c670    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10011f960: 940b19f9    	bl	0x1003e6144 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::state::Generation>>>
+10011f970: 9489c441    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10011f978: 9489c5ab    	bl	0x102391024 <dyld_stub_binder+0x102391024>

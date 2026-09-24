@@ -1,0 +1,1155 @@
+--- a/crates/kasumi-authority/Cargo.toml
++++ b/crates/kasumi-authority/Cargo.toml
+@@ -25,7 +25,7 @@
+ 
+ [dev-dependencies]
+ kasumi-raft = { workspace = true, features = ["test-utils"] }
+-kasumi-engine.workspace = true
++kasumi-engine = { workspace = true, features = ["test-utils"] }
+ ring = "0.17"
+ kasumi-serving = { workspace = true, features = ["test-utils"] }
+ tempfile.workspace = true
+--- a/crates/kasumi-authority/src/activation_gate_tests.rs
++++ b/crates/kasumi-authority/src/activation_gate_tests.rs
+@@ -464,12 +464,13 @@
+     )
+     .unwrap();
+     let captured = phase.capture().unwrap();
+-    let node_store = NodeStore::create_new_fixture(
+-        f._dir.path().join("actual-target.redb"),
+-        kasumi_store::test_utils::NODE_STORE_ID,
+-        kasumi_store::ScratchDisk::fixture(),
+-    )
+-    .unwrap();
++    let storage = PhysicalFixture::new().unwrap();
++    let node_store = storage
++        .create_new(
++            storage.path("actual-target.redb"),
++            kasumi_store::test_utils::NODE_STORE_ID,
++        )
++        .unwrap();
+     let provider = Arc::new(LocalKeyProvider::new([91; 32]));
+     let access = kasumi_store::StorageAccess::target_phase(serving.clone(), phase.clone()).unwrap();
+     let store = kasumi_store::TenantStore::initialize_catalog_fixture_with_access(
+--- a/crates/kasumi-authority/src/bootstrap_open_tests.rs
++++ b/crates/kasumi-authority/src/bootstrap_open_tests.rs
+@@ -4,7 +4,7 @@
+ type RetainedRows = Vec<Vec<(Vec<u8>, Vec<u8>)>>;
+ 
+ struct InstalledFixture {
+-    directory: tempfile::TempDir,
++    physical: PhysicalFixture,
+     stores: Arc<TenantStorageSet>,
+     installation: AuthorityInstallation,
+     bootstrap: crate::AuthorityBootstrap,
+@@ -13,7 +13,7 @@
+ }
+ impl InstalledFixture {
+     async fn new() -> anyhow::Result<Self> {
+-        let directory = kasumi_store::test_utils::private_tempdir()?;
++        let physical = PhysicalFixture::new()?;
+         let key = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+             .map_err(|_| anyhow::anyhow!("fixture root generation failed"))?;
+         let root = kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(key.as_ref())?;
+@@ -35,10 +35,9 @@
+         };
+         let signing = root.install(installation.manifest.clone(), 0)?;
+         let (bootstrap, settings) = test_settings(4 << 20, signing.signer.certificate().clone());
+-        let node = NodeStore::create_new_fixture(
+-            directory.path().join("authority.redb"),
++        let node = physical.create_new(
++            physical.path("authority.redb"),
+             kasumi_store::test_utils::NODE_STORE_ID,
+-            kasumi_store::ScratchDisk::fixture(),
+         )?;
+         let stores = TenantStorageSet::initialize_catalogs(
+             node,
+@@ -49,7 +48,7 @@
+         )
+         .await?;
+         Ok(Self {
+-            directory,
++            physical,
+             stores,
+             installation,
+             bootstrap,
+@@ -87,8 +86,8 @@
+             settings,
+             Arc::new(InProcessRouter::default()),
+             Config::default(),
+-            request_budget(),
+-            kasumi_raft::SnapshotBufferOwner::fixture(),
++            request_budget(&self.physical.admission),
++            self.physical.admission.snapshot_buffer_owner().unwrap(),
+             EpochClock::system()?,
+         )
+         .await
+@@ -145,7 +144,7 @@
+     async fn reopen(self) -> anyhow::Result<Self> {
+         self.close().await;
+         let Self {
+-            directory,
++            physical,
+             stores,
+             installation,
+             bootstrap,
+@@ -153,10 +152,9 @@
+             signing,
+         } = self;
+         drop(stores);
+-        let node = NodeStore::open_existing_fixture(
+-            directory.path().join("authority.redb"),
++        let node = physical.open_existing(
++            physical.path("authority.redb"),
+             kasumi_store::test_utils::NODE_STORE_ID,
+-            kasumi_store::ScratchDisk::fixture(),
+         )?;
+         let stores = TenantStorageSet::open_existing(
+             node,
+@@ -167,7 +165,7 @@
+         )
+         .await?;
+         Ok(Self {
+-            directory,
++            physical,
+             stores,
+             installation,
+             bootstrap,
+--- a/crates/kasumi-authority/src/maintenance_tests.rs
++++ b/crates/kasumi-authority/src/maintenance_tests.rs
+@@ -37,15 +37,16 @@
+     }
+     async fn add_fourth_with_budget(&mut self, resource_budget_bytes: u64) {
+         let id = 4;
++        let storage = PhysicalFixture::new().unwrap();
+         let mut settings = self.settings.clone();
+         settings.resource_budget_bytes = resource_budget_bytes;
+         let stores = TenantStorageSet::initialize_catalogs(
+-            NodeStore::create_new_fixture(
+-                self._dir.path().join("authority-4.redb"),
+-                kasumi_store::test_utils::NODE_STORE_ID,
+-                kasumi_store::ScratchDisk::fixture(),
+-            )
+-            .unwrap(),
++            storage
++                .create_new(
++                    storage.path("authority-4.redb"),
++                    kasumi_store::test_utils::NODE_STORE_ID,
++                )
++                .unwrap(),
+             self.installation.tenant(),
+             Arc::new(LocalKeyProvider::new([4; 32])),
+             Arc::new(LocalKeyProvider::new([14; 32])),
+@@ -80,8 +81,8 @@
+                 election_timeout_max: 1000,
+                 ..Config::default()
+             },
+-            request_budget(),
+-            kasumi_raft::SnapshotBufferOwner::fixture(),
++            request_budget(&storage.admission),
++            storage.admission.snapshot_buffer_owner().unwrap(),
+             self.epoch.clone(),
+         )
+         .await
+@@ -97,6 +98,7 @@
+             .unwrap();
+         self.services.push(service);
+         self.stores.push(stores);
++        self.physical.insert(id, storage);
+     }
+ }
+ 
+@@ -527,8 +529,11 @@
+         fixture.settings.clone(),
+         fixture.router.clone(),
+         Config::default(),
+-        request_budget(),
+-        kasumi_raft::SnapshotBufferOwner::fixture(),
++        request_budget(&fixture.physical[&1].admission),
++        fixture.physical[&1]
++            .admission
++            .snapshot_buffer_owner()
++            .unwrap(),
+         fixture.epoch.clone(),
+     )
+     .await;
+@@ -629,8 +634,11 @@
+         smaller,
+         fixture.router.clone(),
+         Config::default(),
+-        request_budget(),
+-        kasumi_raft::SnapshotBufferOwner::fixture(),
++        request_budget(&fixture.physical[&1].admission),
++        fixture.physical[&1]
++            .admission
++            .snapshot_buffer_owner()
++            .unwrap(),
+         fixture.epoch.clone(),
+     )
+     .await;
+@@ -782,8 +790,11 @@
+         fixture.settings.clone(),
+         fixture.router.clone(),
+         Config::default(),
+-        request_budget(),
+-        kasumi_raft::SnapshotBufferOwner::fixture(),
++        request_budget(&fixture.physical[&1].admission),
++        fixture.physical[&1]
++            .admission
++            .snapshot_buffer_owner()
++            .unwrap(),
+         fixture.epoch.clone(),
+     )
+     .await;
+--- a/crates/kasumi-authority/src/request_drain_tests.rs
++++ b/crates/kasumi-authority/src/request_drain_tests.rs
+@@ -207,8 +207,8 @@
+ async fn request_registry_metadata_charge_outlives_cancelled_waiters_and_dropped_facade() {
+     let admission = kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
+     let bytes = authority_request_metadata_bytes().unwrap();
+-    let mut charge = admission.reserve(bytes, None).unwrap();
+-    charge.retain(bytes);
++    let baseline = admission.snapshot().reserved_bytes;
++    let charge = admission.memory().reserve_resident(bytes).unwrap();
+     let jobs = RequestJobs::new(
+         BackgroundWorkBudget::new(AUTHORITY_REQUEST_SLOTS, Arc::new(charge)).unwrap(),
+     )
+@@ -223,7 +223,7 @@
+         .unwrap();
+     drop(receive);
+     drop(jobs);
+-    assert_eq!(admission.snapshot().reserved_bytes, bytes);
++    assert_eq!(admission.snapshot().reserved_bytes, baseline + bytes);
+     assert_eq!(admission.snapshot().inflight_operations, 0);
+     let mut first = Box::pin(child.drain());
+     std::future::poll_fn(|cx| {
+@@ -232,16 +232,17 @@
+     })
+     .await;
+     drop(first);
+-    assert_eq!(admission.snapshot().reserved_bytes, bytes);
++    assert_eq!(admission.snapshot().reserved_bytes, baseline + bytes);
+     release.send(()).unwrap();
+     child.drain().await.unwrap();
+     drop(child);
+-    assert_eq!(admission.snapshot().reserved_bytes, 0);
++    assert_eq!(admission.snapshot().reserved_bytes, baseline);
+ }
+ 
+ #[tokio::test]
+ async fn request_child_inventory_is_bounded_and_capacity_denial_does_not_fence_owner() {
+-    let jobs = RequestJobs::new(request_budget()).unwrap();
++    let admission = kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
++    let jobs = RequestJobs::new(request_budget(&admission)).unwrap();
+     let requests = Arc::new(tokio::sync::Semaphore::new(AUTHORITY_REQUEST_SLOTS));
+     let mut releases = Vec::new();
+     for _ in 0..AUTHORITY_REQUEST_SLOTS {
+--- a/crates/kasumi-authority/src/target_materialization_tests.rs
++++ b/crates/kasumi-authority/src/target_materialization_tests.rs
+@@ -44,21 +44,19 @@
+     input: TargetMaterializationInput,
+     intent: SignedControlIntent,
+     signers: BTreeMap<u64, TargetSigner>,
+-    admissions: BTreeMap<u64, Arc<kasumi_engine::admission::NodeAdmission>>,
++    physical: BTreeMap<u64, PhysicalFixture>,
++    _source_physical: PhysicalFixture,
+     target_files: std::sync::Mutex<BTreeSet<u64>>,
+ }
+ impl MaterialFixture {
+     async fn new() -> Self {
+         let control = ControlFixture::new();
+         let issuer = control.issuer().await;
+-        let node = NodeStore::create_new_fixture(
+-            issuer._dir.path().join("source.redb"),
+-            Uuid::new_v4(),
+-            kasumi_store::ScratchDisk::fixture(),
+-        )
+-        .unwrap();
+-        let source_admission =
+-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
++        let source_physical = PhysicalFixture::new().unwrap();
++        let node = source_physical
++            .create_new(source_physical.path("source.redb"), Uuid::new_v4())
++            .unwrap();
++        let source_admission = source_physical.admission.clone();
+         let security = audit(node.clone(), source_admission.clone(), false).await;
+         let sourcekey = Arc::new(LocalKeyProvider::new([51; 32]));
+         let app = TenantStore::initialize_catalog_fixture(node, "city".into(), sourcekey.clone())
+@@ -123,8 +121,12 @@
+             .await
+             .unwrap();
+         let destination = Arc::new(
+-            FilesystemBackupDestination::new_fixture(issuer._dir.path().join("backups"), 16 << 20)
+-                .unwrap(),
++            FilesystemBackupDestination::new(
++                source_physical.path("backups"),
++                16 << 20,
++                source_physical.persistent.clone(),
++            )
++            .unwrap(),
+         );
+         let checkpoint = source_db
+             .backup_checkpoint(context, destination.as_ref(), uuid::Uuid::new_v4())
+@@ -211,14 +213,10 @@
+             intent,
+             signers,
+             target_files: Default::default(),
+-            admissions: (1..=3)
+-                .map(|id| {
+-                    (
+-                        id,
+-                        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+-                    )
+-                })
++            physical: (1..=3)
++                .map(|id| (id, PhysicalFixture::new().unwrap()))
+                 .collect(),
++            _source_physical: source_physical,
+         }
+     }
+     async fn phase(
+@@ -304,23 +302,20 @@
+         // materialization still explicitly obtains its registered operation.
+         let first_creation = self.target_files.lock().unwrap().insert(id);
+         let node = {
+-            let path = self.issuer._dir.path().join(format!("target-{id}.redb"));
++            let path = self.physical[&id].path(format!("target-{id}.redb"));
+             if first_creation {
+-                NodeStore::create_new_fixture(
+-                    path,
+-                    node_store_id,
+-                    kasumi_store::ScratchDisk::fixture(),
+-                )
++                self.physical[&id].create_new(path, node_store_id)
+             } else {
+-                NodeStore::open_existing_fixture(
+-                    path,
+-                    node_store_id,
+-                    kasumi_store::ScratchDisk::fixture(),
+-                )
++                self.physical[&id].open_existing(path, node_store_id)
+             }
+             .unwrap()
+         };
+-        let security = audit(node.clone(), self.admissions[&id].clone(), !first_creation).await;
++        let security = audit(
++            node.clone(),
++            self.physical[&id].admission.clone(),
++            !first_creation,
++        )
++        .await;
+         let stores = if first_creation {
+             TenantStorageSet::initialize_catalogs(
+                 node,
+@@ -361,7 +356,7 @@
+                     )
+                 })
+                 .collect(),
+-            admission: self.admissions[&id].clone(),
++            admission: self.physical[&id].admission.clone(),
+         }
+     }
+     async fn close(self) {
+@@ -777,7 +772,7 @@
+                         election_timeout_max: 400,
+                         ..Config::default()
+                     },
+-                    admission: self.admissions[&id].clone(),
++                    admission: self.physical[&id].admission.clone(),
+                 },
+                 router.clone(),
+                 audit.clone(),
+@@ -1045,7 +1040,7 @@
+     );
+     // Independent journal reserves activation and permanent stop headroom
+     // before the actual local effect. It uses neither source nor target key.
+-    let journal_path = f.issuer._dir.path().join("activation-journal.redb");
++    let journal_path = f.physical[&selected.id].path("activation-journal.redb");
+     let journal_installation = kasumi_engine::TargetJournalInstallation {
+         root: f.control.root.clone(),
+         node: nodes()
+@@ -1068,12 +1063,9 @@
+     )
+     .unwrap();
+     let journal_store = TenantStore::initialize_catalog(
+-        NodeStore::create_new_fixture(
+-            &journal_path,
+-            journal_file_id,
+-            kasumi_store::ScratchDisk::fixture(),
+-        )
+-        .unwrap(),
++        f.physical[&projected_node_id]
++            .create_new(&journal_path, journal_file_id)
++            .unwrap(),
+         journal_tenant.clone(),
+         journal_provider.clone(),
+         journal_access.clone(),
+@@ -1087,7 +1079,7 @@
+         journal_store.clone(),
+         journal_installation.clone(),
+         journal_limits.clone(),
+-        f.admissions[&projected_node_id].clone(),
++        f.physical[&projected_node_id].admission.clone(),
+     )
+     .unwrap();
+     assert!(
+@@ -1188,12 +1180,9 @@
+     // Reopen only the separately encrypted journal, independently of all app
+     // providers. Exact signatures survive restart; substituted facts fail closed.
+     let journal_store = TenantStore::open_existing(
+-        NodeStore::open_existing_fixture(
+-            &journal_path,
+-            journal_file_id,
+-            kasumi_store::ScratchDisk::fixture(),
+-        )
+-        .unwrap(),
++        f.physical[&projected_node_id]
++            .open_existing(&journal_path, journal_file_id)
++            .unwrap(),
+         journal_tenant.clone(),
+         journal_provider.clone(),
+         journal_access.clone(),
+@@ -1204,7 +1193,7 @@
+         journal_store.clone(),
+         journal_installation.clone(),
+         journal_limits.clone(),
+-        f.admissions[&projected_node_id].clone(),
++        f.physical[&projected_node_id].admission.clone(),
+     )
+     .unwrap();
+     let projection = journal
+@@ -1241,7 +1230,7 @@
+             journal_store.clone(),
+             journal_installation.clone(),
+             journal_limits.clone(),
+-            f.admissions[&projected_node_id].clone()
++            f.physical[&projected_node_id].admission.clone()
+         )
+         .is_err()
+     );
+@@ -1256,7 +1245,7 @@
+         journal_store.clone(),
+         journal_installation.clone(),
+         journal_limits.clone(),
+-        f.admissions[&projected_node_id].clone(),
++        f.physical[&projected_node_id].admission.clone(),
+     )
+     .unwrap();
+     let projection = journal
+@@ -1517,14 +1506,13 @@
+         root: f.control.root.clone(),
+         node: nodes().first().unwrap().clone(),
+     };
+-    let path = f.issuer._dir.path().join("independent-target-journal.redb");
++    let path = f.physical[&1].path("independent-target-journal.redb");
+     let file_id = kasumi_store::node_store_ids::target_journal(
+         installation.root.control_incarnation,
+         &installation.node.verifier,
+     )
+     .unwrap();
+-    let node = NodeStore::create_new_fixture(&path, file_id, kasumi_store::ScratchDisk::fixture())
+-        .unwrap();
++    let node = f.physical[&1].create_new(&path, file_id).unwrap();
+     let tenant = format!("kasumi.target.{}.1", f.control.root.control_incarnation);
+     let provider = Arc::new(LocalKeyProvider::new([238; 32]));
+     let access = StorageAccess::target_journal(&installation.root, &installation.node).unwrap();
+@@ -1553,14 +1541,14 @@
+         store.clone(),
+         installation.clone(),
+         limits.clone(),
+-        f.admissions[&1].clone(),
++        f.physical[&1].admission.clone(),
+     )
+     .unwrap();
+     let again = TargetJournal::open_existing(
+         store.clone(),
+         installation.clone(),
+         limits.clone(),
+-        f.admissions[&1].clone(),
++        f.physical[&1].admission.clone(),
+     )
+     .unwrap();
+     assert!(Arc::ptr_eq(&journal, &again));
+@@ -1579,32 +1567,29 @@
+     }
+     // Crash after durable creation intent, before the file exists. Losing the
+     // first permit must never turn its original replay into a new creator.
+-    let file_path = f.issuer._dir.path().join("file-intent-target.redb");
++    let file_path = f.physical[&1].path("file-intent-target.redb");
+     let creation = journal.reserve_materialization_file(&op).unwrap();
+     drop(creation);
+     assert!(
+         journal
+             .reserve_materialization_file(&op)
+             .unwrap()
+-            .open(&file_path, kasumi_store::ScratchDisk::fixture())
++            .open(&file_path, f.physical[&1].scratch.clone())
+             .is_err()
+     );
+     assert!(!file_path.exists());
+     // A replacement node, even a canonical Kasumi file, cannot be adopted when
+     // its installed UUID differs. The rejected replay must leave its bytes alone.
+-    let unrelated = NodeStore::create_new_fixture(
+-        &file_path,
+-        Uuid::new_v4(),
+-        kasumi_store::ScratchDisk::fixture(),
+-    )
+-    .unwrap();
++    let unrelated = f.physical[&1]
++        .create_new(&file_path, Uuid::new_v4())
++        .unwrap();
+     drop(unrelated);
+     let unrelated_bytes = std::fs::read(&file_path).unwrap();
+     assert!(
+         journal
+             .reserve_materialization_file(&op)
+             .unwrap()
+-            .open(&file_path, kasumi_store::ScratchDisk::fixture())
++            .open(&file_path, f.physical[&1].scratch.clone())
+             .is_err()
+     );
+     assert_eq!(std::fs::read(&file_path).unwrap(), unrelated_bytes);
+@@ -1633,7 +1618,7 @@
+         store.clone(),
+         installation.clone(),
+         limits.clone(),
+-        f.admissions[&1].clone(),
++        f.physical[&1].admission.clone(),
+     )
+     .unwrap();
+     let extra = f
+@@ -1665,7 +1650,7 @@
+         store.clone(),
+         installation.clone(),
+         limits.clone(),
+-        f.admissions[&1].clone(),
++        f.physical[&1].admission.clone(),
+     )
+     .unwrap();
+     let retained = journal
+@@ -1683,7 +1668,7 @@
+         store.clone(),
+         installation.clone(),
+         limits.clone(),
+-        f.admissions[&1].clone(),
++        f.physical[&1].admission.clone(),
+     )
+     .unwrap();
+     journal
+@@ -1751,9 +1736,7 @@
+     store.shutdown().await.unwrap();
+     drop(store);
+     drop(node);
+-    let node =
+-        NodeStore::open_existing_fixture(path, file_id, kasumi_store::ScratchDisk::fixture())
+-            .unwrap();
++    let node = f.physical[&1].open_existing(path, file_id).unwrap();
+     let store = TenantStore::open_existing(node, tenant, provider, access)
+         .await
+         .unwrap();
+@@ -1761,7 +1744,7 @@
+         store.clone(),
+         installation.clone(),
+         limits.clone(),
+-        f.admissions[&1].clone(),
++        f.physical[&1].admission.clone(),
+     )
+     .unwrap();
+     reopened.stop(&stop_op, &proof).unwrap();
+@@ -1778,7 +1761,7 @@
+             .unwrap(),
+         terminal
+     );
+-    assert!(!f.issuer._dir.path().join("target-1.redb").exists());
++    assert!(!f.physical[&1].path("target-1.redb").exists());
+     drop(stop_op);
+     stop_scope.close();
+     stop_scope.drain().await;
+@@ -1805,7 +1788,7 @@
+                 store.clone(),
+                 installation.clone(),
+                 limits.clone(),
+-                f.admissions[&1].clone()
++                f.physical[&1].admission.clone()
+             )
+             .is_err()
+         );
+@@ -1829,7 +1812,7 @@
+             store.clone(),
+             installation,
+             limits,
+-            f.admissions[&1].clone()
++            f.physical[&1].admission.clone()
+         )
+         .is_err()
+     );
+@@ -1906,17 +1889,17 @@
+         root: f.control.root.clone(),
+         node: nodes().first().unwrap().clone(),
+     };
+-    let journal_path = f.issuer._dir.path().join("creation-outcome-journal.redb");
+-    let node = NodeStore::create_new_fixture(
+-        &journal_path,
+-        kasumi_store::node_store_ids::target_journal(
+-            installation.root.control_incarnation,
+-            &installation.node.verifier,
+-        )
+-        .unwrap(),
+-        kasumi_store::ScratchDisk::fixture(),
+-    )
+-    .unwrap();
++    let journal_path = f.physical[&1].path("creation-outcome-journal.redb");
++    let node = f.physical[&1]
++        .create_new(
++            &journal_path,
++            kasumi_store::node_store_ids::target_journal(
++                installation.root.control_incarnation,
++                &installation.node.verifier,
++            )
++            .unwrap(),
++        )
++        .unwrap();
+     let store = TenantStore::initialize_catalog(
+         node.clone(),
+         format!("kasumi.target.{}.1", installation.root.control_incarnation),
+@@ -1931,7 +1914,7 @@
+         TargetJournalLimits {
+             max_metadata_bytes: 4 << 20,
+         },
+-        f.admissions[&1].clone(),
++        f.physical[&1].admission.clone(),
+     )
+     .unwrap();
+     let scope = f.journal_scope(&f.intent).await;
+@@ -1939,11 +1922,11 @@
+     journal
+         .prepare(&operation, &f.input.digest().unwrap())
+         .unwrap();
+-    let path = f.issuer._dir.path().join("creation-outcome-target.redb");
++    let path = f.physical[&1].path("creation-outcome-target.redb");
+     let MaterializationNode::Created(target) = journal
+         .reserve_materialization_file(&operation)
+         .unwrap()
+-        .open(&path, kasumi_store::ScratchDisk::fixture())
++        .open(&path, f.physical[&1].scratch.clone())
+         .unwrap()
+     else {
+         panic!("original durable file dispatch lost catalog initialization permission")
+@@ -1954,7 +1937,7 @@
+     let MaterializationNode::Existing(target) = journal
+         .reserve_materialization_file(&operation)
+         .unwrap()
+-        .open(&path, kasumi_store::ScratchDisk::fixture())
++        .open(&path, f.physical[&1].scratch.clone())
+         .unwrap()
+     else {
+         panic!("replay regained original catalog initialization permission")
+@@ -1978,7 +1961,7 @@
+         journal
+             .reserve_materialization_file(&operation)
+             .unwrap()
+-            .open(&path, kasumi_store::ScratchDisk::fixture())
++            .open(&path, f.physical[&1].scratch.clone())
+             .is_err()
+     );
+     assert!(!path.exists());
+--- a/crates/kasumi-authority/src/target_serving_tests.rs
++++ b/crates/kasumi-authority/src/target_serving_tests.rs
+@@ -5,10 +5,7 @@
+ use kasumi_engine::{TargetServingReplica, VerifiedTargetServingProjection};
+ 
+ fn journal_path(f: &MaterialFixture, id: u64) -> std::path::PathBuf {
+-    f.issuer
+-        ._dir
+-        .path()
+-        .join(format!("serving-journal-{id}.redb"))
++    f.physical[&id].path(format!("serving-journal-{id}.redb"))
+ }
+ 
+ async fn journal(
+@@ -27,9 +24,9 @@
+     )
+     .unwrap();
+     let node = if create {
+-        NodeStore::create_new_fixture(path, file_id, kasumi_store::ScratchDisk::fixture())
++        f.physical[&id].create_new(path, file_id)
+     } else {
+-        NodeStore::open_existing_fixture(path, file_id, kasumi_store::ScratchDisk::fixture())
++        f.physical[&id].open_existing(path, file_id)
+     }
+     .unwrap();
+     let name = format!("kasumi.target.{}.{id}", f.control.root.control_incarnation);
+@@ -49,14 +46,14 @@
+             store.clone(),
+             installation,
+             limits,
+-            f.admissions[&id].clone(),
++            f.physical[&id].admission.clone(),
+         )
+     } else {
+         kasumi_engine::TargetJournal::open_existing(
+             store.clone(),
+             installation,
+             limits,
+-            f.admissions[&id].clone(),
++            f.physical[&id].admission.clone(),
+         )
+     }
+     .unwrap();
+@@ -102,7 +99,7 @@
+         router: &Arc<InProcessRouter>,
+     ) -> Self {
+         let path = if id == selected {
+-            f.issuer._dir.path().join("activation-journal.redb")
++            f.physical[&id].path("activation-journal.redb")
+         } else {
+             journal_path(f, id)
+         };
+@@ -140,19 +137,19 @@
+             .unwrap();
+         fence.check().unwrap();
+         let gate = ServingGate::new(attempt.verify(lease).unwrap()).unwrap();
+-        let node = NodeStore::open_existing_fixture(
+-            f.issuer._dir.path().join(format!("target-{id}.redb")),
+-            kasumi_store::node_store_ids::target_generation(
+-                f.control.root.control_incarnation,
+-                "city",
+-                f.target.incarnation,
+-                &identity.verifier,
++        let node = f.physical[&id]
++            .open_existing(
++                f.physical[&id].path(format!("target-{id}.redb")),
++                kasumi_store::node_store_ids::target_generation(
++                    f.control.root.control_incarnation,
++                    "city",
++                    f.target.incarnation,
++                    &identity.verifier,
++                )
++                .unwrap(),
+             )
+-            .unwrap(),
+-            kasumi_store::ScratchDisk::fixture(),
+-        )
+-        .unwrap();
+-        let audit = audit(node.clone(), f.admissions[&id].clone(), true).await;
++            .unwrap();
++        let audit = audit(node.clone(), f.physical[&id].admission.clone(), true).await;
+         let stores = TenantStorageSet::open_existing(
+             node,
+             "city".into(),
+@@ -173,7 +170,7 @@
+                     election_timeout_max: 400,
+                     ..Config::default()
+                 },
+-                admission: f.admissions[&id].clone(),
++                admission: f.physical[&id].admission.clone(),
+             },
+             router.clone(),
+             audit.clone(),
+--- a/crates/kasumi-authority/src/tests.rs
++++ b/crates/kasumi-authority/src/tests.rs
+@@ -13,13 +13,51 @@
+ };
+ use uuid::Uuid;
+ 
+-fn request_budget() -> BackgroundWorkBudget {
+-    static ADMISSION: OnceLock<Arc<kasumi_engine::admission::NodeAdmission>> = OnceLock::new();
+-    let admission = ADMISSION
+-        .get_or_init(|| kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap());
++/// One modeled physical process. The caller retains both private directories
++/// and the same admitted disk owners through every file close/reopen.
++struct PhysicalFixture {
++    storage: kasumi_engine::test_utils::FixtureStorage,
++    directory: tempfile::TempDir,
++    _scratch_directory: tempfile::TempDir,
++}
++impl std::ops::Deref for PhysicalFixture {
++    type Target = kasumi_engine::test_utils::FixtureStorage;
++    fn deref(&self) -> &Self::Target {
++        &self.storage
++    }
++}
++impl PhysicalFixture {
++    fn new() -> anyhow::Result<Self> {
++        let directory = kasumi_store::test_utils::private_tempdir()?;
++        let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
++        let persistent =
++            kasumi_store::NodeDisk::fixture_config(directory.path().join("node.redb"))?;
++        let scratch = kasumi_store::ScratchDiskConfig {
++            directory: scratch_directory.path().to_owned(),
++            max_bytes: 256 << 30,
++            min_free_bytes: 0,
++        };
++        let storage = kasumi_engine::test_utils::FixtureStorage::open(
++            &persistent,
++            &scratch,
++            Default::default(),
++        )?;
++        Ok(Self {
++            storage,
++            directory,
++            _scratch_directory: scratch_directory,
++        })
++    }
++    fn path(&self, name: impl AsRef<std::path::Path>) -> std::path::PathBuf {
++        self.directory.path().join(name)
++    }
++}
++
++fn request_budget(
++    admission: &Arc<kasumi_engine::admission::NodeAdmission>,
++) -> BackgroundWorkBudget {
+     let bytes = authority_request_metadata_bytes().unwrap();
+-    let mut charge = admission.reserve(bytes, None).unwrap();
+-    charge.retain(bytes);
++    let charge = admission.memory().reserve_resident(bytes).unwrap();
+     BackgroundWorkBudget::new(AUTHORITY_REQUEST_SLOTS, Arc::new(charge)).unwrap()
+ }
+ 
+@@ -66,7 +104,7 @@
+     }
+ }
+ struct Fixture {
+-    _dir: tempfile::TempDir,
++    physical: BTreeMap<u64, PhysicalFixture>,
+     router: Arc<InProcessRouter>,
+     services: Vec<Arc<IndependentAuthority>>,
+     stores: Vec<Arc<TenantStorageSet>>,
+@@ -117,7 +155,6 @@
+         controls: BTreeMap<Uuid, String>,
+         ordinary_state_bytes: u64,
+     ) -> Self {
+-        let dir = kasumi_store::test_utils::private_tempdir().unwrap();
+         let router = Arc::new(InProcessRouter::default());
+         let key = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+             .unwrap();
+@@ -152,13 +189,15 @@
+         let readiness = Arc::new(TestMaintenanceTransport::default());
+         let mut services = Vec::new();
+         let mut stores = Vec::new();
++        let mut physical = BTreeMap::new();
+         for id in 1..=3 {
+-            let node = NodeStore::create_new_fixture(
+-                dir.path().join(format!("authority-{id}.redb")),
+-                kasumi_store::test_utils::NODE_STORE_ID,
+-                kasumi_store::ScratchDisk::fixture(),
+-            )
+-            .unwrap();
++            let storage = PhysicalFixture::new().unwrap();
++            let node = storage
++                .create_new(
++                    storage.path(format!("authority-{id}.redb")),
++                    kasumi_store::test_utils::NODE_STORE_ID,
++                )
++                .unwrap();
+             let store = TenantStorageSet::initialize_catalogs(
+                 node,
+                 installation.tenant(),
+@@ -195,8 +234,8 @@
+                     election_timeout_max: 1000,
+                     ..Config::default()
+                 },
+-                request_budget(),
+-                kasumi_raft::SnapshotBufferOwner::fixture(),
++                request_budget(&storage.admission),
++                storage.admission.snapshot_buffer_owner().unwrap(),
+                 epoch.clone(),
+             )
+             .await
+@@ -212,9 +251,10 @@
+                 .unwrap();
+             services.push(service);
+             stores.push(store);
++            physical.insert(id, storage);
+         }
+         let fixture = Self {
+-            _dir: dir,
++            physical,
+             router,
+             services,
+             stores,
+@@ -323,12 +363,12 @@
+         self.router = Arc::new(InProcessRouter::default());
+         self.readiness = Arc::new(TestMaintenanceTransport::default());
+         for id in member_ids {
+-            let node = NodeStore::open_existing_fixture(
+-                self._dir.path().join(format!("authority-{id}.redb")),
+-                kasumi_store::test_utils::NODE_STORE_ID,
+-                kasumi_store::ScratchDisk::fixture(),
+-            )
+-            .unwrap();
++            let node = self.physical[&id]
++                .open_existing(
++                    self.physical[&id].path(format!("authority-{id}.redb")),
++                    kasumi_store::test_utils::NODE_STORE_ID,
++                )
++                .unwrap();
+             let stores = TenantStorageSet::open_existing(
+                 node,
+                 self.installation.tenant(),
+@@ -358,8 +398,11 @@
+                     election_timeout_max: 1000,
+                     ..Config::default()
+                 },
+-                request_budget(),
+-                kasumi_raft::SnapshotBufferOwner::fixture(),
++                request_budget(&self.physical[&id].admission),
++                self.physical[&id]
++                    .admission
++                    .snapshot_buffer_owner()
++                    .unwrap(),
+                 self.epoch.clone(),
+             )
+             .await
+@@ -709,13 +752,11 @@
+     let source = fixture.enroll(&service).await;
+     let lease_boot = boot(&fixture, source, 1);
+     let gate = ServingGate::new(acquire(&fixture, &service, &lease_boot).await).unwrap();
+-    let path = fixture._dir.path().join("separate-municipality.redb");
+-    let node = NodeStore::create_new_fixture(
+-        &path,
+-        kasumi_store::test_utils::NODE_STORE_ID,
+-        kasumi_store::ScratchDisk::fixture(),
+-    )
+-    .unwrap();
++    let storage = PhysicalFixture::new().unwrap();
++    let path = storage.path("separate-municipality.redb");
++    let node = storage
++        .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
++        .unwrap();
+     let provider = Arc::new(LocalKeyProvider::new([90; 32]));
+     let custody_provider = Arc::new(LocalKeyProvider::new([91; 32]));
+     let stores = TenantStorageSet::initialize_catalogs(
+@@ -778,12 +819,9 @@
+     stores.shutdown().await.unwrap();
+     drop(stores);
+     drop(node);
+-    let reopened = NodeStore::open_existing_fixture(
+-        &path,
+-        kasumi_store::test_utils::NODE_STORE_ID,
+-        kasumi_store::ScratchDisk::fixture(),
+-    )
+-    .unwrap();
++    let reopened = storage
++        .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
++        .unwrap();
+     let custody =
+         kasumi_store::CustodyStore::open(reopened.clone(), "city".into(), custody_provider)
+             .await
+--- a/crates/kasumi-bench/Cargo.toml
++++ b/crates/kasumi-bench/Cargo.toml
+@@ -9,7 +9,7 @@
+ default-run = "kasumi-bench"
+ 
+ [features]
+-embedded-fixture = ["dep:kasumi-engine", "dep:kasumi-raft", "dep:kasumi-store", "kasumi-store/test-utils"]
++embedded-fixture = ["dep:kasumi-engine", "dep:kasumi-raft", "dep:kasumi-store", "kasumi-store/test-utils", "kasumi-engine/test-utils"]
+ network = ["dep:kasumi-client", "dep:kasumi-transport", "dep:reqwest", "dep:tonic", "dep:zeroize", "dep:base64"]
+ loopback-fixture = ["network", "dep:kasumi-server", "kasumi-server/test-utils", "dep:rcgen", "dep:jsonwebtoken", "dep:base64", "dep:axum", "dep:async-trait"]
+ 
+--- a/crates/kasumi-bench/src/bin/loopback.rs
++++ b/crates/kasumi-bench/src/bin/loopback.rs
+@@ -275,7 +275,14 @@
+     config.control.incarnation = None;
+     config.serving_authorities.clear();
+     config.signer_verifier = None;
+-    config.database_path = path.join("node.redb");
++    let persistent = path.join("persistent");
++    {
++        use std::os::unix::fs::DirBuilderExt;
++        std::fs::DirBuilder::new().mode(0o700).create(&persistent)?;
++    }
++    config.persistent_disk.roots =
++        std::collections::BTreeMap::from([("data".into(), persistent.clone())]);
++    config.database_path = persistent.join("node.redb");
+     config.scratch_disk.directory = path.join("scratch");
+     config.auth = AuthConfig {
+         issuer: issuer_url.clone(),
+--- a/crates/kasumi-bench/src/main.rs
++++ b/crates/kasumi-bench/src/main.rs
+@@ -266,6 +266,85 @@
+     replicas: Vec<Arc<Database>>,
+     bootstrap: Option<ReplicatedBootstrap>,
+ }
++/// Retained for the entire benchmark case, including close/reopen. Replicas
++/// share the original ONE scratch quota. Distinct runtime facades share the
++/// aggregate of their original payload allowances; RSS ceilings are unchanged.
++struct BenchmarkStorage {
++    storage: kasumi_engine::test_utils::FixtureStorage,
++    admissions: Vec<Arc<kasumi_engine::admission::NodeAdmission>>,
++    root: PathBuf,
++}
++impl BenchmarkStorage {
++    fn open(root: &Path, replicas: usize) -> Result<Self> {
++        use kasumi_engine::admission::{AdmissionConfig, MemoryCore, NodeAdmission};
++        let data = root.join("persistent");
++        kasumi_store::private_files::create_directory(&data)?;
++        let persistent = kasumi_store::NodeDisk::fixture_config(data.join("node.redb"))?;
++        let scratch = kasumi_store::ScratchDiskConfig {
++            directory: root.join("scratch"),
++            max_bytes: 64 << 30,
++            min_free_bytes: 256 << 20,
++        };
++        let original = AdmissionConfig::default();
++        let payload = original
++            .resolved_fixture_total_bytes()?
++            .checked_sub(NodeAdmission::required_bookkeeping_bytes(&original)?)
++            .context("original benchmark policy cannot fund its bookkeeping")?;
++        let replicas_u64 = u64::try_from(replicas).context("replica count exceeds u64")?;
++        let mut config = original.clone();
++        config.max_inflight_operations = original
++            .max_inflight_operations
++            .checked_mul(replicas)
++            .context("benchmark operation-slot count overflow")?;
++        config.max_reservations = original
++            .max_reservations
++            .checked_mul(replicas)
++            .context("benchmark reservation-slot count overflow")?;
++        config.max_startup_scopes = original
++            .max_startup_scopes
++            .checked_mul(replicas)
++            .context("benchmark startup-scope count overflow")?;
++        let core = MemoryCore::required_bookkeeping_bytes(&config)?;
++        let facade = NodeAdmission::required_bookkeeping_bytes(&config)?
++            .checked_sub(core)
++            .context("benchmark facade bookkeeping underflow")?;
++        let metadata =
++            kasumi_engine::test_utils::isolated_disk_metadata_bytes(&persistent, &scratch)?;
++        config.max_inflight_bytes = Some(
++            payload
++                .checked_mul(replicas_u64)
++                .and_then(|n| n.checked_add(core))
++                .and_then(|n| {
++                    facade
++                        .checked_mul(replicas_u64)
++                        .and_then(|f| n.checked_add(f))
++                })
++                .and_then(|n| n.checked_add(metadata))
++                .context("benchmark aggregate admission capacity overflow")?,
++        );
++        config.validate()?;
++        let first = NodeAdmission::new(config)?;
++        let mut admissions = Vec::with_capacity(replicas);
++        admissions.push(first.clone());
++        for _ in 1..replicas {
++            admissions.push(NodeAdmission::from_memory(first.memory().clone())?);
++        }
++        let storage = kasumi_engine::test_utils::FixtureStorage::with_admission(
++            &persistent,
++            &scratch,
++            first,
++        )?;
++        Ok(Self {
++            storage,
++            admissions,
++            root: data,
++        })
++    }
++    fn path(&self, replica: usize) -> PathBuf {
++        self.root.join(format!("replica-{replica}.redb"))
++    }
++}
++
+ struct Databases {
+     tenants: Vec<Tenant>,
+     nodes: Vec<Arc<NodeStore>>,
+@@ -275,7 +354,7 @@
+ }
+ impl Databases {
+     async fn open(
+-        path: &Path,
++        physical: &BenchmarkStorage,
+         tenants: usize,
+         documents: usize,
+         operations: usize,
+@@ -285,30 +364,27 @@
+     ) -> Result<Self> {
+         let replicas = if replicated { 3 } else { 1 };
+         let mut nodes = Vec::new();
+-        let scratch_disk = kasumi_store::ScratchDisk::open(kasumi_store::ScratchDiskConfig {
+-            directory: path.join("scratch"),
+-            max_bytes: 64 << 30,
+-            min_free_bytes: 256 << 20,
+-        })?;
++        ensure!(
++            physical.admissions.len() == replicas,
++            "benchmark physical replica count changed"
++        );
+         for replica in 0..replicas {
+             nodes.push(
+                 (if create {
+-                    NodeStore::create_new_fixture(
+-                        path.join(format!("replica-{replica}.redb")),
++                    physical.storage.create_new(
++                        physical.path(replica),
+                         kasumi_store::test_utils::NODE_STORE_ID,
+-                        scratch_disk.clone(),
+                     )
+                 } else {
+-                    NodeStore::open_existing_fixture(
+-                        path.join(format!("replica-{replica}.redb")),
++                    physical.storage.open_existing(
++                        physical.path(replica),
+                         kasumi_store::test_utils::NODE_STORE_ID,
+-                        scratch_disk.clone(),
+                     )
+                 })?,
+             );
+         }
+         let mut audits = Vec::new();
+-        for node in &nodes {
++        for (replica, node) in nodes.iter().enumerate() {
+             let service_store = TenantStore::initialize_catalog_fixture(
+                 node.clone(),
+                 SECURITY_TENANT.into(),
+@@ -322,7 +398,7 @@
+             })(
+                 service_store,
+                 kasumi_types::AuditRetentionBudget::default(),
+-                kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
++                physical.admissions[replica].clone(),
+             )?);
+         }
+         let provider = Arc::new(LocalKeyProvider::new([0x42; 32]));
+@@ -484,6 +560,11 @@
+             }
+         }
+         self.audits.clear();
++        for node in &self.nodes {
++            if let Err(failure) = node.shutdown().await {
++                report.merge(&failure);
++            }
++        }
+         self.nodes.clear();
+         drop(self.provider);
+         drop(self.router);
+@@ -524,8 +605,9 @@
+     let text = mode == "text";
+     let baseline_rss_bytes = rss();
+     let opened = Instant::now();
++    let physical = BenchmarkStorage::open(directory.path(), if replicated { 3 } else { 1 })?;
+     let databases = Databases::open(
+-        directory.path(),
++        &physical,
+         tenants,
+         options.documents,
+         options.operations,
+@@ -715,7 +797,7 @@
+     )?;
+     let recovered = Instant::now();
+     let databases = Databases::open(
+-        directory.path(),
++        &physical,
+         tenants,
+         options.documents,
+         options.operations,
+@@ -1041,7 +1123,8 @@
+     #[tokio::test]
+     async fn failed_read_workload_retains_counts_and_later_independent_work_can_run() {
+         let dir = tempfile::tempdir().unwrap();
+-        let databases = Databases::open(dir.path(), 1, 1, 4, false, None, true)
++        let physical = BenchmarkStorage::open(dir.path(), 1).unwrap();
++        let databases = Databases::open(&physical, 1, 1, 4, false, None, true)
+             .await
+             .unwrap();
+         let database = databases.leader(0).await.unwrap();

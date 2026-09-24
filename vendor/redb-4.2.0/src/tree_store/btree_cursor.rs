@@ -44,16 +44,25 @@ impl Branch {
         &self,
         direction: Direction,
         fixed_key_width: Option<usize>,
-    ) -> Option<(usize, PageNumber)> {
-        let accessor = BranchAccessor::new(&self.page, fixed_key_width);
+    ) -> Result<Option<(usize, PageNumber)>> {
+        let accessor = BranchAccessor::new(&self.page, fixed_key_width)?;
         let child_index = match direction {
             Direction::Next => {
                 let next = self.child_index + 1;
-                (next < accessor.count_children()).then_some(next)?
+                if next >= accessor.count_children() {
+                    return Ok(None);
+                }
+                next
             }
-            Direction::Previous => self.child_index.checked_sub(1)?,
+            Direction::Previous => match self.child_index.checked_sub(1) {
+                Some(index) => index,
+                None => return Ok(None),
+            },
         };
-        Some((child_index, accessor.child_page(child_index).unwrap()))
+        Ok(Some((
+            child_index,
+            accessor.child_page(child_index).unwrap(),
+        )))
     }
 }
 
@@ -161,7 +170,7 @@ where
                 });
             }
             BRANCH => {
-                let accessor = BranchAccessor::new(&page, K::fixed_width());
+                let accessor = BranchAccessor::new(&page, K::fixed_width())?;
                 let child_index = child_to_visit::<K>(&accessor, position);
                 (child_index, accessor.child_page(child_index).unwrap())
             }
@@ -187,7 +196,7 @@ where
 {
     for index in (0..path.len()).rev() {
         if let Some((child_index, child_page)) =
-            path[index].adjacent_child(direction, K::fixed_width())
+            path[index].adjacent_child(direction, K::fixed_width())?
         {
             path[index].child_index = child_index;
             path.truncate(index + 1);
@@ -867,10 +876,11 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> CursorMut<'a, 'b, K, V> {
 
     // Whether the run's parent branch has another child to consume in the
     // scan direction.
-    fn run_parent_has_more_children(&self, direction: Direction) -> bool {
-        self.run_parent_frame()
-            .adjacent_child(direction, K::fixed_width())
-            .is_some()
+    fn run_parent_has_more_children(&self, direction: Direction) -> Result<bool> {
+        Ok(self
+            .run_parent_frame()
+            .adjacent_child(direction, K::fixed_width())?
+            .is_some())
     }
 
     fn step_to_adjacent_leaf(&mut self, direction: Direction) -> Result<bool> {
@@ -1299,7 +1309,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> CursorMut<'a, 'b, K, V> {
                 let resume_key = self.flush_removed_entries(direction)?;
                 return Ok(LeafCloseOutcome::Flushed { resume_key });
             }
-            let keeps_run_open = packs && self.run_parent_has_more_children(direction);
+            let keeps_run_open = packs && self.run_parent_has_more_children(direction)?;
             let removed_indexes = self.take_removals_ascending();
             self.append_leaf_to_run(direction, &removed_indexes);
             if keeps_run_open {
@@ -2437,7 +2447,6 @@ mod tests {
             PAGE_SIZE,
             None,
             0,
-            false,
         )
         .unwrap();
         mem.reset_allocator_state().unwrap();
@@ -2995,5 +3004,49 @@ mod tests {
             cursor.splice_open_run(),
             Err(StorageError::PreviousIo)
         ));
+    }
+}
+
+#[cfg(test)]
+mod canonical_cursor_tests {
+    use super::*;
+    use crate::tree_store::{AllocationPolicy, InMemoryBackend, TransactionalMemory};
+    #[test]
+    fn both_cursor_directions_preflight_last_child_before_any_child_resolution() {
+        let mem = Arc::new(
+            TransactionalMemory::new(
+                Box::new(InMemoryBackend::new()),
+                crate::test_admission(),
+                true,
+                4096,
+                None,
+                0,
+            )
+            .unwrap(),
+        );
+        mem.reset_allocator_state().unwrap();
+        let allocator = PageAllocator::new(mem, AllocationPolicy::Default);
+        let tracker = PageTracker::new_tracking();
+        let mut branch = allocator.allocate(4096, &tracker).unwrap();
+        branch.memory_mut().fill(0);
+        branch.memory_mut()[0] = BRANCH;
+        branch.memory_mut()[2..4].copy_from_slice(&1_u16.to_le_bytes());
+        branch.memory_mut()[40..48].copy_from_slice(&PageNumber::new(0, 0, 0).to_le_bytes());
+        branch.memory_mut()[48..56].copy_from_slice(&(1_u64 << 40).to_le_bytes());
+        let number = branch.get_page_number();
+        drop(branch);
+        for position in [Position::Start, Position::End] {
+            let page = allocator.get_page(number, PageHint::None).unwrap();
+            let mut children_read = 0;
+            let mut path = Vec::new();
+            let result =
+                descend_to_position::<u64, u64, _>(page, position, &mut path, &mut |number| {
+                    children_read += 1;
+                    allocator.get_page(number, PageHint::None)
+                });
+            assert!(matches!(result, Err(StorageError::Corrupted(_))));
+            assert_eq!(children_read, 0);
+            assert!(path.is_empty());
+        }
     }
 }

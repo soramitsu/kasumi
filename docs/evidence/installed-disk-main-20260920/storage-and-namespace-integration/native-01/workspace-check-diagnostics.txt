@@ -1,0 +1,15 @@
+warning: unused import: `unix::fs::MetadataExt`
+  --> crates/kasumi-store/src/node_disk/directory/managed.rs:15:9
+   |
+15 |         unix::fs::MetadataExt,
+   |         ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0063]: missing field `_directory` in initializer of `audit_archive::FilesystemAuditArchive`
+   --> crates/kasumi-store/src/audit_archive.rs:742:23
+    |
+742 |         let archive = Self {
+    |                       ^^^^ missing `_directory`
+
+For more information about this error, try `rustc --explain E0063`.

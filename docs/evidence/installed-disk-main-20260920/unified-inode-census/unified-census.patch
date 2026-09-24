@@ -1,0 +1,1451 @@
+--- a/crates/kasumi-server/src/persistent_disk.rs
++++ b/crates/kasumi-server/src/persistent_disk.rs
+@@ -72,6 +72,7 @@
+         maintenance_reserve_bytes: 1 << 30,
+         min_free_bytes: 256 << 20,
+         max_open_files: 4096,
++        max_open_directories: 4096,
+         max_census_entries: 1_000_000,
+         max_depth: 64,
+         max_name_bytes: 255,
+@@ -142,6 +143,7 @@
+     // isolated owners under the same admitted memory core before storage use.
+     config.max_census_entries = 16_384;
+     config.max_open_files = 256;
++    config.max_open_directories = 256;
+     config
+ }
+ 
+--- a/crates/kasumi-server/src/runtime_memory.rs
++++ b/crates/kasumi-server/src/runtime_memory.rs
+@@ -114,6 +114,7 @@
+         NodeDiskConfig {
+             max_census_entries: 16_384,
+             max_open_files: 256,
++            max_open_directories: 256,
+             ..config
+         }
+     }
+--- a/crates/kasumi-store/src/lib.rs
++++ b/crates/kasumi-store/src/lib.rs
+@@ -35,8 +35,8 @@
+ pub mod node_store_ids;
+ mod read_view;
+ pub use node_disk::{
+-    CensusCancellation, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeDiskPhase,
+-    NodeDiskSnapshot,
++    CensusCancellation, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskDirectory, NodeDiskFile,
++    NodeDiskPhase, NodeDiskSnapshot,
+ };
+ mod scratch_disk;
+ mod scratch_table;
+--- a/crates/kasumi-store/src/node_disk/census.rs
++++ b/crates/kasumi-store/src/node_disk/census.rs
+@@ -1,5 +1,6 @@
+ use super::{
+-    AccountedFile, CensusCancellation, Identity, NamespaceBinding, NodeDiskConfig, extent,
++    AccountedDirectory, AccountedFile, AccountedInode, CensusCancellation, Identity,
++    NamespaceBinding, NodeDiskConfig, extent,
+ };
+ use anyhow::{Context, Result, ensure};
+ use std::{
+@@ -239,6 +240,7 @@
+ }
+ 
+ pub(super) struct Cursor {
++    identity: Identity,
+     binding: NamespaceBinding,
+     file: File,
+     entries: *mut libc::DIR,
+@@ -246,6 +248,7 @@
+ 
+ impl Cursor {
+     fn open(file: File, binding: NamespaceBinding) -> Result<Self> {
++        let identity = Identity::of(&file.metadata()?);
+         // A dup shares the directory offset and would make a later census start
+         // at EOF. Open a new file description anchored to this descriptor.
+         let fd = open_at(&file, c".", libc::O_RDONLY | libc::O_DIRECTORY)?.into_raw_fd();
+@@ -257,6 +260,7 @@
+             return Err(error.into());
+         }
+         Ok(Self {
++            identity,
+             file,
+             entries,
+             binding,
+@@ -303,7 +307,9 @@
+     pub(super) bytes: u64,
+     pub(super) pending: u64,
+     pub(super) files: u64,
+-    pub(super) accounted: HashMap<Identity, AccountedFile>,
++    pub(super) accounted: HashMap<Identity, AccountedInode>,
++    pub(super) directory_bytes: u64,
++    pub(super) directories: u64,
+ }
+ 
+ pub(super) fn census(
+@@ -316,6 +322,12 @@
+     let mut work = 0_u64;
+     for root in roots.values() {
+         root.verify()?;
++        enroll_directory(
++            &mut totals,
++            &root.file,
++            NamespaceBinding::root(root.identity),
++            None,
++        )?;
+         let mut stack = vec![Cursor::open(
+             root.file.try_clone()?,
+             NamespaceBinding::root(root.identity),
+@@ -325,6 +337,7 @@
+             let current = stack.last_mut().expect("nonempty census stack");
+             let Some(name) = current.next(config.max_name_bytes)? else {
+                 current.file.sync_all()?;
++                verify_enrolled_directory(&totals, current)?;
+                 stack.pop();
+                 continue;
+             };
+@@ -336,6 +349,16 @@
+             if name.to_bytes() == b"." || name.to_bytes() == b".." {
+                 continue;
+             }
++            let parent = current.identity;
++            let enrolled = totals
++                .accounted
++                .get_mut(&parent)
++                .and_then(AccountedInode::directory_mut)
++                .expect("enrolled census directory");
++            enrolled.children = enrolled
++                .children
++                .checked_add(1)
++                .context("directory child count overflow")?;
+             let binding = current.binding.child(&name);
+             // Open nonblocking so a substituted FIFO cannot stall a bounded census.
+             let child = open_at(&current.file, &name, libc::O_RDONLY | libc::O_NONBLOCK)?;
+@@ -350,6 +373,7 @@
+                     stack.len() < config.max_depth as usize,
+                     "census depth exhausted"
+                 );
++                enroll_directory(&mut totals, &child, binding, Some(parent))?;
+                 stack.push(Cursor::open(child, binding)?);
+             } else {
+                 regular(&metadata, root.identity.0)?;
+@@ -371,7 +395,12 @@
+                         .accounted
+                         .insert(
+                             Identity::of(&verified),
+-                            AccountedFile::durable(binding, bytes, pending, verified.len()),
++                            AccountedInode::File(AccountedFile::durable(
++                                binding,
++                                bytes,
++                                pending,
++                                verified.len(),
++                            )),
+                         )
+                         .is_none(),
+                     "persistent census repeated an enrolled physical inode"
+@@ -395,3 +424,77 @@
+     cancel.check()?;
+     Ok(totals)
+ }
++
++// Directories are not sparse regular files: st_size is a namespace value, not
++// an admitted logical byte reservation. Charge observed allocation exactly.
++pub(super) fn directory_extent(metadata: &Metadata) -> io::Result<u64> {
++    metadata
++        .blocks()
++        .checked_mul(512)
++        .ok_or_else(|| io::ErrorKind::InvalidData.into())
++}
++
++fn enroll_directory(
++    totals: &mut Totals,
++    file: &File,
++    binding: NamespaceBinding,
++    parent: Option<Identity>,
++) -> Result<()> {
++    let metadata = file.metadata()?;
++    directory(&metadata)?;
++    let identity = Identity::of(&metadata);
++    let bytes = directory_extent(&metadata)?;
++    let next_bytes = totals
++        .bytes
++        .checked_add(bytes)
++        .context("directory extent overflow")?;
++    let next_directories = totals
++        .directory_bytes
++        .checked_add(bytes)
++        .context("directory extent overflow")?;
++    totals
++        .accounted
++        .try_reserve(1)
++        .context("reserving census directory metadata")?;
++    ensure!(
++        totals
++            .accounted
++            .insert(
++                identity,
++                AccountedInode::Directory(AccountedDirectory {
++                    binding,
++                    parent,
++                    bytes,
++                    len: metadata.len(),
++                    children: 0,
++                    live_handles: 0,
++                })
++            )
++            .is_none(),
++        "persistent census repeated an enrolled directory"
++    );
++    totals.directories = totals
++        .directories
++        .checked_add(1)
++        .context("census directory count overflow")?;
++    totals.bytes = next_bytes;
++    totals.directory_bytes = next_directories;
++    Ok(())
++}
++
++fn verify_enrolled_directory(totals: &Totals, cursor: &Cursor) -> Result<()> {
++    let metadata = cursor.file.metadata()?;
++    directory(&metadata)?;
++    let enrolled = totals
++        .accounted
++        .get(&cursor.identity)
++        .and_then(AccountedInode::directory)
++        .context("census directory missing")?;
++    ensure!(
++        Identity::of(&metadata) == cursor.identity
++            && metadata.len() == enrolled.len
++            && directory_extent(&metadata)? == enrolled.bytes,
++        "directory changed during persistent census"
++    );
++    Ok(())
++}
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/directory/tests.rs
+@@ -0,0 +1,303 @@
++use super::super::{CensusCancellation, NodeDiskConfig};
++use super::*;
++use crate::test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry};
++use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
++
++fn fixture() -> (tempfile::TempDir, NodeDiskConfig, Arc<TestDiskMemory>) {
++    let directory = private_tempdir().unwrap();
++    let config = NodeDisk::fixture_config(directory.path().join("unused")).unwrap();
++    (directory, config, TestDiskMemory::new(256 << 20, 4096))
++}
++fn open(config: &NodeDiskConfig, memory: &Arc<TestDiskMemory>) -> Arc<NodeDisk> {
++    retry_disk_registry(|| {
++        NodeDisk::open_fixture(config, memory.clone(), &CensusCancellation::default())
++    })
++    .unwrap()
++}
++fn blocks(path: &Path) -> u64 {
++    path.metadata().unwrap().blocks().checked_mul(512).unwrap()
++}
++
++#[test]
++fn census_charges_roots_nested_directories_and_files_without_sparse_directory_promises() {
++    let (directory, config, memory) = fixture();
++    let child = directory.path().join("child");
++    crate::private_files::create_directory(&child).unwrap();
++    let file = std::fs::OpenOptions::new()
++        .create_new(true)
++        .read(true)
++        .write(true)
++        .mode(0o600)
++        .open(child.join("data"))
++        .unwrap();
++    file.set_len(8192).unwrap();
++    file.sync_all().unwrap();
++    let disk = open(&config, &memory);
++    let directories = blocks(directory.path()) + blocks(&child);
++    let (file_bytes, file_pending) =
++        super::super::extent(&file.metadata().unwrap(), disk.unit).unwrap();
++    let snapshot = disk.snapshot();
++    assert_eq!(snapshot.persistent_directories, 2);
++    assert_eq!(snapshot.observed_directory_bytes, directories);
++    assert_eq!(snapshot.charged_bytes, directories + file_bytes);
++    assert_eq!(snapshot.pending_bytes, file_pending);
++    assert_eq!(snapshot.persistent_files, 1);
++    let state = disk.lock_state();
++    let root = state.accounted[&Identity::of(&directory.path().metadata().unwrap())]
++        .directory()
++        .unwrap();
++    assert_eq!(root.children, 1);
++    let child = state.accounted[&Identity::of(&child.metadata().unwrap())]
++        .directory()
++        .unwrap();
++    assert_eq!(child.children, 1);
++    assert_eq!(
++        child.parent,
++        Some(Identity::of(&directory.path().metadata().unwrap()))
++    );
++}
++
++#[test]
++fn directory_quota_denies_before_allocation_and_preserves_file_quota() {
++    let (directory, mut config, memory) = fixture();
++    config.max_open_directories = 1;
++    let original_file_limit = config.max_open_files;
++    let disk = open(&config, &memory);
++    let handle = disk.open_directory("fixture", Path::new("")).unwrap();
++    let clone = handle.clone();
++    assert_eq!(disk.snapshot().open_directories, 1);
++    let (result, allocations) =
++        crate::allocation_tests::measure(|| disk.open_directory("fixture", Path::new("")));
++    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::StorageFull);
++    assert_eq!(allocations, 0);
++    assert_eq!(disk.config.max_open_files, original_file_limit);
++    assert_eq!(disk.snapshot().open_files, 0);
++    assert_eq!(
++        disk.snapshot().observed_directory_bytes,
++        blocks(directory.path())
++    );
++    drop(handle);
++    assert_eq!(disk.snapshot().open_directories, 1);
++    drop(clone);
++    assert_eq!(disk.snapshot().open_directories, 0);
++}
++
++#[test]
++fn admitted_directory_sync_read_and_last_drop_do_not_allocate_or_credit_extent() {
++    let (_directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let handle = disk.open_directory("fixture", Path::new("")).unwrap();
++    let before = disk.snapshot();
++    assert!(disk.pause().is_err());
++    let (result, allocations) = crate::allocation_tests::measure(|| -> io::Result<()> {
++        assert_eq!(
++            handle.observed_allocated_bytes()?,
++            before.observed_directory_bytes
++        );
++        handle.sync_all()?;
++        drop(handle);
++        Ok(())
++    });
++    result.unwrap();
++    assert_eq!(allocations, 0);
++    assert_eq!(disk.snapshot().open_directories, 0);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++}
++
++#[test]
++fn operational_drain_is_not_published_until_after_actual_directory_close() {
++    let (_directory, mut config, memory) = fixture();
++    config.max_open_directories = 1;
++    let disk = open(&config, &memory);
++    let handle = disk.open_directory("fixture", Path::new("")).unwrap();
++    let (entered_tx, entered) = std::sync::mpsc::sync_channel(0);
++    let (release, release_rx) = std::sync::mpsc::sync_channel(0);
++    *handle.owner().after_close.as_ref().unwrap().lock().unwrap() = Some(ClosePause {
++        entered: entered_tx,
++        release: release_rx,
++    });
++    let dropping = std::thread::spawn(move || drop(handle));
++    // This checkpoint is executed only after drop(actual File), before counters.
++    entered
++        .recv_timeout(std::time::Duration::from_secs(5))
++        .unwrap();
++    assert_eq!(disk.snapshot().open_directories, 1);
++    assert_eq!(
++        disk.open_directory("fixture", Path::new(""))
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::StorageFull
++    );
++    assert!(disk.pause().is_err());
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    release.send(()).unwrap();
++    dropping.join().unwrap();
++    assert_eq!(disk.snapshot().open_directories, 0);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++}
++
++#[test]
++fn unknown_final_directory_absence_is_healthy_but_known_disappearance_fences() {
++    let (directory, config, memory) = fixture();
++    let child = directory.path().join("child");
++    crate::private_files::create_directory(&child).unwrap();
++    let disk = open(&config, &memory);
++    assert_eq!(
++        disk.open_directory("fixture", Path::new("missing"))
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::NotFound
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    let handle = disk.open_directory("fixture", Path::new("child")).unwrap();
++    let before = disk.snapshot().charged_bytes;
++    std::fs::remove_dir(&child).unwrap();
++    let (result, allocations) = crate::allocation_tests::measure(|| handle.sync_all());
++    assert!(result.is_err());
++    assert_eq!(allocations, 0);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert_eq!(disk.snapshot().charged_bytes, before);
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    drop(handle);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    assert_eq!(disk.snapshot().persistent_directories, 1);
++}
++
++#[test]
++fn unchanged_final_directory_inode_does_not_hide_replaced_intermediate_ancestor() {
++    let (directory, config, memory) = fixture();
++    for relative in ["a", "a/b", "c"] {
++        crate::private_files::create_directory(&directory.path().join(relative)).unwrap();
++    }
++    let disk = open(&config, &memory);
++    let handle = disk.open_directory("fixture", Path::new("a/b")).unwrap();
++    let retained = handle.owner().identity;
++    let root_before = directory.path().metadata().unwrap();
++    let outside = private_tempdir().unwrap();
++    std::fs::rename(directory.path().join("a"), outside.path().join("swap")).unwrap();
++    std::fs::rename(directory.path().join("c"), directory.path().join("a")).unwrap();
++    std::fs::rename(outside.path().join("swap"), directory.path().join("c")).unwrap();
++    std::fs::rename(directory.path().join("c/b"), directory.path().join("a/b")).unwrap();
++    let root_after = directory.path().metadata().unwrap();
++    assert_eq!(
++        (root_before.len(), root_before.blocks()),
++        (root_after.len(), root_after.blocks()),
++        "counterexample must preserve root extent"
++    );
++    assert_eq!(
++        retained,
++        Identity::of(&directory.path().join("a/b").metadata().unwrap())
++    );
++    assert!(handle.sync_all().is_err());
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert!(disk.open_directory("fixture", Path::new("a/b")).is_err());
++}
++
++#[test]
++fn failed_directory_census_replacement_retains_previous_entries_and_charge() {
++    let (directory, config, memory) = fixture();
++    crate::private_files::create_directory(&directory.path().join("child")).unwrap();
++    let disk = open(&config, &memory);
++    let before = disk.snapshot();
++    let original = disk.lock_state().accounted.clone();
++    let cancel = CensusCancellation::default();
++    cancel.cancel();
++    assert!(disk.reconcile(&cancel).is_err());
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(disk.lock_state().accounted, original);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    assert_eq!(disk.lock_state().accounted, original);
++}
++
++#[test]
++fn required_directory_limit_is_not_deserialized_from_a_fallback() {
++    let (_directory, config, _memory) = fixture();
++    let mut value = serde_json::to_value(config).unwrap();
++    value
++        .as_object_mut()
++        .unwrap()
++        .remove("max_open_directories");
++    assert!(serde_json::from_value::<NodeDiskConfig>(value).is_err());
++}
++
++#[test]
++fn metadata_denial_precedes_directory_path_access_and_retains_no_partial_owner() {
++    let (directory, mut config, _memory) = fixture();
++    config
++        .roots
++        .insert("fixture".into(), directory.path().join("not-created"));
++    let memory = TestDiskMemory::new(1, 1);
++    let error = retry_disk_registry(|| {
++        NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
++    })
++    .unwrap_err();
++    let crate::DiskOpenError::Failed(error) = error else {
++        panic!("fixture registry retry exhausted");
++    };
++    assert_eq!(
++        error.downcast_ref::<io::Error>().unwrap().kind(),
++        io::ErrorKind::OutOfMemory
++    );
++    assert_eq!(memory.snapshot().attempts, 1);
++    assert_eq!(memory.snapshot().used_bytes, 0);
++    assert_eq!(memory.snapshot().live_reservations, 0);
++    assert!(!config.roots["fixture"].exists());
++}
++
++#[test]
++fn failed_shared_device_rejects_directory_sync_without_releasing_custody_or_bytes() {
++    let (_directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let handle = disk.open_directory("fixture", Path::new("")).unwrap();
++    let before = disk.snapshot();
++    disk.device.lock().fail_owner();
++    assert!(handle.sync_all().is_err());
++    assert!(handle.observed_allocated_bytes().is_err());
++    assert!(disk.open_directory("fixture", Path::new("")).is_err());
++    assert_eq!(disk.snapshot().open_directories, 1);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    drop(handle);
++    assert_eq!(disk.snapshot().open_directories, 0);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++}
++
++#[test]
++fn file_capacity_remains_independent_of_directory_membership() {
++    let (directory, mut config, memory) = fixture();
++    config.max_census_entries = 8;
++    crate::private_files::create_directory(&directory.path().join("child")).unwrap();
++    let disk = open(&config, &memory);
++    // Both directories remain enrolled as each of the original eight file
++    // slots is filled. Capping the union at N (+ roots) denies too early.
++    for index in 0..8 {
++        let relative = std::path::PathBuf::from(format!("file-{index}"));
++        let file = disk
++            .create_file("fixture", &relative, super::super::DiskWork::Foreground)
++            .unwrap();
++        file.sync_all().unwrap();
++        drop(file);
++    }
++    let state = disk.lock_state();
++    assert_eq!(state.files, 8);
++    assert_eq!(state.directories, 2);
++    assert_eq!(state.accounted.len(), 10);
++    drop(state);
++    assert_eq!(
++        disk.create_file(
++            "fixture",
++            std::path::Path::new("overflow"),
++            super::super::DiskWork::Foreground
++        )
++        .unwrap_err()
++        .kind(),
++        std::io::ErrorKind::StorageFull
++    );
++    assert!(!directory.path().join("overflow").exists());
++    // This unchanged work limit may reject recensus even though the files
++    // were individually admitted. Failure retains the entire old union.
++    let old = disk.lock_state().accounted.clone();
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    assert_eq!(disk.lock_state().accounted, old);
++}
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/directory.rs
+@@ -0,0 +1,336 @@
++//! Enrolled, counted read/sync custody for installed directories.
++//!
++//! This primitive does not authorize namespace mutation. Census establishes the
++//! exact identities/extents; a changed directory fences until actual drain and
++//! a fresh census. File-induced parent settlement and directory mutation remain
++//! a separate transition rather than an implicit adopting fallback.
++use super::{
++    AccountedDirectory, AccountedInode, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase, State,
++    census,
++};
++use std::{
++    ffi::CString,
++    fs::File,
++    io,
++    path::{Component, Path},
++    sync::Arc,
++};
++
++pub(super) struct DirectoryOwner {
++    disk: Arc<NodeDisk>,
++    root: String,
++    names: Box<[CString]>,
++    identity: Identity,
++    file: Option<File>,
++    #[cfg(test)]
++    after_close: Option<std::sync::Mutex<Option<ClosePause>>>,
++}
++
++/// An operational directory descriptor whose actual close participates in drain.
++/// The inner Arc is private: callers can clone custody, not retain an untracked
++/// Weak control block after the last physical owner closes.
++#[derive(Clone)]
++pub struct NodeDiskDirectory(Option<Arc<DirectoryOwner>>);
++impl std::fmt::Debug for NodeDiskDirectory {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("NodeDiskDirectory")
++            .field("identity", &self.owner().identity)
++            .finish_non_exhaustive()
++    }
++}
++
++#[cfg(test)]
++struct ClosePause {
++    entered: std::sync::mpsc::SyncSender<()>,
++    release: std::sync::mpsc::Receiver<()>,
++}
++
++struct LookupFailure {
++    error: io::Error,
++    fence: bool,
++}
++impl From<io::Error> for LookupFailure {
++    fn from(error: io::Error) -> Self {
++        Self { error, fence: true }
++    }
++}
++
++fn checked_entry<'a>(
++    state: &'a State,
++    file: &File,
++    binding: NamespaceBinding,
++    parent: Option<Identity>,
++) -> io::Result<(Identity, &'a AccountedDirectory)> {
++    let metadata = file.metadata()?;
++    census::directory_nonallocating(&metadata)?;
++    let identity = Identity::of(&metadata);
++    let Some(entry) = state
++        .accounted
++        .get(&identity)
++        .and_then(AccountedInode::directory)
++    else {
++        return Err(io::ErrorKind::InvalidData.into());
++    };
++    if entry.binding != binding
++        || entry.parent != parent
++        || entry.bytes != census::directory_extent(&metadata)?
++        || entry.len != metadata.len()
++    {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    Ok((identity, entry))
++}
++
++// Each ancestor is compared with the retained ledger, not only the last inode.
++// Paths, hash state and descriptor walk require no heap allocation here.
++fn walk(
++    disk: &NodeDisk,
++    state: &State,
++    root: &str,
++    names: &[CString],
++    absent_final: bool,
++) -> Result<File, LookupFailure> {
++    let root = disk.roots.get(root).ok_or_else(|| LookupFailure {
++        error: io::ErrorKind::InvalidInput.into(),
++        fence: false,
++    })?;
++    root.verify_nonallocating()?;
++    let mut current = root.file.try_clone()?;
++    let mut binding = NamespaceBinding::root(root.identity);
++    let (mut parent, _) = checked_entry(state, &current, binding, None)?;
++    for (index, name) in names.iter().enumerate() {
++        binding = binding.child(name);
++        let child = match census::open_at(&current, name, libc::O_RDONLY | libc::O_DIRECTORY) {
++            Ok(child) => child,
++            Err(error) => {
++                let known = state
++                    .accounted
++                    .values()
++                    .any(|entry| entry.binding() == binding);
++                // This is the one healthy absence: an unknown final component
++                // below a completely verified enrolled ancestry.
++                let fence = !(absent_final
++                    && index + 1 == names.len()
++                    && !known
++                    && error.kind() == io::ErrorKind::NotFound);
++                return Err(LookupFailure { error, fence });
++            }
++        };
++        let (identity, _) = checked_entry(state, &child, binding, Some(parent))?;
++        parent = identity;
++        current = child;
++    }
++    Ok(current)
++}
++
++fn names(relative: &Path, depth: u32, maximum: u32) -> io::Result<Box<[CString]>> {
++    use std::os::unix::ffi::OsStrExt;
++    let mut names = Vec::new();
++    for component in relative.components() {
++        let Component::Normal(name) = component else {
++            return Err(io::ErrorKind::InvalidInput.into());
++        };
++        if names.len() >= depth as usize || name.len() > maximum as usize {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        names
++            .try_reserve(1)
++            .map_err(|_| io::ErrorKind::OutOfMemory)?;
++        names.push(CString::new(name.as_bytes()).map_err(|_| io::ErrorKind::InvalidInput)?);
++    }
++    Ok(names.into_boxed_slice())
++}
++
++impl NodeDisk {
++    /// Open only an enrolled directory. Empty relative opens the configured root.
++    /// No namespace mutation, raw directory adoption or ancestor fallback occurs.
++    pub fn open_directory(
++        self: &Arc<Self>,
++        root: &str,
++        relative: &Path,
++    ) -> io::Result<NodeDiskDirectory> {
++        let mut state = self.lock_state();
++        if state.phase != NodeDiskPhase::Open || !self.device.lock().admission_ready() {
++            return Err(io::ErrorKind::Other.into());
++        }
++        if state.open_directories >= self.config.max_open_directories {
++            return Err(io::ErrorKind::StorageFull.into());
++        }
++        if !self.roots.contains_key(root) {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        // The installed envelope funds all these allocations and the temporary
++        // walk descriptors. No registered destructor exists before publication.
++        let names = names(relative, self.config.max_depth, self.config.max_name_bytes)?;
++        let root = root.to_owned();
++        let mut allocation = Arc::<DirectoryOwner>::new_uninit();
++        #[cfg(test)]
++        let after_close = {
++            let mutex = std::sync::Mutex::new(None);
++            drop(mutex.lock().expect("unpublished directory close hook"));
++            mutex
++        };
++        let file = match walk(self, &state, &root, &names, true) {
++            Ok(file) => file,
++            Err(error) => {
++                if error.fence {
++                    self.fail_locked(&mut state);
++                }
++                return Err(error.error);
++            }
++        };
++        let identity = match file.metadata() {
++            Ok(metadata) => Identity::of(&metadata),
++            Err(error) => {
++                self.fail_locked(&mut state);
++                return Err(error);
++            }
++        };
++        let entry = state
++            .accounted
++            .get_mut(&identity)
++            .and_then(AccountedInode::directory_mut)
++            .expect("verified directory enrollment");
++        let Some(next) = entry.live_handles.checked_add(1) else {
++            self.fail_locked(&mut state);
++            return Err(io::ErrorKind::InvalidData.into());
++        };
++        entry.live_handles = next;
++        state.open_directories += 1;
++        Arc::get_mut(&mut allocation)
++            .expect("unpublished directory owner")
++            .write(DirectoryOwner {
++                disk: self.clone(),
++                root,
++                names,
++                identity,
++                file: Some(file),
++                #[cfg(test)]
++                after_close: Some(after_close),
++            });
++        // SAFETY: the sole allocation has just been fully initialized. It is
++        // published only after actual FD acquisition and all ledger checks.
++        let owner = unsafe { allocation.assume_init() };
++        drop(state);
++        Ok(NodeDiskDirectory(Some(owner)))
++    }
++}
++
++impl NodeDiskDirectory {
++    fn owner(&self) -> &DirectoryOwner {
++        self.0.as_deref().expect("live directory custody")
++    }
++    fn verify(&self, state: &State) -> io::Result<()> {
++        let current = walk(
++            &self.owner().disk,
++            state,
++            &self.owner().root,
++            &self.owner().names,
++            false,
++        )
++        .map_err(|failure| failure.error)?;
++        let retained = self
++            .owner()
++            .file
++            .as_ref()
++            .expect("live directory descriptor");
++        if Identity::of(&current.metadata()?) != self.owner().identity
++            || Identity::of(&retained.metadata()?) != self.owner().identity
++        {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        Ok(())
++    }
++
++    pub fn observed_allocated_bytes(&self) -> io::Result<u64> {
++        let mut state = self.owner().disk.lock_state();
++        if state.phase == NodeDiskPhase::Failed
++            || !self.owner().disk.device.lock().admission_ready()
++        {
++            return Err(io::ErrorKind::Other.into());
++        }
++        self.verify(&state)
++            .inspect_err(|_| self.owner().disk.fail_locked(&mut state))?;
++        Ok(state.accounted[&self.owner().identity]
++            .directory()
++            .expect("verified directory enrollment")
++            .bytes)
++    }
++
++    /// Synchronize an unchanged enrolled directory through its retained FD.
++    /// Paused permits existing custody to drain; Failed never advertises success.
++    pub fn sync_all(&self) -> io::Result<()> {
++        let mut state = self.owner().disk.lock_state();
++        if state.phase == NodeDiskPhase::Failed
++            || !self.owner().disk.device.lock().admission_ready()
++        {
++            return Err(io::ErrorKind::Other.into());
++        }
++        let result = (|| {
++            self.verify(&state)?;
++            self.owner()
++                .file
++                .as_ref()
++                .expect("live directory descriptor")
++                .sync_all()?;
++            self.verify(&state)
++        })();
++        result.inspect_err(|_| self.owner().disk.fail_locked(&mut state))
++    }
++}
++
++// All strong handles retire through into_inner. Its exactly-one-winner rule
++// avoids try_unwrap races where the last Arc would run the owner destructor
++// before its allocation was released. No inner Arc or Weak escapes this module.
++impl Drop for NodeDiskDirectory {
++    fn drop(&mut self) {
++        if let Some(owner) = Arc::into_inner(self.0.take().expect("live directory custody")) {
++            drop(owner);
++        }
++    }
++}
++
++impl Drop for DirectoryOwner {
++    fn drop(&mut self) {
++        // Actual close precedes the drain counters. Nothing in this destructor
++        // enrolls namespace changes or returns disk extent credit.
++        drop(self.file.take());
++        #[cfg(test)]
++        if let Some(mut hook) = self.after_close.take() {
++            if let Some(pause) = hook.get_mut().unwrap().take() {
++                pause.entered.send(()).unwrap();
++                pause
++                    .release
++                    .recv_timeout(std::time::Duration::from_secs(5))
++                    .expect("release directory close fixture");
++            }
++            drop(hook);
++        }
++        // These variable allocations must die before another owner may spend
++        // this slot. The Arc backing already died in Arc::into_inner above.
++        drop(std::mem::take(&mut self.root));
++        drop(std::mem::replace(&mut self.names, Box::new([])));
++        let mut state = self.disk.lock_state();
++        let Some(entry) = state
++            .accounted
++            .get_mut(&self.identity)
++            .and_then(AccountedInode::directory_mut)
++        else {
++            self.disk.fail_locked(&mut state);
++            return;
++        };
++        let Some(next) = entry.live_handles.checked_sub(1) else {
++            self.disk.fail_locked(&mut state);
++            return;
++        };
++        entry.live_handles = next;
++        let Some(next) = state.open_directories.checked_sub(1) else {
++            self.disk.fail_locked(&mut state);
++            return;
++        };
++        state.open_directories = next;
++    }
++}
++
++#[cfg(test)]
++mod tests;
+--- a/crates/kasumi-store/src/node_disk/file.rs
++++ b/crates/kasumi-store/src/node_disk/file.rs
+@@ -1,6 +1,6 @@
+ use super::{
+-    AccountedFile, DiskWork, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase, State, census,
+-    extent, rounded,
++    AccountedFile, AccountedInode, DiskWork, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase,
++    State, census, extent, rounded,
+ };
+ use std::{
+     ffi::CString,
+@@ -185,6 +185,7 @@
+                         .state
+                         .accounted
+                         .values()
++                        .filter_map(AccountedInode::file)
+                         .any(|entry| entry.binding == self.binding)
+                 {
+                     if let Err(error) = verify_parent(
+@@ -216,7 +217,7 @@
+                     .state
+                     .accounted
+                     .get(&identity)
+-                    .is_some_and(|entry| entry.binding != self.binding)
++                    .is_some_and(|entry| entry.binding() != self.binding)
+             {
+                 return Err(io::ErrorKind::InvalidData.into());
+             }
+@@ -261,10 +262,10 @@
+             // survives a failed durability step in the retained census ledger.
+             self.state.accounted.insert(
+                 identity,
+-                AccountedFile {
++                AccountedInode::File(AccountedFile {
+                     settled: false,
+                     ..enrolled
+-                },
++                }),
+             );
+             self.state.files = files;
+             let durable = (|| -> io::Result<()> {
+@@ -285,8 +286,15 @@
+                 .state
+                 .accounted
+                 .get_mut(&identity)
++                .and_then(AccountedInode::file_mut)
+                 .expect("new enrolled inode") = enrolled;
+-        } else if self.state.accounted.get(&identity) != Some(&enrolled) {
++        } else if self
++            .state
++            .accounted
++            .get(&identity)
++            .and_then(AccountedInode::file)
++            != Some(&enrolled)
++        {
+             self.disk.fail_locked(&mut self.state);
+             return Err(io::ErrorKind::InvalidData.into());
+         }
+@@ -431,6 +439,7 @@
+             state
+                 .accounted
+                 .get_mut(&owner.identity)
++                .and_then(AccountedInode::file_mut)
+                 .expect("validated publication enrollment")
+                 .binding = binding;
+             // The descriptor now belongs to the new name even if durability or
+@@ -542,7 +551,7 @@
+             return Err(io::ErrorKind::StorageFull.into());
+         }
+         if let Some(work) = create {
+-            if state.accounted.len() as u64 >= self.config.max_census_entries {
++            if state.files >= self.config.max_census_entries {
+                 return Err(io::ErrorKind::StorageFull.into());
+             }
+             self.reserve(&mut state, 0, work)?;
+@@ -778,6 +787,7 @@
+                                     *state
+                                         .accounted
+                                         .get_mut(&owner.identity)
++                                        .and_then(AccountedInode::file_mut)
+                                         .expect("validated reclaimed inode") =
+                                         AccountedFile::durable(owner.binding, bytes, pending, len);
+                                 } else {
+@@ -825,6 +835,7 @@
+     let Some((identity, enrolled)) = state
+         .accounted
+         .iter()
++        .filter_map(|(identity, entry)| entry.file().map(|file| (identity, file)))
+         .find(|(_, entry)| entry.binding == binding)
+     else {
+         return Ok(());
+@@ -903,7 +914,12 @@
+     }
+ 
+     fn check_enrollment(&self, state: &mut State, budget: &Budget) -> io::Result<()> {
+-        if state.accounted.get(&self.identity) != Some(&budget.accounted(self.binding)) {
++        if state
++            .accounted
++            .get(&self.identity)
++            .and_then(AccountedInode::file)
++            != Some(&budget.accounted(self.binding))
++        {
+             self.disk.fail_locked(state);
+             return Err(io::ErrorKind::InvalidData.into());
+         }
+@@ -916,6 +932,7 @@
+         *state
+             .accounted
+             .get_mut(&self.identity)
++            .and_then(AccountedInode::file_mut)
+             .expect("validated enrolled inode") = budget.accounted(self.binding);
+     }
+ 
+@@ -1541,7 +1558,11 @@
+         let disk = self.disk.clone();
+         let mut state = disk.lock_state();
+         if !settled {
+-            if let Some(enrolled) = state.accounted.get_mut(&self.identity) {
++            if let Some(enrolled) = state
++                .accounted
++                .get_mut(&self.identity)
++                .and_then(AccountedInode::file_mut)
++            {
+                 enrolled.settled = false;
+             }
+             disk.fail_locked(&mut state);
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/ledger/tests.rs
+@@ -0,0 +1,95 @@
++use super::super::Identity;
++use super::*;
++use std::collections::HashMap;
++
++fn file(binding: u8) -> AccountedFile {
++    AccountedFile::durable(NamespaceBinding([binding; 32]), 4096, 0, 12)
++}
++fn directory(binding: u8, parent: Option<Identity>) -> AccountedDirectory {
++    AccountedDirectory {
++        binding: NamespaceBinding([binding; 32]),
++        parent,
++        bytes: 8192,
++        len: 24,
++        children: 3,
++        live_handles: 0,
++    }
++}
++
++#[test]
++fn typed_entries_never_reinterpret_another_inode_kind() {
++    let mut inode = AccountedInode::File(file(1));
++    assert_eq!(inode.binding(), NamespaceBinding([1; 32]));
++    assert!(inode.directory().is_none());
++    assert!(inode.directory_mut().is_none());
++    inode.file_mut().unwrap().pending = 19;
++    assert_eq!(inode.file().unwrap().pending, 19);
++    let mut inode = AccountedInode::Directory(directory(2, Some(Identity(4, 5))));
++    assert_eq!(inode.binding(), NamespaceBinding([2; 32]));
++    assert!(inode.file().is_none());
++    assert!(inode.file_mut().is_none());
++    inode.directory_mut().unwrap().live_handles = 7;
++    assert_eq!(inode.directory().unwrap().live_handles, 7);
++}
++
++#[test]
++fn unified_identity_rejects_cross_kind_double_enrollment() {
++    let id = Identity(4, 5);
++    let mut map = HashMap::new();
++    assert!(map.insert(id, AccountedInode::File(file(1))).is_none());
++    // Census requires every insert's previous entry to be None. A second
++    // kind under this physical identity therefore fails the same check.
++    assert!(
++        map.insert(id, AccountedInode::Directory(directory(2, None)))
++            .is_some()
++    );
++    assert_eq!(map.len(), 1);
++}
++
++#[test]
++fn retained_and_replacement_bounds_preserve_independent_file_capacity() {
++    let n = 8;
++    let roots = 2;
++    let (retained, replacement) = capacities(n, roots).unwrap();
++    // No dot-entry credit is assumed. Even N census directories plus roots
++    // leave room for the original N files admitted after census completes.
++    let mut old = HashMap::new();
++    for index in 0..n + roots {
++        old.insert(
++            Identity(1, index),
++            AccountedInode::Directory(directory(1, None)),
++        );
++    }
++    for index in 0..n {
++        old.insert(Identity(2, index), AccountedInode::File(file(2)));
++    }
++    assert_eq!(old.len() as u64, retained);
++    assert!(old.len() as u64 > replacement);
++    // A fresh census spends one work unit on each non-root inode, whatever
++    // its kind. Exhaust every mixture while the old allocation remains live.
++    for files in 0..=n {
++        let mut new = HashMap::new();
++        for index in 0..files {
++            new.insert(Identity(3, index), AccountedInode::File(file(3)));
++        }
++        for index in files..n + roots {
++            new.insert(
++                Identity(4, index),
++                AccountedInode::Directory(directory(4, None)),
++            );
++        }
++        assert_eq!(new.len() as u64, replacement);
++        assert_eq!((old.len() + new.len()) as u64, 3 * n + 2 * roots);
++    }
++}
++
++#[test]
++fn peak_cardinality_overflow_fails_before_allocation() {
++    assert_eq!(capacities(u64::MAX, 1), None);
++    assert_eq!(capacities(u64::MAX / 2 + 1, 0), None);
++    assert_eq!(
++        capacities(u64::MAX / 2, 1),
++        Some((u64::MAX, u64::MAX / 2 + 1))
++    );
++    assert_eq!(capacities(1_000_000, 1), Some((2_000_001, 1_000_001)));
++}
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/ledger.rs
+@@ -0,0 +1,57 @@
++//! One physical-inode key space for file and directory enrollment.
++//!
++//! The retained owner can create up to N files after a census enrolled up to
++//! N + R directories. A replacement census visits at most N non-root entries,
++//! so its union is bounded by N + R. These different peaks must both be funded.
++use super::{AccountedDirectory, AccountedFile, NamespaceBinding};
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(super) enum AccountedInode {
++    File(AccountedFile),
++    Directory(AccountedDirectory),
++}
++impl AccountedInode {
++    pub(super) fn binding(&self) -> NamespaceBinding {
++        match self {
++            Self::File(entry) => entry.binding,
++            Self::Directory(entry) => entry.binding,
++        }
++    }
++    pub(super) fn file(&self) -> Option<&AccountedFile> {
++        match self {
++            Self::File(entry) => Some(entry),
++            Self::Directory(_) => None,
++        }
++    }
++    pub(super) fn file_mut(&mut self) -> Option<&mut AccountedFile> {
++        match self {
++            Self::File(entry) => Some(entry),
++            Self::Directory(_) => None,
++        }
++    }
++    pub(super) fn directory(&self) -> Option<&AccountedDirectory> {
++        match self {
++            Self::Directory(entry) => Some(entry),
++            Self::File(_) => None,
++        }
++    }
++    pub(super) fn directory_mut(&mut self) -> Option<&mut AccountedDirectory> {
++        match self {
++            Self::Directory(entry) => Some(entry),
++            Self::File(_) => None,
++        }
++    }
++}
++
++/// Checked cardinalities, independent of readdir's treatment of dot entries.
++/// Do not replace the retained limit by `census`: that reduces file admission
++/// when the owner retains directories from an earlier census.
++pub(super) fn capacities(entries: u64, roots: u64) -> Option<(u64, u64)> {
++    let census = entries.checked_add(roots)?;
++    let retained = census.checked_add(entries)?;
++    Some((retained, census))
++}
++
++#[cfg(test)]
++#[path = "ledger/tests.rs"]
++mod tests;
+--- a/crates/kasumi-store/src/node_disk/memory.rs
++++ b/crates/kasumi-store/src/node_disk/memory.rs
+@@ -1,5 +1,5 @@
+ //! Fixed, checked resident workspace for retained metadata and its replacement peak.
+-use super::{AccountedFile, Identity, NodeDisk, NodeDiskConfig, census, file};
++use super::{AccountedInode, Identity, NodeDisk, NodeDiskConfig, census, directory, file, ledger};
+ use crate::disk_memory::{self, add, mul, size};
+ use std::{io, os::unix::ffi::OsStrExt, sync::Weak};
+ 
+@@ -20,9 +20,17 @@
+         let depth = u64::from(config.max_depth);
+         let handles = u64::from(config.max_open_files);
+         let name = add(u64::from(config.max_name_bytes), 1)?;
+-        let ledgers = mul(
+-            2,
+-            table::<(Identity, AccountedFile)>(config.max_census_entries)?,
++        // Census visits at most N non-root entries, but later admission can
++        // fill N file slots while all census directories remain. Existing and
++        // replacement maps therefore have different simultaneous maxima.
++        let (retained, replacement) = ledger::capacities(
++            config.max_census_entries,
++            u64::try_from(config.roots.len()).map_err(|_| disk_memory::overflow())?,
++        )
++        .ok_or_else(disk_memory::overflow)?;
++        let ledgers = add(
++            table::<(Identity, AccountedInode)>(retained)?,
++            table::<(Identity, AccountedInode)>(replacement)?,
+         )?;
+         let live = table::<(Identity, Weak<file::FileOwner>)>(handles)?;
+         let components = mul(
+@@ -36,6 +44,14 @@
+         )?;
+         // Publication prepares a new owner/path while the old owner is live.
+         let owners = mul(add(handles, 1)?, handle)?;
++        let directory_owner = add(
++            add(size::<directory::DirectoryOwner>()?, 16)?,
++            add(NATIVE_HANDLE_WORKSPACE, add(paths, components)?)?,
++        )?;
++        let directory_owners = mul(
++            add(u64::from(config.max_open_directories), 1)?,
++            directory_owner,
++        )?;
+         let cursors = mul(
+             depth,
+             add(
+@@ -60,7 +76,13 @@
+         let base = add(FIXED_OWNER_WORKSPACE, disk_memory::arc::<Self>()?)?;
+         Ok(add(
+             base,
+-            add(ledgers, add(live, add(owners, add(census, roots)?)?)?)?,
++            add(
++                ledgers,
++                add(
++                    live,
++                    add(add(owners, directory_owners)?, add(census, roots)?)?,
++                )?,
++            )?,
+         )?)
+     }
+ }
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -14,6 +14,7 @@
+         maintenance_reserve_bytes: 1 << 20,
+         min_free_bytes: 0,
+         max_open_files: 16,
++        max_open_directories: 16,
+         max_census_entries: 10_000,
+         max_depth: 32,
+         max_name_bytes: 255,
+@@ -1165,7 +1166,7 @@
+     assert_eq!(disk.snapshot().charged_bytes, 0);
+     assert_eq!(disk.snapshot().pending_bytes, 0);
+     assert_eq!(disk.snapshot().persistent_files, 0);
+-    assert!(disk.state.lock().unwrap().accounted.is_empty());
++    assert_eq!(disk.state.lock().unwrap().files, 0);
+     disk.pause().unwrap();
+ }
+ 
+@@ -1188,7 +1189,7 @@
+     assert!(!config.roots["data"].join("four").exists());
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     assert_eq!(disk.snapshot().persistent_files, 3);
+-    assert_eq!(disk.state.lock().unwrap().accounted.len(), 3);
++    assert_eq!(disk.state.lock().unwrap().files, 3);
+     for name in ["one", "two", "three"] {
+         let file = disk.open_file("data", Path::new(name)).unwrap();
+         disk.delete_file(file).unwrap();
+@@ -1319,7 +1320,12 @@
+         let raw = std::fs::File::open(&path).unwrap();
+         raw.try_lock().unwrap();
+         let identity = Identity::of(&raw.metadata().unwrap());
+-        assert!(!disk.lock_state().accounted[&identity].settled);
++        assert!(
++            !disk.lock_state().accounted[&identity]
++                .file()
++                .unwrap()
++                .settled
++        );
+         drop(raw);
+         clean(&disk, &["created"]);
+     }
+@@ -1440,7 +1446,13 @@
+         assert_eq!(snapshot.charged_bytes, 32 << 10);
+         let binding = NamespaceBinding::root(disk.roots["data"].identity).child(c"destination");
+         assert_eq!(
+-            disk.lock_state().accounted.values().next().unwrap().binding,
++            disk.lock_state()
++                .accounted
++                .values()
++                .filter_map(AccountedInode::file)
++                .next()
++                .unwrap()
++                .binding,
+             binding
+         );
+         assert!(disk.open_file("data", Path::new("destination")).is_err());
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -20,12 +20,16 @@
+ };
+ 
+ mod census;
++mod directory;
+ mod file;
++mod ledger;
+ mod memory;
+ #[cfg(test)]
+ mod tests;
+ use census::{Root, census, open_roots};
++pub use directory::NodeDiskDirectory;
+ pub use file::NodeDiskFile;
++use ledger::AccountedInode;
+ 
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+@@ -37,7 +41,11 @@
+     pub min_free_bytes: u64,
+     /// Simultaneous file owners. Each owner retains at most two descriptors.
+     pub max_open_files: u32,
+-    /// Bounds census traversal work and retained file-accounting entries.
++    /// Independent operational directory descriptors, separate from file owners.
++    pub max_open_directories: u32,
++    /// Bounds census traversal work and the separately admitted file count.
++    /// Directories also occupy the unified inode ledger. File creation retains
++    /// its full count allowance after census; it does not spend directory slots.
+     /// An incomplete census never opens admission; new files require a free slot.
+     pub max_census_entries: u64,
+     /// Bounds traversal stack, ownership ancestor locks and path walk depth.
+@@ -58,6 +66,10 @@
+             "maintenance reserve must leave foreground capacity"
+         );
+         ensure!(self.max_open_files > 0, "open-file metadata budget is zero");
++        ensure!(
++            self.max_open_directories > 0,
++            "open-directory metadata budget is zero"
++        );
+         ensure!(self.max_census_entries > 0, "census work budget is zero");
+         ensure!(self.max_depth > 0, "census depth budget is zero");
+         ensure!(
+@@ -162,6 +174,9 @@
+     pub pending_bytes: u64,
+     pub persistent_files: u64,
+     pub open_files: u32,
++    pub persistent_directories: u64,
++    pub open_directories: u32,
++    pub observed_directory_bytes: u64,
+     pub max_bytes: u64,
+     pub maintenance_reserve_bytes: u64,
+     pub filesystem_pending_bytes: u64,
+@@ -230,14 +245,29 @@
+     }
+ }
+ 
++/// Read-only directory enrollment. Namespace mutation settlement is a separate
++/// transition; these entries must never silently adopt an observed change.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++struct AccountedDirectory {
++    binding: NamespaceBinding,
++    parent: Option<Identity>,
++    bytes: u64,
++    len: u64,
++    children: u64,
++    live_handles: u32,
++}
++
+ struct State {
+     phase: NodeDiskPhase,
+     bytes: u64,
+     pending: u64,
+     files: u64,
+     open_files: u32,
++    open_directories: u32,
++    directory_bytes: u64,
++    directories: u64,
+     live: HashMap<Identity, Weak<file::FileOwner>>,
+-    accounted: HashMap<Identity, AccountedFile>,
++    accounted: HashMap<Identity, AccountedInode>,
+ }
+ 
+ /// An installed owner outlives all service/database handles. The strong registry
+@@ -383,6 +413,9 @@
+                 pending: totals.pending,
+                 files: totals.files,
+                 open_files: 0,
++                open_directories: 0,
++                directory_bytes: totals.directory_bytes,
++                directories: totals.directories,
+                 live: HashMap::new(),
+                 accounted: totals.accounted,
+             }),
+@@ -448,7 +481,8 @@
+             for root in owner.roots.values() {
+                 root.verify_nonallocating()?;
+             }
+-            if owner.snapshot().open_files == 0 {
++            let snapshot = owner.snapshot();
++            if snapshot.open_files == 0 && snapshot.open_directories == 0 {
+                 owner.reconcile(&CensusCancellation::default())?;
+             }
+             return Ok(owner);
+@@ -470,6 +504,7 @@
+             maintenance_reserve_bytes: 1 << 30,
+             min_free_bytes: 0,
+             max_open_files: 256,
++            max_open_directories: 256,
+             max_census_entries: 16_384,
+             max_depth: 64,
+             max_name_bytes: 255,
+@@ -485,6 +520,9 @@
+             pending_bytes: state.pending,
+             persistent_files: state.files,
+             open_files: state.open_files,
++            persistent_directories: state.directories,
++            open_directories: state.open_directories,
++            observed_directory_bytes: state.directory_bytes,
+             max_bytes: self.config.max_bytes,
+             maintenance_reserve_bytes: self.config.maintenance_reserve_bytes,
+             filesystem_pending_bytes: *promises,
+@@ -494,7 +532,7 @@
+         }
+     }
+ 
+-    /// Seal new mutation admission before waiting for file/backend owners to drain.
++    /// Seal new mutation admission before waiting for file/backend/directory owners to drain.
+     /// This never releases physical charges, filesystem promises, or root locks.
+     pub fn pause(&self) -> Result<()> {
+         let mut state = self.lock_state();
+@@ -502,13 +540,13 @@
+             state.phase = NodeDiskPhase::Paused;
+         }
+         ensure!(
+-            state.open_files == 0,
+-            "persistent file owners are still live"
++            state.open_files == 0 && state.open_directories == 0,
++            "persistent file or directory owners are still live"
+         );
+         Ok(())
+     }
+ 
+-    /// Recount only after every managed file owner has closed under the retained
++    /// Recount only after every managed file and directory owner has closed under the retained
+     /// exclusive root locks. Failure retains the prior accounting and seals access.
+     pub fn reconcile(&self, cancel: &CensusCancellation) -> Result<()> {
+         ensure!(
+@@ -518,8 +556,8 @@
+         let mut state = self.lock_state();
+         state.phase = NodeDiskPhase::Paused;
+         ensure!(
+-            state.open_files == 0,
+-            "persistent file owners are still live"
++            state.open_files == 0 && state.open_directories == 0,
++            "persistent file or directory owners are still live"
+         );
+         let result = census(&self.roots, &self.config, self.unit, cancel);
+         let totals = match result {
+@@ -545,6 +583,8 @@
+         state.bytes = totals.bytes;
+         state.pending = totals.pending;
+         state.files = totals.files;
++        state.directory_bytes = totals.directory_bytes;
++        state.directories = totals.directories;
+         state.accounted = totals.accounted;
+         state.live.clear();
+         state.phase = NodeDiskPhase::Open;
+--- a/docs/standalone.md
++++ b/docs/standalone.md
+@@ -181,3 +181,10 @@
+ verification, permanent abort outcomes, bounded cleanup passes, and key retention.
+ Use the resulting checkpoint as the exact source checkpoint in a stopped local
+ recovery request.
++
++The first-release directory owner requires `persistent_disk.max_open_directories`
++explicitly; the generated installed policy uses 4,096 directory owners alongside
++4,096 file owners. There is no default or legacy field alias. The inode ledger
++uses one physical-identity key space for files and directories. The one-million
++limit continues to bound census work and separately retained regular-file count;
++it is not a combined file/directory admission cap.

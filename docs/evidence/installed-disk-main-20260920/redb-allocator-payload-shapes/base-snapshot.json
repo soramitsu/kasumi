@@ -1,0 +1,14 @@
+[
+  {
+    "path": "vendor/redb-4.2.0/src/tree_store/allocator_state.rs",
+    "sha256": "300e62c37286e48719318534454f2953de1b3b6bcd1140fa428c634d1e976790"
+  },
+  {
+    "path": "vendor/redb-4.2.0/src/tree_store/page_store/mod.rs",
+    "sha256": "842420b03df7877e6e57dc09b714d0cb1b122958dde2accd3526365b8cd1b30e"
+  },
+  {
+    "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+    "sha256": "1a4e62e43fba843b71b91f1567995c903a8dded5b8cf57dad0561da7f1202159"
+  }
+]

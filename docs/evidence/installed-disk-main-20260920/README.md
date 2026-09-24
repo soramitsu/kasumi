@@ -81,6 +81,895 @@ These inventories do not certify the complete repository or binaries.
 | 74 | Admission/core/actual startup and corrected clock target | **35 passed** |
 | 75 | Strict workspace Clippy after backup cleanup expression correction | **Passed** |
 | 76 | Workspace formatting on the lint-corrected source | **Passed** |
+| 77 | Workspace compilation after mandatory installed disk-memory integration | Failed: eleven diagnostics across three targets; source corrections preserved |
+| 78 | Same workspace compilation after required caller corrections | **Passed** |
+| 79 | Workspace formatting after mandatory memory integration | **Passed** |
+| 80 | Complete store library after mandatory metadata and publication-lock correction | **215 passed, 0 failed, 2 ignored** |
+| 81 | Engine memory/core/startup, explicit snapshot codec, admission and epoch cohort | **50 passed** |
+| 82 | Server memory sharing, readiness, credentials, signer and startup cleanup | **49 passed** |
+| 83 | Raft library and all integration targets after mandatory memory migration; prior custody-capacity failure excluded | **90 passed** |
+| 84 | Complete authority library/integration caller regression | **Failed: timed out at 1,200 seconds during queued activation shutdown; one earlier coverage test failed and later tests did not complete** |
+| 85 | Strict workspace Clippy | Failed: needless borrow in the store census caller |
+| 86 | Engine library caller regression invocation | Failed before compilation/tests: Cargo rejects `test --keep-going` |
+| 87 | Admission, complete backup checkpoint, epoch clock, response release and retirement integration targets | **28 passed** |
+| 88 | Fourteen remaining engine integration targets, original workloads and deadlines | **72 passed, 22 failed across six targets; all fourteen targets completed** |
+| 89 | Corrected engine library invocation; prior 512-by-256 restore failure excluded | **210 passed, 5 failed, 1 ignored, 1 filtered out** |
+| 90 | Isolated replay of attempt 84's coverage failure using its exact test binary | **1 passed; full-suite failure remains unexplained** |
+| 91 | Complete authority successor with explicit fence release and uncaptured diagnostics | **53 passed, 8 failed; queued-activation hang regression passes; later integration targets unrun** |
+| 92 | Strict workspace Clippy after file retirement and fixture corrections | **Passed** |
+| 93 | Complete store library after complete file resource retirement | **220 passed, 0 failed, 2 ignored** |
+| 94 | Engine library successor after five exact fixture corrections; prior large restore failure excluded | **215 passed, 0 failed, 1 ignored, 1 filtered out** |
+| 95 | Workspace formatting after file retirement and fixture corrections | **Passed** |
+| 96 | Four authority availability failures with original-cause diagnostics | **3 passed, 1 failed later at exact stopped-epoch rejection** |
+| 97 | Four target materialization successors and one narrow shutdown classifier | **3 passed, 2 failed** |
+| 98 | Complete contracts, guarded staging, schema activation and staged transactions successors | **50 passed, 8 failed across schema/staged targets** |
+| 99 | Complete admission/core/startup cohort after cancellation backing retirement correction | **34 passed** |
+| 100 | Strict all-target/all-feature workspace Clippy after fixture corrections | **Passed** |
+| 101 | Workspace formatting after fixture corrections | **Passed** |
+| 102 | Actual retained redb commit/abort terminal tests | **5 passed, 3 failed** |
+| 103 | History, lifecycle, schema and staged integration successors | **40 passed, 2 failed; one prior restore failure remains filtered and required** |
+| 104 | Complete admission cohort and canonical snapshot codec tests | **49 passed** |
+| 105 | Three authority successor cases and two precise close classifiers | **4 passed, 1 failed** |
+| 106 | Complete store library including allocation-before-credit lease retirement | **223 passed, 0 failed, 2 ignored** |
+| 107 | Complete vendor redb library after original-I/O, cache and retained-close prerequisites | **120 passed** |
+| 108 | Complete engine library with snapshot ownership foundation; prior large restore excluded | **232 passed, 1 failed, 1 ignored, 1 filtered out** |
+| 109 | Complete authority caller regression and doctests | **61 passed, 2 failed; zero doctests** |
+| 110 | Complete store library after retained memory and vendor corrections | **223 passed, 0 failed, 2 ignored** |
+| 111 | Strict all-target/all-feature workspace Clippy | **Passed** |
+| 112 | Workspace formatting | **Passed** |
+| 113 | Two recovery lifecycle failures with original-cause diagnostics | **1 passed, 1 failed** |
+| 114 | Complete store library with borrowed spool close and actual backing retirement | **226 passed, 0 failed, 2 ignored** |
+| 115 | Exact serving-expiry cleanup and negative cause classifier | **3 passed** |
+| 116 | Stopped-epoch route diagnostic and signer-history read successor | **1 passed, 1 failed earlier during stop verification** |
+| 117 | Expired recovery completion with original leader diagnostics | **Failed: native test stack overflow and SIGABRT** |
+| 118 | Strict workspace Clippy after cache/disposal, handoff and exact stop-drain assertions | **Passed** |
+| 119 | Workspace formatting after cache/disposal and completion handoff | **Passed** |
+| 120 | Exact attempt-117 binary under LLDB | **Diagnostic only: test passed; debugger exited 1 because no stopped process remained for a backtrace** |
+| 121 | Complete vendor redb library after fixed cache capacity and witnessed disposal | **131 passed** |
+| 122 | Complete store library after cache and disposal dependency changes | **226 passed, 0 failed, 2 ignored** |
+| 123 | Lifecycle completion handoff compilation | **Passed; no runtime test executed** |
+| 124 | Complete lifecycle integration target after completion handoff | **12 passed, 2 failed; no ignored or filtered cases** |
+| 125 | Exact stopped-epoch drain/witness assertions | **Failed at final rejection; all six drain observations passed** |
+| 126 | Vendor page-list prerequisite compilation | **Failed before any test executed** |
+| 127 | Complete store library after page-list dependency changes | **226 passed, 0 failed, 2 ignored** |
+| 128 | Lifecycle vote diagnostic and current-leader phase-read compilation | **Passed; no runtime test executed** |
+| 129 | Complete lifecycle integration target with the exact attempt-128 binary | **12 passed, 2 failed; no ignored or filtered cases** |
+| 130 | Strict workspace Clippy after page-list and lifecycle changes | **Passed** |
+| 131 | Workspace formatting after page-list and lifecycle changes | **Passed** |
+| 132 | Complete vendor redb library after page-list compile corrections | **134 passed, 0 failed** |
+| 133 | Original stopped-epoch case with bounded same-identity resolution | **1 passed, 0 failed, 62 filtered out** |
+| 134 | Complete authority library after stopped-epoch resolution | **62 passed, 1 failed; no ignored or filtered cases** |
+| 135 | Lifecycle single-write diagnostic compilation | **Failed before testing: temporary metrics receiver lifetime** |
+| 136 | Lifecycle diagnostic after receiver lifetime correction | **Compiled; no runtime test executed** |
+| 137 | Both original uncertain-activation cases after route/diagnostic changes | **0 passed, 2 failed at first reopen; 12 filtered out** |
+| 138 | Lifecycle stale-route alias retirement compilation | **Compiled; no runtime test executed** |
+| 139 | Both original uncertain-activation cases after alias retirement | **2 passed, 0 failed; 12 filtered out** |
+| 140 | Original failing activation-maintenance case with exact local confirmation | **1 passed, 0 failed; 62 filtered out** |
+| 141 | Other original activation helper case with exact local confirmation | **1 passed, 0 failed; 62 filtered out** |
+| 142 | Canonical format4 and bounded DATA400 reclamation compilation | **Failed before testing: 11 errors and one warning** |
+| 143 | Complete vendor library after canonical-format compile correction | **142 passed, 0 failed; no ignored or filtered cases** |
+| 144 | Complete vendor library with bounded allocation-history purge | **148 passed, 0 failed; no ignored or filtered cases** |
+| 145 | Ten public vendor targets, default features | **255 passed, 2 failed; cursor target has zero enabled cases** |
+| 146 | Original upstream-layout rejection with exact diagnostic | **0 passed, 1 failed; four filtered** |
+| 147 | Both original public fixture cases after corrections | **2 passed, 0 failed; 112 filtered across two targets** |
+| 148 | Ten public vendor targets with cursor/API5 enabled | **296 passed, 0 failed; no ignored or filtered cases** |
+| 149 | Complete vendor library after checked allocator length planning | **155 passed, 0 failed; no ignored or filtered cases** |
+| 150 | Strict workspace Clippy after canonical reclamation and length planning | **Passed** |
+| 151 | Complete vendor library after one-buffer allocator encoding | **162 passed, 0 failed; no ignored or filtered cases** |
+| 152 | Complete store library after canonical reclamation and encoder changes | **226 passed, 0 failed; 2 ignored** |
+| 153 | Strict vendor all-target/all-feature Clippy | **Failed: API5 trait import and unchecked stripe conversion** |
+| 154 | Same strict vendor command after compile correction | **Failed: 41 test-only strict lint errors** |
+| 155 | Same strict vendor command after explicit test syntax/conversion corrections | **Passed** |
+| 156 | Complete all-feature vendor library with retained database opening | **197 passed, 0 failed; no ignored or filtered cases** |
+| 157 | Complete all-feature vendor library with canonical allocator-key rejection | **204 passed, 0 failed; no ignored or filtered cases** |
+| 158 | Strict vendor Clippy after opening and allocator-key changes | **Passed** |
+| 159 | Strict workspace Clippy after opening and allocator-key changes | **Passed** |
+| 160 | Workspace and standalone vendor formatting | **Passed** |
+| 161 | Ten public vendor integration targets with experimental cursor/API5 | **296 passed** |
+| 162 | Full all-feature vendor library after canonical allocator payload validation | **211 passed** |
+| 163 | Strict all-target/all-feature vendor Clippy after payload validation | **Passed** |
+| 164 | Original ten public vendor targets after payload validation | **296 passed** |
+| 165 | Existing verifier regressions and exact reviewed source/Cargo selection | **18 tests and seven package selections passed** |
+
+Attempt 125 completes both original drain windows, with all six exact witness
+assertions passing, then encounters `UnknownOutcome` at the final late-intent
+rejection. The original proposal diagnostic captures local node 1 changing from
+admitted term 1 to healthy term 2/Follower with no current leader. Its group drains
+in 80.045 seconds with unchanged source, no outer timeout and no runner signals.
+The subsequent fixture correction captures one original signed request and verified
+context, and resolves only after observed executing-node term, leader or role
+movement. Every actual group must pass access checks before and after execution.
+One five-second caller timeout covers all calls and additional leader selection;
+only the exact stopped-epoch Conflict satisfies the assertion. These observations
+do not prove an atomic sole cause or bound already accepted children's lifetimes.
+Attempt 133 passes this successor in 9.69 seconds of test execution and 85.802
+seconds overall. Its log captures the actual healthy term/role movement and
+original `UnknownOutcome` before the same request resolves to the exact rejection.
+The original final close succeeds. Source stays unchanged and the owned group
+drains with no outer timeout or runner signals. Broader authority qualification
+remains required.
+
+Attempt 126 fails compilation before testing: adding Copy to the page-list key
+makes an existing closure FnMut, requiring its binding to be mutable. A new test
+also needs an explicitly qualified panic macro. Both failures are preserved with
+the exact corrective patch. Attempt 132 then passes all 134 vendor library cases
+in 53.534 seconds, with unchanged source, actual group drain and no timeout or
+signals. The three new cases validate page-list shape without allocation, reject
+malformed selected ranges before either namespace is removed, and retain the
+original real extraction-close I/O failure with uncertain transaction/database
+custody. Selection and deferred reclaim still scale with historical backlog.
+Attempt 127 passes all 226 enabled store cases in 88.756 seconds, with both ignored
+cases still required separately. Its source inventory is unchanged, its owned
+process group drains, and no timeout or runner signal occurs.
+Attempt 128 compiles the lifecycle successor in 34.582 seconds with unchanged
+source, process drain and no timeout or signals. A 32-slot vote probe retains
+bounded request/return/drop observations and publishes them only if the original
+leader wait fails. It forwards original arguments and results, with unchanged
+transport TTL and election settings. The recovery fixture captures the original
+context before selecting the current leader for its original phase read. Runtime
+qualification and new-binary frame inspection are recorded separately below.
+
+Attempt 129 completes all fourteen original lifecycle cases in 400.04 seconds of
+test execution and 402.974 seconds overall: 12 pass and two fail. Both the full
+source inventory and the exact attempt-128 binary remain unchanged, the owned
+process group drains, and no outer timeout or runner signal occurs. There is no
+stack overflow. The earlier fresh-bootstrap failure is not reproduced; this does
+not establish its cause or a specific fix.
+
+The first failure is the initial next_recovery_dispatch observation at original
+common/recovery_control.rs line 253, after Start and duplicate/alias assertions.
+It reaches the node cached before those calls: healthy node 1, now Follower in
+term 5 with no current leader. The single read still returns Unavailable and the
+original assertion fails. The second failure is commit_next_intent at original
+line 1776, called by the confirming-intent phase at line 997 after resolving the
+activation winner. Its original single write returns UnknownOutcome at the
+ten-second caller deadline. No exact pending child stage or route metrics were
+captured at that failure; leadership movement, commit absence and physical-owner
+failure must not be inferred from that error alone. Target-only current-route
+and diagnostic successors preserve the original calls, identities and deadlines.
+
+Attempts 130 and 131 pass strict workspace Clippy and formatting in 128.564 and
+1.757 seconds. Each records unchanged source, actual owned-process drain and no
+timeout or signals. Existing dependency warnings remain visible in the lint log.
+
+Attempt 134 completes all 63 authority cases in 768.69 seconds of test execution
+and 770.377 seconds overall: 62 pass and one fails. Source remains unchanged, the
+owned process group drains, and no outer timeout or runner signal occurs. The
+activation-maintenance case fails at target_materialization_tests.rs line 1325,
+when journal.record_activation rechecks the original leader-bound activation
+proof after confirming the other voters. Its original linearizable barrier
+reports that it must forward without a known leader; the authority denial is
+wrapped as UnknownOutcome. The exact signed activation had already been obtained
+before those confirmations. A proposed selected-voter local confirmation uses
+that same signed fact and operation before projection, with its actual persisted
+application and authority checks; this successor is now applied. This is
+not a passing authority gate or an atomic diagnosis of the underlying route change.
+
+Attempts 140 and 141 pass both original tests using the changed activation helper.
+The new local proof asserts the same activation fact and selected observer, and
+is explicitly dropped before the original target drain. Original successful
+leader-proof signing, forged-proof rejection, other-voter confirmation, journal
+replay/reopen, corruption rejection and ordinary serving assertions remain. A
+later persisted applied-term change can still invalidate proof reuse; no new
+issuer winner or fresh authorization is introduced. Test/overall times are
+65.12/74.521 and 55.94/56.387 seconds. Both source inventories remain unchanged,
+both process groups drain, and neither runner sends signals or times out.
+
+Attempt 135 fails with E0716 before testing: the diagnostic borrows a temporary
+metrics receiver across its next statement. Its two-line correction binds the
+receiver inside the existing scalar-capture block, which ends before the original
+write await. Attempt 136 compiles in 3.186 seconds. Its exact binary
+`0f393accc494917f40fb35c4cee06bd88d20532bda6b9ca88eca06a74537dc2f`
+then runs both original uncertain-activation cases in 137. Both fail at the first
+reopen with the actual NodeFile exclusive lock returning operation-would-block.
+The route refresh had shadowed the original database Arc; the existing drop
+released only its replacement. Neither case reaches the original attempt-129
+failures or the new write diagnostic. The 22.661-second run retains unchanged
+source/binary and drains without outer timeout or signals.
+
+The correction explicitly retires the old routing Arc before binding its
+replacement. The fixture retains the actual databases during selection, and the
+replacement follows the original drop/close/reopen boundary. No lock retry or
+deadline extension is added. Attempt 138 compiles in 2.549 seconds; attempt 139
+passes both original cases in 109.67 seconds of test execution and 112.434 seconds
+overall against exact binary
+`4ad75c3d3586d0464e9326ff32b9f38aae1c84a991b16a52087ef80f02d498de`.
+Source and binary remain unchanged, the group drains, and no timeout or signals
+occur. The confirming-intent timeout does not recur, so its cause remains open.
+
+Separate attempt-136 static inspection covers ten changed or adjacent functions.
+Preparation, continuation and outer frames are 634,752, 681,504 and 110,368 bytes;
+both box adapters remain separate 64-byte calls. The intent poll and failure
+closure use 68,944 and 1,616 bytes. Named outer/adapter/continuation/intent/failure
+frames total 862,496 bytes, excluding generic adapters, runtime, formatting,
+filesystem and other callees. This is a component sum, not a whole-thread bound.
+The later alias-retirement binary is separately identified above and is not
+retroactively assigned the previous binary's frame evidence.
+
+The fourteen-file canonical format4/DATA400 patch is now applied. Attempt 142
+fails compilation in 6.582 seconds, with unchanged source, actual process drain,
+no outer timeout and no signals. Its eleven errors cover incomplete dirty-marker
+signature changes in unrelated user-table methods, an accidentally deleted public
+statistics method, and a missing test trait import; an unused test import also
+warns. No test executes. The fixed DATA prefix, direct prepared-system exclusion,
+older-format rejection and explicit close remain unqualified on this successor
+until the compile corrections and required fault/public integration gates pass.
+Attempt 143 then passes all 142 vendor library tests after restoring unrelated
+TableNamespace, statistics/debug and trait-import code. Its 42.052-second run
+(36.13 seconds testing) keeps source unchanged and drains process group 80225
+without runner signals or timeout. The library includes canonical rejection,
+actual extraction-close I/O custody, reader horizons, abort preservation and
+cold-reopen prefix tests. Two now-unused internal helpers produce warnings.
+Public integration/fault gates remain open; this scoped pass is not final acceptance.
+Attempt 144 adds bounded allocation-history removal before DATA reclamation and
+removes the two obsolete internal helpers. All 148 vendor library cases pass in
+36.99 test seconds (42.612 seconds total), with unchanged source and process group
+83974 drained without timeout or signals. Both prefix namespaces are validated
+before removal; retained eligible allocation debt blocks DATA free. The six added
+cases cover five cold-reopen batches, savepoint/reader horizons, exact restoration,
+malformed prefixes and original allocation-close I/O custody. This does not supply
+protected allocator capacity, whole-transaction memory bounds or complete
+independent multi-cause close/panic custody.
+Attempt 145 dispatches all ten public targets: basic111PASS, canonical4PASS/1FAIL,
+admitted-integrity5PASS, failed-integrity1PASS, corrupt-descent1PASS, crash1PASS,
+cursor0enabled, integration108PASS/1FAIL, multimap20PASS, concurrency4PASS. Total
+255PASS/2FAIL, 235.203 seconds, source unchanged and process group85407 drained
+without signals or timeout. The corruption fixture looks for serialized version3
+although the sole writer now uses4. Attempt146 keeps the original canonical
+assertion and records the actual returned error: noncanonical region-header count
+130, encountered before version decoding. Its original upstream header has the
+two-phase bit set. The 7.705-second diagnostic drains group395 without signals,
+timeout or source changes. Rejection is working; the expected error provenance
+in the fixture was wrong. Attempt147 passes both corrected original cases in
+8.768 seconds, retaining unchanged source and actual process-group939 drain,
+without timeout or signals. Attempt148 then passes all 296 cases with cursor/API5
+enabled: basic112, canonical5, admitted-integrity5, failed-integrity1,
+corrupt-descent1, crash1, cursor37, integration109, multimap21, concurrency4.
+The 277.981-second run keeps inventoried source unchanged and drains process
+group1001 without timeout or signals. This qualifies the affected public paths
+on this source; physical maintenance reserve and whole-process limits remain open.
+Attempt149 applies allocation-free checked encoded-length helpers to reservation
+planning and passes all 155 vendor library cases, including seven new geometry,
+overflow, exact-byte and allocation-count cases. The 52.601-second run
+(47.78testing) keeps source unchanged and drains group2392 with no timeout or
+signals. Original serializer/decoder bodies remain byte-identical. The existing
+per-region scalar Vec and actual serialization/COW buffers remain; this pass
+does not establish an allocation-free complete reservation or total RSS bound.
+Attempt 150 passes strict workspace Clippy in 121.918 seconds; three existing rmcp
+dependency dead-code warnings remain visible. Its source is unchanged and
+process group 4925 drains without timeout or signals. Attempt 151 applies the
+independently reviewed one-buffer allocator encoder and passes all 162 vendor
+library cases in 50.900 seconds (44.99 testing). Group 6794 drains, source remains
+unchanged and no timeout or signals occur. All seven new encoder cases pass:
+canonical byte equality, guarded output, unchanged short/long/invalid refusals,
+zero allocations during encoding and exactly one allocation for collected output.
+Old nested serializers remain only as test reference algorithms. The full
+prepared allocator copy, final output, COW workspace and protected maintenance
+reserve remain open; these results do not establish the total memory bound.
+Attempt 152 passes all 226 enabled store library cases in 171.622 seconds
+(126.72 testing); two existing cases remain ignored. Group 8965 drains.
+Attempt 153 fails in 11.943 seconds: API5 requires the ReadableTable trait at
+four fixture calls, and the stripe-count cast fails the crate's strict lint.
+Attempt 154 fixes those, then fails on 41 test-only lints in 5.194 seconds.
+Groups 9468 and 9706 drain. The second correction keeps exact pointer-identity
+assertions through explicit pointer construction, checks bounded fixture casts,
+retains failure matches with let-else and unwraps each history row in an explicit
+fold. No lint suppression, case removal, cap change or assertion weakening is
+introduced. Attempt 155 passes all-target/all-feature vendor Clippy in 10.502
+seconds and group 10423 drains.
+
+Attempt 156 integrates retained opening revision 3 and passes all 197 all-feature
+vendor library cases in 108.533 seconds (94.66 testing). Group 12025 drains.
+All eleven new actual-backend cases pass, covering preparation without I/O,
+initialization/callback unwinds, simultaneous original I/O and fence-hook panic,
+bootstrap body/commit/rollback failures, actual transaction disposal, preserved
+failure phases and close waiting for accepted readers/writers. Native fixtures
+retain uncertain resources in fixed process-static slots. The opening proxy keeps
+the same underlying admission object and catches its once-only failure-hook panic
+before the original I/O result can be lost. The repair callback directly requires
+Send + Sync. Complete production census/adoption and resource bounds remain open.
+Attempts 152–156 keep inventoried source unchanged and have no timeout or runner
+signals. Their raw evidence is included in the opening/namespace archive append.
+Attempt 157 applies the six-file canonical allocator-key patch composed with the
+retained opening owner. The obsolete variant, tags 0–2 decoding and tag-0 writer
+are removed. All 204 all-feature library cases pass in 101.610 seconds
+(89.79 testing); group 15787 drains. Seven new cases cover canonical syntax,
+clean/unclean and read-only unchanged-file rejection, malformed transaction
+stamps, integrity refusal, successful stale-snapshot repair and raw leaf/branch
+geometry/cycles. Full allocator payload/layout and complete traversal resource
+bounds remain open. Attempt 158 passes strict all-target/all-feature vendor
+Clippy in 12.196 seconds and group 16262 drains. Both runs keep source unchanged
+and have no timeout or runner signals.
+
+Attempt 159 passes strict all-target/all-feature workspace Clippy in 175.315
+seconds; three existing rmcp dependency warnings remain visible. Attempt 160
+runs both workspace and standalone vendor formatting checks in 2.229 seconds;
+both phases exit zero. Attempt 161 passes the original ten public vendor targets
+with experimental cursor/API5 enabled: basic 112, canonical format 5, admitted
+integrity 5, failed integrity 1, corrupt descent 1, crash consistency 1, cursor 37,
+integration 109, multimap 21 and concurrency 4, totaling 296 in 346.368 seconds.
+Groups 16859, 17763 and 17971 drain. All three runs preserve inventoried source
+and have no timeout or runner signals. They do not qualify unfinished production
+census/adoption, allocator workspace, fault/performance or release gates.
+
+Attempt 162 applies the five-file payload validation package, patch SHA-256
+`6b2e9c49d20f1fee3d345c764a9566bd929eeee30ea9c9dbc3d6742edf414235`,
+after exact-base and source-derived root review. All 211 all-feature vendor unit
+cases pass in 136.457 seconds (125.54 testing). All-order producer allocation,
+free, shrink and extension fixtures substantiate canonical tail/summary checks;
+retained tracker capacity and current-versus-stale contraction cases also pass.
+The malformed native case exercises 16 clean/unclean fixtures through consuming,
+read-only and retained openings without repair callbacks or changed file bytes.
+The raw branch case now rejects canonical separators that misroute an equal key.
+Attempt 163 passes strict vendor Clippy in 11.983 seconds. Its inherited scope
+label mentions the earlier key prerequisite; its exact source inventory includes
+the applied payload successor. Attempt 164 passes all 296 tests in the original
+ten public targets with cursor/API5 in 341.737 seconds (253.60 for integration).
+All three runs have unchanged inventoried source, no timeout/signals and actual
+drain of groups 24263, 26707 and 27344. Their raw files are included in the payload
+append. Reachable-root allocation correspondence, tracker false-full
+consistency, PageNumber canonicalization, full traversal/decoder memory, protected
+maintenance and total native memory/workspace remain unqualified.
+
+Attempt 165 integrates only the reviewed vendor inventory/provenance successor
+and immutable supporting evidence. The new policy SHA-256 is
+`390a5dc4fe90d800fb4255d9f77eaf5f816a2671635a1f68c2445f1f68e87fbd`;
+new provenance is
+`2dace2b24932576a9c6a7ee061041ba836ec4aeaff1fc000b24a8e808ef65ed7`.
+Root review verifies 109 actual files, both original removals and 134 copied
+historical/gate bindings. Proposal status remains immutable; its later adoption
+decision is recorded separately. The exact unchanged verifier had already passed
+its source checks on the frozen target copy and refused stale provenance, a
+missing payload file and an altered mode. The actual root run passes all 18
+existing synthetic tests and all seven source/Cargo package selections in 1.184
+seconds using Python 3.12.14. Its expanded before/after inventory includes vendor
+metadata, reviewed provenance and verifier source. Group 38305 drains with no
+timeout/signals and unchanged inputs. Other five vendor roots remain unchanged;
+only the vendor README support record changes alongside redb. This is exact
+current-source dependency verification, not final release acceptance.
+
+The unapplied managed namespace package preserves its parser failure, compile
+failure and native 43-pass/four-failure trial. Correcting Darwin's retained inode
+link-count assumption and the fixture's absolute ancestor depth yields native03:
+47 pass, five inherited device cases filtered, 1.29 seconds testing, all five
+groups drained and 1,729 inputs unchanged. Root review then identifies new generic
+parent acquisitions outside PendingDirectory; the separate four-file generic
+correction routes them through prepublished custody and removes its extra
+verification walk. Its native01 passes all prior 47 cases plus two new cases in
+2.29 seconds, five filtered, with 1,731 inputs and binaries unchanged; groups
+14226, 14227, 14239, 14257 and 14261 drain. The scoped review approves that
+correction while leaving ordinary root/Drop close contracts, aggregate admission,
+the 44 caller sites, physical filesystem bounds and whole-process memory open.
+
+Attempt 124 passes the formerly overflowing expired-completion case and five
+other recovery cases. It fails a fresh control fixture's initial ten-second
+leader wait: node 1 is Candidate at term 50, while both peers have persisted its
+term-50 vote but remain Learners without initial logs. All three report healthy
+running state. This does not establish whether vote responses were received in
+time. The other failure occurs during the uncertain-activation case's preparation:
+the original phase read is sent to node 1 after it has become a healthy term-3
+Follower with node 3 as current leader. It fails before that test's activation
+fault. No native stack overflow occurs in this successor. The full failed cohort,
+including both original error paths, is preserved; it is not a passing lifecycle
+gate. Its group drains in 366.676 seconds with unchanged inventoried source, no
+outer timeout and no runner signals.
+
+The exact stop-drain fixture assertions are applied only after that cohort drains.
+Their four negative observations now require the actual incomplete-drain error;
+all six observations require the original term/start/last witness. They preserve
+the API requests, contexts, clocks, late Conflict and deadlines. Failure-only
+diagnostics retain the actual result and inspect per-member metrics/access state.
+This strengthens the fixture's proof without claiming to fix its route failure.
+Attempt 118 passes strict workspace lint on these applied assertions in 118.734
+seconds, with unchanged source and actual group drain. The three existing rmcp
+dependency warnings remain visible in its raw log.
+
+Attempts 119, 122 and 123 finish in 1.711, 107.300 and 57.206 seconds,
+respectively. All record unchanged inventoried source, actual process-group
+drain, no outer timeout and no runner signals. The store result retains both
+ignored cases as unqualified. Compilation produces a new lifecycle binary for
+the separate static-frame and runtime checks; it does not settle attempt 117.
+
+Attempt 121 passes all eleven retained transaction tests, five retained database
+close tests and eight new cache admission/selection regressions. Its owned group
+drained in 49.305 seconds with unchanged inventoried source, no timeout and no
+runner signals. Disposal requires the matching borrowed retained database and
+keeps original terminal/rollback observations after the actual transaction is
+retired. Cache refusal preserves selected-page rollback, admitted file growth,
+original I/O and uncertain abort custody. The mixed borrowed/second-chance
+regression requires an actual eviction before a new slot is admitted. Both
+successful database-close phases are asserted independently. This is a vendor
+default-feature development gate; production aggregate adoption remains open.
+
+The rejected first cache revision, independently reviewed successor and required
+clean-close assertion correction are all preserved. The fixed cardinality permits
+a checked collection-metadata component; that calculation excludes payloads,
+retained guards, transaction collections and allocator/RSS behavior. It is not a
+total workspace reservation. The source application is recorded separately in
+`121-cache-applied.json`; disposal and recovery handoff have their own receipts.
+
+Attempt 120 did not reproduce the native stack overflow. The exact prior binary's
+test passed in 101.81 seconds under LLDB; the subsequent backtrace command failed
+because the inferior had already exited. The debugger therefore exited 1 after
+107.071 seconds. Its later process-kill command was not executed. LLDB created
+separate debugger, debugserver and inferior process groups; the independent
+terminal census confirms all three were absent. The late descendant watcher
+itself failed its initial assertion after those processes had exited, sent no
+signals and supplies no continuous-monitoring evidence.
+
+Static disassembly of that same hashed binary shows a 1,349,120-byte recovery
+completion poll frame calling a 312,256-byte expired-resolution poll frame under
+a 71,600-byte outer frame. This establishes stack pressure, not the exact crash
+instruction. The applied handoff returns the preparation poll frame before
+polling expiry resolution and preserves the same live fixture, database, request,
+keys, assertions and deadlines. No stack-size increase was made.
+
+The new attempt-123 binary has SHA-256
+`c8e9e7dc2ac7b878f9462a4b683469119fa78154682f8c131f6065f17f2cf85f`.
+Its static disassembly shows preparation at 623,632 bytes, continuation at
+681,136, outer orchestration at 109,760 and unchanged expiry at 312,256. The
+outer now polls those phases separately. Outer plus expiry and its 64-byte Box
+adapter total 422,080 bytes; the old three named frames totaled 1,732,976 bytes
+before adapters. These are measured frame compositions, not a whole-thread stack
+bound or runtime pass. Exact prologues, call edges and unchanged before/after
+binary/source hashes are in `123-lifecycle-static-stack/`.
+
+The frozen `directory-parent-transitions/` candidate is archived **unapplied and
+not merge-ready**. Its native module probe and 17 mocked Python checks pass, but
+complete Rust callers, a usable whole-server 2 GiB configuration, raw directory
+operations and supported-filesystem pre-effect allocation bounds remain open.
+Its four-times table calculation is an estimate, not a verified bound on pinned
+hashbrown growth and allocation overlap; the numeric calculation must not be
+promoted into that claim. Source, failed attempts and receipts are preserved,
+with 949 native probe/dependency binaries retained only under target and listed
+by exact digest.
+
+The separate frozen `directory-cursor/` successor is also **unapplied and not
+merge-ready**. Its eleven cursor tests pass in native attempt 06, with unchanged
+source and exact before/after executable hash; all four command groups drain.
+The cursor retains its counted directory owner through actual stream close,
+checks namespace generation and exact child bindings, and preserves original
+close failure without replay. It is a standalone module probe, with omitted
+unrelated test modules and no integrated backup caller execution. Managed child
+mkdir/rmdir, qualified physical growth bounds, fixed map backing and whole-server
+memory fit remain open. Earlier compile failures and attempt 05's missing
+executable-hash evidence are preserved, not retroactively upgraded.
+
+Further source review identifies an inherited restart-limit mismatch: file
+creation checks the file count against `max_census_entries`, while census consumes
+that limit for every native directory entry, including dot entries and directories.
+The retained ledger intentionally funds up to `2N + R` entries, but a replacement
+census permits only `N + R` distinct entries and at most `N` raw traversal steps.
+An admitted runtime namespace can therefore exceed what the same configuration
+can recount. Fixed map backing does not resolve this semantic gap. Managed
+namespace adoption must establish bounded, restartable census progress and honest
+policy limits without concealing the problem by lowering file capacity or raising
+the existing resource budget.
+
+The frozen fixed-map successor passes 25 standalone native cases, including real
+last-Weak-allocation retirement. It remains unapplied. Two inode banks and two
+live-owner banks are preallocated after admission, and partial candidates reset
+before lock release on error or unwind. Pinned table geometry and requested
+allocations establish a 1,331,916,340-byte metadata-owner charge; they do not prove
+whole-server RSS or a usable 2 GiB configuration. The inherited policy mismatch
+is reproduced separately with N=8: all seven managed file creations succeed, but
+reconciliation fails its census work limit and retains the prior charge/entries.
+That diagnostic intentionally exits with failure. Required separate file,
+subdirectory and per-step limits are being implemented with retained resumable
+census custody; the original numeric file capacity is preserved.
+
+The page-list/cursor append verifies all 2,158 prior entries and adds 506, for
+2,664 verified raw entries. Seven selected native binaries remain under target
+with exact omission hashes; 416 external dependency/toolchain inventory entries
+are preserved without rereading those external bytes. Root independently verified
+the complete resulting archive. Later terminal attempts append new receipts
+without changing any existing evidence.
+
+The subsequent static-frame append preserves those entries and adds 94, for
+2,758 verified entries. The exact attempt-128 binary remains
+`631110f244e868c72e9966ec5af1df0d484b63bb8c26ffcde3d8c00a730ec098`.
+Its separated outer/expiry/adapter frames total 422,464 bytes. Probe construction
+has 86,144 bytes across four named helper frames; it does not reconstruct the
+32-slot array during RPC sends. These are selected static frame compositions,
+not whole-thread bounds. Attempt 129 separately verifies that exact binary before
+and after running the original fourteen-case lifecycle target.
+The terminal append for attempts 129–131 preserves every earlier archive entry
+and adds sixteen, bringing the verified raw manifest to 2,774 entries. Their
+runtime failures remain preserved alongside the successful lint and format checks.
+The fixed-bank append preserves all 2,774 entries and adds 417, for 3,191 verified
+raw entries, including terminal attempt 134. Five selected native binaries remain
+under target with exact omission hashes; external dependency inventories are
+preserved without rereading external bytes. The lifecycle/reclamation append
+preserves all 3,191 entries and adds 154, for **3,345 verified raw entries**. It
+includes terminal attempts 135–141, both failed attempts, the exact applied
+corrections, selected static frame evidence and canonical reclamation reviews.
+A second complete verification adds nothing. The raw manifest SHA-256 is
+`6878c076c688dcb6db6e2ede0fef5fc7c3b257944e20eb3b32bbbf532c1d95c4`.
+The canonical/census append then preserves all 3,345 entries and adds634, for
+**3,979 verified raw entries**. It includes terminal142–147, all failed bytes,
+compile/public fixture corrections, bounded allocation purge and reviews, and the
+frozen census candidate/native evidence. A second complete verification adds
+nothing. Its raw manifest SHA-256 is
+`e0d48fe552dc7cae13be01b81501cf83306381c995c94321006ac72f508b9646`.
+Four local native binaries (8,522,256 bytes) remain omitted with exact hashes;
+416 supplied external binary fingerprints are preserved without rereading their
+paths. The later148 run and unfinished candidates were excluded from that append.
+The allocator append preserves all 3,979 entries and adds 62, for **4,041 verified
+raw entries**. It contains terminal 148–151, both applied allocator packages,
+their reviews and the source-pinned protected-maintenance design. A second full
+verification adds nothing. Its raw manifest SHA-256 is
+`14a442c9a9e80e31d3e8bbb9cc4338537f83805df18902720d2abe99a309a997`.
+This append copies no native binaries or external dependency bytes. The design
+is explicitly unimplemented; unfinished namespace and opening successors remain
+outside this append.
+
+The opening/namespace append preserves all 4,041 entries and adds 900, for
+**4,941 verified raw entries**. It includes terminal 152–161, failures 153/154,
+the two vendor lint corrections, retained opening revisions and reviews,
+canonical allocator-key packages/review, and the unapplied managed namespace
+packages with their failed and successful native evidence. Six local native
+binaries totaling 13,493,328 bytes are omitted with exact hashes; 416 external
+binary inventory entries remain fingerprints only. A second complete verification
+adds nothing. The raw manifest SHA-256 is
+`03010867d2f05775287ece46fbc3688ec8f231f0a429f853fdf53e81461616fe`.
+The initial archive-generator failure selected a package directory in a run-file
+glob; it wrote no archive entries. Its script and diagnostic are preserved with
+the corrected generator. Unfinished storage census, aggregate/session adoption
+and payload-validation candidates are excluded.
+
+The allocator payload append preserves all 4,941 entries and adds 39, for
+**4,980 verified raw entries**. It includes the frozen payload package, root
+review, exact application receipt and terminal runs 162–164. A second complete
+verification adds nothing. No native binary or external dependency bytes are
+copied. The raw manifest SHA-256 is
+`2470453a84a8b6f20efeef67eb750c60e3a1cd321f8df7ebd5036db0bb5aa827`.
+The unfinished storage census, backup-session admission and dependency provenance
+successors remain outside this append.
+
+The provenance append preserves all 4,980 entries and adds 180, for **5,160
+verified raw entries**. It includes the frozen provenance/policy proposal,
+preparation and negative-check results, root adoption review, prior drift reports
+and terminal 165. Target source/verification scratch copies and unfinished census
+or namespace successors are excluded. No native or external dependency bytes are
+copied. A second full verification adds nothing. The raw manifest SHA-256 is
+`c5920b77dfc114a8047329ca47b3d47829a1d1dc6e355663acd9fd0816f03c68`.
+
+The census/session append preserves all 5,160 entries and adds 1,229, for
+**6,389 verified raw entries**. Its eleven frozen packages include original and
+corrected storage-census candidates, backup namespace/session candidates, their
+scoped independent/root reviews and the source-pinned canonical PageNumber audit.
+Six completed native attempts retain their terminal/drain evidence: original
+census 8-pass then 4-pass/2-fail, the stale-executable qualification failure,
+fresh-candidate census/provider 33-pass, namespace compile failure, namespace
+65-pass and corrected claim-path 67-pass. Preparation, launcher and test-name
+parser failures remain alongside their distinct successors. The successful
+namespace harness excludes three authenticated GC methods and five device tests;
+full workspace and production integration are not inferred from it.
+
+The append verifies 1,233 selected input files. Eight native files totaling
+355,202,784 bytes are hashed and omitted; 416 supplied external inventory
+fingerprints are preserved without opening their referenced paths. Cargo
+assemblies, dependency-cache directories and unfinished combined/custody/decoder
+successors are excluded. The append receipt is
+`storage-census-sessions-append-receipts/566c45aee7bec710011f.json`; the raw manifest
+SHA-256 is `0474a63b10ff4129af22e13a5d61e77008373cc419bd6dabd7f3656f30c5e529`.
+
+The next append freezes the original and five revised combined storage/namespace
+packages, their original failure and success transcripts, four file-custody
+candidates, and scoped independent reviews. It preserves all 6,389 prior entries
+and adds 2,804, for **9,193 verified raw entries**. The 2,808 selected inputs
+match their pinned hashes before and after copying. Eight local native executable
+files totaling 176,603,688 bytes are hashed but omitted; Cargo assemblies and
+caches are excluded. The append receipt is
+`storage-composition-append-receipts/772829aaa6b43c0697cd.json`, and the new
+raw-manifest SHA-256 is
+`dd1b5e7e971479dedd916142f8ec832130b9548559525247fefa3b2daf26f6ff`.
+The second complete verification added zero entries. These candidate receipts
+do not establish production integration or release qualification.
+
+Attempts 114–117 preserve unchanged inventoried source and actual process-group
+drain. Their outer runners sent no signals and did not time out. Attempt 117's
+test process itself aborted on stack overflow; its empty runner-signals list is
+not evidence of a normal child exit. Elapsed times are 107.215, 96.164, 68.889 and
+60.315 seconds. These test workloads ran sequentially within this task.
+
+Attempt 114 passes all three new borrowed-spool cases within the full enabled
+store cohort. Actual final sync precedes injected uncertain return/panic; the
+original cause moves once into the real retained Database observation while the
+same spool, descriptor and charge remain. The allocation test pauses actual
+key/plaintext/ciphertext deallocation separately and proves competing disk growth
+cannot reuse credit until backing retirement, with zero allocations on successful
+first/repeated close. Production NodeDatabase and scratch Backend migration are
+still open. Attempt 115 passes both actual serving-expiry cases and the exact
+Store/Write negative classifier after corrected final cleanup.
+
+Attempt 116's signer-history read passes. The stopped-epoch case fails earlier
+at `issuer_tests.rs:284`, during stop verification after the fixture clock reaches
+2000: the actual quorum path reports forwarding to no current leader. The later
+mutation never executes, so this run does not establish its prior generic route
+failure's cause. A prepared bounded-resolution candidate remains unapplied and
+conditional on further evidence. This compilation also exposes an invalid
+`test-utils` cfg on the new authority diagnostic; that crate supports test cfg
+only; the applied successor uses `cfg(test)`. Attempt 117 records a native stack
+overflow; attempt 120 and the static frame evidence above distinguish what the
+diagnostic did and did not establish. Neither original failure is waived.
+
+Attempts 107–113 all record unchanged inventoried workspace/vendor Rust and
+manifests, actual process-group drain, and no outer timeout or termination
+signals. Their elapsed times are 39.298, 683.523, 898.231, 278.537, 324.879,
+1.728 and 210.517 seconds. Concurrent compilation, Cargo locks and an unrelated
+host build were observed; these are development checks, not isolated performance
+measurements. The archive verifies 1,418 immutable raw entries at this checkpoint.
+
+Attempt 107 passes all eight retained transaction cases, all five actual retained
+database-close cases, the six-method original-I/O matrix, and bounded LRU queue
+tests. Returned shutdown and backend-close errors remain distinct; uncertainty
+retains the actual database and file lock. Production NodeDatabase/transaction
+adoption, resident workspace bounds and borrowed scratch-backend closure remain
+open at this checkpoint. This vendor run uses its default feature set.
+
+Attempt 108 passes all 17 new snapshot-work ownership tests, including canceled
+waiters, original panic/output custody, executor reentry and actual allocation
+retirement. Its only enabled failure is the backup serving-expiry test's ordinary
+cleanup path: actual shutdown is Complete with the original expired-access
+Store/Write errors from the core and state-machine worker. The fixture still
+expects a clean result there. The prior 512-by-256 restore deadline failure remains
+excluded and required; the 100,000-row permanent-history case remains ignored.
+The snapshot primitive still lacks production adapters, preparation fencing,
+shutdown integration and a complete admitted workspace bound.
+
+Attempt 109 passes the materialization/restart and precise replication-close
+cases, but the stopped-epoch mutation again returns UnknownOutcome. Its generic
+route diagnostic alone does not distinguish leader/term changes from a Raft
+running-state failure. A signer-history read also observes Unavailable after an
+expired new effect. Attempt 113's journal/ambiguous-control-commit case passes;
+its expired-completion case times out in the original ten-second leader helper.
+The exact call site and three replicas' metrics were not captured in that run.
+These failures remain preserved; a passing successor cannot explain an earlier
+failure without its own causal evidence.
+
+The next pending source adds complete current Raft metrics to test diagnostics,
+uses the current leader for the exact historical signer read, and routes the
+successful controlled serving-expiry path through typed expired-owner cleanup.
+That cleanup requires Complete, original shared issue identity, exact Store/Write
+causes and absence of unrelated task failures. It also adds borrowed spool-close
+custody and three actual-resource tests; production backend adoption remains
+separate. `114-corrections-applied.json` and the spool module-order receipt bind
+these applications. Their runtime results are not claimed here.
+
+Attempt 103 completes in 816.445 seconds: history passes 5/5, lifecycle 12/14,
+schema activation 12 selected cases and staged transactions 11/11. Both real
+crash tests, exact snapshot quota comparisons and retained-generation reopen
+now pass in their applicable targets. Two lifecycle failures remain: a later
+fresh phase-read observes unavailable quorum and a completion-request preparation
+observes UnknownOutcome. No retries, outcome substitutions or deadline changes
+have been introduced to hide them. The unchanged schema restore's prior 60-second
+failure remains excluded and required pending bounded staging implementation.
+
+Attempt 105 completes in 337.686 seconds with both actual materialization cases
+and both exact close classifiers passing. The stopped-epoch mutation still fails;
+its original-cause diagnostic identifies a changed proposal leader. A reviewed
+fixture successor captures its original authorization context, selects the current
+leader with the existing bounded helper and submits the mutation once, retaining
+the original Conflict assertion. Both 103 and 105 preserve unchanged inventoried
+source, actual process-group drain and no outer timeout or termination signals.
+
+Attempts 102, 104 and 106 preserve unchanged inventoried workspace/vendor Rust and
+manifests, actual process-group drain and no timeout or termination signals.
+Their elapsed times are 17.575, 172.459 and 136.595 seconds; compilation overlapped
+and waited on Cargo locks, so these are development results, not isolated
+performance measurements. Attempt 102 exposes two fixture reopen calls using
+4096-byte defaults against their actual 512-byte databases and a production
+backend path that replaces the original I/O error with OwnerFailed. All three
+failures remain preserved; the original diagnostic must survive while later
+access stays fenced. The retained terminal API has not been adopted by production
+callers and does not establish transaction-memory or database-close guarantees.
+
+Attempt 104 includes the real canonical completion-history record regression:
+kind 23 contributes to resident materialization and snapshot quota, and kind 21
+terminal rows still count toward that quota. The renamed fixture helper
+authenticates complete framing and applies this existing accounting contract.
+Attempt 106 exercises all three new opaque lease tests through the actual store
+allocator. Pausing System.dealloc prevents byte/slot reuse, token-destructor
+unwind retains one-time retirement, and the provider's existing allocation
+allowance/layout remain unchanged. Native debug/optimized extracted tests and
+the failing counterfactual are separately preserved. Their eleven development
+executables remain under target; this documentation archive retains exact source,
+receipts and hashes, with explicit binary omissions recorded in
+`terminal-successors-probe-binary-omissions.json`.
+
+`102-corrections-applied.json` and `102-reviewed-successors-applied.json` bind the
+reviewed source applications to exact before/after hashes. They include explicit
+recovery-topology CAS/leader selection, audit fixture accounting, stopped offline
+backup mutation, retained-generation release, canonical snapshot accounting,
+opaque installed leases and narrowly typed replication-close assertions.
+Snapshot work revision 5 was applied after attempts 102–106 drained, together
+with original-I/O preservation, bounded cache invalidation and the stopped-epoch
+fixture correction; `107-prerequisites-applied.json` records exact hashes.
+The new source remains uncompiled at this application checkpoint. Its transfer
+section runs pending executor callbacks before removing Output and performs no
+callback after taking it. This corrects the preserved revision-4 panic/custody
+finding; runtime tests and production integration remain required.
+
+Attempts 96–101 preserve unchanged inventoried Rust/manifests, actual
+process-group drain, no timeout and no termination signals. Attempt 96 completes
+in 176.234 seconds: three previously failing cases pass in this smaller cohort,
+but this does not explain the preceding full-cohort availability failures. The
+stopped-epoch case progresses to a later assertion and observes UnknownOutcome
+instead of Conflict. Attempt 97 completes in 372.603 seconds: two original
+materialization/recovery cases and the negative classifier pass, while activation
+projection returns UnknownOutcome and another close retains the exact sealed
+Store/Write error from a replication stream, rather than the state-machine
+worker. Further original-cause diagnostics and exact child checks are required.
+
+Attempt 98 completes in 498.538 seconds. Contracts pass 23/23, guarded staging
+passes 11/11, schema activation passes 11/13 and staged transactions pass 5/11.
+Both real crash/recovery tests now pass. The schema target retains its original
+60-second restore timeout and retained-generation reopen failure. The new helper
+incorrectly excluded permanent terminal rows from snapshot quota comparisons;
+six staged cases expose that error. This correction attempt remains failed.
+Two native observations of the actual failing schema restore capture independent
+snapshot validation creating an encrypted scratch index and then performing
+individual durable index inserts. These samples establish real work, not an
+isolated performance measurement or the complete distribution of timeout cost.
+The unchanged restore case remains required and should not be retried again
+until its implementation changes. Attempts 100 and 101 take 50.081 and 1.810
+seconds respectively; the existing three vendored rmcp warnings remain visible.
+
+Attempt 88 completes in 1,186.851 seconds with unchanged inventoried Rust/manifests,
+actual process-group drain and no timeout or termination signals. Its 22 failures
+remain preserved: two contract fixtures, two guarded staging fixtures, three
+history cases, five lifecycle cases, eight schema activation cases and two staged
+transaction cases. Review identified obsolete resident/full-stream comparisons,
+harness files inside the installed census, stale control topology/audit setup and
+retained generation ownership. The schema restore's original 60-second backup
+verification deadline expires and remains unresolved. Its native stack sample
+captures the subsequent 100,001-entry schema fixture's live encoding work; it
+does not identify the phase of the preceding restore timeout.
+
+After attempt 88 drained, six reviewed correction packages were applied with
+exact before/after hashes in `96-corrections-applied.json`. They retain original
+limits, workloads and deadlines, authenticate complete snapshot framing before
+comparing resident bytes, inspect actual permanent terminal point rows, and keep
+crash harness markers outside the private installation. Authority corrections
+preserve immediate production fencing and inspect exact original typed shutdown
+failures; temporary test-only diagnostics expose underlying unavailable causes.
+Attempt 99 validates the cancellation backing retirement change with 34 passes
+in 68.984 seconds, unchanged inventoried source and actual process-group drain,
+without timeout or signals. Other correction successors remain separate runs.
+
+`assembly-python-02` passes **105 tests** through complete Python tooling
+discovery in 12.018 seconds of owned process time. The inventoried scripts,
+assembly documentation and workflow remain unchanged; the original process group
+drains and an independent census finds no remaining member. The applied
+`repeatable-assembly-v3` package adds mandatory native input declarations, two
+owned assembly invocations and semantic verification. Its first reviewed
+documentation invocation was corrected to execute from the actual frozen source.
+The domain registry remains empty. Native probes, a complete candidate pair,
+platform dependency declarations and the full native acceptance path are unrun;
+synthetic-process tests do not qualify them.
+
+Attempt 87 completes in 780.653 seconds with unchanged inventoried Rust/manifests,
+actual process-group drain and no timeout or termination signals. All 12 backup
+checkpoint tests pass, alongside two admission, three clock, one response-release
+and ten retirement cases. A native stack sample during the long historical backup
+case observes actual encrypted point-row redb commit/write/sync work; the case
+subsequently passes. Its original sample and observation receipt are retained.
+This is scoped integration validation, not an isolated performance measurement
+or final release qualification. Attempt 88 covers the other integration targets
+separately and fails as recorded above.
+
+Attempt 94 completes in 638.143 seconds with unchanged inventoried Rust/manifests,
+actual process-group drain, no timeout and no termination signal. It passes all
+five previously failing fixtures, both maintenance guards, and the construction,
+snapshot and journal foreign-core checks. The 512-by-256 restore case remains
+explicitly excluded and required; the 100,000-row permanent capacity test remains
+ignored and unrun. Expected injected panic diagnostics in the uncaptured log
+belong to passing ownership tests, not hidden failures. Integration targets are
+separate attempts 87 and 88 and are not covered by this library result.
+
+Attempts 91, 92, 93 and 95 preserve unchanged inventoried Rust/manifests,
+actual process-group drain and no timeout or termination signal. Their elapsed
+times are respectively 815.381, 122.372, 144.801 and 1.866 seconds. Attempt 91
+validates the explicit response-fence fix but fails eight other authority cases.
+Four expose `Unavailable` during signer/restart/stop operations; three expose
+original OpenRaft storage errors during target close, and one times out waiting
+for maintained membership/suspension. Their original panic locations and errors
+are retained. No broader authority pass is claimed. Attempt 92 retains three
+vendored rmcp dependency warnings; the strict workspace command exits zero.
+
+The separately named `assembly-metadata-python-01` run passes **50 tests** across
+metadata custody, release-gate ownership, package provenance and acceptance
+counterexamples. Its actual process group drains, no timeout/signals occur, and
+all eight inventoried Python source/test files remain unchanged. The applied
+five-file `assembly-metadata-custody` patch owns Cargo metadata dispatch and
+binds its original executable, frozen source, separate outputs and actual drain
+before parsing. These synthetic-process tests are a packaging prerequisite;
+they do not execute native Cargo/two complete assemblies or register a final
+acceptance domain. Repeatable assembly remains open.
+
+Attempts 84, 85, 86, 89 and 90 all preserve unchanged inventoried Rust/manifests
+and actual process-group drain. Attempt 84 timed out, sent SIGTERM and recorded
+exit -15; its partial log is not a completed suite. The other four recorded no
+timeout or termination signal. Attempts overlap as recorded by their runners and
+the explicit observation receipts; these are development checks, not isolated
+host resource measurements. Attempt 90 binds its original binary SHA-256 and
+does not erase or explain the coverage failure in attempt 84.
+
+Attempt 89 passes the previously unselected construction case and the new
+snapshot and journal exact-core regressions. Two new maintenance tests failed
+before exercising their guards because their policies lacked an administrator.
+The other failures are exact fixture mismatches: bootstrap and audit shutdown
+omitted 29,350,630 bytes of retained installed metadata, and the archive restart
+assertion enumerated the obsolete fixture directory. Corrections preserve the
+original workloads, quotas, resource deltas, object counts and deadlines. The
+512-by-256 restore case remains separately failed and required; the ignored
+permanent-capacity case remains unrun.
+
+The queued-activation fixture retained a response fence through shutdown because
+its wildcard match did not consume that field. The successor explicitly drops
+the fence before closing. A standalone language probe and native stall sample
+support that diagnosis; only a completed successor can validate the correction.
+The census correction removes the needless borrow reported by attempt 85.
+
+After both full suites drained, a separate storage correction keeps each file's
+handle and metadata allowance until both descriptors, path/native-mutex backing,
+and its exact weak registration allocation have retired. It also keeps abandoned
+preparation resources under serialization. Five new regressions cover concurrent
+final release, reclaim and abandoned preparation/publication; the original
+zero-allocation assertions and operating caps remain unchanged. Application
+receipts bind these changes separately from the failed predecessors. Attempt 93
+passes all 220 enabled store cases and attempt 94 passes the 215 selected engine
+library cases. Engine integrations remain in progress, and authority's eight
+failures remain unresolved.
+
+Attempts 77–83 use base `600c0ca2b2c4c22b89b44ccd932eca02272c70f1`
+with the separately recorded pending mandatory memory stack. All seven terminal
+receipts record unchanged inventoried workspace/vendor Rust and manifests,
+actual process-group drain, no timeout and no termination signals. This inventory
+does not cover all documentation or qualify binaries/native resource limits.
+Attempt 81's filename-based `database_construction_tests` selector matches no
+test module; its 50 actual tests do not include the new construction regression.
+That case remains required in the broader successor.
+Attempt 82 adds all three shared-cluster memory cases to the prior 46-case
+server cohort. Its macOS test-binary link reports a large unwind-section warning;
+the test process completes normally. The warning remains in the original log.
+Attempt 83 preserves the original 72 selected library and 18 integration cases;
+the separately failed custody-capacity workload remains excluded and required.
+
+After attempt 83 drained, review corrections added early exact-core checks to
+the public snapshot paths, target-journal create/reopen and audit-maintenance
+installation. `83-core-guards-applied.json` binds both reviewed patches and six
+resulting source files. The four new regressions check foreign equal-policy
+cores, unchanged charges/physical state, missing maintenance storage and healthy
+same-core operation. This application record precedes their validation; it does
+not extend the scope of attempts 77–83.
+
+`installed-memory-combined.patch` has SHA-256
+`be2dad44d5a0c261a6c36023af37780c91effa65723f7bd3e0896de0cc2dbddb`.
+Its manifest binds all 13 ordered component patches and 178 affected files;
+`installed-memory-applied.json` records application before validation. The
+unchanged preparation manifests retain their original uncompiled status.
+`77-corrections-applied.json` binds the subsequent corrections separately:
+missing caller arguments, one unused reexport, stable scratch fixture reuse,
+actual retirement snapshot owners and a duplicate publication-state lock. The
+lock correction keeps one guard across preparation and physical validation.
+The superseded combined draft and fixed-memory fixture correction remain
+preserved; their preparation records are not passing test evidence.
+
+The stack requires the installed core before production disk creation, retains
+real persistent/scratch/device metadata leases, rejects foreign-core composition
+before mutation and replaces all supported constructors directly. Installed
+scratch registries retain their memory charges for their actual lifetime.
+Fixture planning preserves original payload, operation and RSS limits; it adds
+only the newly required metadata and lease fees. New installation policy is
+explicit, with no compatibility default or production contention retry.
+The full store successor passes the new metadata/identity/publication cases.
+The new backend fixture retains an actual admitted physical owner even when its
+synthetic backend has no pathname; the separate pure-redb fault fixture keeps
+its distinct explicit purpose. Directory accounting, retained filesystem/snapshot
+children, startup resource adapters, full callers and native qualification remain
+open. Earlier failures and ignored external/capacity cases are not waived.
 
 The attempts with original terminal records (01–28, 30, 32–35 and 37–47) completed
 within their original deadlines, sent no termination signals, and drained their

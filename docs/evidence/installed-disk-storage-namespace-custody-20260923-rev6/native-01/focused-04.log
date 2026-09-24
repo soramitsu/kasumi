@@ -1,0 +1,86 @@
+
+running 1 test
+test node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages ... 
+thread 'node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages' (7129979) panicked at crates/kasumi-store/src/node_disk/file.rs:2377:18:
+release file retirement fixture: Disconnected
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: core::result::unwrap_failed
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1867:5
+   3: <core::result::Result<(), std::sync::mpsc::RecvTimeoutError>>::expect
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1185:23
+   4: <kasumi_store::node_disk::file::FileOwner>::close_checkpoint
+             at ./crates/kasumi-store/src/node_disk/file.rs:2377:18
+   5: <kasumi_store::node_disk::file::FileOwner>::retire_resources
+             at ./crates/kasumi-store/src/node_disk/file.rs:2320:14
+   6: <kasumi_store::node_disk::file::NodeDiskFile>::close
+             at ./crates/kasumi-store/src/node_disk/file.rs:1706:39
+   7: kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#1}
+             at ./crates/kasumi-store/src/node_disk/tests.rs:3072:79
+   8: <kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#1} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+   9: <core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#1}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  10: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#1}>, core::result::Result<(), std::io::error::Error>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  11: ___rust_try
+  12: std::panicking::catch_unwind::<core::result::Result<(), std::io::error::Error>, core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#1}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  13: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#1}>, core::result::Result<(), std::io::error::Error>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  14: kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages
+             at ./crates/kasumi-store/src/node_disk/tests.rs:3072:17
+  15: kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#0}
+             at ./crates/kasumi-store/src/node_disk/tests.rs:3056:86
+  16: <kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  17: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+thread 'node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages' (7129979) panicked at crates/kasumi-store/src/node_disk/file.rs:2377:18:
+release file retirement fixture: Disconnected
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: core::result::unwrap_failed
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1867:5
+   3: <core::result::Result<(), std::sync::mpsc::RecvTimeoutError>>::expect
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1185:23
+   4: <kasumi_store::node_disk::file::FileOwner>::close_checkpoint
+             at ./crates/kasumi-store/src/node_disk/file.rs:2377:18
+   5: <kasumi_store::node_disk::file::FileOwner>::retire_resources
+             at ./crates/kasumi-store/src/node_disk/file.rs:2353:14
+   6: <kasumi_store::node_disk::file::NodeDiskFile>::close
+             at ./crates/kasumi-store/src/node_disk/file.rs:1706:39
+   7: kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#1}
+             at ./crates/kasumi-store/src/node_disk/tests.rs:3072:79
+   8: <kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#1} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+   9: <core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#1}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  10: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#1}>, core::result::Result<(), std::io::error::Error>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  11: ___rust_try
+  12: std::panicking::catch_unwind::<core::result::Result<(), std::io::error::Error>, core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#1}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  13: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#1}>, core::result::Result<(), std::io::error::Error>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  14: kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages
+             at ./crates/kasumi-store/src/node_disk/tests.rs:3072:17
+  15: kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#0}
+             at ./crates/kasumi-store/src/node_disk/tests.rs:3056:86
+  16: <kasumi_store::node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  17: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 337 filtered out; finished in 0.12s
+

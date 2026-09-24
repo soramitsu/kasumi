@@ -1,0 +1,11 @@
+error: expected expression, found `as`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace/proposed/crates/kasumi-store/src/node_disk/directory/managed/tests.rs:236:64
+    |
+236 |         unsafe { Arc::as_ptr(owner).cast::<u8>().sub(offset) } as usize
+    |                                                                ^^ expected expression
+    |
+help: parentheses are required to parse this as an expression
+    |
+236 |         (unsafe { Arc::as_ptr(owner).cast::<u8>().sub(offset) }) as usize
+    |         +                                                      +
+

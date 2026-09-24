@@ -3,92 +3,105 @@
 use super::*;
 use std::{
     collections::BTreeSet,
-    ffi::{CStr, CString},
-    fs::File,
-    os::fd::{AsRawFd, FromRawFd},
+    ffi::CString,
     path::{Path, PathBuf},
 };
 
-pub(crate) struct Directory(File, Arc<crate::NodeDisk>, PathBuf);
+#[path = "backup_session_terminal.rs"]
+mod terminal;
+use crate::node_disk::{NamespaceAdmission, NamespacePart, NamespacePartKind};
+use terminal::Terminal;
+pub(crate) const TERMINAL_IO_BUFFER_BYTES: usize =
+    terminal::IO_CHUNK_BYTES + 2 * terminal::HEADER_BYTES;
+
+pub(crate) struct Directory(crate::NodeDiskDirectory, Arc<crate::NodeDisk>, PathBuf);
 impl Directory {
+    pub(crate) fn into_managed_owner(self) -> crate::NodeDiskDirectory {
+        self.0
+    }
+
     pub fn open(path: &Path, disk: Arc<crate::NodeDisk>) -> Result<Self> {
-        use std::os::unix::fs::OpenOptionsExt;
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)?;
-        disk.binding(&path.join("session-accounting-anchor"))?;
-        Ok(Self(file, disk, path.to_owned()))
+        let anchor = path.join("session-accounting-anchor");
+        let (root, relative) = disk.binding(&anchor)?;
+        let directory =
+            disk.open_directory(root, relative.parent().context("directory binding")?)?;
+        let retained = Self(directory, disk, path.to_owned());
+        retained.verified_identity()?;
+        Ok(retained)
+    }
+    pub(crate) fn open_or_create(path: &Path, disk: Arc<crate::NodeDisk>) -> Result<Self> {
+        use std::os::unix::ffi::OsStrExt;
+        let anchor = path.join("directory-accounting-anchor");
+        let (root, relative) = disk.binding(&anchor)?;
+        let relative = relative.parent().context("directory binding")?;
+        if relative.as_os_str().is_empty() {
+            return Self::open(path, disk);
+        }
+        let parent_relative = relative.parent().context("directory parent")?;
+        let parent = disk.open_directory(root, parent_relative)?;
+        let name = CString::new(relative.file_name().context("directory name")?.as_bytes())?;
+        let directory = match parent.open_child(&name) {
+            Ok(directory) => directory,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && disk.snapshot().phase == crate::NodeDiskPhase::Open =>
+            {
+                let mut admission = disk.admit_namespace(
+                    &[NamespacePart {
+                        root,
+                        relative,
+                        kind: NamespacePartKind::Directory,
+                    }],
+                    crate::DiskWork::Foreground,
+                )?;
+                let directory = parent.create_admitted_child(&name, &mut admission)?;
+                admission.finish()?;
+                directory
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let retained = Self(directory, disk, path.to_owned());
+        retained.verified_identity()?;
+        Ok(retained)
+    }
+    pub(crate) fn verified_identity(&self) -> Result<(u64, u64)> {
+        self.0.verified_identity().map_err(Into::into)
+    }
+
+    pub(crate) fn sync_all(&self) -> Result<()> {
+        self.0.sync_all().map_err(Into::into)
     }
     fn check(&self) -> Result<()> {
-        use std::os::unix::fs::MetadataExt;
-        let result = (|| -> Result<()> {
-            ensure!(
-                self.1.snapshot().phase == crate::NodeDiskPhase::Open,
-                "backup physical owner is unavailable"
-            );
-            let current = std::fs::symlink_metadata(&self.2)?;
-            let retained = self.0.metadata()?;
-            ensure!(
-                current.is_dir()
-                    && current.dev() == retained.dev()
-                    && current.ino() == retained.ino(),
-                "backup directory binding changed"
-            );
-            crate::private_files::check_directory(&self.2)?;
-            Ok(())
-        })();
-        if result.is_err() {
-            self.1.fail();
-        }
-        result
+        self.0.sync_all().map_err(Into::into)
     }
-    fn child(&self, name: &str, create: bool) -> Result<Option<Self>> {
-        self.check()?;
-        use std::os::unix::fs::MetadataExt;
+    fn child(&self, name: &str) -> Result<Option<Self>> {
         let name = CString::new(name)?;
-        if create && unsafe { libc::mkdirat(self.0.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() != std::io::ErrorKind::AlreadyExists {
-                return Err(error.into());
+        match self.0.open_child(&name) {
+            Ok(directory) => Ok(Some(Self(
+                directory,
+                self.1.clone(),
+                self.2.join(name.to_str()?),
+            ))),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && self.1.snapshot().phase == crate::NodeDiskPhase::Open =>
+            {
+                Ok(None)
             }
+            Err(error) => Err(error.into()),
         }
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
-        if fd == -1 {
-            let error = std::io::Error::last_os_error();
-            if !create && error.kind() == std::io::ErrorKind::NotFound {
-                return Ok(None);
-            }
-            return Err(error.into());
-        }
-        let directory = Self(
-            unsafe { File::from_raw_fd(fd) },
-            self.1.clone(),
-            self.2.join(name.to_str()?),
-        );
-        let metadata = directory.0.metadata()?;
-        ensure!(
-            metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o077 == 0,
-            "backup session directory must be owner-only"
-        );
-        if create {
-            directory.0.sync_all()?;
-            self.0.sync_all()?;
-        }
-        Ok(Some(directory))
     }
-    fn session(&self, id: Uuid, create: bool) -> Result<Option<Self>> {
+    fn create_child(&self, name: &str, admission: &mut NamespaceAdmission) -> Result<Self> {
+        let name = CString::new(name)?;
+        let directory = self.0.create_admitted_child(&name, admission)?;
+        Ok(Self(directory, self.1.clone(), self.2.join(name.to_str()?)))
+    }
+    fn session(&self, id: Uuid) -> Result<Option<Self>> {
         ensure!(!id.is_nil(), "nil backup session");
-        let Some(sessions) = self.child("sessions", create)? else {
+        let Some(sessions) = self.child("sessions")? else {
             return Ok(None);
         };
-        sessions.child(&id.to_string(), create)
+        sessions.child(&id.to_string())
     }
     fn open_leaf(&self, name: &str) -> Result<Option<crate::NodeDiskFile>> {
         self.check()?;
@@ -136,31 +149,293 @@ impl Directory {
         self.1.delete_file(file)?;
         self.check()
     }
-    pub fn put(&self, session: Uuid, slot: BackupSessionSlot, bytes: &[u8]) -> Result<()> {
-        slot.relative(session)?;
-        let session = self
-            .session(session, true)?
-            .context("backup session absent")?;
-        let objects = session
-            .child("objects", true)?
-            .context("backup object directory absent")?;
-        // Interrupted uploads remain exact UUID objects in the authenticated
-        // aborted namespace. Publication moves the original accounted inode;
-        // it never creates a transient second hard link.
-        let temporary = format!("{}.kasumi", Uuid::new_v4());
-        let path = objects.2.join(&temporary);
-        let (root, relative) = self.1.binding(&path)?;
+    fn read_terminal(
+        &self,
+        session: Uuid,
+        slot: Terminal,
+        limit: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(file) = self.open_leaf(slot.published())? else {
+            return Ok(None);
+        };
+        let bytes = terminal::read(&file, session, slot, limit)?;
+        #[cfg(test)]
+        test_sync::check(self, slot.published(), test_sync::Point::ReadFile)?;
+        file.sync_all()?;
+        #[cfg(test)]
+        test_sync::check(self, slot.published(), test_sync::Point::ReadDirectory)?;
+        file.sync_all_and_parent()?;
+        self.check()?;
+        Ok(Some(bytes))
+    }
+    // A published terminal is canonical; a reserve must be the exact admitted
+    // fixed length. Neither arbitrary names nor short reserve files are adopted.
+    fn terminal_state(&self, session: Uuid, slot: Terminal) -> Result<(bool, bool)> {
+        let published = match self.open_leaf(slot.published())? {
+            Some(file) => {
+                terminal::validate(&file, session, slot)?;
+                file.sync_all_and_parent()?;
+                true
+            }
+            None => false,
+        };
+        #[cfg(test)]
+        test_sync::check(self, slot.published(), test_sync::Point::TerminalClassified)?;
+        let reserve = self.open_leaf(slot.reserve())?;
+        if let Some(file) = &reserve {
+            if published || file.observed_len()? != terminal::FILE_BYTES as u64 {
+                self.1.fail();
+                anyhow::bail!("invalid backup terminal reservation");
+            }
+            file.sync_all_and_parent()?;
+        }
+        Ok((published, reserve.is_some()))
+    }
+    // The accepted claim is the first owned operation resource. UUID formatting
+    // and both path components live on the stack while State is acquired.
+    fn claim_session_namespace(
+        &self,
+        session: Uuid,
+        slot: BackupSessionSlot,
+    ) -> std::io::Result<crate::node_disk::NamespaceClaim> {
+        if session.is_nil() || matches!(slot, BackupSessionSlot::Object(id) if id.is_nil()) {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        }
+        let mut name = [0_u8; 37];
+        session.hyphenated().encode_lower(&mut name[..36]);
+        let name = std::ffi::CStr::from_bytes_with_nul(&name)
+            .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        self.0.claim_descendants(&[c"sessions", name])
+    }
+    // Fixed UUID bytes are formed before the physical namespace lane is taken;
+    // owned paths and all operation resources are constructed only afterward.
+    fn claim_backup_namespace(
+        &self,
+        id: Uuid,
+    ) -> std::io::Result<crate::node_disk::NamespaceClaim> {
+        if id.is_nil() {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        }
+        let mut name = [0_u8; 44];
+        id.hyphenated().encode_lower(&mut name[..36]);
+        name[36..43].copy_from_slice(b".kasumi");
+        let name = std::ffi::CStr::from_bytes_with_nul(&name)
+            .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        self.0.claim_descendants(&[name])
+    }
+
+    /// Publish one complete backup from one newly admitted temporary inode.
+    /// Existing pending bytes belong to an earlier unresolved attempt. Neither
+    /// that inode nor an existing published backup grants new write permission.
+    pub(crate) fn put_backup(&self, id: Uuid, bytes: &[u8]) -> Result<()> {
+        // This witness must be declared before every owned path/file/admission:
+        // their destructors finish or transfer custody before lane retirement.
+        let claim = self.claim_backup_namespace(id)?;
+        let name = format!("{id}.kasumi");
+        let pending_name = format!("{name}.pending");
+        if self.open_leaf(&name)?.is_some() || self.open_leaf(&pending_name)?.is_some() {
+            return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into());
+        }
+        #[cfg(test)]
+        test_sync::check(self, &name, test_sync::Point::BackupClassified)?;
+        let pending_path = self.2.join(&pending_name);
+        let destination_path = self.2.join(&name);
+        let (root, relative) = self.1.binding(&pending_path)?;
+        let length = u64::try_from(bytes.len())?;
+        let mut admission = self.1.admit_claimed_namespace(
+            &claim,
+            &[NamespacePart {
+                root,
+                relative,
+                kind: NamespacePartKind::File { length },
+            }],
+            crate::DiskWork::Foreground,
+        )?;
         let file = self
             .1
-            .create_file(root, relative, crate::DiskWork::Foreground)?;
-        file.reserve_growth(0, bytes.len() as u64, crate::DiskWork::Foreground)?;
-        file.grow_reserved(bytes.len() as u64)?;
+            .create_admitted_file(&mut admission, root, relative)?;
+        #[cfg(test)]
+        test_sync::check(self, &name, test_sync::Point::BackupCreated)?;
+        file.grow_reserved(length)?;
         file.write_all_at(bytes, 0)?;
         file.sync_all_and_parent()?;
-        let (destination, name) = match slot {
-            BackupSessionSlot::Intent => (&session, "intent.kasumi".to_owned()),
-            BackupSessionSlot::Outcome => (&session, "outcome.kasumi".to_owned()),
-            BackupSessionSlot::Object(id) => (&objects, format!("{id}.kasumi")),
+        // The exact original name is durably complete before its reservation
+        // is settled; rename then transfers the same owner into the final name.
+        admission.finish()?;
+        let (root, relative) = self.1.binding(&destination_path)?;
+        let published = self.1.publish_file(file, root, relative)?;
+        published.sync_all_and_parent()?;
+        Ok(())
+    }
+
+    pub fn put(&self, session_id: Uuid, slot: BackupSessionSlot, bytes: &[u8]) -> Result<()> {
+        // Hold the physical claim across both terminal classification reads and
+        // final publication. All owned paths below retire before this witness.
+        let claim = self.claim_session_namespace(session_id, slot)?;
+        let terminal_slot = match slot {
+            BackupSessionSlot::Intent => Some(Terminal::Intent),
+            BackupSessionSlot::Outcome => Some(Terminal::Outcome),
+            BackupSessionSlot::Object(_) => None,
+        };
+        if let Some(terminal) = terminal_slot {
+            terminal::header(session_id, terminal, bytes)?;
+        }
+        let sessions = self.child("sessions")?;
+        let session = match &sessions {
+            Some(dir) => dir.child(&session_id.to_string())?,
+            None => None,
+        };
+        let objects = match &session {
+            Some(dir) => dir.child("objects")?,
+            None => None,
+        };
+        let mut terminals = [(false, false); 2];
+        if let Some(session) = &session {
+            for (index, terminal) in [Terminal::Intent, Terminal::Outcome]
+                .into_iter()
+                .enumerate()
+            {
+                terminals[index] = session.terminal_state(session_id, terminal)?;
+            }
+            if terminals.iter().any(|(published, _)| *published)
+                && terminals
+                    .iter()
+                    .any(|(published, reserve)| !published && !reserve)
+            {
+                self.1.fail();
+                anyhow::bail!("published backup session lost terminal capacity");
+            }
+        }
+        if let Some(terminal) = terminal_slot {
+            let index = usize::from(terminal == Terminal::Outcome);
+            if terminals[index].0 {
+                return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into());
+            }
+        }
+        let sessions_path = self.2.join("sessions");
+        let session_path = sessions_path.join(session_id.to_string());
+        let objects_path = session_path.join("objects");
+        let temporary = format!("{}.kasumi", Uuid::new_v4());
+        let temporary_path = objects_path.join(&temporary);
+        let mut missing = Vec::with_capacity(crate::node_disk::MAX_NAMESPACE_PARTS);
+        if sessions.is_none() {
+            missing.push((sessions_path, NamespacePartKind::Directory));
+        }
+        if session.is_none() {
+            missing.push((session_path.clone(), NamespacePartKind::Directory));
+        }
+        if objects.is_none() {
+            missing.push((objects_path, NamespacePartKind::Directory));
+        }
+        for (index, terminal) in [Terminal::Intent, Terminal::Outcome]
+            .into_iter()
+            .enumerate()
+        {
+            if terminals[index] == (false, false) {
+                missing.push((
+                    session_path.join(terminal.reserve()),
+                    NamespacePartKind::File {
+                        length: terminal::FILE_BYTES as u64,
+                    },
+                ));
+            }
+        }
+        if terminal_slot.is_none() {
+            missing.push((
+                temporary_path.clone(),
+                NamespacePartKind::File {
+                    length: bytes.len() as u64,
+                },
+            ));
+        }
+        let mut requests = Vec::with_capacity(missing.len());
+        for (path, kind) in &missing {
+            let (root, relative) = self.1.binding(path)?;
+            requests.push(NamespacePart {
+                root,
+                relative,
+                kind: *kind,
+            });
+        }
+        let mut admission = if requests.is_empty() {
+            None
+        } else {
+            Some(
+                self.1
+                    .admit_claimed_namespace(&claim, &requests, crate::DiskWork::Foreground)?,
+            )
+        };
+        let sessions = match sessions {
+            Some(dir) => dir,
+            None => self.create_child(
+                "sessions",
+                admission.as_mut().expect("admitted sessions directory"),
+            )?,
+        };
+        let session = match session {
+            Some(dir) => dir,
+            None => sessions.create_child(
+                &session_id.to_string(),
+                admission.as_mut().expect("admitted session directory"),
+            )?,
+        };
+        let objects = match objects {
+            Some(dir) => dir,
+            None => session.create_child(
+                "objects",
+                admission.as_mut().expect("admitted objects directory"),
+            )?,
+        };
+        // Persist both terminal reservations before any session object/intent/
+        // outcome is published. Cold census sees their complete extent and F.
+        for (index, terminal) in [Terminal::Intent, Terminal::Outcome]
+            .into_iter()
+            .enumerate()
+        {
+            if terminals[index] == (false, false) {
+                let path = session.2.join(terminal.reserve());
+                let (root, relative) = self.1.binding(&path)?;
+                let file = self.1.create_admitted_file(
+                    admission.as_mut().expect("admitted terminal"),
+                    root,
+                    relative,
+                )?;
+                file.grow_reserved(terminal::FILE_BYTES as u64)?;
+                file.sync_all_and_parent()?;
+            }
+        }
+        let object = if terminal_slot.is_none() {
+            let (root, relative) = self.1.binding(&temporary_path)?;
+            let file = self.1.create_admitted_file(
+                admission.as_mut().expect("admitted object"),
+                root,
+                relative,
+            )?;
+            file.grow_reserved(bytes.len() as u64)?;
+            file.sync_all_and_parent()?;
+            Some(file)
+        } else {
+            None
+        };
+        if let Some(admission) = admission {
+            admission.finish()?;
+        }
+        let (file, destination, name) = if let Some(terminal) = terminal_slot {
+            // open_file is exclusive across every wrapper for this physical
+            // NodeDisk, through actual descriptor/registration retirement.
+            let file = session
+                .open_leaf(terminal.reserve())?
+                .context("backup terminal reserve absent")?;
+            terminal::write(&file, session_id, terminal, bytes)?;
+            (file, &session, terminal.published().to_owned())
+        } else {
+            let BackupSessionSlot::Object(id) = slot else {
+                unreachable!()
+            };
+            let file = object.expect("admitted object owner");
+            file.write_all_at(bytes, 0)?;
+            file.sync_all_and_parent()?;
+            (file, &objects, format!("{id}.kasumi"))
         };
         destination.check()?;
         let destination_path = destination.2.join(&name);
@@ -173,9 +448,9 @@ impl Directory {
                 Ok(())
             }
             Err(error) => {
-                // A definite create-only conflict did not publish this upload;
-                // remove only its exact temporary UUID through the same owner.
-                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                // Only an object upload temporary is authenticated GC content.
+                // A terminal reserve remains permanently charged for resolution.
+                if error.kind() == std::io::ErrorKind::AlreadyExists && terminal_slot.is_none() {
                     objects.unlink(&temporary)?;
                 }
                 Err(error.into())
@@ -189,13 +464,16 @@ impl Directory {
         limit: usize,
     ) -> Result<Option<Vec<u8>>> {
         slot.relative(session)?;
-        let Some(session) = self.session(session, false)? else {
+        let session_id = session;
+        let Some(session) = self.session(session)? else {
             return Ok(None);
         };
         match slot {
-            BackupSessionSlot::Intent => session.read("intent.kasumi", limit),
-            BackupSessionSlot::Outcome => session.read("outcome.kasumi", limit),
-            BackupSessionSlot::Object(id) => match session.child("objects", false)? {
+            BackupSessionSlot::Intent => session.read_terminal(session_id, Terminal::Intent, limit),
+            BackupSessionSlot::Outcome => {
+                session.read_terminal(session_id, Terminal::Outcome, limit)
+            }
+            BackupSessionSlot::Object(id) => match session.child("objects")? {
                 Some(objects) => objects.read(&format!("{id}.kasumi"), limit),
                 None => Ok(None),
             },
@@ -203,17 +481,18 @@ impl Directory {
     }
     fn aborted_objects(&self, proof: &VerifiedBackupAbort) -> Result<Option<Self>> {
         let session = self
-            .session(proof.session_id(), false)?
+            .session(proof.session_id())?
             .context("aborted backup session disappeared")?;
         proof.matches_outcome(
             &session
-                .read(
-                    "outcome.kasumi",
+                .read_terminal(
+                    proof.session_id(),
+                    Terminal::Outcome,
                     MAX_SESSION_RECORD_BYTES + crate::backup::HEADER_LIMIT + 84,
                 )?
                 .context("abort outcome disappeared")?,
         )?;
-        session.child("objects", false)
+        session.child("objects")
     }
     pub fn list(
         &self,
@@ -230,75 +509,57 @@ impl Directory {
                 more: false,
             });
         };
-        // openat(".") creates an independent directory cursor; dup would share it.
-        let fd = unsafe {
-            libc::openat(
-                objects.0.as_raw_fd(),
-                c".".as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-            )
-        };
-        ensure!(
-            fd != -1,
-            "opening backup enumeration: {}",
-            std::io::Error::last_os_error()
-        );
-        let pointer = unsafe { libc::fdopendir(fd) };
-        if pointer.is_null() {
-            unsafe {
-                libc::close(fd);
-            }
-            anyhow::bail!(
-                "opening backup enumeration: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-        struct Entries(*mut libc::DIR);
-        impl Drop for Entries {
-            fn drop(&mut self) {
-                unsafe {
-                    libc::closedir(self.0);
+        // Cleanup traverses only the exact enrolled, authenticated objects subtree.
+        let anchor = objects.2.join("session-accounting-anchor");
+        let (root, relative) = objects.1.binding(&anchor)?;
+        let relative = relative
+            .parent()
+            .context("backup object directory has no parent")?;
+        let cancellation = crate::CensusCancellation::default();
+        let directory = objects.1.open_directory(root, relative)?;
+        let mut entries = directory.cursor(&cancellation)?;
+        let mut found = BTreeSet::new();
+        let listing = (|| -> Result<()> {
+            loop {
+                proof.check()?;
+                let Some(entry) = entries.next(&cancellation)? else {
+                    break;
+                };
+                ensure!(
+                    entry.kind() == crate::NodeDiskEntryKind::File,
+                    "unexpected directory in aborted object namespace"
+                );
+                let name = entry
+                    .name()
+                    .to_str()
+                    .context("backup object name is not UTF-8")?;
+                let value = name
+                    .strip_suffix(".kasumi")
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .context("unexpected file in aborted object namespace")?;
+                ensure!(
+                    name == format!("{value}.kasumi") && !value.is_nil(),
+                    "noncanonical file in aborted object namespace"
+                );
+                found.insert(value);
+                if found.len() > limit {
+                    break;
                 }
             }
+            Ok(())
+        })();
+        // Retire even when proof/name/read validation failed. Preserve the
+        // original error and any independent native close error together.
+        let closed = entries.close();
+        drop(entries);
+        if let Err(error) = listing {
+            return Err(match closed {
+                Ok(()) => error,
+                Err(close) => error.context(close),
+            });
         }
-        let entries = Entries(pointer);
-        let mut found = BTreeSet::new();
-        loop {
-            proof.check()?;
-            // readdir can return null on either EOF or failure.
-            #[cfg(target_os = "macos")]
-            unsafe {
-                *libc::__error() = 0;
-            }
-            #[cfg(target_os = "linux")]
-            unsafe {
-                *libc::__errno_location() = 0;
-            }
-            let entry = unsafe { libc::readdir(entries.0) };
-            if entry.is_null() {
-                ensure!(
-                    std::io::Error::last_os_error().raw_os_error() == Some(0),
-                    "reading backup enumeration failed"
-                );
-                break;
-            }
-            let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_string_lossy();
-            if name == "." || name == ".." {
-                continue;
-            }
-            let value = name
-                .strip_suffix(".kasumi")
-                .and_then(|s| Uuid::parse_str(s).ok())
-                .context("unexpected file in aborted object namespace")?;
-            ensure!(
-                name == format!("{value}.kasumi") && !value.is_nil(),
-                "noncanonical file in aborted object namespace"
-            );
-            found.insert(value);
-            if found.len() > limit {
-                break;
-            }
-        }
+        closed?;
+        proof.check()?;
         let more = found.len() > limit;
         if more {
             found.pop_last();
@@ -351,16 +612,63 @@ pub(crate) mod test_sync {
         sync::{Mutex, OnceLock},
     };
 
+    // Inspect physical bytes without consuming an injected durable-read fault.
+    // The canonical decoder checks the full extent, header, digest and zero tail.
+    pub(crate) fn decode_outcome(
+        bytes: &[u8],
+        session: Uuid,
+        limit: usize,
+    ) -> std::io::Result<&[u8]> {
+        terminal::decode(bytes, session, Terminal::Outcome, limit)
+    }
+
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub(crate) enum Point {
         PublishDirectory,
         ReadFile,
         ReadDirectory,
+        TerminalClassified,
+        BackupClassified,
+        BackupCreated,
     }
     type Key = (u64, u64, String, Point);
     fn faults() -> &'static Mutex<BTreeSet<Key>> {
         static FAULTS: OnceLock<Mutex<BTreeSet<Key>>> = OnceLock::new();
         FAULTS.get_or_init(Default::default)
+    }
+    struct Pause {
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    }
+    fn pauses() -> &'static Mutex<std::collections::BTreeMap<Key, Pause>> {
+        static PAUSES: OnceLock<Mutex<std::collections::BTreeMap<Key, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Default::default)
+    }
+    pub(crate) fn pause(
+        directory: &Path,
+        name: &str,
+        point: Point,
+    ) -> Result<(
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+    )> {
+        let metadata = std::fs::metadata(directory)?;
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        assert!(
+            pauses()
+                .lock()
+                .unwrap()
+                .insert(
+                    (metadata.dev(), metadata.ino(), name.to_owned(), point),
+                    Pause {
+                        entered: entered_tx,
+                        release: release_rx
+                    },
+                )
+                .is_none()
+        );
+        Ok((entered_rx, release_tx))
     }
     pub(crate) struct Guard(Vec<Key>);
     impl Drop for Guard {
@@ -384,7 +692,16 @@ pub(crate) mod test_sync {
         Ok(Guard(keys))
     }
     pub(super) fn check(directory: &Directory, name: &str, point: Point) -> Result<()> {
-        let directory = directory.0.metadata()?;
+        directory.check()?;
+        let directory = std::fs::metadata(&directory.2)?;
+        let key = (directory.dev(), directory.ino(), name.to_owned(), point);
+        let pause = pauses().lock().unwrap().remove(&key);
+        if let Some(pause) = pause {
+            pause.entered.send(())?;
+            pause
+                .release
+                .recv_timeout(std::time::Duration::from_secs(10))?;
+        }
         ensure!(
             !faults().lock().unwrap().contains(&(
                 directory.dev(),
@@ -401,12 +718,41 @@ pub(crate) mod test_sync {
 #[cfg(test)]
 mod ownership_tests {
     use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn retained_backup_directory_identity_fences_substitution() {
+        let temporary = crate::test_utils::private_tempdir().unwrap();
+        let path = temporary.path().join("backup");
+        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let disk = crate::test_utils::retry_disk_registry(|| {
+            crate::NodeDisk::fixture_for_path(temporary.path().join("unused"), memory.clone())
+        })
+        .unwrap();
+        let directory = Directory::open_or_create(&path, disk.clone()).unwrap();
+        let metadata = path.metadata().unwrap();
+        assert_eq!(
+            directory.verified_identity().unwrap(),
+            (metadata.dev(), metadata.ino())
+        );
+        assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+
+        std::fs::rename(&path, temporary.path().join("retained")).unwrap();
+        crate::private_files::create_directory(&path).unwrap();
+        assert!(directory.verified_identity().is_err());
+        assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+        assert!(directory.verified_identity().is_err());
+    }
 
     #[test]
     fn missing_unknown_or_admitted_deleted_leaf_is_repeatably_absent() {
         let temporary = crate::test_utils::private_tempdir().unwrap();
         let path = temporary.path().join("object.kasumi");
-        let disk = crate::NodeDisk::fixture_for_path(&path).unwrap();
+        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let disk = crate::test_utils::retry_disk_registry(|| {
+            crate::NodeDisk::fixture_for_path(&path, memory.clone())
+        })
+        .unwrap();
         let directory = Directory::open(temporary.path(), disk.clone()).unwrap();
         let before = disk.snapshot();
         for _ in 0..2 {
@@ -446,7 +792,11 @@ mod ownership_tests {
             let temporary = crate::test_utils::private_tempdir().unwrap();
             let path = temporary.path().join("object.kasumi");
             crate::private_files::create(&path, &[31; 32]).unwrap();
-            let disk = crate::NodeDisk::fixture_for_path(&path).unwrap();
+            let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+            let disk = crate::test_utils::retry_disk_registry(|| {
+                crate::NodeDisk::fixture_for_path(&path, memory.clone())
+            })
+            .unwrap();
             let directory = Directory::open(temporary.path(), disk.clone()).unwrap();
             let before = disk.snapshot();
             assert_eq!(before.persistent_files, 1);
@@ -456,10 +806,9 @@ mod ownership_tests {
             } else {
                 directory.read("object.kasumi", 32).unwrap_err()
             };
-            assert_eq!(
-                error.downcast_ref::<std::io::Error>().unwrap().kind(),
-                std::io::ErrorKind::NotFound
-            );
+            // The managed directory may detect the changed parent before the
+            // missing leaf is opened; both preserve the first physical failure.
+            assert!(error.downcast_ref::<std::io::Error>().is_some());
             assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
             assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
             assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
@@ -467,10 +816,22 @@ mod ownership_tests {
             assert_eq!(disk.snapshot().open_files, 0);
             assert!(directory.read("another-unknown.kasumi", 32).is_err());
             assert!(directory.unlink("another-unknown.kasumi").is_err());
+            drop(directory);
             disk.reconcile(&crate::CensusCancellation::default())
                 .unwrap();
-            assert_eq!(disk.snapshot().charged_bytes, 0);
+            assert_eq!(
+                disk.snapshot().charged_bytes,
+                crate::DirectoryPolicy::fixture().extent_bytes
+            );
             assert_eq!(disk.snapshot().persistent_files, 0);
         }
     }
 }
+
+#[cfg(test)]
+#[path = "backup_session_admission_tests.rs"]
+mod session_admission_tests;
+
+#[cfg(test)]
+#[path = "backup_file_admission_tests.rs"]
+mod file_admission_tests;

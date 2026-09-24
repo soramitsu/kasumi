@@ -1,0 +1,99 @@
+0000000100013c54 t std::sync::poison::map_result::<std::sync::poison::Guard, std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History>, <std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History>>::new::{closure#0}>
+0000000100021820 t <core::iter::adapters::map::Map<core::ops::range::Range<usize>, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#0}> as core::iter::traits::iterator::Iterator>::try_fold::<(), core::iter::traits::iterator::Iterator::find::check<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#1}>::{closure#0}, core::ops::control_flow::ControlFlow<usize>>
+0000000100021c34 t <core::iter::adapters::map::Map<core::ops::range::Range<usize>, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#0}> as core::iter::traits::iterator::Iterator>::find::<<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#1}>
+0000000100021df4 t core::iter::adapters::map::map_try_fold::<usize, usize, (), core::ops::control_flow::ControlFlow<usize>, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#0}, core::iter::traits::iterator::Iterator::find::check<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#1}>::{closure#0}>::{closure#0}
+000000010003c224 t <lifecycle::Fixture>::open::{closure#0}
+000000010003f058 t <<lifecycle::Fixture>::open::{closure#0} as core::future::into_future::IntoFuture>::into_future
+00000001000719a0 t <alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>>::new
+0000000100071c64 t <alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>>::drop_slow
+0000000100099c48 t core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>>>
+0000000100099c6c t core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>>>
+0000000100099c90 t core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>>>
+0000000100099cb4 t core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>>>
+000000010009b58c t core::ptr::drop_glue::<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>>
+000000010009b5ec t core::ptr::drop_glue::<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>>
+000000010009b64c t core::ptr::drop_glue::<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>>
+000000010009b6ac t core::ptr::drop_glue::<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>>
+00000001000a1d28 t core::ptr::drop_glue::<<lifecycle::Fixture>::open::{closure#0}>
+00000001000a6690 t core::ptr::drop_glue::<lifecycle::recovery_control::complete_recovery::{closure#0}>
+00000001000a9528 t core::ptr::drop_glue::<lifecycle::recovery_control::prepare_completion::{closure#0}>
+00000001000abdf8 t core::ptr::drop_glue::<lifecycle::recovery_control::exercise_route_publication::{closure#0}>
+00000001000acdc8 t core::ptr::drop_glue::<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>
+00000001000ae5b0 t core::ptr::drop_glue::<lifecycle::recovery_control::exercise_completed_recovery::{closure#0}>
+00000001000b1a70 t core::ptr::drop_glue::<<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}>
+00000001000b4030 t <lifecycle::bootstrap_vote_probe::Guard as core::ops::drop::Drop>::drop
+00000001000b5760 t <alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}> as core::ops::drop::Drop>::drop
+00000001000b5830 t <alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}> as core::ops::drop::Drop>::drop
+00000001000b5900 t <alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}> as core::ops::drop::Drop>::drop
+00000001000b59d0 t <alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}> as core::ops::drop::Drop>::drop
+00000001000b5bec t <alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe> as core::ops::drop::Drop>::drop
+00000001000b5ec4 t <alloc::sync::Weak<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe, &alloc::alloc::Global> as core::ops::drop::Drop>::drop
+00000001000b6858 t <std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::drop::Drop>::drop
+00000001000b6be8 t <core::array::Guard<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>> as core::ops::drop::Drop>::drop
+00000001000c3284 t <std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History>>::new::{closure#0}
+00000001000c3318 t <std::sync::poison::mutex::Mutex<lifecycle::bootstrap_vote_probe::History>>::new
+00000001000ca048 t <core::fmt::rt::Argument>::new_debug::<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History>>
+00000001000cd0b8 t lifecycle::recovery_control::complete_recovery
+00000001000cd178 t lifecycle::recovery_control::prepare_completion
+00000001000cd218 t lifecycle::recovery_control::exercise_route_publication
+00000001000cd254 t lifecycle::recovery_control::resolve_expired_completion
+00000001000cd2d4 t lifecycle::recovery_control::exercise_completed_recovery
+00000001000d0418 t core::array::try_from_fn::<core::ops::try_trait::NeverShortCircuit<core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>>, 3, <core::ops::try_trait::NeverShortCircuit<core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#0}>::{closure#0}>
+00000001000d0488 t core::array::try_from_fn::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, 32, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>
+00000001000d0524 t core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#0}>::{closure#0}>
+00000001000d06e8 t core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>
+00000001000d08fc t core::array::from_fn::<core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, 3, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#0}>
+00000001000d0938 t core::array::from_fn::<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>, 32, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>
+00000001000d4af0 t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>> as core::future::into_future::IntoFuture>::into_future
+00000001000d4b04 t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>> as core::future::into_future::IntoFuture>::into_future
+00000001000d4b18 t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>> as core::future::into_future::IntoFuture>::into_future
+00000001000d4b2c t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>> as core::future::into_future::IntoFuture>::into_future
+00000001000d4d18 t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>> as core::future::future::Future>::poll
+00000001000d4d64 t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>> as core::future::future::Future>::poll
+00000001000d4db0 t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>> as core::future::future::Future>::poll
+00000001000d4df4 t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>> as core::future::future::Future>::poll
+00000001000d91b4 t <lifecycle::Fixture>::open
+00000001000dcd78 t core::iter::traits::iterator::Iterator::all::check::<&kasumi_types::recovery::RecoveryVoterProgress, lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#4}>::{closure#0}
+00000001000dcdc8 t core::iter::traits::iterator::Iterator::all::check::<&kasumi_types::recovery::RecoveryVoterProgress, lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#5}>::{closure#0}
+00000001000dce18 t core::iter::traits::iterator::Iterator::all::check::<&kasumi_types::recovery::RecoveryVoterProgress, lifecycle::recovery_control::prepare_completion::{closure#0}::{closure#0}>::{closure#0}
+00000001000dd198 t core::iter::traits::iterator::Iterator::find::check::<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#1}>::{closure#0}
+00000001000e7a60 t <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new
+00000001000e7bcc t <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin
+00000001000e85f0 t <lifecycle::bootstrap_vote_probe::Guard>::finish
+00000001000e914c t <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send
+00000001000f7f9c t <alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::all::<lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#4}>
+00000001000f7fd8 t <alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::all::<lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#5}>
+00000001000f8014 t <alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::all::<lifecycle::recovery_control::prepare_completion::{closure#0}::{closure#0}>
+00000001000f8050 t <alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::try_fold::<(), core::iter::traits::iterator::Iterator::all::check<&kasumi_types::recovery::RecoveryVoterProgress, lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#4}>::{closure#0}, core::ops::control_flow::ControlFlow<()>>
+00000001000f8158 t <alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::try_fold::<(), core::iter::traits::iterator::Iterator::all::check<&kasumi_types::recovery::RecoveryVoterProgress, lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#5}>::{closure#0}, core::ops::control_flow::ControlFlow<()>>
+00000001000f8260 t <alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::try_fold::<(), core::iter::traits::iterator::Iterator::all::check<&kasumi_types::recovery::RecoveryVoterProgress, lifecycle::recovery_control::prepare_completion::{closure#0}::{closure#0}>::{closure#0}, core::ops::control_flow::ControlFlow<()>>
+00000001000fd6b4 t <core::ops::range::Range<usize> as core::iter::traits::iterator::Iterator>::map::<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#0}>
+00000001000fd6dc t <core::ops::range::Range<usize> as core::iter::traits::iterator::Iterator>::try_fold::<(), core::iter::adapters::map::map_try_fold<usize, usize, (), core::ops::control_flow::ControlFlow<usize>, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#0}, core::iter::traits::iterator::Iterator::find::check<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#1}>::{closure#0}>::{closure#0}, core::ops::control_flow::ControlFlow<usize>>
+00000001000ffb50 t <core::ops::try_trait::NeverShortCircuit<core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>>>::wrap_mut_1::<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#0}>::{closure#0}
+00000001000ffb78 t <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1::<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}
+0000000100109754 t <alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}> as core::ops::deref::DerefMut>::deref_mut
+000000010010976c t <alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}> as core::ops::deref::DerefMut>::deref_mut
+0000000100109784 t <alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}> as core::ops::deref::DerefMut>::deref_mut
+000000010010979c t <alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}> as core::ops::deref::DerefMut>::deref_mut
+00000001001099e4 t <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#1}::{closure#0}
+0000000100109a24 t <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#0}
+0000000100109a40 t <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}
+0000000100109a60 t <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#0}
+0000000100109ad0 t <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#1}
+0000000100109ba8 t <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}
+000000010010c8e0 t <core::option::Option<&lifecycle::bootstrap_vote_probe::Observation>>::is_none_or::<<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#1}::{closure#0}>
+000000010012185c t lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#0}
+0000000100121a20 t lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#2}
+0000000100121b7c t lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#3}
+00000001001223cc t lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#4}
+00000001001223f4 t lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#5}
+000000010012241c t lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#1}
+0000000100122714 t lifecycle::recovery_control::prepare_completion::{closure#0}::{closure#0}
+0000000100122744 t lifecycle::recovery_control::resolve_expired_completion::{closure#0}::{closure#0}
+0000000100122970 t lifecycle::recovery_control::resolve_expired_completion::{closure#0}::{closure#1}
+00000001001241e4 t lifecycle::recovery_control::complete_recovery::{closure#0}
+0000000100135bb0 t lifecycle::recovery_control::prepare_completion::{closure#0}
+0000000100145314 t lifecycle::recovery_control::exercise_route_publication::{closure#0}
+000000010014c1fc t lifecycle::recovery_control::resolve_expired_completion::{closure#0}
+0000000100152f54 t lifecycle::recovery_control::exercise_completed_recovery::{closure#0}
+000000010015e474 t <lifecycle::recovery_control::exercise_completed_recovery::{closure#0} as core::future::into_future::IntoFuture>::into_future

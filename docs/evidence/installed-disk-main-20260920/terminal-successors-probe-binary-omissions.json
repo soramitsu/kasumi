@@ -1,0 +1,68 @@
+[
+  {
+    "path": "disk-memory-lease-retirement/box-order-probe",
+    "bytes": 490432,
+    "sha256": "66a96fc72d8ac865ac53455bd3f3d64d9126a69a6dcb194a08a171d14bfb2d4d",
+    "reason": "Native development probe executable retained under target; documentation archive retains sources, receipts and executable digest only."
+  },
+  {
+    "path": "disk-memory-lease-retirement/standalone-02/tests-opt",
+    "bytes": 1048520,
+    "sha256": "218457318a75c376fffea3e7d0d10bfa84f313b561a667ee72faf8b0428a424c",
+    "reason": "Native development probe executable retained under target; documentation archive retains sources, receipts and executable digest only."
+  },
+  {
+    "path": "disk-memory-lease-retirement/standalone-02/tests-debug",
+    "bytes": 1170328,
+    "sha256": "5337f0754972220eaccc30db74aa162dde6e4bc6d2598bfd907cbb9c055c2f29",
+    "reason": "Native development probe executable retained under target; documentation archive retains sources, receipts and executable digest only."
+  },
+  {
+    "path": "disk-memory-lease-retirement/standalone-02/tests-clippy",
+    "bytes": 1170224,
+    "sha256": "b7c3a2ab3cc18a531c6a8014f98f61ab2d60c5acb5406366103786fab9259690",
+    "reason": "Native development probe executable retained under target; documentation archive retains sources, receipts and executable digest only."
+  },
+  {
+    "path": "disk-memory-lease-retirement/standalone-02/probe-opt",
+    "bytes": 465800,
+    "sha256": "e8c9e4c5fb85cf3f8053424386faf3b0ab39ed45ef5fc8a3dffb5535b17ab46b",
+    "reason": "Native development probe executable retained under target; documentation archive retains sources, receipts and executable digest only."
+  },
+  {
+    "path": "disk-memory-lease-retirement/standalone-02/probe-debug",
+    "bytes": 490424,
+    "sha256": "7780d39d43303c36a661e9ec944d978def106a9052549bd052b5aa587aef4330",
+    "reason": "Native development probe executable retained under target; documentation archive retains sources, receipts and executable digest only."
+  },
+  {
+    "path": "disk-memory-lease-retirement/counterfactual-01/tests",
+    "bytes": 1170440,
+    "sha256": "fd4b95d017d3210ec6b33d3114d33f3e8785ca354a6b4d202e428630b429d000",
+    "reason": "Native development probe executable retained under target; documentation archive retains sources, receipts and executable digest only."
+  },
+  {
+    "path": "disk-memory-lease-retirement/standalone-01/tests-opt",
+    "bytes": 1048520,
+    "sha256": "450bf1eb4de8931277bf801135e65a55304e7728c24227942b3b5a0df669ba0b",
+    "reason": "Native development probe executable retained under target; documentation archive retains sources, receipts and executable digest only."
+  },
+  {
+    "path": "disk-memory-lease-retirement/standalone-01/tests-debug",
+    "bytes": 1170648,
+    "sha256": "36a1d87a16643e7cdc1dd8ebe7fd1ba211531957ebda6d9f1e0547e2ec8b18de",
+    "reason": "Native development probe executable retained under target; documentation archive retains sources, receipts and executable digest only."
+  },
+  {
+    "path": "disk-memory-lease-retirement/standalone-01/probe-opt",
+    "bytes": 465800,
+    "sha256": "e8c9e4c5fb85cf3f8053424386faf3b0ab39ed45ef5fc8a3dffb5535b17ab46b",
+    "reason": "Native development probe executable retained under target; documentation archive retains sources, receipts and executable digest only."
+  },
+  {
+    "path": "disk-memory-lease-retirement/standalone-01/probe-debug",
+    "bytes": 490424,
+    "sha256": "7780d39d43303c36a661e9ec944d978def106a9052549bd052b5aa587aef4330",
+    "reason": "Native development probe executable retained under target; documentation archive retains sources, receipts and executable digest only."
+  }
+]

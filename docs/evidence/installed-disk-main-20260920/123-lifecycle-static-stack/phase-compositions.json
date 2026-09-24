@@ -1,0 +1,11 @@
+{
+  "scope": "outer + measured Box::poll adapter + one phase poll only; excludes runtime/test wrappers and phase callees",
+  "run123": {
+    "prepare_completion": 733456,
+    "complete_recovery": 790960,
+    "resolve_expired_completion": 422080,
+    "exercise_route_publication": 500160
+  },
+  "run117_expiry_three_named_frames_excluding_box_adapter": 1732976,
+  "run123_expiry_two_named_frames_excluding_box_adapter": 422016
+}

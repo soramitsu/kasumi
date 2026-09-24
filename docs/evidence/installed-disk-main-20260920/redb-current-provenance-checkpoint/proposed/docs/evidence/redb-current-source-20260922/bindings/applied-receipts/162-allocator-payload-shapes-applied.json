@@ -1,0 +1,44 @@
+{
+  "package_manifest_sha256": "e78a1d2eebfd9174f73c9f7285f7526b0dc784c24250543768d9a7c03ae4205a",
+  "patch_sha256": "6b2e9c49d20f1fee3d345c764a9566bd929eeee30ea9c9dbc3d6742edf414235",
+  "review_receipt_sha256": "8406251595248ba351c584af868f9b93e8cb9257de3e413f04612ec809dc7688",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+      "base_sha256": "b57f485716c730beeea59136ca46bbf51b6223ecb010bfbcc3891506b6ed7953",
+      "proposed_sha256": "264a6ff593652d087671d91c967735d093228dfc957f165617ceb0bc2d3d1968",
+      "base_bytes": 7451,
+      "proposed_bytes": 11047
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/allocator_state.rs",
+      "base_sha256": "300e62c37286e48719318534454f2953de1b3b6bcd1140fa428c634d1e976790",
+      "proposed_sha256": "6e34c9e08eff6ec3bca28629a0c1d6294dcf4999885006f08301741c416e4147",
+      "base_bytes": 8469,
+      "proposed_bytes": 11265
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/allocator_snapshot.rs",
+      "base_sha256": null,
+      "proposed_sha256": "81622f3608ac4576520ee8854b2ddaa10ee396cfece7d8a26963e0580a6d363c",
+      "base_bytes": 0,
+      "proposed_bytes": 22593
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/mod.rs",
+      "base_sha256": "842420b03df7877e6e57dc09b714d0cb1b122958dde2accd3526365b8cd1b30e",
+      "proposed_sha256": "d120df8081dba0415d34e7719cf4b126cf267aa9f638e095db2e662b32eb9574",
+      "base_bytes": 919,
+      "proposed_bytes": 1007
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "base_sha256": "1a4e62e43fba843b71b91f1567995c903a8dded5b8cf57dad0561da7f1202159",
+      "proposed_sha256": "e33035e264daca748c6d3f90bf95b95763d6e9e14a0ad593187e29a87bc18f80",
+      "base_bytes": 63146,
+      "proposed_bytes": 63461
+    }
+  ],
+  "branch": "master",
+  "scope": "payload shape and semantic validation prerequisite; complete ownership/workspace remains open"
+}

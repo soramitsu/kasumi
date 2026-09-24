@@ -1,0 +1,46 @@
+--- a/crates/kasumi-engine/src/bootstrap_fixtures.rs
++++ b/crates/kasumi-engine/src/bootstrap_fixtures.rs
+@@ -81,12 +81,19 @@
+         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+         let (persistent_config, scratch_config) =
+             crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
++        let metadata =
++            crate::test_utils::isolated_disk_metadata_bytes(&persistent_config, &scratch_config)
++                .unwrap();
+         let storage = crate::test_utils::FixtureStorage::open(
+             &persistent_config,
+             &scratch_config,
+             Default::default(),
+         )
+         .unwrap();
++        assert_eq!(
++            crate::test_utils::reserved_payload_bytes(&storage.admission),
++            metadata
++        );
+         let node = storage
+             .create_new(
+                 directory.path().join("persistent/node.redb"),
+@@ -166,6 +173,11 @@
+         }
+         audit.shutdown().await.unwrap();
+         let drained = admission.snapshot();
+-        assert_eq!(drained.reserved_bytes, drained.bookkeeping_bytes);
++        // Shared installed disk metadata remains charged after all three
++        // databases and their shared audit/maintenance workers have drained.
++        assert_eq!(
++            drained.reserved_bytes,
++            drained.bookkeeping_bytes.checked_add(metadata).unwrap()
++        );
+     }
+ }
+--- a/crates/kasumi-engine/src/tenant_audit.rs
++++ b/crates/kasumi-engine/src/tenant_audit.rs
+@@ -695,7 +695,7 @@
+             Some(&reference)
+         );
+         assert_eq!(
+-            std::fs::read_dir(directory.path().join("external"))
++            std::fs::read_dir(store.durable_directory().unwrap().join("external"))
+                 .unwrap()
+                 .count(),
+             1

@@ -1,0 +1,1765 @@
+{
+  "selected_artifacts_after_compile": [
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/proc-macro2-1d2170055ad15d80/build-script-build",
+      "sha256": "a2fe97fa0e7e674ec8f46095fcac594266a9963038b9690939cb11a517e25db2",
+      "bytes": 625024
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/quote-b6acb3ddedc82e37/build-script-build",
+      "sha256": "4aab45d73117e124768fa5adf1bdcb0f1a5079681a3606eee6dedc569f71d409",
+      "bytes": 568736
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libunicode_ident-ebe82e1472193bf3.rlib",
+      "sha256": "b4b4c74c5c2fcb80de7b5078bce92b5c872509849474d16bd241c583d56f9d15",
+      "bytes": 51584
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libunicode_ident-ebe82e1472193bf3.rmeta",
+      "sha256": "414aee8ef5f6e8350ce606381d86f363ea205e3b4ad496aea3f24b3d74a34dc0",
+      "bytes": 32925
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libproc_macro2-55815e1867ec6ee3.rlib",
+      "sha256": "b6f9c504eeb1059d80adba279df50f2679c878dd1e8e600981d74ee0f2464ed5",
+      "bytes": 979048
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libproc_macro2-55815e1867ec6ee3.rmeta",
+      "sha256": "49b73f318d4220079eaf0ea3f81840ea87c8b1aaacd1c0b70c6965e8bad0e633",
+      "bytes": 342206
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/libc-1d797fcbfe93b997/build-script-build",
+      "sha256": "28ca9368cf029c16c1dbcdf632bf1429c109f12f0e3e2cbb5d036be3153c182f",
+      "bytes": 646048
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libquote-04564932a2509d90.rlib",
+      "sha256": "8f6a7e0f3677676a22e606e444bdeda05c549871fff289858839f46d0b4d671c",
+      "bytes": 445048
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libquote-04564932a2509d90.rmeta",
+      "sha256": "a36933a0bb0759a37b3cd3a8e028198f7c24d00ab3025d13fa2687e655019271",
+      "bytes": 270486
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/liblibc-2e33b1430200ad69.rlib",
+      "sha256": "f5892822a2c61a40886c633d017b619fc793fa9b47a8cc4ecb0c1557d5c5dcd6",
+      "bytes": 2412440
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/liblibc-2e33b1430200ad69.rmeta",
+      "sha256": "d332edbe224149203255d5543043f51fd21849e4670952fabc258478ed3ecf47",
+      "bytes": 2385217
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsyn-1874ce77f42e10f7.rlib",
+      "sha256": "70e001f178aab238d99e79ba791d7b055c35ef2d27b4a524d95db47c3c0d5335",
+      "bytes": 10487592
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsyn-1874ce77f42e10f7.rmeta",
+      "sha256": "e6b3c41bea78ab4c253aa8881a43e9f1a54c0aff919fbe837dcbe9ca05a1bdb6",
+      "bytes": 5018647
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libcfg_if-dd44da4100d549b3.rlib",
+      "sha256": "0640f01af04dd72a5fd54ba2b1ce0809ea4fe5158e58c9f2ec19ed8bdffc9671",
+      "bytes": 7400
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libcfg_if-dd44da4100d549b3.rmeta",
+      "sha256": "f196c22a5b7bfe02c044e7b8df7215e6313b45795b58e5683a3fc8d0d569b777",
+      "bytes": 5501
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsyn-9bc820ccbdbdfa9b.rlib",
+      "sha256": "0384678a0804a70a5022c3bf50579d604aaccfa4e49f1ffe8e389d572f6b7523",
+      "bytes": 9730952
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsyn-9bc820ccbdbdfa9b.rmeta",
+      "sha256": "682635107574a6ce29edba2ed23c8b2d4b549551b535f1032a206ca59eb2b0da",
+      "bytes": 4264048
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsmallvec-768a99b7c6988dac.rlib",
+      "sha256": "c97dc1e2fde204838443cd39c069215e6d214d16194277c4e6273414783d6ece",
+      "bytes": 237976
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsmallvec-768a99b7c6988dac.rmeta",
+      "sha256": "13db5f0e5e3b30cd55739bf47881ffad4f81a3d5e2835bfae46b660f277cb670",
+      "bytes": 208942
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libgetrandom-b93a74a74bfe5a12.rlib",
+      "sha256": "031154ba3b859ef07cc8797a364d04ea57295111ae544f8037054a9c33db3ad7",
+      "bytes": 117320
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libgetrandom-b93a74a74bfe5a12.rmeta",
+      "sha256": "2fd3c04f23a3eaf834809e5b42d436e8c2d878bc7e655537b3c2e1f9325f5771",
+      "bytes": 52073
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsynstructure-686355e0b261e3bc.rlib",
+      "sha256": "e2a05e7d43a8238b38f0ec6cb01d577cc867e3b25e754b363b3a1d1a47fdc17c",
+      "bytes": 1211344
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsynstructure-686355e0b261e3bc.rmeta",
+      "sha256": "6ff5fba73116e9b5a969ec6fe9689d8c43af480e5fd6340ba77de5076dc47cf5",
+      "bytes": 236196
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libbytes-9925494b526c6fee.rlib",
+      "sha256": "23f2b7661879268c7c2aa14eefcabac512cff4f0fee83d127921b3da6c6bd83b",
+      "bytes": 1463880
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libbytes-9925494b526c6fee.rmeta",
+      "sha256": "ecb554c82c77f0019899265637505416299be138457e2fd63f6185d134c31843",
+      "bytes": 870507
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpin_project_lite-3f008d50a50c3bdd.rlib",
+      "sha256": "d7fcc95890d0cc36d57d67263c6e6dc5efcb64b7b5a02f3fcea2d5fa5b4012a8",
+      "bytes": 96192
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpin_project_lite-3f008d50a50c3bdd.rmeta",
+      "sha256": "b3167ed5534903c174ffcae80b2a18e0d6420d427c71f3532d24cad46b66d47b",
+      "bytes": 94251
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/liberrno-ce56062bcf3c2585.rlib",
+      "sha256": "3697d8f8c952f15972be25532d6f1e79dee0b342b4d746c735ddd870393bcadd",
+      "bytes": 66728
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/liberrno-ce56062bcf3c2585.rmeta",
+      "sha256": "2f3fb8571f76d2f42398dc9f41b5efd1f5fe1270c5933fbcdf3c9039d79f86e7",
+      "bytes": 16141
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libitoa-026cf0f37cb458ff.rlib",
+      "sha256": "002875527001f568c71b50c0cdc7b02172d1c5d1287354f3d78098adbbb2b9aa",
+      "bytes": 151128
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libitoa-026cf0f37cb458ff.rmeta",
+      "sha256": "9dc25a0e1f250e4648f8ee7fad7bd6e1cab6cdd5346200374e7c49e397564c15",
+      "bytes": 60430
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/parking_lot_core-1059fbd6fb473115/build-script-build",
+      "sha256": "d6a8caa690118cae38fab6ba2b58fc13d363ab2920a8fa1aa9c047af7ca3e2ac",
+      "bytes": 494288
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libzerofrom_derive-d632f19656d17ce6.dylib",
+      "sha256": "87d679192dd882585ef06d88d2ec8bf4e1558d968f8f139704b960d92f28a946",
+      "bytes": 4220776
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libscopeguard-a96251683d6f1458.rlib",
+      "sha256": "ba539beb5151ae6075938f810a45e839e6e3aac35b2946111b12c72941d8f53a",
+      "bytes": 27712
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libscopeguard-a96251683d6f1458.rmeta",
+      "sha256": "7dac4d5e8c65bda662db506e42b9a99e503063e6bfc2cbcc4fbac29bbd1af90b",
+      "bytes": 25799
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfutures_core-a9d4dbda5c06f75f.rlib",
+      "sha256": "11b5005a7fb37b86c15bc8a60ecf4f3bff585c7eb6932b84c08e3110f4ec6fc9",
+      "bytes": 106624
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfutures_core-a9d4dbda5c06f75f.rmeta",
+      "sha256": "08e00c7627fc242c920315be62115b7a5b2aac6bea9c289ae4c810ce0d5abf3e",
+      "bytes": 61198
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libversion_check-188de0cca3df455f.rlib",
+      "sha256": "c636519daf3e05661ccc1bca919122dea235f8effd2bb40191464e92e419cfbb",
+      "bytes": 375400
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libversion_check-188de0cca3df455f.rmeta",
+      "sha256": "1707861a6e505975e46a1e11d96341457353dae1080b3b91780b583d140e9158",
+      "bytes": 75096
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/liblock_api-a7c6005ea1716303.rlib",
+      "sha256": "2b1c66154c48328cb24ecbd6acf5c0cfe2bc0c2499ee654e385d114eaf15ecad",
+      "bytes": 386632
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/liblock_api-a7c6005ea1716303.rmeta",
+      "sha256": "65c6236e67999784710835676ea3187299c8fec6479cfe69395e15251e7b52f1",
+      "bytes": 379916
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/generic-array-84d93dc2463ba7f0/build-script-build",
+      "sha256": "250947a93499f39bd5fff841ba3fb99a69f36622c3da146590b519b63cbaa6ef",
+      "bytes": 648000
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libzerofrom-8c0f41f499e4e4f7.rlib",
+      "sha256": "9591a1261cddb00ac77671e749ef0093c614f58c32085a7e21a8e1de79e0f3d4",
+      "bytes": 97016
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libzerofrom-8c0f41f499e4e4f7.rmeta",
+      "sha256": "e5a0c8e7dcf305b93bd8cd526c7bb4c36f2a6c662b14d524ba90932d34a38a7a",
+      "bytes": 95109
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libparking_lot_core-bfc4b2e8535abb92.rlib",
+      "sha256": "22062221350c7af45ebf8bc21e467d2f8f9a60b6ac485362c8e6f4ec3a377197",
+      "bytes": 504312
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libparking_lot_core-bfc4b2e8535abb92.rmeta",
+      "sha256": "b39aca201d771b42b82f94470664ec44d4d5a2deb7911ec3d4e25b984fe594d3",
+      "bytes": 185841
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libyoke_derive-a4b61ec3caed2d98.dylib",
+      "sha256": "a74711d1440743f2db8617d3159bfaa5d8a1809836539c9bf3d12576bbe3154d",
+      "bytes": 3874120
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libstable_deref_trait-347bfbfa91e97210.rlib",
+      "sha256": "47d3150b85707044d642f33b566d2bcb2d68ef5476d64094c31986c8dc77036b",
+      "bytes": 12240
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libstable_deref_trait-347bfbfa91e97210.rmeta",
+      "sha256": "6db733eeebecb979b730f171cc46a7856aaaf280399103050e53f392befb3007",
+      "bytes": 10289
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libonce_cell-26ccf122468ba71b.rlib",
+      "sha256": "2b8ab580f3235061901931d9bc64535d85f3fdc02f9bed90c6c521b34eb8865f",
+      "bytes": 256568
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libonce_cell-26ccf122468ba71b.rmeta",
+      "sha256": "2bdc9c2eb234adf1e48ad38be59fba5fb4b984b2003b299e5fa337bde659892d",
+      "bytes": 193354
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libyoke-5b68a49455578006.rlib",
+      "sha256": "6f8bfaa92ddbcf68d9a5ea3e3634b702906905177e9d3fa13a352d5a8bfafe49",
+      "bytes": 239240
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libyoke-5b68a49455578006.rmeta",
+      "sha256": "ebafc5c4c8030d1ff8f1ae38d44b6b1f2326792428829886303275173c68fab3",
+      "bytes": 235648
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libparking_lot-37ce6c7920673bd8.rlib",
+      "sha256": "14b68524a756d0e02e471f62a3f4cc9c3a701065d420c88a2c7915785d9dde42",
+      "bytes": 1025608
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libparking_lot-37ce6c7920673bd8.rmeta",
+      "sha256": "f2c04bbdd35076fc065886a83d8d7c7fb4e086b9aa384416d6b75ea01fdef692",
+      "bytes": 201381
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsignal_hook_registry-345cfb0389d239fc.rlib",
+      "sha256": "89c33cb13fb1336f1c9ea20183b7bc28dd424c68f171cb5ecebebacd8afb44bb",
+      "bytes": 579008
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsignal_hook_registry-345cfb0389d239fc.rmeta",
+      "sha256": "551104321e8bb94657a776365c6f46b7892f64c401055b5ee141e736978b2790",
+      "bytes": 78299
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtokio_macros-f257b544a320af04.dylib",
+      "sha256": "1f15307c51203d33bf95def372bf9469a4070480e98fd4a1e17c75e2abd22f13",
+      "bytes": 3117784
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsocket2-4e9dffff71c8fa1e.rlib",
+      "sha256": "18fced2d4ad3330bdf3b638315a16e3f36972d466f3ab58ac8c6d5b823059348",
+      "bytes": 1103600
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsocket2-4e9dffff71c8fa1e.rmeta",
+      "sha256": "e8ef81295be9c19b1104f2124cb14b50b1471547db75b555d1b28318271590ee",
+      "bytes": 342249
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libmio-16c86616c5db8aca.rlib",
+      "sha256": "c4af6811245512d8bf848c9b91a90f0afccad3627d70f83e5398a82cbe13b5ea",
+      "bytes": 1453136
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libmio-16c86616c5db8aca.rmeta",
+      "sha256": "4ddaf6e9c5640a298321ceffecf24b36931e873235a5fedcbb0b2ff08d8b5fd1",
+      "bytes": 448650
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtypenum-6112e92b49c9769f.rlib",
+      "sha256": "f73d3e7d0be308152a60d7e1fae3df5439d1dd3482cfec053b79456d7ca82191",
+      "bytes": 2741280
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtypenum-6112e92b49c9769f.rmeta",
+      "sha256": "3190d57ef7c1104649a7ff23f89825665d2c3e1d15549cf506b3ce6cad890207",
+      "bytes": 2720194
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtokio-e5b18a2ee817117c.rlib",
+      "sha256": "a2e4d757ac9c3f70dc29e4b28d7af3c9c71b196ceed92abad7c80cf1b39719fa",
+      "bytes": 26778808
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtokio-e5b18a2ee817117c.rmeta",
+      "sha256": "f34f1aba4af0f305abb03ea21c73ecf00cc0c5de37a8bd59d1985aae7d575e24",
+      "bytes": 8647152
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libgeneric_array-0675e24b83eff3de.rlib",
+      "sha256": "6a3a3dcdfa0d98da40b6ada4eea5f05928e4dd5638e29e14a2994f1306dc7e8d",
+      "bytes": 819136
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libgeneric_array-0675e24b83eff3de.rmeta",
+      "sha256": "dc7c29108c114902c2db6ff32f6eb051f1d807b1041ebbfa3a8e8cfdf7ef35b1",
+      "bytes": 809167
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libzerovec_derive-ef64d9f830fd3703.dylib",
+      "sha256": "bdde1fa4000b6b3ff70e56173e357c10f774af53195b7a11138ad68dca4cfa71",
+      "bytes": 3473496
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libequivalent-d6d60dfc40ac3398.rlib",
+      "sha256": "5f0e30543ef919bf6ce45069a4d28289bcbb2ea093f2938026b00903047a12c0",
+      "bytes": 10112
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libequivalent-d6d60dfc40ac3398.rmeta",
+      "sha256": "241dfe6da0fbc1bb2a6cf32e701080e4a9e7ad4d7673ca22616f808da91ab71d",
+      "bytes": 8195
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libzerovec-b50b890942cfe332.rlib",
+      "sha256": "68e5679f5294810ff1f18474490d97af86a7a596f7f20fce055a49b1cb8c454f",
+      "bytes": 1175992
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libzerovec-b50b890942cfe332.rmeta",
+      "sha256": "4c708cf8ae58f7c7fcb72d6284599ce116459dffa5c2dd60619518138df07501",
+      "bytes": 1088874
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libdisplaydoc-5e3bf2f98f543b7b.dylib",
+      "sha256": "2bb51c723bc777d6180ccf8ccf7073c9fd231669f8137c90d3b998b3cac12b52",
+      "bytes": 3226616
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtracing_core-6545df21a4a143b1.rlib",
+      "sha256": "8fca182ed3c2f197fd63d30710212829f1af5fa511a2a8f7d7e796379699200f",
+      "bytes": 1881368
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtracing_core-6545df21a4a143b1.rmeta",
+      "sha256": "c27abc62cd80231f913f9677126796d0bc8891062e51f07028f629b287a7de49",
+      "bytes": 584978
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhttp-5aa7572ae64e6024.rlib",
+      "sha256": "701e47afbccee433cf7225dd7658fd22ea86a813ea4468b645084aae791131b2",
+      "bytes": 3131064
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhttp-5aa7572ae64e6024.rmeta",
+      "sha256": "ff3686dce2092645b56c0fbae65c43afeed80574d6f8f534e30af1e88bb33f2d",
+      "bytes": 1415296
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/librand_core-50f78441a0ce02c6.rlib",
+      "sha256": "c4f18ffa7d07215f9352a9b1dd7050252cee4f96740e34a36d9d3004b50ef638",
+      "bytes": 172944
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/librand_core-50f78441a0ce02c6.rmeta",
+      "sha256": "b99dd6c702b0ca24e0e2d5697bbc60e8a90682b2a3224311e35e3a2295e39aa1",
+      "bytes": 114085
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtracing_attributes-21083bfe03b66384.dylib",
+      "sha256": "969e0551d46e65bd8635b84a54769b40bb5559af661e71ff1d7477c7530f9544",
+      "bytes": 3959376
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libzeroize_derive-e7632f5833d53aaa.dylib",
+      "sha256": "ed789ddb90786f2cec8c53ca0b5744cd17f36df81a484aaf2af952339f352cf9",
+      "bytes": 3254184
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libshlex-9b4946ebe4fcfa5c.rlib",
+      "sha256": "77eb937f3b7ddab0f7cbae2ae1005116660a77fdf6548c78b274f870d56fbc06",
+      "bytes": 107728
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libshlex-9b4946ebe4fcfa5c.rmeta",
+      "sha256": "7ba05117beb912b0263e3aa25d1ef8ab476c54f3a1806eb88cbf425b79625ff7",
+      "bytes": 48644
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsubtle-6a18727f75d12160.rlib",
+      "sha256": "c7b50d85f0c27cc91be586788288fcf23efc413d29a0f811edb11d9e5a302ab9",
+      "bytes": 125248
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsubtle-6a18727f75d12160.rmeta",
+      "sha256": "9407af9fbe6c9617c3a8e6237b42db940d65231b71e13a4b59c96cac9ba8cb7c",
+      "bytes": 117383
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfind_msvc_tools-c242ba15e15b06ee.rlib",
+      "sha256": "e228e6bcc94bca5bed10906039f19dbf14510d3e9934926ad99c84dbd8259f50",
+      "bytes": 235832
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfind_msvc_tools-c242ba15e15b06ee.rmeta",
+      "sha256": "50bc36d4eabc18c6099a50cf98e0074f097ffdb219ece1856c52eb751619d98e",
+      "bytes": 51287
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/liblog-c278885500066201.rlib",
+      "sha256": "a5c9359ead83c5a273de372a441d7454652940edfa4d8468a9c8c31913f483e3",
+      "bytes": 260136
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/liblog-c278885500066201.rmeta",
+      "sha256": "5855b48c6daafa977ec39bd9a4ce1ad2a2f31b2617a32aba40606fc5eaf6a720",
+      "bytes": 189436
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libcc-5fdf1c4a1d747fff.rlib",
+      "sha256": "11507147f2fcbbc53a178181698293f176ffef24951d3229704128f13408a244",
+      "bytes": 2518160
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libcc-5fdf1c4a1d747fff.rmeta",
+      "sha256": "f89f5ef929c93b962c8b69f4e6b50d442728aaa8a5315605c4e3d1e8656e4671",
+      "bytes": 452214
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtracing-41793695576773a5.rlib",
+      "sha256": "a505f78fdfe431169062d909db56fc6e4cd30a14316e623e5214585a2bc41535",
+      "bytes": 784336
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtracing-41793695576773a5.rmeta",
+      "sha256": "2fa4e56795e1523a137f56f2dae17978b06bb3357bd8e5ab9861c01dc9a8d1a9",
+      "bytes": 602339
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libzeroize-391ab9330dab94a7.rlib",
+      "sha256": "62756f56bc078f603c0c63a69e2e0dcde696b1c71941de25d20f305355f224e4",
+      "bytes": 590280
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libzeroize-391ab9330dab94a7.rmeta",
+      "sha256": "ca31ed23ebcf7ab021087312cd104d75abed8e4c25bbbf03cbc4f4d5fdb68c26",
+      "bytes": 503661
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libcrypto_common-d4c1791276b68a53.rlib",
+      "sha256": "11e85619e2377bcfaffe97cbc9d86aa8da13e5f11e3893feb2f7d28db249f09d",
+      "bytes": 37784
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libcrypto_common-d4c1791276b68a53.rmeta",
+      "sha256": "72091e62713402633cef173764e7de4e2e609ef963b21626bb2543ebf5052fea",
+      "bytes": 32205
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libslab-45283b5f76293b8c.rlib",
+      "sha256": "8a5cd462a63c3518308c89ca3439e318a12990db9ae36ad13c9633537b57a19f",
+      "bytes": 149272
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libslab-45283b5f76293b8c.rmeta",
+      "sha256": "be750ac522db9b1e68c32a95efac9aef50b0f8227c577466235c3721e2f374e9",
+      "bytes": 143192
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/serde_core-73f9ae9c0aea013e/build-script-build",
+      "sha256": "6a5e09cff6a301528e62b23c4c99da4d3b0a1040c8c6ebe4e7a6599ce0ee986c",
+      "bytes": 597840
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpercent_encoding-17645fa2909f7167.rlib",
+      "sha256": "e40552754fdce7bd5c604ccb2864bddafae5c5d3f70115534049bebe15a566a4",
+      "bytes": 193632
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpercent_encoding-17645fa2909f7167.rmeta",
+      "sha256": "d501950041ba9288a2e51a203bcea9bc65eb46fc8713a33333638d2cb3fa68f4",
+      "bytes": 50872
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfutures_sink-18cf86b768051581.rlib",
+      "sha256": "ab02ef2fd069fc69198a6ec631f8de1f97af7b20dba212a09e4534ba59874a21",
+      "bytes": 33016
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfutures_sink-18cf86b768051581.rmeta",
+      "sha256": "4dff9ca4655c0f0473be553cba0d34bc520877d1a4d96721a7c7efe25a9a55e0",
+      "bytes": 31089
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhashbrown-34026e857d661bcb.rlib",
+      "sha256": "08e0de5a0218e7df85f82abca3ccc907cae403131923d32a59a3d2d12fa30971",
+      "bytes": 1296240
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhashbrown-34026e857d661bcb.rmeta",
+      "sha256": "69f74527941cd5022be3c665d69a4f7dbb6dd09640e134b1df36645e0e9911e9",
+      "bytes": 1219989
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libindexmap-13e35ee5a08d22aa.rlib",
+      "sha256": "1b6438bda5894032b0c1efa05f3d5ce33fc38c21715dc2d269a6cbfe139404d8",
+      "bytes": 1286912
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libindexmap-13e35ee5a08d22aa.rmeta",
+      "sha256": "75aa13c8de2a7e8bbe19e91517be43e41e0b263114b2dab3da07038619e66fc1",
+      "bytes": 1274218
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtokio_util-04fe076e8fc6dc68.rlib",
+      "sha256": "c225fed584627df3191d14f24b2e05194073c72c110370da253ca895cd548178",
+      "bytes": 1674576
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtokio_util-04fe076e8fc6dc68.rmeta",
+      "sha256": "92e201da53d88237caa4d609a5266a3452d6fa3097d3a281d5e721b9dbf5cc99",
+      "bytes": 903309
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/ring-7394104c97a1c1cc/build-script-build",
+      "sha256": "72cbb9591c94f52530f0a71d40545d7594d42ebc1e8fcb11495cc647f430688a",
+      "bytes": 2031936
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhttp_body-bd2319effb3b5127.rlib",
+      "sha256": "d539d1d8bef7b7ca8b070c2e5c345ad0aa2e799742c4396edbc6e8dfde0dcf67",
+      "bytes": 85472
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhttp_body-bd2319effb3b5127.rmeta",
+      "sha256": "a550c419db4677cacd38fb4903f1c690a4c7de88f4cee2f47477d7b389f589a8",
+      "bytes": 49626
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtinystr-a5f2993463af534b.rlib",
+      "sha256": "0d291a04de4aabd86b480798a8669d37b2d8dce1bc4765d21866493ebdcc7bbf",
+      "bytes": 363984
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtinystr-a5f2993463af534b.rmeta",
+      "sha256": "da01d59be0c64e156972f1a5b9383be567a813dcf419f08b7329a77f26ee7b56",
+      "bytes": 308076
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/liblitemap-4dfb54c4a7f8a0d0.rlib",
+      "sha256": "6f51b14ec0fa1b1d6c5404eb8a9dfc1dfe0395013cc3b8163be0ee9e85656016",
+      "bytes": 282528
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/liblitemap-4dfb54c4a7f8a0d0.rmeta",
+      "sha256": "f23039367aa959ce4abf016ca3223138d9d47a8cb8ac2da991b6f04380ea7384",
+      "bytes": 276227
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libwriteable-e9f55a693a6c10ea.rlib",
+      "sha256": "182d99255c4149098969c549fd36426ce8c770f28e02da6b4389f6cd89310fac",
+      "bytes": 372992
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libwriteable-e9f55a693a6c10ea.rmeta",
+      "sha256": "d4f1b881a68619ccf2a710e13c0b9b02b2b95445e32554ca24e88fb1fef9c4ac",
+      "bytes": 245183
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libicu_locale_core-ce7663dee115b843.rlib",
+      "sha256": "6013ac4d0b11bc63103821ad1926d7e64c46899ef946c36f9fbfb88bb443c1c3",
+      "bytes": 3607312
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libicu_locale_core-ce7663dee115b843.rmeta",
+      "sha256": "14bd635ddd0d28cf7c713405f372fa7176c8f67592077b932e88482167c932d0",
+      "bytes": 1560674
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libserde_core-5935156f8c1a4e2c.rlib",
+      "sha256": "d5558d1c6114d1b3b283344255878ff4f04417128c3ca5454be14cb24b550fb3",
+      "bytes": 5104800
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libserde_core-5935156f8c1a4e2c.rmeta",
+      "sha256": "9249a4768c2e5e22be04d3709c26909ff789c94c655836ae4d3a2a2d73e598dd",
+      "bytes": 4772680
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpotential_utf-e3bbc852ca6cd6bf.rlib",
+      "sha256": "9fddf07878d122e90bb93ee305aefbd8f144280b0dbece98a81bcfc2b2191b80",
+      "bytes": 126568
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpotential_utf-e3bbc852ca6cd6bf.rmeta",
+      "sha256": "cee2bf9560ad951445e45a1e5dfcce5ca5ca10b3ee776b8106bb1d7cfe94ff4b",
+      "bytes": 43782
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libzerotrie-e6c98cf38581e768.rlib",
+      "sha256": "e30e6a7ce954bc912b5f12ea424c22def29e4279404cf4d6505948e9cf8f280c",
+      "bytes": 575944
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libzerotrie-e6c98cf38581e768.rmeta",
+      "sha256": "00641217241343ca7bab65fc6bd44bd1eed3d9b553548d2d2b5a642dd0a5db88",
+      "bytes": 445065
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtower_service-3acf895906ac0309.rlib",
+      "sha256": "ae7adc5197ae0848741328cf23898de546f8a184ded63ee2e9d78ed4f0246f3a",
+      "bytes": 25064
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtower_service-3acf895906ac0309.rmeta",
+      "sha256": "ea592daa0c35cf218eb523a2ed8df16565937dee8bcef105fcd40ff418133185",
+      "bytes": 23136
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libutf8_iter-3d1699a1449aca4a.rlib",
+      "sha256": "537e585b939c85be8ac32cffc5670fb37de043519c8005d03f80e74c1abc3c89",
+      "bytes": 86400
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libutf8_iter-3d1699a1449aca4a.rmeta",
+      "sha256": "1d454afda5b91adab66fd6a4011c26b5d125e81dd9f9496ca635e2a83fe158e9",
+      "bytes": 50259
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfutures_task-0a562b2dcb6f6590.rlib",
+      "sha256": "b4726f16f234fa01ba559e0af71fd277a056bda97a2e649f9fd15e0a97487d14",
+      "bytes": 162480
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfutures_task-0a562b2dcb6f6590.rmeta",
+      "sha256": "153be7411dfc506397577ef637c656ae5cadf96e05af3df1fb7440fa6bf28d53",
+      "bytes": 91219
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/httparse-b9573e8daf6a18c6/build-script-build",
+      "sha256": "a466bb5d7871eca5be2ebbeba8f522d28bd6844cc1ff446c1c1f9bad9cf12523",
+      "bytes": 630048
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/icu_properties_data-a785c390ba3c26a0/build-script-build",
+      "sha256": "9e9d656eea0549e2d601975d447dd4110ac8411a5dd68aad327558a05a3b6a16",
+      "bytes": 468448
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/icu_normalizer_data-309c7073e7dcd100/build-script-build",
+      "sha256": "6c5c95f90d083cc82393bccea8445bf62b09346fdc98a6ffadbd3797b211ed55",
+      "bytes": 468448
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfutures_util-2bcc58379be00cf8.rlib",
+      "sha256": "c9e59f484a5a4d769e4721659aa8b9c1fb3c834abb20b04a54c48ec637cd64d2",
+      "bytes": 4239936
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfutures_util-2bcc58379be00cf8.rmeta",
+      "sha256": "5c07757b00c25c8a203ae7a8f8f3795205bf55956e6ce8cc5a5340da8077eafd",
+      "bytes": 3901566
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libicu_collections-485567d4b2c6c456.rlib",
+      "sha256": "1a6dc2b6332cdec09798178a37c3e9f589c3579595227a855a0abf4fee860320",
+      "bytes": 1308504
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libicu_collections-485567d4b2c6c456.rmeta",
+      "sha256": "27249223fcfc31a10b29027aa7699d60cea383d4235d127578abe8a849cb72a2",
+      "bytes": 417583
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libicu_provider-bfdc25f5685771e3.rlib",
+      "sha256": "2c305f781279cbd54a23b94e9fd6bfdb75b012b19e66ccbbbb2252d66b0c96cb",
+      "bytes": 708800
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libicu_provider-bfdc25f5685771e3.rmeta",
+      "sha256": "295c6a09be6dc55354d255da61f5047ee046d681408a3af2caabe38207f4e053",
+      "bytes": 420481
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libatomic_waker-a9788ddb5905c48d.rlib",
+      "sha256": "98ee614ea1b528b46af7605c9ed03bc966629d6054b53520914be82e0692f7c6",
+      "bytes": 57920
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libatomic_waker-a9788ddb5905c48d.rmeta",
+      "sha256": "d282dedd51e49f5a46d239bdda359017d0c9a2cbf6a9243880b67e2ccba61bef",
+      "bytes": 14028
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libuntrusted-9dd6ba3a2f2743f0.rlib",
+      "sha256": "afdc3b0ba7aeb14404fdbcd72926a6c96406e7278e97d075cd146cb4647906c4",
+      "bytes": 50624
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libuntrusted-9dd6ba3a2f2743f0.rmeta",
+      "sha256": "6b420c329c04c64ebcc9ec2f7c177d8abcbdbde1ea5f96c7f20063df00eac913",
+      "bytes": 42458
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfnv-ceadf02189e8409b.rlib",
+      "sha256": "8f7df650146e0eb11eabaa00e4246b18ff53e7eb88896eb4d4ea72ac45fd6c66",
+      "bytes": 12832
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfnv-ceadf02189e8409b.rmeta",
+      "sha256": "f9330336c64f6c8e7ad17a57d33718ded660906c7548e4959c516cb5981e6b60",
+      "bytes": 10944
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtry_lock-b6b1def1f0bc04fa.rlib",
+      "sha256": "9fd6df58a43531fd0ea95e2080dda8d7924e8243669b0f1b246fe42040ec87fa",
+      "bytes": 27944
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtry_lock-b6b1def1f0bc04fa.rmeta",
+      "sha256": "81f331104723b1e88eac526e5722409aeea7776bd6b01621fc474a7bbdd83e4a",
+      "bytes": 22281
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libring-fcd6f9603e181a93.rlib",
+      "sha256": "5afee99019968e72907f809532ea0c62225e0c0d0e13246bc63b4cfc5499349b",
+      "bytes": 6546728
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libring-fcd6f9603e181a93.rmeta",
+      "sha256": "73251fcb940dc6f32d44efa4651854bfb5a5c05f6a325fdd6fc5b987d91b1b37",
+      "bytes": 1857191
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libwant-2697c18ce1c9f289.rlib",
+      "sha256": "9b933ae11822d462a9b56773061dd8bb2f39d29bbd17b61c14db95880396e30a",
+      "bytes": 137296
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libwant-2697c18ce1c9f289.rmeta",
+      "sha256": "795c1298875c9da04b35f51c0939acbc7faa4e2b50e5b3a0044e062492408ab8",
+      "bytes": 32270
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libh2-a475f81ec5845b0a.rlib",
+      "sha256": "e37fb6203478011c11ccb7502910f1790e0f023cf37f4bd09c9ab15f74735162",
+      "bytes": 9732304
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libh2-a475f81ec5845b0a.rmeta",
+      "sha256": "2ea9f03fd78191fec30d8fca13648240d1d318e6fe66387c4581921aa484eac7",
+      "bytes": 4202790
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libicu_normalizer_data-3b6faa363c081daa.rlib",
+      "sha256": "b2491e6f39840938c06df0e2985a265fc630a8e95d10120d5d6bf74672ab4b15",
+      "bytes": 438472
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libicu_normalizer_data-3b6faa363c081daa.rmeta",
+      "sha256": "8d5e3b8ade665677b0aa02843128d9a369aa1e40d1df7532db674608a334da4e",
+      "bytes": 436515
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhttparse-88e04a4f8dab4331.rlib",
+      "sha256": "741550dbdbcb230a20dea17348007429ad580aee390ca3b78578ce44a7bf1ece",
+      "bytes": 743432
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhttparse-88e04a4f8dab4331.rmeta",
+      "sha256": "47158cdcc668fefd8a196fb4adf6f9188201cb321c32b8830e314fa52ff19966",
+      "bytes": 529645
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libicu_properties_data-001a3c484eceb3f0.rlib",
+      "sha256": "9a984b5dc7d941d19d4a76575c1d265aa7e8fc9ea3b5aab3e80dbc42bce8a4ba",
+      "bytes": 1864128
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libicu_properties_data-001a3c484eceb3f0.rmeta",
+      "sha256": "38c7ae269a15a2e0331900f4b3138686593ea1a1504c66a31de02e809fd4df2d",
+      "bytes": 1862176
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/librustls_pki_types-ffb2aac7e50b11ce.rlib",
+      "sha256": "3286bab24838725adb5b9d436d9e67777951f7de1b31b32efbbd9dbe3633359c",
+      "bytes": 1039840
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/librustls_pki_types-ffb2aac7e50b11ce.rmeta",
+      "sha256": "4cc4726241e985c8845d4ae32bc1bc5e453b9f86b7d302f766234913517336bf",
+      "bytes": 396201
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfutures_channel-06da6fbd9f572165.rlib",
+      "sha256": "0c7334df7f5d3f267fbb9e92e501e66348bcc9115db480c6c63bf9499b2c3f0c",
+      "bytes": 266744
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfutures_channel-06da6fbd9f572165.rmeta",
+      "sha256": "986fc965e0559109dc39fd00f399861ce2795f0abbd7f9a30e7aee4d226a0108",
+      "bytes": 239653
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhttpdate-02d25a160e35ef18.rlib",
+      "sha256": "f8dd504661e74913c28806c159213c79637aceae39f1dccdd37a6c79e5f50abd",
+      "bytes": 286448
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhttpdate-02d25a160e35ef18.rmeta",
+      "sha256": "324cbe8290f7bbd9c95fb87c7571725223f697904975b32a4041ee1162226c6d",
+      "bytes": 29430
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhyper-3fdc1fb2a264c4ce.rlib",
+      "sha256": "c2b9d5fb8530e5b9b58203e6c30bebff0d87c91d8db9eafdda23e22031fe0fbd",
+      "bytes": 5519544
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhyper-3fdc1fb2a264c4ce.rmeta",
+      "sha256": "03b6ae997c1cff14adffdf5015be9eb6f5a453a8f109ee132fb8a5192aa15395",
+      "bytes": 1944184
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libicu_properties-3eadb43dadb56e45.rlib",
+      "sha256": "8eb8ecfa4922d9de20551d5439a7b1668c7b90561936b2c15c3650b652cabb79",
+      "bytes": 4995400
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libicu_properties-3eadb43dadb56e45.rmeta",
+      "sha256": "d9f65b4a6c9254b83be29252d2f7514f86f52be08e64b0e5af60fae395b1e018",
+      "bytes": 2686421
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libicu_normalizer-335f40bce8070fd3.rlib",
+      "sha256": "cb7d88a384224b7776b680fa1db98bc2e578c1bf2ae244e8309dcb157b2a13bf",
+      "bytes": 1997208
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libicu_normalizer-335f40bce8070fd3.rmeta",
+      "sha256": "bf2957179c197a13a8e2368325fceaefd02d23621d5119d35c3d814b05b59b87",
+      "bytes": 583312
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libform_urlencoded-1a4ff509cc7e42cf.rlib",
+      "sha256": "b188efff921726ac8baa2a83b413327a4699da7007229c3a58da933cacae47e2",
+      "bytes": 162816
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libform_urlencoded-1a4ff509cc7e42cf.rmeta",
+      "sha256": "bfcd94ea25577591918a5c9dbdfd0db0741f28a54f5e8a315da03dc8694d3b84",
+      "bytes": 35356
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsync_wrapper-21ada6f727182f17.rlib",
+      "sha256": "08e8a9c8e9672e95968c479123a88b3cb13f0dfe43fa1f5a32be9e5d6047fbf5",
+      "bytes": 25384
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsync_wrapper-21ada6f727182f17.rmeta",
+      "sha256": "08d4c80c17a0975f38b5a5f0b328755108588a9d8f60437e6d16cabf40adc90d",
+      "bytes": 23461
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libipnet-07e88d5818d9110a.rlib",
+      "sha256": "9a4fc69221c739cc81736612b4035a9c81b596b1091b1be8f7b0813a48afdc41",
+      "bytes": 1456592
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libipnet-07e88d5818d9110a.rmeta",
+      "sha256": "dba1384c45f58662113ef492fe8ebee554cf786c6483804b2fe73f0ef4f0c30c",
+      "bytes": 266343
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/zmij-fe6fdbeb265cfe25/build-script-build",
+      "sha256": "c97644c4ea65c3d7c64cd8e8b30fb60a031c838082ca2bf3cea9eed1f45c8013",
+      "bytes": 571616
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/serde-618fa281c4e0e264/build-script-build",
+      "sha256": "2d0783e64cda8948c46f6c72dd3ff22359129ea3835bb7f56631085ce37a272f",
+      "bytes": 597296
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libbase64-35589c29a679fc09.rlib",
+      "sha256": "6681e1abda8558173fc6b1328ebb9cb7894d747c821a26a602521f7985013f02",
+      "bytes": 553032
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libbase64-35589c29a679fc09.rmeta",
+      "sha256": "a8a10d682f8edf8d7caea9b2c74e2e8a3a7a603be5592cf702778288c76fe4fb",
+      "bytes": 309081
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtower_layer-861118904b53eb3d.rlib",
+      "sha256": "2f2e705b936dc6ab2e488290907f8d133e362fb7e2e6fdb846c553d5ee0dfe40",
+      "bytes": 83448
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtower_layer-861118904b53eb3d.rmeta",
+      "sha256": "396b12e4b3eb94479f70f0fc562af5de97822950d17bd3192500993780d62cc9",
+      "bytes": 77332
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhyper_util-1d9e8c4dfbd28253.rlib",
+      "sha256": "5741709c38b0c4f25cd9cbe3d8f3cd49c1c78c192b1ff036bfdbf588c5a72fc4",
+      "bytes": 4746536
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhyper_util-1d9e8c4dfbd28253.rmeta",
+      "sha256": "c4af1dc901ed4f7e64bd1a99cd2d70898840c90d8380dbc36e7d70182b4f3efd",
+      "bytes": 2002062
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libidna_adapter-e6f79acdaf900e3a.rlib",
+      "sha256": "0b8143adee3651771c5e3f7c8ef823ff42949c632f0b4630e06ca5c5aa688505",
+      "bytes": 94432
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libidna_adapter-e6f79acdaf900e3a.rmeta",
+      "sha256": "d1d21f0f42b2d0989324469b2bdb7d493e82bb6e57ecb0826a780ffe02fdfeb1",
+      "bytes": 32028
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libblock_buffer-28ad5ad108cf29cc.rlib",
+      "sha256": "c200821366a5ae00ada8f290c7abb41657ff8f87ce71cceaf6cef29a7c2e27ca",
+      "bytes": 55984
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libblock_buffer-28ad5ad108cf29cc.rmeta",
+      "sha256": "115c6e6226e08c43712dbcf6a351941035c032e575faa9021be713848c425a0a",
+      "bytes": 50501
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libserde_derive-fde9416a337218e0.dylib",
+      "sha256": "5b5e43faee9cd8501a68b1b1254582300dcc5a73cfca3373245c4858506c7ff2",
+      "bytes": 4476040
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/serde_json-b4f47899df15a78d/build-script-build",
+      "sha256": "13aa0c63d0a74aba3df2319e39951ecef7518f602c32eceb97860692d5a283cf",
+      "bytes": 467968
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/getrandom-80286353af0a2fda/build-script-build",
+      "sha256": "459b9ec4f1249370c3d1e14f3164561606de70a7079a7904322d390e1a08df16",
+      "bytes": 494288
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/anyhow-e5c961ff22c9a759/build-script-build",
+      "sha256": "d851aacf3ed4cf855fab061c6f6e4e4eeef6961f78aa163d12257d7e4e814c18",
+      "bytes": 623024
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/rustls-5b8e22fa3b5e9c48/build-script-build",
+      "sha256": "1175a01192a08319376cd5def97e0b0ded4afc110be1c2ac96f3567b25ad1589",
+      "bytes": 462064
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libmemchr-847396c199b2decf.rlib",
+      "sha256": "44297abf32defe5fd5ef49b5c9bb769d4e94c21d3b725ef8d87603c5ed437734",
+      "bytes": 1418992
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libmemchr-847396c199b2decf.rmeta",
+      "sha256": "01240c9a8eea41e12dcf3e9c4370a692e9fbb1c5f88c468e7984856746587323",
+      "bytes": 1119185
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libdigest-9de6769a62c6655b.rlib",
+      "sha256": "b4d2e73cc2cd39bd9d7a1c7a22d3f6f7c01447cf75c435c956ba42ce141bab05",
+      "bytes": 214504
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libdigest-9de6769a62c6655b.rmeta",
+      "sha256": "dbbee31ce8c0739a34aaece37cb97e58355c7d496d801e5488a23e732d0f4ed8",
+      "bytes": 205997
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libserde-6e5990041b5fa831.rlib",
+      "sha256": "32618bd5f7e6cb4c6acded21e08dd3157e5bf08a18323093e85d9084eb4541e4",
+      "bytes": 1074608
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libserde-6e5990041b5fa831.rmeta",
+      "sha256": "01d268bb96ccdbc459ed561e8cf372366555d3b09133b4c26e2983d8fb8dc3c3",
+      "bytes": 827152
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libidna-ff74689194652918.rlib",
+      "sha256": "eff6a47b0b5f503c9a7226b3852781c9a6d3e170650fb9bfc5c2d25bdc27f21c",
+      "bytes": 2464928
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libidna-ff74689194652918.rmeta",
+      "sha256": "63995bfa5c109bb7eebf26fa9cca30f005c82e727c513e5397d502355bd1fa8f",
+      "bytes": 239697
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libzmij-d781fcf90565b839.rlib",
+      "sha256": "0ed08bedaa06c61b5a219985b81af9546dc7859778aa35cfec267fc53a669095",
+      "bytes": 327400
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libzmij-d781fcf90565b839.rmeta",
+      "sha256": "70b86b1dc8cca485643f234fa11677340232b51201096991a54e59056a4c873e",
+      "bytes": 152592
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtower-ab68c86a38a8feeb.rlib",
+      "sha256": "e6f3a0a5acfe624fe84fea6673db18b50e52a89301103b956dc7ccab66e41ccc",
+      "bytes": 2381848
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtower-ab68c86a38a8feeb.rmeta",
+      "sha256": "0854eda6fb3c9d583e0e6661c98c02abd6272464e4114f7f0ee1c35803753540",
+      "bytes": 1980413
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libwebpki-2e69e7feb7ccdcf0.rlib",
+      "sha256": "4d89c01f556f45687ef653429f183171e74300112b699c39267347f065965bb7",
+      "bytes": 3237072
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libwebpki-2e69e7feb7ccdcf0.rmeta",
+      "sha256": "7a63d9faf1e613e5b2171a095f599e48ba34109a786d806b90ad1b7048b70e8c",
+      "bytes": 582539
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhttp_body_util-349955a53526cf30.rlib",
+      "sha256": "ada6a82fada28baa4550d3f677ea714360386edc96c2a33469ff4feff6f6b7d9",
+      "bytes": 402528
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhttp_body_util-349955a53526cf30.rmeta",
+      "sha256": "c34b702f490be2cc6c9e9b239d6c749fb79c54af16c755914b60b5fc7e6df485",
+      "bytes": 396845
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libbytemuck-2d22c8e2aa7d095c.rlib",
+      "sha256": "2407f5b830ea13316c3cbfb6b883253b5cc3fb35529daf9e30e0796f237eb8ca",
+      "bytes": 464408
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libbytemuck-2d22c8e2aa7d095c.rmeta",
+      "sha256": "8742d8abc632bbfb7738b7ab91b45a94e53231c5c2cb72e6b8309618e696ce0a",
+      "bytes": 438905
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/librustls-6c85ac862baf9044.rlib",
+      "sha256": "0bb60908c0e4df30404ae24a22476c23278794dfed908332ad4b67c150c08b4b",
+      "bytes": 20964432
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/librustls-6c85ac862baf9044.rmeta",
+      "sha256": "7683774d3da0cdd2df14915def7f3399606396636c88619d500b9f1a4848fa30",
+      "bytes": 4129034
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsafe_arch-48f305cb8ec7611e.rlib",
+      "sha256": "da76512031a915420d87d4c21ebf14add2b54983eae93474486473031381c82a",
+      "bytes": 30936
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsafe_arch-48f305cb8ec7611e.rmeta",
+      "sha256": "c3ff0311863d356f480742078b2911b62995f91b30e471111c9fa50c118ae47b",
+      "bytes": 29020
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libserde_json-575cca69ea0170ac.rlib",
+      "sha256": "558ab7a39cdcff62ffceb9fa258c270ae82ad6e820151eb57b91267befc1f510",
+      "bytes": 5220192
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libserde_json-575cca69ea0170ac.rmeta",
+      "sha256": "bfb68c9b907443f7a91792b025081c6b5bdb9023322e682d87b1de28b323afab",
+      "bytes": 1695583
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/liburl-007c8d961934ac47.rlib",
+      "sha256": "1deb5c6fdcddcc0adbdd070a8c785a95e92b28e8cf440a863d0e482716478e16",
+      "bytes": 1861936
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/liburl-007c8d961934ac47.rmeta",
+      "sha256": "f77cce1e4079d2bae7b36e1f4f957bff498745d0529a340d7a9a5c54855ac473",
+      "bytes": 363939
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libanyhow-a3e722315030dbb7.rlib",
+      "sha256": "51d416fdba88dccbf911783f3226738fab20536ca41e333984759d4dc23d3a04",
+      "bytes": 1206080
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libanyhow-a3e722315030dbb7.rmeta",
+      "sha256": "f0947a67af599224445969778db55da2a2c4f20c381301cf52118cb0bca7b2bc",
+      "bytes": 440889
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libgetrandom-949d76a5f7fb6972.rlib",
+      "sha256": "e52ba024f54321c57d0d06e7d0a621e416d3758960a9b2d60b8e0a2f6ec12784",
+      "bytes": 97936
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libgetrandom-949d76a5f7fb6972.rmeta",
+      "sha256": "fc24e846a8e789d23e80d4a648316f2e5e37e436db2b68a55d4971d0c9b90804",
+      "bytes": 58983
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libcpufeatures-7590c431a6b74e22.rlib",
+      "sha256": "43f0407053b6303388ce60aef824a54559a654a860a7ac16ab6f89d235c1c50c",
+      "bytes": 48120
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libcpufeatures-7590c431a6b74e22.rmeta",
+      "sha256": "7ba781a9599ee009ba5d498f7016a81950c3b3694388f67bdcbbc3b78384a5b9",
+      "bytes": 12973
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libbitmaps-defd5a68f0d7fcff.rlib",
+      "sha256": "11be7808e7daeedbe45da0241e30972e67e18813dfb80ddc2ebe8dfc5d40c3ff",
+      "bytes": 1369752
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libbitmaps-defd5a68f0d7fcff.rmeta",
+      "sha256": "a381cd347f2bf4f7ef9b48d134fad76b5f40a74154a932db2a9bd46aa0e4bb61",
+      "bytes": 1125748
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libbitflags-f98b48f7ae2da95d.rlib",
+      "sha256": "ec9182829b54c3db9b69608d450e4d62ee425b6dd332daada4693b22f7483bd6",
+      "bytes": 389872
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libbitflags-f98b48f7ae2da95d.rmeta",
+      "sha256": "bc927040d676c7b123e65dcedd7006b2952d433e55d3401423c09b5619121b13",
+      "bytes": 221311
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/thiserror-95e4ecc877fbfd11/build-script-build",
+      "sha256": "c198c1d367dad70c0454776c8fce082374541b4aa63592a1d164c1fe493e6a9d",
+      "bytes": 649968
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtime_core-f4e00e4cab4e2654.rlib",
+      "sha256": "0e7453d6a68397e4f8354f5e53fda1f27d74d0956834389155f7b061e26a4ebf",
+      "bytes": 478512
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtime_core-f4e00e4cab4e2654.rmeta",
+      "sha256": "c4413f5dbf150c8855594ad6e83acd8e2fbd2e65cba5a5340fbc0484b54134fc",
+      "bytes": 476599
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libnum_conv-bd64ef2de71da7b7.rlib",
+      "sha256": "59396a377e04554673338cecf9c17c0448b6be05cf909a8200516472e7d13914",
+      "bytes": 201488
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libnum_conv-bd64ef2de71da7b7.rmeta",
+      "sha256": "a59cc8f4b8a6d85a2a383476b7418c2403dd8967cc3b86f48a455ab900f2f10e",
+      "bytes": 199579
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/librand_core-fdd7b3183037004d.rlib",
+      "sha256": "0e518b343d7cf5f179779997247f268c1c58e206042ec8cbe463e9e0565ba114",
+      "bytes": 232648
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/librand_core-fdd7b3183037004d.rmeta",
+      "sha256": "7111979e4f26c074673931a7d9299ac4a5bd59f3be8b5777d8f79ef6040f9d5b",
+      "bytes": 123011
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/librand_xoshiro-e6f51367360a4667.rlib",
+      "sha256": "e365d036437b9e93cac1211cf129e562512bb8c655a1c72eb13c294b6b5adcd7",
+      "bytes": 490632
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/librand_xoshiro-e6f51367360a4667.rmeta",
+      "sha256": "fd6297c94f7184458996c12f79333ca2e654654fc5bad062fd8ad07e8ce32a70",
+      "bytes": 244360
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtime_macros-9849e0b2d90418e8.dylib",
+      "sha256": "4666edb58f26e4eefbf17bb7b77cd5574cd9424accf765a673e815e2994ae9b7",
+      "bytes": 1387032
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libimbl_sized_chunks-9c9f60aa289b112f.rlib",
+      "sha256": "7745a56d8dfdb4b03f10e1d2cf58c5ff7e9897acfc74fb068aec73165049fd57",
+      "bytes": 304168
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libimbl_sized_chunks-9c9f60aa289b112f.rmeta",
+      "sha256": "367d9ac767218f9d83dbd71e9108f472ce66b819b72a05567f81e72ef15a0589",
+      "bytes": 299291
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsha2-99a75cdbd7b7c566.rlib",
+      "sha256": "c0ff223f6655f261ed873b40eb4e9ce47f162207509a6b2e637ea6a55550141e",
+      "bytes": 283904
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libsha2-99a75cdbd7b7c566.rmeta",
+      "sha256": "f1df931fa7f9dfe9733128185f3001a24435c14d402b4f979d73dd4d7acddc96",
+      "bytes": 138777
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libwide-3ced9f57f5870169.rlib",
+      "sha256": "7529df5dabccc840f81b4353a817ce1928669243b0c2cd2d5b949e8ba7bbc7a0",
+      "bytes": 5836576
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libwide-3ced9f57f5870169.rmeta",
+      "sha256": "428f770cf9c4f4d7c347ffd79d7e5db1d0e0208814f1aa642bda429584bf912c",
+      "bytes": 5297456
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtokio_rustls-f962eeec0bee038e.rlib",
+      "sha256": "d22b14e8f88fb104b68eef8756f34f167b6a8d7fdccf453201c38d7999778f4b",
+      "bytes": 309056
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtokio_rustls-f962eeec0bee038e.rmeta",
+      "sha256": "71729b9db937066bc9efb5827e550090b6898c0b90b3e42104b5a1da342a75b0",
+      "bytes": 233631
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libinout-d4d352d4712fd219.rlib",
+      "sha256": "a2622d9d13e04898382abe21ea73a20079a6c886d746edd663cef6ca47904e27",
+      "bytes": 73904
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libinout-d4d352d4712fd219.rmeta",
+      "sha256": "965b11ba06392eb1b3654c4df6b34f529eeadb78d2d1ba417db248ec55410e4b",
+      "bytes": 66568
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libthiserror_impl-1374f94615c85b50.dylib",
+      "sha256": "7d707645dce5e5acdf602cf22bf72acd3583265ab8b72cd02892ae80a64a0be7",
+      "bytes": 3576008
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpin_project_internal-3a6fc525d02edc99.dylib",
+      "sha256": "627fe75601990e968fb93cc6e67f593643237e7ca641cff687b4ffeb503a7f5c",
+      "bytes": 3563328
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libarchery-fc9f1d767c1431fa.rlib",
+      "sha256": "00615501755312c5a41cb68a4dc1644481c0f58b3c769630630ec8a0a5bbd98c",
+      "bytes": 85240
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libarchery-fc9f1d767c1431fa.rmeta",
+      "sha256": "24f06b132fbdbf07b0ca7f891e5f814c1917c2d4aa5c2e31f47bf727b9046ace",
+      "bytes": 83333
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libderanged-2a6f7acb720db2f6.rlib",
+      "sha256": "daa83ab3233a58e1de195ea0e0bc0e0169df9454d63f45f65addd4674b5add26",
+      "bytes": 3531664
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libderanged-2a6f7acb720db2f6.rmeta",
+      "sha256": "2f5cadf29aa120bdc32abbc464ea741815b60af06381c650d3dce32bffc9df4b",
+      "bytes": 3529754
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpowerfmt-3ff909e8c10a75ed.rlib",
+      "sha256": "90c97d6cd5419758a6800a6ee2001349108ca55b9d8a09fc56b121eab078fb42",
+      "bytes": 278312
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpowerfmt-3ff909e8c10a75ed.rmeta",
+      "sha256": "a790762ded2988f989dc60638e009439359dc104ddd9cd00e3647526c42c0fc6",
+      "bytes": 137993
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libryu-a3e7516c0c691dfe.rlib",
+      "sha256": "077b8d7d39b6217008fe4190da78d2b26b92812a895f593df39f6262a0dc26ae",
+      "bytes": 197408
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libryu-a3e7516c0c691dfe.rmeta",
+      "sha256": "d488e0c4833c7c7e75a10175d441ffdea4b128c423c7c6689b34f8f671697fa5",
+      "bytes": 55133
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/rustix-79fb66a25a17c309/build-script-build",
+      "sha256": "8ef909e6b49cc0ac0961e0d7c4c1da449c130dffb4d98854df95e73ea6383c6b",
+      "bytes": 623440
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libserde_urlencoded-9942f08dba4d4b12.rlib",
+      "sha256": "6738b315af62d2ecb8b70da26a5f6ad0ad333c826c9c6bcbf2a9d83d1ef5225f",
+      "bytes": 282456
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libserde_urlencoded-9942f08dba4d4b12.rmeta",
+      "sha256": "075fb243fbcc8d9bdb5dde3d70a77739e12ff88d986224e6fec06154c4171d37",
+      "bytes": 225231
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtime-8142aed526ba5cdf.rlib",
+      "sha256": "556548797244edbecbd9cfd998f36d1454c9d31ffcef103bbe71f2506013664b",
+      "bytes": 4915472
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtime-8142aed526ba5cdf.rmeta",
+      "sha256": "b76f40562c6e9825f6535a81690d028e341431148090eec8e9bc36c92823d1e5",
+      "bytes": 4019599
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libimbl-49ea5ebf31d5fb2a.rlib",
+      "sha256": "4318e6ac977932a18cdfa6eecba89600b8e0667e07e5b7f2419130b3d3ec7b35",
+      "bytes": 1849384
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libimbl-49ea5ebf31d5fb2a.rmeta",
+      "sha256": "cec137f89919079fe7498968a4ea9a751e6d54f174bb6b670aba43119d2b0621",
+      "bytes": 1847496
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpin_project-12224fad2239019a.rlib",
+      "sha256": "cbf1689f934eaec4141d8bc243016e916e77706a431c44fd6a1bf66c2c08f72d",
+      "bytes": 22904
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpin_project-12224fad2239019a.rmeta",
+      "sha256": "19477fd3ef21b359999ffb788147baabb3d972a5162e530ee619a4d0815d29c3",
+      "bytes": 20978
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libthiserror-818e0ab0bcca328b.rlib",
+      "sha256": "0f20dbf02ac483ae75db6908737abd02958f5ea80469d26897a4de56d07a2966",
+      "bytes": 32552
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libthiserror-818e0ab0bcca328b.rmeta",
+      "sha256": "77c64f3aebef695177f6f4933477dacf64354c4aae953c2208566cfb935299ca",
+      "bytes": 30636
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libcipher-5f6da3b845bf75c9.rlib",
+      "sha256": "ee0fc2c96958660b341ec7f4db8592f13acafca9739fb83d802feab97b3e54e1",
+      "bytes": 207280
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libcipher-5f6da3b845bf75c9.rmeta",
+      "sha256": "8b95ccca2a87f8742846eb6ec6cca91c97adcc85a0887f4f33360efae440233a",
+      "bytes": 200162
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libuuid-0b3933a0a935a97f.rlib",
+      "sha256": "970a32270257f9ce7c47821dec5bbc6e3d12eefb95723bfe951c37f270987139",
+      "bytes": 950528
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libuuid-0b3933a0a935a97f.rmeta",
+      "sha256": "cc17b0dcc254db50c7dc13803ef6fa815abb5dbe57bc301badd2f88f45d9f786",
+      "bytes": 543141
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libkasumi_clock-6a84d0ab31ea931d.rlib",
+      "sha256": "5c1c0e886932ef1cdffd6bcfaa15b6c8c0e68552f89715f8778c504fa716d9c0",
+      "bytes": 1170080
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libkasumi_clock-6a84d0ab31ea931d.rmeta",
+      "sha256": "98e85a26c746a5d8fdd22a5657665ecd05b010d4c36c196053beb14e17e958ff",
+      "bytes": 24358
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhyper_timeout-0aae67ccf79d0f97.rlib",
+      "sha256": "a84b256b19ca7232762aa73a1fd8467ecbb2f004aae787101e13a42b244a6ccd",
+      "bytes": 160520
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhyper_timeout-0aae67ccf79d0f97.rmeta",
+      "sha256": "56d1618f597eb496153ad2b0366f1eec05c7c8f764b6af02fa3b938a69b66cc4",
+      "bytes": 158587
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libwebpki_roots-47f4b6956e10b71f.rlib",
+      "sha256": "f1c1f63d9131f75be59af9518bcbb155d572dca730a8e13b88ba14cc54ae2b76",
+      "bytes": 142064
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libwebpki_roots-47f4b6956e10b71f.rmeta",
+      "sha256": "ec3729d20483cffebe34032e5b7c71fac3746c7ac592257e2cccab49ddb27a7c",
+      "bytes": 140141
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libuniversal_hash-7091e9e1887fea53.rlib",
+      "sha256": "e361a192b56a8735ab4292796eb40ca5fb4ff1aabdb24f2aad4dcd2654d8e6a4",
+      "bytes": 27304
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libuniversal_hash-7091e9e1887fea53.rmeta",
+      "sha256": "e37ad31d2e9462dbc5d34da4ea3ca997ea9eb11919be2153b531b1f904500091",
+      "bytes": 25375
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtokio_stream-ce32f878933e5bb6.rlib",
+      "sha256": "757c777c48cf4d0a04081ccd207062674ddb1d719d3abaf6133a28281ccd4be2",
+      "bytes": 872304
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtokio_stream-ce32f878933e5bb6.rmeta",
+      "sha256": "f646bd1c5540110845636f733227c788b9b36737ad0fcc83996a1a9326880b80",
+      "bytes": 731699
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libasync_trait-c4de727f6d050a8e.dylib",
+      "sha256": "7cd06f2a0cc8ea13d6d30f5282b11caa55ed7f4f26e8530c6af165e7f1e48c16",
+      "bytes": 3793000
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/getrandom-f6c4962ba748c62a/build-script-build",
+      "sha256": "984c38ed856129f476be697654087b019c5e2ab065fb711d6c41e06beb7f91c3",
+      "bytes": 600864
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/build/redb-1b7b6c8ba0dce3c9/build-script-build",
+      "sha256": "56174b1dcb7684d17155ba6c634271848d6bf0a70e17b70dfff66bd027b5c995",
+      "bytes": 470352
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libopaque_debug-e96b9da85d95083a.rlib",
+      "sha256": "d21f1ebc240f0e0bf0877135af7eb8c926ac00d385d291195094309ef19dd2ae",
+      "bytes": 7560
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libopaque_debug-e96b9da85d95083a.rmeta",
+      "sha256": "a08ab6c7d1e6202165f3acd4f1bf5ac53cc96f2191237dd5046502f83802a891",
+      "bytes": 5638
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libbase64-9b5c486dae9924c9.rlib",
+      "sha256": "efbdbbd6431a5aab8be013f75351ffe1a225020c6a6444ed38d5acc839d5f833",
+      "bytes": 646792
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libbase64-9b5c486dae9924c9.rmeta",
+      "sha256": "9b51e79d9c8158c0c69d088016a23cdd67e6e536c27aed0665f41083577d34bd",
+      "bytes": 348176
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libmime-54e4560fc5c32268.rlib",
+      "sha256": "364a82e03f77d3c05a4c0c6aa96ac5eb296ebdda7bf899b42854d6391594820a",
+      "bytes": 394016
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libmime-54e4560fc5c32268.rmeta",
+      "sha256": "f4f13138cb61946680b031d6092d5f96f98a43d5035689b70d1c38b320c0c7a0",
+      "bytes": 127373
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libaxum_core-a6ad3086827cdd06.rlib",
+      "sha256": "8ad9df979069631ce9776c2e03d7772c32f08829fd7291c31c40aca91094ab7c",
+      "bytes": 3066216
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libaxum_core-a6ad3086827cdd06.rmeta",
+      "sha256": "88d2ec162697cffff86172993c7df31f1d8a73fe50f09390634c9bcf179c77b9",
+      "bytes": 2139228
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpem-f0ebf693a754f55d.rlib",
+      "sha256": "2e1a2ebe5c512f3b90ef93cc8e89c50f505875f9aa59be31c8c3fbb2469a2ef4",
+      "bytes": 796040
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpem-f0ebf693a754f55d.rmeta",
+      "sha256": "e3bb96f7de7bb47f2a1c878481d4b9da2c656902ecf5ffa8a1da289e3de3d44a",
+      "bytes": 67509
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpoly1305-30fdfd1a0ba47287.rlib",
+      "sha256": "e3f80cde6314a7a40dafb3f9827808b748d168f783d56d12720838ccb413f8ca",
+      "bytes": 173032
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libpoly1305-30fdfd1a0ba47287.rmeta",
+      "sha256": "621e14180d4a43fdb493183b53cb087ef76dd7f157ad8afc1a72599372a96914",
+      "bytes": 22539
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtonic-df7885d93768507d.rlib",
+      "sha256": "c7cbfec8cfb59ce2226683d439abc6471a055743673dcec7119c3e9f83af0069",
+      "bytes": 16062872
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtonic-df7885d93768507d.rmeta",
+      "sha256": "bf3013eaca5bb5ac204222402994edbb08f1f138d50a81956fb7cb3bcea3d009",
+      "bytes": 2237646
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhyper_rustls-79c457c5460a1752.rlib",
+      "sha256": "151eee4ea455205afec63f414d17cf48ef3a46b0d45c79b3529a1c376d2ff72e",
+      "bytes": 537600
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhyper_rustls-79c457c5460a1752.rmeta",
+      "sha256": "b225c32cfd64554d0cb60c3964d07074d6014c9f5b8f9815b6ab4a6974ecb50e",
+      "bytes": 95621
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libkasumi_types-12eedda1cfe2ab78.rlib",
+      "sha256": "ec9b8054e8ecc9da356a8f0cb09bec03d07496b7bff0a1b0d100904848718a98",
+      "bytes": 28487856
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libkasumi_types-12eedda1cfe2ab78.rmeta",
+      "sha256": "86f27f452f3505d93f0bd2635304aa3bcc37fb3c3a8fb9e245de1d8fae334c91",
+      "bytes": 11875164
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libchacha20-95ac60aa1bdf4740.rlib",
+      "sha256": "25f95c6edebc6be5ca2ee0a3fc74cbf595dab0482dc1e82dab653818ef0f2308",
+      "bytes": 91384
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libchacha20-95ac60aa1bdf4740.rmeta",
+      "sha256": "99d0b6f2d19be785e7cbaa7506e6e1f8d33488925477c51c01852139a3815490",
+      "bytes": 72458
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/librustix-59639740175308e0.rlib",
+      "sha256": "4a2668c198d1a400d1719dd2a38ce11470b2e7487228aa11d25be6db0f48fdfe",
+      "bytes": 4016136
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/librustix-59639740175308e0.rmeta",
+      "sha256": "3e5a4751ce6fb77b5bb8773e784f512817f3b0f8dfb0f5172160fcc642ffe3e7",
+      "bytes": 2466157
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libyasna-97454cb13630ef58.rlib",
+      "sha256": "737c93d054e595db7d1421fe9b3cb28b5ecad567e16e9c6e369fbac4ec51ae70",
+      "bytes": 1695368
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libyasna-97454cb13630ef58.rmeta",
+      "sha256": "3a630af932ba9b31b10e7f94adcf18489f11a38cc762cb8657a890a2cb049b00",
+      "bytes": 538257
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtower_http-8efd211bae2d24c3.rlib",
+      "sha256": "5ede06f053b2cc0319de1261ae5476b89919cfb056e8d59a0576b4374b2402e2",
+      "bytes": 796432
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtower_http-8efd211bae2d24c3.rmeta",
+      "sha256": "d3246fa2e40f8dcfbc4067f35bef649dd2b90a4d85fc8e7776052a9b9642e6a2",
+      "bytes": 473476
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libserde_path_to_error-78ff6a2673690251.rlib",
+      "sha256": "2f49d0b4877fc31f96435914db8f00a6a8787a8eb491014612676a116518672f",
+      "bytes": 531432
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libserde_path_to_error-78ff6a2673690251.rmeta",
+      "sha256": "fdfeb94d376c70ff10895d4f83a9b89765dcad8d03bf34582b596af3b01d2bc0",
+      "bytes": 387611
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libaead-0d80aa968983642a.rlib",
+      "sha256": "4374c5e1504c4ab6dfd58d1e89c02ce4a3b4f236e352761ed5b49f3ca808965a",
+      "bytes": 91216
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libaead-0d80aa968983642a.rmeta",
+      "sha256": "cbf70716e0d795fa4e54e21fb61d0f0693bba207b44c7c51e8b380ba56ef2e61",
+      "bytes": 58189
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfastrand-18b5b7d1f60e62d8.rlib",
+      "sha256": "35872a0919826b61ce5f6757d0c3a74beaeb14463b47c80ada584904c382bfe2",
+      "bytes": 267672
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libfastrand-18b5b7d1f60e62d8.rmeta",
+      "sha256": "fda227928f9f555d28f1a9785ea667eecff2fd916170a3fec920a420661ca846",
+      "bytes": 149231
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libmatchit-6cb8735f0de73be6.rlib",
+      "sha256": "399740b50cb9904313303c259a2776fb15b9ae9dcba90268a608c54ce2061777",
+      "bytes": 760136
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libmatchit-6cb8735f0de73be6.rmeta",
+      "sha256": "67e2477518109e5ab49ebc7604fecc184c60161b4016e2ea6e47bbb2713df361",
+      "bytes": 199296
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhex-aa3171ad8c679914.rlib",
+      "sha256": "eeb90c86b13e6fd77d2ff826fa52da3f9608afdc5773face5154b9c78de85538",
+      "bytes": 377488
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhex-aa3171ad8c679914.rmeta",
+      "sha256": "dbfba7fe804bb1555fc3a57b1003e03ace784adcf859c91fc5c0ec3a4bd8322e",
+      "bytes": 337196
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libaxum-c1239b14e0995c1e.rlib",
+      "sha256": "d1ab096f5f737f24e3c43d7987153847dab353617dca68280862d3f66221b05f",
+      "bytes": 8666768
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libaxum-c1239b14e0995c1e.rmeta",
+      "sha256": "83787f1b9e175955338bf43005f1952e9577ea2198a5c04c801571a188920080",
+      "bytes": 5280312
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libkasumi_serving-4b0a170a0cf8cbae.rlib",
+      "sha256": "a525eef699a555a494df51fdab6597b764ebd24fb613a17a7e571f42c22790cf",
+      "bytes": 17837832
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libkasumi_serving-4b0a170a0cf8cbae.rmeta",
+      "sha256": "9b537322ca277cbc51e4f2883e81ddfaa977d62b55c700ea81c5bbcff05627b6",
+      "bytes": 3352440
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtempfile-8f7f650d44bbec35.rlib",
+      "sha256": "845077d220aa7255fe305b9eb621855be256642e398065c8161f8df77bb7ee4e",
+      "bytes": 1055504
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libtempfile-8f7f650d44bbec35.rmeta",
+      "sha256": "4a696c966c41c632017291a9f46204828457480025f0dd0ebd45421cff4b5021",
+      "bytes": 239140
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libchacha20poly1305-3345933ce33cee46.rlib",
+      "sha256": "a69186812ee39b5b0cb3cf5c88b14e8c1334a9fdc1b7a8a6733979258e1ba64e",
+      "bytes": 44552
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libchacha20poly1305-3345933ce33cee46.rmeta",
+      "sha256": "6deee066b0ced50b69f8f8e2cc2fa5a4a1774b6234ec89fc05d99dcd82b119ef",
+      "bytes": 42611
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libreqwest-69be48681f0fc72e.rlib",
+      "sha256": "bccea3740085681d3dff14d5ee70e05ad855a583799fbd3634ee156154d76962",
+      "bytes": 23639056
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libreqwest-69be48681f0fc72e.rmeta",
+      "sha256": "65d49375940b1af7883abc4d49902b07745c8ca5f8446820f8a08d667b3c5346",
+      "bytes": 1058529
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/librcgen-dbac2562438ab2c3.rlib",
+      "sha256": "e8e955f8265b03059d1eaf84541fd7cb0639459079dafb65e745842f7586f984",
+      "bytes": 2819456
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/librcgen-dbac2562438ab2c3.rmeta",
+      "sha256": "ed4927f9afd54d40b991603ea5f1f87d128f155c4d6dae9dea9119f0f689ec7b",
+      "bytes": 618266
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libgetrandom-ee9b3b7ebb8ae93b.rlib",
+      "sha256": "9903f253dc40cb84ef5ead3279382ce5932a53021992b24ebd2a164f48e4407d",
+      "bytes": 96280
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libgetrandom-ee9b3b7ebb8ae93b.rmeta",
+      "sha256": "c5715ac084ee965e5ca2482dc9f210a086ae930af71d689e09d06d412dffdde0",
+      "bytes": 57972
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libkasumi_transport-c73225b2c9d59962.rlib",
+      "sha256": "63ae5f8ffa2ebf833fa1bc9479c2021cdaaf8ec0f4f592d2d503e9ffc0b28911",
+      "bytes": 17353080
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libkasumi_transport-c73225b2c9d59962.rmeta",
+      "sha256": "14b2153ed56fea336c2eac80884fe7bd39762af694ad7334cc1a9d6a3a41efdf",
+      "bytes": 137910
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libredb-d1e0e490be287147.rlib",
+      "sha256": "db072fa93753e78e48da9ec6e5f08f2af00c8a714f1d5a3af1839251798456a3",
+      "bytes": 24699688
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libredb-d1e0e490be287147.rmeta",
+      "sha256": "81bf421d4490b4ed8d96f597d628b8f61ccb531f87ade05a23f223104758743e",
+      "bytes": 3304254
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhmac-5694dbcbdfebc444.rlib",
+      "sha256": "8e529a1945396a5ce11cae82c838c928ef3d7f9038acb9e77eb05e99643780e0",
+      "bytes": 45784
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libhmac-5694dbcbdfebc444.rmeta",
+      "sha256": "ad489a7e6109f47ad23bf50e4b53f9bae2636c2ac885931005f4fa712b806cc8",
+      "bytes": 43894
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libquick_xml-490e2e801760815b.rlib",
+      "sha256": "b3540fa5a46925d8f63744e13d01b1a959ee0f772f70e313e23f0b616805c02a",
+      "bytes": 3210080
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/libquick_xml-490e2e801760815b.rmeta",
+      "sha256": "c1e4afd984e9f3809beffb55041dc9414f701cd8deebaf023028ceba4172ae4f",
+      "bytes": 1111479
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/kasumi_store-ef9210ce8cf70872",
+      "sha256": "f937a2b20f5a437826be6896a33341a7a627fa5c005ddbbe53cbc7914775b0f6",
+      "bytes": 51130816
+    }
+  ],
+  "selected_test_binary": {
+    "built_path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/kasumi_store-ef9210ce8cf70872",
+    "retained_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/store-test-binary",
+    "sha256": "f937a2b20f5a437826be6896a33341a7a627fa5c005ddbbe53cbc7914775b0f6",
+    "bytes": 51130816
+  }
+}

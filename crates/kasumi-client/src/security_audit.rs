@@ -83,8 +83,16 @@ fn validate_archives(
         || page.next_index.checked_sub(first) != Some(page.archives.len() as u64)
         || page.archives.len() > usize::from(input.limit)
         || (first < page.through_index && page.archives.is_empty())
+        || (page.through_index == 0) != page.snapshot_head.is_none()
+        || page.snapshot_head.as_ref().is_some_and(|head| {
+            head.object_id.is_nil()
+                || head.first_sequence >= head.next_sequence
+                || kasumi_types::validate_sha256(&head.ciphertext_sha256).is_err()
+        })
         || input.cursor.as_ref().is_some_and(|cursor| {
-            cursor.stream_id != page.stream_id || cursor.through_index != page.through_index
+            cursor.stream_id != page.stream_id
+                || cursor.through_index != page.through_index
+                || cursor.snapshot_head != page.snapshot_head
         })
     {
         return Err(invalid("archive page changed its original stream or range"));
@@ -92,13 +100,33 @@ fn validate_archives(
     for (offset, archive) in page.archives.iter().enumerate() {
         archive.validate().map_err(invalid)?;
         if archive.stream_id != page.stream_id
-            || (first == 0 && offset == 0 && archive.previous.is_some())
+            || (offset == 0
+                && archive.previous.as_ref()
+                    != input
+                        .cursor
+                        .as_ref()
+                        .and_then(|cursor| cursor.previous.as_ref()))
             || (offset > 0 && archive.previous.as_ref() != Some(&page.archives[offset - 1].object))
         {
             return Err(invalid(
                 "archive page contains a different stream or broken range chain",
             ));
         }
+    }
+    if page.next_index == page.through_index
+        && page
+            .archives
+            .last()
+            .map(|archive| &archive.object)
+            .or_else(|| {
+                input
+                    .cursor
+                    .as_ref()
+                    .and_then(|cursor| cursor.previous.as_ref())
+            })
+            != page.snapshot_head.as_ref()
+    {
+        return Err(invalid("archive page differs from its snapshot head"));
     }
     Ok(())
 }
@@ -165,7 +193,87 @@ impl KasumiAdminClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kasumi_types::SecurityAuditCursor;
+    use kasumi_types::{
+        AuditArchiveKeyDependency, AuditArchiveLink, AuditArchiveReference, SecurityAuditCursor,
+    };
+
+    fn archive(
+        stream_id: uuid::Uuid,
+        first_sequence: u64,
+        previous: Option<AuditArchiveLink>,
+    ) -> AuditArchiveReference {
+        AuditArchiveReference {
+            stream_id,
+            object: AuditArchiveLink {
+                object_id: uuid::Uuid::new_v4(),
+                first_sequence,
+                next_sequence: first_sequence + 1,
+                ciphertext_sha256: "a".repeat(64),
+            },
+            previous,
+            record_count: 1,
+            plaintext_bytes: 10,
+            ciphertext_bytes: 20,
+            key: AuditArchiveKeyDependency {
+                provider: "test".into(),
+                key_ref: "key".into(),
+                version: 1,
+                wrapped_key_sha256: "b".repeat(64),
+            },
+        }
+    }
+
+    #[test]
+    fn archive_cursor_binds_snapshot_head_and_page_boundary() {
+        let stream_id = uuid::Uuid::new_v4();
+        let first = archive(stream_id, 0, None);
+        let second = archive(stream_id, 1, Some(first.object.clone()));
+        let input = SecurityAuditArchivePageRequest {
+            cursor: None,
+            limit: 1,
+        };
+        let first_page = SecurityAuditArchivePage {
+            stream_id,
+            next_index: 1,
+            through_index: 2,
+            snapshot_head: Some(second.object.clone()),
+            archives: vec![first.clone()],
+        };
+        validate_archives(&input, &first_page).unwrap();
+        let cursor = first_page.cursor().unwrap();
+        cursor.validate().unwrap();
+        assert_eq!(cursor.previous, Some(first.object.clone()));
+        assert_eq!(cursor.snapshot_head, Some(second.object.clone()));
+        let continuation = SecurityAuditArchivePageRequest {
+            cursor: Some(cursor.clone()),
+            limit: 1,
+        };
+        let mut second_page = SecurityAuditArchivePage {
+            stream_id,
+            next_index: 2,
+            through_index: 2,
+            snapshot_head: Some(second.object.clone()),
+            archives: vec![second],
+        };
+        validate_archives(&continuation, &second_page).unwrap();
+        second_page.archives[0].previous.as_mut().unwrap().object_id = uuid::Uuid::new_v4();
+        assert!(validate_archives(&continuation, &second_page).is_err());
+        second_page.archives[0].previous = Some(first.object);
+        second_page.snapshot_head.as_mut().unwrap().object_id = uuid::Uuid::new_v4();
+        assert!(validate_archives(&continuation, &second_page).is_err());
+        let mut missing_boundary = cursor;
+        missing_boundary.previous = None;
+        assert!(missing_boundary.validate().is_err());
+        assert!(
+            serde_json::from_value::<kasumi_types::SecurityAuditArchiveCursor>(serde_json::json!({
+                "stream_id": stream_id,
+                "next_index": 0,
+                "through_index": 0
+            }))
+            .is_err()
+        );
+    }
+
     #[test]
     fn rejects_historical_restart_holes_empty_progress_and_oversize() {
         let stream_id = uuid::Uuid::new_v4();

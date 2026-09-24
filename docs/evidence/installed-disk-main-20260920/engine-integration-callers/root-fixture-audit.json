@@ -1,0 +1,196 @@
+[
+  {
+    "path": "crates/kasumi-engine/tests/admission.rs",
+    "test_names": [
+      "reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work_still_applies",
+      "explicit_local_bootstrap_reads_the_complete_committed_generation"
+    ],
+    "unchanged_duration_expressions": []
+  },
+  {
+    "path": "crates/kasumi-engine/tests/concurrent_pagination.rs",
+    "test_names": [
+      "snapshot_pages_overlap_atomic_writers_and_current_policy_revocation"
+    ],
+    "unchanged_duration_expressions": [
+      "Duration::from_secs(30)"
+    ]
+  },
+  {
+    "path": "crates/kasumi-engine/tests/contracts.rs",
+    "test_names": [
+      "conditional_batches_fence_dependencies_and_phantoms_but_not_audits_or_replays",
+      "read_assertions_block_write_skew_and_require_read_authority",
+      "append_only_mode_rejects_overwrite_delete_and_schema_weakening_atomically",
+      "audit_budget_blocks_effects_and_can_be_increased_without_losing_records",
+      "permanent_receipts_ignore_former_expiry_boundaries_and_survive_snapshot_recovery",
+      "retirement_is_terminal_and_survives_snapshot_recovery",
+      "batch_failure_leaves_no_partial_document_or_index_effects",
+      "receipts_survive_snapshot_and_precede_changed_schema_and_cas",
+      "unique_index_swap_is_atomic_and_old_generation_remains_coherent",
+      "concurrent_cas_has_exactly_one_winner",
+      "tampered_snapshot_never_changes_current_generation",
+      "authorization_is_rechecked_before_idempotency_response",
+      "actual_raft_writes_queries_and_snapshot_pagination",
+      "coherent_snapshot_reads_span_collections_under_concurrent_commits_and_strict_audit",
+      "snapshot_reads_reject_partial_queries_cursors_and_foreign_authority",
+      "strict_read_audit_is_committed_before_return_and_tied_to_data_revision",
+      "shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_values",
+      "strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_results",
+      "key_revocation_fences_and_evicts_resident_state",
+      "key_revocation_evicts_retained_coherent_leases_and_rejects_every_page",
+      "logical_backup_restores_suspended_with_new_incarnation_and_increasing_revisions",
+      "durable_engine_worker",
+      "killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_policy"
+    ],
+    "unchanged_duration_expressions": [
+      "Duration::from_secs(10)",
+      "Duration::from_secs(20)",
+      "Duration::from_millis(10)"
+    ]
+  },
+  {
+    "path": "crates/kasumi-engine/tests/control.rs",
+    "test_names": [
+      "placement_rejects_shared_domains_unknown_nodes_duplicate_identities_and_cleartext",
+      "control_updates_require_operator_authority_cas_and_survive_reopen"
+    ],
+    "unchanged_duration_expressions": []
+  },
+  {
+    "path": "crates/kasumi-engine/tests/fixture_epoch_clock.rs",
+    "test_names": [
+      "one_epoch_expires_leases_and_credentials_but_preserves_permanent_command_identity",
+      "fixture_epoch_rejects_production_storage_before_bootstrap",
+      "fixture_epoch_rejects_a_different_audit_facade_before_bootstrap"
+    ],
+    "unchanged_duration_expressions": [
+      "Duration::from_millis(59_999)",
+      "Duration::from_millis(1)",
+      "Duration::from_millis(86_400_001 - 60_000)"
+    ]
+  },
+  {
+    "path": "crates/kasumi-engine/tests/guarded_staging.rs",
+    "test_names": [
+      "missing_stop_has_no_upload_lease_and_defeats_delayed_begin_after_encrypted_restart",
+      "upload_stop_clears_payload_and_permanent_capacity_is_checked_without_active_reservation",
+      "committed_original_survives_receipt_absence_admission_failure_and_fresh_resolution",
+      "stale_authority_cannot_create_stop_and_retained_terminal_release_checks_exact_read_scope",
+      "final_response_fence_rechecks_authority_and_preserves_accepted_stop",
+      "concurrent_original_and_stop_keep_exactly_one_permanent_outcome",
+      "malformed_fresh_admission_and_changed_manifest_cannot_accept_or_rebind_identity",
+      "stopped_resolution_preserves_original_failed_finalize",
+      "retained_snapshot_quota_rejects_missing_stop_without_leaving_partial_identity",
+      "guarded_stop_orders_more_than_one_small_batch_of_authority_dependencies",
+      "encrypted_restore_preserves_original_stage_scope_without_reviving_historical_uploads"
+    ],
+    "unchanged_duration_expressions": []
+  },
+  {
+    "path": "crates/kasumi-engine/tests/history.rs",
+    "test_names": [
+      "change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps",
+      "archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_restart",
+      "chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects",
+      "scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_deletions",
+      "shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restart"
+    ],
+    "unchanged_duration_expressions": [
+      "Duration::from_secs(30)",
+      "Duration::from_millis(25)",
+      "Duration::from_secs(5)",
+      "Duration::from_secs(5)",
+      "Duration::from_secs(5)",
+      "Duration::from_secs(5)"
+    ]
+  },
+  {
+    "path": "crates/kasumi-engine/tests/ordered_seek.rs",
+    "test_names": [
+      "actual_store_ordered_seek_has_bounded_visits_and_epoch_fenced_continuation"
+    ],
+    "unchanged_duration_expressions": []
+  },
+  {
+    "path": "crates/kasumi-engine/tests/response_release.rs",
+    "test_names": [
+      "encoded_response_is_fenced_by_policy_changes_and_actual_key_denial"
+    ],
+    "unchanged_duration_expressions": []
+  },
+  {
+    "path": "crates/kasumi-engine/tests/restore_deadline.rs",
+    "test_names": [
+      "restore_deadline_bounds_source_io_and_gate_queue_without_blocking_another_tenant"
+    ],
+    "unchanged_duration_expressions": [
+      "Duration::from_secs(2)",
+      "Duration::from_secs(2)",
+      "Duration::from_secs(2)"
+    ]
+  },
+  {
+    "path": "crates/kasumi-engine/tests/schema_activation.rs",
+    "test_names": [
+      "atomic_bundle_publishes_all_indexes_once_and_preserves_read_generations",
+      "rejection_is_permanent_and_never_publishes_an_earlier_valid_change",
+      "incarnation_schema_data_and_current_authority_are_independent_fences",
+      "record_metadata_and_serialized_budgets_fail_before_partial_activation",
+      "schema_shape_immutable_mode_snapshot_validation_and_retained_quota",
+      "restored_permanent_schema_history_exceeds_the_former_lifetime_ceiling",
+      "text_and_structured_indexes_publish_together_after_existing_documents_validate",
+      "encrypted_restart_and_full_restore_preserve_permanent_activation_receipts",
+      "cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_authority",
+      "ordered_schema_dependencies_reject_changed_document_phantom_snapshot_and_expired_deadline",
+      "schema_effect_digest_binds_dependencies_and_current_read_permission_is_required_on_replay",
+      "encrypted_schema_lookup_checks_current_fences_without_rewriting_original_effect",
+      "first_release_schema_wire_requires_explicit_effect_and_lookup_dependencies"
+    ],
+    "unchanged_duration_expressions": []
+  },
+  {
+    "path": "crates/kasumi-engine/tests/shutdown.rs",
+    "test_names": [
+      "full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext"
+    ],
+    "unchanged_duration_expressions": []
+  },
+  {
+    "path": "crates/kasumi-engine/tests/snapshot_budget.rs",
+    "test_names": [
+      "exact_incremental_accounting_covers_documents_permanent_receipts_schemas_policy_and_restore",
+      "oversize_effects_become_a_durable_rejected_receipt_without_partial_documents",
+      "full_audit_byte_budget_still_advances_rejections_and_can_be_raised",
+      "replay_with_only_rejection_audit_headroom_keeps_the_original_receipt",
+      "recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant_budget"
+    ],
+    "unchanged_duration_expressions": []
+  },
+  {
+    "path": "crates/kasumi-engine/tests/staged_transactions.rs",
+    "test_names": [
+      "large_transaction_stays_invisible_then_publishes_one_generation_and_permanent_receipt",
+      "complete_large_read_set_and_append_only_rules_reject_all_effects_atomically",
+      "staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_identity",
+      "changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverable",
+      "staged_crash_worker",
+      "killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_once",
+      "coherent_lease_pages_cover_large_dependencies_and_scans_with_live_writes",
+      "small_lease_budget_shares_large_roots_and_expires_on_retained_version_pressure",
+      "ordered_foreign_scope_rejection_cannot_expire_or_rebind_an_original_upload",
+      "permanent_staged_byte_exhaustion_preserves_success_failure_and_restored_exact_replays",
+      "permanent_staged_snapshot_rejection_spends_original_terminal_reservation_atomically"
+    ],
+    "unchanged_duration_expressions": [
+      "Duration::from_secs(15)",
+      "Duration::from_millis(10)",
+      "Duration::from_millis(1100)"
+    ]
+  },
+  {
+    "path": "crates/kasumi-engine/tests/common/mod.rs",
+    "test_names": [],
+    "unchanged_duration_expressions": []
+  }
+]

@@ -1,0 +1,16 @@
+--- a/crates/kasumi-engine/tests/backup_checkpoint.rs
++++ b/crates/kasumi-engine/tests/backup_checkpoint.rs
+@@ -1570,12 +1570,12 @@
+     node.shutdown().await.unwrap();
+     drop(node);
+     assert_eq!(target_physical.storage.persistent.snapshot().open_files, 0);
++    target_physical.storage.persistent.pause().unwrap();
+     let cache_path = target_directory
+         .path()
+         .join("tenant-audit-archives")
+         .join(format!("{}.audit", head.object.object_id));
+     std::fs::remove_file(&cache_path).unwrap();
+-    target_physical.storage.persistent.pause().unwrap();
+     target_physical
+         .storage
+         .persistent

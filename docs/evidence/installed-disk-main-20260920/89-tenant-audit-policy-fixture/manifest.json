@@ -1,0 +1,11 @@
+{
+  "status": "target_only_formatted_uncompiled_tests_unrun",
+  "patch_sha256": "0f14d93b9dd917ca11faddfbe0ab98642ecb86985e51a23960965a6400c31334",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/tenant_audit_memory_tests.rs",
+      "before_sha256": "bfc4e7370fba8461253d12abe392784e8e31cbf1a9c2693dcff60bfab0071470",
+      "proposed_sha256": "5be4d89d946114741f582b1f6f5944fd403e530779ce166512519dcb27998a50"
+    }
+  ]
+}

@@ -1,0 +1,824 @@
+--- a/vendor/redb-4.2.0/src/transactions.rs
++++ b/vendor/redb-4.2.0/src/transactions.rs
+@@ -82,13 +82,31 @@
+ 
+ pub(crate) const DATA_PAGE_LIST_CAPACITY: usize = 400;
+ 
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum PendingPageList {
++    Allocated,
++    Freed,
++}
++impl PendingPageList {
++    fn definition(
++        self,
++    ) -> SystemTableDefinition<'static, TransactionIdWithPagination, PageList<'static>> {
++        match self {
++            Self::Allocated => DATA_ALLOCATED_TABLE,
++            Self::Freed => DATA_FREED_TABLE,
++        }
++    }
++}
++
+ struct ValidatedPageListPrefix {
++    table: PendingPageList,
+     free_until: TransactionId,
+     root: Option<BtreeHeader>,
+     last: Option<TransactionIdWithPagination>,
+     records: usize,
+     pages: usize,
+     remaining: bool,
++    eligible_remaining: bool,
+ }
+ 
+ // One original canonical data record's page count is the per-commit historical
+@@ -1387,7 +1405,7 @@
+                 self.poison();
+             }
+             result?;
+-            // No need to process the system freed table, because it only rolls forward
++            // Current system pages are writer-private and only roll forward.
+         }
+ 
+         // 2) queue all pages that became unreachable
+@@ -1707,9 +1725,9 @@
+         Ok(())
+     }
+ 
+-    // Keep allocation records only while a surviving savepoint can use them.
+-    // Deferred reclamation is represented in the prepared allocator snapshot.
+-    fn flush_data_allocated_pages(&self, data_allocated_pages: Vec<PageNumber>) -> Result<u64> {
++    // Record current allocation history and freeze its post-commit savepoint
++    // horizon. Removal is a separately prevalidated bounded prefix.
++    fn record_data_allocations(&self, data_allocated_pages: Vec<PageNumber>) -> Result<u64> {
+         // Catch scenarios like a page getting allocated and then deallocated within the same
+         // transaction, but errantly left in the allocated pages list.
+         #[cfg(debug_assertions)]
+@@ -1746,20 +1764,6 @@
+             .transaction_tracker
+             .oldest_savepoint_excluding(&deleted_savepoints)
+             .map_or(u64::MAX, |(_, x)| x.raw_id());
+-        let key = TransactionIdWithPagination {
+-            transaction_id: oldest,
+-            pagination_id: 0,
+-        };
+-        allocated_table.validate_page_lists(..key)?;
+-        let mut iter = allocated_table.extract_from_if(..key, |_, _| true)?;
+-        let result = (|| {
+-            for entry in &mut iter {
+-                entry?;
+-            }
+-            Ok(())
+-        })();
+-        Self::finish_page_list_extraction(&self.poisoned, iter, result)?;
+-
+         Ok(oldest)
+     }
+ 
+@@ -1840,9 +1844,11 @@
+             .transaction_tracker
+             .oldest_live_read_transaction()
+             .map_or(self.transaction_id, |x| x.next());
+-        self.process_freed_pages(free_until_transaction)?;
+-        // Prepare allocation records before constructing the repair snapshot.
+-        self.flush_data_allocated_pages(allocated_pages)?;
++        // Freeze the DATA read horizon before any savepoint can disappear.
++        // A later release may make more work eligible, but cannot widen this
++        // commit's selected prefix after its allocation metadata was checked.
++        let allocation_horizon = self.record_data_allocations(allocated_pages)?;
++        self.process_pending_pages(free_until_transaction, allocation_horizon)?;
+ 
+         let mut system_tables = self.system_tables.lock().unwrap();
+         let system_freed_pages = system_tables.system_freed_pages();
+@@ -2005,24 +2011,27 @@
+ 
+     // Selection reads at most 400 nonempty canonical records plus one bounded
+     // lookahead. Every selected record is checked before any tree mutation.
+-    fn select_data_reclaim(
++    fn select_page_list_prefix(
+         system_tables: &mut SystemNamespace,
+         dirty: &AtomicBool,
++        table: PendingPageList,
+         free_until: TransactionId,
+     ) -> Result<ValidatedPageListPrefix> {
+-        let root = system_tables.get_system_table_root(DATA_FREED_TABLE)?;
++        let root = system_tables.get_system_table_root(table.definition())?;
+         let mut plan = ValidatedPageListPrefix {
++            table,
+             free_until,
+             root,
+             last: None,
+             records: 0,
+             pages: 0,
+             remaining: false,
++            eligible_remaining: false,
+         };
+         if root.is_none() {
+             return Ok(plan);
+         }
+-        let table = system_tables.open_system_table(dirty, DATA_FREED_TABLE)?;
++        let table = system_tables.open_system_table(dirty, table.definition())?;
+         let horizon = TransactionIdWithPagination {
+             transaction_id: free_until.raw_id(),
+             pagination_id: 0,
+@@ -2040,6 +2049,7 @@
+             let pages = value.value().checked()?;
+             if pages.len() > DATA_PAGE_LIST_CAPACITY - plan.pages {
+                 plan.remaining = true;
++                plan.eligible_remaining = true;
+                 break;
+             }
+             plan.pages += pages.len();
+@@ -2049,25 +2059,92 @@
+         Ok(plan)
+     }
+ 
+-    fn process_freed_pages(&mut self, free_until: TransactionId) -> Result {
++    fn process_pending_pages(
++        &mut self,
++        free_until: TransactionId,
++        allocation_horizon: u64,
++    ) -> Result {
+         let mut system_tables = self.system_tables.lock().unwrap();
+         let result = (|| {
+             if !self.deferred_reclaim.is_empty() {
+                 return Err(StorageError::InvalidPageList);
+             }
+-            let plan = Self::select_data_reclaim(&mut system_tables, &self.dirty, free_until)?;
+-            Self::extract_data_reclaim(
++            let allocated = Self::select_page_list_prefix(
++                &mut system_tables,
++                &self.dirty,
++                PendingPageList::Allocated,
++                TransactionId::new(allocation_horizon),
++            )?;
++            // Retained eligible allocation rows may still reference historical
++            // DATA pages. Purge them in bounded commits before freeing any DATA.
++            // If this commit can reclaim DATA, validate that prefix as well
++            // before removing anything from either namespace.
++            let freed = if allocated.eligible_remaining {
++                None
++            } else {
++                Some(Self::select_page_list_prefix(
++                    &mut system_tables,
++                    &self.dirty,
++                    PendingPageList::Freed,
++                    free_until,
++                )?)
++            };
++            Self::extract_allocated_prefix(
+                 &mut system_tables,
+                 &self.dirty,
+                 &self.poisoned,
+-                &mut self.deferred_reclaim,
+-                plan,
+-            )
++                allocated,
++            )?;
++            if let Some(freed) = freed {
++                Self::extract_data_reclaim(
++                    &mut system_tables,
++                    &self.dirty,
++                    &self.poisoned,
++                    &mut self.deferred_reclaim,
++                    freed,
++                )?;
++            }
++            Ok(())
+         })();
+         if result.is_err() {
+             self.poisoned.store(true, Ordering::Release);
+         }
+         result
++    }
++
++    fn extract_allocated_prefix(
++        system_tables: &mut SystemNamespace,
++        dirty: &AtomicBool,
++        poisoned: &AtomicBool,
++        plan: ValidatedPageListPrefix,
++    ) -> Result {
++        if plan.table != PendingPageList::Allocated
++            || system_tables.get_system_table_root(DATA_ALLOCATED_TABLE)? != plan.root
++        {
++            return Err(StorageError::InvalidPageList);
++        }
++        let Some(last) = plan.last else {
++            return Ok(());
++        };
++        if last.transaction_id >= plan.free_until.raw_id() {
++            return Err(StorageError::InvalidPageList);
++        }
++        let mut allocated = system_tables.open_system_table(dirty, DATA_ALLOCATED_TABLE)?;
++        let mut iter = allocated.extract_from_if(..=last, |_, _| true)?;
++        let result = (|| {
++            let mut records = 0;
++            let mut pages = 0;
++            for entry in &mut iter {
++                let (_, page_list) = entry?;
++                pages += page_list.value().checked()?.len();
++                records += 1;
++            }
++            if records != plan.records || pages != plan.pages {
++                return Err(StorageError::InvalidPageList);
++            }
++            Ok(())
++        })();
++        Self::finish_page_list_extraction(poisoned, iter, result)
+     }
+ 
+     fn extract_data_reclaim(
+@@ -2077,7 +2154,9 @@
+         deferred: &mut DeferredReclaim,
+         plan: ValidatedPageListPrefix,
+     ) -> Result {
+-        if system_tables.get_system_table_root(DATA_FREED_TABLE)? != plan.root {
++        if plan.table != PendingPageList::Freed
++            || system_tables.get_system_table_root(DATA_FREED_TABLE)? != plan.root
++        {
+             return Err(StorageError::InvalidPageList);
+         }
+         let Some(last) = plan.last else {
+@@ -2108,17 +2187,36 @@
+         Self::finish_page_list_extraction(poisoned, iter, result)
+     }
+ 
+-    // Only the explicit maintenance path calls this before its otherwise empty
+-    // commit. The writer guard keeps the DATA root stable; read horizons may
+-    // advance as readers release. Counting every unselected row makes this
+-    // conservative in that race. The commit creates no new DATA pending rows.
+-    pub(crate) fn data_reclaim_backlog_after_batch(&self) -> Result<bool> {
++    // Only explicit maintenance calls this before its otherwise empty commit.
++    // The writer guard keeps both roots stable; read/savepoint horizons may
++    // advance as owners release. Count ineligible rows as retained debt too.
++    // A blocked DATA phase leaves even a small DATA prefix for a later commit.
++    pub(crate) fn reclaim_backlog_after_batch(&self) -> Result<bool> {
+         let free_until = self
+             .transaction_tracker
+             .oldest_live_read_transaction()
+             .map_or(self.transaction_id, |id| id.next());
++        let deleted_savepoints = self.savepoint_state.lock().unwrap().pending_deleted_ids();
++        let oldest = self
++            .transaction_tracker
++            .oldest_savepoint_excluding(&deleted_savepoints)
++            .map_or(u64::MAX, |(_, id)| id.raw_id());
+         let mut system_tables = self.system_tables.lock().unwrap();
+-        Ok(Self::select_data_reclaim(&mut system_tables, &self.dirty, free_until)?.remaining)
++        let allocated = Self::select_page_list_prefix(
++            &mut system_tables,
++            &self.dirty,
++            PendingPageList::Allocated,
++            TransactionId::new(oldest),
++        )?;
++        let freed = Self::select_page_list_prefix(
++            &mut system_tables,
++            &self.dirty,
++            PendingPageList::Freed,
++            free_until,
++        )?;
++        Ok(allocated.remaining
++            || freed.remaining
++            || (allocated.eligible_remaining && freed.last.is_some()))
+     }
+ 
+     // Explicit close remains mandatory even if this loop later stops at a
+--- a/vendor/redb-4.2.0/src/db.rs
++++ b/vendor/redb-4.2.0/src/db.rs
+@@ -755,8 +755,8 @@
+     /// Relocates at most 64 candidate paths within the supplied old/new page-buffer
+     /// byte allowance, then reclaims obsolete generations and trims unused extents.
+     /// Returns true if relocation moved pages or bounded maintenance observed
+-    /// DATA debt beyond its batch. A concurrent reader release can require one
+-    /// extra observation; false never hides unselected DATA reclaim debt.
++    /// DATA or allocation-history debt beyond its batch. A concurrent reader release can require one
++    /// extra observation; false never hides unselected reclaim debt.
+     /// Candidate discovery still scans the database; callers must separately admit that work.
+     pub fn compact(
+         &mut self,
+@@ -815,7 +815,7 @@
+     fn drain_pending_free_pages(&self, shrink_policy: ShrinkPolicy) -> Result<bool> {
+         // Two commits remain a fixed per-call maintenance allowance. Current
+         // system frees are excluded directly, so this does not generate a new
+-        // historical system tail. Report any DATA prefix left for the caller.
++        // historical system tail. Report either retained metadata prefix.
+         let mut remaining = false;
+         for _ in 0..2 {
+             let mut txn = begin_write_with_allocation_policy(
+@@ -827,7 +827,7 @@
+             txn.set_shrink_policy(shrink_policy);
+             // No user mutation occurs between this bounded selection and this
+             // empty maintenance commit; the real writer guard excludes others.
+-            remaining = txn.data_reclaim_backlog_after_batch()?;
++            remaining = txn.reclaim_backlog_after_batch()?;
+             txn.commit().map_err(|e| e.into_storage_error())?;
+         }
+         Ok(remaining)
+--- a/vendor/redb-4.2.0/src/page_list_tests.rs
++++ b/vendor/redb-4.2.0/src/page_list_tests.rs
+@@ -83,7 +83,7 @@
+             data.insert(second, PageList { data: values[1] }).unwrap();
+         }
+         assert!(matches!(
+-            tx.process_freed_pages(TransactionId::new(10_001)),
++            tx.process_pending_pages(TransactionId::new(10_001), u64::MAX),
+             Err(StorageError::InvalidPageList)
+         ));
+         assert!(tx.deferred_reclaim.is_empty());
+@@ -477,12 +477,12 @@
+     // Nothing is eligible at this preview's pinned horizon. Reporting only
+     // eligible rows would return false, even though the ensuing real commit
+     // can leave debt when the reader disappears between preview and commit.
+-    assert!(tx.data_reclaim_backlog_after_batch().unwrap());
++    assert!(tx.reclaim_backlog_after_batch().unwrap());
+     drop(read);
+     commit_clean(tx, &database);
+     assert_eq!(pending_records(&database), vec![(1, 17)]);
+     let tx = database.database().unwrap().begin_write().unwrap();
+-    assert!(!tx.data_reclaim_backlog_after_batch().unwrap());
++    assert!(!tx.reclaim_backlog_after_batch().unwrap());
+     commit_clean(tx, &database);
+     assert!(pending_records(&database).is_empty());
+     close_clean(database);
+@@ -499,7 +499,7 @@
+     let (_, pages) = seed_pending(&database, &[400, 17]);
+     let mut tx = database.database().unwrap().begin_write().unwrap();
+     let horizon = tx.transaction_id;
+-    tx.process_freed_pages(horizon).unwrap();
++    tx.process_pending_pages(horizon, u64::MAX).unwrap();
+     assert_eq!(tx.deferred_reclaim.as_slice(), &pages[..400]);
+     for &page in &pages {
+         assert!(tx.mem.is_allocated(page));
+@@ -673,3 +673,473 @@
+     ));
+     assert_eq!(std::fs::read(file.path()).unwrap(), original);
+ }
++
++fn retained_savepoint(database: &RetainedDatabase) -> crate::Savepoint {
++    let tx = database.database().unwrap().begin_write().unwrap();
++    let savepoint = tx.ephemeral_savepoint().unwrap();
++    abort_clean(tx, database);
++    savepoint
++}
++
++// These records describe real unreachable physical pages. A held savepoint
++// keeps the newly written allocation rows ineligible during fixture creation.
++fn seed_allocation_and_pending(database: &RetainedDatabase, counts: &[usize]) -> Vec<PageNumber> {
++    let tx = database.database().unwrap().begin_write().unwrap();
++    assert!(tx.transaction_tracker.any_savepoint_exists());
++    let generation = tx.transaction_id.raw_id();
++    let mut pages = Vec::new();
++    for (pagination, &count) in counts.iter().enumerate() {
++        let mut bytes = record(count);
++        for i in 0..count {
++            let page = tx
++                .page_allocator()
++                .allocate(4096, &PageTracker::ignore())
++                .unwrap();
++            let number = page.get_page_number();
++            drop(page);
++            bytes[2 + i * 8..10 + i * 8].copy_from_slice(&number.to_le_bytes());
++            pages.push(number);
++        }
++        let key = TransactionIdWithPagination {
++            transaction_id: generation,
++            pagination_id: pagination as u64,
++        };
++        let mut namespace = tx.system_tables.lock().unwrap();
++        namespace
++            .open_system_table(&tx.dirty, DATA_ALLOCATED_TABLE)
++            .unwrap()
++            .insert(key, PageList { data: &bytes })
++            .unwrap();
++        namespace
++            .open_system_table(&tx.dirty, DATA_FREED_TABLE)
++            .unwrap()
++            .insert(key, PageList { data: &bytes })
++            .unwrap();
++    }
++    commit_clean(tx, database);
++    pages
++}
++
++fn allocation_records(database: &RetainedDatabase) -> Vec<(u64, u64, usize)> {
++    let tx = database.database().unwrap().begin_write().unwrap();
++    let mut result = Vec::new();
++    {
++        let mut namespace = tx.system_tables.lock().unwrap();
++        let table = namespace
++            .open_system_table(&tx.dirty, DATA_ALLOCATED_TABLE)
++            .unwrap();
++        for entry in table.range::<TransactionIdWithPagination>(..).unwrap() {
++            let (key, value) = entry.unwrap();
++            let pages = value.value().checked().unwrap();
++            result.push((
++                key.value().transaction_id,
++                key.value().pagination_id,
++                pages.len(),
++            ));
++            #[cfg(debug_assertions)]
++            for index in 0..pages.len() {
++                assert!(
++                    tx.mem.is_allocated(pages.get(index)),
++                    "retained allocation record names a freed physical page"
++                );
++            }
++        }
++    }
++    abort_clean(tx, database);
++    result
++}
++
++#[test]
++fn bounded_allocation_debt_blocks_data_free_and_cold_reopens_after_every_batch() {
++    let file = crate::create_tempfile();
++    let mut database = Database::builder(crate::test_admission())
++        .create(file.path())
++        .unwrap()
++        .retain();
++    let savepoint = retained_savepoint(&database);
++    let pages = seed_allocation_and_pending(&database, &[400, 400, 17]);
++    assert_eq!(pages.len(), 817);
++    drop(savepoint);
++    for (allocated, freed) in [
++        (vec![400, 17], vec![(0, 400), (1, 400), (2, 17)]),
++        (vec![17], vec![(0, 400), (1, 400), (2, 17)]),
++        (vec![], vec![(1, 400), (2, 17)]),
++        (vec![], vec![(2, 17)]),
++        (vec![], vec![]),
++    ] {
++        let tx = database.database().unwrap().begin_write().unwrap();
++        let expected_debt = !allocated.is_empty() || !freed.is_empty();
++        assert_eq!(tx.reclaim_backlog_after_batch().unwrap(), expected_debt);
++        commit_clean(tx, &database);
++        assert_eq!(
++            allocation_records(&database)
++                .iter()
++                .map(|(_, _, count)| *count)
++                .collect::<Vec<_>>(),
++            allocated
++        );
++        assert_eq!(pending_records(&database), freed);
++        close_clean(database);
++        database = Database::open(file.path(), crate::test_admission())
++            .unwrap()
++            .retain();
++        assert_eq!(
++            allocation_records(&database)
++                .iter()
++                .map(|(_, _, count)| *count)
++                .collect::<Vec<_>>(),
++            allocated
++        );
++        assert_eq!(pending_records(&database), freed);
++    }
++    close_clean(database);
++}
++
++#[test]
++fn both_selected_prefixes_are_validated_before_either_namespace_is_removed() {
++    for malformed_allocated in [false, true] {
++        let file = crate::create_tempfile();
++        let database = Database::builder(crate::test_admission())
++            .create(file.path())
++            .unwrap()
++            .retain();
++        let mut tx = database.database().unwrap().begin_write().unwrap();
++        let key = TransactionIdWithPagination {
++            transaction_id: 10_000,
++            pagination_id: 0,
++        };
++        let valid = record(1);
++        let invalid = record(401);
++        let allocated = if malformed_allocated {
++            &invalid
++        } else {
++            &valid
++        };
++        let freed = if malformed_allocated {
++            &valid
++        } else {
++            &invalid
++        };
++        {
++            let mut namespace = tx.system_tables.lock().unwrap();
++            namespace
++                .open_system_table(&tx.dirty, DATA_ALLOCATED_TABLE)
++                .unwrap()
++                .insert(key, PageList { data: allocated })
++                .unwrap();
++            namespace
++                .open_system_table(&tx.dirty, DATA_FREED_TABLE)
++                .unwrap()
++                .insert(key, PageList { data: freed })
++                .unwrap();
++        }
++        assert!(matches!(
++            tx.process_pending_pages(TransactionId::new(10_001), 10_001),
++            Err(StorageError::InvalidPageList)
++        ));
++        assert!(tx.is_poisoned());
++        assert!(tx.deferred_reclaim.is_empty());
++        {
++            let mut namespace = tx.system_tables.lock().unwrap();
++            assert_eq!(
++                namespace
++                    .open_system_table(&tx.dirty, DATA_ALLOCATED_TABLE)
++                    .unwrap()
++                    .get(key)
++                    .unwrap()
++                    .unwrap()
++                    .value()
++                    .data,
++                allocated
++            );
++            assert_eq!(
++                namespace
++                    .open_system_table(&tx.dirty, DATA_FREED_TABLE)
++                    .unwrap()
++                    .get(key)
++                    .unwrap()
++                    .unwrap()
++                    .value()
++                    .data,
++                freed
++            );
++        }
++        abort_clean(tx, &database);
++        close_clean(database);
++        let reopened = Database::open(file.path(), crate::test_admission())
++            .unwrap()
++            .retain();
++        assert!(allocation_records(&reopened).is_empty());
++        assert!(pending_records(&reopened).is_empty());
++        close_clean(reopened);
++    }
++}
++
++#[test]
++fn allocation_preview_retains_debt_across_savepoint_release_before_commit() {
++    let file = crate::create_tempfile();
++    let database = Database::builder(crate::test_admission())
++        .create(file.path())
++        .unwrap()
++        .retain();
++    let savepoint = retained_savepoint(&database);
++    seed_allocation_and_pending(&database, &[400, 17]);
++    let tx = database.database().unwrap().begin_write().unwrap();
++    assert!(tx.reclaim_backlog_after_batch().unwrap());
++    drop(savepoint);
++    commit_clean(tx, &database);
++    assert_eq!(
++        allocation_records(&database)
++            .iter()
++            .map(|(_, _, count)| *count)
++            .collect::<Vec<_>>(),
++        vec![17]
++    );
++    assert_eq!(pending_records(&database), vec![(0, 400), (1, 17)]);
++    let tx = database.database().unwrap().begin_write().unwrap();
++    assert!(tx.reclaim_backlog_after_batch().unwrap());
++    commit_clean(tx, &database);
++    assert!(allocation_records(&database).is_empty());
++    assert_eq!(pending_records(&database), vec![(1, 17)]);
++    let tx = database.database().unwrap().begin_write().unwrap();
++    assert!(!tx.reclaim_backlog_after_batch().unwrap());
++    commit_clean(tx, &database);
++    assert!(pending_records(&database).is_empty());
++    close_clean(database);
++}
++
++#[test]
++fn purging_allocation_history_does_not_advance_the_original_user_reader_horizon() {
++    let file = crate::create_tempfile();
++    let database = Database::builder(crate::test_admission())
++        .create(file.path())
++        .unwrap()
++        .retain();
++    let read = database.database().unwrap().begin_read().unwrap();
++    let savepoint = retained_savepoint(&database);
++    seed_allocation_and_pending(&database, &[400, 17]);
++    drop(savepoint);
++    for allocated in [vec![17], vec![]] {
++        let tx = database.database().unwrap().begin_write().unwrap();
++        commit_clean(tx, &database);
++        assert_eq!(
++            allocation_records(&database)
++                .iter()
++                .map(|(_, _, count)| *count)
++                .collect::<Vec<_>>(),
++            allocated
++        );
++        assert_eq!(pending_records(&database), vec![(0, 400), (1, 17)]);
++    }
++    drop(read);
++    for remaining in [vec![(1, 17)], vec![]] {
++        let tx = database.database().unwrap().begin_write().unwrap();
++        commit_clean(tx, &database);
++        assert_eq!(pending_records(&database), remaining);
++    }
++    close_clean(database);
++}
++
++#[test]
++fn persistent_savepoint_restores_original_payload_with_retained_allocation_debt() {
++    const TABLE: TableDefinition<u64, &[u8]> = TableDefinition::new("bounded-allocation-restore");
++    let file = crate::create_tempfile();
++    let database = Database::builder(crate::test_admission())
++        .create(file.path())
++        .unwrap()
++        .retain();
++    let tx = database.database().unwrap().begin_write().unwrap();
++    tx.open_table(TABLE)
++        .unwrap()
++        .insert(1, b"original".as_slice())
++        .unwrap();
++    commit_clean(tx, &database);
++    let tx = database.database().unwrap().begin_write().unwrap();
++    let id = tx.persistent_savepoint().unwrap();
++    commit_clean(tx, &database);
++    let tx = database.database().unwrap().begin_write().unwrap();
++    tx.open_table(TABLE)
++        .unwrap()
++        .insert(1, b"replacement".as_slice())
++        .unwrap();
++    commit_clean(tx, &database);
++    seed_allocation_and_pending(&database, &[400, 400, 17]);
++    let before = allocation_records(&database);
++    close_clean(database);
++    let database = Database::open(file.path(), crate::test_admission())
++        .unwrap()
++        .retain();
++    assert_eq!(allocation_records(&database), before);
++    let mut tx = database.database().unwrap().begin_write().unwrap();
++    let savepoint = tx.get_persistent_savepoint(id).unwrap();
++    tx.restore_savepoint(&savepoint).unwrap();
++    drop(savepoint);
++    commit_clean(tx, &database);
++    {
++        let read = database.database().unwrap().begin_read().unwrap();
++        assert_eq!(
++            read.open_table(TABLE)
++                .unwrap()
++                .get(1)
++                .unwrap()
++                .unwrap()
++                .value(),
++            b"original"
++        );
++    }
++    assert_eq!(allocation_records(&database), before);
++    close_clean(database);
++    let database = Database::open(file.path(), crate::test_admission())
++        .unwrap()
++        .retain();
++    assert_eq!(allocation_records(&database), before);
++    {
++        let read = database.database().unwrap().begin_read().unwrap();
++        assert_eq!(
++            read.open_table(TABLE)
++                .unwrap()
++                .get(1)
++                .unwrap()
++                .unwrap()
++                .value(),
++            b"original"
++        );
++    }
++    // Savepoint deletion makes old allocation rows eligible. It must not
++    // publish a DATA free while those rows remain, even on the first commit.
++    let tx = database.database().unwrap().begin_write().unwrap();
++    assert!(tx.delete_persistent_savepoint(id).unwrap());
++    commit_clean(tx, &database);
++    assert!(!allocation_records(&database).is_empty());
++    close_clean(database);
++    let database = Database::open(file.path(), crate::test_admission())
++        .unwrap()
++        .retain();
++    allocation_records(&database); // checks every remaining ID against actual allocator ownership
++    close_clean(database);
++}
++
++#[test]
++fn allocation_prefix_close_failure_retains_actual_transaction_and_original_error() {
++    static ALLOCATION_FAILURE: Mutex<Option<FailureCustody>> = Mutex::new(None);
++    let file = crate::create_tempfile();
++    let mode = Arc::new(AtomicU8::new(0));
++    let syncs = Arc::new(AtomicU64::new(0));
++    let marker = Arc::new(Marker);
++    let owner = Arc::new(Owner {
++        failed: AtomicBool::new(false),
++    });
++    let backend = Backend {
++        file: crate::tree_store::file_backend::FileBackend::new(file.reopen().unwrap()).unwrap(),
++        mode: mode.clone(),
++        syncs: syncs.clone(),
++        marker: marker.clone(),
++    };
++    let mut database = Database::builder(owner.clone())
++        .set_page_size(4096)
++        .set_region_size(128 << 10)
++        .create_with_backend(backend)
++        .unwrap()
++        .retain();
++    // Each canonical record retains one real allocated page. This is a
++    // valid pending-page tree; test setup never invents dangling page numbers.
++    let tx = database.database().unwrap().begin_write().unwrap();
++    // Keep allocation history eligible only after this persisted savepoint
++    // releases. This direct extraction test faults before any publication.
++    tx.persistent_savepoint().unwrap();
++    let seed_transaction_id = tx.transaction_id.raw_id();
++    for pagination_id in 0..8 {
++        let page = tx
++            .page_allocator()
++            .allocate(4096, &PageTracker::ignore())
++            .unwrap();
++        let number = page.get_page_number();
++        drop(page);
++        let mut bytes = record(1);
++        bytes[2..10].copy_from_slice(&number.to_le_bytes());
++        tx.system_tables
++            .lock()
++            .unwrap()
++            .open_system_table(&tx.dirty, DATA_ALLOCATED_TABLE)
++            .unwrap()
++            .insert(
++                TransactionIdWithPagination {
++                    transaction_id: seed_transaction_id,
++                    pagination_id,
++                },
++                PageList { data: &bytes },
++            )
++            .unwrap();
++    }
++    let mut tx = tx.retain();
++    assert_eq!(tx.commit().settlement(), WriteTerminalSettlement::Settled);
++    assert!(tx.dispose_settled(&database).disposal_complete());
++    let tx = database.database().unwrap().begin_write().unwrap();
++    // Force the close's next COW allocation to grow the actual file, making the
++    // injected sync error deterministic instead of relying on cache eviction.
++    let free = tx.mem.count_free_pages().unwrap();
++    for _ in 0..free {
++        drop(
++            tx.page_allocator()
++                .allocate(4096, &PageTracker::ignore())
++                .unwrap(),
++        );
++    }
++    assert_eq!(tx.mem.count_free_pages().unwrap(), 0);
++    let before_syncs = syncs.load(Ordering::Acquire);
++    let before_len = file.as_file().metadata().unwrap().len();
++    let mut namespace = tx.system_tables.lock().unwrap();
++    let mut table = namespace
++        .open_system_table(&tx.dirty, DATA_ALLOCATED_TABLE)
++        .unwrap();
++    let key = TransactionIdWithPagination {
++        transaction_id: seed_transaction_id,
++        pagination_id: 0,
++    };
++    table.validate_page_lists(key..=key).unwrap();
++    let mut iter = table.extract_from_if(key..=key, |_, _| true).unwrap();
++    let entry = iter.next().unwrap().unwrap();
++    assert_eq!(entry.1.value().checked().unwrap().len(), 1);
++    drop(entry);
++    mode.store(1, Ordering::Release);
++    let error =
++        WriteTransaction::finish_page_list_extraction(&tx.poisoned, iter, Ok(())).unwrap_err();
++    let StorageError::Io(original) = &error else {
++        std::panic!("close lost original I/O: {error:?}");
++    };
++    assert!(Arc::ptr_eq(
++        &original
++            .get_ref()
++            .unwrap()
++            .downcast_ref::<OriginalIo>()
++            .unwrap()
++            .0,
++        &marker
++    ));
++    assert!(syncs.load(Ordering::Acquire) > before_syncs);
++    assert!(file.as_file().metadata().unwrap().len() > before_len);
++    assert!(tx.is_poisoned());
++    assert!(owner.failed.load(Ordering::Acquire));
++    drop(table);
++    drop(namespace);
++    let mut tx = tx.retain();
++    let report = tx.abort();
++    assert_eq!(report.settlement(), WriteTerminalSettlement::Retained);
++    assert!(matches!(
++        report.terminal(),
++        TerminalObservation::Returned(Err(WriteTerminalError::Abort(StorageError::OwnerFailed)))
++    ));
++    assert!(!tx.dispose_settled(&database).disposal_complete());
++    assert_eq!(
++        database.close().settlement(),
++        DatabaseCloseSettlement::WaitingForTransactions
++    );
++    let mut custody = ALLOCATION_FAILURE.lock().unwrap();
++    assert!(custody.is_none());
++    *custody = Some(FailureCustody {
++        _error: error,
++        _transaction: tx,
++        _database: database,
++        _file: file,
++    });
++}

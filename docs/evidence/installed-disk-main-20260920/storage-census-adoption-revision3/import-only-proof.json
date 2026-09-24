@@ -1,0 +1,9 @@
+{
+  "parent_manifest_sha256": "785269f80c8030962721109554629a1032bf7193db361b6775fb22bcec2926cf",
+  "all_functions_and_test_assertions_unchanged": true,
+  "changed_files": [
+    "crates/kasumi-store/src/storage_opening.rs",
+    "crates/kasumi-store/src/storage_opening_tests.rs"
+  ],
+  "delta_sha256": "3aa5677b07d71fcdf7c847f93ba65448394684633e2b9eecd166787e139848b3"
+}

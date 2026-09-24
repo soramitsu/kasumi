@@ -1,0 +1,13 @@
+{
+  "scope": "Independent terminal census of all three observed debugger/inferior process groups; does not reconstruct unseen process lifetimes",
+  "observed_pids_and_groups": [
+    32363,
+    32367,
+    32366
+  ],
+  "matching_terminal_processes": [],
+  "drained": true,
+  "watcher_launch": "120-descendant-watch.py exited1 at its initial known-process assertion after all three had already exited; it sent no signals",
+  "inferior_from_debugger_log": "PID32366 exited0,1testpassed,101.81s; attempted backtrace had no stopped process; prior117overflow unexplained",
+  "time": 1789918984.692677
+}

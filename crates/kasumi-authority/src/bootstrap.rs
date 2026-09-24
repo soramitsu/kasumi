@@ -81,6 +81,15 @@ pub(crate) fn initialize(
     )
 }
 
+pub(crate) fn decode_resource_floor(bytes: &[u8]) -> Result<u64> {
+    let floor = serde_json::from_slice::<u64>(bytes)?;
+    ensure!(
+        serde_json::to_vec(&floor)? == bytes,
+        "noncanonical authority resource floor"
+    );
+    Ok(floor)
+}
+
 pub(crate) fn load(
     stores: &TenantStorageSet,
     installation: &AuthorityInstallation,
@@ -105,27 +114,36 @@ pub(crate) fn load(
         Ok(app)
     };
     let binding = read_pair(b"binding", MAX_DESCRIPTOR_BYTES)?;
+    let descriptor: Descriptor = serde_json::from_slice(&binding)?;
+    ensure!(
+        serde_json::to_vec(&descriptor)? == binding,
+        "noncanonical authority installation descriptor"
+    );
     let Descriptor::Replicated {
         installation: saved,
         bootstrap,
-    } = serde_json::from_slice(&binding)?;
+    } = descriptor;
     ensure!(
         saved == *installation,
         "authority immutable installation differs"
     );
     validate(&saved, &bootstrap)?;
     let local = read_pair(b"local-member", 4096)?;
-    let LocalBinding::AuthorityMember { verifier: saved } = serde_json::from_slice(&local)?;
+    let local_binding: LocalBinding = serde_json::from_slice(&local)?;
+    ensure!(
+        serde_json::to_vec(&local_binding)? == local,
+        "noncanonical authority local member"
+    );
+    let LocalBinding::AuthorityMember { verifier: saved } = local_binding;
     ensure!(
         saved == *verifier,
         "authority storage cannot reopen under another member identity"
     );
-    let resource_floor = serde_json::from_slice::<u64>(
-        &stores
-            .application()
-            .get_bounded(NS, b"resource-floor", 32)?
-            .context("authority resource floor absent")?,
-    )?;
+    let floor_bytes = stores
+        .application()
+        .get_bounded(NS, b"resource-floor", 32)?
+        .context("authority resource floor absent")?;
+    let resource_floor = decode_resource_floor(&floor_bytes)?;
     ensure!(
         resource_floor >= bootstrap.capacity.max_state_bytes,
         "authority resource floor is below installed genesis"

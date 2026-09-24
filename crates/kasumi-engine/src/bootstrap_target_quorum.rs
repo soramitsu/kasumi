@@ -144,6 +144,7 @@ pub async fn open_target_replica(
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<TargetReplica> {
     security_audit.require_admission(&config.admission)?;
+    let construction = DatabaseConstruction::new(stores.clone(), security_audit.clone())?;
     operation.check()?;
     let invocation = operation.invocation().clone();
     let lease = invocation.gate().current()?;
@@ -266,12 +267,9 @@ pub async fn open_target_replica(
                             .store()
                             .get_bounded("engine.deployment", b"mode", 256 << 10)?
                             .ok_or_else(|| anyhow::anyhow!("target deployment binding absent"))?;
-                        let (mode, bootstrap): (String, ReplicatedBootstrap) =
-                            serde_json::from_slice(&encoded)?;
-                        bootstrap.validate()?;
+                        let bootstrap = decode_current_target_deployment(&material, &encoded)?;
                         anyhow::ensure!(
-                            mode == "replicated"
-                                && bootstrap.incarnation == generation.state.incarnation,
+                            bootstrap.incarnation == generation.state.incarnation,
                             "target deployment is not exact replicated generation"
                         );
                         let prior = material.custody().store().get_bounded(
@@ -325,24 +323,22 @@ pub async fn open_target_replica(
         // here until open returns and the target owner closes any started group.
         let registration = owned.register_group()?;
         engine.install_audit_maintenance(&config.admission)?;
-        let group = RaftGroup::open(
-            config.node_id,
-            format!(
-                "{}/{}",
-                stores.application().tenant(),
-                bootstrap.incarnation
-            ),
-            stores.clone(),
-            engine.clone(),
-            transport,
-            kasumi_raft::RaftGroupConfig {
-                raft: config.raft,
-                limits: kasumi_raft::RaftLimits::default(),
-            },
-            config.admission.snapshot_buffer_owner()?,
-        )
-        .await?;
-        let database = Database::new(engine, group, stores.application().clone(), security_audit);
+        let database = construction
+            .start_replicated(
+                engine,
+                config.node_id,
+                format!(
+                    "{}/{}",
+                    stores.application().tenant(),
+                    bootstrap.incarnation
+                ),
+                transport,
+                kasumi_raft::RaftGroupConfig {
+                    raft: config.raft,
+                    limits: kasumi_raft::RaftLimits::default(),
+                },
+            )
+            .await?;
         let owner = TargetReplica {
             database,
             bootstrap,

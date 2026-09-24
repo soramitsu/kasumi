@@ -1,0 +1,1018 @@
+diff --git a/crates/kasumi-store/src/allocation_tests.rs b/crates/kasumi-store/src/allocation_tests.rs
+--- a/crates/kasumi-store/src/allocation_tests.rs
++++ b/crates/kasumi-store/src/allocation_tests.rs
+@@ -8,6 +8,9 @@
+ thread_local! {
+     static ACTIVE: Cell<bool> = const { Cell::new(false) };
+     static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
++    static REQUESTED_BYTES: Cell<usize> = const { Cell::new(0) };
++    static RETIRED_BYTES: Cell<usize> = const { Cell::new(0) };
++    static RETIREMENTS: Cell<usize> = const { Cell::new(0) };
+     static DEALLOCATION_ADDRESS: Cell<*const ()> = const { Cell::new(std::ptr::null()) };
+     static DEALLOCATION_OBSERVER: Cell<*const DeallocationObservation> = const { Cell::new(std::ptr::null()) };
+ }
+@@ -15,28 +18,33 @@
+ #[global_allocator]
+ static ALLOCATOR: ObservedSystem = ObservedSystem;
+ 
+-fn allocated() {
++fn allocated(bytes: usize) {
+     if ACTIVE.try_with(Cell::get).unwrap_or(false) {
+         let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
++        let _ = REQUESTED_BYTES.try_with(|n| n.set(n.get().saturating_add(bytes)));
+     }
+ }
+ // SAFETY: every operation forwards its unchanged allocation contract to System.
+ unsafe impl GlobalAlloc for ObservedSystem {
+     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+-        allocated();
++        allocated(layout.size());
+         unsafe { System.alloc(layout) }
+     }
+     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+-        allocated();
++        allocated(layout.size());
+         unsafe { System.alloc_zeroed(layout) }
+     }
+     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+-        allocated();
++        allocated(size);
+         unsafe { System.realloc(pointer, layout, size) }
+     }
+     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+         let observation = observe_before_deallocation(pointer, layout);
+         unsafe { System.dealloc(pointer, layout) };
++        if ACTIVE.try_with(Cell::get).unwrap_or(false) {
++            let _ = RETIREMENTS.try_with(|n| n.set(n.get() + 1));
++            let _ = RETIRED_BYTES.try_with(|n| n.set(n.get().saturating_add(layout.size())));
++        }
+         if let Some(observation) = observation {
+             // SAFETY: observe_deallocation retains its borrowed observer for
+             // this entire synchronous allocator call, including a blocked gate.
+@@ -56,6 +64,9 @@
+     }
+     ACTIVE.with(|active| assert!(!active.replace(true), "nested allocation measurement"));
+     ALLOCATIONS.with(|n| n.set(0));
++    REQUESTED_BYTES.with(|n| n.set(0));
++    RETIRED_BYTES.with(|n| n.set(0));
++    RETIREMENTS.with(|n| n.set(0));
+     let reset = Reset;
+     let result = work();
+     drop(reset);
+@@ -156,3 +167,21 @@
+     let _reset = Reset;
+     work()
+ }
++
++/// Total requested bytes across observed allocation/reallocation calls. This
++/// measures allocator requests, not RSS, usable-size rounding or simultaneous
++/// retained allocation. Existing count-only observation remains unchanged.
++pub(crate) fn measure_requested<T>(work: impl FnOnce() -> T) -> (T, usize, usize) {
++    let (result, allocations) = measure(work);
++    (result, allocations, REQUESTED_BYTES.with(Cell::get))
++}
++
++/// Counts only completed System.dealloc calls, after their actual return.
++pub(crate) fn measure_retired<T>(work: impl FnOnce() -> T) -> (T, usize, usize) {
++    let (result, _) = measure(work);
++    (
++        result,
++        RETIREMENTS.with(Cell::get),
++        RETIRED_BYTES.with(Cell::get),
++    )
++}
+diff --git a/crates/kasumi-store/src/node_disk/census.rs b/crates/kasumi-store/src/node_disk/census.rs
+--- a/crates/kasumi-store/src/node_disk/census.rs
++++ b/crates/kasumi-store/src/node_disk/census.rs
+@@ -4,7 +4,7 @@
+ };
+ use anyhow::{Context, Result, ensure};
+ use std::{
+-    collections::{BTreeMap, HashMap},
++    collections::BTreeMap,
+     ffi::{CStr, CString},
+     fs::{File, Metadata, OpenOptions},
+     io,
+@@ -307,9 +307,24 @@
+     pub(super) bytes: u64,
+     pub(super) pending: u64,
+     pub(super) files: u64,
+-    pub(super) accounted: HashMap<Identity, AccountedInode>,
+     pub(super) directory_bytes: u64,
+     pub(super) directories: u64,
++}
++
++struct Scan<'a> {
++    counters: Totals,
++    accounted: &'a mut super::fixed_map::Map<AccountedInode>,
++}
++impl std::ops::Deref for Scan<'_> {
++    type Target = Totals;
++    fn deref(&self) -> &Totals {
++        &self.counters
++    }
++}
++impl std::ops::DerefMut for Scan<'_> {
++    fn deref_mut(&mut self) -> &mut Totals {
++        &mut self.counters
++    }
+ }
+ 
+ pub(super) fn census(
+@@ -317,8 +332,12 @@
+     config: &NodeDiskConfig,
+     unit: u64,
+     cancel: &CensusCancellation,
++    accounted: &mut super::fixed_map::Map<AccountedInode>,
+ ) -> Result<Totals> {
+-    let mut totals = Totals::default();
++    let mut totals = Scan {
++        counters: Totals::default(),
++        accounted,
++    };
+     let mut work = 0_u64;
+     for root in roots.values() {
+         root.verify()?;
+@@ -429,7 +448,7 @@
+         root.verify()?;
+     }
+     cancel.check()?;
+-    Ok(totals)
++    Ok(totals.counters)
+ }
+ 
+ // Directories are not sparse regular files: st_size is a namespace value, not
+@@ -442,7 +461,7 @@
+ }
+ 
+ fn enroll_directory(
+-    totals: &mut Totals,
++    totals: &mut Scan<'_>,
+     file: &File,
+     binding: NamespaceBinding,
+     parent: Option<Identity>,
+@@ -498,7 +517,7 @@
+     Ok(())
+ }
+ 
+-fn verify_enrolled_directory(totals: &Totals, cursor: &Cursor) -> Result<()> {
++fn verify_enrolled_directory(totals: &Scan<'_>, cursor: &Cursor) -> Result<()> {
+     let metadata = cursor.file.metadata()?;
+     directory(&metadata)?;
+     let enrolled = totals
+diff --git a/crates/kasumi-store/src/node_disk/directory/tests.rs b/crates/kasumi-store/src/node_disk/directory/tests.rs
+--- a/crates/kasumi-store/src/node_disk/directory/tests.rs
++++ b/crates/kasumi-store/src/node_disk/directory/tests.rs
+@@ -208,15 +208,34 @@
+     crate::private_files::create_directory(&directory.path().join("child")).unwrap();
+     let disk = open(&config, &memory);
+     let before = disk.snapshot();
+-    let original = disk.lock_state().accounted.clone();
++    let original = disk
++        .lock_state()
++        .accounted
++        .iter()
++        .map(|(key, entry)| (*key, *entry))
++        .collect::<std::collections::BTreeMap<_, _>>();
+     let cancel = CensusCancellation::default();
+     cancel.cancel();
+     assert!(disk.reconcile(&cancel).is_err());
+     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+-    assert_eq!(disk.lock_state().accounted, original);
++    assert_eq!(
++        disk.lock_state()
++            .accounted
++            .iter()
++            .map(|(key, entry)| (*key, *entry))
++            .collect::<std::collections::BTreeMap<_, _>>(),
++        original
++    );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     disk.reconcile(&CensusCancellation::default()).unwrap();
+-    assert_eq!(disk.lock_state().accounted, original);
++    assert_eq!(
++        disk.lock_state()
++            .accounted
++            .iter()
++            .map(|(key, entry)| (*key, *entry))
++            .collect::<std::collections::BTreeMap<_, _>>(),
++        original
++    );
+ }
+ 
+ #[test]
+@@ -305,7 +324,19 @@
+     assert!(!directory.path().join("overflow").exists());
+     // This unchanged work limit may reject recensus even though the files
+     // were individually admitted. Failure retains the entire old union.
+-    let old = disk.lock_state().accounted.clone();
++    let old = disk
++        .lock_state()
++        .accounted
++        .iter()
++        .map(|(key, entry)| (*key, *entry))
++        .collect::<std::collections::BTreeMap<_, _>>();
+     assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+-    assert_eq!(disk.lock_state().accounted, old);
+-}
++    assert_eq!(
++        disk.lock_state()
++            .accounted
++            .iter()
++            .map(|(key, entry)| (*key, *entry))
++            .collect::<std::collections::BTreeMap<_, _>>(),
++        old
++    );
++}
+diff --git a/crates/kasumi-store/src/node_disk/fixed_map/tests.rs b/crates/kasumi-store/src/node_disk/fixed_map/tests.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/fixed_map/tests.rs
+@@ -0,0 +1,348 @@
++use super::*;
++use std::hash::BuildHasher;
++
++fn key_in_group<V>(map: &Map<V>, start: &mut u64, home: u64) -> Identity {
++    // limit40 yields64 physical buckets on both supported group widths.
++    loop {
++        *start += 1;
++        let key = Identity(17, *start);
++        if map.entries.hasher().hash_one(key) & 63 == home {
++            return key;
++        }
++    }
++}
++fn clustered<V>(mut value: impl FnMut(u64) -> V) -> (Banks<V>, [Identity; 40], u64)
++where
++    V: Clone,
++{
++    let mut banks = Banks::new(40).unwrap();
++    let mut keys = [Identity(0, 0); 40];
++    let mut start = 0;
++    for (index, key) in keys.iter_mut().enumerate() {
++        *key = key_in_group(&banks.active, &mut start, 0);
++        banks.try_reserve(1).unwrap();
++        banks.insert(*key, value(index as u64));
++    }
++    assert_eq!(banks.active.entries.capacity(), 56);
++    (banks, keys, start)
++}
++
++#[test]
++fn empty_tombstones_require_drain_not_clear_and_reset_does_not_allocate() {
++    let (mut banks, keys, _) = clustered(|n| n);
++    for key in keys {
++        banks.remove(&key).unwrap();
++    }
++    assert_eq!(banks.len(), 0);
++    let depleted = banks.active.entries.capacity();
++    assert!(depleted < 56, "fixture must retain real deleted buckets");
++    banks.active.entries.clear();
++    assert_eq!(
++        banks.active.entries.capacity(),
++        depleted,
++        "pinned clear skips empty control reset"
++    );
++    let ((), allocations) = crate::allocation_tests::measure(|| banks.clear());
++    assert_eq!(allocations, 0);
++    assert_eq!(banks.active.entries.capacity(), 56);
++    assert_eq!(banks.spare.entries.capacity(), 56);
++}
++#[test]
++fn absent_insertion_rebuilds_before_effect_without_any_new_allocation() {
++    let (mut banks, keys, mut start) = clustered(|n| n);
++    for key in &keys[..20] {
++        banks.remove(key).unwrap();
++    }
++    let ((), allocations) = crate::allocation_tests::measure(|| {
++        for n in 0..20 {
++            // The opposite initially empty group consumes real growth_left
++            // while deleted controls remain in the old cluster.
++            let key = key_in_group(&banks.active, &mut start, 32);
++            banks.try_reserve(1).unwrap();
++            assert!(banks.insert(key, 100 + n).is_none());
++        }
++    });
++    assert_eq!(allocations, 0);
++    assert!(banks.rebuilds > 0);
++    assert_eq!(banks.len(), 40);
++    assert!(banks.try_reserve(1).is_err());
++    for (index, key) in keys[20..].iter().enumerate() {
++        assert_eq!(banks.get(key), Some(&(index as u64 + 20)));
++    }
++}
++#[test]
++fn occupied_replacement_at_zero_growth_does_not_call_hashmap_insert() {
++    let (mut banks, keys, mut start) = clustered(|n| n);
++    for key in &keys[..20] {
++        banks.remove(key).unwrap();
++    }
++    while banks.active.entries.capacity() > banks.len() {
++        let key = key_in_group(&banks.active, &mut start, 32);
++        if banks.len() == 40 {
++            panic!("fixture did not exhaust growth before logical capacity");
++        }
++        banks.active.insert(key, 777);
++    }
++    assert!(banks.len() < 40);
++    let (old, allocations) = crate::allocation_tests::measure(|| banks.insert(keys[20], 999));
++    assert_eq!(old, Some(20));
++    assert_eq!(allocations, 0);
++    assert_eq!(banks.get(&keys[20]), Some(&999));
++}
++#[test]
++fn panic_during_spare_copy_preserves_complete_published_active_map() {
++    use std::sync::{
++        Arc,
++        atomic::{AtomicUsize, Ordering},
++    };
++    struct Value(u64, Arc<AtomicUsize>);
++    impl Clone for Value {
++        fn clone(&self) -> Self {
++            let count = self.1.fetch_add(1, Ordering::SeqCst);
++            assert_ne!(count, 2, "injected third-copy failure");
++            Self(self.0, self.1.clone())
++        }
++    }
++    let calls = Arc::new(AtomicUsize::new(0));
++    let (mut banks, keys, mut start) = clustered(|n| Value(n, calls.clone()));
++    for key in &keys[..20] {
++        banks.remove(key).unwrap();
++    }
++    while banks.active.entries.capacity() > banks.len() {
++        let key = key_in_group(&banks.active, &mut start, 32);
++        assert!(banks.len() < 40);
++        banks.active.insert(key, Value(777, calls.clone()));
++    }
++    let before = banks.iter().map(|(k, v)| (*k, v.0)).collect::<Vec<_>>();
++    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| banks.try_reserve(1)));
++    assert!(result.is_err());
++    assert_eq!(banks.len(), before.len());
++    for (key, value) in &before {
++        assert_eq!(banks.get(key).unwrap().0, *value);
++    }
++    assert_eq!(
++        banks.spare.len(),
++        0,
++        "partial copied ownership retires before unwind escapes"
++    );
++    banks.cancel_stage();
++    assert_eq!(banks.spare.len(), 0);
++    banks.try_reserve(1).unwrap();
++    for (key, value) in &before {
++        assert_eq!(banks.get(key).unwrap().0, *value);
++    }
++}
++#[test]
++fn smaller_census_stage_preserves_full_retained_quota_after_swap_and_cancel() {
++    let mut banks = Banks::<u64>::new(18).unwrap();
++    banks.try_reserve(1).unwrap();
++    banks.insert(Identity(1, 99), 99);
++    {
++        let stage = banks.stage(10).unwrap();
++        for n in 0..10 {
++            stage.try_reserve(1).unwrap();
++            stage.insert(Identity(2, n), n);
++        }
++        assert!(stage.try_reserve(1).is_err());
++    }
++    assert_eq!(banks.get(&Identity(1, 99)), Some(&99));
++    banks.cancel_stage();
++    assert_eq!(banks.len(), 1);
++    assert_eq!(banks.spare.len(), 0);
++    {
++        let stage = banks.stage(10).unwrap();
++        for n in 0..10 {
++            stage.try_reserve(1).unwrap();
++            stage.insert(Identity(2, n), n);
++        }
++    }
++    let ((), allocations) = crate::allocation_tests::measure(|| {
++        banks.commit_stage();
++        for n in 10..18 {
++            banks.try_reserve(1).unwrap();
++            banks.insert(Identity(2, n), n);
++        }
++    });
++    assert_eq!(allocations, 0);
++    assert_eq!(banks.len(), 18);
++    assert!(banks.try_reserve(1).is_err());
++    assert!(banks.get(&Identity(1, 99)).is_none());
++}
++#[test]
++fn pinned_requested_bytes_cover_exact_two_bank_allocations_without_growth_factor() {
++    // Warm the per-thread hash seed before observing table allocations.
++    drop(Banks::<u64>::new(1).unwrap());
++    for limit in [1, 3, 4, 7, 8, 14, 15, 40, 256, 4096] {
++        let (banks, allocations, bytes) =
++            crate::allocation_tests::measure_requested(|| Banks::<u64>::new(limit).unwrap());
++        assert_eq!(allocations, 2, "each fixed bank has one backing allocation");
++        assert!((bytes as u64) <= 2 * bank_bytes::<u64>(limit).unwrap());
++        assert!(banks.active.entries.capacity() >= limit);
++        let ((), retirements, retired_bytes) =
++            crate::allocation_tests::measure_retired(|| drop(banks));
++        assert_eq!(retirements, 2);
++        assert_eq!(retired_bytes, bytes);
++    }
++    assert!(bank_bytes::<u64>(usize::MAX).is_err());
++    assert!(Banks::<u64>::new(usize::MAX).is_err());
++}
++
++#[test]
++fn repeated_churn_retains_every_logical_slot_without_allocating_or_reducing_limits() {
++    let (mut banks, mut keys, mut start) = clustered(|n| n);
++    let ((), allocations) = crate::allocation_tests::measure(|| {
++        for round in 0..4000usize {
++            let slot = round % keys.len();
++            banks.remove(&keys[slot]).unwrap();
++            let next = key_in_group(&banks.active, &mut start, (round as u64) % 64);
++            banks.try_reserve(1).unwrap();
++            assert!(banks.insert(next, round as u64).is_none());
++            keys[slot] = next;
++            assert_eq!(banks.len(), 40);
++        }
++    });
++    assert_eq!(allocations, 0);
++    for key in keys {
++        assert!(banks.contains_key(&key));
++    }
++}
++
++#[test]
++fn failed_and_cancelled_real_census_preserve_old_enrollment_then_publish_complete_candidate() {
++    use super::super::{CensusCancellation, NodeDisk, NodeDiskPhase};
++    use crate::test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry};
++    use std::os::unix::fs::PermissionsExt;
++    let root = private_tempdir().unwrap();
++    let config = NodeDisk::fixture_config(root.path().join("anchor")).unwrap();
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = retry_disk_registry(|| {
++        NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
++    })
++    .unwrap();
++    let before = disk.snapshot();
++    let before_entries = disk
++        .lock_state()
++        .accounted
++        .iter()
++        .map(|(k, v)| (*k, *v))
++        .collect::<Vec<_>>();
++    let bad = root.path().join("bad");
++    crate::private_files::create(&bad, b"new").unwrap();
++    std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o644)).unwrap();
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    {
++        let state = disk.lock_state();
++        assert_eq!(state.phase, NodeDiskPhase::Failed);
++        assert_eq!(state.accounted.len(), before_entries.len());
++        assert_eq!(state.accounted.spare.len(), 0);
++        for (key, value) in &before_entries {
++            assert_eq!(state.accounted.get(key), Some(value));
++        }
++        assert_eq!(state.bytes, before.charged_bytes);
++        assert_eq!(state.pending, before.pending_bytes);
++    }
++    std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o600)).unwrap();
++    let cancel = CensusCancellation::default();
++    cancel
++        .cancel_at
++        .store(2, std::sync::atomic::Ordering::Relaxed);
++    assert!(disk.reconcile(&cancel).is_err());
++    assert!(
++        cancel
++            .checkpoints
++            .load(std::sync::atomic::Ordering::Relaxed)
++            >= 2
++    );
++    {
++        let state = disk.lock_state();
++        assert_eq!(state.accounted.spare.len(), 0);
++        for (key, value) in &before_entries {
++            assert_eq!(state.accounted.get(key), Some(value));
++        }
++    }
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    assert_eq!(disk.snapshot().persistent_files, 1);
++    assert!(disk.lock_state().accounted.spare.entries.capacity() >= 32769);
++    assert_eq!(disk.lock_state().accounted.active.limit, 32769);
++}
++
++#[test]
++fn native_entry_geometry_preserves_original_million_entry_and_handle_policy() {
++    use super::super::{AccountedInode, DirectoryPolicy, NodeDisk, NodeDiskConfig};
++    use std::{
++        collections::BTreeMap,
++        mem::{align_of, size_of},
++        path::PathBuf,
++        sync::Weak,
++    };
++    let config = NodeDiskConfig {
++        roots: BTreeMap::from([("data".into(), PathBuf::from("/var/lib/kasumi/data"))]),
++        max_bytes: 64 << 30,
++        maintenance_reserve_bytes: 8 << 30,
++        min_free_bytes: 0,
++        max_open_files: 4096,
++        max_open_directories: 4096,
++        directory_policy: DirectoryPolicy::new(1 << 20, 32768).unwrap(),
++        max_census_entries: 1_000_000,
++        max_depth: 64,
++        max_name_bytes: 255,
++    };
++    let (retained, census) = super::super::ledger::map_limits(&config).unwrap();
++    assert_eq!((retained, census), (2_000_001, 1_000_001));
++    let banks = 2 * bank_bytes::<AccountedInode>(retained).unwrap();
++    let live = 2 * bank_bytes::<Weak<super::super::file::FileOwner>>(4096).unwrap();
++    println!(
++        "inode_pair_size={} inode_pair_align={} live_pair_size={} live_pair_align={} inode_two_banks_requested={} live_two_banks_requested={} cfg_test_owner={} physical_allocator_RSS_fit=UNQUALIFIED",
++        size_of::<(Identity, AccountedInode)>(),
++        align_of::<(Identity, AccountedInode)>(),
++        size_of::<(Identity, Weak<super::super::file::FileOwner>)>(),
++        align_of::<(Identity, Weak<super::super::file::FileOwner>)>(),
++        banks,
++        live,
++        NodeDisk::required_metadata_bytes(&config).unwrap()
++    );
++}
++
++#[test]
++fn rebuilt_weak_registry_retires_duplicates_before_actual_last_weak_allocation_destruction() {
++    use std::sync::Arc;
++    let (owner, allocations, owner_bytes) =
++        crate::allocation_tests::measure_requested(|| Arc::new(7u64));
++    assert_eq!(allocations, 1);
++    let (mut banks, keys, mut start) = clustered(|_| Arc::downgrade(&owner));
++    for key in &keys[..20] {
++        drop(banks.remove(key).unwrap());
++    }
++    while banks.active.entries.capacity() > banks.len() {
++        let key = key_in_group(&banks.active, &mut start, 32);
++        assert!(banks.len() < 40);
++        banks.active.insert(key, Arc::downgrade(&owner));
++    }
++    let ((), allocations) = crate::allocation_tests::measure(|| banks.try_reserve(1).unwrap());
++    assert_eq!(allocations, 0);
++    assert_eq!(banks.rebuilds, 1);
++    assert_eq!(
++        Arc::weak_count(&owner),
++        banks.len(),
++        "rebuilt spare must not retain duplicate Weak ownership"
++    );
++    let ((), retirements, _) = crate::allocation_tests::measure_retired(|| drop(owner));
++    assert_eq!(
++        retirements, 0,
++        "registered Weak values still retain Arc backing"
++    );
++    let last = banks.remove(&keys[20]).unwrap();
++    assert!(last.upgrade().is_none());
++    let ((), retirements, _) = crate::allocation_tests::measure_retired(|| banks.clear());
++    assert_eq!(
++        retirements, 0,
++        "one extracted registration still owns the control block"
++    );
++    let ((), retirements, bytes) = crate::allocation_tests::measure_retired(|| drop(last));
++    assert_eq!(
++        retirements, 1,
++        "the actual last Weak must destroy its allocation before caller credit"
++    );
++    assert_eq!(bytes, owner_bytes);
++}
+diff --git a/crates/kasumi-store/src/node_disk/fixed_map.rs b/crates/kasumi-store/src/node_disk/fixed_map.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/fixed_map.rs
+@@ -0,0 +1,238 @@
++//! Two preallocated std tables, with no resizing or tombstone-dependent denial.
++//! Pinned Rust 1.97.1 / hashbrown 0.17.1: capacity == items + growth_left.
++use super::Identity;
++use std::{collections::HashMap, io, ops::Index};
++
++pub(super) struct Map<V> {
++    entries: HashMap<Identity, V>,
++    limit: usize,
++}
++impl<V> Map<V> {
++    fn new(limit: usize) -> io::Result<Self> {
++        let mut entries = HashMap::new();
++        // The only table allocation. The caller holds the complete installed
++        // two-bank memory reservation before constructing either bank.
++        entries
++            .try_reserve(limit)
++            .map_err(|_| io::ErrorKind::OutOfMemory)?;
++        if entries.capacity() < limit {
++            return Err(io::ErrorKind::OutOfMemory.into());
++        }
++        Ok(Self { entries, limit })
++    }
++    pub(super) fn len(&self) -> usize {
++        self.entries.len()
++    }
++    pub(super) fn get(&self, key: &Identity) -> Option<&V> {
++        self.entries.get(key)
++    }
++    pub(super) fn get_mut(&mut self, key: &Identity) -> Option<&mut V> {
++        self.entries.get_mut(key)
++    }
++    pub(super) fn contains_key(&self, key: &Identity) -> bool {
++        self.entries.contains_key(key)
++    }
++    pub(super) fn iter(&self) -> impl Iterator<Item = (&Identity, &V)> {
++        self.entries.iter()
++    }
++    pub(super) fn values(&self) -> impl Iterator<Item = &V> {
++        self.entries.values()
++    }
++    pub(super) fn try_reserve(&mut self, additional: usize) -> io::Result<()> {
++        let next = self
++            .len()
++            .checked_add(additional)
++            .ok_or(io::ErrorKind::OutOfMemory)?;
++        if next > self.limit || next > self.entries.capacity() {
++            return Err(io::ErrorKind::OutOfMemory.into());
++        }
++        Ok(())
++    }
++    pub(super) fn insert(&mut self, key: Identity, value: V) -> Option<V> {
++        // hashbrown insert reserves BEFORE checking occupancy. Never call that
++        // path for a replacement at exhausted growth_left.
++        if let Some(existing) = self.entries.get_mut(&key) {
++            return Some(std::mem::replace(existing, value));
++        }
++        assert!(
++            self.len() < self.limit && self.len() < self.entries.capacity(),
++            "absent insertion requires a prepared fixed slot"
++        );
++        self.entries.insert(key, value)
++    }
++    pub(super) fn remove(&mut self, key: &Identity) -> Option<V> {
++        self.entries.remove(key)
++    }
++    fn reset(&mut self) {
++        // clear() skips an empty map and can preserve depleted growth_left.
++        // RawDrain's Drop calls clear_no_drop even when len == 0.
++        drop(self.entries.drain());
++    }
++}
++impl<V> Index<&Identity> for Map<V> {
++    type Output = V;
++    fn index(&self, key: &Identity) -> &V {
++        &self.entries[key]
++    }
++}
++
++struct ResetCandidate<'a, V>(&'a mut Map<V>);
++impl<V> Drop for ResetCandidate<'_, V> {
++    fn drop(&mut self) {
++        self.0.reset();
++    }
++}
++
++pub(super) struct Banks<V> {
++    active: Map<V>,
++    spare: Map<V>,
++    limit: usize,
++    #[cfg(test)]
++    rebuilds: usize,
++}
++impl<V: Clone> Banks<V> {
++    pub(super) fn new(limit: usize) -> io::Result<Self> {
++        Ok(Self {
++            active: Map::new(limit)?,
++            spare: Map::new(limit)?,
++            limit,
++            #[cfg(test)]
++            rebuilds: 0,
++        })
++    }
++    pub(super) fn len(&self) -> usize {
++        self.active.len()
++    }
++    #[cfg(test)]
++    pub(super) fn is_empty(&self) -> bool {
++        self.len() == 0
++    }
++    pub(super) fn get(&self, key: &Identity) -> Option<&V> {
++        self.active.get(key)
++    }
++    pub(super) fn get_mut(&mut self, key: &Identity) -> Option<&mut V> {
++        self.active.get_mut(key)
++    }
++    pub(super) fn contains_key(&self, key: &Identity) -> bool {
++        self.active.contains_key(key)
++    }
++    pub(super) fn iter(&self) -> impl Iterator<Item = (&Identity, &V)> {
++        self.active.iter()
++    }
++    pub(super) fn values(&self) -> impl Iterator<Item = &V> {
++        self.active.values()
++    }
++    pub(super) fn insert(&mut self, key: Identity, value: V) -> Option<V> {
++        self.active.insert(key, value)
++    }
++    pub(super) fn remove(&mut self, key: &Identity) -> Option<V> {
++        self.active.remove(key)
++    }
++    pub(super) fn try_reserve(&mut self, additional: usize) -> io::Result<()> {
++        if self
++            .len()
++            .checked_add(additional)
++            .is_none_or(|next| next > self.limit)
++        {
++            return Err(io::ErrorKind::OutOfMemory.into());
++        }
++        if self.active.try_reserve(additional).is_ok() {
++            return Ok(());
++        }
++        self.spare.reset();
++        self.spare.limit = self.limit;
++        // Cleanup runs on error and unwind before the State guard can unlock.
++        // In particular, duplicate Weak handles may not outlive preparation
++        // and delay a FileOwner's actual last-Weak retirement.
++        let candidate = ResetCandidate(&mut self.spare);
++        for (key, value) in self.active.iter() {
++            candidate.0.try_reserve(1)?;
++            assert!(candidate.0.insert(*key, value.clone()).is_none());
++        }
++        candidate.0.try_reserve(additional)?;
++        // The active map remains unchanged until every copy and check succeeds.
++        std::mem::swap(&mut self.active, candidate.0);
++        #[cfg(test)]
++        {
++            self.rebuilds += 1;
++        }
++        drop(candidate);
++        Ok(())
++    }
++    /// State serialization excludes file preparation and another census while
++    /// the inactive bank contains an unpublished candidate. Its logical census
++    /// quota may be smaller than the retained physical backing.
++    pub(super) fn stage(&mut self, logical_limit: usize) -> io::Result<&mut Map<V>> {
++        if logical_limit > self.limit {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        self.spare.reset();
++        self.spare.limit = logical_limit;
++        Ok(&mut self.spare)
++    }
++    pub(super) fn cancel_stage(&mut self) {
++        self.spare.reset();
++        self.spare.limit = self.limit;
++    }
++    /// Call only after the candidate's complete census and all fallible shared
++    /// promise checks. Both banks already have retained capacity; no expansion
++    /// allocation or old/new backing overlap is introduced at publication.
++    pub(super) fn commit_stage(&mut self) {
++        self.spare.limit = self.limit;
++        std::mem::swap(&mut self.active, &mut self.spare);
++        self.spare.reset();
++        self.spare.limit = self.limit;
++    }
++    pub(super) fn clear(&mut self) {
++        self.active.reset();
++        self.cancel_stage();
++    }
++}
++impl<V> Index<&Identity> for Banks<V> {
++    type Output = V;
++    fn index(&self, key: &Identity) -> &V {
++        &self.active[key]
++    }
++}
++
++/// Exact pinned requested table allocation, conservatively using the largest
++/// supported control-group width (16). This bounds requested backing, not the
++/// allocator's physical footprint. It replaces the former 4*count estimate.
++pub(super) fn bank_bytes<V>(limit: usize) -> io::Result<u64> {
++    use std::{
++        alloc::Layout,
++        mem::{align_of, size_of},
++    };
++    let overflow = || io::Error::from(io::ErrorKind::OutOfMemory);
++    if limit == 0 {
++        return Ok(0);
++    }
++    let buckets = if limit < 4 {
++        4
++    } else if limit < 8 {
++        8
++    } else if limit < 15 {
++        16
++    } else {
++        (limit.checked_mul(8).ok_or_else(overflow)? / 7)
++            .checked_next_power_of_two()
++            .ok_or_else(overflow)?
++    };
++    // Every key is a 16-byte Identity, so hashbrown's tiny-element minimum
++    // exceptions cannot apply even when V has zero size.
++    let group = 16usize;
++    let alignment = align_of::<(Identity, V)>().max(group);
++    let data = size_of::<(Identity, V)>()
++        .checked_mul(buckets)
++        .ok_or_else(overflow)?;
++    let controls = data.checked_add(alignment - 1).ok_or_else(overflow)? & !(alignment - 1);
++    let bytes = controls
++        .checked_add(buckets)
++        .and_then(|n| n.checked_add(group))
++        .ok_or_else(overflow)?;
++    Layout::from_size_align(bytes, alignment).map_err(|_| overflow())?;
++    u64::try_from(bytes).map_err(|_| overflow())
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/kasumi-store/src/node_disk/ledger.rs b/crates/kasumi-store/src/node_disk/ledger.rs
+--- a/crates/kasumi-store/src/node_disk/ledger.rs
++++ b/crates/kasumi-store/src/node_disk/ledger.rs
+@@ -55,3 +55,14 @@
+ #[cfg(test)]
+ #[path = "ledger/tests.rs"]
+ mod tests;
++
++/// Retained physical capacity and the smaller census logical cardinality.
++pub(super) fn map_limits(config: &super::NodeDiskConfig) -> std::io::Result<(usize, usize)> {
++    let roots = u64::try_from(config.roots.len()).map_err(|_| crate::disk_memory::overflow())?;
++    let (retained, census) =
++        capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;
++    Ok((
++        usize::try_from(retained).map_err(|_| crate::disk_memory::overflow())?,
++        usize::try_from(census).map_err(|_| crate::disk_memory::overflow())?,
++    ))
++}
+diff --git a/crates/kasumi-store/src/node_disk/memory.rs b/crates/kasumi-store/src/node_disk/memory.rs
+--- a/crates/kasumi-store/src/node_disk/memory.rs
++++ b/crates/kasumi-store/src/node_disk/memory.rs
+@@ -1,5 +1,7 @@
+ //! Fixed, checked resident workspace for retained metadata and its replacement peak.
+-use super::{AccountedInode, Identity, NodeDisk, NodeDiskConfig, census, directory, file, ledger};
++use super::{
++    AccountedInode, Identity, NodeDisk, NodeDiskConfig, census, directory, file, fixed_map, ledger,
++};
+ use crate::disk_memory::{self, add, mul, size};
+ use std::{io, os::unix::ffi::OsStrExt, sync::Weak};
+ 
+@@ -8,11 +10,11 @@
+ const ALLOCATION_HEADROOM: u64 = 64;
+ const DIRECTORY_STREAM_WORKSPACE: u64 = 64 << 10;
+ 
+-// Covers a bounded table's load factor, power-of-two capacity and old/new
+-// allocations during growth. These are workspace estimates, not a promise
+-// about std's private allocator layout. Existing and replacement ledgers coexist.
+-fn table<T>(count: u64) -> io::Result<u64> {
+-    add(mul(mul(count.max(4), 4)?, add(size::<T>()?, 16)?)?, 4096)
++// A fixed HashMap bank has one pinned backing allocation. Keep the existing
++// per-allocation platform allowance explicit; requested bytes alone do not
++// prove allocator/RSS ownership. Two banks remain resident throughout census.
++fn banks<V>(count: usize) -> io::Result<u64> {
++    mul(2, add(fixed_map::bank_bytes::<V>(count)?, 4096)?)
+ }
+ impl NodeDisk {
+     pub fn required_metadata_bytes(config: &NodeDiskConfig) -> anyhow::Result<u64> {
+@@ -20,19 +22,14 @@
+         let depth = u64::from(config.max_depth);
+         let handles = u64::from(config.max_open_files);
+         let name = add(u64::from(config.max_name_bytes), 1)?;
+-        // Census visits at most N non-root entries, but later admission can
+-        // fill N file slots while all census directories remain. Existing and
+-        // replacement maps therefore have different simultaneous maxima.
+-        let (retained, replacement) = ledger::capacities(
+-            config.max_census_entries,
+-            u64::try_from(config.roots.len()).map_err(|_| disk_memory::overflow())?,
+-        )
+-        .ok_or_else(disk_memory::overflow)?;
+-        let ledgers = add(
+-            table::<(Identity, AccountedInode)>(retained)?,
+-            table::<(Identity, AccountedInode)>(replacement)?,
++        let (retained, _replacement) = ledger::map_limits(config)?;
++        // The inactive retained-capacity bank receives the logically smaller
++        // N+R census. It is also the pre-effect tombstone rebuild workspace.
++        // No third map and no post-publication expansion allocation exist.
++        let ledgers = banks::<AccountedInode>(retained)?;
++        let live = banks::<Weak<file::FileOwner>>(
++            usize::try_from(handles).map_err(|_| disk_memory::overflow())?,
+         )?;
+-        let live = table::<(Identity, Weak<file::FileOwner>)>(handles)?;
+         let components = mul(
+             depth,
+             add(mul(2, size::<std::ffi::CString>()?)?, ALLOCATION_HEADROOM)?,
+@@ -59,7 +56,7 @@
+         // Operational cursors retain counted DirectoryOwners, so a census may
+         // not overlap them. At most max_depth operational streams reuse these
+         // existing census slots. This does not qualify the underlying native
+-        // stream allowance or the separate table-growth estimate.
++        // stream allowance or the allocator physical footprint.
+         if size::<directory::NodeDiskDirectoryCursor>()? > mul(4, size::<census::Cursor>()?)? {
+             return Err(io::Error::from(io::ErrorKind::InvalidData).into());
+         }
+diff --git a/crates/kasumi-store/src/node_disk.rs b/crates/kasumi-store/src/node_disk.rs
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -8,7 +8,7 @@
+ use anyhow::{Context, Result, ensure};
+ use serde::{Deserialize, Serialize};
+ use std::{
+-    collections::{BTreeMap, HashMap},
++    collections::BTreeMap,
+     fs::File,
+     io,
+     os::unix::fs::MetadataExt,
+@@ -22,6 +22,7 @@
+ mod census;
+ mod directory;
+ mod file;
++mod fixed_map;
+ mod ledger;
+ mod memory;
+ mod namespace;
+@@ -315,8 +316,8 @@
+     namespace_generation: u64,
+     directory_bytes: u64,
+     directories: u64,
+-    live: HashMap<Identity, Weak<file::FileOwner>>,
+-    accounted: HashMap<Identity, AccountedInode>,
++    live: fixed_map::Banks<Weak<file::FileOwner>>,
++    accounted: fixed_map::Banks<AccountedInode>,
+ }
+ 
+ /// An installed owner outlives all service/database handles. The strong registry
+@@ -446,8 +447,14 @@
+         let ancestor_locks = census::lock_roots(&roots, config.max_depth)?;
+         let root = roots.values().next().expect("validated roots");
+         let (_, unit) = filesystem(&root.file)?;
+-        let totals = census(&roots, config, unit, cancel)?;
++        let (retained_limit, census_limit) = ledger::map_limits(config)?;
++        let mut accounted = fixed_map::Banks::new(retained_limit)?;
++        let totals = census(&roots, config, unit, cancel, accounted.stage(census_limit)?)?;
+         cancel.check()?;
++        accounted.commit_stage();
++        let live = fixed_map::Banks::new(
++            usize::try_from(config.max_open_files).map_err(|_| disk_memory::overflow())?,
++        )?;
+         let device = selection.open(root.identity.0, config.min_free_bytes, memory.clone())?;
+         let disk = Arc::new(Self {
+             config: config.clone(),
+@@ -467,8 +474,8 @@
+                 namespace_generation: 0,
+                 directory_bytes: totals.directory_bytes,
+                 directories: totals.directories,
+-                live: HashMap::new(),
+-                accounted: totals.accounted,
++                live,
++                accounted,
+             }),
+             #[cfg(test)]
+             available_override: Mutex::new(None),
+@@ -619,10 +626,18 @@
+                 && state.open_directory_cursors == 0,
+             "persistent file or directory owners are still live"
+         );
+-        let result = census(&self.roots, &self.config, self.unit, cancel);
++        let (_, census_limit) = ledger::map_limits(&self.config)?;
++        let result = census(
++            &self.roots,
++            &self.config,
++            self.unit,
++            cancel,
++            state.accounted.stage(census_limit)?,
++        );
+         let totals = match result {
+             Ok(totals) => totals,
+             Err(error) => {
++                state.accounted.cancel_stage();
+                 state.phase = NodeDiskPhase::Failed;
+                 self.device.lock().fail_owner();
+                 return Err(error);
+@@ -633,19 +648,30 @@
+             .checked_sub(state.pending)
+             .and_then(|n| n.checked_add(totals.pending))
+         else {
++            state.accounted.cancel_stage();
+             state.phase = NodeDiskPhase::Failed;
+             promises.fail_owner();
+             anyhow::bail!("persistent census promise accounting overflow");
+         };
+-        promises
+-            .set_pending(next)
+-            .inspect_err(|_| state.phase = NodeDiskPhase::Failed)?;
++        if let Err(error) = cancel.check() {
++            state.accounted.cancel_stage();
++            state.phase = NodeDiskPhase::Failed;
++            promises.fail_owner();
++            return Err(error);
++        }
++        if let Err(error) = promises.set_pending(next) {
++            state.accounted.cancel_stage();
++            state.phase = NodeDiskPhase::Failed;
++            return Err(error.into());
++        }
++        // This is the publication boundary: the complete candidate and shared
++        // promises are accepted. Swap fixed backing, then retire old entries.
++        state.accounted.commit_stage();
+         state.bytes = totals.bytes;
+         state.pending = totals.pending;
+         state.files = totals.files;
+         state.directory_bytes = totals.directory_bytes;
+         state.directories = totals.directories;
+-        state.accounted = totals.accounted;
+         state.live.clear();
+         state.phase = NodeDiskPhase::Open;
+         promises.reconcile_owner();

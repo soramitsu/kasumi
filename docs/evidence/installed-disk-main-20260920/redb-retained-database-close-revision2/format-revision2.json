@@ -1,0 +1,13 @@
+{
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-retained-database-close-revision2/proposed/vendor/redb-4.2.0/src/retained_database_tests.rs"
+  ],
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": ""
+}

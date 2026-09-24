@@ -1,0 +1,7 @@
+{
+  "original_manifest_sha256": "81d363d7e8ea4f1572ad9d0d22ec40a4a212a67279bb698a8c21b1309e101c96",
+  "original_patch_unchanged": "50418750e65460f8b832770e5792ade1c6eed1ffe0e10b0bad9fa13022b2fc7f",
+  "superseded_adapter_sha256": "3d70d1a2765b53ebbba062382a15b6db3bb97a82af45b47aa263124de81100cd",
+  "required_adapter_sha256": "9001501726d33c8041c837ffdcda2550131a02993da5bb8d86e6add772382c5d",
+  "reason": "Root rebased MemoryCore adapter after startup foundation. Public store API and memory semantics are unchanged. This receipt corrects dependency selection without rewriting frozen manifest or patch."
+}

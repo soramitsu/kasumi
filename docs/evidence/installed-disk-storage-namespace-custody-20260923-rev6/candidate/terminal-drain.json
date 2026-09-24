@@ -1,0 +1,47 @@
+{
+  "schema": "kasumi-composed-candidate-terminal-drain-v1",
+  "checked_at_utc": "2026-09-23T00:19:38.680611+00:00",
+  "groups": [
+    92304,
+    92312,
+    93232,
+    93237,
+    93241,
+    93244,
+    93247,
+    93250,
+    93253,
+    93256,
+    93259,
+    93263,
+    93267,
+    93270,
+    93273,
+    93276,
+    93281,
+    93286,
+    96538,
+    96983,
+    98317
+  ],
+  "remaining_processes": [],
+  "native": {
+    "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/result.json",
+    "sha256": "f65746a8e2c766571b61e6625d103d8e7838ea79637e569c2ff6caad190d6685",
+    "bytes": 342
+  },
+  "format": {
+    "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/format-01/result.json",
+    "sha256": "ab94d2962b92f55540db4bb382381eb693bb4484d2758d4327b1aa97b7741324",
+    "bytes": 1150
+  },
+  "all_source_bindings_rehashed": 3700,
+  "actual_bases_verified": 75,
+  "proposed_readback_assembly_hashes_verified": 75,
+  "patch_apply_check_exit": 0,
+  "binary": {
+    "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/store-test-binary",
+    "sha256": "5f19f351c612e52e67036db0609ae434eac767f61098848251721bdb04de1e80",
+    "bytes": 54718560
+  }
+}

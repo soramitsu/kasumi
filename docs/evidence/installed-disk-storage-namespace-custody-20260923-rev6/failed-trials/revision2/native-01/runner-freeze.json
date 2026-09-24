@@ -1,0 +1,16 @@
+{
+  "runner_sha256": "fb7882afe20a3d966780afcff9eb1d6ff9f0f7d4da10f5df166ff278975a2c53",
+  "source_template": "a66fdce777db0d0ed9130649755a9a1dc26ec2b807859d2e19743f07a8f5a70a",
+  "expected_manifest": "93ce8996fc13e0c84d77ddf22f9b71875124286c7de12367c216eea3c0026d24",
+  "whole_cohort_bound_seconds": 1200,
+  "stages": [
+    "workspace-check",
+    "workspace-clippy",
+    "compile-store",
+    "store-inventory",
+    "store-full"
+  ],
+  "expected_store_inventory": 331,
+  "fail_closed_timeout_and_forced_cleanup": true,
+  "fresh_target_required": true
+}

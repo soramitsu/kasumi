@@ -1,0 +1,13 @@
+{
+  "status": "Workspace check and strict Clippy qualified; exact full store runtime and smoke tests queued after allocator native window",
+  "manifest_sha256": "0e0ceb1d2fcaa3293183af8e65f1c333909996b953c7ad415f2fc27b3759d709",
+  "patch_sha256": "8a0258da5a91d7a0daaf5c2a62c6a37fb1d5f91a718685abacd85c4d473f6c2f",
+  "workspace_receipt": "workspace-qualification-receipt.json",
+  "runtime_preparation": "native-full-store/result.json",
+  "runtime_inventory_reconciliation": "native-full-store-resume/inventory-reconciliation.json",
+  "next_command": "python3 target/installed-disk-validation/storage-and-namespace-integration-revision3/native-full-store-resume/run.py",
+  "dispatch_requires_serial_window_return": true,
+  "actual_source_changed": false,
+  "current_branch": "master",
+  "whole_memory_or_release_acceptance": false
+}

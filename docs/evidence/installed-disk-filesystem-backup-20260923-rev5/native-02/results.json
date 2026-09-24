@@ -1,0 +1,190 @@
+[
+  {
+    "name": "workspace-check",
+    "pid": 99176,
+    "pgid": 99176,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "check",
+      "--offline",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "--message-format=json"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/workspace-check.log",
+    "remaining_bound_seconds": 1199.97516875,
+    "compiled_binary_matched": true,
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 213.455047208,
+    "log_sha256": "22c2d3a56ea65c420c656cd481846f931b1551336dea0e57c913c35197f2c9a7"
+  },
+  {
+    "name": "workspace-clippy",
+    "pid": 3009,
+    "pgid": 3009,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "clippy",
+      "--offline",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "--message-format=json",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/workspace-clippy.log",
+    "remaining_bound_seconds": 986.0363230830001,
+    "compiled_binary_matched": true,
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 94.95159337499996,
+    "log_sha256": "cfa2063f49c771481e37f6f357a20cc17866d9cd424f97e1fe9833066cd25ddf"
+  },
+  {
+    "name": "compile-store",
+    "pid": 3528,
+    "pgid": 3528,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kasumi-store",
+      "--all-features",
+      "--lib",
+      "--no-run",
+      "--message-format=json"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/compile-store.log",
+    "remaining_bound_seconds": 890.5431725410001,
+    "compiled_binary_matched": true,
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 78.56067545899998,
+    "log_sha256": "8e53f1d4f7c7ceeb0ddc306eb75f4502f1b37aa81478381eec9b18c58bcbac02"
+  },
+  {
+    "name": "store-inventory",
+    "pid": 4357,
+    "pgid": 4357,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-test-binary",
+      "--list"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-inventory.log",
+    "remaining_bound_seconds": 811.4958165410001,
+    "compiled_binary_matched": true,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-test-binary",
+      "sha256": "8c4a6a6aa5aad8a7e5fc95c0a2f0f041aed0b41b759acb9903cd3a8f4d266b90",
+      "bytes": 54831152
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-test-binary",
+      "sha256": "8c4a6a6aa5aad8a7e5fc95c0a2f0f041aed0b41b759acb9903cd3a8f4d266b90",
+      "bytes": 54831152
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.8506964160000052,
+    "log_sha256": "55015b9b9697c6453dfdde055a23d3b2a544d5668e8da21e21656e7d98e9c03b",
+    "inventory_passed": true
+  },
+  {
+    "name": "store-full",
+    "pid": 4363,
+    "pgid": 4363,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-test-binary",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-full.log",
+    "remaining_bound_seconds": 810.6364195830001,
+    "compiled_binary_matched": true,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-test-binary",
+      "sha256": "8c4a6a6aa5aad8a7e5fc95c0a2f0f041aed0b41b759acb9903cd3a8f4d266b90",
+      "bytes": 54831152
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-test-binary",
+      "sha256": "8c4a6a6aa5aad8a7e5fc95c0a2f0f041aed0b41b759acb9903cd3a8f4d266b90",
+      "bytes": 54831152
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 182.38553816700005,
+    "log_sha256": "4957fb5e2c44a3d595b6dc2c56ffc95463462f17cc20740b562242a5dab136c6",
+    "runtime_passed": true,
+    "runtime_summary": [
+      "343",
+      "0",
+      "2",
+      "0",
+      "0"
+    ]
+  }
+]

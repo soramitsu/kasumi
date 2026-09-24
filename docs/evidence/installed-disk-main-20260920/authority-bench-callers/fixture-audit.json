@@ -1,0 +1,98 @@
+[
+  {
+    "path": "crates/kasumi-authority/src/activation_gate_tests.rs",
+    "test_entrypoints": [
+      "committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encrypted_recovery",
+      "stopped_control_epoch_and_queued_original_expiry_defeat_new_activation_effects",
+      "target_storage_retains_original_phase_and_cannot_install_late_renewal_or_new_gate",
+      "resolved_completion_activates_only_with_its_distinct_positive_inspection_signature"
+    ],
+    "duration_expressions_unchanged": true
+  },
+  {
+    "path": "crates/kasumi-authority/src/bootstrap_open_tests.rs",
+    "test_entrypoints": [
+      "strict_authority_requires_every_published_head_without_recreating_it",
+      "strict_authority_rejects_corrupt_and_unsupported_genesis_without_replacement",
+      "strict_authority_binds_immutable_installation_and_physical_verifier",
+      "strict_authority_reopens_original_genesis_after_complete_owner_drain"
+    ],
+    "duration_expressions_unchanged": true
+  },
+  {
+    "path": "crates/kasumi-authority/src/maintenance_tests.rs",
+    "test_entrypoints": [
+      "maintenance_byte_budget_expands_after_exhaustion_and_preserves_exact_history",
+      "maintenance_requires_every_installed_peer_before_admission",
+      "maintenance_prepared_stop_and_dispatched_restart_are_exact",
+      "maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_drain",
+      "maintenance_store_cannot_reopen_as_another_member_identity",
+      "maintenance_learner_must_fit_current_capacity_after_bootstrap_growth",
+      "maintenance_resource_acknowledgement_survives_lost_reply_before_admission",
+      "maintenance_removing_the_leader_resumes_the_same_committed_operation",
+      "authority_signer_cannot_substitute_another_physical_verifier_with_the_same_node_id"
+    ],
+    "duration_expressions_unchanged": true
+  },
+  {
+    "path": "crates/kasumi-authority/src/request_drain_tests.rs",
+    "test_entrypoints": [
+      "cancelled_public_command_waiter_keeps_actual_child_until_its_receipt_commits",
+      "acknowledgement_timeout_keeps_original_command_owner_and_actual_completion",
+      "ordinary_command_rejection_is_preserved_without_fencing_or_failed_drain",
+      "actual_child_panic_fences_admission_and_cancelled_drain_keeps_original_join_error",
+      "request_registry_metadata_charge_outlives_cancelled_waiters_and_dropped_facade",
+      "request_child_inventory_is_bounded_and_capacity_denial_does_not_fence_owner",
+      "authority_shutdown_retains_admitted_jobs_and_returned_fences_after_waiter_cancellation",
+      "original_signer_authorization_is_reused_when_all_native_slots_are_occupied"
+    ],
+    "duration_expressions_unchanged": true
+  },
+  {
+    "path": "crates/kasumi-authority/src/target_materialization_tests.rs",
+    "test_entrypoints": [
+      "actual_target_materialization_preserves_image_and_original_operation_fence",
+      "fresh_materialization_admission_preserves_expired_origin_and_exact_published_image",
+      "materialization_rejects_authenticated_backup_purpose_substitution_before_publication",
+      "three_actual_materializations_initialize_and_commit_completion_with_restart_proof",
+      "exact_actual_completion_is_required_for_issuer_and_target_activation",
+      "activated_target_keeps_operational_suspension_and_membership_across_restart",
+      "dropping_target_on_non_runtime_thread_retains_shutdown_work_until_real_drain",
+      "expired_completion_with_missing_journal_recovers_only_exact_inspection_facts",
+      "independent_target_journal_reserves_stop_after_normal_quota_and_recovers_encrypted",
+      "followup_request_keeps_both_original_credential_fences_and_cannot_reopen_phase",
+      "target_file_creation_outcome_distinguishes_original_creation_from_strict_replay"
+    ],
+    "duration_expressions_unchanged": true
+  },
+  {
+    "path": "crates/kasumi-authority/src/target_serving_tests.rs",
+    "test_entrypoints": [],
+    "duration_expressions_unchanged": true
+  },
+  {
+    "path": "crates/kasumi-authority/src/tests.rs",
+    "test_entrypoints": [
+      "independent_quorum_fence_drains_original_lease_and_competing_activations_cannot_overlap",
+      "exact_stop_defeats_delayed_activation_and_committed_activation_wins_resolution",
+      "current_admin_self_revocation_yields_unknown_and_new_custodian_recovers_exact_identity",
+      "actual_authority_quorum_loss_rejects_lease_and_activation_without_source_fallback",
+      "actual_encrypted_source_materialization_is_fenced_but_independent_custody_stays_available",
+      "exact_target_preparation_cannot_serve_and_needs_a_fresh_active_lease_after_drain",
+      "encrypted_restart_restarts_full_drain_and_never_reuses_an_old_incarnation"
+    ],
+    "duration_expressions_unchanged": true
+  },
+  {
+    "path": "crates/kasumi-bench/src/bin/loopback.rs",
+    "test_entrypoints": [],
+    "duration_expressions_unchanged": true
+  },
+  {
+    "path": "crates/kasumi-bench/src/main.rs",
+    "test_entrypoints": [
+      "failed_read_workload_retains_counts_and_later_independent_work_can_run"
+    ],
+    "duration_expressions_unchanged": true
+  }
+]

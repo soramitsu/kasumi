@@ -1,0 +1,24 @@
+{
+  "argv": [
+    "rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/transactions.rs",
+    "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/db.rs",
+    "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/error.rs",
+    "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/page_list_tests.rs",
+    "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/mod.rs",
+    "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/page_store/mod.rs",
+    "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/page_store/header.rs",
+    "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+    "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/page_store/savepoint.rs",
+    "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/table_tree.rs",
+    "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+    "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/btree.rs",
+    "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+    "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/btree_cursor.rs"
+  ],
+  "exit_code": 0
+}

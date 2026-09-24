@@ -1,0 +1,920 @@
+crates/kasumi-store/src/node_disk/file.rs SHA256 24934b329c935269f578118d70a4e2e9e108f6cf62c3e68455d232aee51843e5
+170:         let flags = libc::O_RDWR
+171:             | libc::O_NONBLOCK
+172:             | if self.create {
+173:                 libc::O_CREAT | libc::O_EXCL
+174:             } else {
+175:                 0
+176:             };
+177:         let file = match census::open_at(&self.parent, &self.name, flags) {
+178:             Ok(file) => file,
+179:             Err(error) => {
+180:                 // An absent final leaf is harmless only if its complete name
+181:                 // was never enrolled and the prepared parent is still rooted.
+182:                 if !self.create
+183:                     && error.kind() == io::ErrorKind::NotFound
+184:                     && !self
+185:                         .state
+186:                         .accounted
+187:                         .values()
+188:                         .any(|entry| entry.binding == self.binding)
+189:                 {
+190:                     if let Err(error) = verify_parent(
+191:                         &self.disk.roots[&self.root],
+192:                         &self.parent_names,
+193:                         &self.parent,
+194:                     ) {
+195:                         self.disk.fail_locked(&mut self.state);
+196:                         return Err(error);
+197:                     }
+198:                     return Err(error);
+199:                 }
+200:                 // A create-only conflict did not mutate the existing object.
+201:                 if !self.create || error.kind() != io::ErrorKind::AlreadyExists {
+202:                     self.disk.fail_locked(&mut self.state);
+203:                 }
+204:                 return Err(error);
+205:             }
+206:         };
+207:         let mut already_owned = false;
+208:         let inspected = (|| -> io::Result<(Identity, AccountedFile)> {
+209:             let metadata = file.metadata()?;
+210:             census::regular_nonallocating(&metadata, self.device)?;
+211:             let identity = Identity::of(&metadata);
+212:             // A live inode under a different enrolled name is substitution,
+213:             // never a harmless second open of its retained descriptor.
+214:             if !self.create
+215:                 && self
+216:                     .state
+217:                     .accounted
+218:                     .get(&identity)
+219:                     .is_some_and(|entry| entry.binding != self.binding)
+220:             {
+221:                 return Err(io::ErrorKind::InvalidData.into());
+222:             }
+223:             if self.state.live.contains_key(&identity) {
+224:                 // This is an exclusive open, never an implicit owner clone.
+225:                 already_owned = true;
+226:                 return Err(io::ErrorKind::WouldBlock.into());
+227:             }
+228:             census::lock_nonallocating(&file, libc::LOCK_EX)?;
+229:             let metadata = file.metadata()?;
+230:             census::regular_nonallocating(&metadata, self.device)?;
+
+crates/kasumi-store/src/node_disk.rs SHA256 f230ff417b9abcfe5f15815aba38ab6fe8131d4920db9187894ec184cdf803f7
+429:     /// absent from production builds and retains the real private-path census,
+430:     /// descriptor identity checks and extent budgets. Its device ledger is
+431:     /// isolated so an intentional fault cannot seal an unrelated fixture.
+432:     #[cfg(any(test, feature = "test-utils"))]
+433:     pub fn fixture_for_path(
+434:         path: impl AsRef<std::path::Path>,
+435:         memory: Arc<dyn NodeDiskMemoryAdmission>,
+436:     ) -> std::result::Result<Arc<Self>, DiskOpenError> {
+437:         let existing = {
+438:             let installed = registry().try_lock().ok_or(DiskOpenError::RegistryBusy)?;
+439:             installed
+440:                 .find(|entry| entry.owner.config.binding(path.as_ref()).is_ok())
+441:                 .map(|entry| entry.owner.clone())
+442:         };
+443:         if let Some(owner) = existing {
+444:             disk_memory::require(
+445:                 Arc::ptr_eq(owner.memory(), &memory),
+446:                 "fixture persistent owner has different memory admission",
+447:             )?;
+448:             for root in owner.roots.values() {
+449:                 root.verify_nonallocating()?;
+450:             }
+451:             if owner.snapshot().open_files == 0 {
+452:                 owner.reconcile(&CensusCancellation::default())?;
+453:             }
+454:             return Ok(owner);
+455:         }
+456:         let config = Self::fixture_config(path.as_ref())?;
+457:         Self::open_fixture(&config, memory, &CensusCancellation::default())
+458:     }
+459:     /// Explicit bounded generic fixture policy. Production installation policy
+460:     /// retains one million census entries and 4096 owners in the server generator.
+495:     }
+496: 
+497:     /// Seal new mutation admission before waiting for file/backend owners to drain.
+498:     /// This never releases physical charges, filesystem promises, or root locks.
+499:     pub fn pause(&self) -> Result<()> {
+500:         let mut state = self.lock_state();
+501:         if state.phase != NodeDiskPhase::Failed {
+502:             state.phase = NodeDiskPhase::Paused;
+503:         }
+504:         ensure!(
+505:             state.open_files == 0,
+506:             "persistent file owners are still live"
+507:         );
+508:         Ok(())
+509:     }
+510: 
+511:     /// Recount only after every managed file owner has closed under the retained
+512:     /// exclusive root locks. Failure retains the prior accounting and seals access.
+513:     pub fn reconcile(&self, cancel: &CensusCancellation) -> Result<()> {
+514:         ensure!(
+515:             !self.state.is_poisoned(),
+516:             "poisoned persistent ownership requires process restart"
+517:         );
+518:         let mut state = self.lock_state();
+519:         state.phase = NodeDiskPhase::Paused;
+520:         ensure!(
+521:             state.open_files == 0,
+522:             "persistent file owners are still live"
+523:         );
+524:         let result = census(&self.roots, &self.config, self.unit, cancel);
+525:         let totals = match result {
+526:             Ok(totals) => totals,
+527:             Err(error) => {
+528:                 state.phase = NodeDiskPhase::Failed;
+529:                 self.device.lock().fail_owner();
+530:                 return Err(error);
+531:             }
+532:         };
+533:         let mut promises = self.device.lock();
+534:         let Some(next) = promises
+535:             .checked_sub(state.pending)
+536:             .and_then(|n| n.checked_add(totals.pending))
+537:         else {
+538:             state.phase = NodeDiskPhase::Failed;
+539:             promises.fail_owner();
+540:             anyhow::bail!("persistent census promise accounting overflow");
+541:         };
+542:         promises
+543:             .set_pending(next)
+544:             .inspect_err(|_| state.phase = NodeDiskPhase::Failed)?;
+545:         state.bytes = totals.bytes;
+546:         state.pending = totals.pending;
+547:         state.files = totals.files;
+548:         state.accounted = totals.accounted;
+549:         state.live.clear();
+550:         state.phase = NodeDiskPhase::Open;
+551:         promises.reconcile_owner();
+552:         Ok(())
+553:     }
+554: 
+555:     pub(crate) fn fail(&self) {
+556:         let mut state = self.lock_state();
+557:         self.fail_locked(&mut state);
+558:     }
+559: 
+560:     fn fail_locked(&self, state: &mut State) {
+561:         state.phase = NodeDiskPhase::Failed;
+562:         self.device.lock().fail_owner();
+563:     }
+
+crates/kasumi-store/src/test_utils.rs SHA256 be918f6720f750f3c21beb4aa6a89081016592e342ac4f1d3de883029503b05d
+540: impl crate::FilesystemBackupDestination {
+541:     pub fn new_fixture(
+542:         root: impl AsRef<std::path::Path>,
+543:         max_bytes: usize,
+544:         memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
+545:     ) -> anyhow::Result<Self> {
+546:         let root = root.as_ref();
+547:         if !root.exists() {
+548:             crate::private_files::create_directory(root)?;
+549:         }
+550:         let disk = retry_disk_registry(|| {
+551:             crate::NodeDisk::fixture_for_path(root.join("backup-accounting-anchor"), memory.clone())
+552:         })?;
+553:         Self::new(root, max_bytes, disk)
+554:     }
+555: }
+556: 
+
+crates/kasumi-engine/tests/lifecycle.rs SHA256 e443d720e697aa8b51bd6655a5148011b31c006df3905f476fb01dfc5082c014
+90:                 ),
+91:                 identity,
+92:             };
+93:             partition_keys.insert(
+94:                 p.key(),
+95:                 kasumi_serving::GenerationSigner::from_pkcs8(certificate, operational.as_ref())
+96:                     .unwrap(),
+97:             );
+98:             partitions.insert(p.key(), p);
+99:         }
+100:         let installation = LifecycleInstallation {
+101:             root: rootkey,
+102:             generation: 1,
+103:             partitions,
+104:             max_intents: 100,
+105:             max_changes: 10,
+106:             max_state_bytes,
+107:         };
+108:         let installation_command_id = Uuid::new_v4();
+109:         let bootstrap = ReplicatedBootstrap {
+110:             genesis: kasumi_engine::ReplicatedGenesis::Control(kasumi_engine::ControlGenesis {
+111:                 topology: kasumi_engine::control::ControlTopology {
+112:                     nodes: (1..=3)
+113:                         .map(|id| {
+114:                             (
+115:                                 id,
+116:                                 kasumi_engine::control::ControlNode {
+117:                                     endpoint: format!("https://node-{id}.example"),
+118:                                     failure_domain: format!("zone-{id}"),
+119:                                     certificate_pins: BTreeSet::from([format!("{id:064x}")]),
+120:                                 },
+121:                             )
+122:                         })
+123:                         .collect(),
+124:                     tenants: BTreeMap::new(),
+125:                 },
+126:                 lifecycle: kasumi_engine::ControlLifecycleGenesis::Installed {
+127:                     command_id: installation_command_id,
+128:                     installation: installation.clone(),
+129:                 },
+130:             }),
+131:             incarnation: incarnation.to_string(),
+132:             initial_policy: policy("owner"),
+133:             initial_limits: limits,
+134:             voters: (1..=3)
+135:                 .map(|id| {
+136:                     (
+137:                         id,
+138:                         ReplicaPlacement {
+139:                             address: format!("https://node-{id}.example"),
+140:                             failure_domain: format!("zone-{id}"),
+141:                         },
+142:                     )
+143:                 })
+144:                 .collect(),
+145:         };
+167:         result.open(true).await;
+168:         kasumi_engine::control::ControlPlane::new(result.leader().await)
+169:             .unwrap()
+170:             .require_initialized(&result.context("owner"))
+171:             .await
+172:             .unwrap();
+173:         result
+174:             .leader()
+175:             .await
+176:             .lifecycle_control(
+177:                 result.context("owner"),
+178:                 LifecycleControlCommand::Install {
+179:                     command_id: installation_command_id,
+180:                     installation: result.installation.clone(),
+181:                 },
+182:             )
+183:             .await
+184:             .unwrap();
+185:         let leader = result.leader().await;
+186:         assert!(
+187:             leader
+188:                 .raft_group()
+189:                 .raft()
+190:                 .metrics()
+285:     }
+286:     async fn leader(&self) -> Arc<Database> {
+287:         tokio::time::timeout(Duration::from_secs(10), async {
+288:             loop {
+289:                 for (id, db) in &self.nodes {
+290:                     if db.raft_group().raft().metrics().borrow().current_leader == Some(*id)
+291:                         && db.raft_group().linearizable_barrier().await.is_ok()
+292:                     {
+293:                         return db.clone();
+294:                     }
+295:                 }
+296:                 tokio::time::sleep(Duration::from_millis(10)).await;
+297:             }
+298:         })
+299:         .await
+300:         .unwrap()
+301:     }
+302:     // A lost Raft acknowledgement is ambiguous even for an input expected to
+303:     // reject. Resolve the exact permanent phase and retry the unchanged input
+
+crates/kasumi-engine/src/control.rs SHA256 53b13eaefcd79bbc604c37167f79db260475f2d396b97e238f7dac9262016b27
+216:     pub async fn require_initialized(&self, context: &RequestContext) -> Result<()> {
+217:         self.database
+218:             .engine()
+219:             .authorize(context, None, Action::Admin)?;
+220:         let existing = self
+221:             .database
+222:             .collections(context)
+223:             .await?
+224:             .into_iter()
+225:             .find(|collection| collection.name == COLLECTION)
+226:             .ok_or_else(|| {
+227:                 Error::new(
+228:                     ErrorCode::Corruption,
+229:                     "installed Control topology schema is missing",
+230:                 )
+231:             })?;
+232:         if serde_json::to_value(existing)
+233:             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid installed Control schema"))?
+234:             != serde_json::to_value(Self::topology_definition())
+235:                 .map_err(|_| Error::new(ErrorCode::Corruption, "invalid Control schema contract"))?
+236:         {
+237:             return Err(Error::new(
+238:                 ErrorCode::Corruption,
+
+crates/kasumi-engine/src/service.rs SHA256 ec626a8a8d6729917e0fcbbac8c64b84fb60e4b4869f3fa971197a7d38a41072
+1790:         revision: u64,
+1791:         strict: bool,
+1792:         policy_epoch: u64,
+1793:     ) -> Result<()> {
+1794:         self.release_event(
+1795:             context,
+1796:             Some(collection),
+1797:             revision,
+1798:             strict,
+1799:             policy_epoch,
+1800:             "read",
+1801:         )
+1802:         .await
+1803:     }
+1804: 
+1805:     async fn release_event(
+1806:         &self,
+1807:         context: &RequestContext,
+1808:         collection: Option<&str>,
+1809:         revision: u64,
+1810:         strict: bool,
+1811:         policy_epoch: u64,
+1812:         kind: &str,
+1813:     ) -> Result<()> {
+1814:         if strict {
+1815:             let event = AuditEvent {
+1816:                 event_id: uuid::Uuid::new_v4().to_string(),
+1817:                 principal: context.principal.clone(),
+1818:                 action: kind.into(),
+1819:                 request_id: context.request_id.clone(),
+1820:                 timestamp_ms: now_ms()?,
+1821:                 data_revision: Some(revision),
+1822:                 outcome: "authorized_release".into(),
+1823:                 collection: collection.map(Into::into),
+1824:             };
+1825:             self.submit(context.clone(), Operation::Audit(event))
+1826:                 .await
+1827:                 .map_err(|error| {
+1828:                     if matches!(error.code, ErrorCode::Forbidden | ErrorCode::Sealed) {
+1829:                         error
+1830:                     } else {
+1831:                         Error::new(
+1832:                             ErrorCode::AuditUnavailable,
+1833:                             "required read audit could not be confirmed durable",
+1834:                         )
+1835:                     }
+1836:                 })?;
+1837:         }
+1838:         self.access()?;
+1839:         let action = match kind {
+1840:             "receipt" => Action::Write,
+1894:             return Err(Error::new(
+1895:                 ErrorCode::ResourceExhausted,
+1896:                 "collection catalog exceeds result byte limit",
+1897:             ));
+1898:         }
+1899:         let epoch = generation.state.policy_epoch;
+1900:         let revision = generation.state.revision;
+1901:         let strict = generation.state.policy.strict_read_audit;
+1902:         drop(generation);
+1903:         reservation.retain_workspace();
+1904:         if definitions.is_empty() {
+1905:             self.release_event(context, None, revision, strict, epoch, "discovery")
+1906:                 .await?;
+1907:         }
+1908:         for definition in &definitions {
+1909:             self.release(
+1910:                 context,
+1911:                 &definition.name,
+1912:                 revision,
+1913:                 strict || definition.strict_read_audit,
+1914:                 epoch,
+1915:             )
+1916:             .await?;
+1917:         }
+1918:         self.access()?;
+1919:         Ok(definitions)
+1920:     }
+
+crates/kasumi-engine/src/state.rs SHA256 3c959da4d02f11ddb4a885a375c1d6ed29800f60d77512c1679dcb049c18545c
+35: #[path = "tenant_audit.rs"]
+36: pub(crate) mod tenant_audit;
+37: 
+38: pub struct Generation {
+39:     pub state: TenantState,
+40:     pub(crate) receipts: crate::mutation_receipt::View,
+41:     pub(crate) terminals: crate::staged_terminal::View,
+42:     pub(crate) target_resolutions: crate::target_resolution::View,
+43:     pub indexes: Arc<QueryIndexes>,
+44:     snapshot_accounting: SnapshotAccounting,
+45:     _read_reservations: Vec<crate::admission::Reservation>,
+1123:         // Audit events are part of the replicated result, never emitted as document-bearing logs.
+1124:         let action = match &command.operation {
+1125:             Operation::LifecycleControl(_) => "lifecycle_control",
+1126:             Operation::PublishHistoryArchive(_) => "archive",
+1127:             Operation::Mutate(_) => "mutation",
+1128:             Operation::BeginStaged(_)
+1129:             | Operation::AppendStaged(_)
+1130:             | Operation::FinalizeStaged(_)
+1131:             | Operation::StopStaged(_) => "staged_transaction",
+1132:             Operation::ActivateSchema(_)
+1133:             | Operation::CreateCollection(_)
+1134:             | Operation::ReplaceCollection(_) => "schema",
+1135:             Operation::SetPolicy(_) => "policy",
+1136:             Operation::SetLimits(_) => "quota",
+1137:             Operation::Suspend(_) => "suspend",
+1138:             Operation::RetireSource(_) => "retire",
+1139:             Operation::AbortRetirement(_) => "retire_stop",
+1140:             Operation::Audit(_) | Operation::MaintenanceAudit(_) => "audit",
+1141:         };
+1142:         if !matches!(
+1143:             command.operation,
+1144:             Operation::Audit(_) | Operation::MaintenanceAudit(_)
+1145:         ) {
+1146:             let event_id = format!("{}:{revision}", next.incarnation);
+1147:             append_audit(
+1148:                 &mut next,
+1149:                 AuditEvent {
+1150:                     event_id,
+1151:                     principal: command.context.principal.clone(),
+1152:                     action: action.into(),
+1153:                     request_id: command.context.request_id.clone(),
+1154:                     timestamp_ms: command.timestamp_ms,
+1155:                     data_revision: Some(revision),
+1156:                     outcome: if outcome.is_ok() {
+1157:                         "committed"
+1158:                     } else {
+1159:                         "rejected"
+1160:                     }
+1161:                     .into(),
+1162:                     collection: None,
+1163:                 },
+1164:             )?;
+1165:         }
+1166:         if !crate::accounting::audit_fits(&next) {
+1167:             let mut rejected = previous.state.clone();
+1168:             rejected.revision = revision;
+1169:             self.publish_generation(Some(Arc::new(Generation {
+
+crates/kasumi-engine/src/lifecycle_state.rs SHA256 d9a0b0e0c6c5c75384a58918a8562f3bee3282fdadbb390b596771539bcd25aa
+105:                 || installation.root.control_incarnation.to_string() != state.incarnation
+106:             {
+107:                 return Err(conflict("control installation incarnation differs"));
+108:             }
+109:             if let Some(existing) = &state.lifecycle_control {
+110:                 if existing.installation_command_id == *command_id
+111:                     && existing.installation == *installation
+112:                 {
+113:                     return Ok(receipt(existing.installation_revision));
+114:                 }
+115:                 return Err(conflict("control installation is immutable"));
+116:             }
+117:             state.lifecycle_control = Some(LifecycleControlState {
+118:                 installation: installation.clone(),
+119:                 installation_command_id: *command_id,
+120:                 installation_revision: revision,
+121:                 installation_policy_epoch: state.policy_epoch,
+122:                 installation_policy: state.policy.clone(),
+123:                 retired: false,
+124:                 pending_change: None,
+
+crates/kasumi-engine/tests/common/recovery_control.rs SHA256 a1c54c397791fd20fe0ac803f22c145b174a07ca9bcab8cbf775bfb2f11438be
+1375: // the actual current leader; permanent authorization/corruption errors still fail.
+1376: async fn read_topology(f: &Fixture) -> kasumi_engine::control::VersionedTopology {
+1377:     let context = f.context("owner");
+1378:     tokio::time::timeout(Duration::from_secs(10), async {
+1379:         loop {
+1380:             let plane = kasumi_engine::control::ControlPlane::new(f.leader().await).unwrap();
+1381:             match plane.topology(&context).await {
+1382:                 Ok(Some(topology)) => return topology,
+1383:                 Err(error)
+1384:                     if matches!(
+1385:                         error.code,
+1386:                         ErrorCode::UnknownOutcome
+1387:                             | ErrorCode::Unavailable
+1388:                             | ErrorCode::AuditUnavailable
+1389:                     ) => {}
+1390:                 other => panic!("current topology read did not release: {other:?}"),
+1391:             }
+1392:         }
+1393:     })
+1394:     .await
+1395:     .expect("original topology read did not acquire its durable release fence")
+1396: }
+1397: async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request: &RecoveryStart) {
+1398:     use kasumi_engine::control::{
+1399:         ControlNode, ControlPlane, ControlTopology, DeploymentMode, TenantRoute,
+1400:     };
+1401:     let plane = ControlPlane::new(db.clone()).unwrap();
+1402:     plane.initialize(f.context("owner")).await.unwrap();
+1403:     let mut topology = ControlTopology {
+1404:         nodes: request
+1405:             .target_nodes
+1406:             .iter()
+1677:     })
+1678:     .await
+1679:     .expect("original recovery phase outcome did not resolve")
+1680: }
+1681: async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) -> LifecycleIntent {
+1682:     let (phase_id, input) = prepare_next(f, db, operation).await;
+1683:     let RecoveryDispatch::ControlIntent(command) = input else {
+1684:         panic!("committed Control phase required")
+1685:     };
+1686:     let prepared = db
+1687:         .recovery_phase(f.context("owner"), operation, phase_id)
+1688:         .await
+1689:         .unwrap();
+1690:     let mut context = f.context("owner");
+1691:     context.authorization = context
+1692:         .authorization
+1693:         .with_expiry_limit(prepared.dispatch_limit().await.unwrap())
+1694:         .unwrap();
+1695:     drop(prepared);
+1696:     db.lifecycle_control(context, LifecycleControlCommand::CommitIntent(command))
+1697:         .await
+1698:         .unwrap();
+1699:     let intent = db
+1700:         .engine()
+1701:         .generation()
+1702:         .unwrap()
+1703:         .state
+1704:         .lifecycle_control
+1705:         .as_ref()
+1706:         .unwrap()
+1707:         .intents[&phase_id]
+1708:         .clone();
+1709:     resolve_phase(
+1710:         f,
+1711:         operation,
+1712:         phase_id,
+1713:         RecoveryDispatchOutcome::ControlIntent(Box::new(intent.clone())),
+1714:     )
+1715:     .await;
+1716:     intent
+1717: }
+1718: async fn prepare_next(
+1719:     f: &Fixture,
+1720:     _db: &Arc<Database>,
+1721:     operation: Uuid,
+1722: ) -> (Uuid, RecoveryDispatch) {
+1723:     let context = f.context("owner");
+1724:     let phase = Uuid::new_v4();
+1725:     let (sequence, pending, input) = tokio::time::timeout(Duration::from_secs(10), async {
+1726:         loop {
+1727:             let current = f.leader().await;
+1728:             let head = match current.recovery_status(context.clone(), operation).await {
+1729:                 Ok(head) => head,
+1730:                 Err(error)
+1731:                     if matches!(
+1732:                         error.code,
+1733:                         ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+1734:                     ) =>
+1735:                 {
+1736:                     continue;
+1737:                 }
+2047: async fn commit_next_control_for(
+2048:     f: &Fixture,
+2049:     db: &Arc<Database>,
+2050:     operation: Uuid,
+2051:     duration: u64,
+2052: ) -> LifecycleIntent {
+2053:     let (phase_id, input) = prepare_next(f, db, operation).await;
+2054:     let RecoveryDispatch::ControlIntent(command) = input else {
+2055:         panic!("Control phase required")
+2056:     };
+2057:     let phase = db
+2058:         .recovery_phase(f.context("owner"), operation, phase_id)
+2059:         .await
+2060:         .unwrap();
+2061:     let mut context = f.context_for("owner", duration);
+2062:     context.authorization = context
+2063:         .authorization
+2064:         .with_expiry_limit(phase.dispatch_limit().await.unwrap())
+2065:         .unwrap();
+2066:     drop(phase);
+2067:     db.lifecycle_control(context, LifecycleControlCommand::CommitIntent(command))
+2068:         .await
+2069:         .unwrap();
+2070:     let intent = db
+2071:         .engine()
+2072:         .generation()
+2073:         .unwrap()
+2074:         .state
+2075:         .lifecycle_control
+2076:         .as_ref()
+2077:         .unwrap()
+2078:         .intents[&phase_id]
+2079:         .clone();
+2080:     resolve_phase(
+
+crates/kasumi-engine/src/mutation_receipt.rs SHA256 566861e2533054b24b2070fc700690532c214441942d2777845d35e12bdf2d9c
+150: }
+151: impl NamespaceBinding {
+152:     fn namespace(&self) -> String {
+153:         format!("mutation-receipt-{}", self.namespace)
+154:     }
+155: }
+156: struct DurableRows {
+157:     store: Arc<TenantStore>,
+158:     binding: NamespaceBinding,
+159: }
+160: enum Source {
+161:     Durable(DurableRows),
+162:     Staged(Arc<EncryptedTable>),
+163: }
+164: impl Source {
+165:     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+166:         let result = match self {
+167:             Self::Durable(rows) => {
+168:                 rows.store
+169:                     .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
+170:             }
+171:             Self::Staged(table) => table.get(key)?,
+172:         };
+
+crates/kasumi-store/src/lib.rs SHA256 94d7b163909a3ba8b239cbd3dcaa4f50560a4bfa39603326de5ebc3ca8e84f2b
+646: 
+647:     /// Permanently close access, discard owned keys, and stop both lease tasks.
+648:     ///
+649:     /// Completion guarantees that background probes no longer retain this store
+650:     /// or its node. Callers must also finish their own operations and drop all
+651:     /// store/node handles before reopening the database file. Concurrent calls
+652:     /// are safe; canceling this future leaves task handles available for a later
+653:     /// call to finish waiting. A shutdown store cannot be refreshed or restarted.
+654:     pub async fn shutdown(&self) -> DrainResult {
+655:         self.shutdown_requested.store(true, Ordering::Release);
+656:         self.shutdown_signal.send_replace(true);
+657:         self.seal();
+658:         let mut background = self.background.lock().await;
+659:         // Cooperative stop returns normally. Any JoinError, including an abort
+660:         // requested elsewhere before shutdown, is an actual terminal failure.
+661:         // Await in place: dropping a shutdown future must not detach a task. Pop
+662:         // each completed handle before awaiting another, because a completed
+663:         // JoinHandle must never be polled twice by a subsequent shutdown caller.
+664:         while let Some(task) = background.handles.last_mut() {
+665:             let result = task.await;
+666:             let index = background.handles.len() - 1;
+667:             if let Err(error) = result {
+
+crates/kasumi-engine/tests/schema_activation.rs SHA256 828234affb6215e38b59b47f330a7965f4abdcf44f32e9c024109620d8d4a0cf
+1150:     );
+1151: }
+1152: 
+1153: #[tokio::test]
+1154: async fn encrypted_schema_lookup_checks_current_fences_without_rewriting_original_effect() {
+1155:     let root = kasumi_store::test_utils::private_tempdir().unwrap();
+1156:     let path = root.path().join("schema-fences.redb");
+1157:     let physical = common::PhysicalFixture::new(&path, Default::default());
+1158:     let (db, audit) = open(&physical, &path, true).await;
+1159:     let mut install = creates(db.engine(), "fenced-initial", &["guards", "journal"]);
+1160:     let before = db.engine().generation().unwrap();
+1161:     install.read_set = vec![
+1162:         ReadAssertion::Snapshot {
+1163:             incarnation: before.state.incarnation.clone(),
+1164:             schema_epoch: before.state.schema_epoch,
+1165:             policy_epoch: before.state.policy_epoch,
+1166:         },
+1167:         ReadAssertion::Before {
+1168:             not_after_ms: u64::MAX,
+1169:         },
+1170:     ];
+1171:     let reference = install.reference().unwrap();
+1172:     let original = db
+1173:         .activate_schema(context("owner"), install.clone())
+1174:         .await
+1175:         .unwrap();
+1176:     assert_eq!(
+1177:         db.activate_schema(context("owner"), install).await.unwrap(),
+1178:         original
+1179:     );
+1180:     let stale = ReadSchemaActivation {
+1181:         reference: reference.clone(),
+1182:         read_set: vec![ReadAssertion::Snapshot {
+1183:             incarnation: before.state.incarnation.clone(),
+1184:             schema_epoch: before.state.schema_epoch,
+1185:             policy_epoch: before.state.policy_epoch,
+1186:         }],
+1187:     };
+1188:     assert_eq!(
+1189:         db.schema_activation_status(&context("owner"), &stale)
+1190:             .await
+1191:             .unwrap_err()
+1192:             .code,
+1193:         ErrorCode::Conflict
+1194:     );
+1195:     db.shutdown().await.unwrap();
+1196:     audit.shutdown().await.unwrap();
+1197:     drop(db);
+1198:     drop(audit);
+1199:     let (db, audit) = open(&physical, &path, false).await;
+1200:     let current = db.engine().generation().unwrap();
+1201:     let lookup = ReadSchemaActivation {
+1202:         reference: reference.clone(),
+1203:         read_set: vec![
+1204:             ReadAssertion::Snapshot {
+1205:                 incarnation: current.state.incarnation.clone(),
+1206:                 schema_epoch: current.state.schema_epoch,
+1207:                 policy_epoch: current.state.policy_epoch,
+1208:             },
+1209:             ReadAssertion::Before {
+1210:                 not_after_ms: u64::MAX,
+
+crates/kasumi-engine/src/backup_verify.rs SHA256 bb0bb2feba44f713363b6edcd471d953255cb7ebddfc34062677da79950bd271
+135: #[derive(Clone, Copy)]
+136: pub(crate) struct VerificationDeadline(tokio::time::Instant);
+137: impl VerificationDeadline {
+138:     pub fn new(timeout_ms: u64) -> anyhow::Result<Self> {
+139:         anyhow::ensure!(
+140:             (1..=600_000).contains(&timeout_ms),
+141:             "backup verification timeout outside bounds"
+142:         );
+143:         Ok(Self(
+144:             tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms),
+145:         ))
+146:     }
+147:     pub fn check(self) -> anyhow::Result<()> {
+148:         anyhow::ensure!(
+149:             tokio::time::Instant::now() < self.0,
+150:             "backup verification deadline expired"
+151:         );
+152:         Ok(())
+153:     }
+154:     pub async fn run<T>(self, future: impl Future<Output = T>) -> anyhow::Result<T> {
+155:         self.check()?;
+156:         tokio::time::timeout_at(self.0, future)
+157:             .await
+158:             .map_err(|_| anyhow::anyhow!("backup verification deadline expired"))
+540:         "full backup resident stream differs"
+541:     );
+542:     let semantic_work = ownership.clone();
+543:     let semantic_reservation = reservation.clone();
+544:     let semantic_admission = admission.clone();
+545:     let semantic_cancellation = reader.cancellation();
+546:     let (state, bytes) = deadline
+547:         .blocking(
+548:             reservation.clone(),
+549:             ownership.clone(),
+550:             move || match capture {
+551:                 Some(capture) => Ok((VerifiedState::Captured(capture.generation), None)),
+552:                 None => {
+553:                     let bytes =
+554:                         kasumi_store::SnapshotImage::freeze(spool.ok_or_else(|| {
+555:                             anyhow::anyhow!("historical backup staging missing")
+556:                         })?)?;
+557:                     let disk = bytes
+558:                         .len()
+559:                         .checked_mul(8)
+560:                         .and_then(|v| v.checked_add(64 << 20))
+561:                         .ok_or_else(|| anyhow::anyhow!("snapshot index disk budget overflow"))?;
+562:                     let mut check = || {
+563:                         deadline.check()?;
+564:                         if let Some(work) = &semantic_work {
+565:                             work.check()?;
+566:                         }
+567:                         if let Some(token) = &semantic_cancellation {
+568:                             token.check()?;
+569:                         }
+570:                         Ok(())
+571:                     };
+572:                     let layout =
+573:                         crate::snapshot_index::StagedSnapshot::inspect(&bytes, &mut check)?;
+574:                     // Retain the complete index/cache floor while admitting
+575:                     // the measured peak record work before any DTO decode.
+576:                     semantic_reservation
+577:                         .handoff_workspace(&semantic_admission, layout.index_workspace()?)?;
+578:                     let validated =
+579:                         crate::state::snapshot_validation::ValidatedApplicationSnapshot::validate(
+580:                             bytes.clone(),
+581:                             disk,
+582:                             &mut check,
+583:                         )?;
+584:                     anyhow::ensure!(
+585:                         validated.index().summary() == layout,
+586:                         "backup differs from admitted typed framing"
+
+crates/kasumi-engine/src/backup_restore.rs SHA256 3b68ff709be0bca37c8f2336084c90cf9d40990b765836cef79c3c37a8abfddc
+335:     };
+336:     let verified = Box::pin(crate::backup_verify::verify(
+337:         &reader, backup_id, admission, deadline, None,
+338:     ))
+339:     .await?;
+340:     if let Some(expected) = &reader.bound_checkpoint {
+341:         anyhow::ensure!(
+342:             &verified.checkpoint == expected,
+343:             "verified restore graph differs from signed authority checkpoint"
+344:         );
+345:     }
+346:     let VerifiedBackup {
+347:         state,
+348:         bytes,
+349:         checkpoint,
+350:         source_purpose,
+351:         _reservation: reservation,
+352:         _registration: registration,
+353:     } = verified;
+354:     // One trusted deterministic relocation for every replica, leaving the
+355:     // immutable source manifest and object ciphertext unchanged.
+356:     let alias = source.destination_alias.clone();
+357:     let relocation_work = registration.clone();
+358:     let relocation_reservation = reservation.clone();
+359:     let relocation_admission = admission.clone();
+360:     let relocation_cancellation = reader.cancellation();
+361:     let (state, bytes) = deadline
+362:         .blocking(reservation.clone(), registration.clone(), move || {
+363:             drop(bytes.ok_or_else(|| anyhow::anyhow!("restore snapshot image missing"))?);
+364:             let state = match state {
+365:                 crate::backup_verify::VerifiedState::Indexed(state) => state,
+366:                 _ => anyhow::bail!("restore requires independently verified indexed state"),
+367:             };
+368:             let state = (*state).relocate(
+369:                 &alias,
+370:                 backup_id,
+371:                 |layout| {
+372:                     relocation_reservation
+373:                         .handoff_workspace(&relocation_admission, layout.index_workspace()?)
+374:                         .map_err(Into::into)
+375:                 },
+376:                 || {
+377:                     deadline.check()?;
+378:                     if let Some(work) = &relocation_work {
+379:                         work.check()?;
+380:                     }
+381:                     if let Some(token) = &relocation_cancellation {
+382:                         token.check()?;
+383:                     }
+384:                     Ok(())
+385:                 },
+386:             )?;
+387:             let bytes = state.image().clone();
+388:             Ok((state, bytes))
+389:         })
+390:         .await?;
+391:     reader.check_access().await?;
+392:     Ok(VerifiedBackup {
+
+crates/kasumi-engine/src/snapshot_index.rs SHA256 5b1847abf2e75ca48e3b4dac1715a25cf39d824d0e30ecdbe1bb8d9683c05d36
+143:                 0,
+144:             ));
+145:             group.3 = end;
+146:             group.4 = group
+147:                 .4
+148:                 .checked_add(1)
+149:                 .ok_or_else(|| anyhow::anyhow!("snapshot group count overflow"))?;
+150:             let mut location = [0u8; 16];
+151:             location[..8].copy_from_slice(&position.offset.to_be_bytes());
+152:             location[8..].copy_from_slice(&position.bytes.to_be_bytes());
+153:             index.insert(&serde_json::to_vec(&key)?, &location)?;
+154:             check()
+155:         })?;
+156:         if let Some(group) = group {
+157:             write_group(&index, group)?;
+
+crates/kasumi-engine/src/snapshot_validation.rs SHA256 507a4d18d3348d79c6eec582d4d11cb96d7707d7857b664f43f8bd73e195570c
+1106:         .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
+1107:         .transpose()
+1108: }
+1109: fn insert(
+1110:     table: &EncryptedTable,
+1111:     key: &impl Serialize,
+1112:     value: &impl Serialize,
+1113: ) -> anyhow::Result<()> {
+1114:     table.insert(&serde_json::to_vec(key)?, &serde_json::to_vec(value)?)
+1115: }
+1116: fn set(table: &EncryptedTable, key: &impl Serialize, value: &impl Serialize) -> anyhow::Result<()> {
+1117:     table.set(&serde_json::to_vec(key)?, &serde_json::to_vec(value)?)
+1118: }
+1119: 
+
+crates/kasumi-store/src/scratch_table.rs SHA256 c099e1652bf36951dd57a100922c4d6b4cac669c73375086978b981c03f49961
+130:     }
+131:     /// Fence new transactions and retain the exact database while accepted
+132:     /// readers or writers drain. Repeated calls preserve the original outcome.
+133:     pub fn close(&self) -> DrainResult {
+134:         self.database.close()
+135:     }
+136:     pub fn insert(&self, key: &[u8], value: &[u8]) -> Result<()> {
+137:         ensure!(
+138:             key.len() <= 4096 && value.len() <= 32 << 20,
+139:             "staged record exceeds limit"
+140:         );
+141:         let tx = self.database.begin_write()?;
+142:         {
+143:             let mut table = tx.open_table(TABLE)?;
+144:             ensure!(table.insert(key, value)?.is_none(), "duplicate staged key");
+145:         }
+146:         tx.commit()?;
+147:         Ok(())
+148:     }
+149:     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+150:         let tx = self.database.begin_read()?;
+151:         let table = tx.open_table(TABLE)?;
+152:         Ok(table.get(key)?.map(|v| v.value().to_vec()))
+153:     }
+154:     /// Replace a scratch accumulator. Permanent identities use `insert`, which
+155:     /// rejects duplicates; this operation is only for unpublished working tables.
+156:     pub fn set(&self, key: &[u8], value: &[u8]) -> Result<()> {
+157:         ensure!(
+158:             key.len() <= 4096 && value.len() <= 32 << 20,
+159:             "staged record exceeds limit"
+160:         );
+161:         let tx = self.database.begin_write()?;
+162:         {
+163:             tx.open_table(TABLE)?.insert(key, value)?;
+164:         }
+165:         tx.commit()?;
+166:         Ok(())
+167:     }
+

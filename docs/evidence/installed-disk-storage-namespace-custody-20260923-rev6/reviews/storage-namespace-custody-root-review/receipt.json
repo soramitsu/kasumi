@@ -1,0 +1,29 @@
+{
+  "all_actual_bases_match": true,
+  "all_proposed_readbacks_match": true,
+  "branch": "master",
+  "candidate_manifest_sha256": "93ce8996fc13e0c84d77ddf22f9b71875124286c7de12367c216eea3c0026d24",
+  "candidate_patch_sha256": "df6b8f8b8e5e9d34a03d3a38d16aa59fb3281ecf5c072248ed52a9c0d8972405",
+  "custody04_two-branch_fixture_byte_equal": true,
+  "files_verified": 75,
+  "git_apply_check": "passed",
+  "remaining": [
+    "full workspace and store qualification",
+    "production caller adoption",
+    "explicit NodeBackend native close result",
+    "complete resource and release acceptance"
+  ],
+  "revision6_delta_paths": [
+    "crates/kasumi-store/src/node_disk.rs",
+    "crates/kasumi-store/src/node_disk/census/tests.rs",
+    "crates/kasumi-store/src/node_disk/directory.rs",
+    "crates/kasumi-store/src/node_disk/file.rs",
+    "crates/kasumi-store/src/node_disk/file/custody.rs",
+    "crates/kasumi-store/src/node_disk/memory.rs",
+    "crates/kasumi-store/src/node_disk/namespace.rs",
+    "crates/kasumi-store/src/node_disk/native_file.rs",
+    "crates/kasumi-store/src/node_disk/tests.rs"
+  ],
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "status": "SOURCE-BOUND TARGET-ONLY COMPOSITION REVIEW; native qualification pending"
+}

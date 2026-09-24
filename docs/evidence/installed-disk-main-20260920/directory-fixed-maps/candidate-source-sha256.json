@@ -1,0 +1,14 @@
+{
+  "status": "static candidate; production matches native-02; additional Weak test awaits129drain",
+  "files": {
+    "crates/kasumi-store/src/allocation_tests.rs": "66e882672142fdab542776e824a85e77492b9f663f3b76ce7f3bcc3044b83568",
+    "crates/kasumi-store/src/node_disk.rs": "266fd1fb9ec6fe02dfe018c392e0ade492c82f4e1ede3cf8071355b95c01016b",
+    "crates/kasumi-store/src/node_disk/ledger.rs": "6c8c28eb74426b7e522329e9d1711ebf510821405b65107629c4a5d210142e04",
+    "crates/kasumi-store/src/node_disk/census.rs": "22c1a3dfa24e86c24a17f4f27d20b9fdb694f66c799def2107a0342e33a7a6bb",
+    "crates/kasumi-store/src/node_disk/memory.rs": "ebc383de92c3f41fcf6b5b3d6f5b4023505090d692067cd6df310ccb5413dbf8",
+    "crates/kasumi-store/src/node_disk/file.rs": "145205325dcb354e1d711964c90a57404d365f97d92f255aecf997b5f6e379af",
+    "crates/kasumi-store/src/node_disk/fixed_map.rs": "5c2d69a6cefbe05a93a99f0a833acb3dcf32881dc56320623025a31b31bea9d4",
+    "crates/kasumi-store/src/node_disk/directory/tests.rs": "75011907431511d666a6aebcdd0ffc176af18829d7664c79be9cdfe5ade71fb7",
+    "crates/kasumi-store/src/node_disk/fixed_map/tests.rs": "bf270b87e88e7641134c42377b2a398f4dfca95edd1b6136aa717681e91614c1"
+  }
+}

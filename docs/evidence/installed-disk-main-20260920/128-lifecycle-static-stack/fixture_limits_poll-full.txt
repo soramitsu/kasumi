@@ -1,0 +1,167 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010003ec34 <<lifecycle::Fixture>::limits::{closure#0}>:
+10003ec34: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+10003ec38: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10003ec3c: 910043fd    	add	x29, sp, #0x10
+10003ec40: d14017e9    	sub	x9, sp, #0x5, lsl #12   ; =0x5000
+10003ec44: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+10003ec48: f90003ff    	str	xzr, [sp]
+10003ec4c: eb2963ff    	cmp	sp, x9
+10003ec50: 54ffffa1    	b.ne	0x10003ec44 <<lifecycle::Fixture>::limits::{closure#0}+0x10>
+10003ec54: d106c3ff    	sub	sp, sp, #0x1b0
+10003ec58: d100a3a9    	sub	x9, x29, #0x28
+10003ec5c: f90017e9    	str	x9, [sp, #0x28]
+10003ec60: f9001be8    	str	x8, [sp, #0x30]
+10003ec64: f9001fe0    	str	x0, [sp, #0x38]
+10003ec68: f90027e1    	str	x1, [sp, #0x48]
+10003ec6c: aa0003e8    	mov	x8, x0
+10003ec70: f9283fe8    	str	x8, [sp, #0x5078]
+10003ec74: aa0003e8    	mov	x8, x0
+10003ec78: f92843e8    	str	x8, [sp, #0x5080]
+10003ec7c: 5284a708    	mov	w8, #0x2538             ; =9528
+10003ec80: 38686808    	ldrb	w8, [x0, x8]
+10003ec84: b90047e8    	str	w8, [sp, #0x44]
+10003ec88: 34000168    	cbz	w8, 0x10003ecb4 <<lifecycle::Fixture>::limits::{closure#0}+0x80>
+10003ec8c: 14000001    	b	0x10003ec90 <<lifecycle::Fixture>::limits::{closure#0}+0x5c>
+10003ec90: b94047e8    	ldr	w8, [sp, #0x44]
+10003ec94: 71000508    	subs	w8, w8, #0x1
+10003ec98: 540003c0    	b.eq	0x10003ed10 <<lifecycle::Fixture>::limits::{closure#0}+0xdc>
+10003ec9c: 14000001    	b	0x10003eca0 <<lifecycle::Fixture>::limits::{closure#0}+0x6c>
+10003eca0: b94047e8    	ldr	w8, [sp, #0x44]
+10003eca4: 71000908    	subs	w8, w8, #0x2
+10003eca8: 540003a0    	b.eq	0x10003ed1c <<lifecycle::Fixture>::limits::{closure#0}+0xe8>
+10003ecac: 14000001    	b	0x10003ecb0 <<lifecycle::Fixture>::limits::{closure#0}+0x7c>
+10003ecb0: 1400001e    	b	0x10003ed28 <<lifecycle::Fixture>::limits::{closure#0}+0xf4>
+10003ecb4: f9401fe1    	ldr	x1, [sp, #0x38]
+10003ecb8: 910143e0    	add	x0, sp, #0x50
+10003ecbc: f90007e0    	str	x0, [sp, #0x8]
+10003ecc0: 52802108    	mov	w8, #0x108              ; =264
+10003ecc4: aa0803e2    	mov	x2, x8
+10003ecc8: f9000be2    	str	x2, [sp, #0x10]
+10003eccc: 948d4293    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003ecd0: f9401fe8    	ldr	x8, [sp, #0x38]
+10003ecd4: f94007e1    	ldr	x1, [sp, #0x8]
+10003ecd8: f9400be2    	ldr	x2, [sp, #0x10]
+10003ecdc: f9408508    	ldr	x8, [x8, #0x108]
+10003ece0: f90013e8    	str	x8, [sp, #0x20]
+10003ece4: f92847e8    	str	x8, [sp, #0x5088]
+10003ece8: 914017e0    	add	x0, sp, #0x5, lsl #12   ; =0x5000
+10003ecec: 91024000    	add	x0, x0, #0x90
+10003ecf0: f9000fe0    	str	x0, [sp, #0x18]
+10003ecf4: 948d4289    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003ecf8: f9400fe0    	ldr	x0, [sp, #0x18]
+10003ecfc: f94013e1    	ldr	x1, [sp, #0x20]
+10003ed00: 91400be8    	add	x8, sp, #0x2, lsl #12   ; =0x2000
+10003ed04: 91160108    	add	x8, x8, #0x580
+10003ed08: 9402673c    	bl	0x1000d89f8 <<lifecycle::Fixture>::configured>
+10003ed0c: 14000016    	b	0x10003ed64 <<lifecycle::Fixture>::limits::{closure#0}+0x130>
+10003ed10: 52800008    	mov	w8, #0x0                ; =0
+10003ed14: 3707ffe8    	tbnz	w8, #0x0, 0x10003ed10 <<lifecycle::Fixture>::limits::{closure#0}+0xdc>
+10003ed18: 14000024    	b	0x10003eda8 <<lifecycle::Fixture>::limits::{closure#0}+0x174>
+10003ed1c: 52800008    	mov	w8, #0x0                ; =0
+10003ed20: 3707ffe8    	tbnz	w8, #0x0, 0x10003ed1c <<lifecycle::Fixture>::limits::{closure#0}+0xe8>
+10003ed24: 14000024    	b	0x10003edb4 <<lifecycle::Fixture>::limits::{closure#0}+0x180>
+10003ed28: f94027e8    	ldr	x8, [sp, #0x48]
+10003ed2c: f90027e8    	str	x8, [sp, #0x48]
+10003ed30: 14000019    	b	0x10003ed94 <<lifecycle::Fixture>::limits::{closure#0}+0x160>
+10003ed34: f9401fe8    	ldr	x8, [sp, #0x38]
+10003ed38: 5284a709    	mov	w9, #0x2538             ; =9528
+10003ed3c: 8b090109    	add	x9, x8, x9
+10003ed40: 52800048    	mov	w8, #0x2                ; =2
+10003ed44: 39000128    	strb	w8, [x9]
+10003ed48: f85d83a0    	ldur	x0, [x29, #-0x28]
+10003ed4c: 948d41b6    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>
+10003ed50: f94017e9    	ldr	x9, [sp, #0x28]
+10003ed54: f81d83a0    	stur	x0, [x29, #-0x28]
+10003ed58: aa0103e8    	mov	x8, x1
+10003ed5c: b9000928    	str	w8, [x9, #0x8]
+10003ed60: 17fffff5    	b	0x10003ed34 <<lifecycle::Fixture>::limits::{closure#0}+0x100>
+10003ed64: 910563e8    	add	x8, sp, #0x158
+10003ed68: 91400be0    	add	x0, sp, #0x2, lsl #12   ; =0x2000
+10003ed6c: 91160000    	add	x0, x0, #0x580
+10003ed70: 9400008a    	bl	0x10003ef98 <<<lifecycle::Fixture>::configured::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003ed74: 14000001    	b	0x10003ed78 <<lifecycle::Fixture>::limits::{closure#0}+0x144>
+10003ed78: f9401fe8    	ldr	x8, [sp, #0x38]
+10003ed7c: 91044100    	add	x0, x8, #0x110
+10003ed80: 910563e1    	add	x1, sp, #0x158
+10003ed84: 52848508    	mov	w8, #0x2428             ; =9256
+10003ed88: aa0803e2    	mov	x2, x8
+10003ed8c: 948d4263    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003ed90: 14000001    	b	0x10003ed94 <<lifecycle::Fixture>::limits::{closure#0}+0x160>
+10003ed94: f9401fe8    	ldr	x8, [sp, #0x38]
+10003ed98: 91044108    	add	x8, x8, #0x110
+10003ed9c: f90003e8    	str	x8, [sp]
+10003eda0: f81e83a8    	stur	x8, [x29, #-0x18]
+10003eda4: 14000010    	b	0x10003ede4 <<lifecycle::Fixture>::limits::{closure#0}+0x1b0>
+10003eda8: 9002ea00    	adrp	x0, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003edac: 9116a000    	add	x0, x0, #0x5a8
+10003edb0: 948d4133    	bl	0x10238f27c <core::panicking::panic_const::panic_const_async_fn_resumed>
+10003edb4: 9002ea00    	adrp	x0, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003edb8: 9116a000    	add	x0, x0, #0x5a8
+10003edbc: 948d4137    	bl	0x10238f298 <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+10003edc0: f9401fe8    	ldr	x8, [sp, #0x38]
+10003edc4: 91044100    	add	x0, x8, #0x110
+10003edc8: 94018a69    	bl	0x1000a176c <core::ptr::drop_glue::<<lifecycle::Fixture>::configured::{closure#0}>>
+10003edcc: 17ffffda    	b	0x10003ed34 <<lifecycle::Fixture>::limits::{closure#0}+0x100>
+10003edd0: f94017e9    	ldr	x9, [sp, #0x28]
+10003edd4: f81d83a0    	stur	x0, [x29, #-0x28]
+10003edd8: aa0103e8    	mov	x8, x1
+10003eddc: b9000928    	str	w8, [x9, #0x8]
+10003ede0: 17fffff8    	b	0x10003edc0 <<lifecycle::Fixture>::limits::{closure#0}+0x18c>
+10003ede4: f94003e0    	ldr	x0, [sp]
+10003ede8: f94027e1    	ldr	x1, [sp, #0x48]
+10003edec: 914013e8    	add	x8, sp, #0x4, lsl #12   ; =0x4000
+10003edf0: 9126a108    	add	x8, x8, #0x9a8
+10003edf4: 97ffe755    	bl	0x100038b48 <<lifecycle::Fixture>::configured::{closure#0}>
+10003edf8: 14000001    	b	0x10003edfc <<lifecycle::Fixture>::limits::{closure#0}+0x1c8>
+10003edfc: f964d7e9    	ldr	x9, [sp, #0x49a8]
+10003ee00: d2800008    	mov	x8, #0x0                ; =0
+10003ee04: b1000529    	adds	x9, x9, #0x1
+10003ee08: 9a9f1508    	csinc	x8, x8, xzr, ne
+10003ee0c: 360001e8    	tbz	w8, #0x0, 0x10003ee48 <<lifecycle::Fixture>::limits::{closure#0}+0x214>
+10003ee10: 14000001    	b	0x10003ee14 <<lifecycle::Fixture>::limits::{closure#0}+0x1e0>
+10003ee14: f9401fe8    	ldr	x8, [sp, #0x38]
+10003ee18: f9401bea    	ldr	x10, [sp, #0x30]
+10003ee1c: 92800009    	mov	x9, #-0x1               ; =-1
+10003ee20: f9000149    	str	x9, [x10]
+10003ee24: 5284a709    	mov	w9, #0x2538             ; =9528
+10003ee28: 8b090109    	add	x9, x8, x9
+10003ee2c: 52800068    	mov	w8, #0x3                ; =3
+10003ee30: 39000128    	strb	w8, [x9]
+10003ee34: 914017ff    	add	sp, sp, #0x5, lsl #12   ; =0x5000
+10003ee38: 9106c3ff    	add	sp, sp, #0x1b0
+10003ee3c: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10003ee40: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10003ee44: d65f03c0    	ret
+10003ee48: 914013e1    	add	x1, sp, #0x4, lsl #12   ; =0x4000
+10003ee4c: 9126a021    	add	x1, x1, #0x9a8
+10003ee50: 914013e0    	add	x0, sp, #0x4, lsl #12   ; =0x4000
+10003ee54: 91344000    	add	x0, x0, #0xd10
+10003ee58: 52806d08    	mov	w8, #0x368              ; =872
+10003ee5c: aa0803e2    	mov	x2, x8
+10003ee60: 948d422e    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003ee64: f9401fe8    	ldr	x8, [sp, #0x38]
+10003ee68: 91044100    	add	x0, x8, #0x110
+10003ee6c: 94018a40    	bl	0x1000a176c <core::ptr::drop_glue::<<lifecycle::Fixture>::configured::{closure#0}>>
+10003ee70: 14000001    	b	0x10003ee74 <<lifecycle::Fixture>::limits::{closure#0}+0x240>
+10003ee74: f9401be0    	ldr	x0, [sp, #0x30]
+10003ee78: 914013e1    	add	x1, sp, #0x4, lsl #12   ; =0x4000
+10003ee7c: 91344021    	add	x1, x1, #0xd10
+10003ee80: 52806d08    	mov	w8, #0x368              ; =872
+10003ee84: aa0803e2    	mov	x2, x8
+10003ee88: 948d4224    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003ee8c: f9401fe8    	ldr	x8, [sp, #0x38]
+10003ee90: 5284a709    	mov	w9, #0x2538             ; =9528
+10003ee94: 8b090109    	add	x9, x8, x9
+10003ee98: 52800028    	mov	w8, #0x1                ; =1
+10003ee9c: 39000128    	strb	w8, [x9]
+10003eea0: 914017ff    	add	sp, sp, #0x5, lsl #12   ; =0x5000
+10003eea4: 9106c3ff    	add	sp, sp, #0x1b0
+10003eea8: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10003eeac: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10003eeb0: d65f03c0    	ret
+10003eeb4: 948d3ff0    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>

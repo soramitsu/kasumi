@@ -1,0 +1,97 @@
+[
+  {
+    "name": "compile-store",
+    "pid": 43075,
+    "pgid": 43075,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kasumi-store",
+      "--lib",
+      "--no-run",
+      "--message-format=json"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/compile-store.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 0.38959179199999994,
+    "log_sha256": "8f80d17403d6ecaee14237aa28d5b5b92f175a8a33271f911af66d8821ec0189"
+  },
+  {
+    "name": "census",
+    "pid": 43087,
+    "pgid": 43087,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/store-test-binary",
+      "storage_census::",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/census.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/store-test-binary",
+      "sha256": "f937a2b20f5a437826be6896a33341a7a627fa5c005ddbbe53cbc7914775b0f6",
+      "bytes": 51130816
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/store-test-binary",
+      "sha256": "f937a2b20f5a437826be6896a33341a7a627fa5c005ddbbe53cbc7914775b0f6",
+      "bytes": 51130816
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 1.3289478330000002,
+    "log_sha256": "d77f02703d26624a6d57b6db10417490429bf69f24be67afa6f5c3d23b8c59a5"
+  },
+  {
+    "name": "opening",
+    "pid": 43104,
+    "pgid": 43104,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/store-test-binary",
+      "storage_opening::",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/opening.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/store-test-binary",
+      "sha256": "f937a2b20f5a437826be6896a33341a7a627fa5c005ddbbe53cbc7914775b0f6",
+      "bytes": 51130816
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/store-test-binary",
+      "sha256": "f937a2b20f5a437826be6896a33341a7a627fa5c005ddbbe53cbc7914775b0f6",
+      "bytes": 51130816
+    },
+    "executable_unchanged": true,
+    "exit_code": 101,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 1.535380375,
+    "log_sha256": "92e0476291420972407c0fa748cfdf5d4015236fe8cecebad0c0a699d0f9a33d"
+  }
+]

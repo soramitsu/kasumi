@@ -1,0 +1,18 @@
+{
+  "status": "SCOPED_STATIC_APPROVAL_PENDING_COMPILATION_NATIVE_ADOPTION",
+  "branch": "master",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "revision2_manifest_sha256": "dc640ba6338a767827683473deccc25c27b76d94b6338ce0408dd5562d6e7ced",
+  "revision2_patch_sha256": "154d2181bdbbb13926be4cad1fe4c2ae6f33a32f14978de93efdb9fdf2133dc7",
+  "revision3_manifest_sha256": "68b2961e38a11b99e5e2a6c7b58d764f3b72ce29324f70808e31af9f32659075",
+  "revision3_patch_sha256": "a28a3b438ed3138afb1c0faec7daab045f0812800ebf696b8ce8a93d86fd3cef",
+  "revision3_delta_sha256": "368ca4184d764688e4b912bd9f755ef7858e081f2422b652f9270d7ba489893e",
+  "review_sha256": "11cb2df3888439c39646a09a5c34d71164e9241e2d537f41fd3cd1d6193ab2d4",
+  "source_checks_sha256": "465228f3db9246ebf1aedb7cbb237e751462b86adae363d6b666f24b1d44c01a",
+  "exact_baseline_application": "PASS10FILES",
+  "revision3_delta_application": "PASS10FILES",
+  "actual_source_edits": false,
+  "compiler_native_execution": false,
+  "verification_note": "Initial post-delta script expected revision2 key proposed_sha256; revision3 uses after_sha256. Delta had already applied successfully; corrected readback checked all10 exact hashes without reapplying or altering frozen input.",
+  "remaining": "Installed owner census/admission, original fault matrix and exact final gates remain open."
+}

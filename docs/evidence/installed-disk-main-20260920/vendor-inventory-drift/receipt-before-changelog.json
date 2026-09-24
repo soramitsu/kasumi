@@ -1,0 +1,13 @@
+{
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "read_only": true,
+  "manifest_unchanged_sha256": "7b196bbfde98b9c0e84aca1cafd010d3757aa4a50c03fc0bb7bfcd91da39a6fc",
+  "report_sha256": "e89d4f9d0af65e36509b5441e2daa80c7e1caf2934397d4463d47bba0dac3ba9",
+  "readme_sha256": "f859b8e07f797ffe5f3ee66a4fd3891243cff57dfa888690aa749e7ba58433b1",
+  "audit_script_sha256": "64891dd5055ebdb4bb04f57bd9d1e1f8ed584f4a0f87615be6dd80044c621d35",
+  "applied_payload_manifest_sha256": "e78a1d2eebfd9174f73c9f7285f7526b0dc784c24250543768d9a7c03ae4205a",
+  "applied_payload_patch_sha256": "6b2e9c49d20f1fee3d345c764a9566bd929eeee30ea9c9dbc3d6742edf414235",
+  "run162_input_sha256": "7778c30105ea54b8f22baef3580a57fc72e838d27f3a967b02c32e9f81bce44b",
+  "unexpected_unexplained_files": []
+}

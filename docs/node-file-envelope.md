@@ -19,10 +19,10 @@ authenticated recovery journal. Reading a candidate header to choose its
 expected UUID defeats this contract. Existing tenant encryption, exact storage
 purpose, independent custody binding and bootstrap authentication remain required.
 
-`NodeStore::create_new(path, node_store_id, scratch)` creates an exclusive new
+`NodeStore::create_new(path, node_store_id, persistent_disk, scratch)` creates an exclusive new
 inode; its parent must already exist. The caller durably chooses the UUID and
 owns creation before calling it. `initialize_owned_empty(path, expected_file,
-node_store_id, scratch)` instead requires the exact empty single-link inode that
+node_store_id, persistent_disk, scratch)` instead requires the exact empty single-link inode that
 the caller already recorded in its installation or recovery journal. It checks
 that identity and emptiness under the same exclusive descriptor lock before any
 write. Neither operation adopts an existing populated or partial file.
@@ -36,7 +36,7 @@ such a file. Once ready publication completed, later operations can use strict
 reopen. Uncertain publication must be resolved from the original owned identity;
 an error does not prove absence.
 
-`NodeStore::open_existing(path, expected_id, scratch)` acquires an exclusive
+`NodeStore::open_existing(path, expected_id, persistent_disk, scratch)` acquires an exclusive
 lock on the existing owner-only, regular, single-link descriptor. It checks the
 complete canonical ready header, expected UUID and supported length before any
 redb constructor runs. All redb I/O uses that exact descriptor through an offset
@@ -54,7 +54,7 @@ to the recognized installed store; `RepairAborted` never permits falling back to
 writable opening of an unrecognized file. The envelope adds fixed framing only;
 it does not establish persistent disk admission or hard RSS bounds.
 
-`NodeStore::claim_cleanup(path, expected_id)` performs no redb open or mutation.
+`NodeStore::claim_cleanup(path, expected_id, persistent_disk)` performs no redb open or mutation.
 It accepts only a complete canonical Prepared or Ready envelope under the same
 private single-link descriptor lock and returns `NodeFileCleanup`. This guard
 exposes the held `FileIdentity` and retains physical custody through the caller's

@@ -1,0 +1,3 @@
+Two-file composition review verified the exact three-way merge against both frozen parents and actual bases. lib.rs retains all namespace exports and adds the census/opening modules and exports. node_disk/tests.rs retains namespace accounting expectations and adds the census bookkeeping reservation around the same payload budgets. No merge-introduced loss was found.
+
+An inherited namespace test mistakenly adds directory accounting to file.observed_len() in the shrink-failure assertion. This measures file EOF, so that addition is incorrect. It existed before composition and must be corrected separately without altering the frozen trial. Full workspace and native qualification remain the opening agent's work.

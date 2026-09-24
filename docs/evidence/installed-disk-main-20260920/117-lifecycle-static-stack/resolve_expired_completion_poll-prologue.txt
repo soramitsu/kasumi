@@ -1,0 +1,42 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+0000000100147554 <lifecycle::recovery_control::resolve_expired_completion::{closure#0}>:
+100147554: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+100147558: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10014755c: 910043fd    	add	x29, sp, #0x10
+100147560: d14133e9    	sub	x9, sp, #0x4c, lsl #12  ; =0x4c000
+100147564: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+100147568: f90003ff    	str	xzr, [sp]
+10014756c: eb2963ff    	cmp	sp, x9
+100147570: 54ffffa1    	b.ne	0x100147564 <lifecycle::recovery_control::resolve_expired_completion::{closure#0}+0x10>
+100147574: d10e83ff    	sub	sp, sp, #0x3a0
+100147578: 91412fe8    	add	x8, sp, #0x4b, lsl #12  ; =0x4b000
+10014757c: 9120c108    	add	x8, x8, #0x830
+100147580: f9041be8    	str	x8, [sp, #0x830]
+100147584: 91412fe8    	add	x8, sp, #0x4b, lsl #12  ; =0x4b000
+100147588: 91012108    	add	x8, x8, #0x48
+10014758c: f9041fe8    	str	x8, [sp, #0x838]
+100147590: 91412be8    	add	x8, sp, #0x4a, lsl #12  ; =0x4a000
+100147594: 91337d08    	add	x8, x8, #0xcdf
+100147598: f90423e8    	str	x8, [sp, #0x840]
+10014759c: 914127e9    	add	x9, sp, #0x49, lsl #12  ; =0x49000
+1001475a0: 9124c129    	add	x9, x9, #0x930
+1001475a4: f90427e9    	str	x9, [sp, #0x848]
+1001475a8: 91411be8    	add	x8, sp, #0x46, lsl #12  ; =0x46000
+1001475ac: 91322108    	add	x8, x8, #0xc88
+1001475b0: f9042be8    	str	x8, [sp, #0x850]
+1001475b4: 91411be8    	add	x8, sp, #0x46, lsl #12  ; =0x46000
+1001475b8: 911d4108    	add	x8, x8, #0x750
+1001475bc: f9042fe8    	str	x8, [sp, #0x858]
+1001475c0: 9140d7e8    	add	x8, sp, #0x35, lsl #12  ; =0x35000
+1001475c4: 9130c108    	add	x8, x8, #0xc30
+1001475c8: f90433e8    	str	x8, [sp, #0x860]
+1001475cc: 9140a3e8    	add	x8, sp, #0x28, lsl #12  ; =0x28000
+1001475d0: 91394108    	add	x8, x8, #0xe50
+1001475d4: f90437e8    	str	x8, [sp, #0x868]
+1001475d8: 914097e8    	add	x8, sp, #0x25, lsl #12  ; =0x25000
+1001475dc: 9121e108    	add	x8, x8, #0x878
+1001475e0: f9043be8    	str	x8, [sp, #0x870]

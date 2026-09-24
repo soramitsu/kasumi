@@ -1,0 +1,9 @@
+# Root PageList prerequisite review
+
+Static review accepts the narrow shape/count-validation and explicit extraction-close prerequisite de8383c9c041c8dfd54ea8a7c0563de81dc8f46c86b0d95b65ffc2a9e1a688b8 with the required two-u64 key Copy/Clone correction 368cd53ab8bfbad3a685e293278968ee7457de8d73a2d1e5f39b7074906caf52. The original package alone has moved-key compile errors; both immutable packages and the independent review remain preserved.
+
+Read all four changed files and all three tests. Both selected freed-table ranges validate under the original system-namespace lock before either is extracted. The token binds exact table kind, horizon and root; extraction rechecks the staged logical root. The three writers retain their original fixed 400/200 capacities, and savepoint/repair/debug consumers use the same checked shape. Length/count refusal is inline and allocation-free; unused padding is not assumed zero. The valid and malformed DATA/SYSTEM tests preserve original records before removal, and actual rollback restores the prior empty tables before writer reuse and two positive database-close phases.
+
+Explicit extraction close returns the original close error after successful iteration and poisons publication; the actual file-growth/sync fixture retains original I/O pointer identity and the uncertain transaction/database/file in fixed custody. Validation of PageNumber semantic allocation/duplicates is separate. Current all-history traversal and temporary/deferred vectors are still unbounded relative to a tiny current write. Generic secondary-close error custody, prefix maintenance progress and physical COW reserve remain open; this patch does not qualify any of those requirements.
+
+No further static blocker found after the required key-copy correction. Runtime/compile results have separate numbered receipts, not this review.

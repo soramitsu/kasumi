@@ -1,0 +1,44 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010014fd0c <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}>:
+10014fd0c: d10083ff    	sub	sp, sp, #0x20
+10014fd10: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10014fd14: 910043fd    	add	x29, sp, #0x10
+10014fd18: f90003e8    	str	x8, [sp]
+10014fd1c: f90007e0    	str	x0, [sp, #0x8]
+10014fd20: 97fdef69    	bl	0x1000cbac4 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation>
+10014fd24: f94003e8    	ldr	x8, [sp]
+10014fd28: 97fe528e    	bl	0x1000e4760 <test::assert_test_result::<()>>
+10014fd2c: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10014fd30: 910083ff    	add	sp, sp, #0x20
+10014fd34: d65f03c0    	ret
+
+000000010014fd38 <lifecycle::recovery_control::request::{closure#0}>:
+10014fd38: d10543ff    	sub	sp, sp, #0x150
+10014fd3c: a9136ffc    	stp	x28, x27, [sp, #0x130]
+10014fd40: a9147bfd    	stp	x29, x30, [sp, #0x140]
+10014fd44: 910503fd    	add	x29, sp, #0x140
+10014fd48: d10243a9    	sub	x9, x29, #0x90
+10014fd4c: f9000be9    	str	x9, [sp, #0x10]
+10014fd50: f9000fe8    	str	x8, [sp, #0x18]
+10014fd54: aa0003e8    	mov	x8, x0
+10014fd58: 9100a3e0    	add	x0, sp, #0x28
+10014fd5c: f90013e0    	str	x0, [sp, #0x20]
+10014fd60: f90017e1    	str	x1, [sp, #0x28]
+10014fd64: f81c83a8    	stur	x8, [x29, #-0x38]
+10014fd68: aa0003e8    	mov	x8, x0
+10014fd6c: f81d03a8    	stur	x8, [x29, #-0x30]
+10014fd70: 910283e8    	add	x8, sp, #0xa0
+10014fd74: 9460f8cd    	bl	0x10198e0a8 <<core::fmt::rt::Argument>::new_display::<u64>>
+10014fd78: 3dc02be0    	ldr	q0, [sp, #0xa0]
+10014fd7c: 910243e1    	add	x1, sp, #0x90
+10014fd80: 3d8027e0    	str	q0, [sp, #0x90]
+10014fd84: b0029400    	adrp	x0, 0x1053d0000 <dyld_stub_binder+0x1053d0000>
+10014fd88: 91140000    	add	x0, x0, #0x500
+10014fd8c: 945e2fdf    	bl	0x1018dbd08 <<core::fmt::Arguments>::new::<32, 1>>
+10014fd90: 9101e3e8    	add	x8, sp, #0x78
+10014fd94: 97fe3217    	bl	0x1000dc5f0 <alloc::fmt::format>
+10014fd98: f94013e0    	ldr	x0, [sp, #0x20]

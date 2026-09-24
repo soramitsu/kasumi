@@ -21,6 +21,7 @@ import tarfile
 import gate_process
 
 TOOLCHAIN = "1.97.1"
+FORBIDDEN_FIXTURE_FEATURES = frozenset({"test-utils", "embedded-fixture", "loopback-fixture"})
 
 
 def sha256(path):
@@ -29,6 +30,73 @@ def sha256(path):
         for block in iter(lambda: source.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+MAX_CARGO_LOG_LINE_BYTES = 16 << 20
+
+
+def _unique_cargo_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate Cargo JSON key: " + key)
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_cargo(value):
+    raise ValueError("nonfinite Cargo JSON value: " + value)
+
+
+def compiler_artifact_messages(log):
+    """Parse every bounded gate-log line; malformed JSON-looking lines fail."""
+    with Path(log).open("rb") as stream:
+        while line := stream.readline(MAX_CARGO_LOG_LINE_BYTES + 1):
+            if len(line) > MAX_CARGO_LOG_LINE_BYTES:
+                raise ValueError("oversized Cargo gate log line")
+            try:
+                message = json.loads(line, object_pairs_hook=_unique_cargo_object,
+                                     parse_constant=_reject_nonfinite_cargo)
+            except (UnicodeDecodeError, ValueError) as error:
+                if line.lstrip().startswith(b"{"):
+                    raise ValueError("malformed JSON-looking Cargo gate log line") from error
+                continue
+            if isinstance(message, dict) and message.get("reason") == "compiler-artifact":
+                yield message
+
+
+def compiler_executable_identity(message):
+    target = message.get("target")
+    profile = message.get("profile")
+    package_id = message.get("package_id")
+    if (not isinstance(target, dict) or not isinstance(target.get("name"), str)
+            or not target["name"] or not isinstance(profile, dict)
+            or type(profile.get("test")) is not bool
+            or not isinstance(package_id, str) or not package_id):
+        raise ValueError("compiler-artifact executable metadata is malformed")
+    return {"target": target["name"], "test": profile["test"], "package_id": package_id}
+
+
+def record_compiled_package(packages, message):
+    """Build the exact Cargo package/feature/target inventory from its log."""
+    package_id = message.get("package_id")
+    target = message.get("target")
+    features = message.get("features")
+    if (not isinstance(package_id, str) or not package_id
+            or not isinstance(target, dict)
+            or not isinstance(target.get("name"), str) or not target["name"]
+            or any(not isinstance(target.get(field), list)
+                   or not target[field]
+                   or any(not isinstance(value, str) or not value for value in target[field])
+                   for field in ("kind", "crate_types"))
+            or not isinstance(features, list)
+            or any(not isinstance(value, str) or not value for value in features)):
+        raise ValueError("compiler-artifact package metadata is malformed")
+    package = packages.setdefault(package_id, {"features": [], "targets": []})
+    package["features"] = sorted(set(package["features"]) | set(features))
+    target_record = {field: target[field] for field in ("name", "kind", "crate_types")}
+    if target_record not in package["targets"]:
+        package["targets"].append(target_record)
 
 
 def write_json(path, value):
@@ -150,37 +218,28 @@ def run_gate(name, command, source, output, environment, timeout_seconds=14400):
     try:
         with log.open("wb") as stream:
             process = gate_process.run(command, source, environment, stream, timeout_seconds,
-                                       lambda value: write_json(process_path, value))
+                                       lambda value: write_json(process_path, value),
+                                       stderr=subprocess.STDOUT)
         process["outputs_stable"] = process["cleanup"]["drained"] and not process["cleanup"]["errors"]
         write_json(process_path, process)
         if not process["outputs_stable"]:
             raise RuntimeError("gate process custody is uncertain; logs and artifacts remain unverified")
         # Read the retained file after command ownership closes. A silent child
         # cannot hold a pipe open beyond the command's original deadline.
-        with log.open("rb") as stream:
-            for line in stream:
-                try:
-                    message = json.loads(line)
-                except (ValueError, UnicodeDecodeError):
-                    continue
-                if not isinstance(message, dict) or message.get("reason") != "compiler-artifact":
-                    continue
-                package_id = message.get("package_id")
-                if package_id:
-                    package = compiled_packages.setdefault(package_id, {"features": [], "targets": []})
-                    package["features"] = sorted(set(package["features"]) | set(message.get("features", [])))
-                    target_record = {field: message.get("target", {}).get(field) for field in
-                                     ("name", "kind", "crate_types")}
-                    if target_record not in package["targets"]:
-                        package["targets"].append(target_record)
-                if message.get("executable"):
-                    executable = Path(message["executable"]).resolve()
-                    relative = executable.relative_to(target)
-                    artifacts[str(relative)] = {
-                        "target": message.get("target", {}).get("name"),
-                        "test": message.get("profile", {}).get("test"),
-                        "package_id": message.get("package_id"),
-                    }
+        for message in compiler_artifact_messages(log):
+            record_compiled_package(compiled_packages, message)
+            raw = message.get("executable")
+            if raw is not None:
+                if (not isinstance(raw, str) or not Path(raw).is_absolute()
+                        or os.path.normpath(raw) != raw):
+                    raise ValueError("compiler-artifact executable path is malformed")
+                identity = compiler_executable_identity(message)
+            if raw is not None:
+                executable = Path(raw).resolve()
+                relative = str(executable.relative_to(target))
+                if relative in artifacts:
+                    raise ValueError("duplicate compiler-artifact executable identity")
+                artifacts[relative] = identity
         for relative, artifact in artifacts.items():
             path = target / relative
             artifact.update(sha256=sha256(path), bytes=path.stat().st_size)
@@ -263,7 +322,7 @@ def validate_production_artifacts(name, result):
         result["missing_production_executables"] = True
         result["exit_code"] = 1
     if not result["compiled_packages"] or any(
-            set(package["features"]) & {"test-utils", "embedded-fixture", "loopback-fixture"}
+            set(package["features"]) & FORBIDDEN_FIXTURE_FEATURES
             for package in result["compiled_packages"].values()):
         result["fixture_feature_violation"] = True
         result["exit_code"] = 1
@@ -297,6 +356,9 @@ def main():
     output = args.output
     if not output.is_absolute() or output.resolve().is_relative_to(repository):
         parser.error("output must be absolute and outside the repository")
+    # Cargo's emitted executable paths and the owned process working directory
+    # must have the same spelling even after evidence moves to another host.
+    output = output.resolve()
     if not 1 <= args.jobs <= 64:
         parser.error("jobs must be in 1..64")
     if not 1 <= args.gate_timeout_seconds <= 86400:

@@ -1,0 +1,5 @@
+# Combined prerequisite revision3
+
+This distinct successor corrects the 27 unique strict-Clippy findings in seven namespace-owned files from revision2. It retains the actual names backing as `_names`, keeps pristine-plan cancellation and its destruction order in the regression build, simplifies equivalent conditions and borrows, removes unit/identity operations, and clears scalar claim records without non-Drop calls. All original tests, limits, charged-byte assertions and failure branches remain. No lint suppressions are added.
+
+The peer correction WIP is preserved; the final test-only backing reference rename was completed here after the peer hit model capacity. All 69 cumulative patch bases match actual master, and both actual-base apply-check and target-copy exact readback pass. The original failed trials remain intact. `native-01` runs strict Clippy first, then full workspace check, under the same complete flags and 1200-second cohort bound. Full store and script test qualification follows only if both pass. Actual source and vendor manifests remain unchanged.

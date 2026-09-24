@@ -1,0 +1,25 @@
+{
+  "scope": "Original stopped-epoch case with exact drain witnesses and same-identity resolution after observed healthy route movement within one original five-second caller budget; no final acceptance",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-authority",
+    "--lib",
+    "issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain",
+    "--",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 48377,
+  "exit_code": 0,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 85.8022301197052,
+  "inventoried_source_unchanged": true
+}

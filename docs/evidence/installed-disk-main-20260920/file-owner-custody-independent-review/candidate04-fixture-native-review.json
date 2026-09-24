@@ -1,0 +1,130 @@
+{
+  "status": "SCOPED_APPROVAL_FOR_CANDIDATE03_AND04_FIXTURE_DELTAS; CANDIDATE04_NATIVE01_RECEIPTS_INDEPENDENTLY_CHECKED",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "at_utc": "2026-09-22T10:42:35.167061+00:00",
+  "bindings": {
+    "target/installed-disk-validation/file-owner-custody-revision1/candidate-03/candidate02-correction.patch": "9a95aab83f490b8d07f2a4696c35be00067c3d13c5e4c54eddc60d1d7763849f",
+    "target/installed-disk-validation/file-owner-custody-revision1/candidate-04/candidate03-correction.patch": "13c81fa16bde938a5cf3c298f65454f8e0843ea93089b200de3e1c4879621aa5",
+    "target/installed-disk-validation/file-owner-custody-revision1/candidate-04/custody.patch": "48756df32f870731310a1cec7fc665c1311ea6b7aec4ef05a37f5bc42fb516ca",
+    "target/installed-disk-validation/file-owner-custody-revision1/candidate-04/manifest.json": "89bf760a949096fe2c9c21a1907342bf21ecdfcdc5196f5e68785ba40800708d",
+    "target/installed-disk-validation/file-owner-custody-revision1/candidate-04/native-01/terminal-drain.json": "7d479a7618aaa1d395d38cc00b79242c9849065da9ab0690c8074db23c2e70b9",
+    "target/installed-disk-validation/file-owner-custody-revision1/candidate-04/native-01/results.json": "2e10af25e43a538173635103f1d8dce4d6b52a2169c60929fff0e3681fea65e8",
+    "target/installed-disk-validation/file-owner-custody-revision1/candidate-04/native-01/before.json": "fbf2af07eda8120c573b127258294e298fce5654256768c6c278a5fe413f4d94",
+    "target/installed-disk-validation/file-owner-custody-revision1/candidate-04/native-01/after.json": "fbf2af07eda8120c573b127258294e298fce5654256768c6c278a5fe413f4d94",
+    "target/installed-disk-validation/file-owner-custody-revision1/candidate-04/native-01/binary-inventory.json": "b300a0e3502568ebd38d5f4e67d56c9adc5f71b2eb218adc3749d9306ba23214",
+    "target/installed-disk-validation/file-owner-custody-revision1/candidate-04/native-01/test-inventory-readback.json": "72693036b12fafeacaf727f559eb3a8fb99d6008e17394580ec1e428c3aa595f",
+    "target/installed-disk-validation/file-owner-custody-revision1/candidate-04/native-01/selection.json": "73eaab67042bb659621bc9c961fc61e5a94fc47da7d9bf1f53a248c661b3fbbf",
+    "target/installed-disk-validation/file-owner-custody-revision1/candidate-04/native-01/file-test-extraction.json": "a55600b987f61f4e3eeea445c4e99ca85dd243667481f736ba002b7f0cc8cb15",
+    "target/installed-disk-validation/file-owner-custody-revision1/candidate-04/native-01/run.py": "4e073842ce910b21e0cc1082a6b447916f705d477f46115aac0e92b33d9ac24f",
+    "target/installed-disk-validation/file-owner-custody-independent-review/receipt.json": "0c2fab00c7132f60aa950a15d42bfa5af5b1976ba0ab3b32a84d2dcaf4b3eb64"
+  },
+  "review": [
+    "Candidate03 reserves both installation charges before constructing the fixed CustodySlots and before root_set opens root descriptors; fixture now matches the reviewed production ordering.",
+    "Candidate04 observer is read-only and acquired before injected failure; failed managed identity/length calls must reject; the observer proves original descriptor identity, exact EOF and every content byte.",
+    "Observer is dropped before managed owner retirement and accepted census; all original pending/filesystem/charge/Failed fence/repeated-sync/census-denial/same-identity reopen assertions remain.",
+    "All nine before/after manifest entries match frozen files. Entire proposed-tree comparison from candidate02 to candidate04 changes only the two fixture files; reviewed production code is byte-identical."
+  ],
+  "native_receipt_check": {
+    "phases": [
+      {
+        "name": "compiler",
+        "pid": 31260,
+        "pgid": 31260,
+        "exit_code": 0,
+        "timed_out": false,
+        "process_group_drained": true,
+        "executable_unchanged": true,
+        "elapsed_seconds": 0.027444915999999986,
+        "timeout_seconds": 120
+      },
+      {
+        "name": "compile-production",
+        "pid": 31262,
+        "pgid": 31262,
+        "exit_code": 0,
+        "timed_out": false,
+        "process_group_drained": true,
+        "executable_unchanged": true,
+        "elapsed_seconds": 0.7410884169999999,
+        "timeout_seconds": 120
+      },
+      {
+        "name": "compile-tests",
+        "pid": 31266,
+        "pgid": 31266,
+        "exit_code": 0,
+        "timed_out": false,
+        "process_group_drained": true,
+        "executable_unchanged": true,
+        "elapsed_seconds": 1.7118823340000002,
+        "timeout_seconds": 120
+      },
+      {
+        "name": "list",
+        "pid": 31270,
+        "pgid": 31270,
+        "exit_code": 0,
+        "timed_out": false,
+        "process_group_drained": true,
+        "executable_unchanged": true,
+        "elapsed_seconds": 0.33040841600000004,
+        "timeout_seconds": 120
+      },
+      {
+        "name": "run-production",
+        "pid": 31271,
+        "pgid": 31271,
+        "exit_code": 0,
+        "timed_out": false,
+        "process_group_drained": true,
+        "executable_unchanged": true,
+        "elapsed_seconds": 0.1998624579999997,
+        "timeout_seconds": 120
+      },
+      {
+        "name": "run",
+        "pid": 31272,
+        "pgid": 31272,
+        "exit_code": 0,
+        "timed_out": false,
+        "process_group_drained": true,
+        "executable_unchanged": true,
+        "elapsed_seconds": 8.287614542,
+        "timeout_seconds": 120
+      }
+    ],
+    "exact_selected_tests": 132,
+    "passed": 132,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 5,
+    "logs_match_phase_hashes": true,
+    "in_root_executables_match_phase_hashes": true,
+    "before_after_inventory_records_equal": 1825,
+    "current_in_root_files_rehashed": 1637,
+    "external_toolchain_records_compared_only": 188,
+    "reported_groups_absent_at_review": [
+      31259,
+      31260,
+      31262,
+      31266,
+      31270,
+      31271,
+      31272
+    ],
+    "production_geometry": "production owner=1442715970 registry=4592 device=8304 registration=4160 uncommitted_two_GiB_headroom=704750622 RSS_plus_other_reservations=UNQUALIFIED",
+    "test_output_note": "One geometry test prints a diagnostic between the test-name prefix and its following ok line; exact 132 names and final 132-pass summary are consistent."
+  },
+  "runner_reuse_qualification": {
+    "finding": "run.py continuation and final status predicates omit timed_out, so a future timeout followed by exit 0 could be falsely accepted.",
+    "current_trial_effect": "None: independently checked all six timed_out flags false, all elapsed times below 120 seconds, and runner only signals children in the timeout branch.",
+    "required_before_future_reuse": "In a separately frozen successor, require not timed_out in continuation and final acceptance; preserve native01 evidence."
+  },
+  "scope_limits": [
+    "No source edits or native dispatch by reviewer; only this distinct target review receipt was added. Prior review and trial artifacts preserved.",
+    "Module-only rustc harness; full workspace Clippy/runtime, five omitted ScratchDisk/NodeStore integration cases, five filtered device tests, excluded integration modules and three authenticated GC methods are not qualified by this run.",
+    "External toolchain files were not reopened because this review is confined to the repository; their recorded before/after identities agree.",
+    "Configured-root native closure, inherited DirectoryOwner Drop, opaque report/panic ownership, total allocator/RSS envelope, supported-filesystem physical bounds and release acceptance remain separate open work."
+  ]
+}

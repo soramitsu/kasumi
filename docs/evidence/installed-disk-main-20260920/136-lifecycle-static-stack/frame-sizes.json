@@ -1,0 +1,81 @@
+{
+  "prepare_completion_poll": {
+    "bytes": 634752,
+    "components_hex": [
+      "0x20",
+      "0x9a000",
+      "0xf60"
+    ],
+    "prologue": "prepare_completion_poll-prologue.txt"
+  },
+  "complete_recovery_poll": {
+    "bytes": 681504,
+    "components_hex": [
+      "0x20",
+      "0xa6000",
+      "0x600"
+    ],
+    "prologue": "complete_recovery_poll-prologue.txt"
+  },
+  "exercise_completed_recovery_poll": {
+    "bytes": 110368,
+    "components_hex": [
+      "0x20",
+      "0x1a000",
+      "0xf00"
+    ],
+    "prologue": "exercise_completed_recovery_poll-prologue.txt"
+  },
+  "prepare_completion_box_poll": {
+    "bytes": 64,
+    "components_hex": [
+      "0x40"
+    ],
+    "prologue": "prepare_completion_box_poll-prologue.txt"
+  },
+  "complete_recovery_box_poll": {
+    "bytes": 64,
+    "components_hex": [
+      "0x40"
+    ],
+    "prologue": "complete_recovery_box_poll-prologue.txt"
+  },
+  "commit_next_intent_0": {
+    "bytes": 48,
+    "components_hex": [
+      "0x30"
+    ],
+    "prologue": "commit_next_intent_0-prologue.txt"
+  },
+  "commit_next_intent_1": {
+    "bytes": 32,
+    "components_hex": [
+      "0x20"
+    ],
+    "prologue": "commit_next_intent_1-prologue.txt"
+  },
+  "commit_next_intent_2": {
+    "bytes": 160,
+    "components_hex": [
+      "0xa0"
+    ],
+    "prologue": "commit_next_intent_2-prologue.txt"
+  },
+  "commit_next_intent_3": {
+    "bytes": 1616,
+    "components_hex": [
+      "0x20",
+      "0x630"
+    ],
+    "prologue": "commit_next_intent_3-prologue.txt"
+  },
+  "commit_next_intent_4": {
+    "bytes": 68944,
+    "components_hex": [
+      "0x20",
+      "0x10000",
+      "0xd30"
+    ],
+    "prologue": "commit_next_intent_4-prologue.txt"
+  }
+}

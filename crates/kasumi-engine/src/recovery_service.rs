@@ -33,9 +33,106 @@ pub struct VerifiedRecoveryPhase {
     term: u64,
     _reservation: Reservation,
 }
+
+/// Non-cloneable grant for one exact committed BeginEffect. Reading a retained
+/// marker never reconstructs a grant after cancellation or process restart.
+pub struct RecoveryEffectDispatchTicket {
+    phase: VerifiedRecoveryPhase,
+    effect: RecoveryEffect,
+    attempt_id: Uuid,
+}
+impl RecoveryEffectDispatchTicket {
+    pub fn attempt_id(&self) -> Uuid {
+        self.attempt_id
+    }
+    pub async fn consume(self, expected: &RecoveryDispatch) -> Result<()> {
+        let phase = &self.phase;
+        let marker = phase
+            .record
+            .effect_attempts
+            .get(&self.effect)
+            .ok_or_else(|| error(ErrorCode::UnknownOutcome, "recovery effect marker absent"))?;
+        if &phase.record.input != expected
+            || marker.attempt_id != self.attempt_id
+            || marker.input_sha256 != phase.record.input_sha256
+        {
+            return Err(error(
+                ErrorCode::Conflict,
+                "recovery effect ticket changed frozen input",
+            ));
+        }
+        phase.admit_dispatch().await
+    }
+}
 impl VerifiedRecoveryPhase {
     pub fn record(&self) -> &RecoveryPhaseRecord {
         &self.record
+    }
+    pub async fn begin_effect(
+        &self,
+        effect: RecoveryEffect,
+    ) -> Result<RecoveryEffectDispatchTicket> {
+        if !matches!(
+            (&self.record.input, effect),
+            (
+                RecoveryDispatch::Authority(_),
+                RecoveryEffect::AuthorityCommand
+            ) | (
+                RecoveryDispatch::Authority(_),
+                RecoveryEffect::ActivationIntentAcceptance
+            ) | (
+                RecoveryDispatch::ControlIntent(_),
+                RecoveryEffect::ControlIntent
+            ) | (
+                RecoveryDispatch::Target { .. },
+                RecoveryEffect::TargetCommand
+            ) | (
+                RecoveryDispatch::RetireSource(_),
+                RecoveryEffect::SourceRetirement
+            )
+        ) {
+            return Err(error(ErrorCode::Conflict, "recovery effect class differs"));
+        }
+        self.admit_dispatch().await?;
+        let attempt_id = Uuid::new_v4();
+        self.database
+            .recovery_write(
+                self.context.clone(),
+                RecoveryMutation::BeginEffect {
+                    operation_id: self.record.operation_id,
+                    phase_id: self.record.phase_id,
+                    effect,
+                    attempt_id,
+                    expected_input_sha256: self.record.input_sha256.clone(),
+                },
+            )
+            .await?;
+        let phase = self
+            .database
+            .recovery_phase(
+                self.context.clone(),
+                self.record.operation_id,
+                self.record.phase_id,
+            )
+            .await
+            .map_err(|cause| unknown("phase after recovery effect begin", cause))?;
+        if phase.record.input_sha256 != self.record.input_sha256
+            || phase
+                .record
+                .effect_attempts
+                .get(&effect)
+                .is_none_or(|marker| marker.attempt_id != attempt_id)
+        {
+            return Err(error(
+                ErrorCode::UnknownOutcome,
+                "recovery effect marker commitment differs",
+            ));
+        }
+        Ok(RecoveryEffectDispatchTicket {
+            phase,
+            effect,
+            attempt_id,
+        })
     }
     pub async fn release(&self) -> Result<()> {
         self.database
@@ -233,7 +330,7 @@ impl Database {
         self.recovery_write(context.clone(), mutation).await?;
         self.recovery_status(context, operation_id)
             .await
-            .map_err(unknown)
+            .map_err(|cause| unknown("status after recovery control write", cause))
     }
     /// Internal coordinator boundary. No native RPC accepts a caller-supplied
     /// phase input or outcome; the reducer checks the installed workflow again.
@@ -259,7 +356,7 @@ impl Database {
         .await?;
         self.recovery_phase(context, operation_id, phase_id)
             .await
-            .map_err(unknown)
+            .map_err(|cause| unknown("phase after recovery prepare write", cause))
     }
     pub async fn resolve_recovery_dispatch(
         self: &Arc<Self>,
@@ -279,7 +376,31 @@ impl Database {
         .await?;
         self.recovery_status(context, operation_id)
             .await
-            .map_err(unknown)
+            .map_err(|cause| unknown("status after recovery resolve write", cause))
+    }
+    /// Retain the exact signed issuer acceptance before a later authority
+    /// command can begin. A replayed receipt cannot create a second grant.
+    pub async fn commit_recovery_activation_acceptance(
+        self: &Arc<Self>,
+        context: RequestContext,
+        operation_id: Uuid,
+        phase_id: Uuid,
+        attempt_id: Uuid,
+        signed_receipt: kasumi_serving::SignedLifecycleAuthorityReceipt,
+    ) -> Result<VerifiedRecoveryPhase> {
+        self.recovery_write(
+            context.clone(),
+            RecoveryMutation::CommitActivationAcceptance {
+                operation_id,
+                phase_id,
+                attempt_id,
+                signed_receipt: Box::new(signed_receipt),
+            },
+        )
+        .await?;
+        self.recovery_phase(context, operation_id, phase_id)
+            .await
+            .map_err(|cause| unknown("phase after activation acceptance commit", cause))
     }
     /// Closed local publication: topology CAS and permanent phase outcome commit
     /// together. Replaying a completed phase does not touch current topology.
@@ -299,7 +420,7 @@ impl Database {
         .await?;
         self.recovery_phase(context, operation_id, phase_id)
             .await
-            .map_err(unknown)
+            .map_err(|cause| unknown("phase after recovery route write", cause))
     }
     async fn recovery_write(
         self: &Arc<Self>,
@@ -361,12 +482,12 @@ impl Database {
         };
         let result = tokio::time::timeout(Duration::from_secs(10), tokio::spawn(worker.run()))
             .await
-            .map_err(unknown)?
-            .map_err(unknown)?
-            .map_err(unknown)??;
+            .map_err(|cause| unknown("recovery proposal deadline", cause))?
+            .map_err(|cause| unknown("recovery proposal task join", cause))?
+            .map_err(|cause| unknown("recovery proposal worker", cause))??;
         self.recovery_release(&context, policy_epoch, term)
             .await
-            .map_err(unknown)?;
+            .map_err(|cause| unknown("release after recovery proposal", cause))?;
         Ok(result)
     }
     /// Build the next bounded semantic input using the same current Control
@@ -414,6 +535,19 @@ impl Database {
         )?;
         if let Some(id) = operation.pending_phase {
             let pending = recovery::phase(state, operation, id)?;
+            let exact_activation_resolution = matches!(
+                &pending.input,
+                RecoveryDispatch::Authority(command)
+                    if operation.phase == RecoveryPhase::Activate
+                        && now >= command.not_after_ms
+                        && matches!(command.action, AuthorityAction::ActivateCommitted { .. })
+            );
+            if !pending.effect_attempts.is_empty() && !exact_activation_resolution {
+                return Err(error(
+                    ErrorCode::UnknownOutcome,
+                    "resolve the exact begun recovery effect from positive retained evidence",
+                ));
+            }
             if matches!(pending.input, RecoveryDispatch::PublishRoute(_))
                 && now >= recovery::dispatch_limit(operation, pending)?
             {
@@ -862,7 +996,11 @@ impl RecoveryProposal {
 fn error(code: ErrorCode, message: &str) -> Error {
     Error::new(code, message)
 }
-fn unknown(_: impl std::fmt::Display) -> Error {
+fn unknown(_stage: &'static str, _cause: impl std::fmt::Display) -> Error {
+    // Integration tests compile the library without cfg(test). Keep this
+    // temporary cause trace behind their explicit test-utils feature as well.
+    #[cfg(any(test, feature = "test-utils"))]
+    eprintln!("kasumi-engine recovery unknown: stage={_stage}; cause={_cause:#}");
     error(
         ErrorCode::UnknownOutcome,
         "recovery effect may be committed; resolve its exact permanent operation and phase",

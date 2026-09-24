@@ -1,0 +1,63 @@
+{
+  "status": "QUALIFIED THREE-FILE BACKUP CANDIDATE; NOT YET APPLIED; NOT RELEASE ACCEPTED",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "patch_sha256": "85b9d536668569b8e2f1d7bd984b0975eac180696ec9f1562b35681a60f2f58d",
+  "manifest_sha256": "7b10428c0b5cea9eba7b03ac57ca3ba1e86eb32fbacbbf50b03d8123420c908a",
+  "integration_manifest_sha256": "b2d6f9f980a55d0e1a688093cf2deb64269878005ff78e15f394af8341b336e5",
+  "native_result_sha256": "f269ea228bfc953d20bccf8827ec138b820cdaf5b895d3f593d2f48f6e8fc7e0",
+  "native_results_sha256": "61c17ac659b342bb6d4315db1751cd00a4395cc2eadf3c6fec5bc48ef3b7f2f9",
+  "format_result_sha256": "374402535fe2ed0a70d5bda3e146866d3fdf681130e9ee3a25826f7d4bb0fd15",
+  "preflight_sha256": "07446a156e54333a280eec17c26c61a93598d3a276986e47d4e8a429ea476dba",
+  "test_inventory": 345,
+  "passed": 343,
+  "failed": 0,
+  "ignored": 2,
+  "filtered": 0,
+  "native_elapsed_seconds": 577.766906792,
+  "native_bound_seconds": 1200,
+  "native_input_count": 14963,
+  "compiled_artifact_count": 1112,
+  "binary": {
+    "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-test-binary",
+    "sha256": "8c4a6a6aa5aad8a7e5fc95c0a2f0f041aed0b41b759acb9903cd3a8f4d266b90",
+    "bytes": 54831152
+  },
+  "process_groups": [
+    99176,
+    3009,
+    3528,
+    4357,
+    4363,
+    5909
+  ],
+  "all_groups_absent": true,
+  "actual_source_files": 1542,
+  "actual_source_set_unchanged": true,
+  "actual_backup_bases": [
+    {
+      "path": "crates/kasumi-store/src/backup.rs",
+      "actual_before_sha256": "643d97a3f63e0935a2ce38dad7df13b323cddb2c17a206d45afbe08666a7d1cf",
+      "qualified_after_sha256": "3ff9104e7db3b4dffcc3df285fff2ba57d7d7e25c4b87d49689d3a9baa294cf5"
+    },
+    {
+      "path": "crates/kasumi-store/src/backup_file_admission_tests.rs",
+      "actual_before_sha256": null,
+      "qualified_after_sha256": "873553967acb20153a2aac89bbc8758db5c11b7a7511ca444d8f2d7ba68303bb"
+    },
+    {
+      "path": "crates/kasumi-store/src/backup_sessions_fs.rs",
+      "actual_before_sha256": "e5a22b9d7a099e03f8486d3eb0afce127f63be04631ec697da8187a088c849ff",
+      "qualified_after_sha256": "5dc5b3dad089839638a1a3c8a0a167ccc3a50b6a28cdf45b206bd2dbd29802c2"
+    }
+  ],
+  "format_preparation_failure_preserved": "format-01/preparation-failure.json",
+  "scope_limits": [
+    "Compiled dependency artifact bindings are not a complete external registry-source or full toolchain component inventory.",
+    "Two inherited tests remain ignored; no test was filtered or removed.",
+    "Opaque outcomes, whole-call workers/stacks/ciphertext, cache/RSS and complete constructor adoption remain separate open G02 requirements.",
+    "Configured-root/inherited directory closure and supported-filesystem physical bounds remain open.",
+    "The exact frozen candidate includes applied storage revision6 and these three backup files; it excludes ongoing failed-opening recovery and unapplied PageNumber migration."
+  ]
+}

@@ -14,7 +14,7 @@ const AUDIT: u8 = 3;
 const DATA: u8 = 4;
 const END: u8 = 5;
 const CHUNK: usize = 64 << 10;
-const MAX_METADATA: usize = 2 << 20;
+pub(crate) const MAX_METADATA: usize = 2 << 20;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -167,7 +167,9 @@ impl SnapshotEnvelope {
                 METADATA => {
                     let value: Header = serde_json::from_slice(&bytes)?;
                     ensure!(
-                        value.version == 1 && serde_json::to_vec(&value)? == bytes,
+                        value.version == 1
+                            && crate::storage::current_snapshot_id(&value.meta.snapshot_id)
+                            && serde_json::to_vec(&value)? == bytes,
                         "noncanonical snapshot metadata"
                     );
                     if let Some(retirement) = &value.retirement {

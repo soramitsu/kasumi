@@ -1,0 +1,10 @@
+{
+  "verdict": "BLOCKED_P1_DEFERRED_BACKEND_CUSTODY",
+  "patch_sha256": "6bf815e71c839cb1105a27573b330dc5a6ff0a3a02462f49e0350701886a8bb4",
+  "manifest_sha256": "a1ca35465437478a5cf70d17f79be3f47ab2eefe3ee85c75db3bfe3b900f935d",
+  "review_sha256": "0994b01c7ad4273f54fb5fb97cf3221cf97018c9938a21669ae96e3df70fb18a",
+  "base_and_proposed_hashes_verified": true,
+  "actual_sources_match_bases": true,
+  "git_apply_check": "PASS",
+  "cargo_or_tests_run": false
+}

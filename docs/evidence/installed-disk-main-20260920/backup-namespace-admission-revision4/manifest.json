@@ -1,0 +1,530 @@
+{
+  "status": "frozen target-only; not applied; native not yet dispatched",
+  "predecessor": "backup-namespace-admission/candidate-03.patch",
+  "predecessor_sha256": "d7392ce6c5e0cd411af096ba65351c0ba16f2aaafc1d0f09db034dcad2f941f1",
+  "predecessor_native_results_sha256": "5aa980589cd17941c66a19089046e296b87d465eb3d83f35fd88340b41666523",
+  "delta_patch_sha256": "4b3941ae5383e58ae9c6b5019a53e681dd5cb923b0edbd2cb859a10d0c8d4471",
+  "successor_over_generic_patch_sha256": "6c918e171f8f6da11c55dc859448cb5a469e9a4b48f2de29965321ba5159c205",
+  "delta_files": [
+    {
+      "path": "crates/kasumi-store/src/backup_session_admission_tests.rs",
+      "before_sha256": "a9d3d659453e6b7bc568fafe420011e0c4df93303eca04ea2063d8ee7a45ede8",
+      "after_sha256": "10223e8cbca60cf40464a6d181c16dedf7cbceacc3825789d3d941e0bb866716"
+    },
+    {
+      "path": "crates/kasumi-store/src/backup_sessions_fs.rs",
+      "before_sha256": "7a61e83bfdde914fc8281057d81a303a0f080dbe749b027cf6ccf1b60bd9e39b",
+      "after_sha256": "8edf2ee51cf5da3eb851885e33ace0d72354daa79c1508a89ff94cc37470d412"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/batch/tests.rs",
+      "before_sha256": "6e921d50c1e4ab0aee5eafdf9729bb74ea0d614b4c7892f7847f06e1cb28abca",
+      "after_sha256": "17b72df132213639ffc1f15352412a59f9630cdc3c27e699e3ed4e9c3b0e6038"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/batch.rs",
+      "before_sha256": "be6156d78d543fbef347ec325dfd7f14ca526cdec258bd79836a584f72649a62",
+      "after_sha256": "8cf31248f14e656c3a36027523c88c53ce60759a7b440fa668ac6c3d7192def1"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/directory/managed.rs",
+      "before_sha256": "0e48080a2c585500d0941b41811e768a4c3d0d0b23257151d42624b0c98a623b",
+      "after_sha256": "ea272b792e0249b26a6ea60a3fd2363fcbf770a40992aef84bbf4505fd4e039e"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk.rs",
+      "before_sha256": "7749f918e54e2edb36b9a0e3e2ef7c65b76c79199444cb92e2b542f7ebe3c89e",
+      "after_sha256": "4b07e79678a413e44a3245a60a3891805118ef3737144d62eff4ef3386cf8060"
+    }
+  ],
+  "successor_files": [
+    {
+      "path": "crates/kasumi-store/src/audit_archive.rs",
+      "before_sha256": "6e90ea64cce58f1d1c526a68e047d621a4e69618874bbad7a58916819465ef38",
+      "after_sha256": "f12baf55e4359e7bceb4c50315f6c9bf514776011dbbf2532330e5b1df897284"
+    },
+    {
+      "path": "crates/kasumi-store/src/backup.rs",
+      "before_sha256": "c5786a5fca4daad68af484c7e0448afb4d01d05676800eb00efc5009f2f9e37b",
+      "after_sha256": "643d97a3f63e0935a2ce38dad7df13b323cddb2c17a206d45afbe08666a7d1cf"
+    },
+    {
+      "path": "crates/kasumi-store/src/backup_session_admission_tests.rs",
+      "before_sha256": null,
+      "after_sha256": "10223e8cbca60cf40464a6d181c16dedf7cbceacc3825789d3d941e0bb866716"
+    },
+    {
+      "path": "crates/kasumi-store/src/backup_session_terminal.rs",
+      "before_sha256": null,
+      "after_sha256": "c988046fcd81d7400475dba53299f1be5392d5fef2f0d17dab6629b9212ee8a6"
+    },
+    {
+      "path": "crates/kasumi-store/src/backup_sessions_fs.rs",
+      "before_sha256": "95f860c3bd736accaa011ced47da8c8eaec715d6f7a106a16a2500e2e6273906",
+      "after_sha256": "8edf2ee51cf5da3eb851885e33ace0d72354daa79c1508a89ff94cc37470d412"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/batch/tests.rs",
+      "before_sha256": null,
+      "after_sha256": "17b72df132213639ffc1f15352412a59f9630cdc3c27e699e3ed4e9c3b0e6038"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/batch.rs",
+      "before_sha256": null,
+      "after_sha256": "8cf31248f14e656c3a36027523c88c53ce60759a7b440fa668ac6c3d7192def1"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/directory/managed.rs",
+      "before_sha256": "63d4288ae7c07de0b6fc85d5d4feed0cf5db18ddebd0e36a80375c111cfd5a83",
+      "after_sha256": "ea272b792e0249b26a6ea60a3fd2363fcbf770a40992aef84bbf4505fd4e039e"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/directory.rs",
+      "before_sha256": "1f969df79e6ca9af8198b21a2c2f0e77d8ec55f56e8c59d01499b8f8c671bac7",
+      "after_sha256": "6500420c036c95826f6a47ef9818a1163b8739dced1a7c7a25dec168b449f253"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/file.rs",
+      "before_sha256": "994d0d960943122360777b682676e1da42282d82386eeec478df1db9f5ac8fa9",
+      "after_sha256": "57d496028ed570b438dc8ec5501f7f1e4b8ddc50df96ced454d8426d095bdf81"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/memory.rs",
+      "before_sha256": "19c8ed879e5b24d7628451ce4ff44b7dbaa47cebadaace320af672659b98ad07",
+      "after_sha256": "9b6997b96f1444128f39fdfdd304e5fcfa2746563c12d73f441fc90f0ffe6185"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/namespace.rs",
+      "before_sha256": "f8c81b5f4dc44e6d678df5d0d570de0b5ec61b2f6795cff9efc7f25ee26ac332",
+      "after_sha256": "031535732bc263bf17abef5b48bd3c6d24b4a00e29cc89554becad70b52de469"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk.rs",
+      "before_sha256": "b1572815b9184c9b28c8dd949a53eb857b1b2bc2fe4ea264a382d7faaedec4eb",
+      "after_sha256": "4b07e79678a413e44a3245a60a3891805118ef3737144d62eff4ef3386cf8060"
+    }
+  ],
+  "native_inputs": {
+    "backup_sessions_scoped.rs": {
+      "sha256": "1f90206ed4773f772f90bed3265651066709f996771653fafcc8b136591633ce",
+      "bytes": 973
+    },
+    "disk_memory.rs": {
+      "sha256": "7795b70e22e97faff5d7e7448a6e743606fcb038d465602cb8a616873d642ea3",
+      "bytes": 7517
+    },
+    "private_files.rs": {
+      "sha256": "8a291e7ffacd64da4a1dcdf1e8524eb4a8df49b21545e40db1b68eb4db9140e9",
+      "bytes": 8594
+    },
+    "run.py": {
+      "sha256": "ba1e32191e9c4336d4fa0c11e3403231225d6c57238f8f5c24a7581b14d6922f",
+      "bytes": 3874
+    },
+    "backup_session_terminal.rs": {
+      "sha256": "c988046fcd81d7400475dba53299f1be5392d5fef2f0d17dab6629b9212ee8a6",
+      "bytes": 9931
+    },
+    "copies.json": {
+      "sha256": "63eae4066cfa25d6dbc541f6f2e88e78c0f19450964933378d52f72a540064c9",
+      "bytes": 42104
+    },
+    "fixture-source-at-run.rs": {
+      "sha256": "f926d9cf9b2f467cec941e46bd185ef4c88c85b427c620f500c6717c5522c4e9",
+      "bytes": 23639
+    },
+    "test_utils.rs": {
+      "sha256": "b78a05d83833affdf1adf9529d121d794726f69aa48bafaa7511cc055bb8540d",
+      "bytes": 3788
+    },
+    "backup_session_admission_tests.rs": {
+      "sha256": "10223e8cbca60cf40464a6d181c16dedf7cbceacc3825789d3d941e0bb866716",
+      "bytes": 11956
+    },
+    "disk_memory_tests.rs": {
+      "sha256": "cb17e2a9df6e7471dcf192c0178b537355ebc37fab144cfce461c89f802d794c",
+      "bytes": 98
+    },
+    "selection.json": {
+      "sha256": "674f375f4626d08c6e43fcc7bd2744078dfc732fc7148aedd501cb6d55963b6c",
+      "bytes": 5548
+    },
+    "session-definitions-source-at-run.rs": {
+      "sha256": "554165c3d5f6258a33c0416565b3147bca116813f4a5dee42974dbe5389c7d25",
+      "bytes": 36195
+    },
+    "device_disk.rs": {
+      "sha256": "64ad6aa02bff422877c71185f3f84bd3614b001d1fdae9a6427c65b515737da9",
+      "bytes": 13894
+    },
+    "driver.rs": {
+      "sha256": "098d8ea596c6ca0c5575e33e7d39746a491d4f4a13e4232f8e9817e2c2cad457",
+      "bytes": 1279
+    },
+    "backup_sessions_fs.rs": {
+      "sha256": "af5a3518f46e0c6a67426e1b4b660a1102f3e4562d1ac5c96f2b9442c6f7b989",
+      "bytes": 24046
+    },
+    "allocation_tests.rs": {
+      "sha256": "66e882672142fdab542776e824a85e77492b9f663f3b76ce7f3bcc3044b83568",
+      "bytes": 6823
+    },
+    "node_disk.rs": {
+      "sha256": "4b07e79678a413e44a3245a60a3891805118ef3737144d62eff4ef3386cf8060",
+      "bytes": 40491
+    },
+    "proposal-at-run/crates/kasumi-bench/Cargo.toml": {
+      "sha256": "f16dbc759302a56a6a7435028844c2f0baf645af6f55d74de39b0d79d239d0bc",
+      "bytes": 2221
+    },
+    "proposal-at-run/crates/kasumi-bench/src/bin/loopback.rs": {
+      "sha256": "64634b5dacb8d936d9c86de85598223559797fd9f0326b4fd808188b53f3b7ec",
+      "bytes": 30075
+    },
+    "proposal-at-run/crates/kasumi-store/src/backup_session_terminal.rs": {
+      "sha256": "c988046fcd81d7400475dba53299f1be5392d5fef2f0d17dab6629b9212ee8a6",
+      "bytes": 9931
+    },
+    "proposal-at-run/crates/kasumi-store/src/lib.rs": {
+      "sha256": "efafe5e511f4bdefbd9330c2229d5911bfa03eed383aa84ad09a112050f031aa",
+      "bytes": 46456
+    },
+    "proposal-at-run/crates/kasumi-store/src/audit_archive.rs": {
+      "sha256": "f12baf55e4359e7bceb4c50315f6c9bf514776011dbbf2532330e5b1df897284",
+      "bytes": 54047
+    },
+    "proposal-at-run/crates/kasumi-store/src/backup.rs": {
+      "sha256": "643d97a3f63e0935a2ce38dad7df13b323cddb2c17a206d45afbe08666a7d1cf",
+      "bytes": 62958
+    },
+    "proposal-at-run/crates/kasumi-store/src/backup_session_admission_tests.rs": {
+      "sha256": "10223e8cbca60cf40464a6d181c16dedf7cbceacc3825789d3d941e0bb866716",
+      "bytes": 11956
+    },
+    "proposal-at-run/crates/kasumi-store/src/backup_sessions_fs.rs": {
+      "sha256": "8edf2ee51cf5da3eb851885e33ace0d72354daa79c1508a89ff94cc37470d412",
+      "bytes": 28538
+    },
+    "proposal-at-run/crates/kasumi-store/src/allocation_tests.rs": {
+      "sha256": "66e882672142fdab542776e824a85e77492b9f663f3b76ce7f3bcc3044b83568",
+      "bytes": 6823
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk.rs": {
+      "sha256": "4b07e79678a413e44a3245a60a3891805118ef3737144d62eff4ef3386cf8060",
+      "bytes": 40491
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/ledger.rs": {
+      "sha256": "c94740fbb274d77f4b4e61ab28bb40212bc8f0c710dddad83f9f8790c74d4ee2",
+      "bytes": 2385
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/batch.rs": {
+      "sha256": "8cf31248f14e656c3a36027523c88c53ce60759a7b440fa668ac6c3d7192def1",
+      "bytes": 19534
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/census.rs": {
+      "sha256": "55cc82e42879c178a3d6c58df74f925766e963853c1f2dc583f36ff250fbcc11",
+      "bytes": 27067
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/memory.rs": {
+      "sha256": "9b6997b96f1444128f39fdfdd304e5fcfa2746563c12d73f441fc90f0ffe6185",
+      "bytes": 6125
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/directory.rs": {
+      "sha256": "6500420c036c95826f6a47ef9818a1163b8739dced1a7c7a25dec168b449f253",
+      "bytes": 15070
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/tests.rs": {
+      "sha256": "fb16dae6a29c87d8b2ba5fb200740e9e7fcd6cfd2aa15236c494af3803f447ad",
+      "bytes": 105840
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/namespace.rs": {
+      "sha256": "031535732bc263bf17abef5b48bd3c6d24b4a00e29cc89554becad70b52de469",
+      "bytes": 16440
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/file.rs": {
+      "sha256": "57d496028ed570b438dc8ec5501f7f1e4b8ddc50df96ced454d8426d095bdf81",
+      "bytes": 69510
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/fixed_map.rs": {
+      "sha256": "7e868a041104cab8e6fe03da28f86514ae9f9a21bda8147bfdf08e54dc71214e",
+      "bytes": 8237
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/ledger/tests.rs": {
+      "sha256": "41ab4c2f95eb6d8a17b31e981ee2b6b88d5190b5b50fd670f58bafe1aa626674",
+      "bytes": 3749
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/namespace/tests.rs": {
+      "sha256": "b463c38aae9a9ee80b676f72447bd5007778510eaf4626852f90d54ca452b783",
+      "bytes": 7586
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/directory/cursor.rs": {
+      "sha256": "edfd78ce401a44d9c8544987d5578eed7eaa1f54a574eaae609a965a8e02c010",
+      "bytes": 16729
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/directory/tests.rs": {
+      "sha256": "8d59487c7a3ec6fb46240f8639219ea531ad8d48acb4bbb2e351a13460060fd1",
+      "bytes": 13360
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/directory/managed.rs": {
+      "sha256": "ea272b792e0249b26a6ea60a3fd2363fcbf770a40992aef84bbf4505fd4e039e",
+      "bytes": 44155
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/directory/managed/tests.rs": {
+      "sha256": "0d5a8da2417ab58a6504bbe3c0fe70a4cdbe9346372f4b3d123a3beae53e51f3",
+      "bytes": 17669
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/directory/cursor/tests.rs": {
+      "sha256": "8e67fef956f804decc2de47dc2c37a81ea6a802046a490852f643d1c03aae8e7",
+      "bytes": 14494
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/batch/tests.rs": {
+      "sha256": "17b72df132213639ffc1f15352412a59f9630cdc3c27e699e3ed4e9c3b0e6038",
+      "bytes": 13280
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/census/tests.rs": {
+      "sha256": "c51068e1549971efccc868a215c5ca6a6f532466844075e6a9c16483554dbb53",
+      "bytes": 24097
+    },
+    "proposal-at-run/crates/kasumi-store/src/node_disk/fixed_map/tests.rs": {
+      "sha256": "d902893f035cf5107bf06d25f0d5e792614abf1e7c9a2e3507a143a3cb0196b5",
+      "bytes": 13458
+    },
+    "proposal-at-run/crates/kasumi-server/src/audit_destination.rs": {
+      "sha256": "ba4165d083682a428c4fb5e932065e05880ce789402d196f20e4a1c31348436f",
+      "bytes": 7673
+    },
+    "proposal-at-run/crates/kasumi-server/src/runtime.rs": {
+      "sha256": "05f00e437c3acb29b8811445fdf9b3eeb082fb4e0aef65b5ceec21913b27f52d",
+      "bytes": 220617
+    },
+    "proposal-at-run/crates/kasumi-server/src/rpc_recovery_tests.rs": {
+      "sha256": "c3079f1658ffa0b65c3e86f7245d6349ebabe9a908e92c34b2edcc4f3da1713c",
+      "bytes": 13654
+    },
+    "proposal-at-run/crates/kasumi-server/src/standalone_tests.rs": {
+      "sha256": "478cee52f03735fcf74d6f2a9fc24c39ce48ee82f140b1f718a7ce58acf2ee47",
+      "bytes": 21552
+    },
+    "proposal-at-run/crates/kasumi-server/src/runtime_serving_tests.rs": {
+      "sha256": "801dae23b1cf00932de6c3ed95d766622f9f7b9194d349770a4f9be078c018f9",
+      "bytes": 13366
+    },
+    "proposal-at-run/crates/kasumi-server/src/runtime_memory.rs": {
+      "sha256": "d0ceb8730f19e20db0a8da74dea3045513d7422c40547f8a2511734e7dff2a04",
+      "bytes": 5707
+    },
+    "proposal-at-run/crates/kasumi-server/src/standalone.rs": {
+      "sha256": "078639922cd428b950a4a0acff601dd0fe4625307a6b8bf66ecebcf8e95cc484",
+      "bytes": 57686
+    },
+    "proposal-at-run/crates/kasumi-server/src/serving_runtime.rs": {
+      "sha256": "2ad6799157055f77a8326f9d3d22ff3d0d1ed254206782d917b20daef80a5163",
+      "bytes": 20327
+    },
+    "proposal-at-run/crates/kasumi-server/src/runtime_storage_fixtures.rs": {
+      "sha256": "b59b672ebe2489a95653500a073e09586adb0286fb484c9cebb937e577703a48",
+      "bytes": 3104
+    },
+    "proposal-at-run/crates/kasumi-server/src/lifecycle_runtime.rs": {
+      "sha256": "2ac15bbb1a58cb215923777c8068ede5b73a10287843d61bf2049fc1def85152",
+      "bytes": 3578
+    },
+    "proposal-at-run/crates/kasumi-server/src/target_runtime_shutdown_tests.rs": {
+      "sha256": "dfb70947e598673e21def8afa706b89a1dd301ae22411b111ec833a88f138155",
+      "bytes": 14277
+    },
+    "proposal-at-run/crates/kasumi-server/src/standalone_provision_tests.rs": {
+      "sha256": "d2f8b1101961c1c3f0ba64ff74dcf7ff3aaef4ea321cbde4bcd92339aacdaa57",
+      "bytes": 7831
+    },
+    "proposal-at-run/crates/kasumi-server/src/standalone_operator_tests.rs": {
+      "sha256": "79e3ae0379d06c4c6cd1a2261396009b20c715a464c181941b69afcbd92b1522",
+      "bytes": 11595
+    },
+    "proposal-at-run/crates/kasumi-server/src/standalone_storage_tests.rs": {
+      "sha256": "0daa2f6b81249a13ff9afbf8689526ec6410f17a3e11936f8a91d189f7ea2207",
+      "bytes": 3531
+    },
+    "proposal-at-run/crates/kasumi-server/src/node_enrollment_tests.rs": {
+      "sha256": "46eda941283081e92991449468893c450483d70f045f295ba1f26a6155262a1b",
+      "bytes": 10099
+    },
+    "proposal-at-run/crates/kasumi-server/src/control_genesis_tests.rs": {
+      "sha256": "4b94fb3cd7f126e971c1671ef6103697d875d0d69c0242abad8a659c8b033058",
+      "bytes": 13197
+    },
+    "proposal-at-run/crates/kasumi-server/src/standalone_cli.rs": {
+      "sha256": "4e201824653b32704be0aa90c075f8309afd84d1cbc56bafc14248b2669426df",
+      "bytes": 15833
+    },
+    "proposal-at-run/crates/kasumi-server/src/api.rs": {
+      "sha256": "0d21d8e8f0644bbff67c1a475af1d0ab6113f84f1475f3d144ad29fe546f75f5",
+      "bytes": 78756
+    },
+    "proposal-at-run/crates/kasumi-server/src/persistent_disk.rs": {
+      "sha256": "489ebfc7112c0e07443fe50e47aa4fc64188354aa4fe2f12f3c32fc531a4cafa",
+      "bytes": 10213
+    },
+    "proposal-at-run/crates/kasumi-server/src/runtime_retired_source_tests.rs": {
+      "sha256": "010c82a562112d3ed515f2607da5881bf182b7069d4a4bf824bf3661351accb5",
+      "bytes": 16168
+    },
+    "proposal-at-run/crates/kasumi-server/src/bin/kasumid.rs": {
+      "sha256": "b41fffc5a2eaa8e3ff4acd63d9b38b55a29c075710032f7c184f66ef248cae00",
+      "bytes": 5376
+    },
+    "proposal-at-run/docs/operations.md": {
+      "sha256": "b7d6b5e2fe359fdb6bc8c183215b4a03ae64ad863e147bbf5392ff791ad8de84",
+      "bytes": 14685
+    },
+    "proposal-at-run/docs/release-artifacts.md": {
+      "sha256": "b936f3caf89f5a6c900225eee06c653667c18177c56cba96c6b6cc092169b464",
+      "bytes": 11298
+    },
+    "proposal-at-run/docs/administration.md": {
+      "sha256": "a8f2c605883695816550ca6577d364f6917c1ba5a72243854b1d202573192372",
+      "bytes": 17525
+    },
+    "proposal-at-run/docs/standalone.md": {
+      "sha256": "54ac615d0e5356d4f61c17fabc1f0f682f632194e1d572332b608cec19859c2a",
+      "bytes": 18297
+    },
+    "proposal-at-run/scripts/small_native_smoke.py": {
+      "sha256": "a4058a62da455dcbabcbe8d02c0d66bf82a39c645496119893fe7ca038bb2c4c",
+      "bytes": 40691
+    },
+    "proposal-at-run/scripts/test_small_native_smoke.py": {
+      "sha256": "3adbd52da83f6476ee9eb83b7ce753bef52807475a8d73c17e46dd1649babd14",
+      "bytes": 19440
+    },
+    "proposal-at-run/scripts/validation/small-native-smoke.md": {
+      "sha256": "fa4f2abb58d329b143ba74efa67a98b397d29dea1dfae9615c67a34d8890203f",
+      "bytes": 6979
+    },
+    "node_disk/ledger.rs": {
+      "sha256": "c94740fbb274d77f4b4e61ab28bb40212bc8f0c710dddad83f9f8790c74d4ee2",
+      "bytes": 2385
+    },
+    "node_disk/batch.rs": {
+      "sha256": "8cf31248f14e656c3a36027523c88c53ce60759a7b440fa668ac6c3d7192def1",
+      "bytes": 19534
+    },
+    "node_disk/census.rs": {
+      "sha256": "55cc82e42879c178a3d6c58df74f925766e963853c1f2dc583f36ff250fbcc11",
+      "bytes": 27067
+    },
+    "node_disk/memory.rs": {
+      "sha256": "9b6997b96f1444128f39fdfdd304e5fcfa2746563c12d73f441fc90f0ffe6185",
+      "bytes": 6125
+    },
+    "node_disk/directory.rs": {
+      "sha256": "6500420c036c95826f6a47ef9818a1163b8739dced1a7c7a25dec168b449f253",
+      "bytes": 15070
+    },
+    "node_disk/tests.rs": {
+      "sha256": "d2892927a995663823706578994131da9e816b87f4ec346ae45b60f79db0c156",
+      "bytes": 61
+    },
+    "node_disk/namespace.rs": {
+      "sha256": "031535732bc263bf17abef5b48bd3c6d24b4a00e29cc89554becad70b52de469",
+      "bytes": 16440
+    },
+    "node_disk/file.rs": {
+      "sha256": "57d496028ed570b438dc8ec5501f7f1e4b8ddc50df96ced454d8426d095bdf81",
+      "bytes": 69510
+    },
+    "node_disk/fixed_map.rs": {
+      "sha256": "7e868a041104cab8e6fe03da28f86514ae9f9a21bda8147bfdf08e54dc71214e",
+      "bytes": 8237
+    },
+    "node_disk/ledger/tests.rs": {
+      "sha256": "41ab4c2f95eb6d8a17b31e981ee2b6b88d5190b5b50fd670f58bafe1aa626674",
+      "bytes": 3749
+    },
+    "node_disk/namespace/tests.rs": {
+      "sha256": "d2892927a995663823706578994131da9e816b87f4ec346ae45b60f79db0c156",
+      "bytes": 61
+    },
+    "node_disk/directory/cursor.rs": {
+      "sha256": "edfd78ce401a44d9c8544987d5578eed7eaa1f54a574eaae609a965a8e02c010",
+      "bytes": 16729
+    },
+    "node_disk/directory/tests.rs": {
+      "sha256": "d2892927a995663823706578994131da9e816b87f4ec346ae45b60f79db0c156",
+      "bytes": 61
+    },
+    "node_disk/directory/managed.rs": {
+      "sha256": "ea272b792e0249b26a6ea60a3fd2363fcbf770a40992aef84bbf4505fd4e039e",
+      "bytes": 44155
+    },
+    "node_disk/directory/managed/tests.rs": {
+      "sha256": "0d5a8da2417ab58a6504bbe3c0fe70a4cdbe9346372f4b3d123a3beae53e51f3",
+      "bytes": 17669
+    },
+    "node_disk/directory/cursor/tests.rs": {
+      "sha256": "8e67fef956f804decc2de47dc2c37a81ea6a802046a490852f643d1c03aae8e7",
+      "bytes": 14494
+    },
+    "node_disk/batch/tests.rs": {
+      "sha256": "17b72df132213639ffc1f15352412a59f9630cdc3c27e699e3ed4e9c3b0e6038",
+      "bytes": 13280
+    },
+    "node_disk/census/tests.rs": {
+      "sha256": "c51068e1549971efccc868a215c5ca6a6f532466844075e6a9c16483554dbb53",
+      "bytes": 24097
+    },
+    "node_disk/fixed_map/tests.rs": {
+      "sha256": "d902893f035cf5107bf06d25f0d5e792614abf1e7c9a2e3507a143a3cb0196b5",
+      "bytes": 13458
+    }
+  },
+  "checks": [
+    {
+      "argv": [
+        "git",
+        "apply",
+        "--check",
+        "--directory=target/installed-disk-validation/backup-namespace-admission-revision4/delta-apply-check",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/backup-namespace-admission-revision4/claim-path.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "apply",
+        "--directory=target/installed-disk-validation/backup-namespace-admission-revision4/delta-apply-check",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/backup-namespace-admission-revision4/claim-path.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "apply",
+        "--check",
+        "--directory=target/installed-disk-validation/backup-namespace-admission-revision4/successor-apply-check",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/backup-namespace-admission-revision4/namespace-session.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "apply",
+        "--directory=target/installed-disk-validation/backup-namespace-admission-revision4/successor-apply-check",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/backup-namespace-admission-revision4/namespace-session.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "scope": "Actual proposed NodeDisk modules plus exact filesystem open/put/get and terminal modules. Original 49 node_disk tests plus eight batch regressions; actual existing two filesystem ownership regressions, six new filesystem/session regressions including subprocess restart and paused classification race, and two terminal codec regressions. Exact unchanged wire definitions are extracted from session-definitions-source-at-run.rs. Three authenticated GC methods (aborted_objects/list/delete) are explicitly omitted and hashed; there is no authority proof or StorageAccess stub. Full store/server compilation, backup/audit destination constructors, authenticated GC integration, whole RSS, inherited file-helper native close gaps, and supported-filesystem pre-effect directory bounds remain unqualified. Same three unrelated module test exclusions and disk_memory exclusions as prior native cohort. Five inherited device tests compile but are filtered."
+}

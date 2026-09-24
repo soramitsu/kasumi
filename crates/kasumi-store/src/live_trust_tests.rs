@@ -8,6 +8,13 @@ use kasumi_types::{Action, CredentialResource, RequestAuthorization, RequestCont
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+fn must_fail<T>(result: Result<T>, message: &'static str) -> anyhow::Error {
+    match result {
+        Ok(_) => panic!("{message}"),
+        Err(error) => error,
+    }
+}
+
 struct Clock(AtomicU64);
 impl LeaseClock for Clock {
     fn now(&self) -> Duration {
@@ -41,9 +48,14 @@ struct Fixture {
     administrator: Arc<Administrator>,
     keys: Vec<rcgen::KeyPair>,
     signers: Vec<GenerationSigner>,
+    scratch_directory: tempfile::TempDir,
 }
 impl Fixture {
     async fn new() -> Self {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
         let directory = crate::test_utils::private_tempdir().unwrap();
         let root = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
         let manifest = AuthorityManifest {
@@ -86,7 +98,8 @@ impl Fixture {
             NodeStore::create_new_fixture(
                 directory.path().join("trust.redb"),
                 crate::test_utils::NODE_STORE_ID,
-                crate::ScratchDisk::fixture(),
+                fixture_memory.clone(),
+                fixture_scratch.clone(),
             )
             .unwrap(),
             verifier.tenant(),
@@ -114,6 +127,7 @@ impl Fixture {
             administrator,
             keys,
             signers,
+            scratch_directory,
         }
     }
     fn context(&self) -> RequestContext {
@@ -531,6 +545,8 @@ async fn stopped_stage_and_new_admin_requests_preserve_original_identity_and_rej
 #[tokio::test]
 async fn complete_file_reopen_retains_exact_trust_and_permanent_key_bindings() {
     let f = Fixture::new().await;
+    let fixture_scratch = f.store.scratch_disk().clone();
+    let fixture_memory = fixture_scratch.memory().clone();
     let trust = f.initialize();
     let stage = f.stage(&trust);
     let activation = f.activation(&trust, &stage);
@@ -542,6 +558,7 @@ async fn complete_file_reopen_retains_exact_trust_and_permanent_key_bindings() {
         verifier,
         domain,
         administrator,
+        scratch_directory: _scratch_directory,
         ..
     } = f;
     trust.close();
@@ -552,7 +569,8 @@ async fn complete_file_reopen_retains_exact_trust_and_permanent_key_bindings() {
         NodeStore::open_existing_fixture(
             directory.path().join("trust.redb"),
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         verifier.tenant(),
@@ -584,6 +602,150 @@ async fn complete_file_reopen_retains_exact_trust_and_permanent_key_bindings() {
             .is_err()
     );
     reopened.shutdown().await.unwrap();
+}
+
+fn live_trust_rows_digest(store: &TenantStore) -> Result<String> {
+    let mut digest = Sha256::new();
+    store.visit(NS, MAX_SIGNER_TRUST_RECORD_BYTES, |key, value| {
+        digest.update((key.len() as u64).to_be_bytes());
+        digest.update(key);
+        digest.update((value.len() as u64).to_be_bytes());
+        digest.update(value);
+        Ok(())
+    })?;
+    Ok(hex::encode(digest.finalize()))
+}
+
+#[tokio::test]
+async fn current_writer_trust_rows_reject_alternate_bytes_without_repair_then_restore() -> Result<()>
+{
+    let mut f = Fixture::new().await;
+    let original_owner = f.initialize();
+    original_owner.drain_background_work().await.unwrap();
+    drop(original_owner);
+    let persistence = f.store.trust_persistence(&f.verifier, &f.domain)?;
+    let store = f.store.clone();
+    let write_store = store.clone();
+    let write =
+        move |key: &[u8], value: &[u8]| write_store.write_batch(&[WriteOp::put(NS, key, value)]);
+
+    let record_key = f.domain.digest()?;
+    let record_bytes = store
+        .get_bounded(NS, record_key.as_bytes(), MAX_SIGNER_TRUST_RECORD_BYTES)?
+        .expect("current writer must publish trust record");
+    let mut alternate_record = record_bytes.clone();
+    alternate_record.push(b' ');
+    assert_eq!(
+        serde_json::from_slice::<LocalSignerTrustRecord>(&alternate_record)?,
+        serde_json::from_slice::<LocalSignerTrustRecord>(&record_bytes)?
+    );
+    write(record_key.as_bytes(), alternate_record.as_slice())?;
+    let before = live_trust_rows_digest(&store)?;
+    let error = must_fail(persistence.read_record(), "alternate trust record accepted");
+    assert!(format!("{error:#}").contains("noncanonical local signer trust record"));
+    assert!(
+        store
+            .open_live_signer_trust(
+                &f.verifier,
+                f.domain.clone(),
+                f.administrator.clone(),
+                worker_budget()
+            )
+            .is_err()
+    );
+    assert!(
+        store.get_bounded(NS, record_key.as_bytes(), MAX_SIGNER_TRUST_RECORD_BYTES)?
+            == Some(alternate_record)
+    );
+    assert_eq!(live_trust_rows_digest(&store)?, before);
+    write(record_key.as_bytes(), record_bytes.as_slice())?;
+    let owner = f.open();
+    assert_eq!(owner.current()?.active.identity.generation, 1);
+
+    let stage = f.stage(&owner);
+    let activation = f.activation(&owner, &stage);
+    let expected_receipt = owner.administer(&f.context(), activation.clone())?;
+    let receipt_key = persistence.receipt_key(activation.operation_id);
+    let receipt_bytes = store
+        .get_bounded(NS, receipt_key.as_bytes(), MAX_SIGNER_TRUST_RECORD_BYTES)?
+        .expect("current writer must publish receipt");
+    let mut alternate_receipt = receipt_bytes.clone();
+    alternate_receipt.push(b' ');
+    assert_eq!(
+        serde_json::from_slice::<SignerTrustReceipt>(&alternate_receipt)?,
+        serde_json::from_slice::<SignerTrustReceipt>(&receipt_bytes)?
+    );
+    write(receipt_key.as_bytes(), alternate_receipt.as_slice())?;
+    let before = live_trust_rows_digest(&store)?;
+    let error = must_fail(
+        persistence.receipt(activation.operation_id),
+        "alternate signer receipt accepted",
+    );
+    assert!(format!("{error:#}").contains("noncanonical signer trust receipt"));
+    assert!(owner.status(&f.context(), activation.operation_id).is_err());
+    assert!(
+        store.get_bounded(NS, receipt_key.as_bytes(), MAX_SIGNER_TRUST_RECORD_BYTES)?
+            == Some(alternate_receipt)
+    );
+    assert_eq!(live_trust_rows_digest(&store)?, before);
+    write(receipt_key.as_bytes(), receipt_bytes.as_slice())?;
+    assert_eq!(
+        owner.status(&f.context(), activation.operation_id)?,
+        Some(expected_receipt.clone())
+    );
+
+    let public_key = owner.current()?.active.identity.public_key;
+    let key_use_key = format!("key-use/{public_key}");
+    let key_use_bytes = store
+        .get_bounded(NS, key_use_key.as_bytes(), 1024)?
+        .expect("current writer must publish key-use record");
+    let mut alternate_key_use = key_use_bytes.clone();
+    alternate_key_use.push(b' ');
+    assert_eq!(
+        serde_json::from_slice::<SignerKeyUse>(&alternate_key_use)?,
+        serde_json::from_slice::<SignerKeyUse>(&key_use_bytes)?
+    );
+    write(key_use_key.as_bytes(), alternate_key_use.as_slice())?;
+    let before = live_trust_rows_digest(&store)?;
+    let error = must_fail(
+        persistence.key_use(&public_key),
+        "alternate key-use record accepted",
+    );
+    assert!(format!("{error:#}").contains("noncanonical signer key-use record"));
+    assert!(persistence.read_record().is_err());
+    owner.drain_background_work().await.unwrap();
+    drop(owner);
+    assert!(
+        store
+            .open_live_signer_trust(
+                &f.verifier,
+                f.domain.clone(),
+                f.administrator.clone(),
+                worker_budget()
+            )
+            .is_err()
+    );
+    assert!(store.get_bounded(NS, key_use_key.as_bytes(), 1024)? == Some(alternate_key_use));
+    assert_eq!(live_trust_rows_digest(&store)?, before);
+    write(key_use_key.as_bytes(), key_use_bytes.as_slice())?;
+    let restored = f.open();
+    assert_eq!(
+        restored.status(&f.context(), activation.operation_id)?,
+        Some(expected_receipt.clone())
+    );
+    restored.drain_background_work().await.unwrap();
+    drop(restored);
+    drop(write);
+    drop(store);
+    drop(persistence);
+    f.reopen().await;
+    let reopened = f.open();
+    assert_eq!(
+        reopened.status(&f.context(), activation.operation_id)?,
+        Some(expected_receipt)
+    );
+    f.store.shutdown().await.unwrap();
+    Ok(())
 }
 
 #[tokio::test]

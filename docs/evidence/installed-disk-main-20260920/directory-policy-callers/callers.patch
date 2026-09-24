@@ -1,0 +1,95 @@
+--- a/crates/kasumi-server/src/persistent_disk.rs
++++ b/crates/kasumi-server/src/persistent_disk.rs
+@@ -78,7 +78,9 @@
+         max_open_files: 4096,
+         max_open_directories: 4096,
+         directory_policy,
+-        max_census_entries: 1_000_000,
++        max_persistent_files: 1_000_000,
++        max_persistent_subdirectories: 1_000_000,
++        census_work_per_step: 1_000_000,
+         max_depth: 64,
+         max_name_bytes: 255,
+     })
+@@ -150,7 +152,9 @@
+     config.min_free_bytes = 0;
+     // A bounded test policy; the fixture's explicit RuntimeStorage installs its
+     // isolated owners under the same admitted memory core before storage use.
+-    config.max_census_entries = 16_384;
++    config.max_persistent_files = 16_384;
++    config.max_persistent_subdirectories = 16_384;
++    config.census_work_per_step = 16_384;
+     config.max_open_files = 256;
+     config.max_open_directories = 256;
+     config
+@@ -172,6 +176,42 @@
+         assert!(config.validate_persistent_disk().is_err());
+     }
+     #[test]
++    fn persistent_namespace_limits_are_required_without_legacy_fields() {
++        let config =
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
++        let encoded = serde_json::to_value(&config).unwrap();
++        let limits = [
++            "max_persistent_files",
++            "max_persistent_subdirectories",
++            "census_work_per_step",
++        ];
++        for name in limits {
++            assert_eq!(encoded["persistent_disk"][name], 1_000_000);
++            let mut missing = encoded.clone();
++            missing["persistent_disk"]
++                .as_object_mut()
++                .unwrap()
++                .remove(name);
++            assert!(
++                serde_json::from_value::<crate::runtime::RuntimeConfig>(missing).is_err(),
++                "missing required limit {name} was accepted"
++            );
++        }
++        let decoded =
++            serde_json::from_value::<crate::runtime::RuntimeConfig>(encoded.clone()).unwrap();
++        assert_eq!(decoded.persistent_disk, config.persistent_disk);
++        let mut legacy = encoded.clone();
++        let policy = legacy["persistent_disk"].as_object_mut().unwrap();
++        for name in limits {
++            policy.remove(name);
++        }
++        policy.insert("max_census_entries".into(), 1_000_000.into());
++        assert!(serde_json::from_value::<crate::runtime::RuntimeConfig>(legacy).is_err());
++        let mut mixed = encoded;
++        mixed["persistent_disk"]["max_census_entries"] = 1_000_000.into();
++        assert!(serde_json::from_value::<crate::runtime::RuntimeConfig>(mixed).is_err());
++    }
++    #[test]
+     fn persistent_roots_cannot_overlap_each_other_or_scratch() {
+         let mut config =
+             crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+--- a/crates/kasumi-server/src/runtime_memory.rs
++++ b/crates/kasumi-server/src/runtime_memory.rs
+@@ -112,7 +112,9 @@
+     #[cfg(test)]
+     fn fixture_disk_profile(config: NodeDiskConfig) -> NodeDiskConfig {
+         NodeDiskConfig {
+-            max_census_entries: 16_384,
++            max_persistent_files: 16_384,
++            max_persistent_subdirectories: 16_384,
++            census_work_per_step: 16_384,
+             max_open_files: 256,
+             max_open_directories: 256,
+             ..config
+--- a/docs/standalone.md
++++ b/docs/standalone.md
+@@ -31,7 +31,11 @@
+ limits are `max_bytes: 137438953472` (128 GiB),
+ `maintenance_reserve_bytes: 1073741824` (1 GiB),
+ `min_free_bytes: 268435456` (256 MiB), `max_open_files: 4096`,
+-`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.
++`max_open_directories: 4096`, `max_persistent_files: 1000000`,
++`max_persistent_subdirectories: 1000000`, `census_work_per_step: 1000000`,
++`max_depth: 64`, and `max_name_bytes: 255`. The subdirectory count excludes the
++explicitly configured roots. Census work is limited per step; it is not the
++full-job file or directory count. All three namespace/work fields are required.
+ The bounded startup census must finish before storage admission opens. Database,
+ recovery generation, local archive and backup files use this retained owner;
+ configuration never derives a persistent root from a database path. Install every

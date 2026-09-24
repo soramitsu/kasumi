@@ -1,0 +1,22 @@
+{
+  "exit_code": 0,
+  "fresh_group_members": [],
+  "process": {
+    "bytes": 874,
+    "mode": "0o644",
+    "sha256": "4048f01fc709a08b7021afeacee006ef742c0b699c5614a89eedd3fa4c72e753"
+  },
+  "process_status": "passed",
+  "source_unchanged": true,
+  "status": "passed",
+  "stderr": {
+    "bytes": 19120,
+    "mode": "0o644",
+    "sha256": "c23d50c1f911b454b36bbef05116707a4cf10d37ad35924759fe5820004e59c7"
+  },
+  "stdout": {
+    "bytes": 260,
+    "mode": "0o644",
+    "sha256": "1e74b9d863b0b65606c45eb087e51e33cf8000773e3cf58218e108d5b7ac563e"
+  }
+}

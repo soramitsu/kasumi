@@ -62,7 +62,7 @@ pub(super) fn branch_checksum<T: Page>(
     page: &T,
     fixed_key_size: Option<usize>,
 ) -> Result<Checksum, StorageError> {
-    let accessor = BranchAccessor::new(page, fixed_key_size);
+    let accessor = BranchAccessor::new(page, fixed_key_size)?;
     let last_key = accessor.num_keys().checked_sub(1).ok_or_else(|| {
         StorageError::Corrupted(format!(
             "Branch page {:?} corrupted. Number of keys is zero",
@@ -108,9 +108,9 @@ impl BtreeHeader {
         PageNumber::serialized_size() + size_of::<Checksum>() + size_of::<u64>()
     }
 
-    pub(crate) fn from_le_bytes(bytes: [u8; Self::serialized_size()]) -> Self {
+    pub(crate) fn from_le_bytes(bytes: [u8; Self::serialized_size()]) -> Result<Self> {
         let root =
-            PageNumber::from_le_bytes(bytes[..PageNumber::serialized_size()].try_into().unwrap());
+            PageNumber::from_le_bytes(bytes[..PageNumber::serialized_size()].try_into().unwrap())?;
         let mut offset = PageNumber::serialized_size();
         let checksum = Checksum::from_le_bytes(
             bytes[offset..(offset + size_of::<Checksum>())]
@@ -124,11 +124,11 @@ impl BtreeHeader {
                 .unwrap(),
         );
 
-        Self {
+        Ok(Self {
             root,
             checksum,
             length,
-        }
+        })
     }
 
     pub(crate) fn to_le_bytes(self) -> [u8; Self::serialized_size()] {
@@ -324,6 +324,9 @@ impl<'a, V: Value + 'static> AccessGuardMut<'a, V> {
 
     /// Replace the stored value
     pub fn insert<'v>(&mut self, value: impl Borrow<V::SelfType<'v>>) -> Result<()> {
+        if let Some((parent, _)) = &self.parent {
+            BranchAccessor::new(parent, self.key_width)?;
+        }
         let value_bytes = V::as_bytes(value.borrow());
 
         // Enforce the same size limits as the other write paths (Table::insert, the entry() API).
@@ -373,7 +376,7 @@ impl<'a, V: Value + 'static> AccessGuardMut<'a, V> {
 
             // Update parent branch page if it exists, otherwise update root
             if let Some((ref mut parent_page, parent_entry_index)) = self.parent {
-                let mut mutator = BranchMutator::new(parent_page.memory_mut());
+                let mut mutator = BranchMutator::new(parent_page.memory_mut())?;
                 mutator.write_child_page(parent_entry_index, new_page.get_page_number(), DEFERRED);
             } else {
                 self.root_ref.root = new_page.get_page_number();
@@ -1290,7 +1293,7 @@ impl<'b> LeafMutator<'b> {
             return false;
         }
         // If this is a large page, only allow in-place appending to avoid write amplification
-        if page.get_page_number().page_order > 0 && position < accessor.num_pairs() {
+        if page.get_page_number().page_order() > 0 && position < accessor.num_pairs() {
             return false;
         }
         let remaining = page.memory().len() - accessor.total_length();
@@ -1777,6 +1780,27 @@ impl<'a> LeafPageMut<'a> {
 }
 
 // Provides a simple zero-copy way to access a branch page
+// The complete borrowed child vector is checked before any child is accessed
+// or copied. The accessor's immutable page borrow retains this proof.
+fn validate_branch_children(bytes: &[u8]) -> Result<usize> {
+    let malformed = || StorageError::Corrupted("Noncanonical branch children".to_string());
+    if bytes.len() < 8 || bytes[0] != BRANCH {
+        return Err(malformed());
+    }
+    let keys = u16::from_le_bytes(bytes[2..4].try_into().unwrap()) as usize;
+    let children = keys + 1;
+    let start = 8 + size_of::<Checksum>() * children;
+    let end = start + PageNumber::serialized_size() * children;
+    for raw in bytes
+        .get(start..end)
+        .ok_or_else(malformed)?
+        .chunks_exact(PageNumber::serialized_size())
+    {
+        PageNumber::from_le_bytes(raw.try_into().unwrap())?;
+    }
+    Ok(keys)
+}
+
 pub(super) struct BranchAccessor<'a: 'b, 'b, T: Page + 'a> {
     page: &'b T,
     num_keys: usize,
@@ -1785,15 +1809,14 @@ pub(super) struct BranchAccessor<'a: 'b, 'b, T: Page + 'a> {
 }
 
 impl<'a: 'b, 'b, T: Page + 'a> BranchAccessor<'a, 'b, T> {
-    pub(crate) fn new(page: &'b T, fixed_key_size: Option<usize>) -> Self {
-        debug_assert_eq!(page.memory()[0], BRANCH);
-        let num_keys = u16::from_le_bytes(page.memory()[2..4].try_into().unwrap()) as usize;
-        BranchAccessor {
+    pub(crate) fn new(page: &'b T, fixed_key_size: Option<usize>) -> Result<Self> {
+        let num_keys = validate_branch_children(page.memory())?;
+        Ok(BranchAccessor {
             page,
             num_keys,
             fixed_key_size,
             _page_lifetime: PhantomData,
-        }
+        })
     }
 
     #[cfg(not(redb_no_std))]
@@ -1906,11 +1929,14 @@ impl<'a: 'b, 'b, T: Page + 'a> BranchAccessor<'a, 'b, T> {
 
         let offset =
             8 + size_of::<Checksum>() * self.count_children() + PageNumber::serialized_size() * n;
-        Some(PageNumber::from_le_bytes(
-            self.page.memory()[offset..(offset + PageNumber::serialized_size())]
-                .try_into()
-                .unwrap(),
-        ))
+        Some(
+            PageNumber::from_le_bytes(
+                self.page.memory()[offset..(offset + PageNumber::serialized_size())]
+                    .try_into()
+                    .unwrap(),
+            )
+            .expect("immutable child vector validated by BranchAccessor::new"),
+        )
     }
 
     fn num_keys(&self) -> usize {
@@ -2222,9 +2248,9 @@ pub(super) struct BranchMutator<'b> {
 }
 
 impl<'b> BranchMutator<'b> {
-    pub(crate) fn new(page: &'b mut [u8]) -> Self {
-        assert_eq!(page[0], BRANCH);
-        Self { page }
+    pub(crate) fn new(page: &'b mut [u8]) -> Result<Self> {
+        validate_branch_children(page)?;
+        Ok(Self { page })
     }
 
     fn num_keys(&self) -> usize {
@@ -2267,7 +2293,6 @@ mod tests {
             page_size,
             None,
             0,
-            false,
         )
         .unwrap();
         mem.reset_allocator_state().unwrap();
@@ -2310,7 +2335,7 @@ mod tests {
         assert_eq!(accessor.num_pairs(), MAX_PAIRS);
         // The page must be a large (order > 0) page with free space remaining, so that
         // only the pair count limit can cause the append to be rejected
-        assert!(page.get_page_number().page_order > 0);
+        assert!(page.get_page_number().page_order() > 0);
         assert!(page.memory().len() - accessor.total_length() > 100);
 
         assert!(!LeafMutator::sufficient_insert_inplace_space(
@@ -2330,7 +2355,7 @@ mod tests {
         let allocated_pages = PageTracker::new_tracking();
         let keys = ascending_keys(MAX_PAIRS - 1);
         let mut page = build_leaf(&page_allocator, &allocated_pages, &keys);
-        assert!(page.get_page_number().page_order > 0);
+        assert!(page.get_page_number().page_order() > 0);
 
         let key = ((MAX_PAIRS - 1) as u64).to_le_bytes();
         assert!(LeafMutator::sufficient_insert_inplace_space(
@@ -2435,8 +2460,8 @@ mod tests {
         assert!(builder.should_split());
         let (page1, _, page2) = builder.build_split().unwrap();
 
-        let accessor1 = BranchAccessor::new(&page1, u64::fixed_width());
-        let accessor2 = BranchAccessor::new(&page2, u64::fixed_width());
+        let accessor1 = BranchAccessor::new(&page1, u64::fixed_width()).unwrap();
+        let accessor2 = BranchAccessor::new(&page2, u64::fixed_width()).unwrap();
         assert_eq!(
             accessor1.count_children() + accessor2.count_children(),
             num_children
@@ -2444,5 +2469,54 @@ mod tests {
         // num_keys == count_children - 1 must stay within u16.
         assert!(accessor1.count_children() - 1 <= MAX_PAIRS);
         assert!(accessor2.count_children() - 1 <= MAX_PAIRS);
+    }
+
+    #[test]
+    fn branch_proof_rejects_every_child_before_exposing_or_mutating_vector() {
+        struct RawPage(Vec<u8>);
+        impl Page for RawPage {
+            fn memory(&self) -> &[u8] {
+                &self.0
+            }
+            fn get_page_number(&self) -> PageNumber {
+                PageNumber::new(0, 7, 0)
+            }
+        }
+        let children = [
+            PageNumber::new(0, 1, 0),
+            PageNumber::new(1, 2, 1),
+            PageNumber::new(2, 0, 20),
+        ];
+        let mut bytes = vec![0; 8 + 24 * children.len() + 16];
+        bytes[0] = BRANCH;
+        bytes[2..4].copy_from_slice(&2_u16.to_le_bytes());
+        for (index, child) in children.iter().enumerate() {
+            bytes[56 + index * 8..64 + index * 8].copy_from_slice(&child.to_le_bytes());
+        }
+        let good = RawPage(bytes.clone());
+        let (accessor, allocations) =
+            crate::admission::observe_test_allocations(|| BranchAccessor::new(&good, Some(8)));
+        assert_eq!(allocations, 0);
+        let accessor = accessor.unwrap();
+        for (index, child) in children.iter().enumerate() {
+            assert_eq!(accessor.child_page(index), Some(*child));
+        }
+        for (index, child) in children.iter().enumerate() {
+            for bit in (40..59).chain((20 - u32::from(child.page_order()))..20) {
+                let mut bad = bytes.clone();
+                let alias = u64::from_le_bytes(child.to_le_bytes()) | (1_u64 << bit);
+                bad[56 + index * 8..64 + index * 8].copy_from_slice(&alias.to_le_bytes());
+                let page = RawPage(bad.clone());
+                assert!(matches!(
+                    BranchAccessor::new(&page, Some(8)),
+                    Err(StorageError::Corrupted(_))
+                ));
+                assert!(matches!(
+                    BranchMutator::new(&mut bad),
+                    Err(StorageError::Corrupted(_))
+                ));
+                assert_eq!(bad, page.0);
+            }
+        }
     }
 }

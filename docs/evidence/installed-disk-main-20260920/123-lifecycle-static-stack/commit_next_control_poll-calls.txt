@@ -1,0 +1,12 @@
+10013e7a8: 97fe3372    	bl	0x1000cb570 <lifecycle::recovery_control::commit_next_control_for>
+10013e7ec: 948925c7    	bl	0x102387f08 <dyld_stub_binder+0x102387f08>
+10013e810: 940069cb    	bl	0x100158f3c <<lifecycle::recovery_control::commit_next_control_for::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013e82c: 94892674    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013e850: 94892544    	bl	0x102387d60 <core::panicking::panic_const::panic_const_async_fn_resumed>
+10013e85c: 94892548    	bl	0x102387d7c <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+10013e868: 97fdaf1a    	bl	0x1000aa4d0 <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_control_for::{closure#0}>>
+10013e894: 94000031    	bl	0x10013e958 <lifecycle::recovery_control::commit_next_control_for::{closure#0}>
+10013e900: 9489263f    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013e90c: 97fdaef1    	bl	0x1000aa4d0 <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_control_for::{closure#0}>>
+10013e928: 94892635    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013e954: 94892401    	bl	0x102387958 <core::panicking::panic_in_cleanup>

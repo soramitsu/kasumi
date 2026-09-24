@@ -13,13 +13,51 @@ use std::{
 };
 use uuid::Uuid;
 
-fn request_budget() -> BackgroundWorkBudget {
-    static ADMISSION: OnceLock<Arc<kasumi_engine::admission::NodeAdmission>> = OnceLock::new();
-    let admission = ADMISSION
-        .get_or_init(|| kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap());
+/// One modeled physical process. The caller retains both private directories
+/// and the same admitted disk owners through every file close/reopen.
+struct PhysicalFixture {
+    storage: kasumi_engine::test_utils::FixtureStorage,
+    directory: tempfile::TempDir,
+    _scratch_directory: tempfile::TempDir,
+}
+impl std::ops::Deref for PhysicalFixture {
+    type Target = kasumi_engine::test_utils::FixtureStorage;
+    fn deref(&self) -> &Self::Target {
+        &self.storage
+    }
+}
+impl PhysicalFixture {
+    fn new() -> anyhow::Result<Self> {
+        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+        let persistent =
+            kasumi_store::NodeDisk::fixture_config(directory.path().join("node.redb"))?;
+        let scratch = kasumi_store::ScratchDiskConfig {
+            directory: scratch_directory.path().to_owned(),
+            max_bytes: 256 << 30,
+            min_free_bytes: 0,
+        };
+        let storage = kasumi_engine::test_utils::FixtureStorage::open(
+            &persistent,
+            &scratch,
+            Default::default(),
+        )?;
+        Ok(Self {
+            storage,
+            directory,
+            _scratch_directory: scratch_directory,
+        })
+    }
+    fn path(&self, name: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+        self.directory.path().join(name)
+    }
+}
+
+fn request_budget(
+    admission: &Arc<kasumi_engine::admission::NodeAdmission>,
+) -> BackgroundWorkBudget {
     let bytes = authority_request_metadata_bytes().unwrap();
-    let mut charge = admission.reserve(bytes, None).unwrap();
-    charge.retain(bytes);
+    let charge = admission.memory().reserve_resident(bytes).unwrap();
     BackgroundWorkBudget::new(AUTHORITY_REQUEST_SLOTS, Arc::new(charge)).unwrap()
 }
 
@@ -66,7 +104,7 @@ impl WallClock for Wall {
     }
 }
 struct Fixture {
-    _dir: tempfile::TempDir,
+    physical: BTreeMap<u64, PhysicalFixture>,
     router: Arc<InProcessRouter>,
     services: Vec<Arc<IndependentAuthority>>,
     stores: Vec<Arc<TenantStorageSet>>,
@@ -89,23 +127,55 @@ impl Fixture {
     }
     async fn exact_administrative(&self, command: AuthorityCommand) -> AuthorityReceipt {
         let context = self.context("operator");
-        tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                let current = self.leader().await;
-                match current.execute(context.clone(), command.clone()).await {
-                    Ok((receipt, fence)) if fence.release().await.is_ok() => break receipt.receipt,
-                    Ok(_) => {}
-                    Err(error)
-                        if matches!(
-                            error.code,
-                            ErrorCode::UnknownOutcome | ErrorCode::Unavailable
-                        ) => {}
-                    Err(error) => panic!("unexpected exact setup rejection: {error:?}"),
+        let expected_digest = command.digest().unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let current = self.leader().await;
+            // A previous dispatch may have committed while its reply or leader
+            // changed. Read that exact permanent identity before any retry.
+            match current
+                .receipt(context.clone(), &command.tenant, command.command_id)
+                .await
+            {
+                Ok((Some(receipt), fence)) => {
+                    assert_eq!(receipt.receipt.command, command);
+                    assert_eq!(receipt.receipt.command_digest, expected_digest);
+                    if fence.release().await.is_ok() {
+                        return receipt.receipt;
+                    }
                 }
+                Ok((None, fence)) => {
+                    let _ = fence.release().await;
+                }
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) => {}
+                Err(error) => panic!("unexpected exact receipt rejection: {error:?}"),
             }
-        })
-        .await
-        .unwrap()
+            // Check the bound between calls: timing out inside execute would
+            // abandon a dispatched child and obscure its exact drain outcome.
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "exact command has no positive receipt before the setup deadline"
+            );
+            match current.execute(context.clone(), command.clone()).await {
+                Ok((receipt, fence)) if fence.release().await.is_ok() => {
+                    assert_eq!(receipt.receipt.command, command);
+                    assert_eq!(receipt.receipt.command_digest, expected_digest);
+                    return receipt.receipt;
+                }
+                Ok(_) => {}
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) => {}
+                Err(error) => panic!("unexpected exact setup rejection: {error:?}"),
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
     async fn new() -> Self {
         Self::with_controls(BTreeMap::new()).await
@@ -117,7 +187,6 @@ impl Fixture {
         controls: BTreeMap<Uuid, String>,
         ordinary_state_bytes: u64,
     ) -> Self {
-        let dir = kasumi_store::test_utils::private_tempdir().unwrap();
         let router = Arc::new(InProcessRouter::default());
         let key = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
             .unwrap();
@@ -152,13 +221,15 @@ impl Fixture {
         let readiness = Arc::new(TestMaintenanceTransport::default());
         let mut services = Vec::new();
         let mut stores = Vec::new();
+        let mut physical = BTreeMap::new();
         for id in 1..=3 {
-            let node = NodeStore::create_new_fixture(
-                dir.path().join(format!("authority-{id}.redb")),
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-            .unwrap();
+            let storage = PhysicalFixture::new().unwrap();
+            let node = storage
+                .create_new(
+                    storage.path(format!("authority-{id}.redb")),
+                    kasumi_store::test_utils::NODE_STORE_ID,
+                )
+                .unwrap();
             let store = TenantStorageSet::initialize_catalogs(
                 node,
                 installation.tenant(),
@@ -195,8 +266,8 @@ impl Fixture {
                     election_timeout_max: 1000,
                     ..Config::default()
                 },
-                request_budget(),
-                kasumi_raft::SnapshotBufferOwner::fixture(),
+                request_budget(&storage.admission),
+                storage.admission.snapshot_buffer_owner().unwrap(),
                 epoch.clone(),
             )
             .await
@@ -212,9 +283,10 @@ impl Fixture {
                 .unwrap();
             services.push(service);
             stores.push(store);
+            physical.insert(id, storage);
         }
         let fixture = Self {
-            _dir: dir,
+            physical,
             router,
             services,
             stores,
@@ -255,6 +327,29 @@ impl Fixture {
                     .map(|s| format!("{:?}", s.group.raft().metrics().borrow()))
                     .collect::<Vec<_>>()
             )
+        })
+    }
+    fn converged_leader(&self) -> Option<(u64, u64)> {
+        let observed: Vec<_> = self
+            .services
+            .iter()
+            .map(|service| service.group.raft().metrics().borrow().clone())
+            .collect();
+        observed.iter().find_map(|leader| {
+            let leader_id = leader.id;
+            if leader.current_leader != Some(leader_id) {
+                return None;
+            }
+            let voters: BTreeSet<_> = leader.membership_config.voter_ids().collect();
+            (voters.contains(&leader_id)
+                && voters.iter().all(|id| {
+                    observed.iter().any(|metrics| {
+                        metrics.id == *id
+                            && metrics.current_term == leader.current_term
+                            && metrics.current_leader == Some(leader_id)
+                    })
+                }))
+            .then_some((leader_id, leader.current_term))
         })
     }
     fn context(&self, principal: &str) -> RequestContext {
@@ -323,12 +418,12 @@ impl Fixture {
         self.router = Arc::new(InProcessRouter::default());
         self.readiness = Arc::new(TestMaintenanceTransport::default());
         for id in member_ids {
-            let node = NodeStore::open_existing_fixture(
-                self._dir.path().join(format!("authority-{id}.redb")),
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-            .unwrap();
+            let node = self.physical[&id]
+                .open_existing(
+                    self.physical[&id].path(format!("authority-{id}.redb")),
+                    kasumi_store::test_utils::NODE_STORE_ID,
+                )
+                .unwrap();
             let stores = TenantStorageSet::open_existing(
                 node,
                 self.installation.tenant(),
@@ -358,8 +453,11 @@ impl Fixture {
                     election_timeout_max: 1000,
                     ..Config::default()
                 },
-                request_budget(),
-                kasumi_raft::SnapshotBufferOwner::fixture(),
+                request_budget(&self.physical[&id].admission),
+                self.physical[&id]
+                    .admission
+                    .snapshot_buffer_owner()
+                    .unwrap(),
                 self.epoch.clone(),
             )
             .await
@@ -376,7 +474,36 @@ impl Fixture {
             self.services.push(service);
             self.stores.push(stores);
         }
-        self.leader().await;
+        // A local linearizable barrier can pass while a current voter has
+        // already started a higher-term election. Learners and removed nodes
+        // are not part of the committed voting quorum for the next command.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let Some((leader_id, term)) = self.converged_leader() {
+                    let leader = self
+                        .services
+                        .iter()
+                        .find(|service| service.local_node_id == leader_id)
+                        .unwrap();
+                    if leader.group.linearizable_barrier().await.is_ok()
+                        && self.converged_leader() == Some((leader_id, term))
+                    {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "reopened authority did not converge: {error}; states: {:?}",
+                self.services
+                    .iter()
+                    .map(|service| format!("{:?}", service.group.raft().metrics().borrow()))
+                    .collect::<Vec<_>>()
+            )
+        });
     }
 }
 fn nodes() -> BTreeSet<NodeIdentity> {
@@ -709,13 +836,11 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     let source = fixture.enroll(&service).await;
     let lease_boot = boot(&fixture, source, 1);
     let gate = ServingGate::new(acquire(&fixture, &service, &lease_boot).await).unwrap();
-    let path = fixture._dir.path().join("separate-municipality.redb");
-    let node = NodeStore::create_new_fixture(
-        &path,
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
+    let storage = PhysicalFixture::new().unwrap();
+    let path = storage.path("separate-municipality.redb");
+    let node = storage
+        .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+        .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([90; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([91; 32]));
     let stores = TenantStorageSet::initialize_catalogs(
@@ -778,12 +903,9 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     stores.shutdown().await.unwrap();
     drop(stores);
     drop(node);
-    let reopened = NodeStore::open_existing_fixture(
-        &path,
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
+    let reopened = storage
+        .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+        .unwrap();
     let custody =
         kasumi_store::CustodyStore::open(reopened.clone(), "city".into(), custody_provider)
             .await

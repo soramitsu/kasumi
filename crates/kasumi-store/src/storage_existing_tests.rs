@@ -30,13 +30,91 @@ async fn reopen(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
 }
 
 #[tokio::test]
+async fn existing_catalog_rejects_equivalent_alternate_bytes_without_repair() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir()?;
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let directory = crate::test_utils::private_tempdir()?;
+    let node = NodeStore::create_new_fixture(
+        directory.path().join("canonical-catalog.redb"),
+        crate::test_utils::NODE_STORE_ID,
+        fixture_memory,
+        fixture_scratch,
+    )?;
+    let provider = Arc::new(LocalKeyProvider::new([11; 32]));
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
+        node.clone(),
+        "tenant".into(),
+        provider.clone(),
+        Arc::new(ManualClock::new()),
+    )
+    .await?;
+    store.rotate_data_key().await?;
+    let original = {
+        let transaction = node.db.begin_read()?;
+        let table = transaction.open_table(CATALOG)?;
+        let value = table
+            .get(tenant_hash("tenant").as_slice())?
+            .expect("installed catalog");
+        value.value().to_vec()
+    };
+    assert!(
+        serde_json::to_vec(&node.catalog("tenant")?.unwrap())?.as_slice() == original.as_slice(),
+        "rotated catalog differs from current writer bytes"
+    );
+    store.shutdown().await?;
+    drop(store);
+
+    let mut alternate = original.clone();
+    alternate.push(b' ');
+    assert!(
+        serde_json::from_slice::<KeyCatalog>(&alternate)?
+            == serde_json::from_slice::<KeyCatalog>(&original)?,
+        "alternate catalog changed its semantic value"
+    );
+    let transaction = node.db.begin_write()?;
+    transaction
+        .open_table(CATALOG)?
+        .insert(tenant_hash("tenant").as_slice(), alternate.as_slice())?;
+    transaction.commit()?;
+    let before = contents(&node)?;
+    assert!(node.catalog("tenant").is_err());
+    assert!(
+        TenantStore::open_existing_fixture(node.clone(), "tenant".into(), provider.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(contents(&node)?, before, "failed open repaired the catalog");
+
+    let transaction = node.db.begin_write()?;
+    transaction
+        .open_table(CATALOG)?
+        .insert(tenant_hash("tenant").as_slice(), original.as_slice())?;
+    transaction.commit()?;
+    let reopened =
+        TenantStore::open_existing_fixture(node.clone(), "tenant".into(), provider).await?;
+    assert!(
+        serde_json::to_vec(&node.catalog("tenant")?.unwrap())?.as_slice() == original.as_slice(),
+        "restored catalog differs from current writer bytes"
+    );
+    reopened.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn missing_catalogs_and_authenticated_binding_never_provision_during_reopen() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     for present in [0, 1, 2, 3] {
         let directory = crate::test_utils::private_tempdir()?;
         let node = NodeStore::create_new_fixture(
             directory.path().join("partial.redb"),
             crate::test_utils::NODE_STORE_ID,
-            ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )?;
         let mut opened = Vec::new();
         for (flag, name, key) in [
@@ -74,12 +152,17 @@ async fn missing_catalogs_and_authenticated_binding_never_provision_during_reope
 #[tokio::test]
 async fn existing_catalog_admission_cannot_provision_after_waiting_for_the_open_gate() -> Result<()>
 {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     use std::{future::Future, task::Poll};
     let directory = crate::test_utils::private_tempdir()?;
     let node = NodeStore::create_new_fixture(
         directory.path().join("gate.redb"),
         crate::test_utils::NODE_STORE_ID,
-        ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )?;
     let provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let store = TenantStore::initialize_catalog_fixture_with_clock(
@@ -119,11 +202,16 @@ async fn existing_catalog_admission_cannot_provision_after_waiting_for_the_open_
 
 #[tokio::test]
 async fn corrupt_or_authenticated_wrong_binding_is_never_repaired_by_reopen() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
     let node = NodeStore::create_new_fixture(
         directory.path().join("binding.redb"),
         crate::test_utils::NODE_STORE_ID,
-        ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )?;
     let stores = TenantStorageSet::initialize_catalogs_fixture(
         node.clone(),
@@ -158,12 +246,97 @@ async fn corrupt_or_authenticated_wrong_binding_is_never_repaired_by_reopen() ->
 }
 
 #[tokio::test]
+async fn existing_binding_requires_current_writer_bytes_without_repair() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir()?;
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let directory = crate::test_utils::private_tempdir()?;
+    let node = NodeStore::create_new_fixture(
+        directory.path().join("canonical-binding.redb"),
+        crate::test_utils::NODE_STORE_ID,
+        fixture_memory,
+        fixture_scratch,
+    )?;
+    let stores = TenantStorageSet::initialize_catalogs_fixture(
+        node.clone(),
+        "tenant".into(),
+        Arc::new(LocalKeyProvider::new([11; 32])),
+        Arc::new(LocalKeyProvider::new([12; 32])),
+    )
+    .await?;
+    let custody = stores.custody().store().clone();
+    let canonical = custody.get(BINDING_NS, BINDING_KEY)?.unwrap();
+    assert_eq!(canonical, serde_json::to_vec(stores.custody().binding())?);
+
+    let mut alternate = b" \n".to_vec();
+    alternate.extend_from_slice(&canonical);
+    assert_eq!(
+        serde_json::from_slice::<StorageBinding>(&alternate)?,
+        stores.custody().binding().clone()
+    );
+    custody.write_batch(&[WriteOp::put(BINDING_NS, BINDING_KEY, alternate.clone())])?;
+    let install_error = TenantStorageSet::install(stores.application().clone(), custody.clone())
+        .err()
+        .expect("alternate binding must reject existing-binding install");
+    assert!(
+        format!("{install_error:#}").contains("installed storage domain binding bytes differ"),
+        "{install_error:#}"
+    );
+    assert_eq!(
+        custody.get(BINDING_NS, BINDING_KEY)?,
+        Some(alternate.clone())
+    );
+
+    stores.shutdown().await.unwrap();
+    drop(stores);
+    drop(custody);
+    node.drain_initializers().await?;
+    let before = contents(&node)?;
+    let reopen_error = reopen(node.clone())
+        .await
+        .err()
+        .expect("alternate binding must reject existing open");
+    assert!(
+        format!("{reopen_error:#}").contains("existing storage domain binding bytes differ"),
+        "{reopen_error:#}"
+    );
+    node.drain_initializers().await?;
+    assert_eq!(contents(&node)?, before);
+
+    let custody = TenantStore::open_existing_fixture(
+        node.clone(),
+        CustodyStore::catalog_name("tenant"),
+        Arc::new(LocalKeyProvider::new([12; 32])),
+    )
+    .await?;
+    assert_eq!(custody.get(BINDING_NS, BINDING_KEY)?, Some(alternate));
+    custody.write_batch(&[WriteOp::put(BINDING_NS, BINDING_KEY, canonical)])?;
+    custody.shutdown().await.unwrap();
+    drop(custody);
+    node.drain_initializers().await?;
+    let reopened = reopen(node.clone()).await?;
+    reopened.shutdown().await.unwrap();
+    node.drain_initializers().await?;
+    node.shutdown().await.unwrap();
+    Ok(())
+}
+
+#[tokio::test]
 async fn exact_standalone_binding_reopens_after_both_domains_close_and_drain() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
     let path = directory.path().join("installed.redb");
-    let disk = ScratchDisk::fixture();
-    let node =
-        NodeStore::create_new_fixture(&path, crate::test_utils::NODE_STORE_ID, disk.clone())?;
+    let disk = fixture_scratch.clone();
+    let node = NodeStore::create_new_fixture(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        fixture_memory.clone(),
+        disk.clone(),
+    )?;
     let installation = Uuid::new_v4();
     let incarnation = Uuid::new_v4();
     let access = StorageAccess::standalone(installation, "tenant", incarnation)?;
@@ -186,7 +359,12 @@ async fn exact_standalone_binding_reopens_after_both_domains_close_and_drain() -
     stores.shutdown().await.unwrap();
     drop(stores);
     drop(node);
-    let node = NodeStore::open_existing_fixture(&path, crate::test_utils::NODE_STORE_ID, disk)?;
+    let node = NodeStore::open_existing_fixture(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        fixture_memory.clone(),
+        disk,
+    )?;
     let unused = Arc::new(LocalKeyProvider::new([99; 32]));
     assert!(
         TenantStorageSet::open_existing(

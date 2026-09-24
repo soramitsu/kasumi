@@ -1,0 +1,7 @@
+{
+  "unmodified_assembly_inputs": 1478,
+  "all_byte_identical_to_actual_root": true,
+  "overlaid_manifest_paths": 69,
+  "assembly_overlays_verified_before_dispatch": true,
+  "checks_do_not_use_harness_stubs_or_omitted_methods": true
+}

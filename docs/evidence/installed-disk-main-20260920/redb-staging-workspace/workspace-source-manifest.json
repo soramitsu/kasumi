@@ -1,0 +1,95 @@
+{
+  "status": "SOURCE_SHAPES_AND_CONCRETE_LRU_FIX_TOTAL_WORKSPACE_STILL_UNQUALIFIED",
+  "source_files": [
+    {
+      "path": "docs/custody-staging-plan.md",
+      "sha256": "395e5fba8e60a5ab802c98d11aec5a0006575681df3b0c8eb1b2f7bb22bbb88d"
+    },
+    {
+      "path": "crates/kasumi-store/src/scratch_table.rs",
+      "sha256": "c099e1652bf36951dd57a100922c4d6b4cac669c73375086978b981c03f49961"
+    },
+    {
+      "path": "crates/kasumi-store/src/spool.rs",
+      "sha256": "56f9a71183f6eaf22603d3f65ebeb6ca3a29d1d9629949b46f0ab75abefcdfcd"
+    },
+    {
+      "path": "crates/kasumi-raft/src/custody_records.rs",
+      "sha256": "e0b3ab584e05f5a0e09fd384e2515132d4192a53d6854feeadb31c2be46704d9"
+    },
+    {
+      "path": "crates/kasumi-engine/src/staged_terminal.rs",
+      "sha256": "097c73638c9ac99ea085ba9e339b6c7ac0a593ae4b437740a4681af782f11128"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/db.rs",
+      "sha256": "dda1792fa3a15d09bb4d5a83c279cc9203dc970b562f010aebdd00feb8e54481"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "sha256": "d8b20ab61cd6864d7704312c868d66e729a4bab6f54a55993cd9257850a8b8ff"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transaction_tracker.rs",
+      "sha256": "5d673a923d5c6995251ec6ec1a519be4e3b1e7db385f99f16410b375315ee8ab"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "sha256": "25840b63faad3ba554331fd3a859e1f73f19f527bacf2067078e3cdfe6f33459"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+      "sha256": "313bdd7fa068257d1ffae6f13ba56dd26fa105d00e2fdc571263d50c764b2e4a"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "sha256": "b6350a85c1b7a152eb4a173402607756178a62f29ad0db87d6460d0e74e14661"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/table_tree.rs",
+      "sha256": "e4e53fcc516bf69c4f4918335be169d26b0abfc6d6976dbfbfd68c15904f12db"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+      "sha256": "773858218823539467cd503b4524cbf97de1a20eb2745e97877921f8acc7a7d1"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+      "sha256": "18b42bf9c2d434f8d205d2088dc352af2cd8a40e3e0ddc0edfeff4390f349b72"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/lru_cache.rs",
+      "sha256": "3dad9116b06284f993544620885cc57ef7b382f0fc77152eb88e363e68450189"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/fast_hash.rs",
+      "sha256": "aad4660f34971d858c55016cf1b6d88ce49804be2b3d42e24f59f37e58bdca78"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "sha256": "5266543540be85283f87fbed76d38e57a85334c728349c7e7002740b3336815d"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/bitmap.rs",
+      "sha256": "d57724dcbc9701e8fb7a2e268febba1fbe2ff2a00e14e000c27a703afe3af9ff"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs",
+      "sha256": "090fa18f76e9bc375c7e4d17cefc22e6e37501a0f1534a0fdd6d1803d684687a"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/region.rs",
+      "sha256": "ae6fb0a6f050de1739afe80fb5706b1634e6629cba3b5baeeff74935fbf367e0"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/layout.rs",
+      "sha256": "0b559f9a739c6960bfdc0fd84c03f3bd8e083a824a74f9ea41b162f1fb99d670"
+    }
+  ],
+  "derivation_sha256": "983c4304d2080f429efa355438cadf75e41951e4ce7defc0203d86f5956b213e",
+  "shape_script_sha256": "700a16f341260727b1f1fa3677a157ec389feee6132969777163f6026e8d1844",
+  "shape_result_sha256": "9731e323ad7b8b137cf994e10620168b681ee9283dcd05c2e78cd31b3f6f669d",
+  "local_rust_src_available": false,
+  "actual_source_modified": false,
+  "cargo_invoked": false
+}

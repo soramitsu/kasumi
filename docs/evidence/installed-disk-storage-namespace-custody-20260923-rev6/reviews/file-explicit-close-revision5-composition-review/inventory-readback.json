@@ -1,0 +1,8 @@
+{
+  "composition_receipt_sha256": "38a3c5f7fc412d5d384481244397697b3cfcfa6bda142828c531c190251f98e2",
+  "composed_file_count": 75,
+  "composed_expected_inventory_sha256": "696fc4485c4472883c5021d4afcd3027866bc480f40fecaccc13d389ba001901",
+  "exact338_expected_names_equal_prior331_plus_seven_candidate_tests": true,
+  "exact_source_derived_new_names_equal_plan": true,
+  "native_evidence": false
+}

@@ -1,0 +1,42 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+0000000100024cc0 <<lifecycle::Fixture>::leader::{closure#0}::{closure#0}>:
+100024cc0: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+100024cc4: a9017bfd    	stp	x29, x30, [sp, #0x10]
+100024cc8: 910043fd    	add	x29, sp, #0x10
+100024ccc: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+100024cd0: f90003ff    	str	xzr, [sp]
+100024cd4: d11a03ff    	sub	sp, sp, #0x680
+100024cd8: f90003ff    	str	xzr, [sp]
+100024cdc: d10147a8    	sub	x8, x29, #0x51
+100024ce0: f90057e8    	str	x8, [sp, #0xa8]
+100024ce4: 910583e8    	add	x8, sp, #0x160
+100024ce8: f9005be8    	str	x8, [sp, #0xb0]
+100024cec: f9005fe0    	str	x0, [sp, #0xb8]
+100024cf0: f90067e1    	str	x1, [sp, #0xc8]
+100024cf4: aa0003e8    	mov	x8, x0
+100024cf8: f81b03a8    	stur	x8, [x29, #-0x50]
+100024cfc: aa0003e8    	mov	x8, x0
+100024d00: f81c03a8    	stur	x8, [x29, #-0x40]
+100024d04: 39402008    	ldrb	w8, [x0, #0x8]
+100024d08: b900c7e8    	str	w8, [sp, #0xc4]
+100024d0c: 340001e8    	cbz	w8, 0x100024d48 <<lifecycle::Fixture>::leader::{closure#0}::{closure#0}+0x88>
+100024d10: 14000001    	b	0x100024d14 <<lifecycle::Fixture>::leader::{closure#0}::{closure#0}+0x54>
+100024d14: b940c7e8    	ldr	w8, [sp, #0xc4]
+100024d18: 71000508    	subs	w8, w8, #0x1
+100024d1c: 54000220    	b.eq	0x100024d60 <<lifecycle::Fixture>::leader::{closure#0}::{closure#0}+0xa0>
+100024d20: 14000001    	b	0x100024d24 <<lifecycle::Fixture>::leader::{closure#0}::{closure#0}+0x64>
+100024d24: b940c7e8    	ldr	w8, [sp, #0xc4]
+100024d28: 71000908    	subs	w8, w8, #0x2
+100024d2c: 54000200    	b.eq	0x100024d6c <<lifecycle::Fixture>::leader::{closure#0}::{closure#0}+0xac>
+100024d30: 14000001    	b	0x100024d34 <<lifecycle::Fixture>::leader::{closure#0}::{closure#0}+0x74>
+100024d34: b940c7e8    	ldr	w8, [sp, #0xc4]
+100024d38: 71000d08    	subs	w8, w8, #0x3
+100024d3c: 540001e0    	b.eq	0x100024d78 <<lifecycle::Fixture>::leader::{closure#0}::{closure#0}+0xb8>
+100024d40: 14000001    	b	0x100024d44 <<lifecycle::Fixture>::leader::{closure#0}::{closure#0}+0x84>
+100024d44: 14000010    	b	0x100024d84 <<lifecycle::Fixture>::leader::{closure#0}::{closure#0}+0xc4>
+100024d48: f9405fe8    	ldr	x8, [sp, #0xb8]
+100024d4c: f9400108    	ldr	x8, [x8]

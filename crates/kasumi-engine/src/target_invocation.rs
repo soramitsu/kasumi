@@ -183,13 +183,21 @@ pub struct TargetRequestAdmission {
     context: RequestContext,
     elapsed: kasumi_clock::ElapsedDeadline,
     deadline: crate::backup_verify::VerificationDeadline,
+    // The native reply waiter uses this same original monotonic budget. It is
+    // never rebuilt after provider acquisition or child registration.
+    response_deadline: tokio::time::Instant,
     timeout_ms: u64,
     dispatch_not_after_ms: u64,
 }
 impl TargetRequestAdmission {
     pub fn capture(context: RequestContext, timeout_ms: u64) -> Result<Self> {
+        let started = tokio::time::Instant::now();
         let clock = kasumi_clock::EpochClock::system().map_err(unauthorized)?;
-        Self::capture_with_clock(context, timeout_ms, clock.as_ref())
+        let mut result = Self::capture_with_clock(context, timeout_ms, clock.as_ref())?;
+        result.response_deadline = result
+            .response_deadline
+            .min(started + std::time::Duration::from_millis(timeout_ms));
+        Ok(result)
     }
     /// Native dispatch carries one absolute cap from its durable coordinator
     /// phase. Network retry and provider acquisition cannot re-anchor it.
@@ -198,8 +206,14 @@ impl TargetRequestAdmission {
         timeout_ms: u64,
         not_after_ms: u64,
     ) -> Result<Self> {
+        let started = tokio::time::Instant::now();
         let clock = kasumi_clock::EpochClock::system().map_err(unauthorized)?;
-        Self::capture_until_with_clock(context, timeout_ms, not_after_ms, clock.as_ref())
+        let mut result =
+            Self::capture_until_with_clock(context, timeout_ms, not_after_ms, clock.as_ref())?;
+        result.response_deadline = result
+            .response_deadline
+            .min(started + std::time::Duration::from_millis(result.timeout_ms));
+        Ok(result)
     }
     fn capture_until_with_clock(
         context: RequestContext,
@@ -207,6 +221,9 @@ impl TargetRequestAdmission {
         not_after_ms: u64,
         clock: &kasumi_clock::EpochClock,
     ) -> Result<Self> {
+        // Anchor before trusted UTC observation. Work inside capture cannot
+        // extend either the absolute dispatch cap or the configured timeout.
+        let started = tokio::time::Instant::now();
         let observation = clock.observe().map_err(unauthorized)?;
         let remaining = not_after_ms
             .checked_sub(observation.utc_ms())
@@ -222,6 +239,9 @@ impl TargetRequestAdmission {
         // Preserve the earlier paired observation, including time spent in
         // capture_with_clock itself. Its ordinary work timer can only be tighter.
         result.elapsed = elapsed;
+        result.response_deadline = result
+            .response_deadline
+            .min(started + std::time::Duration::from_millis(timeout_ms.min(remaining)));
         result.dispatch_not_after_ms = not_after_ms;
         result.check()?;
         Ok(result)
@@ -231,6 +251,7 @@ impl TargetRequestAdmission {
         timeout_ms: u64,
         clock: &kasumi_clock::EpochClock,
     ) -> Result<Self> {
+        let started = tokio::time::Instant::now();
         context.authorization.check_live()?;
         if context.authorization.expires_at_ms().is_none() {
             return Err(unauthorized("finite native credential required"));
@@ -247,9 +268,16 @@ impl TargetRequestAdmission {
             context,
             elapsed,
             deadline,
+            response_deadline: started + std::time::Duration::from_millis(timeout_ms),
             timeout_ms,
             dispatch_not_after_ms: expires,
         })
+    }
+    /// The original native reply cap, including time spent before the child
+    /// was registered. Callers may use it only to shorten their wait.
+    pub fn response_deadline(&self) -> Result<tokio::time::Instant> {
+        self.check()?;
+        Ok(self.response_deadline)
     }
     pub fn require_context(&self, context: &RequestContext) -> Result<()> {
         self.check()?;
@@ -550,7 +578,7 @@ mod admission_tests {
     }
     #[test]
     fn native_absolute_dispatch_cap_survives_retry_and_never_expands_node_work_limit() {
-        for (timeout_ms, cap_ms) in [(25, 100), (100, 25)] {
+        for (timeout_ms, cap_ms) in [(5_000, 10_000), (10_000, 5_000)] {
             let clock = Arc::new(Clock(AtomicU64::new(0)));
             let epoch = kasumi_clock::EpochClock::new(clock.clone(), Arc::new(Wall)).unwrap();
             let observation = epoch.observe().unwrap();
@@ -560,7 +588,7 @@ mod admission_tests {
                 request_id: "original".into(),
                 scopes: BTreeSet::from([Action::Admin]),
                 authorization: RequestAuthorization::from_verified_credential(
-                    observation.utc_ms() + 1000,
+                    observation.utc_ms() + 20_000,
                     &observation,
                     CredentialResource::Control {
                         incarnation: uuid::Uuid::new_v4(),
@@ -577,11 +605,18 @@ mod admission_tests {
             )
             .unwrap();
             assert_eq!(admission.dispatch_not_after_ms, cap);
-            clock.0.store(26, Ordering::SeqCst);
+            let native_deadline = admission.response_deadline().unwrap();
+            assert!(
+                native_deadline.saturating_duration_since(tokio::time::Instant::now())
+                    <= std::time::Duration::from_millis(timeout_ms.min(cap_ms))
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            assert_eq!(admission.response_deadline().unwrap(), native_deadline);
+            clock.0.store(5_001, Ordering::SeqCst);
             assert!(admission.check().is_err());
             assert_eq!(admission.dispatch_not_after_ms, cap);
             context.authorization.check_live().unwrap();
-            if cap_ms == 25 {
+            if cap_ms == 5_000 {
                 assert!(
                     TargetRequestAdmission::capture_until_with_clock(
                         context, timeout_ms, cap, &epoch

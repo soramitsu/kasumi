@@ -1,0 +1,11 @@
+{
+  "name": "run",
+  "pid": 75894,
+  "pgid": 75894,
+  "argv": [
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/native-02/tests",
+    "node_disk::",
+    "--nocapture",
+    "--test-threads=1"
+  ]
+}

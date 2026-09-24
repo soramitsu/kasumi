@@ -1,0 +1,13 @@
+{
+  "status": "STATIC_REVIEW_NO_ACTIONABLE_BLOCKER_UNEXECUTED",
+  "patch_sha256": "2faf23b1d542d5eb79ba4f26acdce410edc4bc09121c9479d1907d463b9e05c2",
+  "manifest_sha256": "b0ee34b84f87f2a14c45344cccc77552c8e29cdc38f9754ca411ac16b2ecce8e",
+  "review_sha256": "a1e2770963f610b1df50700475a3aeac7885f1fbd3d5e418eef88d8bcde20629",
+  "evidence_sha256": "06cb10cecc469d6b34f48831436e1ba5cd290f598c23f5441f1e21f2bc16df64",
+  "source_inputs": {
+    "crates/kasumi-engine/tests/lifecycle.rs": "ecd9058d5d6dcc8026364ce2414897c3b09b380a4171d1ab59331cdd4ed0dbc4",
+    "crates/kasumi-engine/tests/common/recovery_control.rs": "6e6e9477afd35a346b3b686afe5bc40b4c33bf066743ab17b5a4e3d306004aa0"
+  },
+  "actual_source_mutations": false,
+  "cargo_or_native_runs": false
+}

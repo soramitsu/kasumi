@@ -1,0 +1,20 @@
+{
+  "status": "FROZEN_TARGET_ONLY_SINGLE_TEST_CORRECTION_NATIVE_PENDING",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "base": "target/installed-disk-validation/storage-namespace-custody-integration-revision5/proposed",
+  "base_manifest_sha256": "64a8b440408c734c05b442aafbb9fa969862d78662178b8029a287dd66578b2e",
+  "patch_sha256": "c0a1725fb1d91212bd2182463a300f8c536b74c3db10b73c2e9c958eaab993b2",
+  "files": [
+    {
+      "path": "crates/kasumi-store/src/audit_archive_owned.rs",
+      "before": "c568a57b556b00ac29eee7c9d4ac2c74298d177518c557f73acb44ae9f207ff7",
+      "after": "98509ccdb45806cda58596bc5bf54fe69f0f05dfc24f29edc2b3b71f3d4b5e7a",
+      "readback": "98509ccdb45806cda58596bc5bf54fe69f0f05dfc24f29edc2b3b71f3d4b5e7a"
+    }
+  ],
+  "scan_sha256": "ef7ccbec4d1c974b178bec11d467d57ba57deb7de5e1abc3c3b98d1b02494d3b",
+  "production_changes": false,
+  "test_inventory_changed": false,
+  "native_or_cargo_dispatched": false
+}

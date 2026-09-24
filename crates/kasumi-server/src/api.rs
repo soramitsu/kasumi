@@ -419,6 +419,8 @@ mod tests {
     struct Fixture {
         incarnation: uuid::Uuid,
         _dir: tempfile::TempDir,
+        physical: kasumi_engine::test_utils::FixtureStorage,
+        node: Arc<NodeStore>,
         db: Arc<Database>,
         registry: DatabaseRegistry,
         auth: Arc<Authenticator>,
@@ -446,12 +448,14 @@ mod tests {
             .await;
             let key = EncodingKey::from_ed_pem(key.serialize_pem().as_bytes()).unwrap();
             let dir = kasumi_store::test_utils::private_tempdir().unwrap();
-            let node = NodeStore::create_new_fixture(
-                dir.path().join("node.redb"),
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-            .unwrap();
+            let physical =
+                crate::runtime_storage_fixtures::physical(dir.path(), Default::default()).unwrap();
+            let node = physical
+                .create_new(
+                    dir.path().join("persistent/node.redb"),
+                    kasumi_store::test_utils::NODE_STORE_ID,
+                )
+                .unwrap();
             let audit_store = TenantStore::initialize_catalog_fixture(
                 node.clone(),
                 crate::runtime::SECURITY_TENANT.into(),
@@ -460,8 +464,7 @@ mod tests {
             .await
             .unwrap();
             // The audit and its databases share this fixture's exact governor.
-            let node_admission =
-                kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
+            let node_admission = physical.admission.clone();
             let audit = crate::runtime::SecurityAudit::initialize(
                 audit_store.clone(),
                 kasumi_types::AuditRetentionBudget::default(),
@@ -470,7 +473,7 @@ mod tests {
             .unwrap();
             auth.install_audit(audit.clone()).unwrap();
             let store = TenantStore::initialize_catalog_fixture(
-                node,
+                node.clone(),
                 "tenant-a".into(),
                 Arc::new(LocalKeyProvider::new([3; 32])),
             )
@@ -540,6 +543,8 @@ mod tests {
             Self {
                 incarnation,
                 _dir: dir,
+                physical,
+                node,
                 db,
                 registry,
                 auth,
@@ -598,6 +603,7 @@ mod tests {
         async fn close(&self) {
             self.db.shutdown().await.unwrap();
             self.audit.shutdown().await.unwrap();
+            self.node.shutdown().await.unwrap();
         }
     }
     fn native<T>(message: T, token: &str) -> Request<T> {
@@ -1886,7 +1892,18 @@ name: "docs".into(),
                 .documents
                 .is_empty()
         );
-        fixture.close().await;
+        fixture.db.shutdown().await.unwrap();
+        let failure = fixture.audit.shutdown().await.unwrap_err();
+        assert_eq!(
+            failure.completion(),
+            kasumi_types::drain::DrainCompletion::Complete
+        );
+        assert!(failure.issues().iter().any(|issue| {
+            issue.component() == "audit persistence"
+                && issue.error().to_string()
+                    == "tenant is sealed: key-access lease unavailable or expired"
+        }));
+        fixture.node.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -1910,12 +1927,13 @@ name: "docs".into(),
             strict_read_audit: true,
         };
         let provider = Arc::new(LocalKeyProvider::new([61; 32]));
-        let node = NodeStore::create_new_fixture(
-            fixture._dir.path().join("control.redb"),
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap();
+        let node = fixture
+            .physical
+            .create_new(
+                fixture._dir.path().join("persistent/control.redb"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
         let store =
             TenantStore::initialize_catalog_fixture(node.clone(), tenant.into(), provider.clone())
                 .await
@@ -1958,12 +1976,13 @@ name: "docs".into(),
         }
         let retained = control.engine().generation().unwrap().state.audits.len();
         assert!(retained > 1);
-        let mut config = crate::runtime::example_config();
+        let mut config =
+            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
         config.control.initial_policy = policy;
         let manager = Administration::new(
             config,
             BTreeMap::new(),
-            node,
+            node.clone(),
             fixture.registry.clone(),
             control.clone(),
             fixture.audit.clone(),
@@ -1975,7 +1994,7 @@ name: "docs".into(),
                 lease: None,
             }],
             BTreeMap::new(),
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            fixture.audit.admission().clone(),
             Arc::new(|_| anyhow::bail!("fixture has no installed authority credential")),
         )
         .unwrap();
@@ -2059,6 +2078,7 @@ name: "docs".into(),
             Code::PermissionDenied
         );
         control.shutdown().await.unwrap();
+        node.shutdown().await.unwrap();
         fixture.close().await;
     }
 

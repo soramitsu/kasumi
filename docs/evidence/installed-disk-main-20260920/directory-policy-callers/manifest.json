@@ -1,0 +1,50 @@
+{
+  "status": "frozen target-only mandatory caller successor; requires assembly internal policy replacement",
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "dependency": {
+    "package": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-fixed-maps",
+    "manifest_sha256": "981d4bf8e40a0e37529be5e0beab07c927aaf4ff88caa9fe6d545755d398a97d",
+    "cumulative_patch_sha256": "ef2c07b01c7d4a9acc7b5e606a023cb530cda354a5ec342d60bf3ee9c3a302f0",
+    "all48_files_verified": true
+  },
+  "source_unchanged": true,
+  "source_inventory_count": 631,
+  "patch_sha256": "7c030bba5066762fd99321f0ae0c6465e22aca071ecd6c0ca7d55961187d0ca5",
+  "changed_files": {
+    "crates/kasumi-server/src/persistent_disk.rs": {
+      "base_sha256": "04c07114419f5a707ae8cb4b2be319047218f9a080b158349a30b5ca43747e74",
+      "proposed_sha256": "489ebfc7112c0e07443fe50e47aa4fc64188354aa4fe2f12f3c32fc531a4cafa"
+    },
+    "crates/kasumi-server/src/runtime_memory.rs": {
+      "base_sha256": "632aa9a63771920cc32fbabf3aef6f5f9341fe4c80ffdfc3a45d0bf6eeb3e2c1",
+      "proposed_sha256": "d0ceb8730f19e20db0a8da74dea3045513d7422c40547f8a2511734e7dff2a04"
+    },
+    "docs/standalone.md": {
+      "base_sha256": "13cb683042f6710383912b7c06550260f68d844d7de6509ba6106c620cdc72c4",
+      "proposed_sha256": "54ac615d0e5356d4f61c17fabc1f0f682f632194e1d572332b608cec19859c2a"
+    }
+  },
+  "apply_check_and_exact_target_application_passed": true,
+  "tests_added": 1,
+  "tests_run": false,
+  "external_production_legacy_references": 0,
+  "frozen_files": {
+    "README.md": "f40ab8cf6c3181704034d94c43d1a795de66964fb5143bbc7a698fdaceeddc81",
+    "actual-source-after.json": "01a1be9015ae0951e35658e4e36a1386b0444ec272a4785124a086453af307dd",
+    "actual-source-before.json": "01a1be9015ae0951e35658e4e36a1386b0444ec272a4785124a086453af307dd",
+    "apply-check/crates/kasumi-server/src/persistent_disk.rs": "489ebfc7112c0e07443fe50e47aa4fc64188354aa4fe2f12f3c32fc531a4cafa",
+    "apply-check/crates/kasumi-server/src/runtime_memory.rs": "d0ceb8730f19e20db0a8da74dea3045513d7422c40547f8a2511734e7dff2a04",
+    "apply-check/docs/standalone.md": "54ac615d0e5356d4f61c17fabc1f0f682f632194e1d572332b608cec19859c2a",
+    "apply-checks.json": "d207d18854c1e11252f6d77e9461ecfbca1998d85330c645a432f2aabbfc3b89",
+    "base/crates/kasumi-server/src/persistent_disk.rs": "04c07114419f5a707ae8cb4b2be319047218f9a080b158349a30b5ca43747e74",
+    "base/crates/kasumi-server/src/runtime_memory.rs": "632aa9a63771920cc32fbabf3aef6f5f9341fe4c80ffdfc3a45d0bf6eeb3e2c1",
+    "base/docs/standalone.md": "13cb683042f6710383912b7c06550260f68d844d7de6509ba6106c620cdc72c4",
+    "callers.patch": "7c030bba5066762fd99321f0ae0c6465e22aca071ecd6c0ca7d55961187d0ca5",
+    "current-caller-searches.json": "451716e9bcf25dc6252795684a641bcd5b50844797dd22c3aef0b2ad54b93cbe",
+    "proposed/crates/kasumi-server/src/persistent_disk.rs": "489ebfc7112c0e07443fe50e47aa4fc64188354aa4fe2f12f3c32fc531a4cafa",
+    "proposed/crates/kasumi-server/src/runtime_memory.rs": "d0ceb8730f19e20db0a8da74dea3045513d7422c40547f8a2511734e7dff2a04",
+    "proposed/docs/standalone.md": "54ac615d0e5356d4f61c17fabc1f0f682f632194e1d572332b608cec19859c2a",
+    "virtual-caller-scan.json": "d914abfc2bc413c1ab671a9517da2367ffcc3a443b97d6c2cf1c4f9ffdd8fa00"
+  }
+}

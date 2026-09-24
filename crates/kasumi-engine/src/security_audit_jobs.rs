@@ -119,7 +119,7 @@ mod tests {
     use crate::security_audit::{
         SECURITY_TENANT, SecurityEvent, SecurityEventKind, SecurityOutcome,
     };
-    use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
+    use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
     use kasumi_types::drain::DrainCompletion;
     use std::{task::Poll, time::Duration};
 
@@ -136,25 +136,27 @@ mod tests {
     #[tokio::test]
     async fn cancelled_record_and_drain_retain_actual_blocking_panic_before_physical_reopen() {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-        let path = directory.path().join("audit.redb");
-        let provider = Arc::new(LocalKeyProvider::new([74; 32]));
-        let node = NodeStore::create_new_fixture(
-            &path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+        let (persistent_config, scratch_config) =
+            crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
+        let storage = crate::test_utils::FixtureStorage::open(
+            &persistent_config,
+            &scratch_config,
+            Default::default(),
         )
         .unwrap();
+        let path = directory.path().join("persistent/audit.redb");
+        let provider = Arc::new(LocalKeyProvider::new([74; 32]));
+        let node = storage
+            .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap();
         let weak = Arc::downgrade(&node);
         let store =
             TenantStore::initialize_catalog_fixture(node, SECURITY_TENANT.into(), provider.clone())
                 .await
                 .unwrap();
-        let audit = SecurityAudit::initialize(
-            store.clone(),
-            Default::default(),
-            crate::admission::NodeAdmission::new(Default::default()).unwrap(),
-        )
-        .unwrap();
+        let audit =
+            SecurityAudit::initialize(store.clone(), Default::default(), storage.admission.clone())
+                .unwrap();
         let (entered, waiting) = tokio::sync::oneshot::channel();
         let (release, blocked) = std::sync::mpsc::channel();
         *audit.writer.record_fault.lock().unwrap() = Some(RecordFault {
@@ -179,12 +181,9 @@ mod tests {
         .await;
         drop(first);
         assert!(
-            NodeStore::open_existing_fixture(
-                &path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture()
-            )
-            .is_err()
+            storage
+                .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+                .is_err()
         );
         release.send(()).unwrap();
         let failure = tokio::time::timeout(Duration::from_secs(5), audit.shutdown())
@@ -210,12 +209,9 @@ mod tests {
         drop(store);
         assert!(weak.upgrade().is_none());
         let reopened = TenantStore::open_existing_fixture(
-            NodeStore::open_existing_fixture(
-                &path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-            .unwrap(),
+            storage
+                .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+                .unwrap(),
             SECURITY_TENANT.into(),
             provider,
         )
@@ -249,22 +245,28 @@ mod tests {
     #[tokio::test]
     async fn cancelled_maintenance_retains_publication_panic_and_unpruned_history() {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-        let path = directory.path().join("audit.redb");
-        let provider = Arc::new(LocalKeyProvider::new([75; 32]));
-        let node = NodeStore::create_new_fixture(
-            &path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+        let (persistent_config, scratch_config) =
+            crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
+        let storage = crate::test_utils::FixtureStorage::open(
+            &persistent_config,
+            &scratch_config,
+            Default::default(),
         )
         .unwrap();
+        let path = directory.path().join("persistent/audit.redb");
+        let provider = Arc::new(LocalKeyProvider::new([75; 32]));
+        let node = storage
+            .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap();
         let weak = Arc::downgrade(&node);
         let store =
             TenantStore::initialize_catalog_fixture(node, SECURITY_TENANT.into(), provider.clone())
                 .await
                 .unwrap();
         let archive = Arc::new(PanickingArchive {
-            inner: kasumi_store::FilesystemAuditArchive::open_fixture(
-                directory.path().join("archives"),
+            inner: kasumi_store::FilesystemAuditArchive::open(
+                directory.path().join("persistent/archives"),
+                storage.persistent.clone(),
             )
             .unwrap(),
             entered: tokio::sync::Notify::new(),
@@ -277,7 +279,7 @@ mod tests {
                 archive_bytes: 128 << 20,
             },
             archive.clone(),
-            crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+            storage.admission.clone(),
         )
         .unwrap();
         // Hold the actual automatic worker before admission so this regression
@@ -331,12 +333,9 @@ mod tests {
         drop(store);
         assert!(weak.upgrade().is_none());
         let reopened = TenantStore::open_existing_fixture(
-            NodeStore::open_existing_fixture(
-                &path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-            .unwrap(),
+            storage
+                .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+                .unwrap(),
             SECURITY_TENANT.into(),
             provider,
         )

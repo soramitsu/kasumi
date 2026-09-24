@@ -1,0 +1,12 @@
+{
+  "target/installed-disk-validation/109-authority-full.log": "344436d6e4d270ef6316b24f2e2d0beb9493b6a013b8ea0dab10816fff00ad5a",
+  "target/installed-disk-validation/109-result.json": "30228a6b2eae916d27df62c4cdcbd6cbf0393eea6faf39e38e6fd3328eda4eaf",
+  "target/installed-disk-validation/116-authority-current-route.log": "45d3d59fbffdfd169ed4137d684f29196500f63fd6d758c5c21de153cf1a2856",
+  "target/installed-disk-validation/116-result.json": "125a2ddfb48ee1671f8c754ee92df2e23ed98849197eaa27e64b0b4fa91af0cb",
+  "crates/kasumi-authority/src/lifecycle_service.rs": "0d3862e444c235c43b86806a0af7247a1568b9a3c7be47c41bcea52b3ea911c7",
+  "crates/kasumi-authority/src/service.rs": "63ef4071a2f63b4eb556e28a3756d37d613f5cee1e4313a96285fba05f5d6a08",
+  "crates/kasumi-authority/src/tests.rs": "412e79f0a141689312e8bf36616290c568d208915f5dbb159b001394315fd744",
+  "crates/kasumi-raft/src/quorum.rs": "94cef5b03a3bfc85ca4fede4f493c5df304b9013e1dfdaa10c976a60429ad04f",
+  "vendor/openraft-0.9.25/openraft/src/raft/runtime_config_handle.rs": "9c5f4756839c53fdcf98ab8fdbb16145f3e4fb23fc45ee505f273e9ad02e5ad9",
+  "vendor/openraft-0.9.25/openraft/src/core/raft_core.rs": "b13dc47370be3cfe79193f744fc2c1910f55b256c5c1aba48172b2e8eaefcbe3"
+}

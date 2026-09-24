@@ -483,6 +483,9 @@ impl Authenticator {
         let expires_at = claims.exp.checked_mul(1000).ok_or_else(unauthorized)?;
         let authorization = match &self.config.source {
             AuthKeySource::Local { .. } => {
+                if claims.token_use.as_deref() != Some("access") {
+                    return Err(unauthorized());
+                }
                 let family = claims.kasumi_family.ok_or_else(unauthorized)?;
                 let guard = self
                     .local_credentials()?

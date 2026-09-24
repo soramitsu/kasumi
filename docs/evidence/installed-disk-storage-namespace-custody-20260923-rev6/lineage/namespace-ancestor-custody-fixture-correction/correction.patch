@@ -1,0 +1,107 @@
+--- a/crates/kasumi-store/src/node_disk/namespace/tests.rs
++++ b/crates/kasumi-store/src/node_disk/namespace/tests.rs
+@@ -174,7 +174,16 @@
+     let file = disk
+         .create_file("fixture", Path::new("a/b/file"), DiskWork::Foreground)
+         .unwrap();
++    let contents = b"original";
++    file.reserve_growth(0, contents.len() as u64, DiskWork::Foreground)
++        .unwrap();
++    file.grow_reserved(contents.len() as u64).unwrap();
++    file.write_all_at(contents, 0).unwrap();
++    file.sync_all_and_parent().unwrap();
++    let before = disk.snapshot();
+     let original = Identity::of(&root.path().join("a/b").metadata().unwrap());
++    let original_file = Identity::of(&root.path().join("a/b/file").metadata().unwrap());
++    let original_ancestor = Identity::of(&root.path().join("a").metadata().unwrap());
+     let outside = private_tempdir().unwrap();
+     std::fs::rename(root.path().join("a"), outside.path().join("swap")).unwrap();
+     std::fs::rename(root.path().join("c"), root.path().join("a")).unwrap();
+@@ -184,9 +193,84 @@
+         Identity::of(&root.path().join("a/b").metadata().unwrap()),
+         original
+     );
+-    assert!(file.sync_all().is_err());
++    assert_ne!(
++        Identity::of(&root.path().join("a").metadata().unwrap()),
++        original_ancestor
++    );
++    assert_eq!(
++        file.sync_all().unwrap_err().kind(),
++        io::ErrorKind::InvalidData
++    );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert!(file.write_all_at(b"replaced", 0).is_err());
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    assert_eq!(disk.snapshot().retained_file_attempts, 0);
++    assert_eq!(disk.snapshot().open_files, 1);
++    assert_eq!(entry(&disk, &root.path().join("a/b")).live_handles, 1);
++    assert_eq!(
++        std::fs::read(root.path().join("a/b/file")).unwrap(),
++        contents
++    );
++    assert_eq!(
++        Identity::of(&root.path().join("a/b/file").metadata().unwrap()),
++        original_file
++    );
++    assert!(!root.path().join("c/b").exists());
++
++    // Descriptor drain alone does not acknowledge the failed verification or
++    // release its original registration, parent handle, and admitted backing.
+     drop(file);
++    let retained = disk.snapshot();
++    assert_eq!(retained.phase, NodeDiskPhase::Failed);
++    assert_eq!(retained.open_files, 1);
++    assert_eq!(retained.retained_file_attempts, 1);
++    assert_eq!(retained.uncertain_file_close, None);
++    assert_eq!(retained.charged_bytes, before.charged_bytes);
++    assert_eq!(retained.pending_bytes, before.pending_bytes);
++    assert_eq!(entry(&disk, &root.path().join("a/b")).live_handles, 1);
++    let original_error = {
++        let state = disk.lock_state();
++        assert_eq!(state.file_custody.internal_owners(), 1);
++        assert!(state.live.contains_key(&original_file));
++        state.file_custody.first_error_address().unwrap()
++    };
++    let cancelled = CensusCancellation::default();
++    cancelled.cancel();
++    assert!(disk.reconcile(&cancelled).is_err());
++    assert_eq!(disk.snapshot().open_files, 1);
++    assert_eq!(disk.snapshot().retained_file_attempts, 1);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
++    assert_eq!(entry(&disk, &root.path().join("a/b")).live_handles, 1);
++    assert_eq!(
++        disk.lock_state().file_custody.first_error_address(),
++        Some(original_error)
++    );
++
++    // Accepted census explicitly replaces stale namespace bindings only after
++    // all caller owners and retained native descriptors have drained.
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     assert_eq!(disk.snapshot().open_files, 0);
+-    assert_eq!(entry(&disk, &root.path().join("a/b")).live_handles, 0);
+-}
++    assert_eq!(disk.snapshot().retained_file_attempts, 0);
++    assert!(disk.lock_state().live.is_empty());
++    assert_eq!(disk.lock_state().file_custody.first_error_address(), None);
++    assert_physical_parents(
++        &disk,
++        &[
++            (root.path(), 2, 0),
++            (&root.path().join("a"), 1, 0),
++            (&root.path().join("a/b"), 1, 0),
++            (&root.path().join("c"), 0, 0),
++        ],
++    );
++    assert_eq!(
++        std::fs::read(root.path().join("a/b/file")).unwrap(),
++        contents
++    );
++    assert_eq!(
++        Identity::of(&root.path().join("a/b/file").metadata().unwrap()),
++        original_file
++    );
++    assert!(!root.path().join("c/b").exists());
++}

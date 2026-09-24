@@ -138,12 +138,17 @@ mod tests {
     #[tokio::test]
     async fn owned_publication_resolves_partial_writes_and_uncertain_rename_without_adopting_files()
     {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
         let directory = crate::test_utils::private_tempdir().unwrap();
         let store = TenantStore::initialize_catalog_fixture(
             crate::NodeStore::create_new_fixture(
                 directory.path().join("node.redb"),
                 crate::test_utils::NODE_STORE_ID,
-                crate::ScratchDisk::fixture(),
+                fixture_memory.clone(),
+                fixture_scratch.clone(),
             )
             .unwrap(),
             "tenant-a".into(),
@@ -156,7 +161,7 @@ mod tests {
         let segment = store.encrypt_audit_segment(builder).unwrap();
         let root = directory.path().join("owned");
         let observer = Arc::new(Recorded::default());
-        let archive = FilesystemAuditArchive::open_fixture(&root)
+        let archive = FilesystemAuditArchive::open_fixture(&root, fixture_memory.clone())
             .unwrap()
             .with_publication_observer(observer.clone());
         observer.fault.store(1, Ordering::Release);
@@ -200,23 +205,96 @@ mod tests {
         std::fs::rename(saved, &final_path).unwrap();
         assert_eq!(archive.disk.snapshot().phase, crate::NodeDiskPhase::Failed);
         assert!(archive.publish(&segment).await.is_err());
+        let disk = archive.disk.clone();
+        let before_close = disk.snapshot();
+        assert_eq!(before_close.open_files, 1);
+        let node_path = directory.path().join("node.redb");
+        let node_identity = private_files::file_identity(&node_path).unwrap();
+        let node_bytes = std::fs::read(&node_path).unwrap();
         store.shutdown().await.unwrap();
-        if let Err(failure) = store.node.shutdown().await {
+        {
+            let failure = store.node.shutdown().await.unwrap_err();
             assert_eq!(
                 failure.completion(),
-                kasumi_types::drain::DrainCompletion::Complete
+                kasumi_types::drain::DrainCompletion::Retained
+            );
+            assert!(!failure.issues().is_empty());
+            let repeated = store.node.shutdown().await.unwrap_err();
+            assert_eq!(
+                repeated.completion(),
+                kasumi_types::drain::DrainCompletion::Retained
+            );
+            assert_eq!(failure.issues().len(), repeated.issues().len());
+            for (original, repeated) in failure.issues().iter().zip(repeated.issues()) {
+                assert!(Arc::ptr_eq(original, repeated));
+            }
+            assert!(store.node.db.begin_read().is_err());
+            // The consuming close API cannot prove physical drain on a storage
+            // failure. Its sticky Retained report preserves the original issues;
+            // the installed FileOwner remains for explicit census recovery.
+            assert_eq!(disk.snapshot().open_files, 1);
+            assert_eq!(
+                disk.snapshot().retained_file_attempts,
+                before_close.retained_file_attempts + 1
             );
         }
-        assert_eq!(archive.disk.snapshot().open_files, 0);
-        archive
-            .disk
-            .reconcile(&crate::CensusCancellation::default())
+        assert_eq!(
+            private_files::file_identity(&node_path).unwrap(),
+            node_identity
+        );
+        assert_eq!(std::fs::read(&node_path).unwrap(), node_bytes);
+        assert_eq!(disk.snapshot().open_directories, 1);
+        assert_eq!(disk.snapshot().charged_bytes, before_close.charged_bytes);
+        assert_eq!(disk.snapshot().pending_bytes, before_close.pending_bytes);
+        let retained_charge = disk.snapshot().charged_bytes;
+        let retained_pending = disk.snapshot().pending_bytes;
+        let retained_attempts = disk.snapshot().retained_file_attempts;
+        assert!(
+            disk.reconcile(&crate::CensusCancellation::default())
+                .is_err()
+        );
+        assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+        assert_eq!(disk.snapshot().charged_bytes, retained_charge);
+        assert_eq!(disk.snapshot().pending_bytes, retained_pending);
+        assert_eq!(disk.snapshot().retained_file_attempts, retained_attempts);
+        // Preserve the original repeated-shutdown assertion before explicitly
+        // dropping the store facade; no store/backend owner may cross census.
+        store.shutdown().await.unwrap();
+        drop(store);
+        assert_eq!(disk.snapshot().open_files, 1);
+        // The retained directory also remains a real operational owner.
+        drop(archive);
+        assert_eq!(disk.snapshot().open_directories, 0);
+        let cancelled = crate::CensusCancellation::default();
+        cancelled.cancel();
+        assert!(disk.reconcile(&cancelled).is_err());
+        assert_eq!(disk.snapshot().open_files, 1);
+        assert_eq!(disk.snapshot().retained_file_attempts, retained_attempts);
+        assert_eq!(disk.snapshot().charged_bytes, retained_charge);
+        assert_eq!(disk.snapshot().pending_bytes, retained_pending);
+        assert_eq!(private_files::file_identity(&final_path).unwrap(), original);
+        assert_eq!(std::fs::read(&final_path).unwrap(), segment.ciphertext);
+        disk.reconcile(&crate::CensusCancellation::default())
             .unwrap();
+        assert_eq!(disk.snapshot().open_files, 0);
+        assert_eq!(disk.snapshot().retained_file_attempts, 0);
+        assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+        assert_eq!(
+            private_files::file_identity(&node_path).unwrap(),
+            node_identity
+        );
+        assert_eq!(std::fs::read(&node_path).unwrap(), node_bytes);
+        let archive = FilesystemAuditArchive::open(&root, disk.clone())
+            .unwrap()
+            .with_publication_observer(observer.clone());
+        assert!(Arc::ptr_eq(&archive.disk, &disk));
+        assert_eq!(private_files::file_identity(&final_path).unwrap(), original);
         archive.publish(&segment).await.unwrap();
         observer.fault.store(4, Ordering::Release);
         assert!(archive.publish(&segment).await.is_err());
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
-        store.shutdown().await.unwrap();
+        assert_eq!(private_files::file_identity(&final_path).unwrap(), original);
+        assert_eq!(std::fs::read(&final_path).unwrap(), segment.ciphertext);
     }
 
     #[test]

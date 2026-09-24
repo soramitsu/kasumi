@@ -1,0 +1,312 @@
+[
+  {
+    "name": "probe-debug-compile",
+    "result": {
+      "cleanup": {
+        "after": [],
+        "before": [],
+        "drained": true,
+        "errors": [],
+        "group": 12437,
+        "process_returncode": 0,
+        "signals": []
+      },
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+        "--edition=2024",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/box-order-probe.rs",
+        "-o",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/probe-debug"
+      ],
+      "duration_seconds": 0.244,
+      "error": null,
+      "executable": {
+        "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+        "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da"
+      },
+      "exit_code": 0,
+      "process_exit_code": 0,
+      "process_group": 12437,
+      "received_signals": [],
+      "status": "passed",
+      "timed_out": false,
+      "timeout_seconds": 120,
+      "working_directory": "/Users/mtakemiya/dev/kasumi"
+    }
+  },
+  {
+    "name": "probe-debug-run",
+    "result": {
+      "cleanup": {
+        "after": [],
+        "before": [],
+        "drained": true,
+        "errors": [],
+        "group": 12447,
+        "process_returncode": 0,
+        "signals": []
+      },
+      "command": [
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/probe-debug"
+      ],
+      "duration_seconds": 0.368,
+      "error": null,
+      "executable": {
+        "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/probe-debug",
+        "sha256": "7780d39d43303c36a661e9ec944d978def106a9052549bd052b5aa587aef4330"
+      },
+      "exit_code": 0,
+      "process_exit_code": 0,
+      "process_group": 12447,
+      "received_signals": [],
+      "status": "passed",
+      "timed_out": false,
+      "timeout_seconds": 120,
+      "working_directory": "/Users/mtakemiya/dev/kasumi"
+    }
+  },
+  {
+    "name": "probe-opt-compile",
+    "result": {
+      "cleanup": {
+        "after": [],
+        "before": [],
+        "drained": true,
+        "errors": [],
+        "group": 12451,
+        "process_returncode": 0,
+        "signals": []
+      },
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+        "--edition=2024",
+        "-O",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/box-order-probe.rs",
+        "-o",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/probe-opt"
+      ],
+      "duration_seconds": 0.243,
+      "error": null,
+      "executable": {
+        "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+        "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da"
+      },
+      "exit_code": 0,
+      "process_exit_code": 0,
+      "process_group": 12451,
+      "received_signals": [],
+      "status": "passed",
+      "timed_out": false,
+      "timeout_seconds": 120,
+      "working_directory": "/Users/mtakemiya/dev/kasumi"
+    }
+  },
+  {
+    "name": "probe-opt-run",
+    "result": {
+      "cleanup": {
+        "after": [],
+        "before": [],
+        "drained": true,
+        "errors": [],
+        "group": 12461,
+        "process_returncode": 0,
+        "signals": []
+      },
+      "command": [
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/probe-opt"
+      ],
+      "duration_seconds": 0.307,
+      "error": null,
+      "executable": {
+        "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/probe-opt",
+        "sha256": "e8c9e4c5fb85cf3f8053424386faf3b0ab39ed45ef5fc8a3dffb5535b17ab46b"
+      },
+      "exit_code": 0,
+      "process_exit_code": 0,
+      "process_group": 12461,
+      "received_signals": [],
+      "status": "passed",
+      "timed_out": false,
+      "timeout_seconds": 120,
+      "working_directory": "/Users/mtakemiya/dev/kasumi"
+    }
+  },
+  {
+    "name": "tests-debug-compile",
+    "result": {
+      "cleanup": {
+        "after": [],
+        "before": [],
+        "drained": true,
+        "errors": [],
+        "group": 12465,
+        "process_returncode": 0,
+        "signals": []
+      },
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+        "--edition=2024",
+        "--test",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/harness.rs",
+        "-o",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/tests-debug"
+      ],
+      "duration_seconds": 0.308,
+      "error": null,
+      "executable": {
+        "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+        "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da"
+      },
+      "exit_code": 0,
+      "process_exit_code": 0,
+      "process_group": 12465,
+      "received_signals": [],
+      "status": "passed",
+      "timed_out": false,
+      "timeout_seconds": 120,
+      "working_directory": "/Users/mtakemiya/dev/kasumi"
+    }
+  },
+  {
+    "name": "tests-debug-run",
+    "result": {
+      "cleanup": {
+        "after": [],
+        "before": [],
+        "drained": true,
+        "errors": [],
+        "group": 12475,
+        "process_returncode": 0,
+        "signals": []
+      },
+      "command": [
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/tests-debug",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "duration_seconds": 0.308,
+      "error": null,
+      "executable": {
+        "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/tests-debug",
+        "sha256": "36a1d87a16643e7cdc1dd8ebe7fd1ba211531957ebda6d9f1e0547e2ec8b18de"
+      },
+      "exit_code": 0,
+      "process_exit_code": 0,
+      "process_group": 12475,
+      "received_signals": [],
+      "status": "passed",
+      "timed_out": false,
+      "timeout_seconds": 120,
+      "working_directory": "/Users/mtakemiya/dev/kasumi"
+    }
+  },
+  {
+    "name": "tests-opt-compile",
+    "result": {
+      "cleanup": {
+        "after": [],
+        "before": [],
+        "drained": true,
+        "errors": [],
+        "group": 12479,
+        "process_returncode": 0,
+        "signals": []
+      },
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+        "--edition=2024",
+        "-O",
+        "--test",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/harness.rs",
+        "-o",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/tests-opt"
+      ],
+      "duration_seconds": 0.42,
+      "error": null,
+      "executable": {
+        "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+        "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da"
+      },
+      "exit_code": 0,
+      "process_exit_code": 0,
+      "process_group": 12479,
+      "received_signals": [],
+      "status": "passed",
+      "timed_out": false,
+      "timeout_seconds": 120,
+      "working_directory": "/Users/mtakemiya/dev/kasumi"
+    }
+  },
+  {
+    "name": "tests-opt-run",
+    "result": {
+      "cleanup": {
+        "after": [],
+        "before": [],
+        "drained": true,
+        "errors": [],
+        "group": 12489,
+        "process_returncode": 0,
+        "signals": []
+      },
+      "command": [
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/tests-opt",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "duration_seconds": 0.309,
+      "error": null,
+      "executable": {
+        "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/tests-opt",
+        "sha256": "450bf1eb4de8931277bf801135e65a55304e7728c24227942b3b5a0df669ba0b"
+      },
+      "exit_code": 0,
+      "process_exit_code": 0,
+      "process_group": 12489,
+      "received_signals": [],
+      "status": "passed",
+      "timed_out": false,
+      "timeout_seconds": 120,
+      "working_directory": "/Users/mtakemiya/dev/kasumi"
+    }
+  },
+  {
+    "name": "clippy-box-local",
+    "result": {
+      "cleanup": {
+        "after": [],
+        "before": [],
+        "drained": true,
+        "errors": [],
+        "group": 12493,
+        "process_returncode": 1,
+        "signals": []
+      },
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/clippy-driver",
+        "--edition=2024",
+        "--test",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/harness.rs",
+        "-D",
+        "clippy::boxed_local",
+        "-o",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/tests-clippy"
+      ],
+      "duration_seconds": 0.204,
+      "error": null,
+      "executable": {
+        "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/clippy-driver",
+        "sha256": "ca34521c9c61e5570ad5f07b303b00fbb60756fedcb62b9f1529f85971256ecf"
+      },
+      "exit_code": 1,
+      "process_exit_code": 1,
+      "process_group": 12493,
+      "received_signals": [],
+      "status": "failed",
+      "timed_out": false,
+      "timeout_seconds": 120,
+      "working_directory": "/Users/mtakemiya/dev/kasumi"
+    }
+  }
+]

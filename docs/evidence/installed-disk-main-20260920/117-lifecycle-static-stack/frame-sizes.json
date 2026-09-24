@@ -1,0 +1,8 @@
+{
+  "complete_recovery::poll": 1349120,
+  "resolve_expired_completion::poll": 312256,
+  "exercise_completed_recovery::poll": 71600,
+  "exercise_route_publication::poll": 390336,
+  "Fixture::leader::poll": 8208,
+  "Fixture::leader diagnostic closure": 368
+}

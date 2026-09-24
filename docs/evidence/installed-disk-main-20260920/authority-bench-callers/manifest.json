@@ -1,0 +1,68 @@
+{
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "status": "target-only prepared; NOT applied or compiled",
+  "patch_sha256": "50418750e65460f8b832770e5792ade1c6eed1ffe0e10b0bad9fa13022b2fc7f",
+  "dependencies": {
+    "store_metadata_revision2": "10ebc1c6ee2a0df7c65b67302757b537ddedcb000008ea5391a82d030fab5259",
+    "engine_fixture_helper": "e3bebad935c1fe5ddbe9a53a46fb8bbe68afe0a5b3cf99fe0439edd80535f844",
+    "installed_core_adapter": "3d70d1a2765b53ebbba062382a15b6db3bb97a82af45b47aa263124de81100cd",
+    "server_example_config": "prepared new-install explicit 2GiB policy (loopback subprocess only)"
+  },
+  "files": [
+    {
+      "path": "crates/kasumi-authority/Cargo.toml",
+      "before_sha256": "8dc4a06f2f4fd1c092a423fec9c211741de1b27399687aa3d3b6580208503146",
+      "proposed_sha256": "d7d72d0bba5b4d04360c5a8f9d042e0b7d812ae052ad54f2fe9f6fc4ffc8ded1"
+    },
+    {
+      "path": "crates/kasumi-authority/src/activation_gate_tests.rs",
+      "before_sha256": "a2199ca78b99815647f962fffcae2162a995c40fcad656ee740ba0ffbc598703",
+      "proposed_sha256": "3f4f88eb705bfa793eef8845b77696975cbfcc9d2d4a219d019cc115ad9c1da3"
+    },
+    {
+      "path": "crates/kasumi-authority/src/bootstrap_open_tests.rs",
+      "before_sha256": "68858b5d85beb1ba8a0fc6af6706e06f5e658414a83bcd57461361688cc65739",
+      "proposed_sha256": "7786a8cc1f1bc066dc25376f01c823ca88409885a26d63b74ebbb53970db5343"
+    },
+    {
+      "path": "crates/kasumi-authority/src/maintenance_tests.rs",
+      "before_sha256": "24fb830b3ba667ce6bba8bcd9f623862c49454855930662bf919aba98803703a",
+      "proposed_sha256": "1336a4136d1601d317d5e87a488de09729e062bdac8b7d6c7d674cae34f18267"
+    },
+    {
+      "path": "crates/kasumi-authority/src/request_drain_tests.rs",
+      "before_sha256": "38bd4dce2dbe2fd65e086c7f4616d3ea17c44495426d2deeddf46a4514d43040",
+      "proposed_sha256": "434a82c00c6abd88ebfba52dc25023a9179188332b272da858e8072ba4e05477"
+    },
+    {
+      "path": "crates/kasumi-authority/src/target_materialization_tests.rs",
+      "before_sha256": "4ab82417181d3b2d7651dafc3a5bf6b643fd20b874841e22be043940979084c6",
+      "proposed_sha256": "f8054f7c3d2a7269c2829a330c2599895f6568c53c97fbbd546c01c1ad01e8ef"
+    },
+    {
+      "path": "crates/kasumi-authority/src/target_serving_tests.rs",
+      "before_sha256": "51297a301600d431dd9e9bf2c150738383ddbb215b0c3d783906a0f92cccc139",
+      "proposed_sha256": "780d531e4a14b9f43ed311ff3d0fc7800fd84c327393b2f607423c794f86a53c"
+    },
+    {
+      "path": "crates/kasumi-authority/src/tests.rs",
+      "before_sha256": "7d260dde6d13837ec182376e8bf69bf754b20ecc7376f6096248ee5aa5c931d3",
+      "proposed_sha256": "412e79f0a141689312e8bf36616290c568d208915f5dbb159b001394315fd744"
+    },
+    {
+      "path": "crates/kasumi-bench/Cargo.toml",
+      "before_sha256": "895d594fa71502a94b583211b0fa9dfd0d9fa83c672570080d34bbbede1fc3cd",
+      "proposed_sha256": "658640478131d2e9f6b54ea9bb300509464ccc7d0e263d71f1f0ff9d754fbfa5"
+    },
+    {
+      "path": "crates/kasumi-bench/src/bin/loopback.rs",
+      "before_sha256": "df8935463a75888e542c30e0b66312cfe624078a4866500b805c33162298a3c2",
+      "proposed_sha256": "b52c1ca9dcafe26df2c481aa76541277354afc46c96976126f0fbf8393ce85ae"
+    },
+    {
+      "path": "crates/kasumi-bench/src/main.rs",
+      "before_sha256": "b7a8f8e058784dc823caa1186a0751b085afe536cb41d6d72042290d0e615aff",
+      "proposed_sha256": "c7d3a763148d4fa465f364919d2bae3b2590c095f894ffa4e362e5334e2f2c1c"
+    }
+  ]
+}

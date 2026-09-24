@@ -1,0 +1,86 @@
+{
+  "status": "APPLIED_UNCOMPILED_UNEXECUTED",
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "applied_at_utc": "2026-09-20T16:29:36.606042+00:00",
+  "packages": [
+    {
+      "package": "redb-page-list-prerequisites",
+      "patch_sha256": "de8383c9c041c8dfd54ea8a7c0563de81dc8f46c86b0d95b65ffc2a9e1a688b8",
+      "manifest_sha256": "e429fcbf0d1dfec0980bbfaafa2b537a3f58ba57e584ff309b485db8228acc95",
+      "files": [
+        {
+          "path": "vendor/redb-4.2.0/src/db.rs",
+          "before_sha256": "8f9c67448d351808bab99f0389bcf9a7a21bcc7c55aa81f810a566329575754f",
+          "proposed_sha256": "3cd6bdbdb33b14583b08410e8dbb3586057b22b10467f13655a17359d671795c"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/error.rs",
+          "before_sha256": "e134fde5d4de21029e056e0af5ca7f965b73de894642b0c811b1d4eb59a5610c",
+          "proposed_sha256": "fb674ef84f4a605be75362451789d891fbb2fc841ddd080ee7cc0f8a9c62578f"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/page_list_tests.rs",
+          "before_sha256": null,
+          "proposed_sha256": "0e0bfd151b7c18d97f3bca559dfe1b8a38ca38a970f799d5df64d39ff47aa284"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/transactions.rs",
+          "before_sha256": "a95719b40ad30604040387370a14d6279d59edfd358bb37ffa9c76558b5a7497",
+          "proposed_sha256": "9cc67ebb75fa10ddc01f0026e14b5878ddef40a6024276c38eab8fc401ac04dc"
+        }
+      ]
+    },
+    {
+      "package": "redb-page-list-key-copy-followup",
+      "patch_sha256": "368cd53ab8bfbad3a685e293278968ee7457de8d73a2d1e5f39b7074906caf52",
+      "manifest_sha256": "c38e85f78c447e6e1dbb507bb263d18f22818ea340030d332d883f6479b2bf7c",
+      "files": [
+        {
+          "path": "vendor/redb-4.2.0/src/transactions.rs",
+          "before_sha256": "9cc67ebb75fa10ddc01f0026e14b5878ddef40a6024276c38eab8fc401ac04dc",
+          "proposed_sha256": "2fb12a568b3b0e39f871defe4055cbc6cf24ed9043315f67ebaa88f958c0c13a"
+        }
+      ]
+    },
+    {
+      "package": "124-bootstrap-vote-diagnostics",
+      "patch_sha256": "87b828371f16a3d003a63ac8a56b3845f6f906f9c9e909531cf28d8b128d06ea",
+      "manifest_sha256": "ac78fd1f0407c9f9da67b30407f377b924269cdd9701796c4dafb07ddaf6bc86",
+      "files": [
+        {
+          "path": "crates/kasumi-engine/tests/lifecycle.rs",
+          "before_sha256": "ecd9058d5d6dcc8026364ce2414897c3b09b380a4171d1ab59331cdd4ed0dbc4",
+          "after_sha256": "b39feadc979cbab5a4646a687fd44552cfe4687220e36ada287b72e94db3004c"
+        },
+        {
+          "path": "crates/kasumi-engine/tests/common/bootstrap_vote_probe.rs",
+          "before_sha256": null,
+          "after_sha256": "bc13c13060a5de8427d79f72a5c073e3dbf7deb341c688c20434a8a6c44b597d"
+        }
+      ]
+    },
+    {
+      "package": "124-recovery-observation-current-leader",
+      "patch_sha256": "2faf23b1d542d5eb79ba4f26acdce410edc4bc09121c9479d1907d463b9e05c2",
+      "manifest_sha256": "b0ee34b84f87f2a14c45344cccc77552c8e29cdc38f9754ca411ac16b2ecce8e",
+      "files": [
+        {
+          "path": "crates/kasumi-engine/tests/common/recovery_control.rs",
+          "before_sha256": "6e6e9477afd35a346b3b686afe5bc40b4c33bf066743ab17b5a4e3d306004aa0",
+          "proposed_sha256": "df389a1f5903728287ed45d01281119b797a3778b50d1d60adc17c62f2548eb3"
+        }
+      ]
+    }
+  ],
+  "prior_runners_drained": [
+    118,
+    119,
+    121,
+    122,
+    123,
+    124,
+    125
+  ]
+}

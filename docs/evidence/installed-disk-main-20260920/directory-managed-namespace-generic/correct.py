@@ -1,0 +1,159 @@
+from pathlib import Path
+p=Path('target/installed-disk-validation/directory-managed-namespace-generic/proposed/crates/kasumi-store/src/node_disk')
+f=p/'namespace.rs';s=f.read_text();pos=s.index('    pub(super) fn set_descriptor(');s=s[:pos]+'''    pub(super) fn observe_ancestor(&mut self, index: usize, identity: Identity) {
+        self.ancestors[index] = identity;
+    }
+    pub(super) fn finish_prepared(&mut self, identity: Identity, file: File) {
+        assert_eq!(self.ancestors.last(), Some(&identity));
+        self.identity = identity;
+        self.set_descriptor(file);
+    }
+''' +s[pos:];needle='''    pub(super) fn register(&mut self, _disk: &NodeDisk, state: &mut State) -> io::Result<()> {
+''';assert needle in s;s=s.replace(needle,needle+'''        self.register_in(&mut state.accounted)
+    }
+    pub(super) fn register_in(&mut self, accounted: &mut super::fixed_map::Banks<AccountedInode>) -> io::Result<()> {
+''');start=s.index('    pub(super) fn register_in(');end=s.index('    pub(super) fn take_descriptor',start);a=s[start:end].replace('let entry = state\n            .accounted','let entry = accounted');s=s[:start]+a+s[end:];f.write_text(s)
+f=p/'directory.rs';s=f.read_text();pos=s.index('        let mut allocation = Arc::<DirectoryOwner>::new_uninit();',s.index('    fn open_directory_names('));s=s[:pos]+'''        if !names.is_empty() {
+            return managed::open_existing(self, state, root, names);
+        }
+''' +s[pos:];a=s.index('        let mut parent = if names.is_empty()',pos);b=s.index('        state.open_directories += 1;',a)
+s=s[:a]+'''        let next = state.accounted.get(&identity).and_then(AccountedInode::directory)
+            .expect("verified root enrollment").live_handles.checked_add(1)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        state.accounted.get_mut(&identity).and_then(AccountedInode::directory_mut)
+            .expect("verified root enrollment").live_handles = next;
+''' +s[b:];s=s.replace('                parent,\n                registered: true,','                parent: None,\n                registered: true,',1)
+a=s.index('        if let Some(parent) = &self.owner().parent {',s.index('    fn verify(&self'));b=s.index('        Ok(())',a)
+s=s[:a]+'''        if let Some(parent) = &self.owner().parent {
+            // The inherited walk above already checked the complete enrolled
+            // ancestry. Checking the retained parent needs no additional FD.
+            let metadata = parent.file().metadata()?;
+            census::directory_nonallocating(&metadata)?;
+            if Identity::of(&metadata) != parent.identity() {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+        }
+''' +s[b:];f.write_text(s)
+f=p/'directory/managed.rs';s=f.read_text();pos=s.index('\nfn verify_enrolled(')
+s=s[:pos]+'''
+/// Generic non-root opens use the same operation slot from their first native
+/// descriptor acquisition. The bounded ancestry array is allocated first and
+/// populated only from verified descriptor/ledger pairs during descent.
+pub(super) fn open_existing(disk: &Arc<NodeDisk>, state: &mut State, root: String,
+    names: Box<[CString]>) -> io::Result<NodeDiskDirectory> {
+    ready(disk, state)?;
+    if names.is_empty() || state.open_directories >= disk.config.max_open_directories {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let root_identity = disk.roots[&root].identity;
+    let binding = names.iter().fold(NamespaceBinding::root(root_identity), |binding, name| binding.child(name));
+    let mut ancestors = Vec::new();
+    ancestors.try_reserve_exact(names.len()).map_err(|_| io::ErrorKind::OutOfMemory)?;
+    ancestors.resize(names.len(), Identity(0, 0));
+    ancestors[0] = root_identity;
+    let allocation = Arc::<DirectoryOwner>::new_uninit();
+    state.open_directories += 1;
+    state.pending_directory = Some(PendingDirectory {
+        observation: NodeDiskDirectoryOperation { kind: NodeDiskDirectoryOperationKind::Open,
+            step: NodeDiskDirectoryOperationStep::Prepared, failure: None, close_failure: None,
+            uncertain_close_descriptor: None },
+        root, names, binding, parent: RetainedParent::prepared(root_identity, ancestors.into_boxed_slice()),
+        child: None, walk_current: None, walk_next: None, identity: None,
+        allocation: Some(allocation), plan: None,
+    });
+    let mut effect = Effect { disk, state };
+    let result: io::Result<NodeDiskDirectory> = (|| {
+        acquire_rooted_parent(disk, &mut effect)?;
+        step(&mut effect, NodeDiskDirectoryOperationStep::OpenChild)?;
+        let operation = effect.pending_directory.as_mut().expect("retained operation");
+        operation.child = Some(census::open_at(operation.parent.file(), operation.name(), libc::O_RDONLY | libc::O_DIRECTORY)?);
+        let metadata = operation.child.as_ref().expect("retained child").metadata()?;
+        let identity = Identity::of(&metadata);
+        let parent = operation.parent.identity();
+        verify_enrolled(&effect.accounted, identity, &metadata)?;
+        let entry = effect.accounted.get_mut(&identity).and_then(AccountedInode::directory_mut).expect("verified directory");
+        if entry.binding != binding || entry.parent != Some(parent) { return Err(io::ErrorKind::InvalidData.into()); }
+        entry.live_handles = entry.live_handles.checked_add(1).ok_or(io::ErrorKind::InvalidData)?;
+        effect.pending_directory.as_mut().expect("retained operation").identity = Some(identity);
+        Ok(publish_child(disk, &mut effect))
+    })();
+    if let Err(error) = &result {
+        let operation = effect.pending_directory.as_ref().expect("retained operation");
+        let absent = error.kind() == io::ErrorKind::NotFound
+            && operation.observation.step == NodeDiskDirectoryOperationStep::OpenChild
+            && !effect.accounted.values().any(|entry| entry.binding() == binding);
+        if absent {
+            let operation = effect.pending_directory.as_mut().expect("retained absence");
+            operation.observation.failure = Some(NodeDiskDirectoryFailure::new(operation.observation.step, error));
+            operation_absent(&mut effect).inspect_err(|close| record_failure(disk, &mut effect, close))?;
+        } else { record_failure(disk, &mut effect, error); }
+    }
+    result
+}
+fn acquire_rooted_parent(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
+    let State { accounted, pending_directory, .. } = state;
+    let operation = pending_directory.as_mut().expect("retained operation");
+    let root = &disk.roots[&operation.root];
+    root.verify_nonallocating()?;
+    verify_enrolled(accounted, root.identity, &root.file.metadata()?)?;
+    let mut binding = NamespaceBinding::root(root.identity);
+    let mut parent_identity = root.identity;
+    for index in 0..operation.names.len() - 1 {
+        let current = operation.walk_current.as_ref().unwrap_or(&root.file);
+        operation.walk_next = Some(census::open_at(current, &operation.names[index], libc::O_RDONLY | libc::O_DIRECTORY)?);
+        let metadata = operation.walk_next.as_ref().expect("retained walk descriptor").metadata()?;
+        let identity = Identity::of(&metadata);
+        verify_enrolled(accounted, identity, &metadata)?;
+        binding = binding.child(&operation.names[index]);
+        let entry = accounted[&identity].directory().expect("verified directory");
+        if entry.binding != binding || entry.parent != Some(parent_identity) {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        operation.parent.observe_ancestor(index + 1, identity);
+        PendingDirectory::close_owned(operation.walk_current.take(), NodeDiskDirectoryOperationStep::Verify, &mut operation.observation)?;
+        operation.walk_current = operation.walk_next.take();
+        parent_identity = identity;
+    }
+    let file = match operation.walk_current.take() {
+        Some(file) => file,
+        None => root.file.try_clone()?,
+    };
+    operation.parent.finish_prepared(parent_identity, file);
+    operation.parent.register_in(accounted)
+}
+''' +s[pos:];f.write_text(s)
+f=p/'directory/managed/tests.rs';s=f.read_text()+'''
+#[test]
+fn generic_nonroot_open_uses_retained_parent_walk_and_exact_identity() {
+    let (directory, config, memory) = fixture();
+    crate::private_files::create_directory(&directory.path().join("a")).unwrap();
+    crate::private_files::create_directory(&directory.path().join("a/b")).unwrap();
+    let disk = open(&config, &memory);
+    let child = disk.open_directory("fixture", Path::new("a/b")).unwrap();
+    assert_eq!(child.owner().identity, Identity::of(&directory.path().join("a/b").metadata().unwrap()));
+    assert_eq!(disk.snapshot().open_directories, 1);
+    assert!(disk.pending_directory_operation().is_none());
+    child.remove_if_empty().unwrap();
+    assert_eq!(disk.snapshot().open_directories, 0);
+    assert_eq!(disk.snapshot().persistent_directories, 2);
+    assert_eq!(disk.open_directory("fixture", Path::new("a/missing")).unwrap_err().kind(), io::ErrorKind::NotFound);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+}
+#[test]
+fn generic_nonroot_open_retains_walk_close_failure_before_publication() {
+    let (directory, config, memory) = fixture();
+    for relative in ["a", "a/b", "a/b/c"] {
+        crate::private_files::create_directory(&directory.path().join(relative)).unwrap();
+    }
+    let disk = open(&config, &memory);
+    FAILURE.with(|failure| failure.set(Some(NodeDiskDirectoryOperationStep::Verify)));
+    assert_eq!(disk.open_directory("fixture", Path::new("a/b/c")).unwrap_err().raw_os_error(), Some(libc::EIO));
+    let operation = disk.pending_directory_operation().unwrap();
+    assert_eq!(operation.kind, NodeDiskDirectoryOperationKind::Open);
+    assert_eq!(operation.step, NodeDiskDirectoryOperationStep::Prepared);
+    assert_eq!(operation.close_failure.unwrap().step, NodeDiskDirectoryOperationStep::Verify);
+    assert_eq!(disk.snapshot().open_directories, 1);
+    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+    assert_eq!(disk.pending_directory_operation().unwrap(), operation);
+}
+''';f.write_text(s)

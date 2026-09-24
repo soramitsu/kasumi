@@ -1,0 +1,11 @@
+{
+  "name": "run",
+  "pid": 14261,
+  "pgid": 14261,
+  "argv": [
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace-generic/native-01/tests",
+    "node_disk::",
+    "--nocapture",
+    "--test-threads=1"
+  ]
+}

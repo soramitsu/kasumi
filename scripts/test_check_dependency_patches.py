@@ -13,9 +13,7 @@ import check_dependency_patches as checker
 
 class DependencyPatchTests(unittest.TestCase):
     def setUp(self):
-        output = Path(__file__).resolve().parents[1] / "target/dependency-validation"
-        output.mkdir(parents=True, exist_ok=True)
-        temporary = tempfile.TemporaryDirectory(prefix="unit-", dir=output)
+        temporary = tempfile.TemporaryDirectory(prefix="unit-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.cargo = '[patch.crates-io]\nlibrary = { path = "vendor/workspace/library" }\n'

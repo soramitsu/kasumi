@@ -1,0 +1,28 @@
+{
+  "scope": "Two remaining authority failures with original Raft metrics diagnosis and current-leader historical read; no outcome/deadline changes",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-authority",
+    "--all-features",
+    "--lib",
+    "--",
+    "--test-threads=1",
+    "--nocapture",
+    "--exact",
+    "service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain",
+    "service::tests::replicated_signer_head_fences_unchanged_local_keys_and_rejects_snapshot_regression"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 30314,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 68.8888771533966,
+  "inventoried_source_unchanged": true
+}

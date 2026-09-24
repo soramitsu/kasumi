@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+     Running tests/lifecycle.rs (target/debug/deps/lifecycle-377b80b89ca111b0)
+
+running 2 tests
+test recovery_control::recovery_uncertain_activation_requires_permanent_stop_before_target_cleanup ... ok
+test recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 109.67s
+

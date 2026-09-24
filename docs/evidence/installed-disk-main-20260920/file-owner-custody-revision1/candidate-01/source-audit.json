@@ -1,0 +1,11 @@
+{
+  "file_calls_untracked_retire": false,
+  "file_calls_untracked_parent_verify": false,
+  "file_calls_removed_raw_parent": false,
+  "patch_sha256": "077f626d4ed2d584b75bbbe987d91c273c602331d3ea353c3bf3df9fa64848b8",
+  "manifest_sha256": "3d36fcd4ff85868503725d16c4d39c0f4b0be1b93d56e452a57a686d476cc543",
+  "runner_sha256": "4e073842ce910b21e0cc1082a6b447916f705d477f46115aac0e92b33d9ac24f",
+  "selection_sha256": "07700f081d1a3ab30e5ee47dee09e759d6b003732729fff099c97a9d6b99a7b1",
+  "expected_names": 131,
+  "dispatched": false
+}

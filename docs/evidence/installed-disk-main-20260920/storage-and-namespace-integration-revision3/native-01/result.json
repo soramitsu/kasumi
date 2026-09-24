@@ -1,0 +1,13 @@
+{
+  "source_unchanged": true,
+  "changed_inputs": [],
+  "source_count": 3360,
+  "completed_stages": 2,
+  "expected_stages": 2,
+  "all_passed": true,
+  "cohort_elapsed_seconds": 298.538233875,
+  "cohort_bound_seconds": 1200,
+  "results_sha256": "3c5d9690ad41b16e8f4aa46385b3b0cd14f3af508f49f24c5f5e6ae3ba0ae6dc",
+  "native_runtime_tests": false,
+  "artifact_scope": "Exact check/Clippy compiler artifacts and tool binaries; no runnable test execution."
+}

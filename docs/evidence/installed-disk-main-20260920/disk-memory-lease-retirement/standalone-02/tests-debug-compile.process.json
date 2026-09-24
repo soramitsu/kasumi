@@ -1,0 +1,33 @@
+{
+  "cleanup": {
+    "after": [],
+    "before": [],
+    "drained": true,
+    "errors": [],
+    "group": 12663,
+    "process_returncode": 0,
+    "signals": []
+  },
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+    "--edition=2024",
+    "--test",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-02/harness.rs",
+    "-o",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-02/tests-debug"
+  ],
+  "duration_seconds": 0.242,
+  "error": null,
+  "executable": {
+    "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+    "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da"
+  },
+  "exit_code": 0,
+  "process_exit_code": 0,
+  "process_group": 12663,
+  "received_signals": [],
+  "status": "passed",
+  "timed_out": false,
+  "timeout_seconds": 120,
+  "working_directory": "/Users/mtakemiya/dev/kasumi"
+}

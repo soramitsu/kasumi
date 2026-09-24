@@ -1,0 +1,48 @@
+{
+  "all_exact_outputs_verified": true,
+  "chain": [
+    {
+      "baseline_from": "target/installed-disk-validation/142-canonical-compile-correction/proposed/vendor/redb-4.2.0/src/transactions.rs",
+      "baseline_sha256": "26aac3a2915250a146f0b8066edfe3a035482d692a706c96e920c6cf4fa4ddd0",
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "proposed_sha256": "e43528ac247dd4985cac4d9084ec4e0b4204f044af1af834bf4a626a64fb4136"
+    },
+    {
+      "baseline_from": "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/db.rs",
+      "baseline_sha256": "76f3c101c143a8314cad64fee3bb6ea6ef5563f5fcc7ebc911f1b7c19bbe8bf7",
+      "path": "vendor/redb-4.2.0/src/db.rs",
+      "proposed_sha256": "de347514818cfa2855f9acdce01dd0581ed3a027a84ca0b17d058b9e1e305066"
+    },
+    {
+      "baseline_from": "target/installed-disk-validation/142-canonical-compile-correction/proposed/vendor/redb-4.2.0/src/page_list_tests.rs",
+      "baseline_sha256": "ab8a173509aaf654412890f7179819ce8b45a7a00334e806535854d9b1af3515",
+      "path": "vendor/redb-4.2.0/src/page_list_tests.rs",
+      "proposed_sha256": "ee6c0ebc6d89596b03ea6efa6be31b1f480440a02a88c98ebb48dc01500c77f0"
+    }
+  ],
+  "commands": [
+    {
+      "argv": [
+        "git",
+        "apply",
+        "--check",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-bounded-allocation-purge/purge.patch"
+      ],
+      "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-bounded-allocation-purge-independent-review/apply-check",
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "argv": [
+        "git",
+        "apply",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-bounded-allocation-purge/purge.patch"
+      ],
+      "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-bounded-allocation-purge-independent-review/apply-check",
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": ""
+    }
+  ]
+}

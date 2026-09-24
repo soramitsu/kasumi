@@ -1,0 +1,572 @@
+10011f45c: 97fedce7    	bl	0x1000d67f8 <<lifecycle::Fixture>::new>
+10011f9b4: 97fc7b21    	bl	0x10003e638 <<<lifecycle::Fixture>::new::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10011fa20: 97fe03aa    	bl	0x1000a08c8 <core::ptr::drop_glue::<<lifecycle::Fixture>::new::{closure#0}>>
+10011fa4c: 97fc6f18    	bl	0x10003b6ac <<lifecycle::Fixture>::new::{closure#0}>
+10011fb00: 97fe0372    	bl	0x1000a08c8 <core::ptr::drop_glue::<<lifecycle::Fixture>::new::{closure#0}>>
+10011fb24: 97fead66    	bl	0x1000cb0bc <lifecycle::recovery_control::request>
+10011fcf0: 97fedc5e    	bl	0x1000d6e68 <<lifecycle::Fixture>::leader>
+10011fed0: 97fc79fe    	bl	0x10003e6c8 <<<lifecycle::Fixture>::leader::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100120018: 97fe0329    	bl	0x1000a0cbc <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+10012003c: 97fc77ef    	bl	0x10003dff8 <<lifecycle::Fixture>::leader::{closure#0}>
+1001200dc: 97fe02f8    	bl	0x1000a0cbc <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+10012011c: 97fedb71    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10012025c: 942c8477    	bl	0x100c41438 <<kasumi_engine::service::Database>::recovery_control>
+10012027c: 97fd7ec3    	bl	0x10007fd88 <<<kasumi_engine::service::Database>::recovery_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012030c: 97fe06e7    	bl	0x1000a1ea8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+100120338: 97fd5d30    	bl	0x1000777f8 <<kasumi_engine::service::Database>::recovery_control::{closure#0}>
+1001203d4: 97fe06b5    	bl	0x1000a1ea8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+10012049c: 97feda91    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+1001205dc: 942c8397    	bl	0x100c41438 <<kasumi_engine::service::Database>::recovery_control>
+1001205fc: 97fd7de3    	bl	0x10007fd88 <<<kasumi_engine::service::Database>::recovery_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012069c: 97fe0603    	bl	0x1000a1ea8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+1001206c8: 97fd5c4c    	bl	0x1000777f8 <<kasumi_engine::service::Database>::recovery_control::{closure#0}>
+100120748: 97fe05d8    	bl	0x1000a1ea8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+1001209c0: 97fed948    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100120b00: 942c824e    	bl	0x100c41438 <<kasumi_engine::service::Database>::recovery_control>
+100120b20: 97fd7c9a    	bl	0x10007fd88 <<<kasumi_engine::service::Database>::recovery_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100120b84: 97fe04c9    	bl	0x1000a1ea8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+100120bb0: 97fd5b12    	bl	0x1000777f8 <<kasumi_engine::service::Database>::recovery_control::{closure#0}>
+100120c30: 97fe049e    	bl	0x1000a1ea8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+100120fa0: 97fed7d0    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10012110c: 942c80cb    	bl	0x100c41438 <<kasumi_engine::service::Database>::recovery_control>
+10012112c: 97fd7b17    	bl	0x10007fd88 <<<kasumi_engine::service::Database>::recovery_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100121190: 97fe0346    	bl	0x1000a1ea8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+1001211bc: 97fd598f    	bl	0x1000777f8 <<kasumi_engine::service::Database>::recovery_control::{closure#0}>
+10012123c: 97fe031b    	bl	0x1000a1ea8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+1001213b8: 97fed6ca    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100121404: 942c8033    	bl	0x100c414d0 <<kasumi_engine::service::Database>::next_recovery_dispatch>
+100121458: 97fd7a64    	bl	0x10007fde8 <<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001214ac: 97fe0312    	bl	0x1000a20f4 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+1001214d8: 97fd5b91    	bl	0x10007831c <<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>
+100121558: 97fe02e7    	bl	0x1000a20f4 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+100121710: 97fed5f4    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+1001217e8: 942c7f61    	bl	0x100c4156c <<kasumi_engine::service::Database>::prepare_recovery_dispatch>
+100121808: 97fd7990    	bl	0x10007fe48 <<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001218a8: 97fe0297    	bl	0x1000a2304 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+1001218d4: 97fd6f08    	bl	0x10007d4f4 <<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>
+100121954: 97fe026c    	bl	0x1000a2304 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+100121f28: 97fed3ee    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100121fdc: 942c7d64    	bl	0x100c4156c <<kasumi_engine::service::Database>::prepare_recovery_dispatch>
+100121ff4: 97fd7795    	bl	0x10007fe48 <<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100122048: 97fe00af    	bl	0x1000a2304 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+100122074: 97fd6d20    	bl	0x10007d4f4 <<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>
+1001220f4: 97fe0084    	bl	0x1000a2304 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+100122258: 97fed322    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100122330: 942c7c8f    	bl	0x100c4156c <<kasumi_engine::service::Database>::prepare_recovery_dispatch>
+100122350: 97fd76be    	bl	0x10007fe48 <<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001223b4: 97fdffd4    	bl	0x1000a2304 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+1001223e0: 97fd6c45    	bl	0x10007d4f4 <<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>
+100122460: 97fdffa9    	bl	0x1000a2304 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+100122630: 97fea078    	bl	0x1000ca810 <lifecycle::recovery_control::prepare_receipt>
+1001227bc: 97fed1c9    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100122958: 942c7b31    	bl	0x100c4161c <<kasumi_engine::service::Database>::resolve_recovery_dispatch>
+100122978: 97fd7540    	bl	0x10007fe78 <<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001229dc: 97fdfeae    	bl	0x1000a2494 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+100122a08: 97fd6c9d    	bl	0x10007dc7c <<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>
+100122aa4: 97fdfe7c    	bl	0x1000a2494 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+100122c7c: 97fe9ed4    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+100122c94: 9400d815    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100122ce8: 97fe0930    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100122d14: 97ffeda6    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+100122dcc: 97fe08f7    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100122f44: 97fecfe7    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100122f90: 942c7950    	bl	0x100c414d0 <<kasumi_engine::service::Database>::next_recovery_dispatch>
+100122fe4: 97fd7381    	bl	0x10007fde8 <<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100123038: 97fdfc2f    	bl	0x1000a20f4 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+100123064: 97fd54ae    	bl	0x10007831c <<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>
+1001230e4: 97fdfc04    	bl	0x1000a20f4 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+1001232d0: 97fecf04    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10012343c: 942c784c    	bl	0x100c4156c <<kasumi_engine::service::Database>::prepare_recovery_dispatch>
+10012345c: 97fd727b    	bl	0x10007fe48 <<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012352c: 97fdfb76    	bl	0x1000a2304 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+100123558: 97fd67e7    	bl	0x10007d4f4 <<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>
+1001235d8: 97fdfb4b    	bl	0x1000a2304 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+1001236e0: 942fd253    	bl	0x100d1802c <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+10012379c: 942c7831    	bl	0x100c41860 <<kasumi_engine::service::Database>::lifecycle_control>
+1001237bc: 97fd94aa    	bl	0x100088a64 <<<kasumi_engine::service::Database>::lifecycle_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012382c: 97fdfd1f    	bl	0x1000a2ca8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::lifecycle_control::{closure#0}>>
+100123858: 97fd7e41    	bl	0x10008315c <<kasumi_engine::service::Database>::lifecycle_control::{closure#0}>
+1001238d8: 97fdfcf4    	bl	0x1000a2ca8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::lifecycle_control::{closure#0}>>
+1001239dc: 97fe9f5b    	bl	0x1000cb748 <lifecycle::recovery_control::snapshot>
+1001239f4: 9400d511    	bl	0x100158e38 <<lifecycle::recovery_control::snapshot::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100123a3c: 97fe2765    	bl	0x1000ad7d0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+100123a60: 9400b12d    	bl	0x10014ff14 <lifecycle::recovery_control::snapshot::{closure#0}>
+100123ac4: 97fe2743    	bl	0x1000ad7d0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+100123ae8: 97fd3613    	bl	0x100071334 <core::mem::drop::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+100123b04: 97fecb4a    	bl	0x1000d682c <<lifecycle::Fixture>::close>
+100123b1c: 97fc6adf    	bl	0x10003e698 <<<lifecycle::Fixture>::close::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100123b70: 97fdf422    	bl	0x1000a0bf8 <core::ptr::drop_glue::<<lifecycle::Fixture>::close::{closure#0}>>
+100123b94: 97fc66e4    	bl	0x10003d724 <<lifecycle::Fixture>::close::{closure#0}>
+100123bf8: 97fdf400    	bl	0x1000a0bf8 <core::ptr::drop_glue::<<lifecycle::Fixture>::close::{closure#0}>>
+100123c1c: 97fecafb    	bl	0x1000d6808 <<lifecycle::Fixture>::open>
+100123c34: 97fc6a8d    	bl	0x10003e668 <<<lifecycle::Fixture>::open::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100123c88: 97fdf331    	bl	0x1000a094c <core::ptr::drop_glue::<<lifecycle::Fixture>::open::{closure#0}>>
+100123cac: 97fc5f12    	bl	0x10003b8f4 <<lifecycle::Fixture>::open::{closure#0}>
+100123d10: 97fdf30f    	bl	0x1000a094c <core::ptr::drop_glue::<<lifecycle::Fixture>::open::{closure#0}>>
+100123d2c: 97fecc4f    	bl	0x1000d6e68 <<lifecycle::Fixture>::leader>
+100123d6c: 97fc6a57    	bl	0x10003e6c8 <<<lifecycle::Fixture>::leader::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100123dc0: 97fdf3bf    	bl	0x1000a0cbc <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+100123de4: 97fc6885    	bl	0x10003dff8 <<lifecycle::Fixture>::leader::{closure#0}>
+100123e80: 97fdf38f    	bl	0x1000a0cbc <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+100123ec0: 97fecc08    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100123f48: 942c7527    	bl	0x100c413e4 <<kasumi_engine::service::Database>::recovery_status>
+100123f60: 97fd6f7e    	bl	0x10007fd58 <<<kasumi_engine::service::Database>::recovery_status::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100123fb4: 97fdf713    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+100123fe0: 97fd4a6d    	bl	0x100076994 <<kasumi_engine::service::Database>::recovery_status::{closure#0}>
+100124060: 97fdf6e8    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+1001242a8: 942fcf61    	bl	0x100d1802c <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+1001242b8: 942c7baa    	bl	0x100c43160 <<kasumi_engine::service::Database>::engine>
+1001245f4: 97fe9876    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+10012460c: 9400d1b7    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100124660: 97fe02d2    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10012468c: 97ffe748    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+100124744: 97fe0299    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10012496c: 97fe020f    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100124998: 97ffe685    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+100124a34: 97fe01dd    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100124b7c: 97fec8d9    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100124bbc: 97fec8c9    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100124c2c: 942c71ee    	bl	0x100c413e4 <<kasumi_engine::service::Database>::recovery_status>
+100124c44: 97fd6c45    	bl	0x10007fd58 <<<kasumi_engine::service::Database>::recovery_status::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100124cf4: 942c71bc    	bl	0x100c413e4 <<kasumi_engine::service::Database>::recovery_status>
+100124d0c: 97fd6c13    	bl	0x10007fd58 <<<kasumi_engine::service::Database>::recovery_status::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100124d44: 97fdf3af    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+100124d70: 97fd4709    	bl	0x100076994 <<kasumi_engine::service::Database>::recovery_status::{closure#0}>
+100124df0: 97fdf384    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+100124fe8: 97fec7be    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10012505c: 942c711d    	bl	0x100c414d0 <<kasumi_engine::service::Database>::next_recovery_dispatch>
+1001250b0: 97fd6b4e    	bl	0x10007fde8 <<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001250e8: 97fdf403    	bl	0x1000a20f4 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+100125114: 97fd4c82    	bl	0x10007831c <<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>
+100125194: 97fdf3d8    	bl	0x1000a20f4 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+100125498: 97fec692    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100125594: 942c6ff6    	bl	0x100c4156c <<kasumi_engine::service::Database>::prepare_recovery_dispatch>
+1001255ac: 97fd6a27    	bl	0x10007fe48 <<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001255e4: 97fdf348    	bl	0x1000a2304 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+100125610: 97fd5fb9    	bl	0x10007d4f4 <<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>
+100125690: 97fdf31d    	bl	0x1000a2304 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+100126118: 97fe91ad    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+100126130: 9400caee    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100126204: 97fdee7f    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+100126230: 97fd41d9    	bl	0x100076994 <<kasumi_engine::service::Database>::recovery_status::{closure#0}>
+1001262b0: 97fdee54    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+1001264ac: 97ff350f    	bl	0x1000f38e8 <<alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::all::<lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#4}>>
+10012653c: 97fe9483    	bl	0x1000cb748 <lifecycle::recovery_control::snapshot>
+100126554: 9400ca39    	bl	0x100158e38 <<lifecycle::recovery_control::snapshot::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012659c: 97fe1c8d    	bl	0x1000ad7d0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+1001265c0: 9400a655    	bl	0x10014ff14 <lifecycle::recovery_control::snapshot::{closure#0}>
+100126624: 97fe1c6b    	bl	0x1000ad7d0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+10012666c: 97fe9236    	bl	0x1000caf44 <lifecycle::recovery_control::commit_next_control>
+100126684: 9400c9b1    	bl	0x100158d48 <<lifecycle::recovery_control::commit_next_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001266d8: 97fe0f7b    	bl	0x1000aa4c4 <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_control::{closure#0}>>
+100126704: 9400620e    	bl	0x10013ef3c <lifecycle::recovery_control::commit_next_control::{closure#0}>
+1001267a4: 97fe0f48    	bl	0x1000aa4c4 <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_control::{closure#0}>>
+100126898: 97fec192    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10012690c: 942c6af1    	bl	0x100c414d0 <<kasumi_engine::service::Database>::next_recovery_dispatch>
+100126960: 97fd6522    	bl	0x10007fde8 <<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001269b4: 97fdedd0    	bl	0x1000a20f4 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+1001269e0: 97fd464f    	bl	0x10007831c <<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>
+100126a60: 97fdeda5    	bl	0x1000a20f4 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+100126e38: 97fec02a    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100126eb4: 942c694c    	bl	0x100c413e4 <<kasumi_engine::service::Database>::recovery_status>
+100126ecc: 97fd63a3    	bl	0x10007fd58 <<<kasumi_engine::service::Database>::recovery_status::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100126fa8: 97fdeb16    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+100126fd4: 97fd3e70    	bl	0x100076994 <<kasumi_engine::service::Database>::recovery_status::{closure#0}>
+100127054: 97fdeaeb    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10012719c: 97febf51    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+1001272b4: 942c68ae    	bl	0x100c4156c <<kasumi_engine::service::Database>::prepare_recovery_dispatch>
+1001272d4: 97fd62dd    	bl	0x10007fe48 <<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100127370: 97fdebe5    	bl	0x1000a2304 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+10012739c: 97fd5856    	bl	0x10007d4f4 <<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>
+100127438: 97fdebb3    	bl	0x1000a2304 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+1001275c4: 97fdf6f9    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+1001275f0: 97ffdb6f    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+10012768c: 97fdf6c7    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100127954: 97fe8b7c    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+10012799c: 97fe8b6a    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+1001279b4: 9400c4a9    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100127a0c: 9400c493    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100127a44: 97fdf531    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100127a70: 97ffd742    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+100127af0: 97fdf506    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100127f20: 97fe8a2b    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+100127f38: 9400c36c    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012811c: 97fdf37b    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100128148: 97ffd58c    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+1001281c8: 97fdf350    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+1001285d8: 97fe887d    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+1001285ec: 9400c1bf    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001286ac: 97fdf2bf    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+1001286d8: 97ffd735    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+100128774: 97fdf28d    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+1001287a0: 97fe8bea    	bl	0x1000cb748 <lifecycle::recovery_control::snapshot>
+1001287b8: 9400c1a0    	bl	0x100158e38 <<lifecycle::recovery_control::snapshot::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100128800: 97fe13f4    	bl	0x1000ad7d0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+100128824: 94009dbc    	bl	0x10014ff14 <lifecycle::recovery_control::snapshot::{closure#0}>
+100128888: 97fe13d2    	bl	0x1000ad7d0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+10012891c: 97fe8998    	bl	0x1000caf7c <lifecycle::recovery_control::commit_next_control_for>
+100128934: 9400c111    	bl	0x100158d78 <<lifecycle::recovery_control::commit_next_control_for::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100128988: 97fe06f1    	bl	0x1000aa54c <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_control_for::{closure#0}>>
+1001289b4: 94005a01    	bl	0x10013f1b8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}>
+100128a54: 97fe06be    	bl	0x1000aa54c <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_control_for::{closure#0}>>
+100128b34: 97fe8704    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+100128b4c: 9400c043    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100128ba0: 97fdf0da    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100128bcc: 97ffd2eb    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+100128c4c: 97fdf0af    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100128e98: 97fdf0c4    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100128ec4: 97ffd53a    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+100128f60: 97fdf092    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100129298: 97fe852b    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+1001292d8: 97feb702    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10012931c: 942c6001    	bl	0x100c41320 <<kasumi_engine::service::Database>::recovery_phase>
+100129334: 97fd5a71    	bl	0x10007fcf8 <<<kasumi_engine::service::Database>::recovery_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012938c: 9400be33    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001293c4: 97fdeed1    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+1001293f0: 97ffd0e2    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+100129470: 97fdeea6    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+1001299d4: 97fe837e    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+1001299ec: 9400bcbf    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100129c00: 97fddebe    	bl	0x1000a16f8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+100129c2c: 97fd29d0    	bl	0x10007436c <<kasumi_engine::service::Database>::recovery_phase::{closure#0}>
+100129cac: 97fdde93    	bl	0x1000a16f8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+100129e70: 97fe8235    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+100129e88: 9400bb74    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100129edc: 97fdec0b    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100129f08: 97ffce1c    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+100129f88: 97fdebe0    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10012a9dc: 97fe7f7c    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+10012a9f4: 9400b8bd    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012ab24: 97fde9a1    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10012ab50: 97ffce17    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+10012abec: 97fde96f    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10012ac34: 97fe8119    	bl	0x1000cb098 <lifecycle::recovery_control::reject_changed_completion_caps>
+10012ac4c: 9400b86f    	bl	0x100158e08 <<lifecycle::recovery_control::reject_changed_completion_caps::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012aca0: 97fe09f0    	bl	0x1000ad460 <core::ptr::drop_glue::<lifecycle::recovery_control::reject_changed_completion_caps::{closure#0}>>
+10012acc4: 94008ec8    	bl	0x10014e7e4 <lifecycle::recovery_control::reject_changed_completion_caps::{closure#0}>
+10012ad28: 97fe09ce    	bl	0x1000ad460 <core::ptr::drop_glue::<lifecycle::recovery_control::reject_changed_completion_caps::{closure#0}>>
+10012ad70: 97fe7e75    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+10012ad88: 9400b7b4    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012addc: 97fde84b    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10012ae08: 97ffca5c    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+10012ae88: 97fde820    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10012af1c: 97fe7e0a    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+10012af74: 9400b739    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012afc8: 97fde7d0    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10012aff4: 97ffc9e1    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+10012b074: 97fde7a5    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10012b330: 97feaeec    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10012b398: 942c57e2    	bl	0x100c41320 <<kasumi_engine::service::Database>::recovery_phase>
+10012b3b0: 97fd5252    	bl	0x10007fcf8 <<<kasumi_engine::service::Database>::recovery_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012b49c: 97fdd897    	bl	0x1000a16f8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+10012b4c8: 97fd23a9    	bl	0x10007436c <<kasumi_engine::service::Database>::recovery_phase::{closure#0}>
+10012b548: 97fdd86c    	bl	0x1000a16f8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+10012c128: 97fe79a9    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+10012c1e4: 97fe7b83    	bl	0x1000caff0 <lifecycle::recovery_control::resolve_expired_completion>
+10012c23c: 9400b2ab    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012c294: 9400b2c5    	bl	0x100158da8 <<lifecycle::recovery_control::resolve_expired_completion::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012c350: 97fdfdea    	bl	0x1000abaf8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>>
+10012c374: 94006c78    	bl	0x100147554 <lifecycle::recovery_control::resolve_expired_completion::{closure#0}>
+10012c3d8: 97fdfdc8    	bl	0x1000abaf8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>>
+10012c404: 97fde369    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10012c430: 97ffc7df    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+10012c4cc: 97fde337    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10012c530: 97feaa6c    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10012c570: 97feaa5c    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10012c5e0: 942c5381    	bl	0x100c413e4 <<kasumi_engine::service::Database>::recovery_status>
+10012c5f8: 97fd4dd8    	bl	0x10007fd58 <<<kasumi_engine::service::Database>::recovery_status::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012c64c: 97fdd56d    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10012c678: 97fd28c7    	bl	0x100076994 <<kasumi_engine::service::Database>::recovery_status::{closure#0}>
+10012c6f8: 97fdd542    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10012c940: 97fe7781    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+10012c958: 9400b0c0    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012c9ac: 97fde157    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10012c9d8: 97ffc368    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+10012ca58: 97fde12c    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10012ce7c: 97fea819    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10012cefc: 942c5109    	bl	0x100c41320 <<kasumi_engine::service::Database>::recovery_phase>
+10012cf14: 97fd4b79    	bl	0x10007fcf8 <<<kasumi_engine::service::Database>::recovery_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012cfc0: 97fdd1ce    	bl	0x1000a16f8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+10012cfec: 97fd1ce0    	bl	0x10007436c <<kasumi_engine::service::Database>::recovery_phase::{closure#0}>
+10012d06c: 97fdd1a3    	bl	0x1000a16f8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+10012d9c4: 97fea547    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10012db2c: 942c4ebc    	bl	0x100c4161c <<kasumi_engine::service::Database>::resolve_recovery_dispatch>
+10012db4c: 97fd48cb    	bl	0x10007fe78 <<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012dcc4: 97fdd1f4    	bl	0x1000a2494 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+10012dcf0: 97fd3fe3    	bl	0x10007dc7c <<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>
+10012dd8c: 97fdd1c2    	bl	0x1000a2494 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+10012dfe4: 97fe71fa    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+10012dffc: 9400ab3b    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012e050: 97fddc56    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10012e07c: 97ffc0cc    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+10012e118: 97fddc24    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10012e26c: 942c4c5e    	bl	0x100c413e4 <<kasumi_engine::service::Database>::recovery_status>
+10012e284: 97fd46b5    	bl	0x10007fd58 <<<kasumi_engine::service::Database>::recovery_status::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012e484: 97fdcddf    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10012e4b0: 97fd2139    	bl	0x100076994 <<kasumi_engine::service::Database>::recovery_status::{closure#0}>
+10012e530: 97fdcdb4    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10012e710: 97fe700d    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+10012e724: 9400a94d    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012e778: 97fdd9e4    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10012e7a4: 97ffbbf5    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+10012e824: 97fdd9b9    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10012ee30: 97fea02c    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10012ee9c: 97ffb3cb    	bl	0x10011bdc8 <lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#0}>
+10012efa0: 942c499f    	bl	0x100c4161c <<kasumi_engine::service::Database>::resolve_recovery_dispatch>
+10012efc0: 97fd43ae    	bl	0x10007fe78 <<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012f090: 97fdcd01    	bl	0x1000a2494 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+10012f0bc: 97fd3af0    	bl	0x10007dc7c <<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>
+10012f158: 97fdcccf    	bl	0x1000a2494 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+10012f2d0: 97ffb2be    	bl	0x10011bdc8 <lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#0}>
+10012f3cc: 97fe6d00    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+10012f3e4: 9400a641    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012f438: 97fdd75c    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10012f464: 97ffbbd2    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+10012f51c: 97fdd723    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10012f780: 97fe6ff2    	bl	0x1000cb748 <lifecycle::recovery_control::snapshot>
+10012f798: 9400a5a8    	bl	0x100158e38 <<lifecycle::recovery_control::snapshot::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012f7e0: 97fdf7fc    	bl	0x1000ad7d0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+10012f804: 940081c4    	bl	0x10014ff14 <lifecycle::recovery_control::snapshot::{closure#0}>
+10012f868: 97fdf7da    	bl	0x1000ad7d0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+10012f8f4: 97fe6d88    	bl	0x1000caf14 <lifecycle::recovery_control::commit_next_intent>
+10012f924: 9400a4fd    	bl	0x100158d18 <<lifecycle::recovery_control::commit_next_intent::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012f978: 97fde95c    	bl	0x1000a9ee8 <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_intent::{closure#0}>>
+10012f9a4: 9400383f    	bl	0x10013daa0 <lifecycle::recovery_control::commit_next_intent::{closure#0}>
+10012fa44: 97fde929    	bl	0x1000a9ee8 <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_intent::{closure#0}>>
+10012fb24: 97fe6b08    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+10012fb3c: 9400a447    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10012fb90: 97fdd4de    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10012fbbc: 97ffb6ef    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+10012fc3c: 97fdd4b3    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10012ff24: 97fe9bef    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10012ffdc: 942c4517    	bl	0x100c41438 <<kasumi_engine::service::Database>::recovery_control>
+10012fffc: 97fd3f63    	bl	0x10007fd88 <<<kasumi_engine::service::Database>::recovery_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100130108: 97fdc768    	bl	0x1000a1ea8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+100130134: 97fd1db1    	bl	0x1000777f8 <<kasumi_engine::service::Database>::recovery_control::{closure#0}>
+1001301b4: 97fdc73d    	bl	0x1000a1ea8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+1001304c8: 97fe689f    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+1001304e0: 9400a1de    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100130534: 97fdd275    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100130560: 97ffb486    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+1001305e0: 97fdd24a    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100131344: 97fe96e7    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100131674: 97ffa9d5    	bl	0x10011bdc8 <lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#0}>
+100131778: 942c3fa9    	bl	0x100c4161c <<kasumi_engine::service::Database>::resolve_recovery_dispatch>
+100131798: 97fd39b8    	bl	0x10007fe78 <<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001318e4: 97fdc2ec    	bl	0x1000a2494 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+100131910: 97fd30db    	bl	0x10007dc7c <<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>
+1001319ac: 97fdc2ba    	bl	0x1000a2494 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+100131a84: 97ffa8d1    	bl	0x10011bdc8 <lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#0}>
+100131b80: 97fe6313    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+100131b98: 94009c54    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100131bec: 97fdcd6f    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100131c18: 97ffb1e5    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+100131cd0: 97fdcd36    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100131f10: 97fe93f4    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100131f90: 942c3ce4    	bl	0x100c41320 <<kasumi_engine::service::Database>::recovery_phase>
+100131fa8: 97fd3754    	bl	0x10007fcf8 <<<kasumi_engine::service::Database>::recovery_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100131ffc: 97fdbdbf    	bl	0x1000a16f8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+100132028: 97fd08d1    	bl	0x10007436c <<kasumi_engine::service::Database>::recovery_phase::{closure#0}>
+1001320a8: 97fdbd94    	bl	0x1000a16f8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+1001323c8: 97fe64e0    	bl	0x1000cb748 <lifecycle::recovery_control::snapshot>
+1001323e0: 94009a96    	bl	0x100158e38 <<lifecycle::recovery_control::snapshot::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100132428: 97fdecea    	bl	0x1000ad7d0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+10013244c: 940076b2    	bl	0x10014ff14 <lifecycle::recovery_control::snapshot::{closure#0}>
+1001324b0: 97fdecc8    	bl	0x1000ad7d0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+10013254c: 97fe6272    	bl	0x1000caf14 <lifecycle::recovery_control::commit_next_intent>
+100132708: 97fe600f    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+100132748: 97fe91e6    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100132800: 942c3b0e    	bl	0x100c41438 <<kasumi_engine::service::Database>::recovery_control>
+100132820: 97fd355a    	bl	0x10007fd88 <<<kasumi_engine::service::Database>::recovery_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001328bc: 94009917    	bl	0x100158d18 <<lifecycle::recovery_control::commit_next_intent::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100132910: 97fddd76    	bl	0x1000a9ee8 <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_intent::{closure#0}>>
+10013293c: 94002c59    	bl	0x10013daa0 <lifecycle::recovery_control::commit_next_intent::{closure#0}>
+1001329dc: 97fddd43    	bl	0x1000a9ee8 <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_intent::{closure#0}>>
+100132be0: 97fdbc08    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+100132c0c: 97fd0f62    	bl	0x100076994 <<kasumi_engine::service::Database>::recovery_status::{closure#0}>
+100132c8c: 97fdbbdd    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+100132e24: 97ff02c0    	bl	0x1000f3924 <<alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::all::<lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#5}>>
+1001330b0: 97fe5da5    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+1001330f8: 97fe5d93    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+100133110: 940096d2    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100133168: 940096bc    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001331a0: 97fdc75a    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+1001331cc: 97ffa96b    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+10013324c: 97fdc72f    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100133888: 97fe5bd1    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+1001338a0: 94009512    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001338d8: 97fdc634    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100133904: 97ffaaaa    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+1001339a0: 97fdc602    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+1001339f0: 97fe8d3c    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100133a24: 942c3670    	bl	0x100c413e4 <<kasumi_engine::service::Database>::recovery_status>
+100133a3c: 97fd30c7    	bl	0x10007fd58 <<<kasumi_engine::service::Database>::recovery_status::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100133bc8: 97fdc4d0    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100133bf4: 97ffa6e1    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+100133c74: 97fdc4a5    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100133d08: 97fe5a8f    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+100133d64: 940093bd    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100133db8: 97fdc454    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100133de4: 97ffa665    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+100133e64: 97fdc429    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100134138: 97fe8b6a    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100134194: 97fe8b35    	bl	0x1000d6e68 <<lifecycle::Fixture>::leader>
+1001341d8: 97fc293c    	bl	0x10003e6c8 <<<lifecycle::Fixture>::leader::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001342c8: 97fdb27d    	bl	0x1000a0cbc <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+1001342ec: 97fc2743    	bl	0x10003dff8 <<lifecycle::Fixture>::leader::{closure#0}>
+100134374: 97fdb252    	bl	0x1000a0cbc <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+100134400: 942c33c8    	bl	0x100c41320 <<kasumi_engine::service::Database>::recovery_phase>
+100134414: 940aab40    	bl	0x1003df114 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+100134454: 97fd2e29    	bl	0x10007fcf8 <<<kasumi_engine::service::Database>::recovery_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001344a8: 97fdb494    	bl	0x1000a16f8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+1001344d4: 97fcffa6    	bl	0x10007436c <<kasumi_engine::service::Database>::recovery_phase::{closure#0}>
+100134554: 97fdb469    	bl	0x1000a16f8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+100134cdc: 97ff9cac    	bl	0x10011bf8c <lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#2}>
+100135230: 97fe872c    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+1001352a8: 942c30dd    	bl	0x100c4161c <<kasumi_engine::service::Database>::resolve_recovery_dispatch>
+1001352c0: 97fd2aee    	bl	0x10007fe78 <<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100135410: 97fdb421    	bl	0x1000a2494 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+10013543c: 97fd2210    	bl	0x10007dc7c <<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>
+1001354d8: 97fdb3ef    	bl	0x1000a2494 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+10013562c: 97ff9a58    	bl	0x10011bf8c <lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#2}>
+100135664: 97fe545a    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+10013567c: 94008d9b    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001356d0: 97fdbeb6    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+1001356fc: 97ffa32c    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+100135798: 97fdbe84    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100135858: 97fdbe54    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100135884: 97ffa2ca    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+100135920: 97fdbe22    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100135b94: 97fe52ec    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+100135be8: 97fe84be    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100135c58: 942c2de3    	bl	0x100c413e4 <<kasumi_engine::service::Database>::recovery_status>
+100135c70: 97fd283a    	bl	0x10007fd58 <<<kasumi_engine::service::Database>::recovery_status::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100135cc8: 94008be4    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100135d00: 97fdbc82    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100135d2c: 97ff9e93    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+100135db0: 97fdbc56    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100136164: 97ff978a    	bl	0x10011bf8c <lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#2}>
+1001361ac: 97fe5188    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+1001361c4: 94008ac9    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100136328: 97fdae36    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+100136354: 97fd0190    	bl	0x100076994 <<kasumi_engine::service::Database>::recovery_status::{closure#0}>
+1001363d4: 97fdae0b    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+100136678: 97fef4ba    	bl	0x1000f3960 <<alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::all::<lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#6}>>
+100136708: 97fe5410    	bl	0x1000cb748 <lifecycle::recovery_control::snapshot>
+100136720: 940089c6    	bl	0x100158e38 <<lifecycle::recovery_control::snapshot::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100136764: 97fddc1b    	bl	0x1000ad7d0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+100136788: 940065e3    	bl	0x10014ff14 <lifecycle::recovery_control::snapshot::{closure#0}>
+1001367ec: 97fddbf9    	bl	0x1000ad7d0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+100136934: 940aa1f8    	bl	0x1003df114 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+10013760c: 97fdaa27    	bl	0x1000a1ea8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+100137638: 97fd0070    	bl	0x1000777f8 <<kasumi_engine::service::Database>::recovery_control::{closure#0}>
+1001376b8: 97fda9fc    	bl	0x1000a1ea8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+1001378a8: 940084ec    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013790c: 97fdb57f    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100137938: 97ff9790    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+1001379b8: 97fdb554    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100138300: 97fe4933    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+100138318: 94008274    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001383bc: 97fdb37b    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+1001383e8: 97ff97f1    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+100138484: 97fdb349    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+1001384dc: 97fe489a    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+1001384f4: 940081d9    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100138548: 97fdb270    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100138574: 97ff9481    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+1001385f4: 97fdb245    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+1001386fc: 97fe79f9    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+1001387b4: 942c22db    	bl	0x100c41320 <<kasumi_engine::service::Database>::recovery_phase>
+1001387cc: 97fd1d4b    	bl	0x10007fcf8 <<<kasumi_engine::service::Database>::recovery_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013887c: 97fda39f    	bl	0x1000a16f8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+1001388a8: 97fceeb1    	bl	0x10007436c <<kasumi_engine::service::Database>::recovery_phase::{closure#0}>
+100138928: 97fda374    	bl	0x1000a16f8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+100138a60: 97fe7920    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100138f48: 942f7c39    	bl	0x100d1802c <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+100138fe8: 942c221e    	bl	0x100c41860 <<kasumi_engine::service::Database>::lifecycle_control>
+100139000: 97fd3e99    	bl	0x100088a64 <<<kasumi_engine::service::Database>::lifecycle_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100139054: 97fda715    	bl	0x1000a2ca8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::lifecycle_control::{closure#0}>>
+100139080: 97fd2837    	bl	0x10008315c <<kasumi_engine::service::Database>::lifecycle_control::{closure#0}>
+100139100: 97fda6ea    	bl	0x1000a2ca8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::lifecycle_control::{closure#0}>>
+1001391fc: 942f7b8c    	bl	0x100d1802c <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+10013920c: 942c27d5    	bl	0x100c43160 <<kasumi_engine::service::Database>::engine>
+100139530: 97fe44a7    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+100139548: 94007de8    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013959c: 97fdaf03    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+1001395c8: 97ff9379    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+100139664: 97fdaed1    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100139770: 97fdae8e    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10013979c: 97ff9304    	bl	0x10011e3ac <lifecycle::recovery_control::resolve_phase::{closure#0}>
+100139838: 97fdae5c    	bl	0x1000a51a8 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100139a64: 97fe4338    	bl	0x1000ca744 <lifecycle::recovery_control::prepare_next>
+100139aa4: 97fe750f    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+100139ad8: 942c1e43    	bl	0x100c413e4 <<kasumi_engine::service::Database>::recovery_status>
+100139af0: 97fd189a    	bl	0x10007fd58 <<<kasumi_engine::service::Database>::recovery_status::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100139b48: 94007c44    	bl	0x100158c58 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100139b80: 97fdace2    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100139bac: 97ff8ef3    	bl	0x10011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>
+100139c2c: 97fdacb7    	bl	0x1000a4f08 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10013a05c: 97ff8823    	bl	0x10011c0e8 <lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#3}>
+10013a11c: 97fe7371    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10013a210: 97ff87b6    	bl	0x10011c0e8 <lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#3}>
+10013a270: 942c1ceb    	bl	0x100c4161c <<kasumi_engine::service::Database>::resolve_recovery_dispatch>
+10013a290: 97fd16fa    	bl	0x10007fe78 <<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013a2c8: 97fda073    	bl	0x1000a2494 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+10013a2f4: 97fd0e62    	bl	0x10007dc7c <<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>
+10013a390: 97fda041    	bl	0x1000a2494 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+10013a9c0: 97ff85ca    	bl	0x10011c0e8 <lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#3}>
+10013affc: 97fe6fb9    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10013b07c: 942c1968    	bl	0x100c4161c <<kasumi_engine::service::Database>::resolve_recovery_dispatch>
+10013b094: 97fd1379    	bl	0x10007fe78 <<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013b0cc: 97fd9cf2    	bl	0x1000a2494 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+10013b0f8: 97fd0ae1    	bl	0x10007dc7c <<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>
+10013b194: 97fd9cc0    	bl	0x1000a2494 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+10013b2a8: 97fe3d49    	bl	0x1000ca7cc <lifecycle::recovery_control::resolve_phase>
+10013b2c0: 9400768a    	bl	0x100158ce8 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013b5dc: 97fd9989    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10013b608: 97fcece3    	bl	0x100076994 <<kasumi_engine::service::Database>::recovery_status::{closure#0}>
+10013b688: 97fd995e    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10013b840: 97fe3fc2    	bl	0x1000cb748 <lifecycle::recovery_control::snapshot>
+10013b858: 94007578    	bl	0x100158e38 <<lifecycle::recovery_control::snapshot::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013b8a0: 97fdc7cc    	bl	0x1000ad7d0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+10013b8c4: 94005194    	bl	0x10014ff14 <lifecycle::recovery_control::snapshot::{closure#0}>
+10013b928: 97fdc7aa    	bl	0x1000ad7d0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+10013b94c: 97fcd67a    	bl	0x100071334 <core::mem::drop::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+10013b968: 97fe6bb1    	bl	0x1000d682c <<lifecycle::Fixture>::close>
+10013b980: 97fc0b46    	bl	0x10003e698 <<<lifecycle::Fixture>::close::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013b9d4: 97fd9489    	bl	0x1000a0bf8 <core::ptr::drop_glue::<<lifecycle::Fixture>::close::{closure#0}>>
+10013b9f8: 97fc074b    	bl	0x10003d724 <<lifecycle::Fixture>::close::{closure#0}>
+10013ba5c: 97fd9467    	bl	0x1000a0bf8 <core::ptr::drop_glue::<<lifecycle::Fixture>::close::{closure#0}>>
+10013ba80: 97fe6b62    	bl	0x1000d6808 <<lifecycle::Fixture>::open>
+10013ba98: 97fc0af4    	bl	0x10003e668 <<<lifecycle::Fixture>::open::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013baec: 97fd9398    	bl	0x1000a094c <core::ptr::drop_glue::<<lifecycle::Fixture>::open::{closure#0}>>
+10013bb10: 97fbff79    	bl	0x10003b8f4 <<lifecycle::Fixture>::open::{closure#0}>
+10013bb74: 97fd9376    	bl	0x1000a094c <core::ptr::drop_glue::<<lifecycle::Fixture>::open::{closure#0}>>
+10013bb90: 97fe6cb6    	bl	0x1000d6e68 <<lifecycle::Fixture>::leader>
+10013bbd0: 97fc0abe    	bl	0x10003e6c8 <<<lifecycle::Fixture>::leader::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013bc24: 97fd9426    	bl	0x1000a0cbc <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+10013bc48: 97fc08ec    	bl	0x10003dff8 <<lifecycle::Fixture>::leader::{closure#0}>
+10013bce8: 97fd93f5    	bl	0x1000a0cbc <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+10013bef8: 97fe6bfa    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10013c064: 942c14f5    	bl	0x100c41438 <<kasumi_engine::service::Database>::recovery_control>
+10013c084: 97fd0f41    	bl	0x10007fd88 <<<kasumi_engine::service::Database>::recovery_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013c0e8: 97fd9770    	bl	0x1000a1ea8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+10013c114: 97fcedb9    	bl	0x1000777f8 <<kasumi_engine::service::Database>::recovery_control::{closure#0}>
+10013c194: 97fd9745    	bl	0x1000a1ea8 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+10013c2f4: 97fe6afb    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10013c328: 942c142f    	bl	0x100c413e4 <<kasumi_engine::service::Database>::recovery_status>
+10013c340: 97fd0e86    	bl	0x10007fd58 <<<kasumi_engine::service::Database>::recovery_status::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013c394: 97fd961b    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10013c3c0: 97fce975    	bl	0x100076994 <<kasumi_engine::service::Database>::recovery_status::{closure#0}>
+10013c440: 97fd95f0    	bl	0x1000a1c00 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10013c604: 97fcd34c    	bl	0x100071334 <core::mem::drop::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+10013c620: 97fe6883    	bl	0x1000d682c <<lifecycle::Fixture>::close>
+10013c638: 97fc0818    	bl	0x10003e698 <<<lifecycle::Fixture>::close::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013c68c: 97fd915b    	bl	0x1000a0bf8 <core::ptr::drop_glue::<<lifecycle::Fixture>::close::{closure#0}>>
+10013c6b0: 97fc041d    	bl	0x10003d724 <<lifecycle::Fixture>::close::{closure#0}>
+10013c714: 97fd9139    	bl	0x1000a0bf8 <core::ptr::drop_glue::<<lifecycle::Fixture>::close::{closure#0}>>
+10013cf90: 97fdcd7e    	bl	0x1000b0588 <core::ptr::drop_glue::<lifecycle::Fixture>>
+10013d168: 940a87eb    	bl	0x1003df114 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+10013d62c: 940a86ba    	bl	0x1003df114 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+10013d910: 940a8601    	bl	0x1003df114 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+10013da98: 97fdcabc    	bl	0x1000b0588 <core::ptr::drop_glue::<lifecycle::Fixture>>

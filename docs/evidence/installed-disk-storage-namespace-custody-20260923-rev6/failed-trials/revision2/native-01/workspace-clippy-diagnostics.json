@@ -1,0 +1,772 @@
+[
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/vendor/rmcp-3.2.0#rmcp@3.2.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/vendor/rmcp-3.2.0/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "rmcp",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/vendor/rmcp-3.2.0/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "warning: method `matches_response_id` is never used\n   --> vendor/rmcp-3.2.0/src/model.rs:251:19\n    |\n236 | impl NumberOrString {\n    | ------------------- method in this implementation\n...\n251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {\n    |                   ^^^^^^^^^^^^^^^^^^^\n    |\n    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default",
+          "rendered": null,
+          "spans": []
+        }
+      ],
+      "level": "warning",
+      "message": "method `matches_response_id` is never used",
+      "spans": [
+        {
+          "byte_end": 7413,
+          "byte_start": 7394,
+          "column_end": 20,
+          "column_start": 1,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/model.rs",
+          "is_primary": false,
+          "label": "method in this implementation",
+          "line_end": 236,
+          "line_start": 236,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 20,
+              "highlight_start": 1,
+              "text": "impl NumberOrString {"
+            }
+          ]
+        },
+        {
+          "byte_end": 7878,
+          "byte_start": 7859,
+          "column_end": 38,
+          "column_start": 19,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/model.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 251,
+          "line_start": 251,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 38,
+              "highlight_start": 19,
+              "text": "    pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "dead_code",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/vendor/rmcp-3.2.0#rmcp@3.2.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/vendor/rmcp-3.2.0/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "rmcp",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/vendor/rmcp-3.2.0/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "warning: method `set_client_request_metadata` is never used\n    --> vendor/rmcp-3.2.0/src/service.rs:1032:19\n     |\n 806 | impl<R: ServiceRole> Peer<R> {\n     | ---------------------------- method in this implementation\n...\n1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {\n     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n",
+      "$message_type": "diagnostic",
+      "children": [],
+      "level": "warning",
+      "message": "method `set_client_request_metadata` is never used",
+      "spans": [
+        {
+          "byte_end": 28935,
+          "byte_start": 28907,
+          "column_end": 29,
+          "column_start": 1,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/service.rs",
+          "is_primary": false,
+          "label": "method in this implementation",
+          "line_end": 806,
+          "line_start": 806,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 29,
+              "highlight_start": 1,
+              "text": "impl<R: ServiceRole> Peer<R> {"
+            }
+          ]
+        },
+        {
+          "byte_end": 37085,
+          "byte_start": 37058,
+          "column_end": 46,
+          "column_start": 19,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/service.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 1032,
+          "line_start": 1032,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 46,
+              "highlight_start": 19,
+              "text": "    pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "dead_code",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/vendor/rmcp-3.2.0#rmcp@3.2.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/vendor/rmcp-3.2.0/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "rmcp",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/vendor/rmcp-3.2.0/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "warning: method `is_authorization_required` is never used\n   --> vendor/rmcp-3.2.0/src/transport.rs:275:19\n    |\n249 | impl DynamicTransportError {\n    | -------------------------- method in this implementation\n...\n275 |     pub(crate) fn is_authorization_required(&self) -> bool {\n    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^\n\n",
+      "$message_type": "diagnostic",
+      "children": [],
+      "level": "warning",
+      "message": "method `is_authorization_required` is never used",
+      "spans": [
+        {
+          "byte_end": 8958,
+          "byte_start": 8932,
+          "column_end": 27,
+          "column_start": 1,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/transport.rs",
+          "is_primary": false,
+          "label": "method in this implementation",
+          "line_end": 249,
+          "line_start": 249,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 27,
+              "highlight_start": 1,
+              "text": "impl DynamicTransportError {"
+            }
+          ]
+        },
+        {
+          "byte_end": 9854,
+          "byte_start": 9829,
+          "column_end": 44,
+          "column_start": 19,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/transport.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 275,
+          "line_start": 275,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 44,
+              "highlight_start": 19,
+              "text": "    pub(crate) fn is_authorization_required(&self) -> bool {"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "dead_code",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: function `parent` is never used\n   --> crates/kasumi-store/src/node_disk/census.rs:197:15\n    |\n197 | pub(super) fn parent(\n    |               ^^^^^^\n    |\n    = note: `-D dead-code` implied by `-D warnings`\n    = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`-D dead-code` implied by `-D warnings`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`",
+          "rendered": null,
+          "spans": []
+        }
+      ],
+      "level": "error",
+      "message": "function `parent` is never used",
+      "spans": [
+        {
+          "byte_end": 6820,
+          "byte_start": 6814,
+          "column_end": 21,
+          "column_start": 15,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/census.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 197,
+          "line_start": 197,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 21,
+              "highlight_start": 15,
+              "text": "pub(super) fn parent("
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "dead_code",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: method `verify` is never used\n   --> crates/kasumi-store/src/node_disk/namespace.rs:133:19\n    |\n 22 | impl RetainedParent {\n    | ------------------- method in this implementation\n...\n133 |     pub(super) fn verify(&self, root: &census::Root, names: &[CString]) -> io::Result<()> {\n    |                   ^^^^^^\n\n",
+      "$message_type": "diagnostic",
+      "children": [],
+      "level": "error",
+      "message": "method `verify` is never used",
+      "spans": [
+        {
+          "byte_end": 955,
+          "byte_start": 936,
+          "column_end": 20,
+          "column_start": 1,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/namespace.rs",
+          "is_primary": false,
+          "label": "method in this implementation",
+          "line_end": 22,
+          "line_start": 22,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 20,
+              "highlight_start": 1,
+              "text": "impl RetainedParent {"
+            }
+          ]
+        },
+        {
+          "byte_end": 5110,
+          "byte_start": 5104,
+          "column_end": 25,
+          "column_start": 19,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/namespace.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 133,
+          "line_start": 133,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 25,
+              "highlight_start": 19,
+              "text": "    pub(super) fn verify(&self, root: &census::Root, names: &[CString]) -> io::Result<()> {"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "dead_code",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this expression creates a reference which is immediately dereferenced by the compiler\n    --> crates/kasumi-store/src/node_disk/file.rs:1143:26\n     |\n1143 |             owner.verify(&actual)?;\n     |                          ^^^^^^^ help: change this to: `actual`\n     |\n     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow\n     = note: `-D clippy::needless-borrow` implied by `-D warnings`\n     = help: to override `-D warnings` add `#[allow(clippy::needless_borrow)]`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`-D clippy::needless-borrow` implied by `-D warnings`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "to override `-D warnings` add `#[allow(clippy::needless_borrow)]`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "change this to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 39808,
+              "byte_start": 39801,
+              "column_end": 33,
+              "column_start": 26,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 1143,
+              "line_start": 1143,
+              "suggested_replacement": "actual",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 33,
+                  "highlight_start": 26,
+                  "text": "            owner.verify(&actual)?;"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+      "spans": [
+        {
+          "byte_end": 39808,
+          "byte_start": 39801,
+          "column_end": 33,
+          "column_start": 26,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 1143,
+          "line_start": 1143,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 33,
+              "highlight_start": 26,
+              "text": "            owner.verify(&actual)?;"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::needless_borrow",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this expression creates a reference which is immediately dereferenced by the compiler\n    --> crates/kasumi-store/src/node_disk/file.rs:1156:30\n     |\n1156 |                 owner.verify(&actual)?;\n     |                              ^^^^^^^ help: change this to: `actual`\n     |\n     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "change this to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 40363,
+              "byte_start": 40356,
+              "column_end": 37,
+              "column_start": 30,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 1156,
+              "line_start": 1156,
+              "suggested_replacement": "actual",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 37,
+                  "highlight_start": 30,
+                  "text": "                owner.verify(&actual)?;"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+      "spans": [
+        {
+          "byte_end": 40363,
+          "byte_start": 40356,
+          "column_end": 37,
+          "column_start": 30,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 1156,
+          "line_start": 1156,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 37,
+              "highlight_start": 30,
+              "text": "                owner.verify(&actual)?;"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::needless_borrow",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this `if` statement can be collapsed\n    --> crates/kasumi-store/src/node_disk/file.rs:2178:9\n     |\n2178 | /         if !settled {\n2179 | |             if let Some(enrolled) = state\n2180 | |                 .accounted\n2181 | |                 .get_mut(&owner.identity)\n...    |\n2186 | |         }\n     | |_________^\n     |\n     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if\n     = note: `-D clippy::collapsible-if` implied by `-D warnings`\n     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`\nhelp: collapse nested if block\n     |\n2178 ~         if !settled\n2179 ~             && let Some(enrolled) = state\n2180 |                 .accounted\n ...\n2184 |                 enrolled.settled = false;\n2185 ~             }\n     |\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`-D clippy::collapsible-if` implied by `-D warnings`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "to override `-D warnings` add `#[allow(clippy::collapsible_if)]`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "collapse nested if block",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 80599,
+              "byte_start": 80597,
+              "column_end": 22,
+              "column_start": 20,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 2178,
+              "line_start": 2178,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 22,
+                  "highlight_start": 20,
+                  "text": "        if !settled {"
+                }
+              ]
+            },
+            {
+              "byte_end": 80842,
+              "byte_start": 80832,
+              "column_end": 10,
+              "column_start": 14,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 2186,
+              "line_start": 2185,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 14,
+                  "highlight_start": 14,
+                  "text": "            }"
+                },
+                {
+                  "highlight_end": 10,
+                  "highlight_start": 1,
+                  "text": "        }"
+                }
+              ]
+            },
+            {
+              "byte_end": 80614,
+              "byte_start": 80612,
+              "column_end": 15,
+              "column_start": 13,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 2179,
+              "line_start": 2179,
+              "suggested_replacement": "&&",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 15,
+                  "highlight_start": 13,
+                  "text": "            if let Some(enrolled) = state"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this `if` statement can be collapsed",
+      "spans": [
+        {
+          "byte_end": 80842,
+          "byte_start": 80586,
+          "column_end": 10,
+          "column_start": 9,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 2186,
+          "line_start": 2178,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 22,
+              "highlight_start": 9,
+              "text": "        if !settled {"
+            },
+            {
+              "highlight_end": 42,
+              "highlight_start": 1,
+              "text": "            if let Some(enrolled) = state"
+            },
+            {
+              "highlight_end": 27,
+              "highlight_start": 1,
+              "text": "                .accounted"
+            },
+            {
+              "highlight_end": 42,
+              "highlight_start": 1,
+              "text": "                .get_mut(&owner.identity)"
+            },
+            {
+              "highlight_end": 52,
+              "highlight_start": 1,
+              "text": "                .and_then(AccountedInode::file_mut)"
+            },
+            {
+              "highlight_end": 14,
+              "highlight_start": 1,
+              "text": "            {"
+            },
+            {
+              "highlight_end": 42,
+              "highlight_start": 1,
+              "text": "                enrolled.settled = false;"
+            },
+            {
+              "highlight_end": 14,
+              "highlight_start": 1,
+              "text": "            }"
+            },
+            {
+              "highlight_end": 10,
+              "highlight_start": 1,
+              "text": "        }"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::collapsible_if",
+        "explanation": null
+      }
+    }
+  }
+]

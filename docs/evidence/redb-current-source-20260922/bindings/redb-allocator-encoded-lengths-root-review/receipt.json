@@ -1,0 +1,10 @@
+{
+  "status": "APPROVED_SCOPED_INTEGRATION_PENDING_NATIVE",
+  "subject_patch_sha256": "055fc2a64f3477a0dc6d6e5a1a086afbf2f5df521ebd863936b60c82bf46a7d3",
+  "subject_manifest_sha256": "4c29b812846a4e39b09f58eba58b27d7b52c1c3b31c7d67cf37f98a2f58a37e7",
+  "review_sha256": "a8ee981f7c9f4c3ae2a439fa3b7220abb02733622117577e14bd8c9c1b1af64e",
+  "all_four_actual_bases_equal": true,
+  "serializer_decoder_bodies_exactly_unchanged": true,
+  "apply_check_exit": 0,
+  "native_execution": false
+}

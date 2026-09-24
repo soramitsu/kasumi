@@ -1,0 +1,32 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi/vendor/redb-4.2.0)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.77s
+     Running tests/canonical_format.rs (target/debug/deps/canonical_format-930184b32082f0c7)
+
+running 1 test
+test upstream_two_phase_format_three_is_rejected_before_table_decoding ... 
+thread 'upstream_two_phase_format_three_is_rejected_before_table_decoding' (5676809) panicked at tests/canonical_format.rs:168:5:
+unexpected upstream rejection result: Err(Storage(Corrupted("Noncanonical region header page count: 130"))); header=[114, 101, 100, 98, 26, 10, 169, 13, 10, 5, 0, 0, 0, 16, 0, 0, 130, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 129, 2, 0, 0]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: canonical_format::upstream_two_phase_format_three_is_rejected_before_table_decoding
+             at ./tests/canonical_format.rs:168:5
+   3: canonical_format::upstream_two_phase_format_three_is_rejected_before_table_decoding::{closure#0}
+             at ./tests/canonical_format.rs:145:71
+   4: <canonical_format::upstream_two_phase_format_three_is_rejected_before_table_decoding::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+   5: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+
+failures:
+
+failures:
+    upstream_two_phase_format_three_is_rejected_before_table_decoding
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.15s
+
+error: test failed, to rerun pass `--test canonical_format`

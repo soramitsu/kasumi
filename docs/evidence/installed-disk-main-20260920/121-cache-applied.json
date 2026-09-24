@@ -1,0 +1,88 @@
+{
+  "status": "APPLIED_UNCOMPILED_UNEXECUTED",
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "applied_at_utc": "2026-09-20T15:57:56.892402+00:00",
+  "packages": [
+    {
+      "package": "redb-fixed-cache-capacity-revision2",
+      "patch_sha256": "3f2548f12aad8c27f72a8645162296ec85079d9cdc9a2adf6363f5c9a1e4bcdc",
+      "manifest_sha256": "562bc4b6aadafd07dac3168b5793d460557afd264ffd74c03fb2e5f12e593f73",
+      "files": [
+        {
+          "path": "vendor/redb-4.2.0/src/admission/tests.rs",
+          "before_sha256": "2d4581f62015ea68b09a4f5bd79709c06a28e1263c0f56a25b4c022788e825fc",
+          "proposed_sha256": "82351c92ff8b8dc69b76e640407980f30590641d1c3df0292aa147e4b071b3ab"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/admission.rs",
+          "before_sha256": "aceee2036eb30fce2ade997106f2b61e28f04bf2d4616180ef9cb9388cfc0817",
+          "proposed_sha256": "89b088b56bea18ad301e7e27dafc221bc9167c7aea261eb2b3eed00b1e2f87e2"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/cache_admission_tests.rs",
+          "before_sha256": null,
+          "proposed_sha256": "716fb3a3c08b1a7f08974d5eeceb7f759c13cce57a239dc8036bbc56d2f2e6de"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/error.rs",
+          "before_sha256": "cced646dec3856bd7abe427a04eb328303a526b8a8335ab96f375611ad347686",
+          "proposed_sha256": "e134fde5d4de21029e056e0af5ca7f965b73de894642b0c811b1d4eb59a5610c"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/retained_transaction.rs",
+          "before_sha256": "544e9ccf1f3a5d39e09f5b37a9fde569eb07a9b38f09a13a9e958e5c02b04cb8",
+          "proposed_sha256": "eeaeba8b05d1fd4203c98c0fd99feea10ac829fadb2212186428846360ef9718"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/transactions.rs",
+          "before_sha256": "69e0f0fb35968efa3561ef1e79bdc63649f0b0b530f7ff446b460a7a6ba12fb5",
+          "proposed_sha256": "a95719b40ad30604040387370a14d6279d59edfd358bb37ffa9c76558b5a7497"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+          "before_sha256": "18b42bf9c2d434f8d205d2088dc352af2cd8a40e3e0ddc0edfeff4390f349b72",
+          "proposed_sha256": "712705a50997d9e586f6008d1a2a3fe00e1a3f333797d8f289ff3e039cb3e6ef"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/tree_store/page_store/lru_cache.rs",
+          "before_sha256": "3dad9116b06284f993544620885cc57ef7b382f0fc77152eb88e363e68450189",
+          "proposed_sha256": "4d18d2b645316ffd6721ee3740b13f77180a068afe50245a9f6f8f417859d48b"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+          "before_sha256": "18b9ce3ad0f872557950838d11f92c408d1b984902add06b5f154e2c7fb9696b",
+          "proposed_sha256": "bafa9256bdf1cc0a46dc5721aca3226a7f4da05a190a2bf18c484592561c4614"
+        }
+      ]
+    },
+    {
+      "package": "redb-fixed-cache-clean-close-followup",
+      "patch_sha256": "b71cc8d16ed8fef78a14426e41cfdc8ffc2582894d0d17c67b5b5e37a6879dc2",
+      "manifest_sha256": "411000344b1d6e825744be87fcc95ed6589686d952d6c9d8442d55662a2a1117",
+      "files": [
+        {
+          "path": "vendor/redb-4.2.0/src/cache_admission_tests.rs",
+          "before_sha256": "716fb3a3c08b1a7f08974d5eeceb7f759c13cce57a239dc8036bbc56d2f2e6de",
+          "proposed_sha256": "9bb050880beed4bd74b7dbe89843b0926ab15844edc7337ba1676b5b83be782e"
+        }
+      ]
+    }
+  ],
+  "independent_review_sha256": "a2a860f4c7a85c12531cdb049de6ae04a0b8e1863c398dc754972f4c8e587b01",
+  "prior_runners_drained": [
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+    115,
+    116,
+    117,
+    120
+  ]
+}

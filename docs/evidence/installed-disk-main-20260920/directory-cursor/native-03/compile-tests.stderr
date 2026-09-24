@@ -1,0 +1,43 @@
+error[E0433]: cannot find module or crate `serde_json` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-03/node_disk/directory/tests.rs:225:21
+    |
+225 |     let mut value = serde_json::to_value(config).unwrap();
+    |                     ^^^^^^^^^^ use of unresolved module or unlinked crate `serde_json`
+    |
+    = help: you might be missing a crate named `serde_json`
+
+error[E0433]: cannot find module or crate `serde_json` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-03/node_disk/directory/tests.rs:230:13
+    |
+230 |     assert!(serde_json::from_value::<NodeDiskConfig>(value).is_err());
+    |             ^^^^^^^^^^ use of unresolved module or unlinked crate `serde_json`
+    |
+    = help: you might be missing a crate named `serde_json`
+
+error[E0433]: cannot find module or crate `serde_json` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-03/node_disk/namespace/tests.rs:100:23
+    |
+100 |     let mut missing = serde_json::to_value(&config).unwrap();
+    |                       ^^^^^^^^^^ use of unresolved module or unlinked crate `serde_json`
+    |
+    = help: you might be missing a crate named `serde_json`
+
+error[E0433]: cannot find module or crate `serde_json` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-03/node_disk/namespace/tests.rs:102:13
+    |
+102 |     assert!(serde_json::from_value::<NodeDiskConfig>(missing).is_err());
+    |             ^^^^^^^^^^ use of unresolved module or unlinked crate `serde_json`
+    |
+    = help: you might be missing a crate named `serde_json`
+
+error[E0433]: cannot find module or crate `serde_json` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-03/node_disk/namespace/tests.rs:121:17
+    |
+121 |         assert!(serde_json::from_str::<DirectoryPolicy>(bytes).is_err());
+    |                 ^^^^^^^^^^ use of unresolved module or unlinked crate `serde_json`
+    |
+    = help: you might be missing a crate named `serde_json`
+
+error: aborting due to 5 previous errors
+
+For more information about this error, try `rustc --explain E0433`.

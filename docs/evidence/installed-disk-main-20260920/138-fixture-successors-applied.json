@@ -1,0 +1,46 @@
+{
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "status": "APPLIED_UNCOMMITTED",
+  "changes": [
+    {
+      "source": "crates/kasumi-engine/tests/common/recovery_control.rs",
+      "before_sha256": "5a404fabbd2cbbff1eb5d3c90a842dd617c898ae2e26504ed7595c45949dd27b",
+      "applied_sha256": "167f7cbab53a537c917b098352b9588f30112fffc66a89dac0a99c9eb7d142a7",
+      "manifest_sha256": "b51e83a73e03a83a5f573cfd7b602b739258383fcf2fc82e8e51eadc5a442875",
+      "patch_sha256": "052591e4c3b744ede02bf40495d223bdb9f05493f552c81238bb613004e81411",
+      "formatted_sha256": "167f7cbab53a537c917b098352b9588f30112fffc66a89dac0a99c9eb7d142a7",
+      "format_command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/Users/mtakemiya/dev/kasumi/crates/kasumi-engine/tests/common/recovery_control.rs"
+      ],
+      "format_stdout": "",
+      "format_stderr": ""
+    },
+    {
+      "source": "crates/kasumi-authority/src/target_materialization_tests.rs",
+      "before_sha256": "953a03768ae5b239b65107b4b263efdbf5a24312d85695d9fb1da97bf43e17be",
+      "applied_sha256": "9928fb65994688b0b38da4214dc3ed75c537c43f0a5774d507331799e8bf43d9",
+      "manifest_sha256": "262b88c6cef9a4090a7d04e0ea35dba8f78e756a3e704884c83255eca043de4f",
+      "patch_sha256": "1c70fe3cf15453a7286b2a0407441fb672b5aff5c7bb58b1ea8505b14c9801ff",
+      "formatted_sha256": "33c0b0f5935cf1522cfa158c77fd7be1976b838d7f9a6a0f2340dabb19c4dd41",
+      "format_command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/Users/mtakemiya/dev/kasumi/crates/kasumi-authority/src/target_materialization_tests.rs"
+      ],
+      "format_stdout": "",
+      "format_stderr": ""
+    }
+  ],
+  "prior137_drained_result_sha256": "4feb98f6c5f8dc96a14b972eeedfd3b3174128e1c9da620b4edf143df04f1d02",
+  "local_confirmation_peer_sha256": "3690a2c14aa804405a72a1deb3065d051fbfd8140e2e474c13614e828e1ce909",
+  "route_retirement_peer_confirmation": "authority_materialization_repair independently confirmed original205 Arc remains alive across first reopen because253 shadows it; explicit drop before253 retires that alias; Fixture still retains physical owners. Later661 shadow ends before continuation closes."
+}

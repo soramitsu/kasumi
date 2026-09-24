@@ -1,0 +1,6 @@
+ESTIMATE_ONLY copied private shapes; no production source linked
+Identity=16 AccountedFile=72 ledger_pair=88 live_pair=24 FileOwner=200 Cursor=48 Root=64 NodeDiskConfig=72
+entries=1000000 handles=4096 depth=64 name=255 ledgers=832008192 live=659456 owners=179186392 census=4210944 roots=8492 own_workspace_bytes=1016139012 own_workspace_mib=969.066
+entries=250000 handles=1024 depth=64 name=255 ledgers=208008192 live=167936 owners=44829400 census=4210944 roots=8492 own_workspace_bytes=257290500 own_workspace_mib=245.371
+entries=100000 handles=1024 depth=64 name=255 ledgers=83208192 live=167936 owners=44829400 census=4210944 roots=8492 own_workspace_bytes=132490500 own_workspace_mib=126.353
+explicit_new_install_total_bytes=2147483648 disk_plus_192mib_audit_bytes=1217465604 remaining_before_core_startup_device_and_scratch_bytes=930018044

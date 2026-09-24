@@ -1,0 +1,61 @@
+1000e7c04: 94887abe    	bl	0x1023066fc <<std::time::Instant>::now>
+1000e7c24: 940001b1    	bl	0x1000e82e8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate>
+1000e7c2c: 9400010a    	bl	0x1000e8054 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::history>
+1000e7c44: 97ff6ee5    	bl	0x1000c37d8 <<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::deref::Deref>::deref>
+1000e7c4c: 14000008    	b	0x1000e7c6c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0xa0>
+1000e7c54: 97fed43f    	bl	0x10009cd50 <core::ptr::drop_glue::<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History>>>
+1000e7c58: 140000fd    	b	0x1000e804c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x480>
+1000e7c68: 17fffffa    	b	0x1000e7c50 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x84>
+1000e7c9c: 14000001    	b	0x1000e7ca0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0xd4>
+1000e7ca4: 97ff6ee2    	bl	0x1000c382c <<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::deref::DerefMut>::deref_mut>
+1000e7cac: 14000001    	b	0x1000e7cb0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0xe4>
+1000e7cd0: 94005679    	bl	0x1000fd6b4 <<core::ops::range::Range<usize> as core::iter::traits::iterator::Iterator>::map::<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#0}>>
+1000e7cd4: 14000001    	b	0x1000e7cd8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x10c>
+1000e7ce0: 97fce7d5    	bl	0x100021c34 <<core::iter::adapters::map::Map<core::ops::range::Range<usize>, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#0}> as core::iter::traits::iterator::Iterator>::find::<<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin::{closure#1}>>
+1000e7cec: 14000001    	b	0x1000e7cf0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x124>
+1000e7d08: 14000001    	b	0x1000e7d0c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x140>
+1000e7d1c: 97ff6eaf    	bl	0x1000c37d8 <<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::deref::Deref>::deref>
+1000e7d24: 14000005    	b	0x1000e7d38 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x16c>
+1000e7d2c: 97ff6eab    	bl	0x1000c37d8 <<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::deref::Deref>::deref>
+1000e7d34: 140000b0    	b	0x1000e7ff4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x428>
+1000e7d44: 14000001    	b	0x1000e7d48 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x17c>
+1000e7d5c: 940097fc    	bl	0x10010dd4c <<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>::is_some>
+1000e7d64: 14000009    	b	0x1000e7d88 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x1bc>
+1000e7d7c: 948a9c44    	bl	0x10238ee8c <core::panicking::panic_bounds_check>
+1000e7d80: 14000001    	b	0x1000e7d84 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x1b8>
+1000e7d90: 14000001    	b	0x1000e7d94 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x1c8>
+1000e7d9c: 942121fb    	bl	0x100930588 <<openraft::raft::message::vote::VoteRequest<u64> as core::clone::Clone>::clone>
+1000e7da0: 1400001a    	b	0x1000e7e08 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x23c>
+1000e7da8: 97ff6e8c    	bl	0x1000c37d8 <<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::deref::Deref>::deref>
+1000e7db0: 14000001    	b	0x1000e7db4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x1e8>
+1000e7de4: 14000001    	b	0x1000e7de8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x21c>
+1000e7dec: 97ff6e90    	bl	0x1000c382c <<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::deref::DerefMut>::deref_mut>
+1000e7df4: 14000001    	b	0x1000e7df8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x22c>
+1000e7e04: 17ffffe4    	b	0x1000e7d94 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x1c8>
+1000e7e18: 94887a26    	bl	0x1023066b0 <<std::time::Instant>::saturating_duration_since>
+1000e7e24: 14000001    	b	0x1000e7e28 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x25c>
+1000e7e6c: 948a9e2b    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e7ea0: 948a9e1e    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e7eb4: 948a9e19    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e7ecc: 948a9e13    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e7ee0: 948a9e0e    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e7ee8: 97ff6e51    	bl	0x1000c382c <<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::deref::DerefMut>::deref_mut>
+1000e7ef0: 14000001    	b	0x1000e7ef4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x328>
+1000e7f00: 14000001    	b	0x1000e7f04 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x338>
+1000e7f24: 948a9dfd    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e7f3c: 14000008    	b	0x1000e7f5c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x390>
+1000e7f54: 948a9bce    	bl	0x10238ee8c <core::panicking::panic_bounds_check>
+1000e7f58: 17ffff8b    	b	0x1000e7d84 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x1b8>
+1000e7f5c: 14000005    	b	0x1000e7f70 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x3a4>
+1000e7f68: 948a9c8d    	bl	0x10238f19c <core::panicking::panic_const::panic_const_add_overflow>
+1000e7f6c: 17ffff86    	b	0x1000e7d84 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x1b8>
+1000e7f74: 97ff6e2e    	bl	0x1000c382c <<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::deref::DerefMut>::deref_mut>
+1000e7f7c: 14000001    	b	0x1000e7f80 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x3b4>
+1000e7fa0: 14000001    	b	0x1000e7fa4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x3d8>
+1000e7fe0: 97fed35c    	bl	0x10009cd50 <core::ptr::drop_glue::<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History>>>
+1000e8024: 14000001    	b	0x1000e8028 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x45c>
+1000e802c: 97ff6e00    	bl	0x1000c382c <<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::deref::DerefMut>::deref_mut>
+1000e8034: 14000001    	b	0x1000e8038 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x46c>
+1000e8044: 17ffffd8    	b	0x1000e7fa4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin+0x3d8>
+1000e8048: 948a9b8b    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+1000e8050: 948a9cf5    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>

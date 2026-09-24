@@ -232,3 +232,107 @@ async fn native_schema_activation_is_atomic_scoped_permanent_and_private() {
     );
     fixture.close().await;
 }
+
+#[tokio::test]
+async fn native_admin_json_rejects_unknown_nested_fields_before_mutation() {
+    let fixture = Fixture::new().await;
+    let token = fixture.token("person", "tenant-a", "kasumi:admin");
+    let admin = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
+    let generation = fixture.db.engine().generation().unwrap();
+    let revision = generation.state.revision;
+    let schema_epoch = generation.state.schema_epoch;
+
+    let definition = json!({
+        "name": "new-collection",
+        "write_mode": "mutable",
+        "retention_class": "operational",
+        "schema": {"type": "object"},
+        "indexes": [{"name": "by-n", "fields": [{"path": "/n", "kind": "number"}]}],
+        "strict_read_audit": false
+    });
+    assert!(serde_json::from_value::<CollectionDefinition>(definition.clone()).is_ok());
+    let mut unknown_definition = definition.clone();
+    unknown_definition["obsolete_definition"] = json!(true);
+    let mut misspelled_unique = definition.clone();
+    misspelled_unique["indexes"][0]["uniqe"] = json!(true);
+    let mut unknown_field = definition.clone();
+    unknown_field["indexes"][0]["fields"][0]["obsolete_kind"] = json!("number");
+    for value in [unknown_definition, misspelled_unique, unknown_field] {
+        let error = admin
+            .create_collection(native(
+                proto::CollectionDefinitionRequest {
+                    definition_json: serde_json::to_vec(&value).unwrap(),
+                },
+                &token,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), Code::InvalidArgument);
+    }
+
+    let policy = json!({
+        "grants": [{
+            "principal": "person",
+            "collection": null,
+            "actions": ["read", "write", "admin"]
+        }],
+        "strict_read_audit": false
+    });
+    assert!(serde_json::from_value::<Policy>(policy.clone()).is_ok());
+    let mut unknown_policy = policy.clone();
+    unknown_policy["obsolete_policy"] = json!(true);
+    let mut unknown_grant = policy;
+    unknown_grant["grants"][0]["obsolete_scope"] = json!("*");
+    for value in [unknown_policy, unknown_grant] {
+        let error = admin
+            .set_policy(native(
+                proto::SetPolicyRequest {
+                    policy_json: serde_json::to_vec(&value).unwrap(),
+                },
+                &token,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), Code::InvalidArgument);
+    }
+
+    let mut limits = serde_json::to_value(Limits::default()).unwrap();
+    limits["atomic"]["obsolete_limit"] = json!(1);
+    let error = admin
+        .set_limits(native(
+            proto::SetLimitsRequest {
+                limits_json: serde_json::to_vec(&limits).unwrap(),
+            },
+            &token,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::InvalidArgument);
+
+    let change = json!({
+        "activation_id": "unknown-nested-field",
+        "expected_incarnation": generation.state.incarnation.clone(),
+        "expected_schema_epoch": schema_epoch,
+        "read_set": [],
+        "changes": [{"kind": "create", "definition": definition}]
+    });
+    assert!(serde_json::from_value::<kasumi_types::SchemaChangeSet>(change.clone()).is_ok());
+    let mut unknown_schema_index = change;
+    unknown_schema_index["changes"][0]["definition"]["indexes"][0]["uniqe"] = json!(true);
+    let error = admin
+        .activate_schema(native(
+            proto::SchemaChangeSetRequest {
+                request_json: serde_json::to_vec(&unknown_schema_index).unwrap(),
+            },
+            &token,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::InvalidArgument);
+
+    let after = fixture.db.engine().generation().unwrap();
+    assert_eq!(after.state.revision, revision);
+    assert_eq!(after.state.schema_epoch, schema_epoch);
+    assert!(!after.state.collections.contains_key("new-collection"));
+    fixture.close().await;
+}

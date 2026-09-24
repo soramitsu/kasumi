@@ -1,0 +1,12 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED",
+  "dependency_patch_sha256": "e11a7f2fca8e39e1944b60222303858a94da856e4106204677644a510818ab23",
+  "patch_sha256": "28b2e1a25f8f4c275d753a7130f27b298296bc635255dbaa1aee5abfae74be02",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/tests/staged_transactions.rs",
+      "before_sha256": "d12f1128fd395975c5ee1c08d1cb2108cec8ffc6c790f37605fe985e3d012277",
+      "proposed_sha256": "434a0693d63af0de55ff220b4e45d90beff59c294cbabd4a00ca2089a3515151"
+    }
+  ]
+}

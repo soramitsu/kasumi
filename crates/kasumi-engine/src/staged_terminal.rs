@@ -2,7 +2,7 @@
 //! rows beyond that prefix are never evidence that their command was applied.
 //! Reads open short point transactions and do not pin unrelated redb pages.
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{EncryptedTable, ScratchDisk, TenantStore, WriteOp};
+use kasumi_store::{EncryptedTable, EncryptedTableBatch, ScratchDisk, TenantStore, WriteOp};
 use kasumi_types::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -295,6 +295,11 @@ impl View {
             .bytes(&ordinal_key(ordinal))?
             .context("terminal ordinal missing")?;
         let entry: Ordinal = serde_json::from_slice(&bytes)?;
+        crate::current_json::require_current_writer_bytes(
+            &bytes,
+            &entry,
+            "staged terminal ordinal",
+        )?;
         ensure!(
             digest(&entry.key) && digest(&entry.sha256),
             "invalid terminal ordinal index"
@@ -351,6 +356,7 @@ impl View {
         if row.ordinal > self.head.count {
             return Ok(None);
         }
+        crate::current_json::require_current_writer_bytes(&bytes, &row, "staged terminal point")?;
         ensure!(
             row.key == key && row.ordinal > 0,
             "terminal point identity differs"
@@ -397,18 +403,31 @@ impl View {
 /// authenticated final head must match before this can become a restore input.
 pub(crate) struct Builder {
     table: Arc<EncryptedTable>,
+    batch: Option<EncryptedTableBatch>,
+    batch_bytes: usize,
+    batch_rows: usize,
     head: StagedTerminalHead,
     failed: bool,
 }
 impl Builder {
+    // Keep uncommitted scratch work bounded independently of the full stream.
+    // The table itself has an admitted disk owner and an 8 MiB redb page cache.
+    const BATCH_BYTES: usize = EncryptedTableBatch::MAX_BYTES;
+    const BATCH_ROWS: usize = EncryptedTableBatch::MAX_ENTRIES / 2;
+
     pub(crate) fn new(
         disk: &Arc<ScratchDisk>,
         limit: u64,
         tenant: &str,
         origin: &str,
     ) -> Result<Self> {
+        let table = Arc::new(EncryptedTable::new(disk, limit)?);
+        let batch = table.begin_batch()?;
         Ok(Self {
-            table: Arc::new(EncryptedTable::new(disk, limit)?),
+            table,
+            batch: Some(batch),
+            batch_bytes: 0,
+            batch_rows: 0,
             head: StagedTerminalHead::empty(tenant, origin)?,
             failed: false,
         })
@@ -425,10 +444,42 @@ impl Builder {
             key: row.key.clone(),
             sha256: row.sha256()?,
         };
-        self.table
-            .insert(&id_key(&row.key), &serde_json::to_vec(row)?)?;
-        self.table
-            .insert(&ordinal_key(row.ordinal), &serde_json::to_vec(&index)?)?;
+        let id = id_key(&row.key);
+        let ordinal = ordinal_key(row.ordinal);
+        let encoded_row = serde_json::to_vec(row)?;
+        let encoded_index = serde_json::to_vec(&index)?;
+        let bytes = id
+            .len()
+            .checked_add(ordinal.len())
+            .and_then(|n| n.checked_add(encoded_row.len()))
+            .and_then(|n| n.checked_add(encoded_index.len()))
+            .context("terminal staging batch byte overflow")?;
+        ensure!(
+            bytes <= Self::BATCH_BYTES,
+            "terminal row exceeds staging batch"
+        );
+        if self.batch_rows == Self::BATCH_ROWS
+            || self
+                .batch_bytes
+                .checked_add(bytes)
+                .is_none_or(|total| total > Self::BATCH_BYTES)
+        {
+            self.batch
+                .take()
+                .context("terminal staging batch missing")?
+                .commit()?;
+            self.batch = Some(self.table.begin_batch()?);
+            self.batch_bytes = 0;
+            self.batch_rows = 0;
+        }
+        let batch = self
+            .batch
+            .as_mut()
+            .context("terminal staging batch missing")?;
+        batch.insert(&id, &encoded_row)?;
+        batch.insert(&ordinal, &encoded_index)?;
+        self.batch_bytes += bytes;
+        self.batch_rows += 1;
         self.failed = false;
         Ok(())
     }
@@ -438,6 +489,9 @@ impl Builder {
             &self.head == expected,
             "terminal stream final root/count/bytes differ"
         );
+        self.batch
+            .context("terminal staging batch missing")?
+            .commit()?;
         Ok(View {
             source: Some(Arc::new(Source::Staged(self.table))),
             head: self.head,
@@ -509,7 +563,14 @@ impl View {
         self.check_head(&state.tenant)?;
         let selected = store
             .get_bounded(CATALOG, checkpoint_sha256.as_bytes(), 64 << 10)?
-            .map(|bytes| serde_json::from_slice::<NamespaceBinding>(&bytes))
+            .map(|bytes| {
+                let binding: NamespaceBinding = serde_json::from_slice(&bytes)?;
+                ensure!(
+                    serde_json::to_vec(&binding)? == bytes,
+                    "noncanonical terminal checkpoint binding"
+                );
+                Ok::<NamespaceBinding, anyhow::Error>(binding)
+            })
             .transpose()?;
         if reopen {
             let binding = selected.context("authoritative terminal checkpoint binding missing")?;
@@ -771,13 +832,17 @@ impl Pending {
 
 #[cfg(any(test, feature = "test-utils"))]
 impl View {
-    pub(crate) fn fixture_owner(&self, state: &TenantState) -> Result<Self> {
+    pub(crate) fn fixture_owner(
+        &self,
+        disk: &Arc<ScratchDisk>,
+        state: &TenantState,
+    ) -> Result<Self> {
         if self.source.is_some() {
             return Ok(self.clone());
         }
         ensure!(self.head.count == 0, "fixture terminal prefix has no owner");
         let table = Arc::new(EncryptedTable::new(
-            &ScratchDisk::fixture(),
+            disk,
             scratch_limit(state.limits.max_snapshot_bytes)?,
         )?);
         Ok(Self {

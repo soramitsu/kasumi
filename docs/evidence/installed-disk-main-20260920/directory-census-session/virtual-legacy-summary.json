@@ -1,0 +1,18 @@
+{
+  "historical_evidence_occurrences": 482,
+  "current_supported_occurrences": [
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "line": 208,
+      "text": "        policy.insert(\"max_census_entries\".into(), 1_000_000.into());",
+      "overlay": true
+    },
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "line": 211,
+      "text": "        mixed[\"persistent_disk\"][\"max_census_entries\"] = 1_000_000.into();",
+      "overlay": true
+    }
+  ],
+  "note": "Both supported-source occurrences are intentional serde rejection fixtures; historical evidence remains immutable."
+}

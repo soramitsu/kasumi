@@ -266,6 +266,85 @@ struct Tenant {
     replicas: Vec<Arc<Database>>,
     bootstrap: Option<ReplicatedBootstrap>,
 }
+/// Retained for the entire benchmark case, including close/reopen. Replicas
+/// share the original ONE scratch quota. Distinct runtime facades share the
+/// aggregate of their original payload allowances; RSS ceilings are unchanged.
+struct BenchmarkStorage {
+    storage: kasumi_engine::test_utils::FixtureStorage,
+    admissions: Vec<Arc<kasumi_engine::admission::NodeAdmission>>,
+    root: PathBuf,
+}
+impl BenchmarkStorage {
+    fn open(root: &Path, replicas: usize) -> Result<Self> {
+        use kasumi_engine::admission::{AdmissionConfig, MemoryCore, NodeAdmission};
+        let data = root.join("persistent");
+        kasumi_store::private_files::create_directory(&data)?;
+        let persistent = kasumi_store::NodeDisk::fixture_config(data.join("node.redb"))?;
+        let scratch = kasumi_store::ScratchDiskConfig {
+            directory: root.join("scratch"),
+            max_bytes: 64 << 30,
+            min_free_bytes: 256 << 20,
+        };
+        let original = AdmissionConfig::default();
+        let payload = original
+            .resolved_fixture_total_bytes()?
+            .checked_sub(NodeAdmission::required_bookkeeping_bytes(&original)?)
+            .context("original benchmark policy cannot fund its bookkeeping")?;
+        let replicas_u64 = u64::try_from(replicas).context("replica count exceeds u64")?;
+        let mut config = original.clone();
+        config.max_inflight_operations = original
+            .max_inflight_operations
+            .checked_mul(replicas)
+            .context("benchmark operation-slot count overflow")?;
+        config.max_reservations = original
+            .max_reservations
+            .checked_mul(replicas)
+            .context("benchmark reservation-slot count overflow")?;
+        config.max_startup_scopes = original
+            .max_startup_scopes
+            .checked_mul(replicas)
+            .context("benchmark startup-scope count overflow")?;
+        let core = MemoryCore::required_bookkeeping_bytes(&config)?;
+        let facade = NodeAdmission::required_bookkeeping_bytes(&config)?
+            .checked_sub(core)
+            .context("benchmark facade bookkeeping underflow")?;
+        let metadata =
+            kasumi_engine::test_utils::isolated_disk_metadata_bytes(&persistent, &scratch)?;
+        config.max_inflight_bytes = Some(
+            payload
+                .checked_mul(replicas_u64)
+                .and_then(|n| n.checked_add(core))
+                .and_then(|n| {
+                    facade
+                        .checked_mul(replicas_u64)
+                        .and_then(|f| n.checked_add(f))
+                })
+                .and_then(|n| n.checked_add(metadata))
+                .context("benchmark aggregate admission capacity overflow")?,
+        );
+        config.validate()?;
+        let first = NodeAdmission::new(config)?;
+        let mut admissions = Vec::with_capacity(replicas);
+        admissions.push(first.clone());
+        for _ in 1..replicas {
+            admissions.push(NodeAdmission::from_memory(first.memory().clone())?);
+        }
+        let storage = kasumi_engine::test_utils::FixtureStorage::with_admission(
+            &persistent,
+            &scratch,
+            first,
+        )?;
+        Ok(Self {
+            storage,
+            admissions,
+            root: data,
+        })
+    }
+    fn path(&self, replica: usize) -> PathBuf {
+        self.root.join(format!("replica-{replica}.redb"))
+    }
+}
+
 struct Databases {
     tenants: Vec<Tenant>,
     nodes: Vec<Arc<NodeStore>>,
@@ -275,7 +354,7 @@ struct Databases {
 }
 impl Databases {
     async fn open(
-        path: &Path,
+        physical: &BenchmarkStorage,
         tenants: usize,
         documents: usize,
         operations: usize,
@@ -285,30 +364,27 @@ impl Databases {
     ) -> Result<Self> {
         let replicas = if replicated { 3 } else { 1 };
         let mut nodes = Vec::new();
-        let scratch_disk = kasumi_store::ScratchDisk::open(kasumi_store::ScratchDiskConfig {
-            directory: path.join("scratch"),
-            max_bytes: 64 << 30,
-            min_free_bytes: 256 << 20,
-        })?;
+        ensure!(
+            physical.admissions.len() == replicas,
+            "benchmark physical replica count changed"
+        );
         for replica in 0..replicas {
             nodes.push(
                 (if create {
-                    NodeStore::create_new_fixture(
-                        path.join(format!("replica-{replica}.redb")),
+                    physical.storage.create_new(
+                        physical.path(replica),
                         kasumi_store::test_utils::NODE_STORE_ID,
-                        scratch_disk.clone(),
                     )
                 } else {
-                    NodeStore::open_existing_fixture(
-                        path.join(format!("replica-{replica}.redb")),
+                    physical.storage.open_existing(
+                        physical.path(replica),
                         kasumi_store::test_utils::NODE_STORE_ID,
-                        scratch_disk.clone(),
                     )
                 })?,
             );
         }
         let mut audits = Vec::new();
-        for node in &nodes {
+        for (replica, node) in nodes.iter().enumerate() {
             let service_store = TenantStore::initialize_catalog_fixture(
                 node.clone(),
                 SECURITY_TENANT.into(),
@@ -322,7 +398,7 @@ impl Databases {
             })(
                 service_store,
                 kasumi_types::AuditRetentionBudget::default(),
-                kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+                physical.admissions[replica].clone(),
             )?);
         }
         let provider = Arc::new(LocalKeyProvider::new([0x42; 32]));
@@ -484,6 +560,11 @@ impl Databases {
             }
         }
         self.audits.clear();
+        for node in &self.nodes {
+            if let Err(failure) = node.shutdown().await {
+                report.merge(&failure);
+            }
+        }
         self.nodes.clear();
         drop(self.provider);
         drop(self.router);
@@ -524,8 +605,9 @@ async fn database_case(
     let text = mode == "text";
     let baseline_rss_bytes = rss();
     let opened = Instant::now();
+    let physical = BenchmarkStorage::open(directory.path(), if replicated { 3 } else { 1 })?;
     let databases = Databases::open(
-        directory.path(),
+        &physical,
         tenants,
         options.documents,
         options.operations,
@@ -715,7 +797,7 @@ async fn database_case(
     )?;
     let recovered = Instant::now();
     let databases = Databases::open(
-        directory.path(),
+        &physical,
         tenants,
         options.documents,
         options.operations,
@@ -1041,7 +1123,8 @@ mod tests {
     #[tokio::test]
     async fn failed_read_workload_retains_counts_and_later_independent_work_can_run() {
         let dir = tempfile::tempdir().unwrap();
-        let databases = Databases::open(dir.path(), 1, 1, 4, false, None, true)
+        let physical = BenchmarkStorage::open(dir.path(), 1).unwrap();
+        let databases = Databases::open(&physical, 1, 1, 4, false, None, true)
             .await
             .unwrap();
         let database = databases.leader(0).await.unwrap();

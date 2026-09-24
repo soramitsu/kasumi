@@ -1,0 +1,39 @@
+--- a/crates/kasumi-authority/src/target_materialization_tests.rs
++++ b/crates/kasumi-authority/src/target_materialization_tests.rs
+@@ -1319,8 +1319,18 @@
+         }
+         assert!(follower.owner.database().check_serving().is_err());
+     }
++    // The original leader proof was released before confirming every voter.
++    // Bind this voter's local projection to that same signed, persisted fact.
++    let local_completed = selected
++        .owner
++        .database()
++        .confirm_target_activation(&selected.operation, actual_signed_activation.clone())
++        .await
++        .unwrap();
++    assert_eq!(local_completed.fact(), completed.fact());
++    assert_eq!(local_completed.observation().observer_node_id, selected.id);
+     let projected = journal
+-        .record_activation(&selected.operation, &completed, &f.signers[&selected.id])
++        .record_activation(&selected.operation, &local_completed, &f.signers[&selected.id])
+         .await
+         .unwrap();
+     let exact_execution = projected.execution().unwrap();
+@@ -1334,7 +1344,7 @@
+         .clone();
+     projected.check(&serving_gate).unwrap();
+     let replayed = journal
+-        .record_activation(&selected.operation, &completed, &f.signers[&selected.id])
++        .record_activation(&selected.operation, &local_completed, &f.signers[&selected.id])
+         .await
+         .unwrap();
+     assert_eq!(replayed.execution().unwrap(), exact_execution);
+@@ -1425,6 +1435,7 @@
+     drop(journal_store);
+     // A lifecycle-gated handle never turns into an ordinary data route.
+     assert!(selected.owner.database().check_serving().is_err());
++    drop(local_completed);
+     drop(completed);
+     f.close_targets(targets, &router).await;
+     let targets = f.open_targets(&intent, &input, &router).await;

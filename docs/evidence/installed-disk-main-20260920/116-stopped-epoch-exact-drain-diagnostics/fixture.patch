@@ -1,0 +1,195 @@
+--- a/crates/kasumi-authority/src/issuer_tests.rs
++++ b/crates/kasumi-authority/src/issuer_tests.rs
+@@ -153,6 +153,54 @@
+         .unwrap();
+     target
+ }
++fn inspect_control_stop_drain(
++    fixture: &Fixture,
++    service: &IndependentAuthority,
++    witness: &str,
++    expected: (u64, u64, u64),
++    waiting: bool,
++    result: Result<(SignedControlEpochStop, AuthorityResponseFence)>,
++) -> Result<(SignedControlEpochStop, AuthorityResponseFence)> {
++    let observed = service
++        .drains
++        .lock()
++        .map(|drains| {
++            drains
++                .get(witness)
++                .map(|drain| (drain.term, drain.started, drain.last))
++        })
++        .map_err(|error| error.to_string());
++    let expected_witness = Some((
++        expected.0,
++        Duration::from_millis(expected.1),
++        Duration::from_millis(expected.2),
++    ));
++    let expected_outcome = match (&result, waiting) {
++        (Err(error), true) => {
++            error.code == ErrorCode::Unavailable
++                && error.message == "exact fence drain has not completed; retry the same identity"
++        }
++        (Ok(_), false) => true,
++        _ => false,
++    };
++    assert!(
++        observed == Ok(expected_witness) && expected_outcome,
++        "control stop drain: local={} witness={witness} clock={} expected={expected_witness:?} waiting={waiting} observed={observed:?} error={:?}; members={:?}",
++        service.local_node_id,
++        fixture.clock.0.load(Ordering::SeqCst),
++        result.as_ref().err(),
++        fixture
++            .services
++            .iter()
++            .map(|member| {
++                let metrics = member.group.raft().metrics().borrow().clone();
++                let access = member.group.check_access();
++                format!("metrics={metrics:?}, access={access:?}")
++            })
++            .collect::<Vec<_>>()
++    );
++    result
++}
+ #[tokio::test]
+ async fn control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain() {
+     let control = ControlFixture::new();
+@@ -233,25 +281,48 @@
+             .await
+             .is_err()
+     );
+-    assert!(
+-        service
+-            .verify_control_stop(f.context("operator"), stopped.reference())
+-            .await
+-            .is_err()
++    let witness = format!("control/{}", stopped.digest().unwrap());
++    let initial_term = service.term();
++    assert!(
++        inspect_control_stop_drain(
++            &f,
++            &service,
++            &witness,
++            (initial_term, 0, 0),
++            true,
++            service
++                .verify_control_stop(f.context("operator"), stopped.reference())
++                .await,
++        )
++        .is_err()
+     );
+     f.clock.0.store(999, Ordering::SeqCst);
+     assert!(
+-        service
+-            .verify_control_stop(f.context("operator"), stopped.reference())
+-            .await
+-            .is_err()
++        inspect_control_stop_drain(
++            &f,
++            &service,
++            &witness,
++            (initial_term, 0, 999),
++            true,
++            service
++                .verify_control_stop(f.context("operator"), stopped.reference())
++                .await,
++        )
++        .is_err()
+     );
+     f.clock.0.store(1000, Ordering::SeqCst);
+     assert!(lease.check().is_err());
+-    let (drained, _) = service
+-        .verify_control_stop(f.context("operator"), stopped.reference())
+-        .await
+-        .unwrap();
++    let (drained, _) = inspect_control_stop_drain(
++        &f,
++        &service,
++        &witness,
++        (initial_term, 0, 1000),
++        false,
++        service
++            .verify_control_stop(f.context("operator"), stopped.reference())
++            .await,
++    )
++    .unwrap();
+     verify_control_epoch_stop(&stop.observation.stop, &drained).unwrap();
+     use kasumi_raft::StateMachineBackend;
+     let mut snapshot = Vec::new();
+@@ -264,24 +335,46 @@
+     drop(service);
+     f.reopen().await;
+     let service = f.leader().await;
+-    assert!(
++    let restarted_term = service.term();
++    assert!(
++        inspect_control_stop_drain(
++            &f,
++            &service,
++            &witness,
++            (restarted_term, 1000, 1000),
++            true,
++            service
++                .verify_control_stop(f.context("operator"), stopped.reference())
++                .await,
++        )
++        .is_err()
++    );
++    f.clock.0.store(1999, Ordering::SeqCst);
++    assert!(
++        inspect_control_stop_drain(
++            &f,
++            &service,
++            &witness,
++            (restarted_term, 1000, 1999),
++            true,
++            service
++                .verify_control_stop(f.context("operator"), stopped.reference())
++                .await,
++        )
++        .is_err()
++    );
++    f.clock.0.store(2000, Ordering::SeqCst);
++    inspect_control_stop_drain(
++        &f,
++        &service,
++        &witness,
++        (restarted_term, 1000, 2000),
++        false,
+         service
+             .verify_control_stop(f.context("operator"), stopped.reference())
+-            .await
+-            .is_err()
+-    );
+-    f.clock.0.store(1999, Ordering::SeqCst);
+-    assert!(
+-        service
+-            .verify_control_stop(f.context("operator"), stopped.reference())
+-            .await
+-            .is_err()
+-    );
+-    f.clock.0.store(2000, Ordering::SeqCst);
+-    service
+-        .verify_control_stop(f.context("operator"), stopped.reference())
+-        .await
+-        .unwrap();
++            .await,
++    )
++    .unwrap();
+     let retained = service
+         .read_lifecycle_receipt(f.context("operator"), original.reference())
+         .await
+@@ -293,9 +386,9 @@
+         accepted.receipt.accepted_revision
+     );
+     let late = control.intent(&f, &t, 1_050_000);
+-    // Reopening and advancing the fixture clock can change the elected leader.
+-    // Pin the current leader for this new mutation; the stopped-epoch rejection
+-    // must come from the reducer, not an unrelated stale proposal route.
++    // Raft elections use real elapsed time, independently of the fixture clock.
++    // Select the current leader for this new mutation; the stopped-epoch
++    // rejection must come from the reducer.
+     let context = f.context("operator");
+     let service = f.leader().await;
+     assert_eq!(

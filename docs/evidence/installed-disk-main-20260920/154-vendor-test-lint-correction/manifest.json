@@ -1,0 +1,37 @@
+{
+  "status": "test-only fixes to strict154 lint failures",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/cache_admission_tests.rs",
+      "before_sha256": "9bb050880beed4bd74b7dbe89843b0926ab15844edc7337ba1676b5b83be782e",
+      "after_sha256": "b40e2fa66cce535d96e4296a65c757f04476a3e2aeaaefed0acfdb5c0da61004"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_database_tests.rs",
+      "before_sha256": "f646569746d28cff4179d3dc57a5f38d6aa01aed3834adf4e75c81e3d0d966de",
+      "after_sha256": "8a563d68d5239fb38ad6459b69f87c8e2bf63d2823badab3032364b6f5171f0b"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_transaction_tests.rs",
+      "before_sha256": "da38c0939e980a672648c55318fea8edc2b6714e87836e7186498543e509c438",
+      "after_sha256": "245cec07782e3353da405a6a49ae3d6d8c1a8e80c54dfa0ec7addc2fec387cb6"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/page_list_tests.rs",
+      "before_sha256": "ec0a42b13fdb961ca598776a4f457625a5e9b9169a7fff0bd26eaebed6eda599",
+      "after_sha256": "4c8ab00da96a217fdce9f6824c0b9beebba890dea217bae0aa3e8353766974a3"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+      "before_sha256": "621029cf39ec62587600a2f8a58745e50e32eff8d1bf375b75c30e9f7adc8694",
+      "after_sha256": "8699813f7a1bcba936931307d4cc8ffed6ee3bc6ceaf492a82e1aa77ebd5f9cc"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/checked_backend_tests.rs",
+      "before_sha256": "c80a43742a7fbf93b7fe8be8778db7555c9da1652558596ce0b160d5125d2fc7",
+      "after_sha256": "8f713ff6b5a28a1016f917fdfceb9721bf36f524099d0e1b4d009c15fdaaa2a1"
+    }
+  ],
+  "patch_sha256": "b1217f02283c25788d38d569758ac3e8b774477da92054983d3a0c90f8366add",
+  "test_changes": "Explicit pointer construction preserves identity checks; checked bounded fixture casts; same exhaustive outcome matches via let-else; history fold explicitly unwraps every result; test-only capacity getter tail expression. No lint suppression or reduced scope."
+}

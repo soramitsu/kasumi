@@ -1,0 +1,16 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED_OBSERVED_FAILURE_LINE_NOT_YET_KNOWN",
+  "patch_sha256": "9f31ad09ae51e14689cef4820f7b061ffc5423fd2603fe08220dc28e249a36a5",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/security_audit_retention.rs",
+      "before_sha256": "e91634d5e19782ab35d6617c0536dcdf585bf896f3440b95e22629134df73e32",
+      "proposed_sha256": "fffd504ecef824cf627c4ead985152a345897aa27e1fd09e76ffedf743ac832c"
+    }
+  ],
+  "apply_check": {
+    "exit_code": 0,
+    "stderr": ""
+  },
+  "rustfmt_stdin": "passed"
+}

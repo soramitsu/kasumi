@@ -1,0 +1,58 @@
+diff --git a/crates/kasumi-store/src/audit_archive.rs b/crates/kasumi-store/src/audit_archive.rs
+--- a/crates/kasumi-store/src/audit_archive.rs
++++ b/crates/kasumi-store/src/audit_archive.rs
+@@ -741,6 +741,7 @@
+         );
+         let archive = Self {
+             root: self.root.clone(),
++            _directory: self._directory.clone(),
+             disk: self.disk.clone(),
+             observer: self.observer.clone(),
+             publication: self.publication.clone(),
+diff --git a/crates/kasumi-store/src/backup_sessions_fs.rs b/crates/kasumi-store/src/backup_sessions_fs.rs
+--- a/crates/kasumi-store/src/backup_sessions_fs.rs
++++ b/crates/kasumi-store/src/backup_sessions_fs.rs
+@@ -14,6 +14,7 @@
+ pub(crate) const TERMINAL_IO_BUFFER_BYTES: usize =
+     terminal::IO_CHUNK_BYTES + 2 * terminal::HEADER_BYTES;
+ 
++#[derive(Clone)]
+ pub(crate) struct Directory(crate::NodeDiskDirectory, Arc<crate::NodeDisk>, PathBuf);
+ impl Directory {
+     pub fn open(path: &Path, disk: Arc<crate::NodeDisk>) -> Result<Self> {
+diff --git a/crates/kasumi-store/src/node_disk/directory/managed.rs b/crates/kasumi-store/src/node_disk/directory/managed.rs
+--- a/crates/kasumi-store/src/node_disk/directory/managed.rs
++++ b/crates/kasumi-store/src/node_disk/directory/managed.rs
+@@ -10,10 +10,7 @@
+     fs::File,
+     io,
+     mem::MaybeUninit,
+-    os::{
+-        fd::{AsRawFd, IntoRawFd},
+-        unix::fs::MetadataExt,
+-    },
++    os::fd::{AsRawFd, IntoRawFd},
+     sync::Arc,
+ };
+ 
+diff --git a/crates/kasumi-store/src/node_disk/tests.rs b/crates/kasumi-store/src/node_disk/tests.rs
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -843,12 +843,11 @@
+         assert_eq!(allocations, 0, "uncertain shrink allocated: {failure:?}");
+         assert_eq!(
+             file.observed_len().unwrap(),
+-            namespace_charge(&disk)
+-                + if failure == file::ShrinkFailure::Truncate {
+-                    128 << 10
+-                } else {
+-                    32 << 10
+-                }
++            if failure == file::ShrinkFailure::Truncate {
++                128 << 10
++            } else {
++                32 << 10
++            }
+         );
+         assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+         assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);

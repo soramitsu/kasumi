@@ -1,0 +1,175 @@
+--- a/crates/kasumi-store/src/node_file.rs
++++ b/crates/kasumi-store/src/node_file.rs
+@@ -275,6 +275,13 @@
+         &self.disk
+     }
+ 
++    #[cfg(test)]
++    pub(crate) fn retained_file_custody(&self) -> Option<(usize, Option<usize>)> {
++        let guard = self.file.read();
++        let file = guard.as_ref()?;
++        Some((file.close_owner_address()?, file.close_error_address()))
++    }
++
+     pub(crate) fn backend(self: &Arc<Self>) -> NodeBackend {
+         NodeBackend(self.clone())
+     }
+--- a/crates/kasumi-store/src/storage_opening_tests.rs
++++ b/crates/kasumi-store/src/storage_opening_tests.rs
+@@ -369,52 +369,128 @@
+ 
+ #[test]
+ fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
++    use redb::StorageBackend;
+     let directory = private_tempdir().unwrap();
+     let path = directory.path().join("new-close-error.kasumi");
+     let memory = TestDiskMemory::new(256 << 20, 4096);
+     let disk = disk(&path, &memory);
+-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
++    let opening =
++        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
+     assert_eq!(opening.open(), NodeOpeningPhase::Open);
+     let id = opening.id();
+     let actual = std::ptr::from_ref(opening.registration.owner());
+-    // The new error is returned by the real retained shutdown protocol; the
+-    // borrowed backend close still releases the actual descriptor successfully.
+-    opening.registration.owner().state.lock().file.disk().fail();
++    let file_owner = {
++        let state = opening.registration.owner().state.lock();
++        assert!(!state.outcomes_released);
++        state.file.retained_file_custody().unwrap().0
++    };
++    let physical = std::fs::read(&path).unwrap();
++    let admitted = disk.snapshot();
++    // Starting close may produce both a shutdown error and a failed backend
++    // outcome. This call cannot preauthorize either future outcome's release.
++    disk.fail();
+     assert_eq!(opening.retire(), StorageCensusDisposition::Retained);
+     let retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
+     assert_eq!(std::ptr::from_ref(retained.registration.owner()), actual);
+-    let original = {
++    let (original, backend, native) = {
+         let report = retained.report();
++        assert!(
++            !report.state.outcomes_released,
++            "first close must invalidate relinquishment before producing either error"
++        );
+         let redb = report.redb();
+-        assert_eq!(redb.settlement(), DatabaseOpenSettlement::Closed);
++        assert_eq!(redb.settlement(), DatabaseOpenSettlement::Retained);
+         let close = redb.database_close().unwrap();
+-        assert!(matches!(
+-            close.backend(),
+-            TerminalObservation::Returned(Ok(()))
+-        ));
+-        let TerminalObservation::Returned(Err(error)) = close.shutdown() else {
++        let TerminalObservation::Returned(Err(shutdown)) = close.shutdown() else {
+             panic!("new original shutdown failure absent");
+         };
+-        std::ptr::from_ref(error)
++        let TerminalObservation::Returned(Err(backend)) = close.backend() else {
++            panic!("failed file owner must not produce positive backend close");
++        };
++        let (owner, native) = report.state.file.retained_file_custody().unwrap();
++        assert_eq!(owner, file_owner);
++        assert!(
++            native.is_some(),
++            "original file-owner error must remain retained"
++        );
++        (
++            std::ptr::from_ref(shutdown),
++            std::ptr::from_ref(backend),
++            native,
++        )
+     };
++    assert_eq!(disk.snapshot().open_files, 1);
++    assert_eq!(disk.snapshot().charged_bytes, admitted.charged_bytes);
++    assert_eq!(disk.snapshot().pending_bytes, admitted.pending_bytes);
++    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
++    assert!(
++        disk.reconcile(&crate::CensusCancellation::default())
++            .is_err()
++    );
+     drop(retained);
+     let charged = memory.snapshot();
+-    assert_eq!(
+-        memory.storage_census().drain_owner(id),
+-        StorageCensusDisposition::Retained
+-    );
+-    assert_eq!(memory.snapshot(), charged);
+-    let observed = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
+-    {
+-        let report = observed.report();
+-        let redb = report.redb();
+-        let close = redb.database_close().unwrap();
+-        let TerminalObservation::Returned(Err(error)) = close.shutdown() else {
+-            panic!("close original was erased");
+-        };
+-        assert_eq!(std::ptr::from_ref(error), original);
+-    }
+-    assert_eq!(observed.retire(), StorageCensusDisposition::Retired);
++    for _ in 0..2 {
++        assert_eq!(
++            memory.storage_census().drain_owner(id),
++            StorageCensusDisposition::Retained
++        );
++        assert_eq!(memory.snapshot(), charged);
++        let observed = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
++        assert_eq!(std::ptr::from_ref(observed.registration.owner()), actual);
++        assert!(observed.queue_node_tables().is_err());
++        {
++            let report = observed.report();
++            assert!(!report.state.outcomes_released);
++            let redb = report.redb();
++            assert_eq!(redb.settlement(), DatabaseOpenSettlement::Retained);
++            let close = redb.database_close().unwrap();
++            let TerminalObservation::Returned(Err(error)) = close.shutdown() else {
++                panic!("close original was erased");
++            };
++            assert_eq!(std::ptr::from_ref(error), original);
++            let TerminalObservation::Returned(Err(error)) = close.backend() else {
++                panic!("backend close original was erased");
++            };
++            assert_eq!(std::ptr::from_ref(error), backend);
++            assert_eq!(
++                report.state.file.retained_file_custody(),
++                Some((file_owner, native))
++            );
++            assert!(report.state.file.backend().len().is_err());
++        }
++        // Inspecting/relinquishing reports is not proof that the retained
++        // physical owner and its error custody have retired.
++        assert_eq!(observed.retire(), StorageCensusDisposition::Retained);
++        let still_retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
++        assert!(
++            !still_retained
++                .registration
++                .owner()
++                .state
++                .lock()
++                .outcomes_released,
++            "an unresolved close cannot preserve a blanket future acknowledgement"
++        );
++        drop(still_retained);
++        assert_eq!(memory.snapshot(), charged);
++        assert_eq!(disk.snapshot().open_files, 1);
++        assert_eq!(disk.snapshot().charged_bytes, admitted.charged_bytes);
++        assert_eq!(disk.snapshot().pending_bytes, admitted.pending_bytes);
++        assert!(
++            disk.reconcile(&crate::CensusCancellation::default())
++                .is_err()
++        );
++        let (root, relative) = disk.binding(&path).unwrap();
++        assert!(disk.open_file(root, relative).is_err());
++        assert_eq!(std::fs::read(&path).unwrap(), physical);
++    }
++    // No disposal/recovery API currently supplies a positive release witness
++    // for this failed live backend. Keep the installed owner after every facade
++    // has gone; a future explicit acknowledgement protocol must resolve it.
++    assert_eq!(memory.storage_census().snapshot().databases, 1);
++    assert_eq!(memory.storage_census().snapshot().writers, 0);
++    assert_eq!(disk.snapshot().open_files, 1);
++    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+ }
+ 
+ #[test]

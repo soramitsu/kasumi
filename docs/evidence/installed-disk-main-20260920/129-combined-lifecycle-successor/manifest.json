@@ -1,0 +1,42 @@
+{
+  "status": "FROZEN_TARGET_ONLY_UNCOMPILED",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "base_sha256": "df389a1f5903728287ed45d01281119b797a3778b50d1d60adc17c62f2548eb3",
+  "proposed_sha256": "2147b8684336bf4e81f0b1104fdab747309e9f15721f1bc8138d005b592e816a",
+  "source_unchanged": true,
+  "inputs": {
+    "target/installed-disk-validation/129-initial-dispatch-current-leader/manifest.json": "169037327e3d930770d86fdddd00f38b15172170e5f986b2af68d743abe40a02",
+    "target/installed-disk-validation/129-initial-dispatch-current-leader/fixture.patch": "bec8b619b4a76eadfbecdc17f35164eec514d27669b8af11cf77e8ab96e3aca8",
+    "target/installed-disk-validation/129-intent-commit-failure-diagnostic/manifest.json": "35b857e23068295037135c05af249910270658ca0cded36b2e517d241f69ab2f",
+    "target/installed-disk-validation/129-intent-commit-failure-diagnostic/diagnostic.patch": "87f447ca2d4173266562d8e4490f0839021b49a9538a1091b95ec0db1e409032"
+  },
+  "changes": [
+    {
+      "start_zero_based": 249,
+      "end_zero_based": 249,
+      "origin": "129-initial-dispatch-current-leader"
+    },
+    {
+      "start_zero_based": 250,
+      "end_zero_based": 251,
+      "origin": "129-initial-dispatch-current-leader"
+    },
+    {
+      "start_zero_based": 1773,
+      "end_zero_based": 1773,
+      "origin": "129-intent-commit-failure-diagnostic"
+    },
+    {
+      "start_zero_based": 1775,
+      "end_zero_based": 1776,
+      "origin": "129-intent-commit-failure-diagnostic"
+    }
+  ],
+  "files": {
+    "README.md": "e324d3b6c4ad644e74b3cc9ebf7a25042ca22b85b90a6ea395c92a572bbf3b32",
+    "base/crates/kasumi-engine/tests/common/recovery_control.rs": "df389a1f5903728287ed45d01281119b797a3778b50d1d60adc17c62f2548eb3",
+    "proposed/crates/kasumi-engine/tests/common/recovery_control.rs": "2147b8684336bf4e81f0b1104fdab747309e9f15721f1bc8138d005b592e816a",
+    "successor.patch": "8f72e1b173d406be15b7a5ce0a616a457f0fa23d987e9ab7aa15a318193aa911"
+  }
+}

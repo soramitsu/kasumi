@@ -1,0 +1,8 @@
+crates/kasumi-store/src/node_disk.rs
+crates/kasumi-store/src/node_disk/census.rs
+crates/kasumi-store/src/node_disk/file.rs
+crates/kasumi-store/src/node_disk/tests.rs
+crates/kasumi-store/src/device_disk.rs
+crates/kasumi-store/src/scratch_disk.rs
+crates/kasumi-store/src/test_utils.rs
+crates/kasumi-store/src/lib.rs

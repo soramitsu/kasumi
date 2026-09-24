@@ -1,5 +1,5 @@
 use crate::transaction_tracker::{SavepointId, TransactionId, TransactionTracker};
-use crate::tree_store::page_store::page_manager::FILE_FORMAT_VERSION3;
+use crate::tree_store::page_store::page_manager::FILE_FORMAT_VERSION4;
 use crate::tree_store::{BtreeHeader, TransactionalMemory};
 use crate::{Result, StorageError, TypeName, Value};
 use alloc::format;
@@ -95,7 +95,7 @@ pub(crate) enum SerializedSavepoint<'a> {
 
 impl SerializedSavepoint<'_> {
     pub(crate) fn from_savepoint(savepoint: &Savepoint) -> Self {
-        assert_eq!(savepoint.version, FILE_FORMAT_VERSION3);
+        assert_eq!(savepoint.version, FILE_FORMAT_VERSION4);
         let mut result = vec![savepoint.version];
         result.extend(savepoint.id.0.to_le_bytes());
         result.extend(savepoint.transaction_id.raw_id().to_le_bytes());
@@ -132,7 +132,7 @@ impl SerializedSavepoint<'_> {
         }
         let mut offset = 0;
         let version = data[offset];
-        if version != FILE_FORMAT_VERSION3 {
+        if version != FILE_FORMAT_VERSION4 {
             return Err(StorageError::Corrupted(format!(
                 "Unsupported savepoint version: {version}"
             )));
@@ -165,7 +165,7 @@ impl SerializedSavepoint<'_> {
                 data[offset..(offset + BtreeHeader::serialized_size())]
                     .try_into()
                     .unwrap(),
-            ))
+            )?)
         } else {
             None
         };
@@ -226,7 +226,7 @@ mod test {
     fn corrupted_record_errors() {
         let tracker = Arc::new(TransactionTracker::new(TransactionId::new(1)));
 
-        let mut record = vec![FILE_FORMAT_VERSION3];
+        let mut record = vec![FILE_FORMAT_VERSION4];
         record.extend(1u64.to_le_bytes());
         record.extend(1u64.to_le_bytes());
         record.push(0);
@@ -243,12 +243,14 @@ mod test {
             Err(StorageError::Corrupted(_))
         ));
 
-        let mut bad_version = record.clone();
-        bad_version[0] = 9;
-        assert!(matches!(
-            SerializedSavepoint::Ref(&bad_version).to_savepoint(tracker.clone()),
-            Err(StorageError::Corrupted(_))
-        ));
+        for version in [0, 1, 2, 3, 5, 9, u8::MAX] {
+            let mut bad_version = record.clone();
+            bad_version[0] = version;
+            assert!(matches!(
+                SerializedSavepoint::Ref(&bad_version).to_savepoint(tracker.clone()),
+                Err(StorageError::Corrupted(_))
+            ));
+        }
 
         let mut bad_null_marker = record.clone();
         bad_null_marker[17] = 2;
@@ -256,5 +258,56 @@ mod test {
             SerializedSavepoint::Ref(&bad_null_marker).to_savepoint(tracker),
             Err(StorageError::Corrupted(_))
         ));
+    }
+
+    #[test]
+    fn canonical_savepoint_roots_reject_aliases_before_tracker_publication() {
+        use crate::tree_store::page_store::base::{MAX_PAGE_INDEX, MAX_REGIONS, PageNumber};
+        let tracker = Arc::new(TransactionTracker::new(TransactionId::new(9)));
+        for order in 0..=20 {
+            let root = BtreeHeader::new(
+                PageNumber::new(MAX_REGIONS - 1, MAX_PAGE_INDEX >> order, order),
+                11,
+                13,
+            );
+            let savepoint = Savepoint {
+                version: FILE_FORMAT_VERSION4,
+                id: SavepointId(7),
+                transaction_id: TransactionId::new(8),
+                user_root: Some(root),
+                transaction_tracker: tracker.clone(),
+                ephemeral: false,
+            };
+            let record = SerializedSavepoint::from_savepoint(&savepoint);
+            let decoded = record.to_savepoint(tracker.clone()).unwrap();
+            assert_eq!(decoded.get_user_root(), Some(root));
+            assert_eq!(decoded.get_id(), SavepointId(7));
+            assert_eq!(decoded.get_transaction_id(), TransactionId::new(8));
+            assert_eq!(
+                SerializedSavepoint::from_savepoint(&decoded).data(),
+                record.data()
+            );
+            drop(decoded);
+            let owners = Arc::strong_count(&tracker);
+            for bit in (40..59).chain((20 - u32::from(order))..20) {
+                let mut bad = record.data().to_vec();
+                let offset = 2 * size_of::<u8>() + 2 * size_of::<u64>();
+                let raw = u64::from_le_bytes(bad[offset..offset + 8].try_into().unwrap())
+                    | (1_u64 << bit);
+                bad[offset..offset + 8].copy_from_slice(&raw.to_le_bytes());
+                let original = bad.clone();
+                assert!(
+                    matches!(
+                        SerializedSavepoint::Ref(&bad).to_savepoint(tracker.clone()),
+                        Err(StorageError::Corrupted(_))
+                    ),
+                    "order={order}, bit={bit}"
+                );
+                assert_eq!(bad, original);
+                assert_eq!(Arc::strong_count(&tracker), owners);
+                assert!(!tracker.any_savepoint_exists());
+                assert!(tracker.oldest_live_read_transaction().is_none());
+            }
+        }
     }
 }

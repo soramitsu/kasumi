@@ -1,0 +1,71 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED_UNRUN_PREREQUISITE",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "patch_sha256": "9729155dc09c080a696ba8883d6c9e7eaa951ae6d5eb1f86632b6eb9e26a6cd6",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/db.rs",
+      "before_sha256": "de347514818cfa2855f9acdce01dd0581ed3a027a84ca0b17d058b9e1e305066",
+      "after_sha256": "fe9b0bd9c2a1b7284a1319f6a73c0ccf7ac18ef906fcc9953010f5c76265bfb1",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/lib.rs",
+      "before_sha256": "f55ea9cba2e2d33d159e49e1d8bf43da809db5547351c911b3b3ddcd34e46d30",
+      "after_sha256": "eb4982b16232196216b2bb586838e2615a3c3f77eab8b84ee6f3867eb9e4bf3d",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_opening.rs",
+      "before_sha256": null,
+      "after_sha256": "b2efad74c86b6fd162c7d3d3a153d45e0241e2686b7148d740ba05e9d3415f67",
+      "new_file": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_opening_tests.rs",
+      "before_sha256": null,
+      "after_sha256": "191e70b7e32fffba9b9be745a4090c56956394a0253482050fe71f479eb7f753",
+      "new_file": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_transaction.rs",
+      "before_sha256": "eeaeba8b05d1fd4203c98c0fd99feea10ac829fadb2212186428846360ef9718",
+      "after_sha256": "88d12d1c53999772088a746d50e244896ba0a6a1638a7a34290adf03f0f72139",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/mod.rs",
+      "before_sha256": "d1b8c13d009219f5bc10e598e6c07523cfdf18eb17bb78a757f38d7b42c72b0d",
+      "after_sha256": "eae4eba50b03e0e461b3130603d0678cda0808a054f666cc13be68ea6957ca9e",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+      "before_sha256": "712705a50997d9e586f6008d1a2a3fe00e1a3f333797d8f289ff3e039cb3e6ef",
+      "after_sha256": "0cb697cd901d5687f2437c99194da369c63e34724a811dcb5ee313cd7198daad",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/mod.rs",
+      "before_sha256": "d91c85b7a1fec6e8cf17cd0560e1c515bdf4dd848e9c548a96ceb7d2d3f0c210",
+      "after_sha256": "842420b03df7877e6e57dc09b714d0cb1b122958dde2accd3526365b8cd1b30e",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "before_sha256": "a0f083e6a15453538227999d93a77e44723e24cc7a87a608f0a47f6353e1e853",
+      "after_sha256": "fbce43617e79b9ff4700fa387c6460858885d898a7b3779523437f8489de8bb2",
+      "new_file": false
+    }
+  ],
+  "readme_sha256": "36eaab5c5ce06ba346e1205b0048e9284173289d50f2b29ccc8ebebb84980b55",
+  "fault_test_design_sha256": "b69e2d2b66fb75a567ea48d84494e5dbe1bd30512b3a6b03f6129bbd352e5488",
+  "actual_source_changes": false,
+  "cargo_or_native_execution": false,
+  "test_count": 6,
+  "production_adoption_complete": false,
+  "total_memory_bound": false,
+  "page_manager_base_includes_applied149": true
+}

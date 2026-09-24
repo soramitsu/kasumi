@@ -196,9 +196,19 @@ impl AuthorityRuntime {
     }
 
     pub async fn open(config: AuthorityRuntimeConfig) -> Result<Self> {
+        config.validate()?;
+        let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+        Self::open_with_storage(config, storage).await
+    }
+
+    pub(crate) async fn open_with_storage(
+        config: AuthorityRuntimeConfig,
+        storage: crate::runtime_memory::RuntimeStorage,
+    ) -> Result<Self> {
+        storage.require_policy(&config.admission)?;
         crate::startup_owner::open(
             crate::startup_owner::Kind::Authority,
-            Self::open_owned(config),
+            Self::open_owned(config, storage),
         )
         .await
     }
@@ -249,14 +259,17 @@ impl AuthorityRuntime {
         report.outcome(retained)
     }
 
-    async fn open_owned(config: AuthorityRuntimeConfig) -> Result<Self> {
+    async fn open_owned(
+        config: AuthorityRuntimeConfig,
+        storage: crate::runtime_memory::RuntimeStorage,
+    ) -> Result<Self> {
         let mut pending = crate::startup_resources::Resources::default();
         let outcome = crate::startup_preparation::capture("authority runtime", async {
             config.validate()?;
-            let persistent_disk = crate::persistent_disk::open(&config.persistent_disk)?;
-            let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
-            let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
+            let admission = storage.facade(&config.admission)?;
             pending.owned_admissions.push(admission.clone());
+            let persistent_disk = crate::persistent_disk::open(&config.persistent_disk, &storage)?;
+            let scratch_disk = storage.open_scratch(&config.scratch_disk)?;
             let auth = Authenticator::new(config.auth.clone())?;
             let native_tls = kasumi_transport::ReloadableServerConfig::new(config.native.load()?);
             let identity = config.replication.listener.tls.load()?;

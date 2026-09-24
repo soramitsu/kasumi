@@ -71,10 +71,14 @@ fn position(record: &TargetResolutionRecord) -> kasumi_raft::AppliedEntryContext
 }
 async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
+    kasumi_store::private_files::create_directory(&directory.path().join("persistent")).unwrap();
+    let disk = ScratchDisk::fixture(directory.path().join("scratch"), memory.clone());
     let node = NodeStore::create_new_fixture(
-        directory.path().join("node.redb"),
+        directory.path().join("persistent/node.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
-        ScratchDisk::fixture(),
+        memory,
+        disk,
     )
     .unwrap();
     let state = state(&fixture::origin());
@@ -93,6 +97,150 @@ async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
         .replace_namespaces(&install.replacements(), install.writes())
         .unwrap();
     (directory, store, state, install.view)
+}
+
+#[tokio::test]
+async fn selected_physical_rows_require_current_writer_bytes_without_repair() -> Result<()> {
+    let (_directory, store, before, old) = durable().await;
+    let mut state = before.clone();
+    let record = seal(&mut state);
+    let key = record.key();
+    let selected = Pending::prepare(
+        &old,
+        &mut state,
+        record.clone(),
+        &position(&record),
+        TARGET_COMPLETION_RESERVE_BYTES,
+    )?
+    .persist()?;
+    let checkpoint = "51".repeat(32);
+    store.write_batch(&selected.checkpoint_writes(&state, &checkpoint)?)?;
+    let point_key = id_key(&key);
+    let namespace = match selected.source.as_deref() {
+        Some(Source::Durable(rows)) => rows.binding.namespace(),
+        _ => panic!("fixture requires durable selected rows"),
+    };
+    let ordinal_key = ordinal_key(1);
+    let canonical_ordinal = store
+        .get_bounded(&namespace, &ordinal_key, MAX_ROW_BYTES)?
+        .expect("current writer must persist selected ordinal");
+    let canonical_point = store
+        .get_bounded(&namespace, &point_key, MAX_ROW_BYTES)?
+        .expect("current writer must persist selected point");
+    assert_eq!(
+        serde_json::to_vec(&serde_json::from_slice::<Ordinal>(&canonical_ordinal)?)?,
+        canonical_ordinal
+    );
+    assert_eq!(
+        serde_json::to_vec(&serde_json::from_slice::<Row>(&canonical_point)?)?,
+        canonical_point
+    );
+    let _ = selected.row(1)?;
+
+    let mut alternate_ordinal = canonical_ordinal.clone();
+    alternate_ordinal.push(b' ');
+    assert!(serde_json::from_slice::<Ordinal>(&alternate_ordinal).is_ok());
+    store.write_batch(&[WriteOp::put(
+        &namespace,
+        ordinal_key.as_slice(),
+        alternate_ordinal.as_slice(),
+    )])?;
+    let Err(error) = selected.row(1) else {
+        panic!("selected ordinal accepted alternate writer bytes");
+    };
+    assert!(
+        format!("{error:#}").contains("noncanonical target terminal ordinal"),
+        "{error:#}"
+    );
+    assert_eq!(
+        store.get_bounded(&namespace, &ordinal_key, MAX_ROW_BYTES)?,
+        Some(alternate_ordinal),
+        "failed selected read repaired ordinal bytes"
+    );
+    store.write_batch(&[WriteOp::put(
+        &namespace,
+        ordinal_key.as_slice(),
+        canonical_ordinal.as_slice(),
+    )])?;
+    let _ = selected.row(1)?;
+
+    let mut alternate_point = canonical_point.clone();
+    alternate_point.push(b' ');
+    assert!(serde_json::from_slice::<Row>(&alternate_point).is_ok());
+    store.write_batch(&[WriteOp::put(
+        &namespace,
+        point_key.as_slice(),
+        alternate_point.as_slice(),
+    )])?;
+    // The same physical row is still ahead of the old view's applied cursor.
+    assert!(old.get(&key)?.is_none());
+    let Err(error) = selected.get(&key) else {
+        panic!("selected point accepted alternate writer bytes");
+    };
+    assert!(
+        format!("{error:#}").contains("noncanonical target terminal point"),
+        "{error:#}"
+    );
+    assert_eq!(
+        store.get_bounded(&namespace, &point_key, MAX_ROW_BYTES)?,
+        Some(alternate_point),
+        "failed selected read repaired point bytes"
+    );
+    store.write_batch(&[WriteOp::put(
+        &namespace,
+        point_key.as_slice(),
+        canonical_point.as_slice(),
+    )])?;
+    assert_eq!(selected.get(&key)?.unwrap().record, record);
+    store.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn checkpoint_catalog_requires_current_writer_bytes_without_repair() -> Result<()> {
+    let (_directory, store, state, selected) = durable().await;
+    let checkpoint = "18".repeat(32);
+    let canonical = store
+        .get_bounded(CATALOG, checkpoint.as_bytes(), 64 << 10)?
+        .expect("current writer must install checkpoint binding");
+    let binding: NamespaceBinding = serde_json::from_slice(&canonical)?;
+    assert_eq!(serde_json::to_vec(&binding)?, canonical);
+    assert!(View::checkpoint_exists(&store, &checkpoint)?);
+    selected.prepare_install(&store, &state, &checkpoint, true)?;
+
+    let mut alternate = canonical.clone();
+    alternate.push(b' ');
+    assert!(serde_json::from_slice::<NamespaceBinding>(&alternate).is_ok());
+    store.write_batch(&[WriteOp::put(
+        CATALOG,
+        checkpoint.as_bytes(),
+        alternate.as_slice(),
+    )])?;
+    assert!(View::checkpoint_exists(&store, &checkpoint)?);
+    let error = selected
+        .prepare_install(&store, &state, &checkpoint, true)
+        .err()
+        .expect("alternate checkpoint binding accepted");
+    assert!(
+        format!("{error:#}").contains("noncanonical target terminal checkpoint binding"),
+        "{error:#}"
+    );
+    assert_eq!(
+        store.get_bounded(CATALOG, checkpoint.as_bytes(), 64 << 10)?,
+        Some(alternate),
+        "failed installation repaired the checkpoint binding"
+    );
+
+    store.write_batch(&[WriteOp::put(
+        CATALOG,
+        checkpoint.as_bytes(),
+        canonical.as_slice(),
+    )])?;
+    let restored = selected.prepare_install(&store, &state, &checkpoint, true)?;
+    assert!(restored.replacements().is_empty());
+    assert_eq!(restored.view.head(), selected.head());
+    store.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -265,6 +413,11 @@ async fn target_snapshot_catalog_reopens_only_its_exact_committed_prefix() {
 
 #[test]
 fn every_historical_terminal_requires_its_exact_earlier_seal() {
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+    )
+    .unwrap();
+    let disk = &scratch.disk;
     let mut state = state(&fixture::origin());
     let mut record = seal(&mut state);
     let TargetResolutionRecord::Completion(fact) = &mut record else {
@@ -292,13 +445,7 @@ fn every_historical_terminal_requires_its_exact_earlier_seal() {
     )
     .unwrap();
     row.validate(&state).unwrap();
-    let mut builder = Builder::new(
-        &ScratchDisk::fixture(),
-        8 << 20,
-        &state.tenant,
-        &state.incarnation,
-    )
-    .unwrap();
+    let mut builder = Builder::new(disk, 8 << 20, &state.tenant, &state.incarnation).unwrap();
     assert!(builder.push(&row, &state).is_err());
 }
 

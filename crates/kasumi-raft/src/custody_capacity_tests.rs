@@ -34,8 +34,11 @@ fn visit_spool(
 }
 #[tokio::test]
 async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = FaultBackend::new();
-    let (domains, _, _, mut log) = fixture(disk.clone(), true).await?;
+    let (domains, _, _, mut log) = fixture(disk.clone(), true, fixture_scratch.clone()).await?;
     log.blocking_append([
         openraft::Entry {
             log_id: id(0),
@@ -52,12 +55,13 @@ async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopen
         ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?,
         "retirement absent"
     );
+    let codec_scratch = fixture_scratch.clone();
     let (head, request, original, revision, context) = tokio::task::spawn_blocking(move || {
         let mut snapshot = custody_machine::capture(domains.custody())?;
         let mut head = custody_tables::load(domains.custody().store())?;
         let context = seed()?.0.context;
-        let mut commands = EncryptedSpool::new(&kasumi_store::ScratchDisk::fixture(), 64 << 20)?;
-        let mut audit = EncryptedSpool::new(&kasumi_store::ScratchDisk::fixture(), 64 << 20)?;
+        let mut commands = EncryptedSpool::new(&codec_scratch.clone(), 64 << 20)?;
+        let mut audit = EncryptedSpool::new(&codec_scratch.clone(), 64 << 20)?;
         let mut revision = 2u64;
         let mut original = None;
         for index in 0..4200 {
@@ -83,8 +87,7 @@ async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopen
             revision += 1;
         }
         assert!(head.commands > 4096 && head.audit > 8192);
-        let mut builder =
-            custody_records::Builder::new(&kasumi_store::ScratchDisk::fixture(), head.clone())?;
+        let mut builder = custody_records::Builder::new(&codec_scratch.clone(), head.clone())?;
         visit_spool(&mut commands, |bytes| builder.command(bytes))?;
         let mut sequence = 0u64;
         visit_spool(&mut audit, |bytes| {
@@ -116,7 +119,7 @@ async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopen
         Ok::<_, anyhow::Error>((head, request, original, revision, context))
     })
     .await??;
-    let (reopened, _, _, _) = fixture(disk.crash(), false).await?;
+    let (reopened, _, _, _) = fixture(disk.crash(), false, fixture_scratch.clone()).await?;
     tokio::task::spawn_blocking(move || -> Result<()> {
         let current = custody_tables::load(reopened.custody().store())?;
         assert_eq!(current, head);

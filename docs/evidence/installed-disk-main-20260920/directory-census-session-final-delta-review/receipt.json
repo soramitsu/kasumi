@@ -1,0 +1,24 @@
+{
+  "branch": "master",
+  "controls": {
+    "format01_result": "98b233dacffd6adf98fab5deedf349781cd59e61e10057dbeed9982fe45abe32",
+    "native02_results": "0ee2a604af58bc0d495f647c5d973424287e831cffa93fab0e8b7ea81f611970",
+    "snapshot02_files": "07025fc34d69e7adf1f1271c42464b8d861a2779b8d1f71bad00f599228f81e4",
+    "snapshot03_files": "90b003ba3f1747a30b7db7bb8522430b2f45977f78fd46bf4b29c5ba7b7f17b2",
+    "snapshot04_design": "5d4b7991169ea42eaa8d73b664c25043ca0cb09a14dfd791c353ece9953d8835",
+    "snapshot04_files": "238a542dfdab67cd1a42ba9ab95cbbf95f86207c7d531cf1634153247b29f2c2",
+    "snapshot04_patch": "b755f21124065b94d96db325c6d2ac5031335c1f338218c933986a40b8ac3569"
+  },
+  "external_paths_reread": false,
+  "files": {
+    "apply-checks-04.json": "fadeb9e421a837500abfc6add6be010647dfd1d1d89d94e17f94d3ff2511869c",
+    "apply-checks.json": "6ce0d05ec5ff6b802ccf277a852b82720373d98b497d23bf5616565b14f4bbad",
+    "native-evidence-check.json": "1ca95227682bdb127cd1fb0b2d411d9573df13090de5a95a3fe0f1f8afe0f55c",
+    "review.md": "9aa1084d95848d8e6450c044db11a74580d41ffbfab2ff8824267764f6f3134a"
+  },
+  "original_snapshot02_review_preserved": true,
+  "reviewer_rust_native_execution": false,
+  "reviewer_source_edits": false,
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "status": "BOUNDED_FINAL_DELTA_APPROVED_PENDING_INTEGRATED_GATES"
+}

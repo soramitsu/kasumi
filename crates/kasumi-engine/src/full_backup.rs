@@ -1,5 +1,6 @@
 //! Stream one coherent resident generation, verify transitive cold objects,
 //! then publish the authenticated full manifest last.
+use super::backup_producer_jobs::Failure as ProducerFailure;
 use super::*;
 use crate::backup_format::*;
 use std::io::Write;
@@ -33,27 +34,41 @@ struct StateStream {
     total: u64,
     limit: u64,
     cancellation: QueryCancellation,
+    stopped: bool,
+    #[cfg(test)]
+    pause_before_check: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl StateStream {
-    fn send_chunk(&mut self) -> std::io::Result<()> {
-        self.cancellation.check().map_err(std::io::Error::other)?;
-        let bytes = std::mem::replace(&mut self.buffer, Vec::with_capacity(CHUNK_BYTES));
-        self.sender
-            .blocking_send(bytes)
-            .map_err(|_| std::io::Error::other("backup consumer stopped"))
+    fn check(&mut self) -> std::io::Result<()> {
+        #[cfg(test)]
+        if let Some(pause) = self.pause_before_check.take() {
+            pause();
+        }
+        self.cancellation.check().map_err(|error| {
+            self.stopped = true;
+            std::io::Error::other(error)
+        })
     }
-    fn finish(mut self) -> std::io::Result<(u64, String)> {
+    fn send_chunk(&mut self) -> std::io::Result<()> {
+        self.check()?;
+        let bytes = std::mem::replace(&mut self.buffer, Vec::with_capacity(CHUNK_BYTES));
+        self.sender.blocking_send(bytes).map_err(|_| {
+            self.stopped = true;
+            std::io::Error::other("backup consumer stopped")
+        })
+    }
+    fn finish(&mut self) -> std::io::Result<(u64, String)> {
         if !self.buffer.is_empty() {
             self.send_chunk()?;
         }
-        Ok((self.total, hex::encode(self.hash.finalize())))
+        Ok((self.total, hex::encode(self.hash.clone().finalize())))
     }
 }
 
 impl Write for StateStream {
     fn write(&mut self, mut bytes: &[u8]) -> std::io::Result<usize> {
-        self.cancellation.check().map_err(std::io::Error::other)?;
+        self.check()?;
         let len = bytes.len();
         self.total = self
             .total
@@ -72,7 +87,7 @@ impl Write for StateStream {
         Ok(len)
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        self.cancellation.check().map_err(std::io::Error::other)
+        self.check()
     }
 }
 
@@ -85,18 +100,32 @@ struct StreamWork {
 }
 
 impl StreamWork {
-    fn run(mut self) -> Result<(u64, String)> {
-        crate::snapshot_codec::write(
+    fn run(mut self) -> std::result::Result<(u64, String), ProducerFailure> {
+        if crate::snapshot_codec::write(
             &self.generation.state,
             &self.generation.receipts,
+            &self.generation.backup_bindings,
             &self.generation.terminals,
             &self.generation.target_resolutions,
             &mut self.writer,
         )
-        .map_err(|_| Error::new(ErrorCode::Unavailable, "backup state stream failed"))?;
-        self.writer
-            .finish()
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "backup state stream incomplete"))
+        .is_err()
+        {
+            let error = Error::new(ErrorCode::Unavailable, "backup state stream failed");
+            return Err(if self.writer.stopped {
+                ProducerFailure::Stopped(error)
+            } else {
+                ProducerFailure::Failed(error)
+            });
+        }
+        self.writer.finish().map_err(|_| {
+            let error = Error::new(ErrorCode::Unavailable, "backup state stream incomplete");
+            if self.writer.stopped {
+                ProducerFailure::Stopped(error)
+            } else {
+                ProducerFailure::Failed(error)
+            }
+        })
     }
 }
 
@@ -139,6 +168,7 @@ impl Database {
                 "backup concurrency limit reached",
             )
         })?);
+        self.backup_producers.prepare(self.admission())?;
         tokio::select! {
             result = self.barrier() => result?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
@@ -208,12 +238,20 @@ impl Database {
                 limit: crate::target_resolution::snapshot_limit(state)
                     .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))?,
                 cancellation: cancellation.clone(),
+                stopped: false,
+                #[cfg(test)]
+                pause_before_check: self.worker_test_hooks.backup_stream.lock().unwrap().take(),
             },
             _reservation: reservation.clone(),
             _permit: permit.clone(),
             _registration: self.work.begin(cancellation.clone())?,
         };
-        let producer = tokio::task::spawn_blocking(move || work.run());
+        let producer = self.backup_producers.start(move || work.run()).map_err(|_| {
+            Error::new(
+                ErrorCode::UnknownOutcome,
+                "backup producer admission failed after intent publication; resolve the same session identity",
+            )
+        })?;
         let mut chunks = Vec::with_capacity(PAGE_CHUNKS);
         let mut chunk_count = 0u64;
         let mut page_count = 0u64;
@@ -292,9 +330,7 @@ impl Database {
             });
             page_count += 1;
         }
-        let (resident_bytes, resident_sha256) = producer
-            .await
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "backup producer failed"))??;
+        let (resident_bytes, resident_sha256) = producer.wait().await?;
         let manifest = FullBackupManifest {
             kind: FullBackupKind::FullDatabase,
             tenant: state.tenant.clone(),

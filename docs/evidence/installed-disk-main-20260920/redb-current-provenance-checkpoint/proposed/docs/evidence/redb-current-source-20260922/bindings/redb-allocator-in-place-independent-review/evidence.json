@@ -1,0 +1,140 @@
+{
+  "patch_sha256": "a41926e0b6fda54e12eff688da8c88c43d0a0f21c1514395a7f2af79f3fc12f2",
+  "manifest_sha256": "0642b5d880ade44d2e5a6df435694d8aa48be881013838c8a3e2b3dbeee61a3b",
+  "checks": [
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/bitmap.rs",
+      "base_sha256": "aee25ff80290c56cee083839f7ae138e33fd9076d496790ecc2d5fec6bc11d93",
+      "proposed_sha256": "1c66d0a834c11d20babad113ea5b6f79645d4ebfa58421e11923a65bb483be1a",
+      "live_base_exact": true,
+      "unchanged_functions": {
+        "from_bytes": {
+          "count": 2,
+          "exact_unchanged": true,
+          "sha256": [
+            "840195cd156aa6196b1caab948726b9e6d46c0dae8a1f56682d4b910b55d835c",
+            "e02862f19dcaa9e1dbc6a0e8d8c5e05a015c81aee3e872825418da0bb9fbf440"
+          ]
+        },
+        "xxh3_hash": {
+          "count": 2,
+          "exact_unchanged": true,
+          "sha256": [
+            "aa699c4dbee97d73b921dd47d28aface437e2c1b1da23108ea90d0b367e89be1",
+            "eb587a6d9863f4b4e2cdaa934694dd20e9f6500242c492536089fd69f887f3dd"
+          ]
+        },
+        "checked_encoded_len": {
+          "count": 2,
+          "exact_unchanged": true,
+          "sha256": [
+            "8d295e517039c8005bc6a4faa1cfc824f18fbf79c623fd0ccbb6715374dcd0b4",
+            "03543341d2dc1350d63e9d56d4fcf1234bafbe574eb78d2ed611c6442532206d"
+          ]
+        },
+        "checked_offset_encoded_len": {
+          "count": 1,
+          "exact_unchanged": true,
+          "sha256": [
+            "05e73849d3cbf91b8410c708bd49c3af7c16c620cdd5d7e28a5ba55dca867b10"
+          ]
+        },
+        "checked_length_encoded_len": {
+          "count": 0,
+          "exact_unchanged": true,
+          "sha256": []
+        }
+      },
+      "reference_serializers_match_original_except_reference_method_names_and_whitespace": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs",
+      "base_sha256": "50221599223409a8d7549a45df62ce3a9a2ea8c2d5dfbd592a9d80f457da9c17",
+      "proposed_sha256": "289f6b3f52d77f2ac40bdaaaca9c693c16ed62b8c2819d5539df9f7b80f12d92",
+      "live_base_exact": true,
+      "unchanged_functions": {
+        "from_bytes": {
+          "count": 1,
+          "exact_unchanged": true,
+          "sha256": [
+            "a54ecfb56a6d79831c8986c1b47912feb802808aabe9ffa24a081b7099252f73"
+          ]
+        },
+        "xxh3_hash": {
+          "count": 1,
+          "exact_unchanged": true,
+          "sha256": [
+            "3c3e605582c003c398a7511ebe62c78e3d68ba4d0c3046948ad406c1cf2c7c83"
+          ]
+        },
+        "checked_encoded_len": {
+          "count": 1,
+          "exact_unchanged": true,
+          "sha256": [
+            "094c8f087cf2784ac5c62c41c2c0fd6eafcecdd380895cb7c78418c3a38e60d2"
+          ]
+        },
+        "checked_offset_encoded_len": {
+          "count": 0,
+          "exact_unchanged": true,
+          "sha256": []
+        },
+        "checked_length_encoded_len": {
+          "count": 0,
+          "exact_unchanged": true,
+          "sha256": []
+        }
+      },
+      "reference_serializers_match_original_except_reference_method_names_and_whitespace": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/region.rs",
+      "base_sha256": "4c01519d1f840857155efcd45ebee22b1bb2b9672c1eaed3465e795017ee18fe",
+      "proposed_sha256": "2f1b8a7ddb86f8000df47f9f68d24752f93df5489b377c9f3312d0a6203ff086",
+      "live_base_exact": true,
+      "unchanged_functions": {
+        "from_bytes": {
+          "count": 1,
+          "exact_unchanged": true,
+          "sha256": [
+            "465f54911e5800b0e1734dd98a95fb6f2569aa6bf852c6731cfd3f23f85e77c4"
+          ]
+        },
+        "xxh3_hash": {
+          "count": 1,
+          "exact_unchanged": true,
+          "sha256": [
+            "44adda230a5a1748b9ddbbdc15253b0a93596d81dbf9f979e6afbe0ff1267de4"
+          ]
+        },
+        "checked_encoded_len": {
+          "count": 1,
+          "exact_unchanged": true,
+          "sha256": [
+            "f829f77e5fc1ef0f1c2ce2ca87931eb59449254df4cc6647aa2e9a0845a7a7d0"
+          ]
+        },
+        "checked_offset_encoded_len": {
+          "count": 0,
+          "exact_unchanged": true,
+          "sha256": []
+        },
+        "checked_length_encoded_len": {
+          "count": 1,
+          "exact_unchanged": true,
+          "sha256": [
+            "90adca23ce5a4af452db322445b168ce899da80c7f881f0c02eb2b8ffbae6dd4"
+          ]
+        }
+      },
+      "reference_serializers_match_original_except_reference_method_names_and_whitespace": true
+    }
+  ],
+  "git_apply_check": {
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "branch": "master",
+  "native_cargo_or_source_changes": false
+}

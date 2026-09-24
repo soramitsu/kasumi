@@ -1,0 +1,29 @@
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-02/node_disk/file.rs:1294:49
+     |
+1294 |     pub fn identity(&self) -> io::Result<crate::private_files::FileIdentity> {
+     |                                                 ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-02/node_disk/file.rs:1298:31
+     |
+1298 |         let identity = crate::private_files::descriptor_identity(file).map_err(|error| {
+     |                               ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+warning: unused import: `directory::NodeDiskDirectory`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-02/node_disk.rs:31:9
+   |
+31 | pub use directory::NodeDiskDirectory;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `file::NodeDiskFile`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-02/node_disk.rs:32:9
+   |
+32 | pub use file::NodeDiskFile;
+   |         ^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 2 previous errors; 2 warnings emitted
+
+For more information about this error, try `rustc --explain E0433`.

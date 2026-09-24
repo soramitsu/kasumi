@@ -30,12 +30,17 @@ use tokio::sync::{Notify, oneshot};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-pub(super) struct ReleaseGate {
+pub(crate) struct ReleaseGate {
     entered: Notify,
     release: Notify,
 }
+impl std::fmt::Debug for ReleaseGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReleaseGate").finish_non_exhaustive()
+    }
+}
 impl ReleaseGate {
-    fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             entered: Notify::new(),
             release: Notify::new(),
@@ -45,10 +50,13 @@ impl ReleaseGate {
         self.entered.notify_one();
         self.release.notified().await;
     }
-    async fn entered(&self) {
+    pub(crate) async fn entered(&self) {
         tokio::time::timeout(Duration::from_secs(10), self.entered.notified())
             .await
             .unwrap();
+    }
+    pub(crate) fn release(&self) {
+        self.release.notify_one();
     }
 }
 
@@ -94,12 +102,21 @@ impl Fixture {
         private_files::create_directory(&private).unwrap();
         let signer = private.join("signer.json");
         initialize_signer(&signer).unwrap();
-        let node = NodeStore::create_new_fixture(
-            private.join("node.redb"),
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap();
+        let mut config = kasumi_engine::admission::AdmissionConfig {
+            max_inflight_bytes: Some(128 << 20),
+            ..Default::default()
+        };
+        let bookkeeping =
+            kasumi_engine::admission::NodeAdmission::required_bookkeeping_bytes(&config).unwrap();
+        config.max_inflight_bytes = Some(bookkeeping.checked_add(128 << 20).unwrap());
+        let physical = crate::runtime_storage_fixtures::physical(&private, config).unwrap();
+        let admission = physical.admission.clone();
+        let node = physical
+            .create_new(
+                private.join("persistent/node.redb"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
         let security_store = TenantStore::initialize_catalog(
             node.clone(),
             kasumi_engine::SECURITY_TENANT.into(),
@@ -108,14 +125,6 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let mut config = kasumi_engine::admission::AdmissionConfig {
-            max_inflight_bytes: Some(128 << 20),
-            ..Default::default()
-        };
-        let bookkeeping =
-            kasumi_engine::admission::NodeAdmission::required_bookkeeping_bytes(&config).unwrap();
-        config.max_inflight_bytes = Some(bookkeeping.checked_add(128 << 20).unwrap());
-        let admission = kasumi_engine::admission::NodeAdmission::new(config).unwrap();
         let security = kasumi_engine::SecurityAudit::initialize(
             security_store.clone(),
             Default::default(),
@@ -260,6 +269,7 @@ impl Fixture {
             auth: self.auth.clone(),
             challenge: HeaderValue::from_static("Bearer"),
             origins: Vec::new(),
+            release_gate: Arc::new(Mutex::new(None)),
         }
     }
     fn owned_response_router(&self, body: Body, mutation_dispatched: bool) -> Router {
@@ -620,6 +630,99 @@ async fn dispatched_mutation_response_wait_reports_unknown_outcome_after_revocat
     fixture.close().await;
 }
 
+#[tokio::test]
+async fn dispatched_mutation_response_keeps_original_deadline_after_family_renewal() {
+    let fixture = Fixture::new().await;
+    let issued = fixture.issue();
+    assert_eq!(issued.expires_at_ms - fixture.clock.base_ms, 3_600_000);
+    let gate = ReleaseGate::new();
+    let arguments = json!({
+        "read_set":[], "idempotency_key":"renewed-mcp-mutation",
+        "operations":[{"op":"put", "collection":"docs", "id":"renewal", "body":{"value":"committed"}, "expected":{"kind":"absent"}}],
+    });
+    let mut pending_request = request(
+        &issued.token,
+        "tools/call",
+        json!({"name":"kasumi_mutate", "arguments":arguments.clone()}),
+    );
+    pending_request.extensions_mut().insert(gate.clone());
+    let running = tokio::spawn(fixture.router().oneshot(pending_request));
+    gate.entered().await;
+    let original = fixture
+        .database
+        .operation_receipt(&Fixture::context(), "renewed-mcp-mutation")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(original.outcome.is_ok());
+
+    fixture.clock.elapsed_ms.store(30_000, Ordering::SeqCst);
+    let renewed = fixture
+        .credentials
+        .renew(
+            &RenewCredential {
+                family_id: issued.family_id,
+                renewal_id: Uuid::new_v4(),
+            },
+            "person",
+        )
+        .unwrap();
+    assert!(renewed.expires_at_ms > issued.expires_at_ms);
+    fixture.clock.elapsed_ms.store(3_600_000, Ordering::SeqCst);
+    fixture
+        .auth
+        .authenticate(&format!("Bearer {}", renewed.token))
+        .await
+        .unwrap()
+        .authorization
+        .check_live()
+        .unwrap();
+    gate.release.notify_one();
+    let (status, body) = decoded(running.await.unwrap().unwrap()).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body, json!({"error":"UNKNOWN_OUTCOME"}));
+    fixture.assert_one_denial();
+
+    let (status, body) = decoded(
+        fixture
+            .router()
+            .oneshot(request(
+                &renewed.token,
+                "tools/call",
+                json!({
+                    "name":"kasumi_receipt",
+                    "arguments":{"idempotency_key":"renewed-mcp-mutation"},
+                }),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["result"]["structuredContent"],
+        serde_json::to_value(&original).unwrap()
+    );
+    let (status, body) = decoded(
+        fixture
+            .router()
+            .oneshot(request(
+                &renewed.token,
+                "tools/call",
+                json!({"name":"kasumi_mutate", "arguments":arguments}),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["result"]["structuredContent"],
+        serde_json::to_value(original.outcome.unwrap()).unwrap()
+    );
+    fixture.close().await;
+}
+
 struct UnpolledStream(Option<u64>);
 impl hyper::body::Body for UnpolledStream {
     type Data = Bytes;
@@ -785,6 +888,68 @@ async fn terminal_body_limits_errors_and_length_mismatches_are_enforced_before_r
         )
     );
     assert_eq!(fixture.admission.snapshot().reserved_bytes, baseline);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn terminal_content_length_must_match_body_before_release() {
+    const ONE: &[&str] = &["1"];
+    const TWO: &[&str] = &["2"];
+    const DUPLICATE: &[&str] = &["2", "2"];
+    let fixture = Fixture::new().await;
+    let issued = fixture.issue();
+    for (lengths, dispatched, expected_status, expected_body) in [
+        (
+            ONE,
+            false,
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"UNAVAILABLE"}),
+        ),
+        (
+            DUPLICATE,
+            false,
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"UNAVAILABLE"}),
+        ),
+        (
+            ONE,
+            true,
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"UNKNOWN_OUTCOME"}),
+        ),
+        (TWO, false, StatusCode::OK, json!({})),
+    ] {
+        let app = Router::new()
+            .route(
+                "/mcp",
+                axum::routing::post(
+                    move |axum::Extension(invocation): axum::Extension<Verified>| async move {
+                        invocation
+                            .mutation_dispatched
+                            .store(dispatched, Ordering::Release);
+                        let mut response = Response::new(Body::from("{}"));
+                        for value in lengths {
+                            response
+                                .headers_mut()
+                                .append(CONTENT_LENGTH, HeaderValue::from_static(value));
+                        }
+                        response
+                    },
+                ),
+            )
+            .layer(middleware::from_fn_with_state(
+                fixture.http_auth(),
+                authenticate,
+            ));
+        let (status, body) = decoded(
+            app.oneshot(request(&issued.token, "tools/list", json!({})))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, expected_status);
+        assert_eq!(body, expected_body);
+    }
     fixture.close().await;
 }
 

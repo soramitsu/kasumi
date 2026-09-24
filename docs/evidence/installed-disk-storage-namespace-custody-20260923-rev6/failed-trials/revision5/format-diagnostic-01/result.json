@@ -1,0 +1,30 @@
+{
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "fmt",
+    "--all",
+    "--",
+    "--check"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+  "pid": 91924,
+  "pgid": 91924,
+  "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/format-diagnostic-01/format.log",
+  "bound_seconds": 120,
+  "diagnostic_only": true,
+  "final_acceptance": false,
+  "exit_code": 0,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "remaining_processes": [],
+  "source_unchanged": true,
+  "source_count": 3619,
+  "native_source_after_sha256": "41a186155701805b43b60fc10154360cc9d7eecc0613e78574cd421b60aa59f0",
+  "binary_sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+  "source_before_sha256": "81f906109c3d8ecf6019f6879a725f170d84e3a8620714fd8029277677a468ec",
+  "source_after_sha256": "81f906109c3d8ecf6019f6879a725f170d84e3a8620714fd8029277677a468ec",
+  "elapsed_seconds": 2.448897625,
+  "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "all_passed": true
+}

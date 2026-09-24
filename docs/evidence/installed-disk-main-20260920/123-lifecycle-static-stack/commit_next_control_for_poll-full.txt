@@ -1,0 +1,1328 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010013e958 <lifecycle::recovery_control::commit_next_control_for::{closure#0}>:
+10013e958: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+10013e95c: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10013e960: 910043fd    	add	x29, sp, #0x10
+10013e964: d14043e9    	sub	x9, sp, #0x10, lsl #12  ; =0x10000
+10013e968: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+10013e96c: f90003ff    	str	xzr, [sp]
+10013e970: eb2963ff    	cmp	sp, x9
+10013e974: 54ffffa1    	b.ne	0x10013e968 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x10>
+10013e978: d131c3ff    	sub	sp, sp, #0xc70
+10013e97c: f90003ff    	str	xzr, [sp]
+10013e980: 91403fe9    	add	x9, sp, #0xf, lsl #12   ; =0xf000
+10013e984: 912dc129    	add	x9, x9, #0xb70
+10013e988: f900a3e9    	str	x9, [sp, #0x140]
+10013e98c: 914023ea    	add	x10, sp, #0x8, lsl #12  ; =0x8000
+10013e990: 910b414a    	add	x10, x10, #0x2d0
+10013e994: f900a7ea    	str	x10, [sp, #0x148]
+10013e998: 91401bea    	add	x10, sp, #0x6, lsl #12  ; =0x6000
+10013e99c: 9133214a    	add	x10, x10, #0xcc8
+10013e9a0: f900abea    	str	x10, [sp, #0x150]
+10013e9a4: 91400bea    	add	x10, sp, #0x2, lsl #12  ; =0x2000
+10013e9a8: 9137814a    	add	x10, x10, #0xde0
+10013e9ac: f900afea    	str	x10, [sp, #0x158]
+10013e9b0: f900b3e8    	str	x8, [sp, #0x160]
+10013e9b4: f900b7e0    	str	x0, [sp, #0x168]
+10013e9b8: f900bfe1    	str	x1, [sp, #0x178]
+10013e9bc: aa0003e8    	mov	x8, x0
+10013e9c0: f9057128    	str	x8, [x9, #0xae0]
+10013e9c4: aa0003e8    	mov	x8, x0
+10013e9c8: f9057528    	str	x8, [x9, #0xae8]
+10013e9cc: 3951b808    	ldrb	w8, [x0, #0x46e]
+10013e9d0: b90177e8    	str	w8, [sp, #0x174]
+10013e9d4: 340003e8    	cbz	w8, 0x10013ea50 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xf8>
+10013e9d8: 14000001    	b	0x10013e9dc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x84>
+10013e9dc: b94177e8    	ldr	w8, [sp, #0x174]
+10013e9e0: 71000508    	subs	w8, w8, #0x1
+10013e9e4: 540006a0    	b.eq	0x10013eab8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x160>
+10013e9e8: 14000001    	b	0x10013e9ec <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x94>
+10013e9ec: b94177e8    	ldr	w8, [sp, #0x174]
+10013e9f0: 71000908    	subs	w8, w8, #0x2
+10013e9f4: 54000680    	b.eq	0x10013eac4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x16c>
+10013e9f8: 14000001    	b	0x10013e9fc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xa4>
+10013e9fc: b94177e8    	ldr	w8, [sp, #0x174]
+10013ea00: 71000d08    	subs	w8, w8, #0x3
+10013ea04: 54000660    	b.eq	0x10013ead0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x178>
+10013ea08: 14000001    	b	0x10013ea0c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xb4>
+10013ea0c: b94177e8    	ldr	w8, [sp, #0x174]
+10013ea10: 71001108    	subs	w8, w8, #0x4
+10013ea14: 54000640    	b.eq	0x10013eadc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x184>
+10013ea18: 14000001    	b	0x10013ea1c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xc4>
+10013ea1c: b94177e8    	ldr	w8, [sp, #0x174]
+10013ea20: 71001508    	subs	w8, w8, #0x5
+10013ea24: 54000620    	b.eq	0x10013eae8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x190>
+10013ea28: 14000001    	b	0x10013ea2c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xd4>
+10013ea2c: b94177e8    	ldr	w8, [sp, #0x174]
+10013ea30: 71001908    	subs	w8, w8, #0x6
+10013ea34: 54000600    	b.eq	0x10013eaf4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x19c>
+10013ea38: 14000001    	b	0x10013ea3c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xe4>
+10013ea3c: b94177e8    	ldr	w8, [sp, #0x174]
+10013ea40: 71001d08    	subs	w8, w8, #0x7
+10013ea44: 540005e0    	b.eq	0x10013eb00 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1a8>
+10013ea48: 14000001    	b	0x10013ea4c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xf4>
+10013ea4c: 14000030    	b	0x10013eb0c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1b4>
+10013ea50: f940afe8    	ldr	x8, [sp, #0x158]
+10013ea54: f940b7e9    	ldr	x9, [sp, #0x168]
+10013ea58: f940a3ea    	ldr	x10, [sp, #0x140]
+10013ea5c: 3911b13f    	strb	wzr, [x9, #0x46c]
+10013ea60: 3911ad3f    	strb	wzr, [x9, #0x46b]
+10013ea64: 3911a93f    	strb	wzr, [x9, #0x46a]
+10013ea68: 3911a13f    	strb	wzr, [x9, #0x468]
+10013ea6c: 3911b53f    	strb	wzr, [x9, #0x46d]
+10013ea70: 3911a53f    	strb	wzr, [x9, #0x469]
+10013ea74: f9422d2b    	ldr	x11, [x9, #0x458]
+10013ea78: f9015d2b    	str	x11, [x9, #0x2b8]
+10013ea7c: f9423121    	ldr	x1, [x9, #0x460]
+10013ea80: f9057941    	str	x1, [x10, #0xaf0]
+10013ea84: 3dc0a120    	ldr	q0, [x9, #0x280]
+10013ea88: 3d80a520    	str	q0, [x9, #0x290]
+10013ea8c: f941592a    	ldr	x10, [x9, #0x2b0]
+10013ea90: f901612a    	str	x10, [x9, #0x2c0]
+10013ea94: f9415d20    	ldr	x0, [x9, #0x2b8]
+10013ea98: 3dc0a520    	ldr	q0, [x9, #0x290]
+10013ea9c: 91400be2    	add	x2, sp, #0x2, lsl #12   ; =0x2000
+10013eaa0: 91378042    	add	x2, x2, #0xde0
+10013eaa4: 3d800100    	str	q0, [x8]
+10013eaa8: 914007e8    	add	x8, sp, #0x1, lsl #12   ; =0x1000
+10013eaac: 911ec108    	add	x8, x8, #0x7b0
+10013eab0: 97fe3082    	bl	0x1000cacb8 <lifecycle::recovery_control::prepare_next>
+10013eab4: 14000024    	b	0x10013eb44 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1ec>
+10013eab8: 52800008    	mov	w8, #0x0                ; =0
+10013eabc: 3707ffe8    	tbnz	w8, #0x0, 0x10013eab8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x160>
+10013eac0: 14000033    	b	0x10013eb8c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x234>
+10013eac4: 52800008    	mov	w8, #0x0                ; =0
+10013eac8: 3707ffe8    	tbnz	w8, #0x0, 0x10013eac4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x16c>
+10013eacc: 14000033    	b	0x10013eb98 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x240>
+10013ead0: f940bfe8    	ldr	x8, [sp, #0x178]
+10013ead4: f900bfe8    	str	x8, [sp, #0x178]
+10013ead8: 14000027    	b	0x10013eb74 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x21c>
+10013eadc: f940bfe8    	ldr	x8, [sp, #0x178]
+10013eae0: f900bfe8    	str	x8, [sp, #0x178]
+10013eae4: 140000b1    	b	0x10013eda8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x450>
+10013eae8: f940bfe8    	ldr	x8, [sp, #0x178]
+10013eaec: f900bfe8    	str	x8, [sp, #0x178]
+10013eaf0: 1400012d    	b	0x10013efa4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x64c>
+10013eaf4: f940bfe8    	ldr	x8, [sp, #0x178]
+10013eaf8: f900bfe8    	str	x8, [sp, #0x178]
+10013eafc: 140001df    	b	0x10013f278 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x920>
+10013eb00: f940bfe8    	ldr	x8, [sp, #0x178]
+10013eb04: f900bfe8    	str	x8, [sp, #0x178]
+10013eb08: 140002c9    	b	0x10013f62c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xcd4>
+10013eb0c: f940bfe8    	ldr	x8, [sp, #0x178]
+10013eb10: f900bfe8    	str	x8, [sp, #0x178]
+10013eb14: 14000409    	b	0x10013fb38 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x11e0>
+10013eb18: f940a3e8    	ldr	x8, [sp, #0x140]
+10013eb1c: f940b7ea    	ldr	x10, [sp, #0x168]
+10013eb20: 52800049    	mov	w9, #0x2                ; =2
+10013eb24: 3911b949    	strb	w9, [x10, #0x46e]
+10013eb28: f9457d00    	ldr	x0, [x8, #0xaf8]
+10013eb2c: 948924f7    	bl	0x102387f08 <dyld_stub_binder+0x102387f08>
+10013eb30: f940a3e9    	ldr	x9, [sp, #0x140]
+10013eb34: f9057d20    	str	x0, [x9, #0xaf8]
+10013eb38: aa0103e8    	mov	x8, x1
+10013eb3c: b90b0128    	str	w8, [x9, #0xb00]
+10013eb40: 17fffff6    	b	0x10013eb18 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1c0>
+10013eb44: 910603e8    	add	x8, sp, #0x180
+10013eb48: 914007e0    	add	x0, sp, #0x1, lsl #12   ; =0x1000
+10013eb4c: 911ec000    	add	x0, x0, #0x7b0
+10013eb50: 940068b3    	bl	0x100158e1c <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013eb54: 14000001    	b	0x10013eb58 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x200>
+10013eb58: f940b7e8    	ldr	x8, [sp, #0x168]
+10013eb5c: 9111c100    	add	x0, x8, #0x470
+10013eb60: 910603e1    	add	x1, sp, #0x180
+10013eb64: 5282c608    	mov	w8, #0x1630             ; =5680
+10013eb68: aa0803e2    	mov	x2, x8
+10013eb6c: 948925a4    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013eb70: 14000001    	b	0x10013eb74 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x21c>
+10013eb74: f940a3e9    	ldr	x9, [sp, #0x140]
+10013eb78: f940b7e8    	ldr	x8, [sp, #0x168]
+10013eb7c: 9111c108    	add	x8, x8, #0x470
+10013eb80: f9009fe8    	str	x8, [sp, #0x138]
+10013eb84: f9087928    	str	x8, [x9, #0x10f0]
+10013eb88: 14000010    	b	0x10013ebc8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x270>
+10013eb8c: d002e200    	adrp	x0, 0x105d80000 <dyld_stub_binder+0x105d80000>
+10013eb90: 91182000    	add	x0, x0, #0x608
+10013eb94: 94892473    	bl	0x102387d60 <core::panicking::panic_const::panic_const_async_fn_resumed>
+10013eb98: d002e200    	adrp	x0, 0x105d80000 <dyld_stub_binder+0x105d80000>
+10013eb9c: 91182000    	add	x0, x0, #0x608
+10013eba0: 94892477    	bl	0x102387d7c <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+10013eba4: f940b7e8    	ldr	x8, [sp, #0x168]
+10013eba8: 9111c100    	add	x0, x8, #0x470
+10013ebac: 97fd993a    	bl	0x1000a5094 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10013ebb0: 17ffffda    	b	0x10013eb18 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1c0>
+10013ebb4: f940a3e9    	ldr	x9, [sp, #0x140]
+10013ebb8: f9057d20    	str	x0, [x9, #0xaf8]
+10013ebbc: aa0103e8    	mov	x8, x1
+10013ebc0: b90b0128    	str	w8, [x9, #0xb00]
+10013ebc4: 17fffff8    	b	0x10013eba4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x24c>
+10013ebc8: f9409fe0    	ldr	x0, [sp, #0x138]
+10013ebcc: f940bfe1    	ldr	x1, [sp, #0x178]
+10013ebd0: 91400be8    	add	x8, sp, #0x2, lsl #12   ; =0x2000
+10013ebd4: 9137c108    	add	x8, x8, #0xdf0
+10013ebd8: 97ff7cf4    	bl	0x10011dfa8 <lifecycle::recovery_control::prepare_next::{closure#0}>
+10013ebdc: 14000001    	b	0x10013ebe0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x288>
+10013ebe0: f95703e9    	ldr	x9, [sp, #0x2e00]
+10013ebe4: d2800008    	mov	x8, #0x0                ; =0
+10013ebe8: b1000529    	adds	x9, x9, #0x1
+10013ebec: 9a9f1508    	csinc	x8, x8, xzr, ne
+10013ebf0: 360001a8    	tbz	w8, #0x0, 0x10013ec24 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x2cc>
+10013ebf4: 14000001    	b	0x10013ebf8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x2a0>
+10013ebf8: f940b7e9    	ldr	x9, [sp, #0x168]
+10013ebfc: f940b3ea    	ldr	x10, [sp, #0x160]
+10013ec00: 92800008    	mov	x8, #-0x1               ; =-1
+10013ec04: f9000148    	str	x8, [x10]
+10013ec08: 52800068    	mov	w8, #0x3                ; =3
+10013ec0c: 3911b928    	strb	w8, [x9, #0x46e]
+10013ec10: 914043ff    	add	sp, sp, #0x10, lsl #12  ; =0x10000
+10013ec14: 9131c3ff    	add	sp, sp, #0xc70
+10013ec18: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10013ec1c: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10013ec20: d65f03c0    	ret
+10013ec24: 91400be1    	add	x1, sp, #0x2, lsl #12   ; =0x2000
+10013ec28: 9137c021    	add	x1, x1, #0xdf0
+10013ec2c: 91400be0    	add	x0, sp, #0x2, lsl #12   ; =0x2000
+10013ec30: 913be000    	add	x0, x0, #0xef8
+10013ec34: 52802108    	mov	w8, #0x108              ; =264
+10013ec38: aa0803e2    	mov	x2, x8
+10013ec3c: 94892570    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013ec40: f940b7e8    	ldr	x8, [sp, #0x168]
+10013ec44: 9111c100    	add	x0, x8, #0x470
+10013ec48: 97fd9913    	bl	0x1000a5094 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10013ec4c: 14000001    	b	0x10013ec50 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x2f8>
+10013ec50: f940b7e9    	ldr	x9, [sp, #0x168]
+10013ec54: 91400be8    	add	x8, sp, #0x2, lsl #12   ; =0x2000
+10013ec58: 913be108    	add	x8, x8, #0xef8
+10013ec5c: 91400bea    	add	x10, sp, #0x2, lsl #12  ; =0x2000
+10013ec60: 9137e54a    	add	x10, x10, #0xdf9
+10013ec64: 3ccff140    	ldur	q0, [x10, #0xff]
+10013ec68: 3d80a920    	str	q0, [x9, #0x2a0]
+10013ec6c: 5280002a    	mov	w10, #0x1               ; =1
+10013ec70: 3911b52a    	strb	w10, [x9, #0x46d]
+10013ec74: 910b2120    	add	x0, x9, #0x2c8
+10013ec78: 91004101    	add	x1, x8, #0x10
+10013ec7c: 52801f08    	mov	w8, #0xf8               ; =248
+10013ec80: aa0803e2    	mov	x2, x8
+10013ec84: 9489255e    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013ec88: f940b7e8    	ldr	x8, [sp, #0x168]
+10013ec8c: f941650a    	ldr	x10, [x8, #0x2c8]
+10013ec90: d2f00008    	mov	x8, #-0x8000000000000000 ; =-9223372036854775808
+10013ec94: 8b080148    	add	x8, x10, x8
+10013ec98: d2f0000b    	mov	x11, #-0x8000000000000000 ; =-9223372036854775808
+10013ec9c: 52800069    	mov	w9, #0x3                ; =3
+10013eca0: eb0b014a    	subs	x10, x10, x11
+10013eca4: 9a892108    	csel	x8, x8, x9, hs
+10013eca8: f1000508    	subs	x8, x8, #0x1
+10013ecac: 54000201    	b.ne	0x10013ecec <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x394>
+10013ecb0: 14000001    	b	0x10013ecb4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x35c>
+10013ecb4: f940b7e8    	ldr	x8, [sp, #0x168]
+10013ecb8: 3911b51f    	strb	wzr, [x8, #0x46d]
+10013ecbc: 52800029    	mov	w9, #0x1                ; =1
+10013ecc0: 3911b109    	strb	w9, [x8, #0x46c]
+10013ecc4: f9416909    	ldr	x9, [x8, #0x2d0]
+10013ecc8: f901e109    	str	x9, [x8, #0x3c0]
+10013eccc: f9415d00    	ldr	x0, [x8, #0x2b8]
+10013ecd0: 9111c108    	add	x8, x8, #0x470
+10013ecd4: d0011281    	adrp	x1, 0x102390000 <dyld_stub_binder+0x102390000>
+10013ecd8: 910dfc21    	add	x1, x1, #0x37f
+10013ecdc: 528000a9    	mov	w9, #0x5                ; =5
+10013ece0: aa0903e2    	mov	x2, x9
+10013ece4: 97fe6279    	bl	0x1000d76c8 <<lifecycle::Fixture>::context>
+10013ece8: 14000013    	b	0x10013ed34 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x3dc>
+10013ecec: f0011280    	adrp	x0, 0x102391000 <dyld_stub_binder+0x102391000>
+10013ecf0: 91116400    	add	x0, x0, #0x459
+10013ecf4: 528002c8    	mov	w8, #0x16               ; =22
+10013ecf8: aa0803e1    	mov	x1, x8
+10013ecfc: 97fb5d80    	bl	0x1000162fc <<core::fmt::Arguments>::from_str>
+10013ed00: f90097e0    	str	x0, [sp, #0x128]
+10013ed04: f9009be1    	str	x1, [sp, #0x130]
+10013ed08: 1400003e    	b	0x10013ee00 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x4a8>
+10013ed0c: f940b7e8    	ldr	x8, [sp, #0x168]
+10013ed10: 3911ad1f    	strb	wzr, [x8, #0x46b]
+10013ed14: 3951b108    	ldrb	w8, [x8, #0x46c]
+10013ed18: 37008548    	tbnz	w8, #0x0, 0x10013fdc0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1468>
+10013ed1c: 14000426    	b	0x10013fdb4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x145c>
+10013ed20: f940a3e9    	ldr	x9, [sp, #0x140]
+10013ed24: f9057d20    	str	x0, [x9, #0xaf8]
+10013ed28: aa0103e8    	mov	x8, x1
+10013ed2c: b90b0128    	str	w8, [x9, #0xb00]
+10013ed30: 17fffff7    	b	0x10013ed0c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x3b4>
+10013ed34: f940b7e8    	ldr	x8, [sp, #0x168]
+10013ed38: 52800029    	mov	w9, #0x1                ; =1
+10013ed3c: 3911ad09    	strb	w9, [x8, #0x46b]
+10013ed40: f9415d00    	ldr	x0, [x8, #0x2b8]
+10013ed44: 91400fe8    	add	x8, sp, #0x3, lsl #12   ; =0x3000
+10013ed48: 912ac108    	add	x8, x8, #0xab0
+10013ed4c: 97fe6241    	bl	0x1000d7650 <<lifecycle::Fixture>::leader>
+10013ed50: 1400000a    	b	0x10013ed78 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x420>
+10013ed54: f940b7e8    	ldr	x8, [sp, #0x168]
+10013ed58: 3951ad08    	ldrb	w8, [x8, #0x46b]
+10013ed5c: 37008248    	tbnz	w8, #0x0, 0x10013fda4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x144c>
+10013ed60: 17ffffeb    	b	0x10013ed0c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x3b4>
+10013ed64: f940a3e9    	ldr	x9, [sp, #0x140]
+10013ed68: f9057d20    	str	x0, [x9, #0xaf8]
+10013ed6c: aa0103e8    	mov	x8, x1
+10013ed70: b90b0128    	str	w8, [x9, #0xb00]
+10013ed74: 17fffff8    	b	0x10013ed54 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x3fc>
+10013ed78: 91400fe8    	add	x8, sp, #0x3, lsl #12   ; =0x3000
+10013ed7c: 91400fe0    	add	x0, sp, #0x3, lsl #12   ; =0x3000
+10013ed80: 912ac000    	add	x0, x0, #0xab0
+10013ed84: 97fbfe51    	bl	0x10003e6c8 <<<lifecycle::Fixture>::leader::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013ed88: 14000001    	b	0x10013ed8c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x434>
+10013ed8c: f940b7e8    	ldr	x8, [sp, #0x168]
+10013ed90: 9113e100    	add	x0, x8, #0x4f8
+10013ed94: 91400fe1    	add	x1, sp, #0x3, lsl #12   ; =0x3000
+10013ed98: 52815608    	mov	w8, #0xab0              ; =2736
+10013ed9c: aa0803e2    	mov	x2, x8
+10013eda0: 94892517    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013eda4: 14000001    	b	0x10013eda8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x450>
+10013eda8: f940a3e9    	ldr	x9, [sp, #0x140]
+10013edac: f940b7e8    	ldr	x8, [sp, #0x168]
+10013edb0: 9113e108    	add	x8, x8, #0x4f8
+10013edb4: f90093e8    	str	x8, [sp, #0x120]
+10013edb8: f9086928    	str	x8, [x9, #0x10d0]
+10013edbc: 14000022    	b	0x10013ee44 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x4ec>
+10013edc0: f940b7e8    	ldr	x8, [sp, #0x168]
+10013edc4: f941650a    	ldr	x10, [x8, #0x2c8]
+10013edc8: d2f00008    	mov	x8, #-0x8000000000000000 ; =-9223372036854775808
+10013edcc: 8b080148    	add	x8, x10, x8
+10013edd0: d2f0000b    	mov	x11, #-0x8000000000000000 ; =-9223372036854775808
+10013edd4: 52800069    	mov	w9, #0x3                ; =3
+10013edd8: eb0b014a    	subs	x10, x10, x11
+10013eddc: 9a892108    	csel	x8, x8, x9, hs
+10013ede0: f1000508    	subs	x8, x8, #0x1
+10013ede4: 54007f60    	b.eq	0x10013fdd0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1478>
+10013ede8: 140003fe    	b	0x10013fde0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1488>
+10013edec: f940a3e9    	ldr	x9, [sp, #0x140]
+10013edf0: f9057d20    	str	x0, [x9, #0xaf8]
+10013edf4: aa0103e8    	mov	x8, x1
+10013edf8: b90b0128    	str	w8, [x9, #0xb00]
+10013edfc: 17fffff1    	b	0x10013edc0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x468>
+10013ee00: f9409be1    	ldr	x1, [sp, #0x130]
+10013ee04: f94097e0    	ldr	x0, [sp, #0x128]
+10013ee08: d002e202    	adrp	x2, 0x105d80000 <dyld_stub_binder+0x105d80000>
+10013ee0c: 91188042    	add	x2, x2, #0x620
+10013ee10: 94892357    	bl	0x102387b6c <core::panicking::panic_fmt>
+10013ee14: 14000001    	b	0x10013ee18 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x4c0>
+10013ee18: d4200020    	brk	#0x1
+10013ee1c: 948922cf    	bl	0x102387958 <core::panicking::panic_in_cleanup>
+10013ee20: f940b7e8    	ldr	x8, [sp, #0x168]
+10013ee24: 9113e100    	add	x0, x8, #0x4f8
+10013ee28: 97fd8808    	bl	0x1000a0e48 <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+10013ee2c: 17ffffca    	b	0x10013ed54 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x3fc>
+10013ee30: f940a3e9    	ldr	x9, [sp, #0x140]
+10013ee34: f9057d20    	str	x0, [x9, #0xaf8]
+10013ee38: aa0103e8    	mov	x8, x1
+10013ee3c: b90b0128    	str	w8, [x9, #0xb00]
+10013ee40: 17fffff8    	b	0x10013ee20 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x4c8>
+10013ee44: f94093e0    	ldr	x0, [sp, #0x120]
+10013ee48: f940bfe1    	ldr	x1, [sp, #0x178]
+10013ee4c: 97fbfc6b    	bl	0x10003dff8 <<lifecycle::Fixture>::leader::{closure#0}>
+10013ee50: f9008fe0    	str	x0, [sp, #0x118]
+10013ee54: 14000001    	b	0x10013ee58 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x500>
+10013ee58: f9408fe8    	ldr	x8, [sp, #0x118]
+10013ee5c: f922b3e8    	str	x8, [sp, #0x4560]
+10013ee60: f962b3e9    	ldr	x9, [sp, #0x4560]
+10013ee64: d2800008    	mov	x8, #0x0                ; =0
+10013ee68: f1000129    	subs	x9, x9, #0x0
+10013ee6c: 9a9f1508    	csinc	x8, x8, xzr, ne
+10013ee70: 360001a8    	tbz	w8, #0x0, 0x10013eea4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x54c>
+10013ee74: 14000001    	b	0x10013ee78 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x520>
+10013ee78: f940b7e9    	ldr	x9, [sp, #0x168]
+10013ee7c: f940b3ea    	ldr	x10, [sp, #0x160]
+10013ee80: 92800008    	mov	x8, #-0x1               ; =-1
+10013ee84: f9000148    	str	x8, [x10]
+10013ee88: 52800088    	mov	w8, #0x4                ; =4
+10013ee8c: 3911b928    	strb	w8, [x9, #0x46e]
+10013ee90: 914043ff    	add	sp, sp, #0x10, lsl #12  ; =0x10000
+10013ee94: 9131c3ff    	add	sp, sp, #0xc70
+10013ee98: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10013ee9c: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10013eea0: d65f03c0    	ret
+10013eea4: f940b7e8    	ldr	x8, [sp, #0x168]
+10013eea8: f940a3ea    	ldr	x10, [sp, #0x140]
+10013eeac: f962b3e9    	ldr	x9, [sp, #0x4560]
+10013eeb0: f9058549    	str	x9, [x10, #0xb08]
+10013eeb4: f901e509    	str	x9, [x8, #0x3c8]
+10013eeb8: 9113e100    	add	x0, x8, #0x4f8
+10013eebc: 97fd87e3    	bl	0x1000a0e48 <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+10013eec0: 14000001    	b	0x10013eec4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x56c>
+10013eec4: f940b7e8    	ldr	x8, [sp, #0x168]
+10013eec8: 910f2109    	add	x9, x8, #0x3c8
+10013eecc: f90087e9    	str	x9, [sp, #0x108]
+10013eed0: 3911ad1f    	strb	wzr, [x8, #0x46b]
+10013eed4: 9111c101    	add	x1, x8, #0x470
+10013eed8: 91401be0    	add	x0, sp, #0x6, lsl #12   ; =0x6000
+10013eedc: 911be000    	add	x0, x0, #0x6f8
+10013eee0: f9008be0    	str	x0, [sp, #0x110]
+10013eee4: 52801108    	mov	w8, #0x88               ; =136
+10013eee8: aa0803e2    	mov	x2, x8
+10013eeec: 948924c4    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013eef0: f94087e0    	ldr	x0, [sp, #0x108]
+10013eef4: f940b7e9    	ldr	x9, [sp, #0x168]
+10013eef8: f940afe8    	ldr	x8, [sp, #0x158]
+10013eefc: f9408be1    	ldr	x1, [sp, #0x110]
+10013ef00: 3dc0a520    	ldr	q0, [x9, #0x290]
+10013ef04: 91401be2    	add	x2, sp, #0x6, lsl #12   ; =0x6000
+10013ef08: 911e0042    	add	x2, x2, #0x780
+10013ef0c: 3d8e6900    	str	q0, [x8, #0x39a0]
+10013ef10: 3dc0a920    	ldr	q0, [x9, #0x2a0]
+10013ef14: 91401be3    	add	x3, sp, #0x6, lsl #12   ; =0x6000
+10013ef18: 911e4063    	add	x3, x3, #0x790
+10013ef1c: 3d8e6d00    	str	q0, [x8, #0x39b0]
+10013ef20: 914017e8    	add	x8, sp, #0x5, lsl #12   ; =0x5000
+10013ef24: 9118c108    	add	x8, x8, #0x630
+10013ef28: 942c0963    	bl	0x100c414b4 <<kasumi_engine::service::Database>::recovery_phase>
+10013ef2c: 14000010    	b	0x10013ef6c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x614>
+10013ef30: f940b7e8    	ldr	x8, [sp, #0x168]
+10013ef34: 3911a91f    	strb	wzr, [x8, #0x46a]
+10013ef38: 910f2100    	add	x0, x8, #0x3c8
+10013ef3c: 940a80db    	bl	0x1003df2a8 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+10013ef40: 17ffff85    	b	0x10013ed54 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x3fc>
+10013ef44: aa0103e8    	mov	x8, x1
+10013ef48: f9007fe0    	str	x0, [sp, #0xf8]
+10013ef4c: b90107e8    	str	w8, [sp, #0x104]
+10013ef50: 14000001    	b	0x10013ef54 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x5fc>
+10013ef54: f940a3e9    	ldr	x9, [sp, #0x140]
+10013ef58: f9407fea    	ldr	x10, [sp, #0xf8]
+10013ef5c: b94107e8    	ldr	w8, [sp, #0x104]
+10013ef60: f9057d2a    	str	x10, [x9, #0xaf8]
+10013ef64: b90b0128    	str	w8, [x9, #0xb00]
+10013ef68: 17fffff2    	b	0x10013ef30 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x5d8>
+10013ef6c: 914013e8    	add	x8, sp, #0x4, lsl #12   ; =0x4000
+10013ef70: 9115a108    	add	x8, x8, #0x568
+10013ef74: 914017e0    	add	x0, sp, #0x5, lsl #12   ; =0x5000
+10013ef78: 9118c000    	add	x0, x0, #0x630
+10013ef7c: 97fd035f    	bl	0x10007fcf8 <<<kasumi_engine::service::Database>::recovery_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013ef80: 14000001    	b	0x10013ef84 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x62c>
+10013ef84: f940b7e8    	ldr	x8, [sp, #0x168]
+10013ef88: 9111c100    	add	x0, x8, #0x470
+10013ef8c: 914013e1    	add	x1, sp, #0x4, lsl #12   ; =0x4000
+10013ef90: 9115a021    	add	x1, x1, #0x568
+10013ef94: 52821908    	mov	w8, #0x10c8             ; =4296
+10013ef98: aa0803e2    	mov	x2, x8
+10013ef9c: 94892498    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013efa0: 14000001    	b	0x10013efa4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x64c>
+10013efa4: f940a3e9    	ldr	x9, [sp, #0x140]
+10013efa8: f940b7e8    	ldr	x8, [sp, #0x168]
+10013efac: 9111c108    	add	x8, x8, #0x470
+10013efb0: f9007be8    	str	x8, [sp, #0xf0]
+10013efb4: f9086d28    	str	x8, [x9, #0x10d8]
+10013efb8: 1400000a    	b	0x10013efe0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x688>
+10013efbc: f940b7e8    	ldr	x8, [sp, #0x168]
+10013efc0: 9111c100    	add	x0, x8, #0x470
+10013efc4: 97fd8a30    	bl	0x1000a1884 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+10013efc8: 17ffffda    	b	0x10013ef30 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x5d8>
+10013efcc: f940a3e9    	ldr	x9, [sp, #0x140]
+10013efd0: f9057d20    	str	x0, [x9, #0xaf8]
+10013efd4: aa0103e8    	mov	x8, x1
+10013efd8: b90b0128    	str	w8, [x9, #0xb00]
+10013efdc: 17fffff8    	b	0x10013efbc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x664>
+10013efe0: f9407be0    	ldr	x0, [sp, #0xf0]
+10013efe4: f940bfe1    	ldr	x1, [sp, #0x178]
+10013efe8: 91401be8    	add	x8, sp, #0x6, lsl #12   ; =0x6000
+10013efec: 911e8108    	add	x8, x8, #0x7a0
+10013eff0: 97fcd4df    	bl	0x10007436c <<kasumi_engine::service::Database>::recovery_phase::{closure#0}>
+10013eff4: 14000001    	b	0x10013eff8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x6a0>
+10013eff8: f973d3e9    	ldr	x9, [sp, #0x67a0]
+10013effc: d2800008    	mov	x8, #0x0                ; =0
+10013f000: b1000529    	adds	x9, x9, #0x1
+10013f004: 9a9f1508    	csinc	x8, x8, xzr, ne
+10013f008: 360001a8    	tbz	w8, #0x0, 0x10013f03c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x6e4>
+10013f00c: 14000001    	b	0x10013f010 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x6b8>
+10013f010: f940b7e9    	ldr	x9, [sp, #0x168]
+10013f014: f940b3ea    	ldr	x10, [sp, #0x160]
+10013f018: 92800008    	mov	x8, #-0x1               ; =-1
+10013f01c: f9000148    	str	x8, [x10]
+10013f020: 528000a8    	mov	w8, #0x5                ; =5
+10013f024: 3911b928    	strb	w8, [x9, #0x46e]
+10013f028: 914043ff    	add	sp, sp, #0x10, lsl #12  ; =0x10000
+10013f02c: 9131c3ff    	add	sp, sp, #0xc70
+10013f030: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10013f034: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10013f038: d65f03c0    	ret
+10013f03c: 91401be1    	add	x1, sp, #0x6, lsl #12   ; =0x6000
+10013f040: 911e8021    	add	x1, x1, #0x7a0
+10013f044: 91401be0    	add	x0, sp, #0x6, lsl #12   ; =0x6000
+10013f048: 91288000    	add	x0, x0, #0xa20
+10013f04c: 52805008    	mov	w8, #0x280              ; =640
+10013f050: aa0803e2    	mov	x2, x8
+10013f054: 9489246a    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013f058: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f05c: 9111c100    	add	x0, x8, #0x470
+10013f060: 97fd8a09    	bl	0x1000a1884 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+10013f064: 14000001    	b	0x10013f068 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x710>
+10013f068: 91401be1    	add	x1, sp, #0x6, lsl #12   ; =0x6000
+10013f06c: 91288021    	add	x1, x1, #0xa20
+10013f070: 914043e0    	add	x0, sp, #0x10, lsl #12  ; =0x10000
+10013f074: 911a0000    	add	x0, x0, #0x680
+10013f078: 52805008    	mov	w8, #0x280              ; =640
+10013f07c: aa0803e2    	mov	x2, x8
+10013f080: 9489245f    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013f084: f940a3e8    	ldr	x8, [sp, #0x140]
+10013f088: f9458909    	ldr	x9, [x8, #0xb10]
+10013f08c: d2800008    	mov	x8, #0x0                ; =0
+10013f090: f1000929    	subs	x9, x9, #0x2
+10013f094: 9a9f1508    	csinc	x8, x8, xzr, ne
+10013f098: 360004a8    	tbz	w8, #0x0, 0x10013f12c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x7d4>
+10013f09c: 14000001    	b	0x10013f0a0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x748>
+10013f0a0: f940a3e8    	ldr	x8, [sp, #0x140]
+10013f0a4: 914043e9    	add	x9, sp, #0x10, lsl #12  ; =0x10000
+10013f0a8: 911a0129    	add	x9, x9, #0x680
+10013f0ac: 3cc08120    	ldur	q0, [x9, #0x8]
+10013f0b0: 914043e2    	add	x2, sp, #0x10, lsl #12  ; =0x10000
+10013f0b4: 91280042    	add	x2, x2, #0xa00
+10013f0b8: 3d83a500    	str	q0, [x8, #0xe90]
+10013f0bc: 3cc18120    	ldur	q0, [x9, #0x18]
+10013f0c0: 3d83a900    	str	q0, [x8, #0xea0]
+10013f0c4: d0011280    	adrp	x0, 0x102391000 <dyld_stub_binder+0x102391000>
+10013f0c8: 9136d800    	add	x0, x0, #0xdb6
+10013f0cc: 52800568    	mov	w8, #0x2b               ; =43
+10013f0d0: aa0803e1    	mov	x1, x8
+10013f0d4: d002e203    	adrp	x3, 0x105d81000 <dyld_stub_binder+0x105d81000>
+10013f0d8: 912bc063    	add	x3, x3, #0xaf0
+10013f0dc: b002e204    	adrp	x4, 0x105d80000 <dyld_stub_binder+0x105d80000>
+10013f0e0: 9118e084    	add	x4, x4, #0x638
+10013f0e4: 94892203    	bl	0x1023878f0 <core::result::unwrap_failed>
+10013f0e8: 14000009    	b	0x10013f10c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x7b4>
+10013f0ec: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f0f0: f9075920    	str	x0, [x9, #0xeb0]
+10013f0f4: aa0103e8    	mov	x8, x1
+10013f0f8: b90eb928    	str	w8, [x9, #0xeb8]
+10013f0fc: 914043e0    	add	x0, sp, #0x10, lsl #12  ; =0x10000
+10013f100: 91280000    	add	x0, x0, #0xa00
+10013f104: 9484228f    	bl	0x102247b40 <core::ptr::drop_glue::<kasumi_types::Error>>
+10013f108: 14000003    	b	0x10013f114 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x7bc>
+10013f10c: d4200020    	brk	#0x1
+10013f110: 94892212    	bl	0x102387958 <core::panicking::panic_in_cleanup>
+10013f114: f940a3e8    	ldr	x8, [sp, #0x140]
+10013f118: f9475909    	ldr	x9, [x8, #0xeb0]
+10013f11c: b94eb908    	ldr	w8, [x8, #0xeb8]
+10013f120: f9007fe9    	str	x9, [sp, #0xf8]
+10013f124: b90107e8    	str	w8, [sp, #0x104]
+10013f128: 17ffff8b    	b	0x10013ef54 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x5fc>
+10013f12c: f940b7e0    	ldr	x0, [sp, #0x168]
+10013f130: 914043e1    	add	x1, sp, #0x10, lsl #12  ; =0x10000
+10013f134: 911a0021    	add	x1, x1, #0x680
+10013f138: 52805008    	mov	w8, #0x280              ; =640
+10013f13c: aa0803e2    	mov	x2, x8
+10013f140: 9489242f    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013f144: 14000001    	b	0x10013f148 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x7f0>
+10013f148: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f14c: 52800029    	mov	w9, #0x1                ; =1
+10013f150: 3911a909    	strb	w9, [x8, #0x46a]
+10013f154: f9415d00    	ldr	x0, [x8, #0x2b8]
+10013f158: f9416103    	ldr	x3, [x8, #0x2c0]
+10013f15c: 910f4108    	add	x8, x8, #0x3d0
+10013f160: b0011281    	adrp	x1, 0x102390000 <dyld_stub_binder+0x102390000>
+10013f164: 910dfc21    	add	x1, x1, #0x37f
+10013f168: 528000a9    	mov	w9, #0x5                ; =5
+10013f16c: aa0903e2    	mov	x2, x9
+10013f170: 97fe5dc5    	bl	0x1000d6884 <<lifecycle::Fixture>::context_for>
+10013f174: 1400000c    	b	0x10013f1a4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x84c>
+10013f178: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f17c: 3911a11f    	strb	wzr, [x8, #0x468]
+10013f180: 3911a51f    	strb	wzr, [x8, #0x469]
+10013f184: 3951a908    	ldrb	w8, [x8, #0x46a]
+10013f188: 37006088    	tbnz	w8, #0x0, 0x10013fd98 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1440>
+10013f18c: 17ffff69    	b	0x10013ef30 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x5d8>
+10013f190: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f194: f9057d20    	str	x0, [x9, #0xaf8]
+10013f198: aa0103e8    	mov	x8, x1
+10013f19c: b90b0128    	str	w8, [x9, #0xb00]
+10013f1a0: 17fffff6    	b	0x10013f178 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x820>
+10013f1a4: f940b7e0    	ldr	x0, [sp, #0x168]
+10013f1a8: 52800028    	mov	w8, #0x1                ; =1
+10013f1ac: 3911a008    	strb	w8, [x0, #0x468]
+10013f1b0: 3911a408    	strb	w8, [x0, #0x469]
+10013f1b4: 91106008    	add	x8, x0, #0x418
+10013f1b8: f9023808    	str	x8, [x0, #0x470]
+10013f1bc: 91401fe8    	add	x8, sp, #0x7, lsl #12   ; =0x7000
+10013f1c0: 911f8108    	add	x8, x8, #0x7e0
+10013f1c4: 94172641    	bl	0x100708ac8 <<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::dispatch_limit>
+10013f1c8: 1400001e    	b	0x10013f240 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x8e8>
+10013f1cc: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f1d0: 3951a508    	ldrb	w8, [x8, #0x469]
+10013f1d4: 37005a28    	tbnz	w8, #0x0, 0x10013fd18 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x13c0>
+10013f1d8: 140002cc    	b	0x10013fd08 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x13b0>
+10013f1dc: aa0103e8    	mov	x8, x1
+10013f1e0: f90073e0    	str	x0, [sp, #0xe0]
+10013f1e4: b900efe8    	str	w8, [sp, #0xec]
+10013f1e8: 14000001    	b	0x10013f1ec <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x894>
+10013f1ec: f94073e9    	ldr	x9, [sp, #0xe0]
+10013f1f0: b940efe8    	ldr	w8, [sp, #0xec]
+10013f1f4: f9006be9    	str	x9, [sp, #0xd0]
+10013f1f8: b900dfe8    	str	w8, [sp, #0xdc]
+10013f1fc: 14000001    	b	0x10013f200 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x8a8>
+10013f200: f9406be9    	ldr	x9, [sp, #0xd0]
+10013f204: b940dfe8    	ldr	w8, [sp, #0xdc]
+10013f208: f90063e9    	str	x9, [sp, #0xc0]
+10013f20c: b900cfe8    	str	w8, [sp, #0xcc]
+10013f210: 14000001    	b	0x10013f214 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x8bc>
+10013f214: f94063e9    	ldr	x9, [sp, #0xc0]
+10013f218: b940cfe8    	ldr	w8, [sp, #0xcc]
+10013f21c: f9005be9    	str	x9, [sp, #0xb0]
+10013f220: b900bfe8    	str	w8, [sp, #0xbc]
+10013f224: 14000001    	b	0x10013f228 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x8d0>
+10013f228: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f22c: f9405bea    	ldr	x10, [sp, #0xb0]
+10013f230: b940bfe8    	ldr	w8, [sp, #0xbc]
+10013f234: f9057d2a    	str	x10, [x9, #0xaf8]
+10013f238: b90b0128    	str	w8, [x9, #0xb00]
+10013f23c: 17ffffe4    	b	0x10013f1cc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x874>
+10013f240: 91401be8    	add	x8, sp, #0x6, lsl #12   ; =0x6000
+10013f244: 9133c108    	add	x8, x8, #0xcf0
+10013f248: 91401fe0    	add	x0, sp, #0x7, lsl #12   ; =0x7000
+10013f24c: 911f8000    	add	x0, x0, #0x7e0
+10013f250: 97fd0322    	bl	0x10007fed8 <<<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::dispatch_limit::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013f254: 14000001    	b	0x10013f258 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x900>
+10013f258: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f25c: 9111e100    	add	x0, x8, #0x478
+10013f260: 91401be1    	add	x1, sp, #0x6, lsl #12   ; =0x6000
+10013f264: 9133c021    	add	x1, x1, #0xcf0
+10013f268: 52815e08    	mov	w8, #0xaf0              ; =2800
+10013f26c: aa0803e2    	mov	x2, x8
+10013f270: 948923e3    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013f274: 14000001    	b	0x10013f278 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x920>
+10013f278: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f27c: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f280: 9111e108    	add	x8, x8, #0x478
+10013f284: f90057e8    	str	x8, [sp, #0xa8]
+10013f288: f9087528    	str	x8, [x9, #0x10e8]
+10013f28c: 1400000a    	b	0x10013f2b4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x95c>
+10013f290: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f294: 9111e100    	add	x0, x8, #0x478
+10013f298: 97fd95f0    	bl	0x1000a4a58 <core::ptr::drop_glue::<<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::dispatch_limit::{closure#0}>>
+10013f29c: 17ffffcc    	b	0x10013f1cc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x874>
+10013f2a0: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f2a4: f9057d20    	str	x0, [x9, #0xaf8]
+10013f2a8: aa0103e8    	mov	x8, x1
+10013f2ac: b90b0128    	str	w8, [x9, #0xb00]
+10013f2b0: 17fffff8    	b	0x10013f290 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x938>
+10013f2b4: f94057e0    	ldr	x0, [sp, #0xa8]
+10013f2b8: f940bfe1    	ldr	x1, [sp, #0x178]
+10013f2bc: 914023e8    	add	x8, sp, #0x8, lsl #12   ; =0x8000
+10013f2c0: 910b4108    	add	x8, x8, #0x2d0
+10013f2c4: 97fd00c5    	bl	0x10007f5d8 <<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::dispatch_limit::{closure#0}>
+10013f2c8: 14000001    	b	0x10013f2cc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x974>
+10013f2cc: f940abe8    	ldr	x8, [sp, #0x150]
+10013f2d0: f94b0509    	ldr	x9, [x8, #0x1608]
+10013f2d4: d2800008    	mov	x8, #0x0                ; =0
+10013f2d8: b1000929    	adds	x9, x9, #0x2
+10013f2dc: 9a9f1508    	csinc	x8, x8, xzr, ne
+10013f2e0: 360001a8    	tbz	w8, #0x0, 0x10013f314 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x9bc>
+10013f2e4: 14000001    	b	0x10013f2e8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x990>
+10013f2e8: f940b7e9    	ldr	x9, [sp, #0x168]
+10013f2ec: f940b3ea    	ldr	x10, [sp, #0x160]
+10013f2f0: 92800008    	mov	x8, #-0x1               ; =-1
+10013f2f4: f9000148    	str	x8, [x10]
+10013f2f8: 528000c8    	mov	w8, #0x6                ; =6
+10013f2fc: 3911b928    	strb	w8, [x9, #0x46e]
+10013f300: 914043ff    	add	sp, sp, #0x10, lsl #12  ; =0x10000
+10013f304: 9131c3ff    	add	sp, sp, #0xc70
+10013f308: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10013f30c: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10013f310: d65f03c0    	ret
+10013f314: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f318: f940a7e9    	ldr	x9, [sp, #0x148]
+10013f31c: 3dc00120    	ldr	q0, [x9]
+10013f320: 3d800920    	str	q0, [x9, #0x20]
+10013f324: 3dc00520    	ldr	q0, [x9, #0x10]
+10013f328: 3d800d20    	str	q0, [x9, #0x30]
+10013f32c: 9111e100    	add	x0, x8, #0x478
+10013f330: 97fd95ca    	bl	0x1000a4a58 <core::ptr::drop_glue::<<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::dispatch_limit::{closure#0}>>
+10013f334: 14000001    	b	0x10013f338 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x9e0>
+10013f338: f940a3e8    	ldr	x8, [sp, #0x140]
+10013f33c: f940a7e9    	ldr	x9, [sp, #0x148]
+10013f340: 3dc00920    	ldr	q0, [x9, #0x20]
+10013f344: 3d836500    	str	q0, [x8, #0xd90]
+10013f348: 3dc00d20    	ldr	q0, [x9, #0x30]
+10013f34c: 3d836900    	str	q0, [x8, #0xda0]
+10013f350: f946c908    	ldr	x8, [x8, #0xd90]
+10013f354: b1000508    	adds	x8, x8, #0x1
+10013f358: 9a9f07e8    	cset	x8, ne
+10013f35c: 36000468    	tbz	w8, #0x0, 0x10013f3e8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xa90>
+10013f360: 14000001    	b	0x10013f364 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xa0c>
+10013f364: f940a3e8    	ldr	x8, [sp, #0x140]
+10013f368: 3dc36500    	ldr	q0, [x8, #0xd90]
+10013f36c: 914043e2    	add	x2, sp, #0x10, lsl #12  ; =0x10000
+10013f370: 9128c042    	add	x2, x2, #0xa30
+10013f374: 3d83b100    	str	q0, [x8, #0xec0]
+10013f378: 3dc36900    	ldr	q0, [x8, #0xda0]
+10013f37c: 3d83b500    	str	q0, [x8, #0xed0]
+10013f380: d0011280    	adrp	x0, 0x102391000 <dyld_stub_binder+0x102391000>
+10013f384: 9136d800    	add	x0, x0, #0xdb6
+10013f388: 52800568    	mov	w8, #0x2b               ; =43
+10013f38c: aa0803e1    	mov	x1, x8
+10013f390: d002e203    	adrp	x3, 0x105d81000 <dyld_stub_binder+0x105d81000>
+10013f394: 912bc063    	add	x3, x3, #0xaf0
+10013f398: b002e204    	adrp	x4, 0x105d80000 <dyld_stub_binder+0x105d80000>
+10013f39c: 91194084    	add	x4, x4, #0x650
+10013f3a0: 94892154    	bl	0x1023878f0 <core::result::unwrap_failed>
+10013f3a4: 14000009    	b	0x10013f3c8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xa70>
+10013f3a8: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f3ac: f9077920    	str	x0, [x9, #0xef0]
+10013f3b0: aa0103e8    	mov	x8, x1
+10013f3b4: b90ef928    	str	w8, [x9, #0xef8]
+10013f3b8: 914043e0    	add	x0, sp, #0x10, lsl #12  ; =0x10000
+10013f3bc: 9128c000    	add	x0, x0, #0xa30
+10013f3c0: 948421e0    	bl	0x102247b40 <core::ptr::drop_glue::<kasumi_types::Error>>
+10013f3c4: 14000003    	b	0x10013f3d0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xa78>
+10013f3c8: d4200020    	brk	#0x1
+10013f3cc: 94892163    	bl	0x102387958 <core::panicking::panic_in_cleanup>
+10013f3d0: f940a3e8    	ldr	x8, [sp, #0x140]
+10013f3d4: f9477909    	ldr	x9, [x8, #0xef0]
+10013f3d8: b94ef908    	ldr	w8, [x8, #0xef8]
+10013f3dc: f90073e9    	str	x9, [sp, #0xe0]
+10013f3e0: b900efe8    	str	w8, [sp, #0xec]
+10013f3e4: 17ffff82    	b	0x10013f1ec <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x894>
+10013f3e8: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f3ec: f946cd28    	ldr	x8, [x9, #0xd98]
+10013f3f0: f90053e8    	str	x8, [sp, #0xa0]
+10013f3f4: f9077528    	str	x8, [x9, #0xee8]
+10013f3f8: 14000001    	b	0x10013f3fc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xaa4>
+10013f3fc: f94053e1    	ldr	x1, [sp, #0xa0]
+10013f400: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f404: f9423900    	ldr	x0, [x8, #0x470]
+10013f408: 91401be8    	add	x8, sp, #0x6, lsl #12   ; =0x6000
+10013f40c: 91332108    	add	x8, x8, #0xcc8
+10013f410: 9483ebe7    	bl	0x10223a3ac <<kasumi_types::authorization::RequestAuthorization>::with_expiry_limit>
+10013f414: 14000001    	b	0x10013f418 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xac0>
+10013f418: f940abe8    	ldr	x8, [sp, #0x150]
+10013f41c: 79400109    	ldrh	w9, [x8]
+10013f420: d2800008    	mov	x8, #0x0                ; =0
+10013f424: 71000929    	subs	w9, w9, #0x2
+10013f428: 9a9f1508    	csinc	x8, x8, xzr, ne
+10013f42c: 360004a8    	tbz	w8, #0x0, 0x10013f4c0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xb68>
+10013f430: 14000001    	b	0x10013f434 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xadc>
+10013f434: f940a3e8    	ldr	x8, [sp, #0x140]
+10013f438: 91401be9    	add	x9, sp, #0x6, lsl #12   ; =0x6000
+10013f43c: 91332129    	add	x9, x9, #0xcc8
+10013f440: 3cc08120    	ldur	q0, [x9, #0x8]
+10013f444: 914043e2    	add	x2, sp, #0x10, lsl #12  ; =0x10000
+10013f448: 91274042    	add	x2, x2, #0x9d0
+10013f44c: 3d839900    	str	q0, [x8, #0xe60]
+10013f450: 3cc18120    	ldur	q0, [x9, #0x18]
+10013f454: 3d839d00    	str	q0, [x8, #0xe70]
+10013f458: d0011280    	adrp	x0, 0x102391000 <dyld_stub_binder+0x102391000>
+10013f45c: 9136d800    	add	x0, x0, #0xdb6
+10013f460: 52800568    	mov	w8, #0x2b               ; =43
+10013f464: aa0803e1    	mov	x1, x8
+10013f468: d002e203    	adrp	x3, 0x105d81000 <dyld_stub_binder+0x105d81000>
+10013f46c: 912bc063    	add	x3, x3, #0xaf0
+10013f470: b002e204    	adrp	x4, 0x105d80000 <dyld_stub_binder+0x105d80000>
+10013f474: 9119a084    	add	x4, x4, #0x668
+10013f478: 9489211e    	bl	0x1023878f0 <core::result::unwrap_failed>
+10013f47c: 14000009    	b	0x10013f4a0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xb48>
+10013f480: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f484: f9074120    	str	x0, [x9, #0xe80]
+10013f488: aa0103e8    	mov	x8, x1
+10013f48c: b90e8928    	str	w8, [x9, #0xe88]
+10013f490: 914043e0    	add	x0, sp, #0x10, lsl #12  ; =0x10000
+10013f494: 91274000    	add	x0, x0, #0x9d0
+10013f498: 948421aa    	bl	0x102247b40 <core::ptr::drop_glue::<kasumi_types::Error>>
+10013f49c: 14000003    	b	0x10013f4a8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xb50>
+10013f4a0: d4200020    	brk	#0x1
+10013f4a4: 9489212d    	bl	0x102387958 <core::panicking::panic_in_cleanup>
+10013f4a8: f940a3e8    	ldr	x8, [sp, #0x140]
+10013f4ac: f9474109    	ldr	x9, [x8, #0xe80]
+10013f4b0: b94e8908    	ldr	w8, [x8, #0xe88]
+10013f4b4: f9006be9    	str	x9, [sp, #0xd0]
+10013f4b8: b900dfe8    	str	w8, [sp, #0xdc]
+10013f4bc: 17ffff51    	b	0x10013f200 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x8a8>
+10013f4c0: 91401be0    	add	x0, sp, #0x6, lsl #12   ; =0x6000
+10013f4c4: 91328000    	add	x0, x0, #0xca0
+10013f4c8: 91401be1    	add	x1, sp, #0x6, lsl #12   ; =0x6000
+10013f4cc: 91332021    	add	x1, x1, #0xcc8
+10013f4d0: 52800508    	mov	w8, #0x28               ; =40
+10013f4d4: aa0803e2    	mov	x2, x8
+10013f4d8: 94892349    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013f4dc: 14000001    	b	0x10013f4e0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xb88>
+10013f4e0: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f4e4: 91106100    	add	x0, x8, #0x418
+10013f4e8: 948422a5    	bl	0x102247f7c <core::ptr::drop_glue::<kasumi_types::authorization::RequestAuthorization>>
+10013f4ec: 14000010    	b	0x10013f52c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xbd4>
+10013f4f0: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f4f4: 52800029    	mov	w9, #0x1                ; =1
+10013f4f8: 3911a509    	strb	w9, [x8, #0x469]
+10013f4fc: 91106100    	add	x0, x8, #0x418
+10013f500: 91401be1    	add	x1, sp, #0x6, lsl #12   ; =0x6000
+10013f504: 91328021    	add	x1, x1, #0xca0
+10013f508: 52800508    	mov	w8, #0x28               ; =40
+10013f50c: aa0803e2    	mov	x2, x8
+10013f510: 9489233b    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013f514: 17ffff2e    	b	0x10013f1cc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x874>
+10013f518: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f51c: f9057d20    	str	x0, [x9, #0xaf8]
+10013f520: aa0103e8    	mov	x8, x1
+10013f524: b90b0128    	str	w8, [x9, #0xb00]
+10013f528: 17fffff2    	b	0x10013f4f0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xb98>
+10013f52c: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f530: 52800029    	mov	w9, #0x1                ; =1
+10013f534: 3911a509    	strb	w9, [x8, #0x469]
+10013f538: 91106100    	add	x0, x8, #0x418
+10013f53c: 91401be1    	add	x1, sp, #0x6, lsl #12   ; =0x6000
+10013f540: 91328021    	add	x1, x1, #0xca0
+10013f544: 52800508    	mov	w8, #0x28               ; =40
+10013f548: aa0803e2    	mov	x2, x8
+10013f54c: 9489232c    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013f550: f940b7e1    	ldr	x1, [sp, #0x168]
+10013f554: 3911a83f    	strb	wzr, [x1, #0x46a]
+10013f558: 914023e0    	add	x0, sp, #0x8, lsl #12   ; =0x8000
+10013f55c: 910c4000    	add	x0, x0, #0x310
+10013f560: f9004fe0    	str	x0, [sp, #0x98]
+10013f564: 52805008    	mov	w8, #0x280              ; =640
+10013f568: aa0803e2    	mov	x2, x8
+10013f56c: 94892324    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013f570: f9404fe0    	ldr	x0, [sp, #0x98]
+10013f574: 97fcc7de    	bl	0x1000714ec <core::mem::drop::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+10013f578: 14000001    	b	0x10013f57c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xc24>
+10013f57c: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f580: 910f2100    	add	x0, x8, #0x3c8
+10013f584: 942f630f    	bl	0x100d181c0 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+10013f588: f9004be0    	str	x0, [sp, #0x90]
+10013f58c: 14000001    	b	0x10013f590 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xc38>
+10013f590: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f594: 3911a11f    	strb	wzr, [x8, #0x468]
+10013f598: 3911a51f    	strb	wzr, [x8, #0x469]
+10013f59c: 910f4101    	add	x1, x8, #0x3d0
+10013f5a0: 914033e0    	add	x0, sp, #0xc, lsl #12   ; =0xc000
+10013f5a4: 9102a000    	add	x0, x0, #0xa8
+10013f5a8: f90047e0    	str	x0, [sp, #0x88]
+10013f5ac: 52801108    	mov	w8, #0x88               ; =136
+10013f5b0: aa0803e2    	mov	x2, x8
+10013f5b4: 94892312    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013f5b8: f9404be0    	ldr	x0, [sp, #0x90]
+10013f5bc: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f5c0: f940a7e9    	ldr	x9, [sp, #0x148]
+10013f5c4: f94047e1    	ldr	x1, [sp, #0x88]
+10013f5c8: 3911b11f    	strb	wzr, [x8, #0x46c]
+10013f5cc: f941e108    	ldr	x8, [x8, #0x3c0]
+10013f5d0: 914033e2    	add	x2, sp, #0xc, lsl #12   ; =0xc000
+10013f5d4: 9104c042    	add	x2, x2, #0x130
+10013f5d8: f91f3528    	str	x8, [x9, #0x3e68]
+10013f5dc: d2f00008    	mov	x8, #-0x8000000000000000 ; =-9223372036854775808
+10013f5e0: f91f3128    	str	x8, [x9, #0x3e60]
+10013f5e4: 91402be8    	add	x8, sp, #0xa, lsl #12   ; =0xa000
+10013f5e8: 910cc108    	add	x8, x8, #0x330
+10013f5ec: 942c0902    	bl	0x100c419f4 <<kasumi_engine::service::Database>::lifecycle_control>
+10013f5f0: 14000001    	b	0x10013f5f4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xc9c>
+10013f5f4: 914023e8    	add	x8, sp, #0x8, lsl #12   ; =0x8000
+10013f5f8: 9116e108    	add	x8, x8, #0x5b8
+10013f5fc: 91402be0    	add	x0, sp, #0xa, lsl #12   ; =0xa000
+10013f600: 910cc000    	add	x0, x0, #0x330
+10013f604: 97fd2518    	bl	0x100088a64 <<<kasumi_engine::service::Database>::lifecycle_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013f608: 14000001    	b	0x10013f60c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xcb4>
+10013f60c: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f610: 9111c100    	add	x0, x8, #0x470
+10013f614: 914023e1    	add	x1, sp, #0x8, lsl #12   ; =0x8000
+10013f618: 9116e021    	add	x1, x1, #0x5b8
+10013f61c: 5283af08    	mov	w8, #0x1d78             ; =7544
+10013f620: aa0803e2    	mov	x2, x8
+10013f624: 948922f6    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013f628: 14000001    	b	0x10013f62c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xcd4>
+10013f62c: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f630: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f634: 9111c108    	add	x8, x8, #0x470
+10013f638: f90043e8    	str	x8, [sp, #0x80]
+10013f63c: f9087128    	str	x8, [x9, #0x10e0]
+10013f640: 1400000a    	b	0x10013f668 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xd10>
+10013f644: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f648: 9111c100    	add	x0, x8, #0x470
+10013f64c: 97fd8dfa    	bl	0x1000a2e34 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::lifecycle_control::{closure#0}>>
+10013f650: 17fffedf    	b	0x10013f1cc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x874>
+10013f654: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f658: f9057d20    	str	x0, [x9, #0xaf8]
+10013f65c: aa0103e8    	mov	x8, x1
+10013f660: b90b0128    	str	w8, [x9, #0xb00]
+10013f664: 17fffff8    	b	0x10013f644 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xcec>
+10013f668: f94043e0    	ldr	x0, [sp, #0x80]
+10013f66c: f940bfe1    	ldr	x1, [sp, #0x178]
+10013f670: 914033e8    	add	x8, sp, #0xc, lsl #12   ; =0xc000
+10013f674: 91068108    	add	x8, x8, #0x1a0
+10013f678: 97fd0eb9    	bl	0x10008315c <<kasumi_engine::service::Database>::lifecycle_control::{closure#0}>
+10013f67c: 14000001    	b	0x10013f680 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xd28>
+10013f680: f940a7e8    	ldr	x8, [sp, #0x148]
+10013f684: f95f6909    	ldr	x9, [x8, #0x3ed0]
+10013f688: d2800008    	mov	x8, #0x0                ; =0
+10013f68c: f1000929    	subs	x9, x9, #0x2
+10013f690: 9a9f1508    	csinc	x8, x8, xzr, ne
+10013f694: 360001a8    	tbz	w8, #0x0, 0x10013f6c8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xd70>
+10013f698: 14000001    	b	0x10013f69c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xd44>
+10013f69c: f940b7e9    	ldr	x9, [sp, #0x168]
+10013f6a0: f940b3ea    	ldr	x10, [sp, #0x160]
+10013f6a4: 92800008    	mov	x8, #-0x1               ; =-1
+10013f6a8: f9000148    	str	x8, [x10]
+10013f6ac: 528000e8    	mov	w8, #0x7                ; =7
+10013f6b0: 3911b928    	strb	w8, [x9, #0x46e]
+10013f6b4: 914043ff    	add	sp, sp, #0x10, lsl #12  ; =0x10000
+10013f6b8: 9131c3ff    	add	sp, sp, #0xc70
+10013f6bc: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10013f6c0: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10013f6c4: d65f03c0    	ret
+10013f6c8: 914033e1    	add	x1, sp, #0xc, lsl #12   ; =0xc000
+10013f6cc: 91068021    	add	x1, x1, #0x1a0
+10013f6d0: 914033e0    	add	x0, sp, #0xc, lsl #12   ; =0xc000
+10013f6d4: 91072000    	add	x0, x0, #0x1c8
+10013f6d8: 52800508    	mov	w8, #0x28               ; =40
+10013f6dc: aa0803e2    	mov	x2, x8
+10013f6e0: 948922c7    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013f6e4: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f6e8: 9111c100    	add	x0, x8, #0x470
+10013f6ec: 97fd8dd2    	bl	0x1000a2e34 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::lifecycle_control::{closure#0}>>
+10013f6f0: 14000001    	b	0x10013f6f4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xd9c>
+10013f6f4: 914033e1    	add	x1, sp, #0xc, lsl #12   ; =0xc000
+10013f6f8: 91072021    	add	x1, x1, #0x1c8
+10013f6fc: 914043e0    	add	x0, sp, #0x10, lsl #12  ; =0x10000
+10013f700: 9124a000    	add	x0, x0, #0x928
+10013f704: 52800508    	mov	w8, #0x28               ; =40
+10013f708: aa0803e2    	mov	x2, x8
+10013f70c: 948922bc    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013f710: f940a3e8    	ldr	x8, [sp, #0x140]
+10013f714: f946dd08    	ldr	x8, [x8, #0xdb8]
+10013f718: 360004a8    	tbz	w8, #0x0, 0x10013f7ac <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xe54>
+10013f71c: 14000001    	b	0x10013f720 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xdc8>
+10013f720: f940a3e8    	ldr	x8, [sp, #0x140]
+10013f724: 914043e9    	add	x9, sp, #0x10, lsl #12  ; =0x10000
+10013f728: 9124a129    	add	x9, x9, #0x928
+10013f72c: 3cc08120    	ldur	q0, [x9, #0x8]
+10013f730: 914043e2    	add	x2, sp, #0x10, lsl #12  ; =0x10000
+10013f734: 91268042    	add	x2, x2, #0x9a0
+10013f738: 3d838d00    	str	q0, [x8, #0xe30]
+10013f73c: 3cc18120    	ldur	q0, [x9, #0x18]
+10013f740: 3d839100    	str	q0, [x8, #0xe40]
+10013f744: d0011280    	adrp	x0, 0x102391000 <dyld_stub_binder+0x102391000>
+10013f748: 9136d800    	add	x0, x0, #0xdb6
+10013f74c: 52800568    	mov	w8, #0x2b               ; =43
+10013f750: aa0803e1    	mov	x1, x8
+10013f754: d002e203    	adrp	x3, 0x105d81000 <dyld_stub_binder+0x105d81000>
+10013f758: 912bc063    	add	x3, x3, #0xaf0
+10013f75c: b002e204    	adrp	x4, 0x105d80000 <dyld_stub_binder+0x105d80000>
+10013f760: 911a0084    	add	x4, x4, #0x680
+10013f764: 94892063    	bl	0x1023878f0 <core::result::unwrap_failed>
+10013f768: 14000009    	b	0x10013f78c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xe34>
+10013f76c: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f770: f9072920    	str	x0, [x9, #0xe50]
+10013f774: aa0103e8    	mov	x8, x1
+10013f778: b90e5928    	str	w8, [x9, #0xe58]
+10013f77c: 914043e0    	add	x0, sp, #0x10, lsl #12  ; =0x10000
+10013f780: 91268000    	add	x0, x0, #0x9a0
+10013f784: 948420ef    	bl	0x102247b40 <core::ptr::drop_glue::<kasumi_types::Error>>
+10013f788: 14000003    	b	0x10013f794 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xe3c>
+10013f78c: d4200020    	brk	#0x1
+10013f790: 94892072    	bl	0x102387958 <core::panicking::panic_in_cleanup>
+10013f794: f940a3e8    	ldr	x8, [sp, #0x140]
+10013f798: f9472909    	ldr	x9, [x8, #0xe50]
+10013f79c: b94e5908    	ldr	w8, [x8, #0xe58]
+10013f7a0: f90063e9    	str	x9, [sp, #0xc0]
+10013f7a4: b900cfe8    	str	w8, [sp, #0xcc]
+10013f7a8: 17fffe9b    	b	0x10013f214 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x8bc>
+10013f7ac: f940a7e8    	ldr	x8, [sp, #0x148]
+10013f7b0: 914043e9    	add	x9, sp, #0x10, lsl #12  ; =0x10000
+10013f7b4: 9124a129    	add	x9, x9, #0x928
+10013f7b8: 3cc08120    	ldur	q0, [x9, #0x8]
+10013f7bc: 3d80b100    	str	q0, [x8, #0x2c0]
+10013f7c0: 3cc18120    	ldur	q0, [x9, #0x18]
+10013f7c4: 3d80b500    	str	q0, [x8, #0x2d0]
+10013f7c8: 14000001    	b	0x10013f7cc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xe74>
+10013f7cc: 914023e0    	add	x0, sp, #0x8, lsl #12   ; =0x8000
+10013f7d0: 91164000    	add	x0, x0, #0x590
+10013f7d4: 940b53cc    	bl	0x100414704 <core::ptr::drop_glue::<kasumi_types::WriteReceipt>>
+10013f7d8: 14000001    	b	0x10013f7dc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xe84>
+10013f7dc: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f7e0: 910f2100    	add	x0, x8, #0x3c8
+10013f7e4: 942f6277    	bl	0x100d181c0 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+10013f7e8: f9003fe0    	str	x0, [sp, #0x78]
+10013f7ec: 14000001    	b	0x10013f7f0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xe98>
+10013f7f0: f9403fe0    	ldr	x0, [sp, #0x78]
+10013f7f4: 942c0ec0    	bl	0x100c432f4 <<kasumi_engine::service::Database>::engine>
+10013f7f8: f9003be0    	str	x0, [sp, #0x70]
+10013f7fc: 14000001    	b	0x10013f800 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xea8>
+10013f800: f9403be0    	ldr	x0, [sp, #0x70]
+10013f804: 942f6268    	bl	0x100d181a4 <<alloc::sync::Arc<kasumi_engine::state::TenantEngine> as core::ops::deref::Deref>::deref>
+10013f808: f90037e0    	str	x0, [sp, #0x68]
+10013f80c: 14000001    	b	0x10013f810 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xeb8>
+10013f810: f94037e0    	ldr	x0, [sp, #0x68]
+10013f814: 914033e8    	add	x8, sp, #0xc, lsl #12   ; =0xc000
+10013f818: 9107e108    	add	x8, x8, #0x1f8
+10013f81c: 94048eeb    	bl	0x1002633c8 <<kasumi_engine::state::TenantEngine>::generation>
+10013f820: 14000001    	b	0x10013f824 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xecc>
+10013f824: f940a7e8    	ldr	x8, [sp, #0x148]
+10013f828: f95f9508    	ldr	x8, [x8, #0x3f28]
+10013f82c: b1000508    	adds	x8, x8, #0x1
+10013f830: 9a9f07e8    	cset	x8, ne
+10013f834: 360004e8    	tbz	w8, #0x0, 0x10013f8d0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xf78>
+10013f838: 14000001    	b	0x10013f83c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xee4>
+10013f83c: f940a3e8    	ldr	x8, [sp, #0x140]
+10013f840: 914033e9    	add	x9, sp, #0xc, lsl #12   ; =0xc000
+10013f844: 9103e529    	add	x9, x9, #0xf9
+10013f848: 3ccff120    	ldur	q0, [x9, #0xff]
+10013f84c: 914043e2    	add	x2, sp, #0x10, lsl #12  ; =0x10000
+10013f850: 91258042    	add	x2, x2, #0x960
+10013f854: 3d837d00    	str	q0, [x8, #0xdf0]
+10013f858: 914033e9    	add	x9, sp, #0xc, lsl #12   ; =0xc000
+10013f85c: 91042529    	add	x9, x9, #0x109
+10013f860: 3ccff120    	ldur	q0, [x9, #0xff]
+10013f864: 3d838100    	str	q0, [x8, #0xe00]
+10013f868: d0011280    	adrp	x0, 0x102391000 <dyld_stub_binder+0x102391000>
+10013f86c: 9136d800    	add	x0, x0, #0xdb6
+10013f870: 52800568    	mov	w8, #0x2b               ; =43
+10013f874: aa0803e1    	mov	x1, x8
+10013f878: d002e203    	adrp	x3, 0x105d81000 <dyld_stub_binder+0x105d81000>
+10013f87c: 912bc063    	add	x3, x3, #0xaf0
+10013f880: b002e204    	adrp	x4, 0x105d80000 <dyld_stub_binder+0x105d80000>
+10013f884: 911a6084    	add	x4, x4, #0x698
+10013f888: 9489201a    	bl	0x1023878f0 <core::result::unwrap_failed>
+10013f88c: 14000009    	b	0x10013f8b0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xf58>
+10013f890: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f894: f9071120    	str	x0, [x9, #0xe20]
+10013f898: aa0103e8    	mov	x8, x1
+10013f89c: b90e2928    	str	w8, [x9, #0xe28]
+10013f8a0: 914043e0    	add	x0, sp, #0x10, lsl #12  ; =0x10000
+10013f8a4: 91258000    	add	x0, x0, #0x960
+10013f8a8: 948420a6    	bl	0x102247b40 <core::ptr::drop_glue::<kasumi_types::Error>>
+10013f8ac: 14000003    	b	0x10013f8b8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xf60>
+10013f8b0: d4200020    	brk	#0x1
+10013f8b4: 94892029    	bl	0x102387958 <core::panicking::panic_in_cleanup>
+10013f8b8: f940a3e8    	ldr	x8, [sp, #0x140]
+10013f8bc: f9471109    	ldr	x9, [x8, #0xe20]
+10013f8c0: b94e2908    	ldr	w8, [x8, #0xe28]
+10013f8c4: f9005be9    	str	x9, [sp, #0xb0]
+10013f8c8: b900bfe8    	str	w8, [sp, #0xbc]
+10013f8cc: 17fffe57    	b	0x10013f228 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x8d0>
+10013f8d0: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f8d4: f940a7e8    	ldr	x8, [sp, #0x148]
+10013f8d8: f95f9908    	ldr	x8, [x8, #0x3f30]
+10013f8dc: f90033e8    	str	x8, [sp, #0x60]
+10013f8e0: f9070d28    	str	x8, [x9, #0xe18]
+10013f8e4: 14000001    	b	0x10013f8e8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xf90>
+10013f8e8: f94033e8    	ldr	x8, [sp, #0x60]
+10013f8ec: f940a7e9    	ldr	x9, [sp, #0x148]
+10013f8f0: 914033e0    	add	x0, sp, #0xc, lsl #12   ; =0xc000
+10013f8f4: 9107c000    	add	x0, x0, #0x1f0
+10013f8f8: f91f9128    	str	x8, [x9, #0x3f20]
+10013f8fc: 942f6223    	bl	0x100d18188 <<alloc::sync::Arc<kasumi_engine::state::Generation> as core::ops::deref::Deref>::deref>
+10013f900: f9002fe0    	str	x0, [sp, #0x58]
+10013f904: 1400000a    	b	0x10013f92c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xfd4>
+10013f908: 914033e0    	add	x0, sp, #0xc, lsl #12   ; =0xc000
+10013f90c: 9107c000    	add	x0, x0, #0x1f0
+10013f910: 940a7e54    	bl	0x1003df260 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::state::Generation>>>
+10013f914: 17fffe2e    	b	0x10013f1cc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x874>
+10013f918: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f91c: f9057d20    	str	x0, [x9, #0xaf8]
+10013f920: aa0103e8    	mov	x8, x1
+10013f924: b90b0128    	str	w8, [x9, #0xb00]
+10013f928: 17fffff8    	b	0x10013f908 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xfb0>
+10013f92c: f9402fe8    	ldr	x8, [sp, #0x58]
+10013f930: 910ca100    	add	x0, x8, #0x328
+10013f934: 9417f979    	bl	0x10073df18 <<core::option::Option<kasumi_types::lifecycle::LifecycleControlState>>::as_ref>
+10013f938: f9002be0    	str	x0, [sp, #0x50]
+10013f93c: 14000001    	b	0x10013f940 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0xfe8>
+10013f940: f940a3e8    	ldr	x8, [sp, #0x140]
+10013f944: f9402be9    	ldr	x9, [sp, #0x50]
+10013f948: f906f109    	str	x9, [x8, #0xde0]
+10013f94c: f946f108    	ldr	x8, [x8, #0xde0]
+10013f950: f1000108    	subs	x8, x8, #0x0
+10013f954: 9a9f07e8    	cset	x8, ne
+10013f958: 370000e8    	tbnz	w8, #0x0, 0x10013f974 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x101c>
+10013f95c: 14000001    	b	0x10013f960 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1008>
+10013f960: b002e200    	adrp	x0, 0x105d80000 <dyld_stub_binder+0x105d80000>
+10013f964: 911ac000    	add	x0, x0, #0x6b0
+10013f968: 94891fdb    	bl	0x1023878d4 <core::option::unwrap_failed>
+10013f96c: 14000001    	b	0x10013f970 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1018>
+10013f970: d4200020    	brk	#0x1
+10013f974: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f978: f946f128    	ldr	x8, [x9, #0xde0]
+10013f97c: f90027e8    	str	x8, [sp, #0x48]
+10013f980: f906f528    	str	x8, [x9, #0xde8]
+10013f984: 14000001    	b	0x10013f988 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1030>
+10013f988: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f98c: f94027e9    	ldr	x9, [sp, #0x48]
+10013f990: 91028120    	add	x0, x9, #0xa0
+10013f994: 910a8101    	add	x1, x8, #0x2a0
+10013f998: b002e202    	adrp	x2, 0x105d80000 <dyld_stub_binder+0x105d80000>
+10013f99c: 911b2042    	add	x2, x2, #0x6c8
+10013f9a0: 97fedf78    	bl	0x1000f7780 <<alloc::collections::btree::map::BTreeMap<uuid::Uuid, kasumi_types::lifecycle::LifecycleIntent> as core::ops::index::Index<&uuid::Uuid>>::index>
+10013f9a4: f90023e0    	str	x0, [sp, #0x40]
+10013f9a8: 14000001    	b	0x10013f9ac <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1054>
+10013f9ac: f94023e0    	ldr	x0, [sp, #0x40]
+10013f9b0: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f9b4: 9111c108    	add	x8, x8, #0x470
+10013f9b8: 97feeaf0    	bl	0x1000fa578 <<kasumi_types::lifecycle::LifecycleIntent as core::clone::Clone>::clone>
+10013f9bc: 14000001    	b	0x10013f9c0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1068>
+10013f9c0: 914033e0    	add	x0, sp, #0xc, lsl #12   ; =0xc000
+10013f9c4: 9107c000    	add	x0, x0, #0x1f0
+10013f9c8: 940a7e26    	bl	0x1003df260 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::state::Generation>>>
+10013f9cc: 1400000f    	b	0x10013fa08 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x10b0>
+10013f9d0: f940b7e8    	ldr	x8, [sp, #0x168]
+10013f9d4: 9111c100    	add	x0, x8, #0x470
+10013f9d8: 94842424    	bl	0x102248a68 <core::ptr::drop_glue::<kasumi_types::lifecycle::LifecycleIntent>>
+10013f9dc: 17fffdfc    	b	0x10013f1cc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x874>
+10013f9e0: aa0103e8    	mov	x8, x1
+10013f9e4: f9001be0    	str	x0, [sp, #0x30]
+10013f9e8: b9003fe8    	str	w8, [sp, #0x3c]
+10013f9ec: 14000001    	b	0x10013f9f0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1098>
+10013f9f0: f940a3e9    	ldr	x9, [sp, #0x140]
+10013f9f4: f9401bea    	ldr	x10, [sp, #0x30]
+10013f9f8: b9403fe8    	ldr	w8, [sp, #0x3c]
+10013f9fc: f9057d2a    	str	x10, [x9, #0xaf8]
+10013fa00: b90b0128    	str	w8, [x9, #0xb00]
+10013fa04: 17fffff3    	b	0x10013f9d0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1078>
+10013fa08: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fa0c: f940a7e9    	ldr	x9, [sp, #0x148]
+10013fa10: f9415d0a    	ldr	x10, [x8, #0x2b8]
+10013fa14: f90017ea    	str	x10, [sp, #0x28]
+10013fa18: 3dc0a500    	ldr	q0, [x8, #0x290]
+10013fa1c: 3d9e2120    	str	q0, [x9, #0x7880]
+10013fa20: 3dc0a900    	ldr	q0, [x8, #0x2a0]
+10013fa24: 3d9e2520    	str	q0, [x9, #0x7890]
+10013fa28: 9111c100    	add	x0, x8, #0x470
+10013fa2c: 914043e8    	add	x8, sp, #0x10, lsl #12  ; =0x10000
+10013fa30: 912a0108    	add	x8, x8, #0xa80
+10013fa34: 97feead1    	bl	0x1000fa578 <<kasumi_types::lifecycle::LifecycleIntent as core::clone::Clone>::clone>
+10013fa38: 14000001    	b	0x10013fa3c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x10e4>
+10013fa3c: 52800108    	mov	w8, #0x8                ; =8
+10013fa40: aa0803e0    	mov	x0, x8
+10013fa44: 52803708    	mov	w8, #0x1b8              ; =440
+10013fa48: aa0803e1    	mov	x1, x8
+10013fa4c: 97fb4d55    	bl	0x100012fa0 <alloc::boxed::box_new_uninit>
+10013fa50: f90013e0    	str	x0, [sp, #0x20]
+10013fa54: 14000010    	b	0x10013fa94 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x113c>
+10013fa58: f940a3e9    	ldr	x9, [sp, #0x140]
+10013fa5c: f9078120    	str	x0, [x9, #0xf00]
+10013fa60: aa0103e8    	mov	x8, x1
+10013fa64: b90f0928    	str	w8, [x9, #0xf08]
+10013fa68: 914043e0    	add	x0, sp, #0x10, lsl #12  ; =0x10000
+10013fa6c: 912a0000    	add	x0, x0, #0xa80
+10013fa70: 948423fe    	bl	0x102248a68 <core::ptr::drop_glue::<kasumi_types::lifecycle::LifecycleIntent>>
+10013fa74: 14000002    	b	0x10013fa7c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1124>
+10013fa78: 94891fb8    	bl	0x102387958 <core::panicking::panic_in_cleanup>
+10013fa7c: f940a3e8    	ldr	x8, [sp, #0x140]
+10013fa80: f9478109    	ldr	x9, [x8, #0xf00]
+10013fa84: b94f0908    	ldr	w8, [x8, #0xf08]
+10013fa88: f9001be9    	str	x9, [sp, #0x30]
+10013fa8c: b9003fe8    	str	w8, [sp, #0x3c]
+10013fa90: 17ffffd8    	b	0x10013f9f0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1098>
+10013fa94: f94013e0    	ldr	x0, [sp, #0x20]
+10013fa98: f940a3e9    	ldr	x9, [sp, #0x140]
+10013fa9c: aa0003e8    	mov	x8, x0
+10013faa0: f9086528    	str	x8, [x9, #0x10c8]
+10013faa4: 914043e1    	add	x1, sp, #0x10, lsl #12  ; =0x10000
+10013faa8: 912a0021    	add	x1, x1, #0xa80
+10013faac: 52803708    	mov	w8, #0x1b8              ; =440
+10013fab0: aa0803e2    	mov	x2, x8
+10013fab4: 948921d2    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013fab8: 14000001    	b	0x10013fabc <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1164>
+10013fabc: f94017e0    	ldr	x0, [sp, #0x28]
+10013fac0: f940a3e9    	ldr	x9, [sp, #0x140]
+10013fac4: f940a7ea    	ldr	x10, [sp, #0x148]
+10013fac8: f94013e8    	ldr	x8, [sp, #0x20]
+10013facc: 91403fe3    	add	x3, sp, #0xf, lsl #12   ; =0xf000
+10013fad0: 912dc063    	add	x3, x3, #0xb70
+10013fad4: f93c5548    	str	x8, [x10, #0x78a8]
+10013fad8: 52800048    	mov	w8, #0x2                ; =2
+10013fadc: 39000128    	strb	w8, [x9]
+10013fae0: 91403be8    	add	x8, sp, #0xe, lsl #12   ; =0xe000
+10013fae4: 9103e108    	add	x8, x8, #0xf8
+10013fae8: 91403fe1    	add	x1, sp, #0xf, lsl #12   ; =0xf000
+10013faec: 912d4021    	add	x1, x1, #0xb50
+10013faf0: 91403fe2    	add	x2, sp, #0xf, lsl #12   ; =0xf000
+10013faf4: 912d8042    	add	x2, x2, #0xb60
+10013faf8: 97fe2c92    	bl	0x1000cad40 <lifecycle::recovery_control::resolve_phase>
+10013fafc: 14000001    	b	0x10013fb00 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x11a8>
+10013fb00: 914033e8    	add	x8, sp, #0xc, lsl #12   ; =0xc000
+10013fb04: 911a8108    	add	x8, x8, #0x6a0
+10013fb08: 91403be0    	add	x0, sp, #0xe, lsl #12   ; =0xe000
+10013fb0c: 9103e000    	add	x0, x0, #0xf8
+10013fb10: 940064e7    	bl	0x100158eac <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013fb14: 14000001    	b	0x10013fb18 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x11c0>
+10013fb18: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fb1c: 9118a100    	add	x0, x8, #0x628
+10013fb20: 914033e1    	add	x1, sp, #0xc, lsl #12   ; =0xc000
+10013fb24: 911a8021    	add	x1, x1, #0x6a0
+10013fb28: 52834b08    	mov	w8, #0x1a58             ; =6744
+10013fb2c: aa0803e2    	mov	x2, x8
+10013fb30: 948921b3    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013fb34: 14000001    	b	0x10013fb38 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x11e0>
+10013fb38: f940a3e9    	ldr	x9, [sp, #0x140]
+10013fb3c: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fb40: 9118a108    	add	x8, x8, #0x628
+10013fb44: f9000fe8    	str	x8, [sp, #0x18]
+10013fb48: f9087d28    	str	x8, [x9, #0x10f8]
+10013fb4c: 1400000a    	b	0x10013fb74 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x121c>
+10013fb50: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fb54: 9118a100    	add	x0, x8, #0x628
+10013fb58: 97fd95f7    	bl	0x1000a5334 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10013fb5c: 17ffff9d    	b	0x10013f9d0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1078>
+10013fb60: f940a3e9    	ldr	x9, [sp, #0x140]
+10013fb64: f9057d20    	str	x0, [x9, #0xaf8]
+10013fb68: aa0103e8    	mov	x8, x1
+10013fb6c: b90b0128    	str	w8, [x9, #0xb00]
+10013fb70: 17fffff8    	b	0x10013fb50 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x11f8>
+10013fb74: f9400fe0    	ldr	x0, [sp, #0x18]
+10013fb78: f940bfe1    	ldr	x1, [sp, #0x178]
+10013fb7c: 91403fe8    	add	x8, sp, #0xf, lsl #12   ; =0xf000
+10013fb80: 912e2108    	add	x8, x8, #0xb88
+10013fb84: 97ff7c16    	bl	0x10011ebdc <lifecycle::recovery_control::resolve_phase::{closure#0}>
+10013fb88: 14000001    	b	0x10013fb8c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1234>
+10013fb8c: f940a3e8    	ldr	x8, [sp, #0x140]
+10013fb90: f9400d09    	ldr	x9, [x8, #0x18]
+10013fb94: d2800008    	mov	x8, #0x0                ; =0
+10013fb98: b1000529    	adds	x9, x9, #0x1
+10013fb9c: 9a9f1508    	csinc	x8, x8, xzr, ne
+10013fba0: 360001a8    	tbz	w8, #0x0, 0x10013fbd4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x127c>
+10013fba4: 14000001    	b	0x10013fba8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1250>
+10013fba8: f940b7e9    	ldr	x9, [sp, #0x168]
+10013fbac: f940b3ea    	ldr	x10, [sp, #0x160]
+10013fbb0: 92800008    	mov	x8, #-0x1               ; =-1
+10013fbb4: f9000148    	str	x8, [x10]
+10013fbb8: 52800108    	mov	w8, #0x8                ; =8
+10013fbbc: 3911b928    	strb	w8, [x9, #0x46e]
+10013fbc0: 914043ff    	add	sp, sp, #0x10, lsl #12  ; =0x10000
+10013fbc4: 9131c3ff    	add	sp, sp, #0xc70
+10013fbc8: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10013fbcc: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10013fbd0: d65f03c0    	ret
+10013fbd4: 91403fe1    	add	x1, sp, #0xf, lsl #12   ; =0xf000
+10013fbd8: 912e2021    	add	x1, x1, #0xb88
+10013fbdc: 914043e0    	add	x0, sp, #0x10, lsl #12  ; =0x10000
+10013fbe0: 91004000    	add	x0, x0, #0x10
+10013fbe4: f90007e0    	str	x0, [sp, #0x8]
+10013fbe8: 52809108    	mov	w8, #0x488              ; =1160
+10013fbec: aa0803e2    	mov	x2, x8
+10013fbf0: f9000be2    	str	x2, [sp, #0x10]
+10013fbf4: 94892182    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013fbf8: f94007e1    	ldr	x1, [sp, #0x8]
+10013fbfc: f9400be2    	ldr	x2, [sp, #0x10]
+10013fc00: 914033e0    	add	x0, sp, #0xc, lsl #12   ; =0xc000
+10013fc04: 91086000    	add	x0, x0, #0x218
+10013fc08: 9489217d    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013fc0c: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fc10: 9118a100    	add	x0, x8, #0x628
+10013fc14: 97fd95c8    	bl	0x1000a5334 <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10013fc18: 14000001    	b	0x10013fc1c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x12c4>
+10013fc1c: 914033e0    	add	x0, sp, #0xc, lsl #12   ; =0xc000
+10013fc20: 91086000    	add	x0, x0, #0x218
+10013fc24: 97fdc501    	bl	0x1000b1028 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+10013fc28: 14000001    	b	0x10013fc2c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x12d4>
+10013fc2c: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fc30: 9111c101    	add	x1, x8, #0x470
+10013fc34: 914043e0    	add	x0, sp, #0x10, lsl #12  ; =0x10000
+10013fc38: 91126000    	add	x0, x0, #0x498
+10013fc3c: 52803708    	mov	w8, #0x1b8              ; =440
+10013fc40: aa0803e2    	mov	x2, x8
+10013fc44: 9489216e    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013fc48: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fc4c: 3911a11f    	strb	wzr, [x8, #0x468]
+10013fc50: 3911a51f    	strb	wzr, [x8, #0x469]
+10013fc54: 3911a91f    	strb	wzr, [x8, #0x46a]
+10013fc58: 910f2100    	add	x0, x8, #0x3c8
+10013fc5c: 940a7d93    	bl	0x1003df2a8 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+10013fc60: 14000001    	b	0x10013fc64 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x130c>
+10013fc64: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fc68: 3911ad1f    	strb	wzr, [x8, #0x46b]
+10013fc6c: 3911b11f    	strb	wzr, [x8, #0x46c]
+10013fc70: f941650a    	ldr	x10, [x8, #0x2c8]
+10013fc74: d2f00008    	mov	x8, #-0x8000000000000000 ; =-9223372036854775808
+10013fc78: 8b080148    	add	x8, x10, x8
+10013fc7c: d2f0000b    	mov	x11, #-0x8000000000000000 ; =-9223372036854775808
+10013fc80: 52800069    	mov	w9, #0x3                ; =3
+10013fc84: eb0b014a    	subs	x10, x10, x11
+10013fc88: 9a892108    	csel	x8, x8, x9, hs
+10013fc8c: f1000508    	subs	x8, x8, #0x1
+10013fc90: 54000241    	b.ne	0x10013fcd8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1380>
+10013fc94: 14000001    	b	0x10013fc98 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1340>
+10013fc98: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fc9c: f940b3e0    	ldr	x0, [sp, #0x160]
+10013fca0: 3911b51f    	strb	wzr, [x8, #0x46d]
+10013fca4: 914043e1    	add	x1, sp, #0x10, lsl #12  ; =0x10000
+10013fca8: 91126021    	add	x1, x1, #0x498
+10013fcac: 52803708    	mov	w8, #0x1b8              ; =440
+10013fcb0: aa0803e2    	mov	x2, x8
+10013fcb4: 94892152    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10013fcb8: f940b7e9    	ldr	x9, [sp, #0x168]
+10013fcbc: 52800028    	mov	w8, #0x1                ; =1
+10013fcc0: 3911b928    	strb	w8, [x9, #0x46e]
+10013fcc4: 914043ff    	add	sp, sp, #0x10, lsl #12  ; =0x10000
+10013fcc8: 9131c3ff    	add	sp, sp, #0xc70
+10013fccc: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10013fcd0: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10013fcd4: d65f03c0    	ret
+10013fcd8: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fcdc: 910b2100    	add	x0, x8, #0x2c8
+10013fce0: 940b5abc    	bl	0x1004167d0 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+10013fce4: 17ffffed    	b	0x10013fc98 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1340>
+10013fce8: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fcec: 3911b51f    	strb	wzr, [x8, #0x46d]
+10013fcf0: 17fffb8a    	b	0x10013eb18 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1c0>
+10013fcf4: f940a3e9    	ldr	x9, [sp, #0x140]
+10013fcf8: f9057d20    	str	x0, [x9, #0xaf8]
+10013fcfc: aa0103e8    	mov	x8, x1
+10013fd00: b90b0128    	str	w8, [x9, #0xb00]
+10013fd04: 17fffff9    	b	0x10013fce8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1390>
+10013fd08: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fd0c: 3951a108    	ldrb	w8, [x8, #0x468]
+10013fd10: 37000148    	tbnz	w8, #0x0, 0x10013fd38 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x13e0>
+10013fd14: 14000005    	b	0x10013fd28 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x13d0>
+10013fd18: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fd1c: 91106100    	add	x0, x8, #0x418
+10013fd20: 94842097    	bl	0x102247f7c <core::ptr::drop_glue::<kasumi_types::authorization::RequestAuthorization>>
+10013fd24: 17fffff9    	b	0x10013fd08 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x13b0>
+10013fd28: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fd2c: 3951a108    	ldrb	w8, [x8, #0x468]
+10013fd30: 37000148    	tbnz	w8, #0x0, 0x10013fd58 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1400>
+10013fd34: 14000005    	b	0x10013fd48 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x13f0>
+10013fd38: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fd3c: 910f4100    	add	x0, x8, #0x3d0
+10013fd40: 9461496e    	bl	0x1019922f8 <core::ptr::drop_glue::<alloc::string::String>>
+10013fd44: 17fffff9    	b	0x10013fd28 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x13d0>
+10013fd48: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fd4c: 3951a108    	ldrb	w8, [x8, #0x468]
+10013fd50: 37000148    	tbnz	w8, #0x0, 0x10013fd78 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1420>
+10013fd54: 14000005    	b	0x10013fd68 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1410>
+10013fd58: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fd5c: 910fa100    	add	x0, x8, #0x3e8
+10013fd60: 94614966    	bl	0x1019922f8 <core::ptr::drop_glue::<alloc::string::String>>
+10013fd64: 17fffff9    	b	0x10013fd48 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x13f0>
+10013fd68: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fd6c: 3951a108    	ldrb	w8, [x8, #0x468]
+10013fd70: 370000c8    	tbnz	w8, #0x0, 0x10013fd88 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1430>
+10013fd74: 17fffd01    	b	0x10013f178 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x820>
+10013fd78: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fd7c: 91110100    	add	x0, x8, #0x440
+10013fd80: 94779fa9    	bl	0x101f27c24 <core::ptr::drop_glue::<alloc::collections::btree::set::BTreeSet<kasumi_types::Action>>>
+10013fd84: 17fffff9    	b	0x10013fd68 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1410>
+10013fd88: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fd8c: 91100100    	add	x0, x8, #0x400
+10013fd90: 9461495a    	bl	0x1019922f8 <core::ptr::drop_glue::<alloc::string::String>>
+10013fd94: 17fffcf9    	b	0x10013f178 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x820>
+10013fd98: f940b7e0    	ldr	x0, [sp, #0x168]
+10013fd9c: 97fdc474    	bl	0x1000b0f6c <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+10013fda0: 17fffc64    	b	0x10013ef30 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x5d8>
+10013fda4: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fda8: 9111c100    	add	x0, x8, #0x470
+10013fdac: 9477a040    	bl	0x101f27eac <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10013fdb0: 17fffbd7    	b	0x10013ed0c <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x3b4>
+10013fdb4: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fdb8: 3911b11f    	strb	wzr, [x8, #0x46c]
+10013fdbc: 17fffc01    	b	0x10013edc0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x468>
+10013fdc0: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fdc4: 910f0100    	add	x0, x8, #0x3c0
+10013fdc8: 94323b6b    	bl	0x100dceb74 <core::ptr::drop_glue::<alloc::boxed::Box<kasumi_types::lifecycle::CommitLifecycleIntent>>>
+10013fdcc: 17fffffa    	b	0x10013fdb4 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x145c>
+10013fdd0: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fdd4: 3951b508    	ldrb	w8, [x8, #0x46d]
+10013fdd8: 370000c8    	tbnz	w8, #0x0, 0x10013fdf0 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1498>
+10013fddc: 17ffffc3    	b	0x10013fce8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1390>
+10013fde0: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fde4: 910b2100    	add	x0, x8, #0x2c8
+10013fde8: 940b5a7a    	bl	0x1004167d0 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+10013fdec: 17ffffbf    	b	0x10013fce8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1390>
+10013fdf0: f940b7e8    	ldr	x8, [sp, #0x168]
+10013fdf4: 910b4100    	add	x0, x8, #0x2d0
+10013fdf8: 94323b5f    	bl	0x100dceb74 <core::ptr::drop_glue::<alloc::boxed::Box<kasumi_types::lifecycle::CommitLifecycleIntent>>>
+10013fdfc: 17ffffbb    	b	0x10013fce8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}+0x1390>

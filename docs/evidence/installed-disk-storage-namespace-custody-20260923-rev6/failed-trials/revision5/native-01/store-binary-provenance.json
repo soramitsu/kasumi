@@ -1,0 +1,39 @@
+{
+  "selected": {
+    "reason": "compiler-artifact",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "profile": {
+      "opt_level": "0",
+      "debuginfo": 2,
+      "debug_assertions": true,
+      "overflow_checks": true,
+      "test": true
+    },
+    "features": [
+      "test-utils"
+    ],
+    "filenames": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/cargo-target/debug/deps/kasumi_store-da802ca493244251"
+    ],
+    "executable": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/cargo-target/debug/deps/kasumi_store-da802ca493244251",
+    "fresh": false
+  },
+  "retained_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+  "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+  "bytes": 54696720
+}

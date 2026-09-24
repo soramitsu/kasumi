@@ -2,6 +2,10 @@ use crate::admission::{CancelOnDrop, NodeAdmission, Reservation, WorkFence, Work
 use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, TenantEngine};
 #[path = "audit_maintenance_service.rs"]
 mod audit_maintenance_service;
+#[path = "backup_producer_jobs.rs"]
+mod backup_producer_jobs;
+#[path = "database_construction.rs"]
+pub(crate) mod construction;
 #[path = "control_administration.rs"]
 pub(crate) mod control_administration;
 #[cfg(test)]
@@ -13,6 +17,9 @@ mod database_workers;
 mod ordered_seek_service;
 #[path = "proposal_jobs.rs"]
 mod proposal_jobs;
+#[cfg(test)]
+#[path = "service_allocation_tests.rs"]
+mod service_allocation_tests;
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
 use kasumi_query::QueryCancellation;
 use kasumi_raft::RaftGroup;
@@ -62,12 +69,41 @@ pub(crate) mod target_receiver_service;
 pub(crate) mod target_service;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    future::Future,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
+
+// Charge each boxed release future before constructing its heap backing.
+// The allowance matches the node governor's fixed-allocation estimate.
+const RELEASE_FUTURE_ALLOCATION_ALLOWANCE: u64 = 4096;
+
+async fn admitted_release_future<T, F>(
+    admission: &Arc<NodeAdmission>,
+    make_future: impl FnOnce() -> F,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    let bytes = u64::try_from(std::mem::size_of::<F>())
+        .ok()
+        .and_then(|size| size.checked_add(RELEASE_FUTURE_ALLOCATION_ALLOWANCE))
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::ResourceExhausted,
+                "read release future allocation size overflow",
+            )
+        })?;
+    let _charge = admission.reserve_resident(bytes)?;
+    // On completion or cancellation, the boxed future dies before its charge.
+    {
+        let mut future = Box::pin(make_future());
+        future.as_mut().await
+    }
+}
 
 struct Cursor {
     principal: String,
@@ -445,6 +481,7 @@ pub struct Database {
     audit_worker_completed: AtomicU64,
     proposal_gate: Arc<tokio::sync::Mutex<()>>,
     proposals: proposal_jobs::Jobs,
+    backup_producers: backup_producer_jobs::Jobs,
     command_clock: Mutex<Arc<dyn CommandClock>>,
 }
 
@@ -682,56 +719,7 @@ impl Database {
         Ok(fence)
     }
 
-    /// Every database uses its security ledger's exact installed node governor.
-    /// The governor is present before any background worker starts.
-    pub fn new(
-        engine: Arc<TenantEngine>,
-        group: RaftGroup,
-        store: Arc<TenantStore>,
-        security_audit: Arc<SecurityAudit>,
-    ) -> Arc<Self> {
-        Self::new_inner(
-            engine,
-            group,
-            store,
-            security_audit,
-            DatabaseClocks::default(),
-        )
-    }
-
-    /// Fixture-only constructor. One paired clock drives command admission UTC
-    /// and snapshot/cursor elapsed leases; existing authorization deadlines retain
-    /// their original observations. Production catalogs are always rejected.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub(crate) fn new_fixture_with_epoch_clock(
-        engine: Arc<TenantEngine>,
-        group: RaftGroup,
-        store: Arc<TenantStore>,
-        security_audit: Arc<SecurityAudit>,
-        clock: Arc<kasumi_clock::EpochClock>,
-    ) -> anyhow::Result<Arc<Self>> {
-        anyhow::ensure!(
-            matches!(
-                store.storage_access().purpose(),
-                kasumi_store::StoragePurpose::LocalFixture
-            ) && Arc::ptr_eq(&store, group.storage_domains().application()),
-            "fixture clock requires the exact fixture application store"
-        );
-        clock.now_ms()?;
-        let clocks = DatabaseClocks {
-            elapsed: clock.elapsed_clock(),
-            command: Arc::new(FixtureCommandClock(clock)),
-        };
-        Ok(Self::new_inner(
-            engine,
-            group,
-            store,
-            security_audit,
-            clocks,
-        ))
-    }
-
-    fn new_inner(
+    fn finish_construction(
         engine: Arc<TenantEngine>,
         group: RaftGroup,
         store: Arc<TenantStore>,
@@ -778,6 +766,7 @@ impl Database {
             audit_worker_completed: AtomicU64::new(0),
             proposal_gate: Arc::new(tokio::sync::Mutex::new(())),
             proposals: proposal_jobs::Jobs::default(),
+            backup_producers: backup_producer_jobs::Jobs::default(),
             command_clock: Mutex::new(clocks.command),
         });
         database.spawn_seal_monitor();
@@ -858,6 +847,15 @@ impl Database {
         // A caller timeout never stops an admitted application proposal. Join
         // its actual child before stopping Raft or releasing durable owners.
         if let Err(failure) = self.proposals.drain().await {
+            report.merge(&failure);
+            if failure.completion() == DrainCompletion::Retained {
+                return report.outcome(Some(failure));
+            }
+        }
+        // A cancelled backup caller does not own its blocking producer. Join
+        // the exact child and retain its terminal result before Raft or storage
+        // can close beneath its generation and work reservation.
+        if let Err(failure) = self.backup_producers.drain().await {
             report.merge(&failure);
             if failure.completion() == DrainCompletion::Retained {
                 return report.outcome(Some(failure));
@@ -1065,7 +1063,17 @@ impl Database {
         tokio::time::timeout(Duration::from_secs(5), self.group.linearizable_barrier())
             .await
             .map_err(|_| Error::new(ErrorCode::Unavailable, "read quorum deadline exceeded"))?
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "read quorum unavailable"))?;
+            .map_err(|_cause| {
+                // Retain the erased Raft cause only in explicit fixture builds.
+                // Metrics distinguish a cached follower from a current leader
+                // whose quorum/storage failed. Error behavior stays unchanged.
+                #[cfg(any(test, feature = "test-utils"))]
+                eprintln!(
+                    "kasumi-engine read quorum unavailable: cause={_cause:#}; metrics={:?}",
+                    self.group.raft().metrics().borrow(),
+                );
+                Error::new(ErrorCode::Unavailable, "read quorum unavailable")
+            })?;
         self.access()
     }
 
@@ -1838,14 +1846,16 @@ impl Database {
         strict: bool,
         policy_epoch: u64,
     ) -> Result<()> {
-        self.release_event(
-            context,
-            Some(collection),
-            revision,
-            strict,
-            policy_epoch,
-            "read",
-        )
+        admitted_release_future(self.admission(), || {
+            self.release_event(
+                context,
+                Some(collection),
+                revision,
+                strict,
+                policy_epoch,
+                "read",
+            )
+        })
         .await
     }
 
@@ -1869,18 +1879,20 @@ impl Database {
                 outcome: "authorized_release".into(),
                 collection: collection.map(Into::into),
             };
-            self.submit(context.clone(), Operation::Audit(event))
-                .await
-                .map_err(|error| {
-                    if matches!(error.code, ErrorCode::Forbidden | ErrorCode::Sealed) {
-                        error
-                    } else {
-                        Error::new(
-                            ErrorCode::AuditUnavailable,
-                            "required read audit could not be confirmed durable",
-                        )
-                    }
-                })?;
+            admitted_release_future(self.admission(), || {
+                self.submit(context.clone(), Operation::Audit(event))
+            })
+            .await
+            .map_err(|error| {
+                if matches!(error.code, ErrorCode::Forbidden | ErrorCode::Sealed) {
+                    error
+                } else {
+                    Error::new(
+                        ErrorCode::AuditUnavailable,
+                        "required read audit could not be confirmed durable",
+                    )
+                }
+            })?;
         }
         self.access()?;
         let action = match kind {
@@ -2340,7 +2352,7 @@ mod tests {
     include!("service_custody_tests.rs");
     use super::*;
     use crate::admission::AdmissionConfig;
-    use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
+    use kasumi_store::test_utils::LocalKeyProvider;
     use serde_json::json;
     use std::{future::Future, task::Poll};
 
@@ -2354,12 +2366,20 @@ mod tests {
     #[tokio::test]
     async fn queued_deadlines_use_admission_time_and_survive_caller_cancellation() {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-        let node = NodeStore::create_new_fixture(
-            directory.path().join("node.redb"),
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+        let (persistent_config, scratch_config) =
+            crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
+        let storage = crate::test_utils::FixtureStorage::open(
+            &persistent_config,
+            &scratch_config,
+            Default::default(),
         )
         .unwrap();
+        let node = storage
+            .create_new(
+                directory.path().join("persistent/node.redb"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
         let audit_store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             crate::SECURITY_TENANT.into(),
@@ -2370,7 +2390,7 @@ mod tests {
         let audit = SecurityAudit::initialize(
             audit_store,
             kasumi_types::AuditRetentionBudget::default(),
-            crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+            storage.admission.clone(),
         )
         .unwrap();
         let context = RequestContext {

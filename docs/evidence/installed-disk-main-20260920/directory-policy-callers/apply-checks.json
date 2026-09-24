@@ -1,0 +1,25 @@
+[
+  {
+    "argv": [
+      "git",
+      "apply",
+      "--check",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-policy-callers/callers.patch"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-policy-callers/apply-check",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "apply",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-policy-callers/callers.patch"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-policy-callers/apply-check",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  }
+]

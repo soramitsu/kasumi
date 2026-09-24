@@ -1,0 +1,30 @@
+{
+  "status": "source-derived-necessary-image-shape-not-total-cow-bound",
+  "page_bytes": 4096,
+  "full_region_pages": 1048576,
+  "buddy_orders": 21,
+  "full_buddy_value_bytes": 266960,
+  "single_allocator_leaf_bytes": 266973,
+  "required_page_order": 7,
+  "required_block_bytes": 524288,
+  "allocator_leaf_formula": "4+9*n+sum(value_lengths)",
+  "allocator_branch_formula": "29*children+3",
+  "branch_children_fitting_4096": 141,
+  "fragmentation_witness": {
+    "region_order0_pages": 16,
+    "allocated_order0_indexes": [
+      1,
+      3,
+      5,
+      7,
+      9,
+      11,
+      13,
+      15
+    ],
+    "free_order0_count": 8,
+    "requested_order": 3,
+    "satisfiable": false,
+    "status": "logical buddy-model witness; native test not run"
+  }
+}

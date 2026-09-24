@@ -1,0 +1,8 @@
+[
+  {
+    "pid": 27058,
+    "ppid": 21504,
+    "pgid": 27058,
+    "command": "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 scripts/test_small_native_smoke.py -v"
+  }
+]

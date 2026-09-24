@@ -1,0 +1,21 @@
+--- a/crates/kasumi-store/src/spool.rs
++++ b/crates/kasumi-store/src/spool.rs
+@@ -449,6 +449,10 @@
+     }
+ }
+ 
++#[path = "retained_spool.rs"]
++mod retained_spool;
++pub use retained_spool::{RetainedSpool, SpoolClosePhase};
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -612,7 +616,3 @@
+         assert!(spool.read_exact(&mut data).is_err());
+     }
+ }
+-
+-#[path = "retained_spool.rs"]
+-mod retained_spool;
+-pub use retained_spool::{RetainedSpool, SpoolClosePhase};

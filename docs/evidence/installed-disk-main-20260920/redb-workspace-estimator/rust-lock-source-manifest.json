@@ -1,0 +1,37 @@
+[
+  {
+    "path": "library/std/src/sys/sync/mutex/mod.rs",
+    "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/sync/mutex/mod.rs",
+    "sha256": "1c715675a2bc34471b96de58f7aaaf2db411289cf838d17edc61cb2d6b006aa2"
+  },
+  {
+    "path": "library/std/src/sys/sync/mutex/pthread.rs",
+    "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/sync/mutex/pthread.rs",
+    "sha256": "1aa80435780abe34a365179635e92fb5935894fb9b4f615eb45b336958c28035"
+  },
+  {
+    "path": "library/std/src/sys/pal/unix/sync.rs",
+    "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/pal/unix/sync.rs",
+    "error": "HTTP Error 404: Not Found"
+  },
+  {
+    "path": "library/std/src/sys/sync/rwlock/mod.rs",
+    "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/sync/rwlock/mod.rs",
+    "sha256": "5438fdbc0ade05b50d7350c252ccb9d37bea596355560fbdc695f4937d727ef3"
+  },
+  {
+    "path": "library/std/src/sys/sync/rwlock/queue.rs",
+    "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/sync/rwlock/queue.rs",
+    "sha256": "a2b1b14e4ecb9b66e8691680c09bfedefa0fadda7d90521e784ef859f5d760ca"
+  },
+  {
+    "path": "library/std/src/sys/sync/condvar/mod.rs",
+    "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/sync/condvar/mod.rs",
+    "sha256": "af88b86441a57ae779ae0a01528bc4e8b0068f1e72978547c1a08ac4d7107c2d"
+  },
+  {
+    "path": "library/std/src/sys/sync/condvar/pthread.rs",
+    "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/sync/condvar/pthread.rs",
+    "sha256": "515dac39964e931abbcf56fa963254adab34cbd7a76916ccd03fd4d863acfd4f"
+  }
+]

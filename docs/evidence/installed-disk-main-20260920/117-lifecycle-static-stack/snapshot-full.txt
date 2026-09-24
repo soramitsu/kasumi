@@ -1,0 +1,263 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010014ff14 <lifecycle::recovery_control::snapshot::{closure#0}>:
+10014ff14: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+10014ff18: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10014ff1c: 910043fd    	add	x29, sp, #0x10
+10014ff20: d12d83ff    	sub	sp, sp, #0xb60
+10014ff24: f90003ff    	str	xzr, [sp]
+10014ff28: f90047e0    	str	x0, [sp, #0x88]
+10014ff2c: aa0003e8    	mov	x8, x0
+10014ff30: f81703a8    	stur	x8, [x29, #-0x90]
+10014ff34: f81783a1    	stur	x1, [x29, #-0x88]
+10014ff38: aa0003e8    	mov	x8, x0
+10014ff3c: f81803a8    	stur	x8, [x29, #-0x80]
+10014ff40: 39402008    	ldrb	w8, [x0, #0x8]
+10014ff44: b90097e8    	str	w8, [sp, #0x94]
+10014ff48: 340000e8    	cbz	w8, 0x10014ff64 <lifecycle::recovery_control::snapshot::{closure#0}+0x50>
+10014ff4c: 14000001    	b	0x10014ff50 <lifecycle::recovery_control::snapshot::{closure#0}+0x3c>
+10014ff50: b94097e8    	ldr	w8, [sp, #0x94]
+10014ff54: 71000508    	subs	w8, w8, #0x1
+10014ff58: 54000140    	b.eq	0x10014ff80 <lifecycle::recovery_control::snapshot::{closure#0}+0x6c>
+10014ff5c: 14000001    	b	0x10014ff60 <lifecycle::recovery_control::snapshot::{closure#0}+0x4c>
+10014ff60: 1400000b    	b	0x10014ff8c <lifecycle::recovery_control::snapshot::{closure#0}+0x78>
+10014ff64: f94047e8    	ldr	x8, [sp, #0x88]
+10014ff68: f9400108    	ldr	x8, [x8]
+10014ff6c: f90043e8    	str	x8, [sp, #0x80]
+10014ff70: f81883a8    	stur	x8, [x29, #-0x78]
+10014ff74: 910263e8    	add	x8, sp, #0x98
+10014ff78: 945108e3    	bl	0x101592304 <<alloc::vec::Vec<u8>>::new>
+10014ff7c: 14000010    	b	0x10014ffbc <lifecycle::recovery_control::snapshot::{closure#0}+0xa8>
+10014ff80: 52800008    	mov	w8, #0x0                ; =0
+10014ff84: 3707ffe8    	tbnz	w8, #0x0, 0x10014ff80 <lifecycle::recovery_control::snapshot::{closure#0}+0x6c>
+10014ff88: 140000de    	b	0x100150300 <lifecycle::recovery_control::snapshot::{closure#0}+0x3ec>
+10014ff8c: 52800008    	mov	w8, #0x0                ; =0
+10014ff90: 3707ffe8    	tbnz	w8, #0x0, 0x10014ff8c <lifecycle::recovery_control::snapshot::{closure#0}+0x78>
+10014ff94: 140000de    	b	0x10015030c <lifecycle::recovery_control::snapshot::{closure#0}+0x3f8>
+10014ff98: f94047e9    	ldr	x9, [sp, #0x88]
+10014ff9c: 52800048    	mov	w8, #0x2                ; =2
+10014ffa0: 39002128    	strb	w8, [x9, #0x8]
+10014ffa4: f85903a0    	ldur	x0, [x29, #-0x70]
+10014ffa8: 9488d868    	bl	0x102386148 <dyld_stub_binder+0x102386148>
+10014ffac: f81903a0    	stur	x0, [x29, #-0x70]
+10014ffb0: aa0103e8    	mov	x8, x1
+10014ffb4: b81983a8    	stur	w8, [x29, #-0x68]
+10014ffb8: 17fffff8    	b	0x10014ff98 <lifecycle::recovery_control::snapshot::{closure#0}+0x84>
+10014ffbc: f94043e0    	ldr	x0, [sp, #0x80]
+10014ffc0: 942f201b    	bl	0x100d1802c <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+10014ffc4: f9003fe0    	str	x0, [sp, #0x78]
+10014ffc8: 14000012    	b	0x100150010 <lifecycle::recovery_control::snapshot::{closure#0}+0xfc>
+10014ffcc: 910263e0    	add	x0, sp, #0x98
+10014ffd0: 94610845    	bl	0x1019920e4 <core::ptr::drop_glue::<alloc::vec::Vec<u8>>>
+10014ffd4: 17fffff1    	b	0x10014ff98 <lifecycle::recovery_control::snapshot::{closure#0}+0x84>
+10014ffd8: aa0103e8    	mov	x8, x1
+10014ffdc: f90037e0    	str	x0, [sp, #0x68]
+10014ffe0: b90077e8    	str	w8, [sp, #0x74]
+10014ffe4: 14000001    	b	0x10014ffe8 <lifecycle::recovery_control::snapshot::{closure#0}+0xd4>
+10014ffe8: f94037e9    	ldr	x9, [sp, #0x68]
+10014ffec: b94077e8    	ldr	w8, [sp, #0x74]
+10014fff0: f9002fe9    	str	x9, [sp, #0x58]
+10014fff4: b90067e8    	str	w8, [sp, #0x64]
+10014fff8: 14000001    	b	0x10014fffc <lifecycle::recovery_control::snapshot::{closure#0}+0xe8>
+10014fffc: f9402fe9    	ldr	x9, [sp, #0x58]
+100150000: b94067e8    	ldr	w8, [sp, #0x64]
+100150004: f81903a9    	stur	x9, [x29, #-0x70]
+100150008: b81983a8    	stur	w8, [x29, #-0x68]
+10015000c: 17fffff0    	b	0x10014ffcc <lifecycle::recovery_control::snapshot::{closure#0}+0xb8>
+100150010: f9403fe0    	ldr	x0, [sp, #0x78]
+100150014: 942bcc53    	bl	0x100c43160 <<kasumi_engine::service::Database>::engine>
+100150018: f9002be0    	str	x0, [sp, #0x50]
+10015001c: 14000001    	b	0x100150020 <lifecycle::recovery_control::snapshot::{closure#0}+0x10c>
+100150020: f9402be0    	ldr	x0, [sp, #0x50]
+100150024: 942f1ffb    	bl	0x100d18010 <<alloc::sync::Arc<kasumi_engine::state::TenantEngine> as core::ops::deref::Deref>::deref>
+100150028: f90027e0    	str	x0, [sp, #0x48]
+10015002c: 14000001    	b	0x100150030 <lifecycle::recovery_control::snapshot::{closure#0}+0x11c>
+100150030: f94027e0    	ldr	x0, [sp, #0x48]
+100150034: 910d23e8    	add	x8, sp, #0x348
+100150038: 9404c2fb    	bl	0x100280c24 <<kasumi_engine::state::TenantEngine as kasumi_raft::StateMachineBackend>::capture_snapshot>
+10015003c: 14000001    	b	0x100150040 <lifecycle::recovery_control::snapshot::{closure#0}+0x12c>
+100150040: f941a7e9    	ldr	x9, [sp, #0x348]
+100150044: d2800008    	mov	x8, #0x0                ; =0
+100150048: b1000929    	adds	x9, x9, #0x2
+10015004c: 9a9f1508    	csinc	x8, x8, xzr, ne
+100150050: 36000388    	tbz	w8, #0x0, 0x1001500c0 <lifecycle::recovery_control::snapshot::{closure#0}+0x1ac>
+100150054: 14000001    	b	0x100150058 <lifecycle::recovery_control::snapshot::{closure#0}+0x144>
+100150058: f941abe8    	ldr	x8, [sp, #0x350]
+10015005c: d10123a2    	sub	x2, x29, #0x48
+100150060: f81b83a8    	stur	x8, [x29, #-0x48]
+100150064: 90011200    	adrp	x0, 0x102390000 <dyld_stub_binder+0x102390000>
+100150068: 9100c800    	add	x0, x0, #0x32
+10015006c: 52800568    	mov	w8, #0x2b               ; =43
+100150070: aa0803e1    	mov	x1, x8
+100150074: b002e163    	adrp	x3, 0x105d7d000 <dyld_stub_binder+0x105d7d000>
+100150078: 912ae063    	add	x3, x3, #0xab8
+10015007c: b002e164    	adrp	x4, 0x105d7d000 <dyld_stub_binder+0x105d7d000>
+100150080: 910d0084    	add	x4, x4, #0x340
+100150084: 9488d6ab    	bl	0x102385b30 <core::result::unwrap_failed>
+100150088: 14000007    	b	0x1001500a4 <lifecycle::recovery_control::snapshot::{closure#0}+0x190>
+10015008c: f81c03a0    	stur	x0, [x29, #-0x40]
+100150090: aa0103e8    	mov	x8, x1
+100150094: b81c83a8    	stur	w8, [x29, #-0x38]
+100150098: d10123a0    	sub	x0, x29, #0x48
+10015009c: 9450668e    	bl	0x101569ad4 <core::ptr::drop_glue::<anyhow::Error>>
+1001500a0: 14000003    	b	0x1001500ac <lifecycle::recovery_control::snapshot::{closure#0}+0x198>
+1001500a4: d4200020    	brk	#0x1
+1001500a8: 9488d6bc    	bl	0x102385b98 <core::panicking::panic_in_cleanup>
+1001500ac: f85c03a9    	ldur	x9, [x29, #-0x40]
+1001500b0: b85c83a8    	ldur	w8, [x29, #-0x38]
+1001500b4: f90037e9    	str	x9, [sp, #0x68]
+1001500b8: b90077e8    	str	w8, [sp, #0x74]
+1001500bc: 17ffffcb    	b	0x10014ffe8 <lifecycle::recovery_control::snapshot::{closure#0}+0xd4>
+1001500c0: 9102c3e0    	add	x0, sp, #0xb0
+1001500c4: 910d23e1    	add	x1, sp, #0x348
+1001500c8: 52805308    	mov	w8, #0x298              ; =664
+1001500cc: aa0803e2    	mov	x2, x8
+1001500d0: 9488d8db    	bl	0x10238643c <dyld_stub_binder+0x10238643c>
+1001500d4: 14000001    	b	0x1001500d8 <lifecycle::recovery_control::snapshot::{closure#0}+0x1c4>
+1001500d8: 9102c3e0    	add	x0, sp, #0xb0
+1001500dc: 910263e1    	add	x1, sp, #0x98
+1001500e0: b002e162    	adrp	x2, 0x105d7d000 <dyld_stub_binder+0x105d7d000>
+1001500e4: 910d6042    	add	x2, x2, #0x358
+1001500e8: 9439f61d    	bl	0x100fcd95c <<kasumi_raft::CapturedSnapshot>::write>
+1001500ec: f90023e0    	str	x0, [sp, #0x40]
+1001500f0: 1400000d    	b	0x100150124 <lifecycle::recovery_control::snapshot::{closure#0}+0x210>
+1001500f4: 9102c3e0    	add	x0, sp, #0xb0
+1001500f8: 940b0f74    	bl	0x100413ec8 <core::ptr::drop_glue::<kasumi_raft::CapturedSnapshot>>
+1001500fc: 17ffffb4    	b	0x10014ffcc <lifecycle::recovery_control::snapshot::{closure#0}+0xb8>
+100150100: aa0103e8    	mov	x8, x1
+100150104: f9001be0    	str	x0, [sp, #0x30]
+100150108: b9003fe8    	str	w8, [sp, #0x3c]
+10015010c: 14000001    	b	0x100150110 <lifecycle::recovery_control::snapshot::{closure#0}+0x1fc>
+100150110: f9401be9    	ldr	x9, [sp, #0x30]
+100150114: b9403fe8    	ldr	w8, [sp, #0x3c]
+100150118: f81903a9    	stur	x9, [x29, #-0x70]
+10015011c: b81983a8    	stur	w8, [x29, #-0x68]
+100150120: 17fffff5    	b	0x1001500f4 <lifecycle::recovery_control::snapshot::{closure#0}+0x1e0>
+100150124: f94023e8    	ldr	x8, [sp, #0x40]
+100150128: f81d03a8    	stur	x8, [x29, #-0x30]
+10015012c: f85d03a8    	ldur	x8, [x29, #-0x30]
+100150130: f1000108    	subs	x8, x8, #0x0
+100150134: 9a9f07e8    	cset	x8, ne
+100150138: 36000388    	tbz	w8, #0x0, 0x1001501a8 <lifecycle::recovery_control::snapshot::{closure#0}+0x294>
+10015013c: 14000001    	b	0x100150140 <lifecycle::recovery_control::snapshot::{closure#0}+0x22c>
+100150140: f85d03a8    	ldur	x8, [x29, #-0x30]
+100150144: d100a3a2    	sub	x2, x29, #0x28
+100150148: f81d83a8    	stur	x8, [x29, #-0x28]
+10015014c: 90011200    	adrp	x0, 0x102390000 <dyld_stub_binder+0x102390000>
+100150150: 9100c800    	add	x0, x0, #0x32
+100150154: 52800568    	mov	w8, #0x2b               ; =43
+100150158: aa0803e1    	mov	x1, x8
+10015015c: b002e163    	adrp	x3, 0x105d7d000 <dyld_stub_binder+0x105d7d000>
+100150160: 912ae063    	add	x3, x3, #0xab8
+100150164: b002e164    	adrp	x4, 0x105d7d000 <dyld_stub_binder+0x105d7d000>
+100150168: 910ea084    	add	x4, x4, #0x3a8
+10015016c: 9488d671    	bl	0x102385b30 <core::result::unwrap_failed>
+100150170: 14000007    	b	0x10015018c <lifecycle::recovery_control::snapshot::{closure#0}+0x278>
+100150174: f81e03a0    	stur	x0, [x29, #-0x20]
+100150178: aa0103e8    	mov	x8, x1
+10015017c: b81e83a8    	stur	w8, [x29, #-0x18]
+100150180: d100a3a0    	sub	x0, x29, #0x28
+100150184: 94506654    	bl	0x101569ad4 <core::ptr::drop_glue::<anyhow::Error>>
+100150188: 14000003    	b	0x100150194 <lifecycle::recovery_control::snapshot::{closure#0}+0x280>
+10015018c: d4200020    	brk	#0x1
+100150190: 9488d682    	bl	0x102385b98 <core::panicking::panic_in_cleanup>
+100150194: f85e03a9    	ldur	x9, [x29, #-0x20]
+100150198: b85e83a8    	ldur	w8, [x29, #-0x18]
+10015019c: f9001be9    	str	x9, [sp, #0x30]
+1001501a0: b9003fe8    	str	w8, [sp, #0x3c]
+1001501a4: 17ffffdb    	b	0x100150110 <lifecycle::recovery_control::snapshot::{closure#0}+0x1fc>
+1001501a8: 14000001    	b	0x1001501ac <lifecycle::recovery_control::snapshot::{closure#0}+0x298>
+1001501ac: 9102c3e0    	add	x0, sp, #0xb0
+1001501b0: 940b0f46    	bl	0x100413ec8 <core::ptr::drop_glue::<kasumi_raft::CapturedSnapshot>>
+1001501b4: 14000001    	b	0x1001501b8 <lifecycle::recovery_control::snapshot::{closure#0}+0x2a4>
+1001501b8: f94043e0    	ldr	x0, [sp, #0x80]
+1001501bc: 942f1f9c    	bl	0x100d1802c <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+1001501c0: f90017e0    	str	x0, [sp, #0x28]
+1001501c4: 14000001    	b	0x1001501c8 <lifecycle::recovery_control::snapshot::{closure#0}+0x2b4>
+1001501c8: f94017e0    	ldr	x0, [sp, #0x28]
+1001501cc: 942bcbe5    	bl	0x100c43160 <<kasumi_engine::service::Database>::engine>
+1001501d0: f90013e0    	str	x0, [sp, #0x20]
+1001501d4: 14000001    	b	0x1001501d8 <lifecycle::recovery_control::snapshot::{closure#0}+0x2c4>
+1001501d8: f94013e0    	ldr	x0, [sp, #0x20]
+1001501dc: 942f1f8d    	bl	0x100d18010 <<alloc::sync::Arc<kasumi_engine::state::TenantEngine> as core::ops::deref::Deref>::deref>
+1001501e0: f9000fe0    	str	x0, [sp, #0x18]
+1001501e4: 14000001    	b	0x1001501e8 <lifecycle::recovery_control::snapshot::{closure#0}+0x2d4>
+1001501e8: 910263e0    	add	x0, sp, #0x98
+1001501ec: 944f90e1    	bl	0x101534570 <<alloc::vec::Vec<u8>>::as_slice>
+1001501f0: f90007e0    	str	x0, [sp, #0x8]
+1001501f4: f9000be1    	str	x1, [sp, #0x10]
+1001501f8: 14000001    	b	0x1001501fc <lifecycle::recovery_control::snapshot::{closure#0}+0x2e8>
+1001501fc: f9400fe0    	ldr	x0, [sp, #0x18]
+100150200: f9400be8    	ldr	x8, [sp, #0x10]
+100150204: f94007e9    	ldr	x9, [sp, #0x8]
+100150208: d10283a1    	sub	x1, x29, #0xa0
+10015020c: f81603a9    	stur	x9, [x29, #-0xa0]
+100150210: f81683a8    	stur	x8, [x29, #-0x98]
+100150214: 912163e8    	add	x8, sp, #0x858
+100150218: b002e162    	adrp	x2, 0x105d7d000 <dyld_stub_binder+0x105d7d000>
+10015021c: 910f0042    	add	x2, x2, #0x3c0
+100150220: 9404c381    	bl	0x100281024 <<kasumi_engine::state::TenantEngine as kasumi_raft::StateMachineBackend>::validate_snapshot>
+100150224: 14000001    	b	0x100150228 <lifecycle::recovery_control::snapshot::{closure#0}+0x314>
+100150228: f9442fe9    	ldr	x9, [sp, #0x858]
+10015022c: d2800008    	mov	x8, #0x0                ; =0
+100150230: b1000929    	adds	x9, x9, #0x2
+100150234: 9a9f1508    	csinc	x8, x8, xzr, ne
+100150238: 36000388    	tbz	w8, #0x0, 0x1001502a8 <lifecycle::recovery_control::snapshot::{closure#0}+0x394>
+10015023c: 14000001    	b	0x100150240 <lifecycle::recovery_control::snapshot::{closure#0}+0x32c>
+100150240: f94433e8    	ldr	x8, [sp, #0x860]
+100150244: d10183a2    	sub	x2, x29, #0x60
+100150248: f81a03a8    	stur	x8, [x29, #-0x60]
+10015024c: 90011200    	adrp	x0, 0x102390000 <dyld_stub_binder+0x102390000>
+100150250: 9100c800    	add	x0, x0, #0x32
+100150254: 52800568    	mov	w8, #0x2b               ; =43
+100150258: aa0803e1    	mov	x1, x8
+10015025c: b002e163    	adrp	x3, 0x105d7d000 <dyld_stub_binder+0x105d7d000>
+100150260: 912ae063    	add	x3, x3, #0xab8
+100150264: b002e164    	adrp	x4, 0x105d7d000 <dyld_stub_binder+0x105d7d000>
+100150268: 91106084    	add	x4, x4, #0x418
+10015026c: 9488d631    	bl	0x102385b30 <core::result::unwrap_failed>
+100150270: 14000007    	b	0x10015028c <lifecycle::recovery_control::snapshot::{closure#0}+0x378>
+100150274: f81a83a0    	stur	x0, [x29, #-0x58]
+100150278: aa0103e8    	mov	x8, x1
+10015027c: b81b03a8    	stur	w8, [x29, #-0x50]
+100150280: d10183a0    	sub	x0, x29, #0x60
+100150284: 94506614    	bl	0x101569ad4 <core::ptr::drop_glue::<anyhow::Error>>
+100150288: 14000003    	b	0x100150294 <lifecycle::recovery_control::snapshot::{closure#0}+0x380>
+10015028c: d4200020    	brk	#0x1
+100150290: 9488d642    	bl	0x102385b98 <core::panicking::panic_in_cleanup>
+100150294: f85a83a9    	ldur	x9, [x29, #-0x58]
+100150298: b85b03a8    	ldur	w8, [x29, #-0x50]
+10015029c: f9002fe9    	str	x9, [sp, #0x58]
+1001502a0: b90067e8    	str	w8, [sp, #0x64]
+1001502a4: 17ffff56    	b	0x10014fffc <lifecycle::recovery_control::snapshot::{closure#0}+0xe8>
+1001502a8: 911783e0    	add	x0, sp, #0x5e0
+1001502ac: 912163e1    	add	x1, sp, #0x858
+1001502b0: 52804f08    	mov	w8, #0x278              ; =632
+1001502b4: aa0803e2    	mov	x2, x8
+1001502b8: 9488d861    	bl	0x10238643c <dyld_stub_binder+0x10238643c>
+1001502bc: 14000001    	b	0x1001502c0 <lifecycle::recovery_control::snapshot::{closure#0}+0x3ac>
+1001502c0: 911783e0    	add	x0, sp, #0x5e0
+1001502c4: 9431e1a1    	bl	0x100dc8948 <core::ptr::drop_glue::<core::option::Option<kasumi_raft::snapshot_state::RetiredSnapshotState>>>
+1001502c8: 14000001    	b	0x1001502cc <lifecycle::recovery_control::snapshot::{closure#0}+0x3b8>
+1001502cc: 910263e0    	add	x0, sp, #0x98
+1001502d0: 94610785    	bl	0x1019920e4 <core::ptr::drop_glue::<alloc::vec::Vec<u8>>>
+1001502d4: 14000001    	b	0x1001502d8 <lifecycle::recovery_control::snapshot::{closure#0}+0x3c4>
+1001502d8: f94047e9    	ldr	x9, [sp, #0x88]
+1001502dc: 52800028    	mov	w8, #0x1                ; =1
+1001502e0: 39002128    	strb	w8, [x9, #0x8]
+1001502e4: 52800008    	mov	w8, #0x0                ; =0
+1001502e8: 12000100    	and	w0, w8, #0x1
+1001502ec: 912d83ff    	add	sp, sp, #0xb60
+1001502f0: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+1001502f4: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+1001502f8: d65f03c0    	ret
+1001502fc: 9488d627    	bl	0x102385b98 <core::panicking::panic_in_cleanup>
+100150300: b002e160    	adrp	x0, 0x105d7d000 <dyld_stub_binder+0x105d7d000>
+100150304: 9110c000    	add	x0, x0, #0x430
+100150308: 9488d726    	bl	0x102385fa0 <core::panicking::panic_const::panic_const_async_fn_resumed>
+10015030c: b002e160    	adrp	x0, 0x105d7d000 <dyld_stub_binder+0x105d7d000>
+100150310: 9110c000    	add	x0, x0, #0x430
+100150314: 9488d72a    	bl	0x102385fbc <core::panicking::panic_const::panic_const_async_fn_resumed_panic>

@@ -1,0 +1,35 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000719a0 <<alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>>::new>:
+1000719a0: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1000719a4: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1000719a8: 910043fd    	add	x29, sp, #0x10
+1000719ac: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+1000719b0: f90003ff    	str	xzr, [sp]
+1000719b4: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+1000719b8: f90003ff    	str	xzr, [sp]
+1000719bc: d13c03ff    	sub	sp, sp, #0xf00
+1000719c0: f90003ff    	str	xzr, [sp]
+1000719c4: aa0003e1    	mov	x1, x0
+1000719c8: 52800028    	mov	w8, #0x1                ; =1
+1000719cc: f9000be8    	str	x8, [sp, #0x10]
+1000719d0: f9000fe8    	str	x8, [sp, #0x18]
+1000719d4: f90007e8    	str	x8, [sp, #0x8]
+1000719d8: f94007e9    	ldr	x9, [sp, #0x8]
+1000719dc: 910143e8    	add	x8, sp, #0x50
+1000719e0: f9002be9    	str	x9, [sp, #0x50]
+1000719e4: f94007e9    	ldr	x9, [sp, #0x8]
+1000719e8: f9002fe9    	str	x9, [sp, #0x58]
+1000719ec: 91004100    	add	x0, x8, #0x10
+1000719f0: 5285d308    	mov	w8, #0x2e98             ; =11928
+1000719f4: aa0803e2    	mov	x2, x8
+1000719f8: 948c7748    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000719fc: 52800108    	mov	w8, #0x8                ; =8
+100071a00: aa0803e0    	mov	x0, x8
+100071a04: 5285d508    	mov	w8, #0x2ea8             ; =11944
+100071a08: aa0803e1    	mov	x1, x8
+100071a0c: 97fe858b    	bl	0x100013038 <alloc::boxed::box_new_uninit>
+100071a10: f90003e0    	str	x0, [sp]

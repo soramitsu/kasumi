@@ -186,6 +186,8 @@ pub(super) struct Fixture {
     endpoints: BTreeMap<u64, AuthorityEndpoint>,
     issuers: Vec<Arc<kasumi_authority::IndependentAuthority>>,
     issuer_stores: Vec<Arc<TenantStorageSet>>,
+    issuer_nodes: Vec<Arc<NodeStore>>,
+    storage: crate::runtime_memory::RuntimeStorage,
     issuer_audits: Vec<Arc<SecurityAudit>>,
     issuer_networks: Vec<Arc<ClusterNetwork>>,
     issuer_stops: Vec<watch::Sender<bool>>,
@@ -219,10 +221,15 @@ impl Fixture {
         control: Uuid,
         kms: &str,
         kms_certificate: &std::path::Path,
+        cluster: &crate::runtime_cluster_storage::ClusterStorage,
+        fenced_source: bool,
     ) -> impl std::future::Future<Output = Self> {
         Box::pin(async move {
             let directory = directory.join("canonical-recovery");
-            private_files::create_directory(&directory).unwrap();
+            assert!(
+                directory.is_dir(),
+                "shared fixture roots must precede census"
+            );
             let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
             let root = ControlSigningRoot {
                 control_incarnation: control,
@@ -380,20 +387,32 @@ impl Fixture {
             };
             let mut issuers = Vec::new();
             let mut issuer_stores = Vec::new();
+            let mut issuer_nodes = Vec::new();
             let mut issuer_audits = Vec::new();
             let mut issuer_networks = Vec::new();
             let mut issuer_stops = Vec::new();
             let mut issuer_tasks = Vec::new();
             for (index, socket) in sockets.into_iter().enumerate() {
                 let id = (index + 1) as u64;
+                let admission = cluster.storage.facade(cluster.storage.policy()).unwrap();
+                let disk = cluster
+                    .storage
+                    .open_persistent(&cluster.persistent)
+                    .unwrap();
+                let audit_node = NodeStore::create_new(
+                    directory.join(format!("persistent/issuer-audit-{id}.redb")),
+                    Uuid::new_v4(),
+                    disk.clone(),
+                    cluster
+                        .storage
+                        .open_scratch(&cluster.issuer_scratch[index][0])
+                        .unwrap(),
+                )
+                .unwrap();
+                issuer_nodes.push(audit_node.clone());
                 let audit = SecurityAudit::initialize(
                     TenantStore::initialize_catalog_fixture(
-                        NodeStore::create_new_fixture(
-                            directory.join(format!("issuer-audit-{id}.redb")),
-                            Uuid::new_v4(),
-                            kasumi_store::ScratchDisk::fixture(),
-                        )
-                        .unwrap(),
+                        audit_node,
                         kasumi_engine::SECURITY_TENANT.into(),
                         Arc::new(LocalKeyProvider::new([0xA0 + id as u8; 32])),
                     )
@@ -403,16 +422,22 @@ impl Fixture {
                         hot_bytes: 64 << 20,
                         archive_bytes: 64 << 30,
                     },
-                    kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+                    admission.clone(),
                 )
                 .unwrap();
+                let node = NodeStore::create_new(
+                    directory.join(format!("persistent/issuer-{id}.redb")),
+                    Uuid::new_v4(),
+                    disk,
+                    cluster
+                        .storage
+                        .open_scratch(&cluster.issuer_scratch[index][1])
+                        .unwrap(),
+                )
+                .unwrap();
+                issuer_nodes.push(node.clone());
                 let stores = TenantStorageSet::initialize_catalogs(
-                    NodeStore::create_new_fixture(
-                        directory.join(format!("issuer-{id}.redb")),
-                        Uuid::new_v4(),
-                        kasumi_store::ScratchDisk::fixture(),
-                    )
-                    .unwrap(),
+                    node,
                     authority_install.tenant(),
                     Arc::new(LocalKeyProvider::new([40 + id as u8; 32])),
                     Arc::new(LocalKeyProvider::new([50 + id as u8; 32])),
@@ -461,11 +486,8 @@ impl Fixture {
                     },
                     network.clone(),
                     kasumi_raft::server_config(),
-                    crate::authority_runtime::request_budget(
-                        &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
-                    )
-                    .unwrap(),
-                    kasumi_raft::SnapshotBufferOwner::fixture(),
+                    crate::authority_runtime::request_budget(&admission).unwrap(),
+                    admission.snapshot_buffer_owner().unwrap(),
                 )
                 .await
                 .unwrap();
@@ -490,12 +512,20 @@ impl Fixture {
                     .into_axum_router(),
                 );
                 let (stop, stopped) = watch::channel(false);
+                // The fenced-source test isolates startup after real signed issuer
+                // enrollment. Audited issuer HA remains a separate release gate;
+                // every other canonical recovery case uses the durable sink.
+                let handshake_audit: Arc<dyn tls::TlsHandshakeAudit> = if fenced_source {
+                    Arc::new(FixtureAudit)
+                } else {
+                    audit.clone()
+                };
                 issuer_tasks.push(tokio::spawn(tls::serve_tls(
                     socket,
                     network.server_tls(),
                     router,
                     ListenerLimits::default(),
-                    audit.clone(),
+                    handshake_audit,
                     stopped,
                 )));
                 issuer_stops.push(stop);
@@ -505,6 +535,59 @@ impl Fixture {
                 issuers.push(authority);
             }
             issuers[0].initialize().await.unwrap();
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    for issuer in &issuers {
+                        let metrics = issuer.raft_group().raft().metrics().borrow().clone();
+                        if metrics.current_leader == Some(metrics.id)
+                            && matches!(
+                                tokio::time::timeout(
+                                    Duration::from_secs(2),
+                                    issuer.raft_group().linearizable_barrier(),
+                                )
+                                .await,
+                                Ok(Ok(_))
+                            )
+                        {
+                            return;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                let progress = issuers
+                    .iter()
+                    .map(|issuer| {
+                        let metrics = issuer.raft_group().raft().metrics().borrow().clone();
+                        format!(
+                            "id={} leader={:?} term={} state={:?} applied={:?} running={:?}",
+                            metrics.id,
+                            metrics.current_leader,
+                            metrics.current_term,
+                            metrics.state,
+                            metrics.last_applied,
+                            metrics.running_state,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let audits = issuer_audits
+                    .iter()
+                    .map(|audit| audit.status().map_err(|error| error.to_string()))
+                    .collect::<Vec<_>>();
+                let transport_free = issuer_networks
+                    .iter()
+                    .map(|network| network.fixture_transport_free_slots())
+                    .collect::<Vec<_>>();
+                let listener_finished = issuer_tasks
+                    .iter()
+                    .map(|task| task.is_finished())
+                    .collect::<Vec<_>>();
+                panic!(
+                    "issuer quorum did not become linearizable: {progress:?}; audit_status={audits:?}; transport_free={transport_free:?}; listener_finished={listener_finished:?}"
+                )
+            });
             let verifier_ids = (1..=3)
                 .map(|node_id| kasumi_serving::TrustVerifierIdentity {
                     installation_id: Uuid::new_v4(),
@@ -525,6 +608,8 @@ impl Fixture {
                 endpoints,
                 issuers,
                 issuer_stores,
+                issuer_nodes,
+                storage: cluster.storage.clone(),
                 issuer_audits,
                 issuer_networks,
                 issuer_stops,
@@ -684,19 +769,17 @@ impl Fixture {
             keys,
         };
         let verifier_root = verifier.database_path.parent().unwrap();
-        if !verifier_root.exists() {
-            private_files::create_directory(verifier_root).unwrap();
-        }
+        private_files::check_directory(verifier_root).unwrap();
         crate::signer_runtime::InitializeSignerVerifier {
-            admission: Default::default(),
+            admission: config.admission.clone(),
             persistent_disk: config.persistent_disk.clone(),
             scratch_disk: config.scratch_disk.clone(),
             verifier: verifier.clone(),
             initial_certificates: vec![self.signing.signer.certificate().clone()],
         }
-        .initialize()
+        .initialize_with_storage(self.storage.clone())
         .await
-        .unwrap();
+        .unwrap_or_else(|error| panic!("signer verifier fixture initialization failed: {error:?}"));
         config.signer_verifier = Some(verifier);
         config.serving_authorities = BTreeMap::from([("issuer".into(), self.authority(index))]);
         config.tenants[0].serving = TenantServingConfig::Independent {
@@ -852,9 +935,12 @@ impl Fixture {
                         operation_timeout_ms: 60_000,
                     },
                 });
-                crate::target_journal_installation::initialize(config.clone())
-                    .await
-                    .unwrap();
+                crate::target_journal_installation::initialize_with_storage(
+                    config.clone(),
+                    self.storage.clone(),
+                )
+                .await
+                .unwrap();
                 self.target_configs.push(config);
             }
             let source_purpose = kasumi_types::staged_digest(
@@ -1107,6 +1193,108 @@ impl Fixture {
     async fn client(&self) -> kasumi_client::KasumiRecoveryPool {
         self.client_with_credential(&self.control_token)
     }
+    /// Commit a real Control Start and observe its initial durable phase before
+    /// any target effect is dispatched. This positive point read does not claim
+    /// that the target has initialized or the recovery has finished.
+    pub async fn assert_protected_prepare_status(&self, configurations: &[RuntimeConfig]) {
+        let request = self.request.as_ref().unwrap();
+        let mut native = self.client().await;
+        let expected = match native.start(request, Duration::from_secs(5)).await {
+            Ok(record) => record,
+            Err(_) => self.status(&mut native, "protected Start outcome").await,
+        };
+        assert_eq!(expected.request, *request);
+        assert_eq!(expected.phase, RecoveryPhase::Prepare);
+        assert!(expected.pending_phase.is_none());
+        self.assert_protected_status_record(configurations, &expected)
+            .await;
+    }
+    /// Query the actual NodeRuntime protected listener after the same operation
+    /// has reached a durable terminal phase through the native coordinator.
+    pub async fn assert_protected_status(&self, configurations: &[RuntimeConfig]) {
+        let mut native = self.client().await;
+        let expected = self.status(&mut native, "protected terminal phase").await;
+        assert_eq!(expected.phase, RecoveryPhase::Finished);
+        self.assert_protected_status_record(configurations, &expected)
+            .await;
+    }
+    async fn assert_protected_status_record(
+        &self,
+        configurations: &[RuntimeConfig],
+        expected: &RecoveryRecord,
+    ) {
+        let operation_id = self.request.as_ref().unwrap().operation_id;
+        let controls = self
+            .control_observers
+            .iter()
+            .map(|owner| owner.upgrade().expect("live installed Control owner"))
+            .collect::<Vec<_>>();
+        assert_eq!(controls.len(), configurations.len());
+        // The recovery fixture deliberately fails over Control after Start.
+        // The saved dispatch node is not necessarily the current read leader.
+        let index = quorum_ready_leader(&controls, "protected recovery status").await;
+        assert_eq!(
+            controls[index].raft_group().raft().metrics().borrow().id as usize,
+            index + 1
+        );
+        drop(controls);
+        let endpoint = format!(
+            "https://localhost:{}/recovery/{operation_id}",
+            configurations[index].admin.listen.port()
+        );
+        let absent = format!(
+            "https://localhost:{}/recovery/{}",
+            configurations[index].admin.listen.port(),
+            Uuid::new_v4()
+        );
+        let mut identity = read_bounded(&self.files[0].certificate, 1 << 20).unwrap();
+        identity
+            .extend_from_slice(&private_files::read(&self.files[0].private_key, 1 << 20).unwrap());
+        let client = reqwest::Client::builder()
+            .https_only(true)
+            .min_tls_version(reqwest::tls::Version::TLS_1_3)
+            .max_tls_version(reqwest::tls::Version::TLS_1_3)
+            .tls_built_in_root_certs(false)
+            .add_root_certificate(
+                reqwest::Certificate::from_pem(&read_bounded(&self.ca, 1 << 20).unwrap())
+                    .unwrap(),
+            )
+            .identity(reqwest::Identity::from_pem(&identity).unwrap())
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(25))
+            .build()
+            .unwrap();
+        let response = client
+            .get(&endpoint)
+            .bearer_auth(&self.control_token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let value: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 5);
+        assert_eq!(value["operation_id"], operation_id.to_string());
+        assert_eq!(
+            value["phase"],
+            serde_json::to_value(expected.phase).unwrap()
+        );
+        assert_eq!(value["updated_revision"], expected.updated_revision);
+        assert_eq!(value["phase_pending"], expected.pending_phase.is_some());
+        assert_eq!(value["terminal"], expected.phase.terminal());
+        let missing = client
+            .get(&absent)
+            .bearer_auth(&self.control_token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status().as_u16(), 404);
+        assert_eq!(missing.headers()["cache-control"], "no-store");
+        assert_eq!(
+            missing.text().await.unwrap(),
+            "protected node observation unavailable\n"
+        );
+    }
     fn client_with_credential(&self, token: &str) -> kasumi_client::KasumiRecoveryPool {
         let installed = self.target_configs[0].target_recovery.as_ref().unwrap();
         let token = zeroize::Zeroizing::new(token.to_owned());
@@ -1181,6 +1369,23 @@ impl Fixture {
         networks[leader]
             .set_test_group_isolated(&group, true)
             .unwrap();
+        // OpenRaft waits for the old leader lease and its randomized election
+        // timeout. Require an actual, linearizable replacement among the two
+        // survivors before starting the original five-second client deadline.
+        let survivors = controls
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != leader)
+            .map(|(_, database)| Arc::clone(database))
+            .collect::<Vec<_>>();
+        let replacement =
+            quorum_ready_leader(&survivors, "Control after installed-member isolation").await;
+        let replacement_node = survivors[replacement]
+            .raft_group()
+            .raft()
+            .metrics()
+            .borrow()
+            .id;
         let original = self.request.as_ref().unwrap();
         let observed = client
             .status(
@@ -1190,30 +1395,19 @@ impl Fixture {
                 Duration::from_secs(5),
             )
             .await;
-        let replacement = controls.iter().enumerate().any(|(index, database)| {
-            index != leader
-                && database
-                    .raft_group()
-                    .raft()
-                    .metrics()
-                    .borrow()
-                    .state
-                    .is_leader()
-        });
         networks[leader]
             .set_test_group_isolated(&group, false)
             .unwrap();
-        assert_eq!(
-            observed
-                .expect("installed Control quorum must remain readable after leader isolation")
-                .request,
-            *original
-        );
-        assert!(
-            replacement,
-            "successful read must come from a replacement live Control leader"
-        );
+        let observed = observed.unwrap_or_else(|error| {
+            panic!(
+                "installed Control quorum must remain readable after replacement election: {}; replacement node={replacement_node}; {}",
+                recovery_step_error(&error),
+                self.control_failure_context()
+            )
+        });
+        assert_eq!(observed.request, *original);
         // Physical owners remain with the fixture. Release these observations before target draining.
+        drop(survivors);
         drop(controls);
     }
     pub async fn recover(&self, networks: &[Arc<ClusterNetwork>]) {
@@ -1248,6 +1442,7 @@ impl Fixture {
         let mut isolated = false;
         let mut restored = false;
         let mut progress = std::collections::VecDeque::with_capacity(8);
+        let mut dispatches = std::collections::VecDeque::with_capacity(8);
         let mut last_pending = None;
         let mut last_step = String::from("not dispatched");
         let mut steps = 0_u64;
@@ -1415,6 +1610,10 @@ impl Fixture {
                     Ok(record) => recovery_progress(&record),
                     Err(error) => recovery_step_error(&error),
                 };
+                if dispatches.len() == 8 {
+                    dispatches.pop_front();
+                }
+                dispatches.push_back(last_step.clone());
             }
         })
         .await;
@@ -1457,7 +1656,7 @@ impl Fixture {
                 "no pending phase in last observed head".into()
             };
             panic!(
-                "recovery success deadline elapsed: {error:?}; materialized_one={observed_one_materialization} isolated={isolated} restored={restored} steps={steps}; last_step={last_step}; pending={pending}; last_eight_heads={progress:?}; {}",
+                "recovery success deadline elapsed: {error:?}; materialized_one={observed_one_materialization} isolated={isolated} restored={restored} steps={steps}; last_step={last_step}; pending={pending}; last_eight_heads={progress:?}; last_eight_dispatches={dispatches:?}; {}",
                 self.control_failure_context()
             );
         }
@@ -1531,11 +1730,17 @@ impl Fixture {
         }
         self.issuers.clear();
         self.issuer_networks.clear();
+        for audit in &self.issuer_audits {
+            audit.admission().drain_snapshot_startups().await.unwrap();
+        }
         for stores in self.issuer_stores.drain(..) {
             stores.shutdown().await.unwrap();
         }
         for audit in self.issuer_audits.drain(..) {
             audit.shutdown().await.unwrap();
+        }
+        for node in self.issuer_nodes.drain(..) {
+            node.shutdown().await.unwrap();
         }
     }
 }

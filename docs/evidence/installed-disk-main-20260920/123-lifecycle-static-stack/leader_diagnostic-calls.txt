@@ -1,0 +1,10 @@
+100025260: 94033dca    	bl	0x1000f4988 <<alloc::collections::btree::map::BTreeMap<u64, alloc::sync::Arc<kasumi_engine::service::Database>>>::iter>
+100025270: 94033856    	bl	0x1000f33c8 <<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>> as core::iter::traits::iterator::Iterator>::map::<(u64, alloc::string::String), <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>
+100025280: 97fff0f4    	bl	0x100021650 <<core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}> as core::iter::traits::iterator::Iterator>::collect::<alloc::vec::Vec<(u64, alloc::string::String)>>>
+1000252a0: 94226eb6    	bl	0x1008c0d78 <<core::fmt::rt::Argument>::new_display::<tokio::time::error::Elapsed>>
+1000252ac: 94782e21    	bl	0x101e30b30 <core::ptr::drop_glue::<alloc::vec::Vec<(u64, alloc::string::String)>>>
+1000252d0: 94028c38    	bl	0x1000c83b0 <<core::fmt::rt::Argument>::new_debug::<alloc::vec::Vec<(u64, alloc::string::String)>>>
+1000252f8: 94825c80    	bl	0x1020bc4f8 <<core::fmt::Arguments>::new::<43, 2>>
+100025318: 948d8a15    	bl	0x102387b6c <core::panicking::panic_fmt>
+100025324: 948d898d    	bl	0x102387958 <core::panicking::panic_in_cleanup>
+100025330: 948d8af6    	bl	0x102387f08 <dyld_stub_binder+0x102387f08>

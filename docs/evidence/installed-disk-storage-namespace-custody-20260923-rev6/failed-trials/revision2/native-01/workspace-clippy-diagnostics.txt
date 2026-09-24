@@ -1,0 +1,89 @@
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `parent` is never used
+   --> crates/kasumi-store/src/node_disk/census.rs:197:15
+    |
+197 | pub(super) fn parent(
+    |               ^^^^^^
+    |
+    = note: `-D dead-code` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: method `verify` is never used
+   --> crates/kasumi-store/src/node_disk/namespace.rs:133:19
+    |
+ 22 | impl RetainedParent {
+    | ------------------- method in this implementation
+...
+133 |     pub(super) fn verify(&self, root: &census::Root, names: &[CString]) -> io::Result<()> {
+    |                   ^^^^^^
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+    --> crates/kasumi-store/src/node_disk/file.rs:1143:26
+     |
+1143 |             owner.verify(&actual)?;
+     |                          ^^^^^^^ help: change this to: `actual`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+     = note: `-D clippy::needless-borrow` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::needless_borrow)]`
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+    --> crates/kasumi-store/src/node_disk/file.rs:1156:30
+     |
+1156 |                 owner.verify(&actual)?;
+     |                              ^^^^^^^ help: change this to: `actual`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+
+error: this `if` statement can be collapsed
+    --> crates/kasumi-store/src/node_disk/file.rs:2178:9
+     |
+2178 | /         if !settled {
+2179 | |             if let Some(enrolled) = state
+2180 | |                 .accounted
+2181 | |                 .get_mut(&owner.identity)
+...    |
+2186 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+     |
+2178 ~         if !settled
+2179 ~             && let Some(enrolled) = state
+2180 |                 .accounted
+ ...
+2184 |                 enrolled.settled = false;
+2185 ~             }
+     |
+

@@ -1,0 +1,56 @@
+{
+  "status": "PASS scoped independent source review; native/runtime/composed integration unqualified",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "candidate": "target/installed-disk-validation/file-explicit-close-revision1/candidate-01",
+  "manifest_sha256": "ce3e396af747696be59d6c1a77452bba0a1e95d15d8d8b1bd817047245167cca",
+  "patch_sha256": "9d0c8fe323e1f13fdd84883db1ffe57a41e2e5842d9056af94dd67c6d33f7518",
+  "files": [
+    {
+      "path": "crates/kasumi-store/src/node_disk/file.rs",
+      "base": "bf2878cd889dc22ad0a9d0b17ddb8cade18d277e711ab8dd98d6f021b88fe751",
+      "proposed": "b5177c9abfa8d5e416ba69373d120c58c65ae059f1d7922ed8ce7f343874ce95"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/file/custody.rs",
+      "base": "8b42f70a6eeef46cfddbdc005b6f1f7c0977d60161900260964ac54a405024d1",
+      "proposed": "621c0ff78a8fb29b3c9d868c221ab4dd1269388f43caf42a957debe624e15af8"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "base": "24e8ec5be11eebdc87183e2a33a151577d6cba09a7096ee52b0dd32205337912",
+      "proposed": "1314c78d8906872f8feff13c9f1ac61270b4db1888346f2883d228d0d9115f78"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_file.rs",
+      "base": "44778b3b9f038a6991ff2209d9d48cee63573b6bd8f6d60cc00b001df676dcf9",
+      "proposed": "47f330f5ba8b407fa110e0e375ef8327d8324e802ba2c328f658f9459149324a"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_file/tests.rs",
+      "base": "c3bbef9fbd08ff75356ab649f9203d82d0f6a0d43c5f1bff1f076a849fef9630",
+      "proposed": "45d38920188561145efc108b8db5a99ea9435b15df36b55f4276c3600122779c"
+    }
+  ],
+  "all_five_exact_revision4_bases_verified": true,
+  "all_five_proposed_hashes_verified": true,
+  "independent_patch_dry_run_exit": 0,
+  "independent_patch_apply_exit": 0,
+  "all_five_readbacks_match": true,
+  "actual_owned_source_unchanged": true,
+  "reviewed_invariants": [
+    "State excludes registry upgrades while the existing occupied map slot temporarily loans its sole Weak; sole strong and Weak counts precede native effects.",
+    "ExplicitClose restores the exact Weak before unlocking on error/unwind, and marks attempted retirement failed. NodeBackend keeps its original Some(file) through returned errors and unwinds.",
+    "Native close outcomes remain in original resources; close projection returns before a repeated native attempt. Neither a known failed owner nor an unsettled extent can return successful close.",
+    "A prior ResourcesClosed unwind is rejected by the absent budget/original_error backing gate before record_error or native access. Both test checkpoints exercise unwind and repeat close against stable Arc/Weak/charges.",
+    "All fallible registration/parent/slot checks precede retirement. Success frees descriptor and owned path/mutex backing then the final Arc before parent/open_files/slot credits.",
+    "Closed or partially retired public file operations gate before dereferencing absent backing; failed close does not manufacture a replacement owner."
+  ],
+  "tests_read": "Seven new tests and two changed existing NodeFile tests; no names removed; no native executed by reviewer.",
+  "qualifications": [
+    "No compile, runtime, strict lint, full-store or full-workspace result asserted.",
+    "Failed still-live backend may safely retain indefinitely until a separate acknowledgement/recovery policy is implemented.",
+    "Returned errors project errno/kind; this is not proof that caller observed original opaque outcome, and no opaque error/panic, allocator/RSS, directory/root or physical-filesystem envelope is qualified.",
+    "Inherited post-check standalone observations are not claimed globally serialized."
+  ]
+}

@@ -1,19 +1,20 @@
 # Protected node observations
 
-The data-node daemon serves `GET /health`, `GET /ready`, and `GET /metrics` on its
-private administrative listener (loopback port 9445 in a fresh standalone install).
-All three require TLS 1.3, an installed client certificate, and a current Control
+The data-node daemon serves `GET /health`, `GET /ready`, `GET /metrics`, and
+`GET /recovery/{operation_id}` on its private administrative listener (loopback
+port 9445 in a fresh standalone install).
+All four require TLS 1.3, an installed client certificate, and a current Control
 administrator bearer credential. Application administrator credentials cannot
 scrape these routes. There is no anonymous health endpoint.
 
-`/health` and `/ready` return JSON; `/metrics` returns Prometheus text. Responses
-are at most 1 MiB and carry `Cache-Control: no-store`. Each request reserves bounded
+`/health`, `/ready`, and exact recovery status return JSON; `/metrics` returns
+Prometheus text. Responses are at most 1 MiB and carry `Cache-Control: no-store`. Each request reserves bounded
 node workspace and retains its original credential deadline and Control policy
 fence through encoding and release. Renewal cannot extend that deadline. A
 revocation, policy change, lifecycle transition, or closure of an observed store
-can withhold the whole result. Membership changes or expiry/invalidation of the
-original readiness coverage also withhold the result. Authentication and authorization failures are
-audited. Failure responses contain no diagnostic state.
+can withhold the whole result. For `/health`, `/ready`, and `/metrics`,
+membership changes or expiry/invalidation of the original readiness coverage
+also withhold the result. Authentication and authorization failures are audited. Failure responses contain no diagnostic state.
 
 `/health` reports whether startup completed and the daemon is serving. `/ready`
 additionally requires an accessible service audit store, usable unpressured node
@@ -23,9 +24,21 @@ group in the completed sweep. It returns 503
 when these conditions do not hold. A listening socket or remembered leader alone
 does not establish readiness. Draining begins before listeners and workers stop.
 
+`GET /recovery/{operation_id}` takes a canonical hyphenated UUID and returns only
+the exact durable Control operation's
+UUID, phase, updated revision, pending-phase flag, and terminal flag. It is a
+point-addressed read, not an enumeration or phase-count metric. With an
+available three-voter Control quorum, a valid but unknown UUID returns a generic
+404. An invalid UUID returns a generic 400 after authorization; unavailable
+quorum or release authority returns 503. The result is the verified
+phase at its reported revision and may be superseded by a later transition.
+The route does not reveal the recovery request, target placement, or dispatch
+inputs. The protected 1 MiB response limit and original release checks apply.
+
 Control administrator authorization itself requires a current Control quorum
-barrier. If that cannot be established, all three endpoints return a generic 503;
-they do not release counters using an old policy. On HA nodes this means a Control
+barrier. If that cannot be established, all protected endpoints return a generic
+503; they do not release counters using an old policy. On HA nodes this means a
+Control
 follower cannot serve these protected observations until it can satisfy that
 administrative authorization. Treat a failed scrape as unavailable monitoring,
 not as zero load or an empty database. Admission pressure can likewise prevent a
@@ -87,13 +100,18 @@ Available metrics include:
   the `sample_usable` flag alongside the last sample; do not interpret an unusable
   sample as current memory use.
 - Service-audit hot/archive bytes and budgets, sequence and pruning positions,
-  segment count, draining state, persistence failure, and maintenance failures.
+  segment count, draining state, persistence failure, maintenance failures, and
+  policy-due archive backlog bytes.
 - Per-group tenant-audit hot/archive bytes and budgets, sequence/pruning positions,
-  segment counts, and draining state where the original store remains available.
+  segment counts, draining state, policy-due archive backlog bytes, and
+  archive-worker failure/committed-segment counters where the original store
+  remains available and an automatic worker was installed.
 - Per-group logical document bytes/counts and configured logical/snapshot disk
   budgets. These are not measurements of filesystem free space or physical file
   allocation. Audit bytes above the 50% drain target describe retained volume,
-  not a count of scheduled or running maintenance jobs.
+  not a count of scheduled or running maintenance jobs. Archive backlog bytes
+  are hot bytes above that target only when policy has reached the 75% start
+  threshold or is continuing a drain. They are not a worker queue length.
 - The scraping credential's verified absolute expiry timestamp. No token,
   credential-family identity, key reference, document, or raw provider error is a
   metric label or JSON diagnostic field.
@@ -108,12 +126,13 @@ Available metrics include:
   that another independent source copy or any distributed source is fenced.
 
 Unavailable values are omitted from Prometheus and represented as `null` in JSON.
-Tenant archive-worker failure counters, durable backup-session totals, authority
+Tenant archive-worker counters are local to the current database instance and reset
+on restart or replacement. A live store can have due backlog without an installed
+worker; its worker counters are then `null` in JSON and absent from Prometheus.
+The per-group detail limit remains 128, so these tenant fields are not
+whole-node totals above that count. Durable backup-session totals, authority
 daemon metrics, distributed recovery-coordinator phases, and peer-maintenance
-counters and physical disk utilization are not yet instrumented here. Their
-absence is not a zero value. Tenant
-retention positions alone do not establish that automatic archival maintenance is
-enabled; consult the final release checklist and archive status.
+counters are not yet instrumented here. Their absence is not a zero value.
 
 Example local scrape using Prometheus's documented
 [authorization and TLS settings](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#http_config):
@@ -164,7 +183,12 @@ filesystem observation. Prometheus exposes `kasumi_persistent_disk_admission_rea
 `kasumi_persistent_disk_files`, `kasumi_persistent_disk_open_files`,
 `kasumi_persistent_disk_filesystem_pending_bytes`,
 `kasumi_persistent_disk_filesystem_min_free_bytes`, and the optional fresh
-`kasumi_persistent_disk_filesystem_available_bytes` sample. Readiness requires an
+`kasumi_persistent_disk_filesystem_available_bytes` sample, plus optional
+`kasumi_persistent_disk_filesystem_total_bytes` and
+`kasumi_persistent_disk_filesystem_used_bytes` physical-utilization samples.
+Total counts all filesystem blocks and used counts blocks not free according to
+`fstatvfs`; these values include other processes and are not node-owned charges.
+Readiness requires an
 open owner, usable filesystem admission and sufficient sampled free space for the
 shared pending growth and minimum-free reservation. Its response fence rechecks
 that requirement immediately before releasing a ready observation.
@@ -173,7 +197,11 @@ that requirement immediately before releasing a ready observation.
 `kasumi_scratch_disk_max_bytes`, `kasumi_scratch_disk_min_free_bytes`,
 `kasumi_scratch_disk_charged_bytes`, `kasumi_scratch_disk_live_files`,
 `kasumi_scratch_disk_filesystem_pending_bytes`, and the optional fresh
-`kasumi_scratch_disk_filesystem_available_bytes` sample. Charged bytes include
+`kasumi_scratch_disk_filesystem_available_bytes` sample, plus optional
+`kasumi_scratch_disk_filesystem_total_bytes` and
+`kasumi_scratch_disk_filesystem_used_bytes` physical-utilization samples. If
+persistent and scratch directories share a filesystem, these samples overlap
+and must not be summed. Charged bytes include
 rounded encrypted spool extents and staging tables retained by active images or
 workers. Filesystem pending bytes include promises by persistent and scratch
 owners on the same filesystem in this process; their installed extent limits

@@ -99,6 +99,15 @@ impl StagedSnapshot {
                 Record::RecoveryTarget(_, operation) => {
                     require(&index, &(18, operation.to_string(), String::new()))?;
                 }
+                Record::BackupBinding(_) => {
+                    let header = get_record(&image, &index, &(0, String::new(), String::new()))?;
+                    ensure!(
+                        matches!(header, Some(Record::Header(head))
+                        if head.tenant == crate::control::CONTROL_TENANT
+                        && head.lifecycle_control.is_some()),
+                        "backup binding point row requires installed Control"
+                    );
+                }
                 Record::RecoveryOperation(_, _) => {
                     let header = get_record(&image, &index, &(0, String::new(), String::new()))?;
                     ensure!(

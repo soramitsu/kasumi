@@ -1,0 +1,47 @@
+{
+  "status": "SOURCE_DERIVED_INTEGER_MODEL_ONLY_NO_RUST_EXECUTION",
+  "source_path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+  "source_sha256": "773858218823539467cd503b4524cbf97de1a20eb2745e97877921f8acc7a7d1",
+  "supported_orders": [
+    0,
+    20
+  ],
+  "region_field_bits": 20,
+  "page_index_field_bits": 20,
+  "reserved_high_bits": [
+    40,
+    58
+  ],
+  "order_dependent_reserved_index_bits": "[20 - order, 19] for order > 0",
+  "aliases_per_valid_page": "2^(19 + order), including the canonical encoding",
+  "counterexamples_checked": 5133,
+  "sample_counterexamples": [
+    {
+      "order": 0,
+      "region": 0,
+      "page_index": 0,
+      "reserved_bit": 40,
+      "canonical_raw_hex": "0000000000000000",
+      "alias_raw_hex": "0000010000000000"
+    },
+    {
+      "order": 12,
+      "region": 0,
+      "page_index": 0,
+      "reserved_bit": 8,
+      "canonical_raw_hex": "6000000000000000",
+      "alias_raw_hex": "6000000000000100"
+    },
+    {
+      "order": 20,
+      "region": 1048575,
+      "page_index": 0,
+      "reserved_bit": 19,
+      "canonical_raw_hex": "a00000fffff00000",
+      "alias_raw_hex": "a00000fffff80000"
+    }
+  ],
+  "canonical_rule": "order <= 20; bits40..58 == 0; raw low20 index <= MAX_PAGE_INDEX >> order; region is unchanged20 bits. Check order before the shift.",
+  "producer_geometry_change": false,
+  "production_gap_remains": true
+}

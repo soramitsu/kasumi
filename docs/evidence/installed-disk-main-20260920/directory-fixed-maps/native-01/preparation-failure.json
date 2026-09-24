@@ -1,0 +1,7 @@
+{
+  "stage": "prepare_native.py followed by run.py initialization",
+  "reported_error": "FileNotFoundError: directory-cursor/native-05/selected.json; selection.json consequently absent",
+  "native_process_started": false,
+  "native_compiler_or_test_output": null,
+  "provenance": "Original traceback is retained in the tool transcript; this is a concise assessment, not reconstructed raw stderr. Prepared source bytes remain in native-01."
+}

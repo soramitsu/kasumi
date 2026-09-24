@@ -1,0 +1,178 @@
+--- a/crates/kasumi-engine/src/snapshot_api.rs
++++ b/crates/kasumi-engine/src/snapshot_api.rs
+@@ -78,6 +78,22 @@
+         .unwrap_or_else(|| Error::new(ErrorCode::Corruption, error.to_string()))
+ }
+ impl TenantEngine {
++    fn admitted_snapshot_store(&self, admission: &NodeAdmission) -> Result<Arc<TenantStore>> {
++        let store =
++            self.snapshot_store.get().cloned().ok_or_else(|| {
++                Error::new(ErrorCode::Unavailable, "snapshot storage not installed")
++            })?;
++        admission
++            .memory()
++            .require_store_memory(&store)
++            .map_err(|_| {
++                Error::new(
++                    ErrorCode::Conflict,
++                    "snapshot admission and physical storage memory owners differ",
++                )
++            })?;
++        Ok(store)
++    }
+     /// Capture a complete backend bundle, including retained audit ciphertext.
+     /// This image is not a Raft LogId/membership envelope and cannot independently
+     /// overwrite a running group. Timeout/cancellation drains owned work rather
+@@ -87,13 +103,10 @@
+         admission: Arc<NodeAdmission>,
+         timeout_ms: u64,
+     ) -> Result<SnapshotImage> {
++        let store = self.admitted_snapshot_store(&admission)?;
+         let deadline = VerificationDeadline::new(timeout_ms).map_err(error)?;
+         let token = QueryCancellation::default();
+         let _cancel = CancelOnDrop(token.clone());
+-        let store =
+-            self.snapshot_store.get().cloned().ok_or_else(|| {
+-                Error::new(ErrorCode::Unavailable, "snapshot storage not installed")
+-            })?;
+         let generation = self.generation()?;
+         let logical = u64::try_from(generation.snapshot_bytes()?)
+             .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot size overflow"))?
+@@ -148,13 +161,10 @@
+         admission: Arc<NodeAdmission>,
+         timeout_ms: u64,
+     ) -> Result<PreparedSnapshotRestore> {
++        let store = self.admitted_snapshot_store(&admission)?;
+         let deadline = VerificationDeadline::new(timeout_ms).map_err(error)?;
+         let token = QueryCancellation::default();
+         let _cancel = CancelOnDrop(token.clone());
+-        let store =
+-            self.snapshot_store.get().cloned().ok_or_else(|| {
+-                Error::new(ErrorCode::Unavailable, "snapshot storage not installed")
+-            })?;
+         let engine = self.clone();
+         let mut work = Work {
+             store,
+@@ -220,6 +230,7 @@
+         self: &Arc<Self>,
+         admission: Arc<NodeAdmission>,
+     ) -> anyhow::Result<()> {
++        let store = self.admitted_snapshot_store(&admission)?;
+         if self
+             .generation()?
+             .state
+@@ -232,11 +243,6 @@
+         let deadline = VerificationDeadline::new(600_000)?;
+         let token = QueryCancellation::default();
+         let _cancel = CancelOnDrop(token.clone());
+-        let store = self
+-            .snapshot_store
+-            .get()
+-            .cloned()
+-            .ok_or_else(|| anyhow::anyhow!("bootstrap archive store not installed"))?;
+         let engine = self.clone();
+         let work = Work {
+             store,
+--- a/crates/kasumi-engine/src/snapshot_bundle.rs
++++ b/crates/kasumi-engine/src/snapshot_bundle.rs
+@@ -910,6 +910,100 @@
+         source_store.shutdown().await.unwrap();
+         target_store.shutdown().await.unwrap();
+     }
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn snapshot_operations_reject_foreign_equal_policy_memory_before_dispatch() {
++        use crate::admission::{AdmissionConfig, NodeAdmission};
++        use std::{
++            future::Future,
++            task::{Context, Poll, Waker},
++        };
++
++        fn ready_error<T>(
++            future: impl Future<Output = kasumi_types::Result<T>>,
++        ) -> kasumi_types::Error {
++            let mut future = std::pin::pin!(future);
++            match future
++                .as_mut()
++                .poll(&mut Context::from_waker(Waker::noop()))
++            {
++                Poll::Ready(Err(error)) => error,
++                Poll::Ready(Ok(_)) => panic!("foreign memory owner was accepted"),
++                Poll::Pending => panic!("foreign owner reached asynchronous work"),
++            }
++        }
++        fn usage(node: &NodeAdmission) -> (u64, usize, usize) {
++            let snapshot = node.snapshot();
++            (
++                snapshot.reserved_bytes,
++                snapshot.live_reservations,
++                snapshot.inflight_operations,
++            )
++        }
++        let config = AdmissionConfig::default();
++        let original_total = config.resolved_fixture_total_bytes().unwrap();
++        let incarnation = uuid::Uuid::new_v4().to_string();
++        let (
++            (_source_dir, source, source_store),
++            (_target_dir, target, target_store),
++            admission,
++            metadata_bytes,
++        ) = admitted_pair(&incarnation, config.clone()).await;
++        let foreign_config = AdmissionConfig {
++            max_inflight_bytes: Some(original_total.checked_add(metadata_bytes).unwrap()),
++            ..config
++        };
++        admission.memory().require_policy(&foreign_config).unwrap();
++        let foreign = NodeAdmission::new(foreign_config).unwrap();
++        assert!(!admission.shares_memory(&foreign));
++        let image = source.snapshot(admission.clone(), 60_000).await.unwrap();
++        let before = (usage(&admission), usage(&foreign));
++        let files = (
++            source_store.scratch_disk().snapshot().live_files,
++            target_store.scratch_disk().snapshot().live_files,
++        );
++        assert_eq!(
++            ready_error(source.snapshot(foreign.clone(), 60_000)).code,
++            kasumi_types::ErrorCode::Conflict
++        );
++        assert_eq!(
++            ready_error(target.prepare_snapshot_restore(image.clone(), foreign.clone(), 60_000))
++                .code,
++            kasumi_types::ErrorCode::Conflict
++        );
++        // Even the no-archive shortcut must validate the supplied memory owner.
++        let mut dependencies =
++            std::pin::pin!(source.verify_bootstrap_dependencies_owned(foreign.clone()));
++        let Poll::Ready(Err(error)) = dependencies
++            .as_mut()
++            .poll(&mut Context::from_waker(Waker::noop()))
++        else {
++            panic!("foreign dependency admission did not fail before dispatch")
++        };
++        assert_eq!(
++            error.downcast_ref::<kasumi_types::Error>().unwrap().code,
++            kasumi_types::ErrorCode::Conflict
++        );
++        assert_eq!((usage(&admission), usage(&foreign)), before);
++        assert_eq!(
++            (
++                source_store.scratch_disk().snapshot().live_files,
++                target_store.scratch_disk().snapshot().live_files,
++            ),
++            files
++        );
++        let prepared = target
++            .prepare_snapshot_restore(image.clone(), admission.clone(), 60_000)
++            .await
++            .unwrap();
++        assert_eq!(prepared.image(), &image);
++        source
++            .verify_bootstrap_dependencies_owned(admission)
++            .await
++            .unwrap();
++        source_store.shutdown().await.unwrap();
++        target_store.shutdown().await.unwrap();
++    }
++
+     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+     async fn public_restore_admits_resident_state_without_charging_permanent_stream_as_ram() {
+         use crate::staged_terminal::{AppliedIdentity, AppliedOrigin, Builder, Row};

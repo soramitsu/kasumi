@@ -1,0 +1,18 @@
+{
+  "status": "APPLIED UNCOMMITTED; full public integration gate145 pending",
+  "manifest": {
+    "status": "TARGET ONLY; no native qualification",
+    "patch_sha256": "ee1a66c26484a408ccdae3a40042eb13ff9925469ce5ac3d7d4df2ea217ff7dc",
+    "files": [
+      {
+        "path": "vendor/redb-4.2.0/tests/canonical_format.rs",
+        "before_sha256": "e48248f0f0773eacf56323173f44cd01819394117445ee63a1fa74b207a60daa",
+        "proposed_sha256": "3dff3c34fa94586473ed41993795b28ea13859320865032947bd79bf1f92fdd0"
+      }
+    ],
+    "test_mapping": "Preserve upstream formats2/3 single-phase and persisted savepoint rejection; replace obsolete format3-open success with typed format3 two-phase rejection+unchanged bytes for writable/readonly opens. Both public current-format composite mismatches and private actual stored legacy-name mismatch remain unchanged.",
+    "preparation_note": "First target formatter failed to resolve common/admission.rs; copied unchanged dependency and reran successfully, no actual source mutated."
+  },
+  "peer_receipt_sha256": "3b91f3694e55903d083f89047c29268282433d3f427179d67fafc7c080466d11",
+  "previous144_drained": true
+}

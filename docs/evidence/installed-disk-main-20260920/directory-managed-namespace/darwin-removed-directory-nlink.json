@@ -1,0 +1,10 @@
+{
+  "pid": 6728,
+  "pgid": 6728,
+  "python": "/Library/Developer/CommandLineTools/usr/bin/python3",
+  "before_nlink": 2,
+  "after_nlink": 2,
+  "same_inode": true,
+  "platform": "darwin",
+  "scope": "Native descriptor nlink observation only; mkdir/open/rmdir/fstat/close and cleanup all completed. Not the managed operation qualification."
+}

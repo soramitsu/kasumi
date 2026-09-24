@@ -1,0 +1,135 @@
+{
+  "status": "SCOPED_STATIC_APPROVAL_FOR_CANDIDATE02_PREPARATION_PUBLICATION_RETIREMENT; native qualification pending",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "at_utc": "2026-09-22T10:31:13.139288+00:00",
+  "candidate_bindings": [
+    {
+      "candidate": "candidate-01",
+      "manifest_sha256": "3d36fcd4ff85868503725d16c4d39c0f4b0be1b93d56e452a57a686d476cc543",
+      "patch_sha256": "077f626d4ed2d584b75bbbe987d91c273c602331d3ea353c3bf3df9fa64848b8",
+      "files": [
+        {
+          "path": "crates/kasumi-store/src/node_disk/directory.rs",
+          "before_sha256": "6500420c036c95826f6a47ef9818a1163b8739dced1a7c7a25dec168b449f253",
+          "after_sha256": "e8c3b1a5c9e4dc33f32e69f15b42cf101f74f912f84ffbbfca023259b5f2b7fc"
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk/file/custody.rs",
+          "before_sha256": null,
+          "after_sha256": "8b42f70a6eeef46cfddbdc005b6f1f7c0977d60161900260964ac54a405024d1"
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk/file.rs",
+          "before_sha256": "57d496028ed570b438dc8ec5501f7f1e4b8ddc50df96ced454d8426d095bdf81",
+          "after_sha256": "a8f58af8e9c4ea35e635ebfcf2eb33c2fe1fb675b1651a50bde6649cc0b11897"
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk/memory.rs",
+          "before_sha256": "9b6997b96f1444128f39fdfdd304e5fcfa2746563c12d73f441fc90f0ffe6185",
+          "after_sha256": "51ba4f6004ca479710aead3a5a06ff94094472b1419345a0c9385506b1bfdeae"
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk/namespace.rs",
+          "before_sha256": "031535732bc263bf17abef5b48bd3c6d24b4a00e29cc89554becad70b52de469",
+          "after_sha256": "4935201c879c61f3505625d795b0f3f090e7d79db158e0b3b5199e0f9fd75fed"
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk/native_file.rs",
+          "before_sha256": null,
+          "after_sha256": "73f15a145a13b4bea56701398f8a3a5754a37263eec2c47039351ad4159539e7"
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk/tests.rs",
+          "before_sha256": "fb16dae6a29c87d8b2ba5fb200740e9e7fcd6cfd2aa15236c494af3803f447ad",
+          "after_sha256": "b5869f80ed24cf8112dd2d268f40dc30e19c709bafb9482453e0a9c1325508b1"
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk.rs",
+          "before_sha256": "4b07e79678a413e44a3245a60a3891805118ef3737144d62eff4ef3386cf8060",
+          "after_sha256": "58ee040fd04a0d69b05cd96f3c013cad93f459c0c308356fab8d0f6ed418e271"
+        }
+      ]
+    },
+    {
+      "candidate": "candidate-02",
+      "manifest_sha256": "8271b88cf0d70496372651f0b1347d6156760f9ff0cad7fe194d54fbdbaf8a84",
+      "patch_sha256": "3e17abdb87f8579f29c2123da986d240ad8eb24503c929311918026052a9a321",
+      "files": [
+        {
+          "path": "crates/kasumi-store/src/node_disk/directory.rs",
+          "before_sha256": "6500420c036c95826f6a47ef9818a1163b8739dced1a7c7a25dec168b449f253",
+          "after_sha256": "e8c3b1a5c9e4dc33f32e69f15b42cf101f74f912f84ffbbfca023259b5f2b7fc"
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk/file/custody.rs",
+          "before_sha256": null,
+          "after_sha256": "8b42f70a6eeef46cfddbdc005b6f1f7c0977d60161900260964ac54a405024d1"
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk/file.rs",
+          "before_sha256": "57d496028ed570b438dc8ec5501f7f1e4b8ddc50df96ced454d8426d095bdf81",
+          "after_sha256": "e9674de40f9433c83881ebc65e0efcf337333124a710c02038b475eaf2ec454f"
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk/memory.rs",
+          "before_sha256": "9b6997b96f1444128f39fdfdd304e5fcfa2746563c12d73f441fc90f0ffe6185",
+          "after_sha256": "51ba4f6004ca479710aead3a5a06ff94094472b1419345a0c9385506b1bfdeae"
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk/namespace.rs",
+          "before_sha256": "031535732bc263bf17abef5b48bd3c6d24b4a00e29cc89554becad70b52de469",
+          "after_sha256": "4935201c879c61f3505625d795b0f3f090e7d79db158e0b3b5199e0f9fd75fed"
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk/native_file.rs",
+          "before_sha256": null,
+          "after_sha256": "094675c132b74c3bcd75842810a212a0c715dca25b15485bfc523fa27398b8e7"
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk/tests.rs",
+          "before_sha256": "fb16dae6a29c87d8b2ba5fb200740e9e7fcd6cfd2aa15236c494af3803f447ad",
+          "after_sha256": "cc9f05813370469df6847db5944d9a54e76489a7df841bd72fdd00b3e36a189e"
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk.rs",
+          "before_sha256": "4b07e79678a413e44a3245a60a3891805118ef3737144d62eff4ef3386cf8060",
+          "after_sha256": "6e2c9ace4c6379f2210410a0c48215374de86ffff4c40be480b9609ab70dc614"
+        }
+      ]
+    }
+  ],
+  "candidate02_delta_sha256": "2703670a31e297dcfe2c886505781aab40d33c4d6ac6ead49a1c812d3d89f432",
+  "review_findings": [
+    {
+      "id": "new-bank-after-root-descriptors",
+      "candidate01": "New CustodySlots allocation could fail after configured-root FDs opened despite prior charge",
+      "candidate02": "Moved actual bank construction after both charges but before open_roots; resolved in reviewed delta"
+    },
+    {
+      "id": "verification-before-failed-state-gate",
+      "candidate01": "check() entered tracked parent FD verification before State/Failed/device gate",
+      "candidate02": "State gate held through verify; all eight check callers precede their own State acquisition and observe callers explicitly release State first; no recursive locking at those sites"
+    }
+  ],
+  "scoped_positive_findings": [
+    "H+1 fixed slot count shared by planning/allocation and charged through installed owner; new inline fields covered by size-derived terms, added native mutex allowances explicit; real mutexes warmed before file FD acquisition, empty retirement placeholder allocates none",
+    "FilePreparation reserves slot and owns warmed resources before acquire_parent; each acquired FD is installed before metadata/identity checks; errors/unwinds transfer to fixed installed custody while State remains held",
+    "PreparedPublication explicitly drops destination preparation before source FileOwner; unsuccessful exclusivity cannot acquire a destination FD; success transfers parent/name/binding before post-rename fallible synchronization; old parent closes before scalar parent credit",
+    "Normal FileOwner retirement uses the map Weak to retain the original Arc allocation while data/parent FDs and metadata backing retire; removes the exact Weak before registration/slot becomes reusable",
+    "Retirement guard moves unfinished resources into reserved custody during unwind; uncertain native close retains actual original io::Error and diagnostic integer, blocks census and never retries the integer",
+    "stat_leaf uses one component plus AT_SYMLINK_NOFOLLOW and preserves regular type, link count1, device, effective UID and private mode checks from regular_nonallocating; enrolled-target size/block arithmetic is checked",
+    "Existing directory verify/retire remain separate; reviewed file call paths use verify_file/retire_drained",
+    "Four native custody regressions plus candidate02 fence regression retain the intended assertions; no runtime pass inferred"
+  ],
+  "qualification_limits": [
+    "No native/Cargo run by this review; source/harness compilation and tests remain required",
+    "A successful complete census is the documented explicit relinquishment boundary for already terminal attempts; cancellation and unknown native close cannot reach it. This is scoped policy, not a proof of every production caller choosing it correctly",
+    "Opaque io::Error/panic payloads, destructor panic/report envelope and total allocator/RSS remain open; NodeDiskFile::identity inherited descriptor_identity->io::Error::other path remains outside new native error geometry",
+    "Configured-root acquisition, ordinary DirectoryOwner/native directory destructor protocol remain separately open",
+    "check holds State only through tracked verify; some subsequent inherited metadata/identity observations are outside that guard",
+    "No complete arbitrary filesystem-race, whole-operation mutation rollback or full release acceptance claim"
+  ],
+  "source_edits": false,
+  "native_execution": false
+}

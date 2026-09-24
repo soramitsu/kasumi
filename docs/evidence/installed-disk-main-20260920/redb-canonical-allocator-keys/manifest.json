@@ -1,0 +1,167 @@
+{
+  "status": "target-only-not-applied-not-compiled-not-tested",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "created_at_utc": "2026-09-22T06:26:58.184606+00:00",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+      "base_sha256": null,
+      "proposed_sha256": "b57f485716c730beeea59136ca46bbf51b6223ecb010bfbcc3891506b6ed7953",
+      "base_bytes": 0,
+      "proposed_bytes": 7451
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/db.rs",
+      "base_sha256": "de347514818cfa2855f9acdce01dd0581ed3a027a84ca0b17d058b9e1e305066",
+      "proposed_sha256": "12aef722b613d322f8c3ba179ea64107cbbe64ea98748d824cd018030c215bd1",
+      "base_bytes": 67473,
+      "proposed_bytes": 68738
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "base_sha256": "e43528ac247dd4985cac4d9084ec4e0b4204f044af1af834bf4a626a64fb4136",
+      "proposed_sha256": "ea90b5c0ae83c249e79ec9da4140b94fe93543308a6739950bc17cbb4a709aed",
+      "base_bytes": 95547,
+      "proposed_bytes": 96091
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/allocator_state.rs",
+      "base_sha256": null,
+      "proposed_sha256": "300e62c37286e48719318534454f2953de1b3b6bcd1140fa428c634d1e976790",
+      "base_bytes": 0,
+      "proposed_bytes": 8469
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/mod.rs",
+      "base_sha256": "d1b8c13d009219f5bc10e598e6c07523cfdf18eb17bb78a757f38d7b42c72b0d",
+      "proposed_sha256": "87dc0f46a131f5bd46c48a93379b48f9176db436d9fa02abc4ef4c006996240f",
+      "base_bytes": 1483,
+      "proposed_bytes": 1567
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "base_sha256": "a0f083e6a15453538227999d93a77e44723e24cc7a87a608f0a47f6353e1e853",
+      "proposed_sha256": "080091d2c2cccd455578a3cea83639f4d9e3f329f153cadc5ff386ce46c7acea",
+      "base_bytes": 60243,
+      "proposed_bytes": 60355
+    }
+  ],
+  "patch": "canonical-keys.patch",
+  "patch_sha256": "a61e1c3d9ac6bfef19a4f33b669d9355c59fca38af02234817244a8ad02551d4",
+  "prepared_tests": [
+    {
+      "path": "vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+      "name": "allocator_keys_have_only_exact_canonical_tags_width_and_padding",
+      "status": "prepared-unexecuted"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+      "name": "obsolete_unknown_and_aliased_allocator_keys_never_repair_or_mutate_on_open",
+      "status": "prepared-unexecuted"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+      "name": "malformed_allocator_transaction_stamp_is_corruption_before_stale_repair",
+      "status": "prepared-unexecuted"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+      "name": "integrity_rejects_noncanonical_allocator_keys_without_storage_writes",
+      "status": "prepared-unexecuted"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+      "name": "exact_canonical_stale_allocator_stamp_still_uses_verified_repair",
+      "status": "prepared-unexecuted"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/allocator_state.rs",
+      "name": "allocator_raw_leaf_geometry_is_checked_before_key_or_value_access",
+      "status": "prepared-unexecuted"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/allocator_state.rs",
+      "name": "allocator_raw_walk_rejects_bad_branch_separator_and_cycle_without_comparison",
+      "status": "prepared-unexecuted"
+    }
+  ],
+  "static_checks": [
+    {
+      "name": "target-rustfmt-check",
+      "argv": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-allocator-keys/proposed/vendor/redb-4.2.0/src/allocator_state_key_tests.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-allocator-keys/proposed/vendor/redb-4.2.0/src/db.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-allocator-keys/proposed/vendor/redb-4.2.0/src/transactions.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-allocator-keys/proposed/vendor/redb-4.2.0/src/tree_store/allocator_state.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-allocator-keys/proposed/vendor/redb-4.2.0/src/tree_store/mod.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-allocator-keys/proposed/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs"
+      ],
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "git-apply-check",
+      "argv": [
+        "git",
+        "apply",
+        "--check",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-allocator-keys/canonical-keys.patch"
+      ],
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "supporting_sources": [
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "sha256": "7cdfaedb6cbd25b97870913d0640c85d0b14feda7e4f8c1e0f548ba076be2d01"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+      "sha256": "6bf0407250bcae126a6a04f5dbad1bf23aeb5b0a3098a0bc37b19544a9386a78"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/table_tree.rs",
+      "sha256": "e0890dbbfbe8dabeca263a7a9055fbe6a6286cdfbeca82f913736c206909db90"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+      "sha256": "773858218823539467cd503b4524cbf97de1a20eb2745e97877921f8acc7a7d1"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+      "sha256": "8699813f7a1bcba936931307d4cc8ffed6ee3bc6ceaf492a82e1aa77ebd5f9cc"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/types.rs",
+      "sha256": "ee657c146e3a94b53098df3ad2a1e37bb17cfaa1da95269245a417c384334df6"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/error.rs",
+      "sha256": "d06dd7441556729c086ccda470f4057e262fec40d46f533799834548e4868881"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/page_list_tests.rs",
+      "sha256": "4c8ab00da96a217fdce9f6824c0b9beebba890dea217bae0aa3e8353766974a3"
+    }
+  ],
+  "readme_sha256": "653bb659cf235c9311611b2df4301104851038ab2908da9bb67db13dd3f4f242",
+  "preparation_failures_sha256": "646d288b66757789b04216fcb993125419fb6e79600640bddee5553fe44b3196",
+  "freeze_script_sha256": "e8bb6328967e29677539c7f99099ff2edbcc0bed3aaed023026d2548fd00b24c",
+  "actual_source_unchanged": true,
+  "remaining_limits": [
+    "Value::from_bytes remains an infallible internal interface behind mandatory input prevalidation",
+    "Buddy/tracker value payload and region-index/layout validation remain separate",
+    "Raw traversal cache/ancestor guards/stack are not total memory qualification",
+    "Opening-owner successor must compose narrow db entry-point and page_manager stamp hunks",
+    "No Cargo/native tests executed"
+  ]
+}

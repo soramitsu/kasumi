@@ -1,0 +1,20 @@
+{
+  "manifest_sha256": "83ab0cf18c5ee3d5b4b00309c4073200faa1d753254b9f871da2837018b4faec",
+  "runner_sha256": "3e2412deb94a80e6d074be766d4640ab714caad720daea59559ffad2bb60aedf",
+  "cumulative_patch_sha256": "c41f0ef642848a12d1579980be43e5520821d2537c6ee0c100698186c2b737ff",
+  "correction_patch_sha256": "2ceae1a5347026275cb56599d2c5ed783e79ad790bb32819a8d704d8fc325fa1",
+  "apply_readback_sha256": "5dd1fc33988e6be2262cb414151f3b7c012599594e0c53097f77422f7f723804",
+  "changed_paths_sha256": "17cae72664684d2225d93ebd8cb2625dcf9960441818c49955935b138c36d4d7",
+  "expected_test_count": 331,
+  "cohort_bound_seconds": 1200,
+  "fresh_target": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/cargo-target",
+  "source_file_count": 75,
+  "phase_order": [
+    "workspace-clippy",
+    "workspace-check",
+    "compile-store",
+    "store-inventory",
+    "store-full"
+  ],
+  "qualification_status": "not_started"
+}

@@ -1,0 +1,47 @@
+{
+  "status": "no remaining source-review blocker for exact fixed-bank candidate; added Weak test unrun; broader directory/policy/RSS gaps open",
+  "candidate_manifest": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-fixed-maps/candidate-source-sha256.json",
+  "candidate_manifest_sha256": "94fff8eebbe627625191023a1ffdea49d9ee0d875450581ab7fb180ac7f2759a",
+  "review_sha256": "bdf211d8d35ae093404168692c423f357806ab47006b49fcc6827ee2863206d0",
+  "reviewed_files": {
+    "crates/kasumi-store/src/allocation_tests.rs": "66e882672142fdab542776e824a85e77492b9f663f3b76ce7f3bcc3044b83568",
+    "crates/kasumi-store/src/node_disk.rs": "266fd1fb9ec6fe02dfe018c392e0ade492c82f4e1ede3cf8071355b95c01016b",
+    "crates/kasumi-store/src/node_disk/ledger.rs": "6c8c28eb74426b7e522329e9d1711ebf510821405b65107629c4a5d210142e04",
+    "crates/kasumi-store/src/node_disk/census.rs": "22c1a3dfa24e86c24a17f4f27d20b9fdb694f66c799def2107a0342e33a7a6bb",
+    "crates/kasumi-store/src/node_disk/memory.rs": "ebc383de92c3f41fcf6b5b3d6f5b4023505090d692067cd6df310ccb5413dbf8",
+    "crates/kasumi-store/src/node_disk/file.rs": "145205325dcb354e1d711964c90a57404d365f97d92f255aecf997b5f6e379af",
+    "crates/kasumi-store/src/node_disk/fixed_map.rs": "5c2d69a6cefbe05a93a99f0a833acb3dcf32881dc56320623025a31b31bea9d4",
+    "crates/kasumi-store/src/node_disk/directory/tests.rs": "75011907431511d666a6aebcdd0ffc176af18829d7664c79be9cdfe5ade71fb7",
+    "crates/kasumi-store/src/node_disk/fixed_map/tests.rs": "bf270b87e88e7641134c42377b2a398f4dfca95edd1b6136aa717681e91614c1"
+  },
+  "native_02": {
+    "receipt_sha256": "d6a99eebce16293f8b9f4b13c7f7d1220ccae40d05d4a42f99e744523448153f",
+    "before_sha256": "35762f6da6f86fb400ebe0ed636ac0a726e5b198dbd87f8417321bb2004d3079",
+    "after_sha256": "35762f6da6f86fb400ebe0ed636ac0a726e5b198dbd87f8417321bb2004d3079",
+    "input_count": 460,
+    "inputs_unchanged": true,
+    "commands": 5,
+    "all_commands_zero_drained_unchanged": true,
+    "test_stdout_sha256": "8d192175354eda3cc1ac611ff6f63f8fcf50557334e4386f5314d6a5619b29f0",
+    "production_stdout_sha256": "9b5a604e189cbd74b98e9b77862c74a2ffbe31db74c39ef3ef39e363636b3b89",
+    "production_file_matches": {
+      "crates/kasumi-store/src/allocation_tests.rs": true,
+      "crates/kasumi-store/src/node_disk.rs": true,
+      "crates/kasumi-store/src/node_disk/ledger.rs": true,
+      "crates/kasumi-store/src/node_disk/census.rs": true,
+      "crates/kasumi-store/src/node_disk/memory.rs": true,
+      "crates/kasumi-store/src/node_disk/file.rs": true,
+      "crates/kasumi-store/src/node_disk/fixed_map.rs": true,
+      "crates/kasumi-store/src/node_disk/directory/tests.rs": true,
+      "crates/kasumi-store/src/node_disk/fixed_map/tests.rs": false
+    },
+    "extra_weak_test_executed": false
+  },
+  "pinned_proof_manifest": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/node-disk-fixed-bank-proof/manifest.json",
+  "pinned_proof_manifest_sha256": "2bc9573952795e5ea44f23f2eaa637fb8f52e8a2dcd6366134c6edbb3fe1b69f",
+  "reviewer_actions": {
+    "actual_source_edits": false,
+    "cargo": false,
+    "native_execution": false
+  }
+}

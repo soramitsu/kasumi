@@ -1,0 +1,42 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+0000000100140660 <lifecycle::recovery_control::exercise_route_publication::{closure#0}>:
+100140660: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+100140664: a9017bfd    	stp	x29, x30, [sp, #0x10]
+100140668: 910043fd    	add	x29, sp, #0x10
+10014066c: d1417fe9    	sub	x9, sp, #0x5f, lsl #12  ; =0x5f000
+100140670: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+100140674: f90003ff    	str	xzr, [sp]
+100140678: eb2963ff    	cmp	sp, x9
+10014067c: 54ffffa1    	b.ne	0x100140670 <lifecycle::recovery_control::exercise_route_publication::{closure#0}+0x10>
+100140680: d11283ff    	sub	sp, sp, #0x4a0
+100140684: f90003ff    	str	xzr, [sp]
+100140688: 91417be8    	add	x8, sp, #0x5e, lsl #12  ; =0x5e000
+10014068c: 91098108    	add	x8, x8, #0x260
+100140690: f90363e8    	str	x8, [sp, #0x6c0]
+100140694: 914177e9    	add	x9, sp, #0x5d, lsl #12  ; =0x5d000
+100140698: 9125a129    	add	x9, x9, #0x968
+10014069c: f90367e9    	str	x9, [sp, #0x6c8]
+1001406a0: 914177e8    	add	x8, sp, #0x5d, lsl #12  ; =0x5d000
+1001406a4: 91045d08    	add	x8, x8, #0x117
+1001406a8: f9036be8    	str	x8, [sp, #0x6d0]
+1001406ac: 91415be8    	add	x8, sp, #0x56, lsl #12  ; =0x56000
+1001406b0: 91074108    	add	x8, x8, #0x1d0
+1001406b4: f9036fe8    	str	x8, [sp, #0x6d8]
+1001406b8: 91414fe8    	add	x8, sp, #0x53, lsl #12  ; =0x53000
+1001406bc: 9127a108    	add	x8, x8, #0x9e8
+1001406c0: f90373e8    	str	x8, [sp, #0x6e0]
+1001406c4: 91414be8    	add	x8, sp, #0x52, lsl #12  ; =0x52000
+1001406c8: 91121d08    	add	x8, x8, #0x487
+1001406cc: f90377e8    	str	x8, [sp, #0x6e8]
+1001406d0: 914143e8    	add	x8, sp, #0x50, lsl #12  ; =0x50000
+1001406d4: 91191d08    	add	x8, x8, #0x647
+1001406d8: f9037be8    	str	x8, [sp, #0x6f0]
+1001406dc: 914133e8    	add	x8, sp, #0x4c, lsl #12  ; =0x4c000
+1001406e0: 913a8108    	add	x8, x8, #0xea0
+1001406e4: f9037fe8    	str	x8, [sp, #0x6f8]
+1001406e8: 91412be8    	add	x8, sp, #0x4a, lsl #12  ; =0x4a000
+1001406ec: 911a2108    	add	x8, x8, #0x688

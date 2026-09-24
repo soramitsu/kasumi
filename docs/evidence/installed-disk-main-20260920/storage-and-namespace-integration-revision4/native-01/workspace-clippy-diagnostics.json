@@ -1,0 +1,408 @@
+[
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/vendor/rmcp-3.2.0#rmcp@3.2.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/vendor/rmcp-3.2.0/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "rmcp",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/vendor/rmcp-3.2.0/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "warning: method `matches_response_id` is never used\n   --> vendor/rmcp-3.2.0/src/model.rs:251:19\n    |\n236 | impl NumberOrString {\n    | ------------------- method in this implementation\n...\n251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {\n    |                   ^^^^^^^^^^^^^^^^^^^\n    |\n    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default",
+          "rendered": null,
+          "spans": []
+        }
+      ],
+      "level": "warning",
+      "message": "method `matches_response_id` is never used",
+      "spans": [
+        {
+          "byte_end": 7413,
+          "byte_start": 7394,
+          "column_end": 20,
+          "column_start": 1,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/model.rs",
+          "is_primary": false,
+          "label": "method in this implementation",
+          "line_end": 236,
+          "line_start": 236,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 20,
+              "highlight_start": 1,
+              "text": "impl NumberOrString {"
+            }
+          ]
+        },
+        {
+          "byte_end": 7878,
+          "byte_start": 7859,
+          "column_end": 38,
+          "column_start": 19,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/model.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 251,
+          "line_start": 251,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 38,
+              "highlight_start": 19,
+              "text": "    pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "dead_code",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/vendor/rmcp-3.2.0#rmcp@3.2.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/vendor/rmcp-3.2.0/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "rmcp",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/vendor/rmcp-3.2.0/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "warning: method `set_client_request_metadata` is never used\n    --> vendor/rmcp-3.2.0/src/service.rs:1032:19\n     |\n 806 | impl<R: ServiceRole> Peer<R> {\n     | ---------------------------- method in this implementation\n...\n1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {\n     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n",
+      "$message_type": "diagnostic",
+      "children": [],
+      "level": "warning",
+      "message": "method `set_client_request_metadata` is never used",
+      "spans": [
+        {
+          "byte_end": 28935,
+          "byte_start": 28907,
+          "column_end": 29,
+          "column_start": 1,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/service.rs",
+          "is_primary": false,
+          "label": "method in this implementation",
+          "line_end": 806,
+          "line_start": 806,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 29,
+              "highlight_start": 1,
+              "text": "impl<R: ServiceRole> Peer<R> {"
+            }
+          ]
+        },
+        {
+          "byte_end": 37085,
+          "byte_start": 37058,
+          "column_end": 46,
+          "column_start": 19,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/service.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 1032,
+          "line_start": 1032,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 46,
+              "highlight_start": 19,
+              "text": "    pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "dead_code",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/vendor/rmcp-3.2.0#rmcp@3.2.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/vendor/rmcp-3.2.0/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "rmcp",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/vendor/rmcp-3.2.0/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "warning: method `is_authorization_required` is never used\n   --> vendor/rmcp-3.2.0/src/transport.rs:275:19\n    |\n249 | impl DynamicTransportError {\n    | -------------------------- method in this implementation\n...\n275 |     pub(crate) fn is_authorization_required(&self) -> bool {\n    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^\n\n",
+      "$message_type": "diagnostic",
+      "children": [],
+      "level": "warning",
+      "message": "method `is_authorization_required` is never used",
+      "spans": [
+        {
+          "byte_end": 8958,
+          "byte_start": 8932,
+          "column_end": 27,
+          "column_start": 1,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/transport.rs",
+          "is_primary": false,
+          "label": "method in this implementation",
+          "line_end": 249,
+          "line_start": 249,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 27,
+              "highlight_start": 1,
+              "text": "impl DynamicTransportError {"
+            }
+          ]
+        },
+        {
+          "byte_end": 9854,
+          "byte_start": 9829,
+          "column_end": 44,
+          "column_start": 19,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/transport.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 275,
+          "line_start": 275,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 44,
+              "highlight_start": 19,
+              "text": "    pub(crate) fn is_authorization_required(&self) -> bool {"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "dead_code",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error[E0716]: temporary value dropped while borrowed\n   --> crates/kasumi-store/src/node_file/tests.rs:447:59\n    |\n447 |     let redb::TerminalObservation::Returned(Err(error)) = opening.report().opening() else {\n    |                                                           ^^^^^^^^^^^^^^^^ creates a temporary value which is freed while still in use\n448 |         panic!(\"positive close must preserve the original opening error\");\n449 |     };\n    |      - temporary value is freed at the end of this statement\n450 |     assert_eq!(std::ptr::from_ref(error), original_failure);\n    |                                   ----- borrow later used here\n    |\nhelp: consider using a `let` binding to create a longer lived value\n    |\n447 ~     let binding = opening.report();\n448 ~     let redb::TerminalObservation::Returned(Err(error)) = binding.opening() else {\n    |\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "consider using a `let` binding to create a longer lived value",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 15269,
+              "byte_start": 15269,
+              "column_end": 5,
+              "column_start": 5,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_file/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 447,
+              "line_start": 447,
+              "suggested_replacement": "let binding = opening.report();\n    ",
+              "suggestion_applicability": "MaybeIncorrect",
+              "text": [
+                {
+                  "highlight_end": 5,
+                  "highlight_start": 5,
+                  "text": "    let redb::TerminalObservation::Returned(Err(error)) = opening.report().opening() else {"
+                }
+              ]
+            },
+            {
+              "byte_end": 15339,
+              "byte_start": 15323,
+              "column_end": 75,
+              "column_start": 59,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_file/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 447,
+              "line_start": 447,
+              "suggested_replacement": "binding",
+              "suggestion_applicability": "MaybeIncorrect",
+              "text": [
+                {
+                  "highlight_end": 75,
+                  "highlight_start": 59,
+                  "text": "    let redb::TerminalObservation::Returned(Err(error)) = opening.report().opening() else {"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "temporary value dropped while borrowed",
+      "spans": [
+        {
+          "byte_end": 15339,
+          "byte_start": 15323,
+          "column_end": 75,
+          "column_start": 59,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_file/tests.rs",
+          "is_primary": true,
+          "label": "creates a temporary value which is freed while still in use",
+          "line_end": 447,
+          "line_start": 447,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 75,
+              "highlight_start": 59,
+              "text": "    let redb::TerminalObservation::Returned(Err(error)) = opening.report().opening() else {"
+            }
+          ]
+        },
+        {
+          "byte_end": 15438,
+          "byte_start": 15437,
+          "column_end": 7,
+          "column_start": 6,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_file/tests.rs",
+          "is_primary": false,
+          "label": "temporary value is freed at the end of this statement",
+          "line_end": 449,
+          "line_start": 449,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 7,
+              "highlight_start": 6,
+              "text": "    };"
+            }
+          ]
+        },
+        {
+          "byte_end": 15478,
+          "byte_start": 15473,
+          "column_end": 40,
+          "column_start": 35,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_file/tests.rs",
+          "is_primary": false,
+          "label": "borrow later used here",
+          "line_end": 450,
+          "line_start": 450,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 40,
+              "highlight_start": 35,
+              "text": "    assert_eq!(std::ptr::from_ref(error), original_failure);"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "E0716",
+        "explanation": "A temporary value is being dropped while a borrow is still in active use.\n\nErroneous code example:\n\n```compile_fail,E0716\nfn foo() -> i32 { 22 }\nfn bar(x: &i32) -> &i32 { x }\nlet p = bar(&foo());\n         // ------ creates a temporary\nlet q = *p;\n```\n\nHere, the expression `&foo()` is borrowing the expression `foo()`. As `foo()` is\na call to a function, and not the name of a variable, this creates a\n**temporary** -- that temporary stores the return value from `foo()` so that it\ncan be borrowed. You could imagine that `let p = bar(&foo());` is equivalent to\nthe following, which uses an explicit temporary variable.\n\nErroneous code example:\n\n```compile_fail,E0597\n# fn foo() -> i32 { 22 }\n# fn bar(x: &i32) -> &i32 { x }\nlet p = {\n  let tmp = foo(); // the temporary\n  bar(&tmp) // error: `tmp` does not live long enough\n}; // <-- tmp is freed as we exit this block\nlet q = p;\n```\n\nWhenever a temporary is created, it is automatically dropped (freed) according\nto fixed rules. Ordinarily, the temporary is dropped at the end of the enclosing\nstatement -- in this case, after the `let p`. This is illustrated in the example\nabove by showing that `tmp` would be freed as we exit the block.\n\nTo fix this problem, you need to create a local variable to store the value in\nrather than relying on a temporary. For example, you might change the original\nprogram to the following:\n\n```\nfn foo() -> i32 { 22 }\nfn bar(x: &i32) -> &i32 { x }\nlet value = foo(); // dropped at the end of the enclosing block\nlet p = bar(&value);\nlet q = *p;\n```\n\nBy introducing the explicit `let value`, we allocate storage that will last\nuntil the end of the enclosing block (when `value` goes out of scope). When we\nborrow `&value`, we are borrowing a local variable that already exists, and\nhence no temporary is created.\n\nTemporaries are not always dropped at the end of the enclosing statement. In\nsimple cases where the `&` expression is immediately stored into a variable, the\ncompiler will automatically extend the lifetime of the temporary until the end\nof the enclosing block. Therefore, an alternative way to fix the original\nprogram is to write `let tmp = &foo()` and not `let tmp = foo()`:\n\n```\nfn foo() -> i32 { 22 }\nfn bar(x: &i32) -> &i32 { x }\nlet value = &foo();\nlet p = bar(value);\nlet q = *p;\n```\n\nHere, we are still borrowing `foo()`, but as the borrow is assigned directly\ninto a variable, the temporary will not be dropped until the end of the\nenclosing block. Similar rules apply when temporaries are stored into aggregate\nstructures like a tuple or struct:\n\n```\n// Here, two temporaries are created, but\n// as they are stored directly into `value`,\n// they are not dropped until the end of the\n// enclosing block.\nfn foo() -> i32 { 22 }\nlet value = (&foo(), &foo());\n```\n"
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "For more information about this error, try `rustc --explain E0716`.\n",
+      "$message_type": "diagnostic",
+      "children": [],
+      "level": "failure-note",
+      "message": "For more information about this error, try `rustc --explain E0716`.",
+      "spans": [],
+      "code": null
+    }
+  }
+]

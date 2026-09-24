@@ -1,0 +1,7 @@
+{
+  "status": "failed_before_inputs_or_archive_written",
+  "exception": "IsADirectoryError",
+  "cause": "run file glob also selected a package directory",
+  "script_sha256": "167b1d22f085f23105898d2f37a4c3c1f8bb8b341b9a2a347940d6b9c843aa5d",
+  "archive_changed": false
+}

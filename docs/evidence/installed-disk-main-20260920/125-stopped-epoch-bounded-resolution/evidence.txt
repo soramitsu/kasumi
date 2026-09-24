@@ -1,0 +1,16 @@
+Observed run125: target/installed-disk-validation/125-stopped-epoch-exact-drain.log lines 8-18 and terminal result. 0 passed, 1 failed; 11.87 seconds test time, 80.04548501968384 seconds owned runner time. Process group 45142 drained, timeout false, signals empty, source unchanged.
+
+Original causal diagnostic:
+AUTHORITY_PROPOSAL_ROUTE: local=1 admitted_term=1; current running_state=Ok, current_term=2, vote=(2,3,uncommitted), last_log_index=6, last_applied=(term1,node1,index5), state=Follower, current_leader=None.
+AUTHORITY_UNKNOWN at service.rs446: authority proposal leader changed.
+issuer_tests.rs394: expected Conflict, got UnknownOutcome.
+
+Source paths read and hashed:
+- crates/kasumi-authority/src/service.rs:35,48 public sanitized mapping; :414 barrier; :430 write_proposal's captured-term/local-leadership/core checks and ownership comment.
+- crates/kasumi-authority/src/lifecycle_service.rs:10 initial five-second deadline; :25 accepted_request; :58 exact reference/digest replay; :84 original context validation; :95 prepared write and inner reducer response.
+- crates/kasumi-authority/src/lifecycle_state.rs:101 exact retained identity; :123 stopped-epoch application Conflict before new writes.
+- crates/kasumi-authority/src/request_jobs.rs:193 accepted_request and :205 real registered child plus timeout_at / child.drain custody.
+- crates/kasumi-authority/src/tests.rs:275 Fixture::leader checks current metrics and actual linearizable barrier; :300 original context constructor.
+- crates/kasumi-raft/src/lib.rs:689 check_access includes actual storage, ownership, snapshot custody, running_state and machine_failed.
+
+No broader cause claim: the evidence establishes this run's term/role movement, not a failure-free atomic interval or a general election-liveness guarantee.

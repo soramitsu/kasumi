@@ -1,0 +1,18 @@
+{
+  "status": "FROZEN_TARGET_ONLY_UNCOMPILED",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "source_paths": [
+    "crates/kasumi-engine/tests/common/recovery_control.rs"
+  ],
+  "observed_129_result_sha256": "4cf37d06093b46782b925f9ae953b1a2f111b882e28cb830a0ce0bd57fafa79d",
+  "observed_129_log_sha256": "1d2e4716591fc49331201d4a244eb55781e17debcf237d0fcaeb20cc80b635a6",
+  "files": {
+    "README.md": "92ddcc52ddb27867452471778946827657bc5860a9cf0caec85177da4d1a62d0",
+    "base/crates/kasumi-engine/tests/common/recovery_control.rs": "df389a1f5903728287ed45d01281119b797a3778b50d1d60adc17c62f2548eb3",
+    "diagnostic.patch": "87f447ca2d4173266562d8e4490f0839021b49a9538a1091b95ec0db1e409032",
+    "preparation-failure.json": "8ed736f1f9aec3a1e9b5262da89416310438beadb9b2185b56773b0a8ab675fb",
+    "proposed/crates/kasumi-engine/tests/common/recovery_control.rs": "dd2198a9fe9c38501fa9ab030f144435abcbe8cd7da5e460c869da415afa6cc8"
+  }
+}

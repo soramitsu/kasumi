@@ -1,0 +1,24 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010011f84c <lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}::{closure#1}>:
+10011f84c: d10083ff    	sub	sp, sp, #0x20
+10011f850: aa0803e9    	mov	x9, x8
+10011f854: aa0003e8    	mov	x8, x0
+10011f858: f9000fe8    	str	x8, [sp, #0x18]
+10011f85c: 3dc03c00    	ldr	q0, [x0, #0xf0]
+10011f860: 3d8003e0    	str	q0, [sp]
+10011f864: 3945400c    	ldrb	w12, [x0, #0x150]
+10011f868: f940d80b    	ldr	x11, [x0, #0x1b0]
+10011f86c: f940d40a    	ldr	x10, [x0, #0x1a8]
+10011f870: f940d008    	ldr	x8, [x0, #0x1a0]
+10011f874: 3dc003e0    	ldr	q0, [sp]
+10011f878: 3d800120    	str	q0, [x9]
+10011f87c: 3900812c    	strb	w12, [x9, #0x20]
+10011f880: f900092b    	str	x11, [x9, #0x10]
+10011f884: f9000d2a    	str	x10, [x9, #0x18]
+10011f888: f9001528    	str	x8, [x9, #0x28]
+10011f88c: 910083ff    	add	sp, sp, #0x20
+10011f890: d65f03c0    	ret

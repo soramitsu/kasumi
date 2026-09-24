@@ -1,0 +1,32 @@
+{
+  "name": "compile-production",
+  "pid": 46063,
+  "pgid": 46063,
+  "argv": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+    "--edition=2024",
+    "--crate-name",
+    "directory_cursor_native",
+    "-L",
+    "dependency=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps",
+    "--extern",
+    "anyhow=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libanyhow-a99e56a6aef2a202.rlib",
+    "--extern",
+    "serde=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libserde-6e5990041b5fa831.rlib",
+    "--extern",
+    "uuid=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libuuid-68e334add96507a0.rlib",
+    "--extern",
+    "libc=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/liblibc-259df0b9de2373d4.rlib",
+    "--extern",
+    "sha2=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libsha2-99a75cdbd7b7c566.rlib",
+    "--extern",
+    "parking_lot=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libparking_lot-699a212a3864092e.rlib",
+    "--extern",
+    "zeroize=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libzeroize-1057c5d5924b5ca2.rlib",
+    "--extern",
+    "tempfile=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libtempfile-162b26d7eb0fc3ad.rlib",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/driver.rs",
+    "-o",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/production"
+  ]
+}

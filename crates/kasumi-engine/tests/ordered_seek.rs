@@ -1,6 +1,6 @@
 mod common;
 use kasumi_engine::test_utils::open_fixture;
-use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
+use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
 use std::{collections::BTreeSet, sync::Arc};
@@ -46,13 +46,16 @@ fn request() -> OrderedSeekRequest {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn actual_store_ordered_seek_has_bounded_visits_and_epoch_fenced_continuation() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let node = NodeStore::create_new_fixture(
-        directory.path().join("seek.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    let audit = common::security_audit(node.clone()).await;
+    let physical =
+        common::PhysicalFixture::new(&directory.path().join("seek.redb"), Default::default());
+    let node = physical
+        .storage
+        .create_new(
+            directory.path().join("seek.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let audit = common::security_audit(node.clone(), physical.storage.admission.clone()).await;
     let store = TenantStore::initialize_catalog_fixture(
         node,
         "seek".into(),

@@ -1,5 +1,5 @@
 use super::*;
-use crate::standalone::{ClientProfile, initialize};
+use crate::standalone::ClientProfile;
 use kasumi_client::{ClientError, KasumiAdminClient};
 use kasumi_store::private_files;
 use kasumi_types::*;
@@ -53,12 +53,35 @@ async fn entered(gate: &crate::rpc::AuditReleaseGate) {
         .unwrap();
 }
 
-#[tokio::test]
-async fn audit_native_tls_fixed_history_and_original_authorization_release() {
-    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let installation = initialize(&directory.path().join("kasumi"), "tenant-a")
-        .await
+#[test]
+fn audit_native_tls_fixed_history_and_original_authorization_release() {
+    // This aggregate fixture retains TLS, native clients, archived audit pages,
+    // and authorization-release futures. Isolate its frame from libtest's stack.
+    std::thread::Builder::new()
+        .name("audit native TLS aggregate fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    audit_native_tls_fixed_history_and_original_authorization_release_impl(),
+                ));
+        })
+        .unwrap()
+        .join()
         .unwrap();
+}
+
+async fn audit_native_tls_fixed_history_and_original_authorization_release_impl() {
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let (installation, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &directory.path().join("kasumi"),
+        "tenant-a",
+    )
+    .await
+    .unwrap();
     let mut config = RuntimeConfig::load(&installation.configuration).unwrap();
     config.security_audit.retention.hot_bytes = 128 << 10;
     let mut control = ClientProfile::load(&installation.control_profile).unwrap();
@@ -85,9 +108,15 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release() {
         &serde_json::to_vec(&control).unwrap(),
     )
     .unwrap();
-    crate::standalone::configure_test_topology(&config).await;
+    crate::standalone::configure_test_topology(&config, storage.clone()).await;
     drop(listeners);
-    let runtime = NodeRuntime::open(config.clone()).await.unwrap();
+    let runtime = NodeRuntime::open_using_storage(
+        config.clone(),
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await
+    .unwrap();
     let audit = runtime.audit.clone();
     let database = runtime.control.database.clone();
     let release = runtime.audit_release_gate.clone();
@@ -203,6 +232,38 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release() {
         .unwrap();
     let pinned_archive_count = archives.through_index;
     let reference = archives.archives[0].clone();
+    let mut changed_snapshot = archives.cursor().unwrap();
+    changed_snapshot.snapshot_head.as_mut().unwrap().object_id = Uuid::new_v4();
+    changed_snapshot.validate().unwrap();
+    let error = admin
+        .security_audit_archives(
+            &operator,
+            &SecurityAuditArchivePageRequest {
+                cursor: Some(changed_snapshot),
+                limit: 1,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, ClientError::Transport(status) if status.code() == tonic::Code::InvalidArgument)
+    );
+    let mut changed_boundary = archives.cursor().unwrap();
+    changed_boundary.previous.as_mut().unwrap().object_id = Uuid::new_v4();
+    changed_boundary.validate().unwrap();
+    let error = admin
+        .security_audit_archives(
+            &operator,
+            &SecurityAuditArchivePageRequest {
+                cursor: Some(changed_boundary),
+                limit: 1,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, ClientError::Transport(status) if status.code() == tonic::Code::InvalidArgument)
+    );
     append(&audit, 350).await;
     let next = admin
         .security_audit_archives(

@@ -1,0 +1,25 @@
+--- a/crates/kasumi-engine/src/admission.rs
++++ b/crates/kasumi-engine/src/admission.rs
+@@ -1027,13 +1027,18 @@
+             .charge
+             .take()
+             .expect("live reservation");
+-        state.bytes -= charge.bytes;
+-        state.operations -= usize::from(charge.kind == ChargeKind::Operation);
++        let bytes = charge.bytes;
++        let operation = charge.kind == ChargeKind::Operation;
++        // The charge can retain the final cancellation-state Arc. Retire that
++        // backing under serialization before another reservation can reuse its
++        // bytes or ledger slot. QueryCancellation destruction only releases its
++        // atomic-state Arc; it neither calls user code nor takes this lock.
++        drop(charge);
++        state.bytes -= bytes;
++        state.operations -= usize::from(operation);
+         state.live -= 1;
+         state.slots[self.slot].next_free = state.free;
+         state.free = Some(self.slot);
+-        drop(state);
+-        drop(charge);
+     }
+ }
+ #[derive(Default)]

@@ -132,6 +132,33 @@ pub struct ClusterNetwork {
     maintenance: OnceLock<std::sync::Weak<kasumi_authority::IndependentAuthority>>,
 }
 
+// Option<String> alone treats an omitted object key as None. Decode through a
+// required newtype so only an explicit null can represent an unbound route.
+#[derive(Serialize)]
+#[serde(transparent)]
+struct RequiredBootstrapBinding(Option<String>);
+
+impl<'de> Deserialize<'de> for RequiredBootstrapBinding {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct BindingVisitor;
+        impl<'de> serde::de::Visitor<'de> for BindingVisitor {
+            type Value = RequiredBootstrapBinding;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an explicit bootstrap fingerprint or null")
+            }
+
+            fn visit_newtype_struct<D: serde::Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<Self::Value, D::Error> {
+                Option::<String>::deserialize(deserializer).map(RequiredBootstrapBinding)
+            }
+        }
+        deserializer.deserialize_newtype_struct("RequiredBootstrapBinding", BindingVisitor)
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PeerRequest {
@@ -139,8 +166,7 @@ struct PeerRequest {
     source: u64,
     target: u64,
     request: RpcRequest,
-    #[serde(default)]
-    bootstrap_sha256: Option<String>,
+    bootstrap_sha256: RequiredBootstrapBinding,
 }
 
 fn encode_bounded(value: &impl Serialize, limit: usize) -> Result<Vec<u8>> {
@@ -220,6 +246,7 @@ impl ClusterNetwork {
             let config = peer_client_config(identity, trusted_ca_pem, peer.certificate_pins)?;
             let client = reqwest::Client::builder()
                 .use_preconfigured_tls(config)
+                .http2_prior_knowledge()
                 .https_only(true)
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
@@ -367,6 +394,14 @@ impl ClusterNetwork {
             bytes.extend_from_slice(&chunk);
         }
         serde_json::from_slice(&bytes).context("invalid readiness response")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_transport_free_slots(&self) -> (usize, usize) {
+        (
+            self.incoming.available_permits(),
+            self.outgoing.available_permits(),
+        )
     }
 
     pub fn server_tls(&self) -> Arc<rustls::ServerConfig> {
@@ -589,7 +624,7 @@ async fn receive(
         return network.denied(source, &message.group).await;
     };
     match network.fingerprint(&message.group) {
-        Ok(expected) if expected == message.bootstrap_sha256 => {}
+        Ok(expected) if expected == message.bootstrap_sha256.0 => {}
         _ => return network.denied(source, &message.group).await,
     }
     let response = dispatch_rpc(&raft, message.request).await;
@@ -707,7 +742,7 @@ impl RaftTransport for ClusterNetwork {
             source,
             target,
             request,
-            bootstrap_sha256: self.fingerprint(group)?,
+            bootstrap_sha256: RequiredBootstrapBinding(self.fingerprint(group)?),
         };
         let hint = smaller_append(&message.request);
         let bytes = encode_bounded(&message, self.limits.max_rpc_bytes)

@@ -1,0 +1,35 @@
+{
+  "cleanup": {
+    "after": [],
+    "before": [],
+    "drained": true,
+    "errors": [],
+    "group": 68952,
+    "process_returncode": 0,
+    "signals": []
+  },
+  "command": [
+    "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    "-m",
+    "unittest",
+    "-v",
+    "test_package_metadata",
+    "test_release_gate",
+    "test_package_release",
+    "test_verify_release_acceptance"
+  ],
+  "duration_seconds": 7.022,
+  "error": null,
+  "executable": {
+    "path": "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    "sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e"
+  },
+  "exit_code": 0,
+  "process_exit_code": 0,
+  "process_group": 68952,
+  "received_signals": [],
+  "status": "passed",
+  "timed_out": false,
+  "timeout_seconds": 600,
+  "working_directory": "/Users/mtakemiya/dev/kasumi"
+}

@@ -1,0 +1,2 @@
+1000d50dc: 9400d459    	bl	0x10010a240 <<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}> as core::ops::deref::DerefMut>::deref_mut>
+1000d50f0: 940141d6    	bl	0x100125848 <lifecycle::recovery_control::complete_recovery::{closure#0}>

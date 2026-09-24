@@ -1,0 +1,11 @@
+{
+  "status": "scoped-approval-for-native-validation",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "manifest_sha256": "e78a1d2eebfd9174f73c9f7285f7526b0dc784c24250543768d9a7c03ae4205a",
+  "patch_sha256": "6b2e9c49d20f1fee3d345c764a9566bd929eeee30ea9c9dbc3d6742edf414235",
+  "review_sha256": "372fdd61b115624b8cd136430fca4817ba6643a6d9b1ed92583623afe11b3426",
+  "exact_bases_verified": 5,
+  "supporting_hashes_verified": 9,
+  "native_tests_run": false
+}

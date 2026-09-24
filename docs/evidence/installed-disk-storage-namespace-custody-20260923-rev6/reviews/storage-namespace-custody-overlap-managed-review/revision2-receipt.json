@@ -1,0 +1,23 @@
+{
+  "status": "SCOPED_OVERLAP_APPROVAL",
+  "scope": "Only revision2 restoration and previously reviewed overlap semantic preservation; no native/broad cumulative approval",
+  "bindings": {
+    "target/installed-disk-validation/storage-namespace-custody-integration-revision2/manifest.json": "93ce8996fc13e0c84d77ddf22f9b71875124286c7de12367c216eea3c0026d24",
+    "target/installed-disk-validation/storage-namespace-custody-integration-revision2/correction.patch": "62d07914c2c471e8f2a575197e009827c2393032dd4bdb6c765c49d76986c696",
+    "target/installed-disk-validation/storage-namespace-custody-integration-revision2/custody-to-combined-overlaps.patch": "c19a08a2b9db8ec6d4ac2a97f92e0ae021947e37134a14baea6fcdde5d88dc0c",
+    "target/installed-disk-validation/storage-namespace-custody-integration-revision2/proposed/crates/kasumi-store/src/node_disk/tests.rs": "24e8ec5be11eebdc87183e2a33a151577d6cba09a7096ee52b0dd32205337912"
+  },
+  "prior_failure_receipt_sha256": "a49db1f997883b50bb85e92367ff7f44556d07db7309a920d4752b68564cfd91",
+  "changed_from_failed_composition": [
+    "crates/kasumi-store/src/node_disk/tests.rs"
+  ],
+  "restored_function_sha256": "9f14d37a1b60de4ab490d43604d83bec50f42b165bf7e8e667afb21786bf7389",
+  "findings": [
+    "Entire early/late adversarial replacement function exactly equals custody04, preserving both branches, late allocation-free measurement, bytes/charge/Failed assertions, retained handle counts and clean.",
+    "All other proposed files are byte-identical to prior composition; file let-chain and clean namespace/NodeDisk integration preservation findings remain valid."
+  ],
+  "limits": [
+    "Full workspace strict Clippy and unfiltered runtime still require qualification.",
+    "No changes to production source or frozen inputs and no native dispatch by reviewer."
+  ]
+}

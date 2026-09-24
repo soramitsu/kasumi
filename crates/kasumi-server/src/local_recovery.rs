@@ -3,10 +3,14 @@
 //! or a distributed source has stopped.
 use crate::runtime::{KeyProviderSettings, RuntimeConfig};
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{StoragePurpose, TenantStore, WriteOp, private_files};
+use kasumi_store::{
+    DiskWork, NodeDiskDirectory, StoragePurpose, TenantStore, WriteOp, private_files,
+};
 use kasumi_types::{FullBackupCheckpoint, validate_name};
 use serde::{Deserialize, Serialize};
 use std::{
+    ffi::{CStr, CString},
+    io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -366,9 +370,12 @@ impl LocalTarget {
 }
 
 impl Operator {
-    async fn open(configuration: &Path) -> Result<Self> {
+    async fn open(
+        configuration: &Path,
+        storage: crate::runtime_memory::RuntimeStorage,
+    ) -> Result<Self> {
         let config = RuntimeConfig::load(configuration)?;
-        let state = crate::standalone::OperatorState::open(&config).await?;
+        let state = crate::standalone::OperatorState::open(&config, storage).await?;
         let owner = Self { state };
         #[cfg(test)]
         tests::pause_open(configuration).await;
@@ -498,10 +505,21 @@ pub async fn start(
     configuration: &Path,
     request: LocalRecoveryStart,
 ) -> Result<LocalRecoveryStatus> {
+    request.validate()?;
+    let config = RuntimeConfig::load(configuration)?;
+    let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+    start_with_storage(configuration, request, storage).await
+}
+
+pub(crate) async fn start_with_storage(
+    configuration: &Path,
+    request: LocalRecoveryStart,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<LocalRecoveryStatus> {
     let configuration = configuration.to_owned();
     let result =
         crate::startup_owner::open(crate::startup_owner::Kind::LocalOperator, async move {
-            start_owned(&configuration, request)
+            start_owned(&configuration, request, storage)
                 .await
                 .map(DrainedStatus)
         })
@@ -512,9 +530,10 @@ pub async fn start(
 async fn start_owned(
     configuration: &Path,
     request: LocalRecoveryStart,
+    storage: crate::runtime_memory::RuntimeStorage,
 ) -> Result<LocalRecoveryStatus> {
     request.validate()?;
-    let mut operator = Operator::open(configuration).await?;
+    let mut operator = Operator::open(configuration, storage).await?;
     let result = async {
         if let Some(bytes) = operator
             .store()
@@ -628,10 +647,20 @@ async fn start_owned(
 }
 
 pub async fn status(configuration: &Path, operation: Uuid) -> Result<LocalRecoveryStatus> {
+    let config = RuntimeConfig::load(configuration)?;
+    let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+    status_with_storage(configuration, operation, storage).await
+}
+
+pub(crate) async fn status_with_storage(
+    configuration: &Path,
+    operation: Uuid,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<LocalRecoveryStatus> {
     let configuration = configuration.to_owned();
     let result =
         crate::startup_owner::open(crate::startup_owner::Kind::LocalOperator, async move {
-            status_owned(&configuration, operation)
+            status_owned(&configuration, operation, storage)
                 .await
                 .map(DrainedStatus)
         })
@@ -639,8 +668,12 @@ pub async fn status(configuration: &Path, operation: Uuid) -> Result<LocalRecove
     Ok(result.0)
 }
 
-async fn status_owned(configuration: &Path, operation: Uuid) -> Result<LocalRecoveryStatus> {
-    let mut operator = Operator::open(configuration).await?;
+async fn status_owned(
+    configuration: &Path,
+    operation: Uuid,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<LocalRecoveryStatus> {
+    let mut operator = Operator::open(configuration, storage).await?;
     let result: Result<LocalRecoveryStatus> = (|| {
         let journal = record(operator.store(), operation)?;
         operator.validate(&journal)?;
@@ -656,10 +689,20 @@ async fn status_owned(configuration: &Path, operation: Uuid) -> Result<LocalReco
 }
 
 pub async fn resume(configuration: &Path, operation: Uuid) -> Result<LocalRecoveryStatus> {
+    let config = RuntimeConfig::load(configuration)?;
+    let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+    resume_with_storage(configuration, operation, storage).await
+}
+
+pub(crate) async fn resume_with_storage(
+    configuration: &Path,
+    operation: Uuid,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<LocalRecoveryStatus> {
     let configuration = configuration.to_owned();
     let result =
         crate::startup_owner::open(crate::startup_owner::Kind::LocalOperator, async move {
-            resume_owned(&configuration, operation)
+            resume_owned(&configuration, operation, storage)
                 .await
                 .map(DrainedStatus)
         })
@@ -667,8 +710,12 @@ pub async fn resume(configuration: &Path, operation: Uuid) -> Result<LocalRecove
     Ok(result.0)
 }
 
-async fn resume_owned(configuration: &Path, operation: Uuid) -> Result<LocalRecoveryStatus> {
-    let mut operator = Operator::open(configuration).await?;
+async fn resume_owned(
+    configuration: &Path,
+    operation: Uuid,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<LocalRecoveryStatus> {
+    let mut operator = Operator::open(configuration, storage).await?;
     let result = async {
         let mut journal = record(operator.store(), operation)?;
         operator.validate(&journal)?;
@@ -708,10 +755,20 @@ async fn resume_owned(configuration: &Path, operation: Uuid) -> Result<LocalReco
 }
 
 pub async fn stop(configuration: &Path, operation: Uuid) -> Result<LocalRecoveryStatus> {
+    let config = RuntimeConfig::load(configuration)?;
+    let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+    stop_with_storage(configuration, operation, storage).await
+}
+
+pub(crate) async fn stop_with_storage(
+    configuration: &Path,
+    operation: Uuid,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<LocalRecoveryStatus> {
     let configuration = configuration.to_owned();
     let result =
         crate::startup_owner::open(crate::startup_owner::Kind::LocalOperator, async move {
-            stop_owned(&configuration, operation)
+            stop_owned(&configuration, operation, storage)
                 .await
                 .map(DrainedStatus)
         })
@@ -719,8 +776,12 @@ pub async fn stop(configuration: &Path, operation: Uuid) -> Result<LocalRecovery
     Ok(result.0)
 }
 
-async fn stop_owned(configuration: &Path, operation: Uuid) -> Result<LocalRecoveryStatus> {
-    let mut operator = Operator::open(configuration).await?;
+async fn stop_owned(
+    configuration: &Path,
+    operation: Uuid,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<LocalRecoveryStatus> {
+    let mut operator = Operator::open(configuration, storage).await?;
     let result = async {
         let mut journal = record(operator.store(), operation)?;
         operator.validate(&journal)?;
@@ -917,42 +978,67 @@ impl Operator {
         check_database_file(journal)?;
         Ok(created)
     }
-    fn prepare_directory(&self, journal: &Journal) -> Result<()> {
-        // Directory creation remains pending an admitted NodeDisk directory API;
-        // all regular files under this root use the installed owner below.
-        let parent = journal
-            .target_directory
-            .parent()
-            .context("target directory has no parent")?;
-        if parent.try_exists()? {
-            private_files::check_directory(parent)?;
-        } else {
-            private_files::create_directory(parent)?;
-        }
-        if journal.target_directory.try_exists()? {
-            private_files::check_directory(&journal.target_directory)?;
-            let marker = journal.target_directory.join("binding.json");
-            if !marker.try_exists()? {
-                ensure!(
-                    std::fs::read_dir(&journal.target_directory)?
-                        .next()
-                        .is_none(),
-                    "unbound target directory is not empty"
-                );
-                crate::standalone::create_installed_file(
-                    &self.config.persistent_disk,
-                    self.store().persistent_disk(),
-                    &marker,
-                    &encoded(&binding(journal))?,
-                    MAX_RECORD,
-                )?;
+    fn directory_child(
+        &self,
+        parent: &NodeDiskDirectory,
+        name: &CStr,
+        create: bool,
+    ) -> Result<Option<NodeDiskDirectory>> {
+        match parent.open_child(name) {
+            Ok(directory) => Ok(Some(directory)),
+            Err(error) => {
+                let snapshot = self.store().persistent_disk().snapshot();
+                if error.kind() != ErrorKind::NotFound
+                    || snapshot.phase != kasumi_store::NodeDiskPhase::Open
+                    || !snapshot.filesystem_admission_ready
+                {
+                    return Err(error.into());
+                }
+                if create {
+                    Ok(Some(parent.create_child(name, DiskWork::Foreground)?))
+                } else {
+                    Ok(None)
+                }
             }
-        } else {
-            private_files::create_directory(&journal.target_directory)?;
+        }
+    }
+    fn open_target_directory(
+        &self,
+        journal: &Journal,
+        create: bool,
+    ) -> Result<Option<NodeDiskDirectory>> {
+        let disk = self.store().persistent_disk();
+        let (root, database_relative) = self
+            .config
+            .persistent_disk
+            .binding(&journal.database_path)?;
+        let data_relative = database_relative
+            .parent()
+            .context("local recovery database has no installed directory")?;
+        let data = disk.open_directory(root, data_relative)?;
+        let Some(generations) = self.directory_child(&data, c"generations", create)? else {
+            return Ok(None);
+        };
+        let target = CString::new(journal.status.request.target_incarnation.to_string())?;
+        self.directory_child(&generations, &target, create)
+    }
+    fn prepare_directory(&self, journal: &Journal) -> Result<()> {
+        let _target = self
+            .open_target_directory(journal, true)?
+            .context("local recovery target directory was not created")?;
+        private_files::check_directory(&journal.target_directory)?;
+        let marker = journal.target_directory.join("binding.json");
+        if !marker.try_exists()? {
+            ensure!(
+                std::fs::read_dir(&journal.target_directory)?
+                    .next()
+                    .is_none(),
+                "unbound target directory is not empty"
+            );
             crate::standalone::create_installed_file(
                 &self.config.persistent_disk,
                 self.store().persistent_disk(),
-                &journal.target_directory.join("binding.json"),
+                &marker,
                 &encoded(&binding(journal))?,
                 MAX_RECORD,
             )?;
@@ -1221,7 +1307,7 @@ impl Operator {
             matches!(outcome, GenerationRecord::Stopped { operation_id } if operation_id == journal.status.request.operation_id),
             "target permanent stop differs"
         );
-        if journal.target_directory.try_exists()? {
+        if let Some(target) = self.open_target_directory(journal, false)? {
             private_files::check_directory(&journal.target_directory)?;
             let marker = journal.target_directory.join("binding.json");
             let marker_owner = if marker.try_exists()? {
@@ -1291,10 +1377,8 @@ impl Operator {
             if let Some(marker) = marker_owner {
                 self.store().persistent_disk().delete_file(marker)?;
             }
-            // Directory ownership/accounting remains a separate NodeDisk API
-            // gap. A failed managed file operation never reaches raw cleanup.
             self.require_cleanup_disk()?;
-            std::fs::remove_dir(&journal.target_directory)?;
+            target.remove_if_empty()?;
         }
         self.require_cleanup_disk()?;
         // Directory absence can be the visible result of an earlier removal whose parent

@@ -116,8 +116,11 @@ impl RaftNetworkFactory<TypeConfig> for NetworkFactory {
 
 impl Network {
     async fn send(&self, request: RpcRequest, option: RPCOption) -> Result<RpcResponse> {
+        // OpenRaft uses hard_ttl as the RPC deadline. soft_ttl is the point
+        // where a transport may begin graceful cancellation, not permission to
+        // fail a still-live authenticated RPC before OpenRaft's own deadline.
         tokio::time::timeout(
-            option.soft_ttl(),
+            option.hard_ttl(),
             self.transport
                 .send(&self.group, self.source, self.target, &self.node, request),
         )

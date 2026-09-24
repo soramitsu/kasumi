@@ -1,0 +1,17 @@
+{
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "status": "TARGET_ONLY_REVIEWABLE_UNCOMPILED",
+  "patch_sha256": "92e8267f31bd4114698f74d2eeca31d9c79ada4850c4d2580bc55de16883a3c7",
+  "files": [
+    {
+      "path": "crates/kasumi-authority/src/issuer_tests.rs",
+      "before_sha256": "bdc12b184bbcace31a3005640fd1b09bae9de799917dba34011acbb40e5d97a0",
+      "proposed_sha256": "77fbb82454695d3fec5fb019a6d34963fc80d1875ad7766a89ade264e90f4b7e"
+    }
+  ],
+  "evidence": "105-authority-original-outcomes.log:15 AUTHORITY_UNKNOWN authority proposal leader changed; original stopped-epoch Conflict assertion remains unchanged",
+  "deadline_changed": false,
+  "mutation_retries_added": false,
+  "actual_source_modified": false
+}

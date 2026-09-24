@@ -1,0 +1,9 @@
+error[E0463]: can't find crate for `zeroize`
+ --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-03/private_files.rs:9:5
+  |
+9 | use zeroize::Zeroizing;
+  |     ^^^^^^^ can't find crate
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0463`.

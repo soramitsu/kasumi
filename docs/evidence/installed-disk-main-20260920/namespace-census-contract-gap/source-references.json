@@ -1,0 +1,7 @@
+{
+  "target/installed-disk-validation/directory-fixed-maps/proposed/crates/kasumi-store/src/node_disk.rs": "266fd1fb9ec6fe02dfe018c392e0ade492c82f4e1ede3cf8071355b95c01016b",
+  "target/installed-disk-validation/directory-fixed-maps/proposed/crates/kasumi-store/src/node_disk/census.rs": "22c1a3dfa24e86c24a17f4f27d20b9fdb694f66c799def2107a0342e33a7a6bb",
+  "target/installed-disk-validation/directory-fixed-maps/proposed/crates/kasumi-store/src/node_disk/ledger.rs": "6c8c28eb74426b7e522329e9d1711ebf510821405b65107629c4a5d210142e04",
+  "target/installed-disk-validation/directory-fixed-maps/proposed/crates/kasumi-store/src/node_disk/file.rs": "145205325dcb354e1d711964c90a57404d365f97d92f255aecf997b5f6e379af",
+  "target/installed-disk-validation/directory-fixed-maps/proposed/crates/kasumi-store/src/node_disk/fixed_map.rs": "5c2d69a6cefbe05a93a99f0a833acb3dcf32881dc56320623025a31b31bea9d4"
+}

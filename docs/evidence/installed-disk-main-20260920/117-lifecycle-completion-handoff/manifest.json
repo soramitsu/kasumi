@@ -1,0 +1,26 @@
+{
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "status": "TARGET_ONLY_UNCOMPILED",
+  "patch_sha256": "6667ce384366678180175e9a85e6ae9655e36805d518c486e89aa0b206246dc8",
+  "readme_sha256": "fc1d4a4d533b2725255e310e259304883cbb294e90c335e89af52a38eb641528",
+  "static_evidence_manifest_sha256": "4e805b432961a998facf60361f66af4de3d7649f3c8b31db5f5d9b1604dd1f11",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/tests/common/recovery_control.rs",
+      "base_sha256": "78a61799150f2db94644fd0b55916ff2994ebd276c9d87cf567c58ba279d8f03",
+      "proposed_sha256": "6e6e9477afd35a346b3b686afe5bc40b4c33bf066743ab17b5a4e3d306004aa0"
+    }
+  ],
+  "preservation_checks": {
+    "preparation_body_byte_identical": true,
+    "continuation_body_byte_identical": true,
+    "downstream_helpers_byte_identical": true,
+    "assertion_count": 139,
+    "assertion_sites_preserved": true,
+    "duration_expressions_preserved": true,
+    "context_construction_sites_preserved": true
+  },
+  "actual_source_unchanged": true,
+  "cargo_or_binary_runs": false
+}

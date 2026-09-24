@@ -101,6 +101,19 @@ pub struct TenantStorageSet {
 }
 
 impl TenantStorageSet {
+    /// Classify an unprovisioned tenant without constructing either key provider.
+    /// A single catalog is an interrupted or corrupt installation, not a stage.
+    pub fn catalogs_installed(node: &NodeStore, tenant: &str) -> Result<bool> {
+        validate_application_tenant(tenant)?;
+        let application = node.catalog(tenant)?.is_some();
+        let custody = node.catalog(&CustodyStore::catalog_name(tenant))?.is_some();
+        ensure!(
+            application == custody,
+            "application and custody catalogs are only partially installed"
+        );
+        Ok(application)
+    }
+
     /// Open both existing catalogs and their authenticated immutable binding.
     /// Missing catalogs or binding are errors; this path never installs either.
     pub async fn open_existing(
@@ -183,8 +196,8 @@ impl TenantStorageSet {
         let bytes = serde_json::to_vec(&binding)?;
         if let Some(saved) = saved {
             ensure!(
-                serde_json::from_slice::<StorageBinding>(&saved)? == binding,
-                "installed storage domain binding differs"
+                saved == bytes,
+                "installed storage domain binding bytes differ"
             );
         } else {
             let tx = application.node.db.begin_write()?;

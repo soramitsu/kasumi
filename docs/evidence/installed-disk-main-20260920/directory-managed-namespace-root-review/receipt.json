@@ -1,0 +1,16 @@
+{
+  "status": "CORRECTION_REQUIRED_BEFORE_COHERENT_ADOPTION",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "successor_patch_sha256": "e8067e1a5cd6621762ae01bb9c9be5f675002ce1fc6313083f3640508a6f1dd4",
+  "cumulative_patch_sha256": "6e11939993f0c922cc981001ba7aebb8022e1650b0c4f812816f119d537a30ac",
+  "manifest_sha256": "cf483e49f0dc971f01f53327bdde33696cd85b69dc971986ebea86dbedc06aa0",
+  "review_sha256": "da07a81871d61d060d3f40e799ed1c36a311efe6b126886aaeb57763bb482673",
+  "cumulative_files_verified": 51,
+  "native_source_inventory_count": 1729,
+  "copied_proposed_sources_verified": 38,
+  "native_result_sha256": "bb08d9e1479247a9113b6632e2bf0603969419feebb01ed4261b7c33e257070e",
+  "all_native_reported_groups_drained": true,
+  "outside_repository_inventory_bytes_reread": false,
+  "actual_source_changes": false
+}

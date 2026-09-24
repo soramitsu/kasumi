@@ -11,7 +11,7 @@ use kasumi_serving::{
     AuthorityCapacity, AuthorityManifest, AuthorityMember, AuthorityMembership, AuthorityPartition,
     InstallationSigningRoot, TrustVerifierIdentity,
 };
-use kasumi_store::{NodeStore, ScratchDisk, TenantStore, private_files};
+use kasumi_store::{NodeStore, TenantStore, private_files};
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
@@ -25,6 +25,7 @@ use uuid::Uuid;
 struct Fixture {
     _directory: tempfile::TempDir,
     config: AuthorityRuntimeConfig,
+    storage: crate::runtime_memory::RuntimeStorage,
 }
 impl Fixture {
     async fn new() -> Result<Self> {
@@ -117,14 +118,19 @@ impl Fixture {
             keys: keys("verifier")?,
             max_background_workers: 64,
         };
+        let storage = crate::runtime_memory::RuntimeStorage::isolated_fixture(
+            Default::default(),
+            &persistent_disk,
+            &scratch_disk,
+        )?;
         InitializeSignerVerifier {
-            admission: Default::default(),
+            admission: storage.policy().clone(),
             persistent_disk: persistent_disk.clone(),
             scratch_disk: scratch_disk.clone(),
             verifier: signer_verifier.clone(),
             initial_certificates: vec![operational.certificate.clone()],
         }
-        .initialize()
+        .initialize_with_storage(storage.clone())
         .await?;
         let config = AuthorityRuntimeConfig {
             installation: kasumi_authority::AuthorityInstallation {
@@ -162,7 +168,7 @@ impl Fixture {
                 },
             },
             resource_budget_bytes: 128 << 20,
-            admission: Default::default(),
+            admission: storage.policy().clone(),
             database_path: root.join("data/authority.redb"),
             database_id: Uuid::new_v4(),
             persistent_disk,
@@ -209,13 +215,15 @@ impl Fixture {
         Ok(Self {
             _directory: directory,
             config,
+            storage,
         })
     }
     fn node(&self) -> Result<Arc<NodeStore>> {
-        NodeStore::open_existing_fixture(
+        NodeStore::open_existing(
             &self.config.database_path,
             self.config.database_id,
-            ScratchDisk::open(self.config.scratch_disk.clone())?,
+            self.storage.open_persistent(&self.config.persistent_disk)?,
+            self.storage.open_scratch(&self.config.scratch_disk)?,
         )
     }
     async fn verifier(&self) -> Result<Arc<crate::signer_runtime::InstalledSignerVerifier>> {
@@ -225,9 +233,9 @@ impl Fixture {
             .open(
                 BTreeMap::from([(domain.digest()?, domain)]),
                 Arc::new(crate::runtime::file_secret),
-                crate::persistent_disk::open(&self.config.persistent_disk)?,
-                ScratchDisk::open(self.config.scratch_disk.clone())?,
-                kasumi_engine::admission::NodeAdmission::new(Default::default())?,
+                self.storage.open_persistent(&self.config.persistent_disk)?,
+                self.storage.open_scratch(&self.config.scratch_disk)?,
+                self.storage.facade(&self.config.admission)?,
             )
             .await
     }
@@ -279,7 +287,7 @@ impl Fixture {
         }
         security.shutdown().await?;
         drop(security);
-        node.drain_initializers().await?;
+        node.shutdown().await?;
         drop(node);
         let verifier = self.verifier().await?;
         verifier.shutdown().await?;
@@ -358,9 +366,12 @@ async fn authority_enrollment_panics_drain_owned_nodes_verifier_and_both_domains
     ] {
         let fixture = Fixture::new().await?;
         let _fault = crate::startup_preparation::install(fixture.config.database_id, phase);
-        let error = tokio::time::timeout(Duration::from_secs(10), fixture.config.provision_node())
-            .await?
-            .unwrap_err();
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            initialize_with_storage(fixture.config.clone(), fixture.storage.clone()),
+        )
+        .await?
+        .unwrap_err();
         assert!(
             error
                 .downcast_ref::<crate::startup_preparation::PreparationPanic>()
@@ -371,7 +382,11 @@ async fn authority_enrollment_panics_drain_owned_nodes_verifier_and_both_domains
             .verify_retained_state(pair, genesis, complete)
             .await?;
         let before = std::fs::read(&fixture.config.database_path)?;
-        assert!(fixture.config.provision_node().await.is_err());
+        assert!(
+            initialize_with_storage(fixture.config.clone(), fixture.storage.clone())
+                .await
+                .is_err()
+        );
         assert_eq!(
             std::fs::read(&fixture.config.database_path)?,
             before,
@@ -390,7 +405,10 @@ async fn cancelled_authority_enrollment_joins_dispatched_genesis_and_preserves_b
     let blocking = BlockingGuard::install(id);
     let _fault = crate::startup_preparation::install(id, "authority-enrollment-genesis-dispatched");
     let pause = crate::startup_preparation::pause_failure(id);
-    let mut enrolling = Box::pin(registry.open(initialize_owned(fixture.config.clone())));
+    let mut enrolling = Box::pin(registry.open(initialize_owned(
+        fixture.config.clone(),
+        fixture.storage.clone(),
+    )));
     std::future::poll_fn(|cx| {
         assert!(enrolling.as_mut().poll(cx).is_pending());
         Poll::Ready(())

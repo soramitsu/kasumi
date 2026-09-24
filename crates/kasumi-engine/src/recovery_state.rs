@@ -47,6 +47,19 @@ pub(crate) enum RecoveryMutation {
         expected_pending: Option<Uuid>,
         input: Box<RecoveryDispatch>,
     },
+    BeginEffect {
+        operation_id: Uuid,
+        phase_id: Uuid,
+        effect: RecoveryEffect,
+        attempt_id: Uuid,
+        expected_input_sha256: String,
+    },
+    CommitActivationAcceptance {
+        operation_id: Uuid,
+        phase_id: Uuid,
+        attempt_id: Uuid,
+        signed_receipt: Box<kasumi_serving::SignedLifecycleAuthorityReceipt>,
+    },
     PublishRoute {
         operation_id: Uuid,
         phase_id: Uuid,
@@ -142,6 +155,74 @@ pub(crate) fn dispatch_limit(
         .ok_or_else(|| conflict("recovery phase deadline overflow"))?
         .min(phase.original_credential_expires_at_ms))
 }
+fn effect_dispatch_limit(operation: &RecoveryRecord, phase: &RecoveryPhaseRecord) -> Result<u64> {
+    let limit = dispatch_limit(operation, phase)?;
+    Ok(match &phase.input {
+        RecoveryDispatch::Authority(input) => limit.min(input.not_after_ms),
+        RecoveryDispatch::Target { request, .. } => limit.min(request.not_after_ms),
+        RecoveryDispatch::RetireSource(request) => limit.min(request.not_after_ms),
+        _ => limit,
+    })
+}
+fn validate_effect_attempt_deadlines(
+    operation: &RecoveryRecord,
+    phase: &RecoveryPhaseRecord,
+) -> Result<()> {
+    let limit = effect_dispatch_limit(operation, phase)?;
+    if phase
+        .effect_attempts
+        .values()
+        .any(|attempt| attempt.admitted_at_ms >= limit)
+    {
+        return Err(conflict(
+            "recovery effect attempt exceeds original phase timeout or deadline",
+        ));
+    }
+    Ok(())
+}
+
+/// A positive effect outcome resolves only a frozen input with a prior
+/// committed BeginEffect. Reading the outcome later never creates a grant.
+fn require_effect_marker(
+    prepared: &RecoveryPhaseRecord,
+    outcome: &RecoveryDispatchOutcome,
+    current_revision: u64,
+) -> Result<()> {
+    let effect = match (&prepared.input, outcome) {
+        (RecoveryDispatch::Authority(_), RecoveryDispatchOutcome::Authority(_)) => {
+            Some(RecoveryEffect::AuthorityCommand)
+        }
+        (RecoveryDispatch::ControlIntent(_), RecoveryDispatchOutcome::ControlIntent(_)) => {
+            Some(RecoveryEffect::ControlIntent)
+        }
+        (RecoveryDispatch::RetireSource(_), RecoveryDispatchOutcome::SourceRetired(_)) => {
+            Some(RecoveryEffect::SourceRetirement)
+        }
+        (RecoveryDispatch::Target { request, .. }, RecoveryDispatchOutcome::Target(_))
+            if matches!(
+                request.step,
+                TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
+                    | TargetRuntimeStep::Initialize(_)
+            ) =>
+        {
+            Some(RecoveryEffect::TargetCommand)
+        }
+        _ => None,
+    };
+    if let Some(effect) = effect {
+        let marker = prepared
+            .effect_attempts
+            .get(&effect)
+            .ok_or_else(|| conflict("recovery effect outcome lacks committed BeginEffect"))?;
+        if marker.input_sha256 != prepared.input_sha256
+            || marker.begun_revision <= prepared.prepared_revision
+            || marker.begun_revision >= current_revision
+        {
+            return Err(conflict("recovery effect marker differs from frozen input"));
+        }
+    }
+    Ok(())
+}
 pub(crate) fn target(request: &RecoveryStart) -> RecoveryTarget {
     RecoveryTarget {
         incarnation: request.target_incarnation,
@@ -214,7 +295,7 @@ impl TenantEngine {
             bytes.len() <= MAX_COMMAND_BYTES && position.retirement_seed.is_none(),
             "invalid recovery command work or custody seed"
         );
-        let command: RecoveryCommand = serde_json::from_slice(&bytes[PREFIX.len()..])?;
+        let command: RecoveryCommand = super::decode_canonical_json(&bytes[PREFIX.len()..])?;
         let _guard = self
             .apply_lock
             .lock()
@@ -243,6 +324,10 @@ impl TenantEngine {
                 RecoveryMutation::Start(_) => "recovery_start",
                 RecoveryMutation::Stop { .. } => "recovery_stop",
                 RecoveryMutation::Prepare { .. } => "recovery_phase_prepare",
+                RecoveryMutation::BeginEffect { .. } => "recovery_effect_begin",
+                RecoveryMutation::CommitActivationAcceptance { .. } => {
+                    "recovery_activation_acceptance_commit"
+                }
                 RecoveryMutation::Resolve { .. } => "recovery_phase_resolve",
                 RecoveryMutation::PublishRoute { .. } => "recovery_route_publish",
             }
@@ -324,6 +409,7 @@ impl TenantEngine {
             state: next,
             indexes,
             receipts: previous.receipts.clone(),
+            backup_bindings: previous.backup_bindings.clone(),
             snapshot_accounting: accounting,
             _read_reservations: vec![],
         })));
@@ -332,7 +418,7 @@ impl TenantEngine {
         ))
     }
 }
-fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryRecord> {
+pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryRecord> {
     if let RecoveryMutation::Start(request) = &command.mutation {
         request.validate()?;
         if let Some(existing) = state
@@ -418,6 +504,8 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
     let operation_id = match command.mutation {
         RecoveryMutation::Stop { operation_id, .. }
         | RecoveryMutation::Prepare { operation_id, .. }
+        | RecoveryMutation::BeginEffect { operation_id, .. }
+        | RecoveryMutation::CommitActivationAcceptance { operation_id, .. }
         | RecoveryMutation::Resolve { operation_id, .. }
         | RecoveryMutation::PublishRoute { operation_id, .. } => operation_id,
         RecoveryMutation::Start(_) => unreachable!(),
@@ -438,6 +526,13 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                     return Err(conflict("permanent recovery stop identity differs"));
                 }
                 return Ok(operation);
+            }
+            if let Some(id) = operation.pending_phase
+                && !phase(state, &operation, id)?.effect_attempts.is_empty()
+            {
+                return Err(conflict(
+                    "resolve the begun remote recovery effect before stopping",
+                ));
             }
             operation.stop_request = Some(*command_id);
             if operation.activation.is_none() {
@@ -520,6 +615,14 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                     (RecoveryDispatch::Authority(original),RecoveryDispatch::Authority(stop))
                     if operation.phase==RecoveryPhase::Activate && command.authorization.admitted_at_ms>=original.not_after_ms
                     && matches!(&stop.action,AuthorityAction::StopActivation{original:stopped} if stopped==original));
+                // A signed StopActivation is the installed exact resolver for
+                // an ambiguous original activation. Every other begun effect
+                // must remain pending until positive retained evidence arrives.
+                if !pending.effect_attempts.is_empty() && !stop_expired {
+                    return Err(conflict(
+                        "resolve the begun remote recovery effect before another phase",
+                    ));
+                }
                 let expired_route = matches!(
                     (&pending.input, input.as_ref()),
                     (
@@ -576,6 +679,8 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                 admitted_at_ms: command.authorization.admitted_at_ms,
                 original_credential_expires_at_ms: command.authorization.expires_at_ms,
                 prepared_revision: state.revision,
+                effect_attempts: BTreeMap::new(),
+                activation_acceptance: None,
                 outcome: None,
                 resolved_revision: None,
             };
@@ -614,6 +719,109 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                 .next_phase_sequence
                 .checked_add(1)
                 .ok_or_else(|| conflict("recovery phase sequence exhausted"))?;
+        }
+        RecoveryMutation::BeginEffect {
+            phase_id,
+            effect,
+            attempt_id,
+            expected_input_sha256,
+            ..
+        } => {
+            if operation.pending_phase != Some(*phase_id) {
+                return Err(conflict("recovery effect is not the pending phase"));
+            }
+            let key = phase_key(operation_id, *phase_id);
+            let mut prepared = phase(state, &operation, *phase_id)?.clone();
+            // Even a bit-for-bit Begin replay is a conflict: only the first
+            // definite commit may eventually yield a one-shot dispatch ticket.
+            if prepared.effect_attempts.contains_key(effect) {
+                return Err(conflict("recovery effect may already have been dispatched"));
+            }
+            if attempt_id.is_nil()
+                || operation.phase != prepared.phase
+                || prepared.outcome.is_some()
+                || command.authorization.context.principal != prepared.principal
+                || expected_input_sha256 != &prepared.input_sha256
+                || prepared.input_sha256 != staged_digest(&prepared.input)?.0
+            {
+                return Err(conflict("recovery effect phase or frozen input differs"));
+            }
+            let limit = effect_dispatch_limit(&operation, &prepared)?;
+            if command.authorization.admitted_at_ms < prepared.admitted_at_ms
+                || command.authorization.admitted_at_ms >= limit
+                || command.authorization.admitted_at_ms >= command.authorization.expires_at_ms
+            {
+                return Err(conflict("original recovery effect deadline expired"));
+            }
+            let allowed = match (&prepared.input, effect) {
+                (RecoveryDispatch::Authority(input), RecoveryEffect::AuthorityCommand) => {
+                    !matches!(&input.action, AuthorityAction::ActivateCommitted { .. })
+                        || prepared.activation_acceptance.is_some()
+                }
+                (
+                    RecoveryDispatch::Authority(input),
+                    RecoveryEffect::ActivationIntentAcceptance,
+                ) => {
+                    prepared.phase == RecoveryPhase::Activate
+                        && matches!(&input.action, AuthorityAction::ActivateCommitted { .. })
+                }
+                (RecoveryDispatch::ControlIntent(_), RecoveryEffect::ControlIntent)
+                | (RecoveryDispatch::Target { .. }, RecoveryEffect::TargetCommand)
+                | (RecoveryDispatch::RetireSource(_), RecoveryEffect::SourceRetirement) => true,
+                _ => false,
+            };
+            if !allowed {
+                return Err(conflict("recovery effect kind or activation order differs"));
+            }
+            prepared.effect_attempts.insert(
+                *effect,
+                RecoveryEffectAttempt {
+                    attempt_id: *attempt_id,
+                    input_sha256: expected_input_sha256.clone(),
+                    admitted_at_ms: command.authorization.admitted_at_ms,
+                    begun_revision: state.revision,
+                },
+            );
+            prepared.validate()?;
+            state.recovery_control.phases.insert(key, prepared);
+        }
+        RecoveryMutation::CommitActivationAcceptance {
+            phase_id,
+            attempt_id,
+            signed_receipt,
+            ..
+        } => {
+            if operation.pending_phase != Some(*phase_id) {
+                return Err(conflict("activation acceptance is not the pending phase"));
+            }
+            let key = phase_key(operation_id, *phase_id);
+            let mut prepared = phase(state, &operation, *phase_id)?.clone();
+            let marker = prepared
+                .effect_attempts
+                .get(&RecoveryEffect::ActivationIntentAcceptance)
+                .ok_or_else(|| conflict("activation acceptance has no committed attempt"))?;
+            if prepared.activation_acceptance.is_some()
+                || prepared
+                    .effect_attempts
+                    .contains_key(&RecoveryEffect::AuthorityCommand)
+                || prepared.outcome.is_some()
+                || *attempt_id != marker.attempt_id
+                || command.authorization.context.principal != prepared.principal
+                || state.revision <= marker.begun_revision
+            {
+                return Err(conflict("activation acceptance commitment differs"));
+            }
+            verify_activation_acceptance(state, &operation, &prepared, signed_receipt)?;
+            let signed_receipt_json = serde_json::to_string(signed_receipt)
+                .map_err(|_| conflict("activation acceptance encoding failed"))?;
+            prepared.activation_acceptance = Some(RecoveryActivationAcceptance {
+                attempt_id: *attempt_id,
+                committed_revision: state.revision,
+                signed_receipt_sha256: staged_digest(signed_receipt)?.0,
+                signed_receipt_json,
+            });
+            prepared.validate()?;
+            state.recovery_control.phases.insert(key, prepared);
         }
         RecoveryMutation::PublishRoute { phase_id, .. } => {
             let key = phase_key(operation_id, *phase_id);
@@ -665,6 +873,7 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                     "recovery phase was superseded; retain its original history",
                 ));
             }
+            require_effect_marker(&prepared, outcome, state.revision)?;
             validate_outcome(state, &operation, &prepared, outcome)?;
             if let (
                 RecoveryDispatch::Authority(command),
@@ -1159,6 +1368,88 @@ fn history(
     })
     .map_err(|_| conflict("invalid installed recovery issuer history trust"))
 }
+fn verify_activation_acceptance(
+    state: &TenantState,
+    operation: &RecoveryRecord,
+    prepared: &RecoveryPhaseRecord,
+    signed: &kasumi_serving::SignedLifecycleAuthorityReceipt,
+) -> Result<()> {
+    let RecoveryDispatch::Authority(command) = &prepared.input else {
+        return Err(conflict(
+            "activation acceptance is not for an issuer command",
+        ));
+    };
+    let AuthorityAction::ActivateCommitted { control, .. } = &command.action else {
+        return Err(conflict(
+            "activation acceptance is not for committed activation",
+        ));
+    };
+    if prepared.phase != RecoveryPhase::Activate {
+        return Err(conflict("activation acceptance phase differs"));
+    }
+    let LifecycleAuthorityIdentity::Intent(id) = control.reference.identity else {
+        return Err(conflict("activation acceptance Control identity differs"));
+    };
+    let current = intent(state, operation, id)?;
+    let kasumi_serving::LifecycleAuthorityRequest::AcceptIntent(observed) = &signed.receipt.request
+    else {
+        return Err(conflict("activation acceptance is not a Control intent"));
+    };
+    let installation = &state
+        .lifecycle_control
+        .as_ref()
+        .ok_or_else(|| conflict("Control installation absent"))?
+        .installation;
+    let partition = partition(state, operation)?;
+    let expected_partitions_digest = staged_digest(&installation.partitions)?.0;
+    kasumi_serving::ControlTrust::install(installation.root.clone())
+        .and_then(|trust| trust.verify_intent(observed))
+        .map_err(|_| {
+            error(
+                ErrorCode::Forbidden,
+                "invalid signed activation Control intent",
+            )
+        })?;
+    if observed.observation.intent != *current
+        || observed.observation.authority_partition != *partition
+        || observed.observation.partition_set_sha256 != expected_partitions_digest
+        || observed.observation.root != installation.root
+        || signed.receipt.reference != control.reference
+        || signed.receipt.request.reference() != control.reference
+        || signed.receipt.request_sha256 != control.intent_sha256
+        || signed
+            .receipt
+            .request
+            .digest()
+            .map_err(|_| conflict("activation acceptance request digest failed"))?
+            != control.intent_sha256
+        || signed.receipt.authority_id != partition.authority_id
+        || signed.receipt.authority_manifest_sha256 != partition.manifest_sha256
+        || signed.receipt.partition != partition.partition
+        || signed.receipt.accepted_revision == 0
+        || signed.receipt.accepted_term == 0
+    {
+        return Err(conflict(
+            "activation acceptance differs from exact Control and issuer identity",
+        ));
+    }
+    validate_name(&signed.receipt.original_principal)
+        .map_err(|_| conflict("activation acceptance principal invalid"))?;
+    history(partition)?
+        .verify(
+            "kasumi.issuer-control-receipt.v1",
+            &signed.receipt,
+            &signed.signature,
+        )
+        .map_err(|_| {
+            error(
+                ErrorCode::Forbidden,
+                "invalid signed issuer activation acceptance",
+            )
+        })?;
+    Ok(())
+}
+
 fn validate_outcome(
     state: &TenantState,
     operation: &RecoveryRecord,
@@ -2017,14 +2308,36 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
             .get(&retained.operation_id.to_string())
             .ok_or_else(|| conflict("recovery phase has no operation"))?;
         if *key != phase_key(retained.operation_id, retained.phase_id)
+            || retained
+                .activation_acceptance
+                .as_ref()
+                .is_some_and(|evidence| evidence.committed_revision > operation.updated_revision)
             || retained.sequence >= operation.next_phase_sequence
             || retained.prepared_revision < operation.created_revision
             || retained.prepared_revision > operation.updated_revision
             || retained
                 .resolved_revision
                 .is_some_and(|revision| revision > operation.updated_revision)
+            || retained
+                .effect_attempts
+                .values()
+                .any(|attempt| attempt.begun_revision > operation.updated_revision)
         {
             return Err(conflict("recovery retained phase identity differs"));
+        }
+        validate_effect_attempt_deadlines(operation, retained)?;
+        if let Some(evidence) = &retained.activation_acceptance {
+            let signed: kasumi_serving::SignedLifecycleAuthorityReceipt =
+                serde_json::from_str(&evidence.signed_receipt_json)
+                    .map_err(|_| conflict("activation acceptance evidence cannot be decoded"))?;
+            if serde_json::to_string(&signed)
+                .map_err(|_| conflict("activation acceptance encoding failed"))?
+                != evidence.signed_receipt_json
+                || staged_digest(&signed)?.0 != evidence.signed_receipt_sha256
+            {
+                return Err(conflict("activation acceptance evidence is not canonical"));
+            }
+            verify_activation_acceptance(state, operation, retained, &signed)?;
         }
         match retained.previous_phase {
             Some(id) => {
@@ -2041,6 +2354,7 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
         let context = attempts::for_phase(state, operation, retained)?;
         validate_frozen_input(state, &context, retained)?;
         if let Some(outcome) = &retained.outcome {
+            require_effect_marker(retained, outcome, state.revision)?;
             validate_outcome(state, &context, retained, outcome)?;
         }
     }
@@ -2330,9 +2644,28 @@ pub(crate) fn validate_successor(previous: &TenantState, incoming: &TenantState)
             .get(key)
             .ok_or_else(|| conflict("snapshot removed permanent recovery phase"))?;
         let mut comparison = new.clone();
+        comparison.effect_attempts = old.effect_attempts.clone();
+        comparison.activation_acceptance = old.activation_acceptance.clone();
         comparison.outcome = old.outcome.clone();
         comparison.resolved_revision = old.resolved_revision;
         if !same(old, &comparison)?
+            || old
+                .effect_attempts
+                .iter()
+                .any(|(effect, attempt)| new.effect_attempts.get(effect) != Some(attempt))
+            || new.effect_attempts.iter().any(|(effect, attempt)| {
+                !old.effect_attempts.contains_key(effect)
+                    && attempt.begun_revision <= previous.revision
+            })
+            || old
+                .activation_acceptance
+                .as_ref()
+                .is_some_and(|evidence| new.activation_acceptance.as_ref() != Some(evidence))
+            || old.activation_acceptance.is_none()
+                && new
+                    .activation_acceptance
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.committed_revision <= previous.revision)
             || old.outcome.as_ref().is_some_and(|outcome| {
                 new.outcome
                     .as_ref()
@@ -2347,5 +2680,130 @@ pub(crate) fn validate_successor(previous: &TenantState, incoming: &TenantState)
             ));
         }
     }
+    for retained in incoming.recovery_control.phases.values() {
+        let operation = incoming
+            .recovery_control
+            .operations
+            .get(&retained.operation_id.to_string())
+            .ok_or_else(|| conflict("snapshot recovery effect has no operation"))?;
+        validate_effect_attempt_deadlines(operation, retained)?;
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod initial_target_effect_marker_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn phase_and_outcome(
+        step: TargetRuntimeStep,
+        outcome: TargetRuntimeOutcome,
+    ) -> (RecoveryPhaseRecord, RecoveryDispatchOutcome) {
+        let operation_id = Uuid::new_v4();
+        let phase_id = Uuid::new_v4();
+        let command_id = Uuid::new_v4();
+        let input = RecoveryDispatch::Target {
+            node_id: 1,
+            request: Box::new(TargetRuntimeRequest {
+                tenant: "acme".into(),
+                command_id,
+                not_after_ms: 200,
+                step,
+            }),
+        };
+        let input_sha256 = staged_digest(&input).unwrap().0;
+        (
+            RecoveryPhaseRecord {
+                operation_id,
+                phase_id,
+                sequence: 1,
+                phase: RecoveryPhase::Initialize,
+                completion_scope: None,
+                previous_phase: None,
+                input,
+                input_sha256,
+                principal: "operator".into(),
+                admitted_at_ms: 100,
+                original_credential_expires_at_ms: 200,
+                prepared_revision: 1,
+                effect_attempts: BTreeMap::new(),
+                activation_acceptance: None,
+                outcome: None,
+                resolved_revision: None,
+            },
+            RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
+                command_id,
+                node_id: 1,
+                outcome,
+            })),
+        )
+    }
+
+    #[test]
+    fn first_membership_results_require_the_prior_exact_control_marker() {
+        let quorum = TargetQuorumInput {
+            origin_sha256: "11".repeat(32),
+            materialized: BTreeMap::new(),
+        };
+        for (step, response) in [
+            (
+                TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum.clone())),
+                TargetRuntimeOutcome::Started {
+                    origin_sha256: quorum.origin_sha256.clone(),
+                },
+            ),
+            (
+                TargetRuntimeStep::Initialize(quorum.clone()),
+                TargetRuntimeOutcome::Initialized {
+                    origin_sha256: quorum.origin_sha256.clone(),
+                },
+            ),
+        ] {
+            let (mut phase, outcome) = phase_and_outcome(step, response);
+            assert_eq!(
+                require_effect_marker(&phase, &outcome, 3).unwrap_err().code,
+                ErrorCode::Conflict
+            );
+            let original = RecoveryEffectAttempt {
+                attempt_id: Uuid::new_v4(),
+                input_sha256: phase.input_sha256.clone(),
+                admitted_at_ms: 150,
+                begun_revision: 2,
+            };
+            phase
+                .effect_attempts
+                .insert(RecoveryEffect::TargetCommand, original.clone());
+            require_effect_marker(&phase, &outcome, 3).unwrap();
+
+            let marker = phase
+                .effect_attempts
+                .get_mut(&RecoveryEffect::TargetCommand)
+                .unwrap();
+            marker.input_sha256 = "ff".repeat(32);
+            assert_eq!(
+                require_effect_marker(&phase, &outcome, 3).unwrap_err().code,
+                ErrorCode::Conflict
+            );
+            phase
+                .effect_attempts
+                .insert(RecoveryEffect::TargetCommand, original.clone());
+            phase
+                .effect_attempts
+                .get_mut(&RecoveryEffect::TargetCommand)
+                .unwrap()
+                .begun_revision = phase.prepared_revision;
+            assert_eq!(
+                require_effect_marker(&phase, &outcome, 3).unwrap_err().code,
+                ErrorCode::Conflict
+            );
+            phase
+                .effect_attempts
+                .insert(RecoveryEffect::TargetCommand, original);
+            assert_eq!(
+                require_effect_marker(&phase, &outcome, 2).unwrap_err().code,
+                ErrorCode::Conflict
+            );
+        }
+    }
 }

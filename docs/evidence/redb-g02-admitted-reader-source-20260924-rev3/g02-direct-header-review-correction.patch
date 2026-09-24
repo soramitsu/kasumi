@@ -1,0 +1,125 @@
+--- a/vendor/redb-4.2.0/tests/common/admission.rs
++++ b/vendor/redb-4.2.0/tests/common/admission.rs
+@@ -1,10 +1,13 @@
+ //! Admission fixtures belong to integration test executables, never the library.
+-use redb::{AdmissionError, OwnerFailed, StorageAdmission};
++use redb::{AdmissionError, OwnerFailed, ResidentLease, StorageAdmission};
+ use std::sync::Arc;
+ 
+ #[derive(Debug)]
+ struct TestAdmission;
+ impl StorageAdmission for TestAdmission {
++    fn reserve_workspace(&self, _: u64) -> Result<Box<dyn ResidentLease>, AdmissionError> {
++        Ok(Box::new(()))
++    }
+     fn check_owner(&self) -> Result<(), OwnerFailed> {
+         Ok(())
+     }
+--- a/vendor/redb-4.2.0/tests/retained_opening_admission.rs
++++ b/vendor/redb-4.2.0/tests/retained_opening_admission.rs
+@@ -3,7 +3,7 @@
+ //! field or proxy replaces the actual OpeningAdmission allocation.
+ use redb::{
+     AdmissionError, BackendCloseOutcome, Builder, DatabaseOpenMode, DatabaseOpenSettlement,
+-    OwnerFailed, StorageAdmission, StorageBackend,
++    OwnerFailed, ResidentLease, StorageAdmission, StorageBackend,
+ };
+ use std::{
+     alloc::{GlobalAlloc, Layout, System},
+@@ -111,6 +111,9 @@
+ #[derive(Debug)]
+ struct Admission;
+ impl StorageAdmission for Admission {
++    fn reserve_workspace(&self, _: u64) -> Result<Box<dyn ResidentLease>, AdmissionError> {
++        Ok(Box::new(()))
++    }
+     fn check_owner(&self) -> Result<(), OwnerFailed> {
+         Ok(())
+     }
+--- a/vendor/redb-4.2.0/examples/support/mod.rs
++++ b/vendor/redb-4.2.0/examples/support/mod.rs
+@@ -1,16 +1,46 @@
+ //! Finite single-file budget for the standalone API examples. Kasumi uses its
+ //! installed physical NodeDisk owner, including aggregate and filesystem limits.
+-use redb::{AdmissionError, OwnerFailed, StorageAdmission};
++use redb::{AdmissionError, OwnerFailed, ResidentLease, StorageAdmission};
+ use std::sync::{
+     Arc,
+-    atomic::{AtomicBool, Ordering},
++    atomic::{AtomicBool, AtomicU64, Ordering},
+ };
+ #[derive(Debug)]
+ struct ExampleBudget {
+     failed: AtomicBool,
+     maximum: u64,
++    resident: Arc<AtomicU64>,
++}
++struct ExampleLease {
++    resident: Arc<AtomicU64>,
++    bytes: u64,
++}
++impl Drop for ExampleLease {
++    fn drop(&mut self) {
++        self.resident.fetch_sub(self.bytes, Ordering::AcqRel);
++    }
+ }
+ impl StorageAdmission for ExampleBudget {
++    fn reserve_workspace(&self, bytes: u64) -> Result<Box<dyn ResidentLease>, AdmissionError> {
++        self.check_owner()
++            .map_err(|_| AdmissionError::OwnerFailed)?;
++        let lease_bytes = u64::try_from(std::mem::size_of::<ExampleLease>())
++            .map_err(|_| AdmissionError::CapacityDenied)?;
++        let charged = bytes
++            .checked_add(lease_bytes)
++            .and_then(|sum| sum.checked_add(4096))
++            .ok_or(AdmissionError::CapacityDenied)?;
++        self.resident
++            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
++                live.checked_add(charged)
++                    .filter(|next| *next <= self.maximum)
++            })
++            .map_err(|_| AdmissionError::CapacityDenied)?;
++        Ok(Box::new(ExampleLease {
++            resident: self.resident.clone(),
++            bytes: charged,
++        }))
++    }
+     fn check_owner(&self) -> Result<(), OwnerFailed> {
+         if self.failed.load(Ordering::Acquire) {
+             Err(OwnerFailed)
+@@ -38,5 +68,6 @@
+     Arc::new(ExampleBudget {
+         failed: AtomicBool::new(false),
+         maximum,
++        resident: Arc::new(AtomicU64::new(0)),
+     })
+ }
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
+@@ -459,14 +459,9 @@
+         assert!(region_size.is_power_of_two());
+         let storage = storage_owner.as_ref().expect("prepared cache retained");
+         let initial_storage_len = storage.raw_file_len()?;
+-        // Both possible direct buffers are admitted before initialization may
+-        // grow or publish the new file. Keep their actual leases until each
+-        // read result is destroyed; an unused magic lease simply retires.
+-        let magic_credit = storage.reserve_direct_read(MAGICNUMBER.len())?;
+-        let header_credit = storage.reserve_direct_read(DB_HEADER_SIZE)?;
+-
+         let magic_number: [u8; MAGICNUMBER.len()] =
+             if initial_storage_len >= MAGICNUMBER.len() as u64 {
++                let magic_credit = storage.reserve_direct_read(MAGICNUMBER.len())?;
+                 storage
+                     .read_direct_reserved(0, magic_credit)?
+                     .as_ref()
+@@ -494,6 +489,10 @@
+             }
+         }
+ 
++        // Validate the existing file before asking for header workspace. For
++        // creation, reserve before any growth or header publication. An empty
++        // file never needs a magic-read reservation.
++        let header_credit = storage.reserve_direct_read(DB_HEADER_SIZE)?;
+         if magic_number != MAGICNUMBER {
+             let region_tracker_required_bytes =
+                 RegionTracker::new(INITIAL_REGIONS, MAX_MAX_PAGE_ORDER + 1)

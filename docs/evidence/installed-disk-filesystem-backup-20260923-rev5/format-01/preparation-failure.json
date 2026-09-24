@@ -1,0 +1,8 @@
+{
+  "status": "FAILED_BEFORE_NATIVE_DISPATCH",
+  "exception": "KeyError",
+  "missing_inventory_key": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/run.py",
+  "cause": "inventory __file__ resolved to format wrapper; corrected successor explicitly binds both scripts",
+  "native_child_dispatched": false,
+  "runner_sha256": "f2e3210462ec5edf0f17164c851c3614bc53b513b31e889bde2c76f10631a01a"
+}

@@ -1,0 +1,35 @@
+{
+  "cleanup": {
+    "after": [],
+    "before": [],
+    "drained": true,
+    "errors": [],
+    "group": 12493,
+    "process_returncode": 1,
+    "signals": []
+  },
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/clippy-driver",
+    "--edition=2024",
+    "--test",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/harness.rs",
+    "-D",
+    "clippy::boxed_local",
+    "-o",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/tests-clippy"
+  ],
+  "duration_seconds": 0.204,
+  "error": null,
+  "executable": {
+    "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/clippy-driver",
+    "sha256": "ca34521c9c61e5570ad5f07b303b00fbb60756fedcb62b9f1529f85971256ecf"
+  },
+  "exit_code": 1,
+  "process_exit_code": 1,
+  "process_group": 12493,
+  "received_signals": [],
+  "status": "failed",
+  "timed_out": false,
+  "timeout_seconds": 120,
+  "working_directory": "/Users/mtakemiya/dev/kasumi"
+}

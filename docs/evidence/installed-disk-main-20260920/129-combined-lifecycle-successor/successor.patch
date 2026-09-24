@@ -1,0 +1,84 @@
+--- a/crates/kasumi-engine/tests/common/recovery_control.rs
++++ b/crates/kasumi-engine/tests/common/recovery_control.rs
+@@ -247,8 +247,12 @@
+         ErrorCode::Conflict
+     );
+     let phase_id = Uuid::new_v4();
++    // The earlier control calls may outlive this node's leadership. Keep the
++    // original finite observation context while selecting the current route.
++    let context = f.context("owner");
++    let db = f.leader().await;
+     let input = db
+-        .next_recovery_dispatch(&f.context("owner"), id, phase_id)
++        .next_recovery_dispatch(&context, id, phase_id)
+         .await
+         .unwrap()
+         .unwrap();
+@@ -1771,9 +1775,66 @@
+         .with_expiry_limit(prepared.dispatch_limit().await.unwrap())
+         .unwrap();
+     drop(prepared);
++    let requested_phase = command.phase;
++    let requested_id = command.command_id;
++    let before = {
++        let metrics = db.raft_group().raft().metrics().borrow();
++        (
++            metrics.id,
++            metrics.current_term,
++            metrics.current_leader,
++            metrics.state,
++        )
++    };
++    let started = std::time::Instant::now();
+     db.lifecycle_control(context, LifecycleControlCommand::CommitIntent(command))
+         .await
+-        .unwrap();
++        .unwrap_or_else(|error| {
++            // Local rows are diagnostic, never verified authority. Preserve the
++            // failed single call: no read request, retry or deadline refresh.
++            eprintln!(
++                "RECOVERY_INTENT_COMMIT_FAILED: operation={operation} phase_id={phase_id} \
++                 requested_id={requested_id} phase={requested_phase:?} \
++                 elapsed={:?} before={before:?} error={error:?}",
++                started.elapsed()
++            );
++            for (node, database) in &f.nodes {
++                let access = database.raft_group().check_access();
++                let retained = database.engine().generation().map(|generation| {
++                    let intent = generation
++                        .state
++                        .lifecycle_control
++                        .as_ref()
++                        .and_then(|control| control.intents.get(&requested_id));
++                    (
++                        generation.state.revision,
++                        intent.map(|intent| {
++                            (
++                                intent.request.command_id,
++                                intent.request.phase,
++                                intent.revision,
++                                intent.accepted_at_ms,
++                                intent.original_credential_expires_at_ms,
++                            )
++                        }),
++                    )
++                });
++                eprintln!(
++                    "RECOVERY_INTENT_MEMBER: node={node} access={access:?} \
++                     retained={retained:?} metrics={:?}",
++                    database.raft_group().raft().metrics().borrow()
++                );
++                let physical = &f.physical[node].storage;
++                eprintln!(
++                    "RECOVERY_INTENT_STORAGE: node={node} persistent={:?} scratch={:?} memory={:?}",
++                    physical.persistent.snapshot(),
++                    physical.scratch.snapshot(),
++                    physical.admission.snapshot()
++                );
++            }
++            eprintln!("RECOVERY_INTENT_VOTES: {}", f.vote_probe.diagnostic());
++            panic!("original lifecycle intent commit failed: {error:?}")
++        });
+     let intent = db
+         .engine()
+         .generation()

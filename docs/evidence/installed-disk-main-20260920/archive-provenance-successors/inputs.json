@@ -1,0 +1,724 @@
+{
+  "candidate_scratch_and_unfinished_native_census_session_successors_excluded": true,
+  "controls": {
+    "redb-current-provenance-checkpoint/manifest.json": "eb2b072c7b173833e4444aa03793da260926d1be747090edfae36e94853ebb35",
+    "redb-current-provenance-root-review/receipt.json": "2b2ef521b74a9e26c6a617d159766fee47a55af4ea0efb3fa0930dae2f507523",
+    "vendor-inventory-drift/receipt.json": "daba05bea7e2eba487a7e3e049643e41100075ef7d080f84d07b659c851ed215"
+  },
+  "files": {
+    "165-dependency-phases.json": {
+      "bytes": 497,
+      "sha256": "cfd1eeb0e82473c97f48d6bcb2c484a8d9111f5ce42b0ff45f358e2eee9adf32"
+    },
+    "165-dependency-provenance-check.log": {
+      "bytes": 3452,
+      "sha256": "a1d7950bfe9d09533ad4bb42c6030f3f7f1ef966d2557236a78ca4dd2eae48f3"
+    },
+    "165-original-vendor-policy.json": {
+      "bytes": 197322,
+      "sha256": "7b196bbfde98b9c0e84aca1cafd010d3757aa4a50c03fc0bb7bfcd91da39a6fc"
+    },
+    "165-provenance-applied.json": {
+      "bytes": 1014,
+      "sha256": "290af548a9273619d29d000fd456bc53ccc4d0c8d2d20d003f682d2ceb404895"
+    },
+    "165-result.json": {
+      "bytes": 629,
+      "sha256": "eeae9b63594158536aadfae31fcb41003567529865971ed111cc6670fbe56e2c"
+    },
+    "165-source-after.json": {
+      "bytes": 281420,
+      "sha256": "31db971f482252247ae02d1cc5472c0e8b1e5374d895246e4afe74c18bcb47f3"
+    },
+    "165-source-before.json": {
+      "bytes": 281420,
+      "sha256": "31db971f482252247ae02d1cc5472c0e8b1e5374d895246e4afe74c18bcb47f3"
+    },
+    "apply-provenance165.py": {
+      "bytes": 7396,
+      "sha256": "45ac10e5aea177ccd6613d1c5f5cdef3ade6f896af5eb46715569eac2c0d1848"
+    },
+    "dependency165.py": {
+      "bytes": 588,
+      "sha256": "d3eb5e616172c1933f48cfb5f8f55ebaf1e065816284a1c9bc1e580591427cfe"
+    },
+    "redb-current-provenance-checkpoint/README.md": {
+      "bytes": 2240,
+      "sha256": "9fd7aec5252d0c428cd0bd8d056806504dcb3c52bf10fa803850ef10373a0012"
+    },
+    "redb-current-provenance-checkpoint/bind_archived_test_history.py": {
+      "bytes": 5236,
+      "sha256": "f3a8416f5de04f68262c36d1bafcdd9512d6d9e52cb0482e3273af6e33f0c736"
+    },
+    "redb-current-provenance-checkpoint/final-verification.json": {
+      "bytes": 2431,
+      "sha256": "421b7b662664420946ad1db8fa449a482392b0fca60a99081ec4c4a4c3f94eac"
+    },
+    "redb-current-provenance-checkpoint/freeze.py": {
+      "bytes": 7534,
+      "sha256": "0ba9fcee939b1c03a0d285a128656e00f90c636de63f3d5915770a41386cc00a"
+    },
+    "redb-current-provenance-checkpoint/manifest.json": {
+      "bytes": 56243,
+      "sha256": "eb2b072c7b173833e4444aa03793da260926d1be747090edfae36e94853ebb35"
+    },
+    "redb-current-provenance-checkpoint/policy-update.patch": {
+      "bytes": 13248,
+      "sha256": "f082f5d163b546d963b417c4fdb6d6b994c3cf1255ac0a857d4173f582743ba9"
+    },
+    "redb-current-provenance-checkpoint/preparation.json": {
+      "bytes": 192377,
+      "sha256": "c787271a5f590ec6b52f672e3ef5fe7646418cea5593a6a64d62becf54bdc035"
+    },
+    "redb-current-provenance-checkpoint/prepare.py": {
+      "bytes": 11213,
+      "sha256": "33c39b39feee7aa265f80542445f192c370be99d171487e7a5100d84e3c19535"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/README.md": {
+      "bytes": 3404,
+      "sha256": "5e9b1b442a4bcb2d431b24038c8145f36780bc6da3bf51aed2d44aff43cad8fa"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/applied-receipts/156-retained-opening-applied.json": {
+      "bytes": 3590,
+      "sha256": "a9209521aa293d2daebaeeb6936445037f4569351e21d05607ccd4162ccbef8d"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/applied-receipts/157-canonical-allocator-keys-applied.json": {
+      "bytes": 5950,
+      "sha256": "d7161b562686ce8e0050813d5af670eaf72e8f2f1f715dbadff78e96355ac53c"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/applied-receipts/162-allocator-payload-shapes-applied.json": {
+      "bytes": 1982,
+      "sha256": "bb6025e81c3d817e861aaf9c735d68d415ed6a05ab70020b0cc7f97c34bc004c"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-102-redb-terminal-corrections/README.md": {
+      "bytes": 4436,
+      "sha256": "1742d7dba6aab355465a1130f9176caab8db9885e6fac2d9dc59914810ccb0db"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-102-redb-terminal-corrections/corrections.patch": {
+      "bytes": 12195,
+      "sha256": "ff27c9b3f303e3bc6ca42bc48ccd78c41a7db519b9f7be0e419cc6de66e71c1f"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-102-redb-terminal-corrections/manifest.json": {
+      "bytes": 1893,
+      "sha256": "78295125548fb36731a59a720c634007a8f3631105c4947bc6877e65a5cbfde6"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-102-redb-terminal-corrections/static-checks.json": {
+      "bytes": 1903,
+      "sha256": "8429742d5b937e0cfe048afcba54bd11017664c5b56dffbf640940e50ab2498a"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-143-canonical-public-fixtures-independent-review/receipt.json": {
+      "bytes": 1231,
+      "sha256": "3b91f3694e55903d083f89047c29268282433d3f427179d67fafc7c080466d11"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-143-canonical-public-fixtures-independent-review/review.md": {
+      "bytes": 1225,
+      "sha256": "130e24ad3533f35b06fad26f7be6d2e8fcb2a8d2b6bbcbd45135fa2d0ddc704d"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-143-canonical-public-fixtures/fixture.patch": {
+      "bytes": 3424,
+      "sha256": "ee1a66c26484a408ccdae3a40042eb13ff9925469ce5ac3d7d4df2ea217ff7dc"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-143-canonical-public-fixtures/manifest.json": {
+      "bytes": 913,
+      "sha256": "d64d129bd83e883363bd7dd8b31848ddf7cad4bab2ccbe1754f0fcc495ad307b"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-145-public-failure-successor/manifest.json": {
+      "bytes": 1009,
+      "sha256": "49c724ae7fa2fc293a34d7d1e1bc09ec635608a43bc98fd8800e4d8d49b61fec"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-145-public-failure-successor/successor.patch": {
+      "bytes": 1753,
+      "sha256": "23a932f61fc08ea58028fa48b526831dd6b611dfc9bbe6b9f47b82d9d0547702"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-146-observed-upstream-layout-rejection/fixture.patch": {
+      "bytes": 2469,
+      "sha256": "c895f39b5790ffcee6db875ac1de7d83db552e024cddc770a92a0204cb627d1a"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-146-observed-upstream-layout-rejection/manifest.json": {
+      "bytes": 1014,
+      "sha256": "7ef3b9662fbb665580a616f12705205345d9efbb03da538eae6a3f0c8e84951d"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-154-vendor-test-lint-correction/correction.patch": {
+      "bytes": 17826,
+      "sha256": "b1217f02283c25788d38d569758ac3e8b774477da92054983d3a0c90f8366add"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-154-vendor-test-lint-correction/manifest.json": {
+      "bytes": 2023,
+      "sha256": "05e56a1c1e223a6170b5f6b5e2708b02f7c8c843b7935b5f0fc0f571a8a5785b"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-test-application-receipts/107-prerequisites-applied.json": {
+      "bytes": 4663,
+      "sha256": "2ca33a7d72243dcce9c80529a65234da3513a660c244257faf0ddeddef7753e1"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-test-application-receipts/145-public-format-fixture-applied.json": {
+      "bytes": 1155,
+      "sha256": "c6028c164119b3a5c87cf4cf1ddc074f52ec27af8eeb30b554fd9d779c2e2d62"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-test-application-receipts/146-public-failure-successor-applied.json": {
+      "bytes": 1341,
+      "sha256": "4114685cab4a19624f36b09f707a38e9c26f50c2aced205d9ff92a9a1274b569"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-test-application-receipts/147-observed-layout-rejection-applied.json": {
+      "bytes": 1420,
+      "sha256": "e769bc14961bd3c7aeb1fbc64631448fed322ac322baed80034a0b4245aeeb94"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/archived-test-application-receipts/155-vendor-test-lint-correction-applied.json": {
+      "bytes": 2107,
+      "sha256": "fe9164be793b6d879d1abbd06746e4a32711b19a7543069f3581fa9bc82aae6a"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/canonical-import/README.md": {
+      "bytes": 3707,
+      "sha256": "a6e525c34bbf741f9fa98a9543a7c9c23c83625a48eff7553719466f9e19b797"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/canonical-import/owned-evidence.json": {
+      "bytes": 230500,
+      "sha256": "3fea17874b14d22fbac8d2db38e9a4bf4d25361db0b960768e272eac889563a7"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/canonical-import/owned-verification.json": {
+      "bytes": 5738,
+      "sha256": "e17cde610c6defec487b7a86750bd797b4b9a710ea6290004a3435aa317e1a93"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/canonical-import/provenance.json": {
+      "bytes": 26173,
+      "sha256": "5f20d369866b132e4d2041e42bc5403190573bdcc537ece4481df8d69d2696a5"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/canonical-import/published-to-fork.patch": {
+      "bytes": 500000,
+      "sha256": "67cc397bdd81b08069cfc43039eb213b9dbd63231a3ae8b31b504168209f790e"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-encoded-lengths-root-review/receipt.json": {
+      "bytes": 487,
+      "sha256": "2585087f7bb2c003efc2dc000a9aa86b9eb7526591606f8835e31d82e8943df6"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-encoded-lengths-root-review/review.md": {
+      "bytes": 1503,
+      "sha256": "a8ee981f7c9f4c3ae2a439fa3b7220abb02733622117577e14bd8c9c1b1af64e"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-encoded-lengths/README.md": {
+      "bytes": 4021,
+      "sha256": "0831946dbb79f9464f71ac05ca9391f98ba941ece7f19038bd53a757cacc58a5"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-encoded-lengths/encoded-lengths.patch": {
+      "bytes": 16177,
+      "sha256": "055fc2a64f3477a0dc6d6e5a1a086afbf2f5df521ebd863936b60c82bf46a7d3"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-encoded-lengths/manifest.json": {
+      "bytes": 8134,
+      "sha256": "4c29b812846a4e39b09f58eba58b27d7b52c1c3b31c7d67cf37f98a2f58a37e7"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-in-place-encoding/README.md": {
+      "bytes": 4110,
+      "sha256": "b5cd83249e86255cfe8a88c1225a73a6fb07d64a4ec287f88254c4d018c4874d"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-in-place-encoding/encoding.patch": {
+      "bytes": 20900,
+      "sha256": "a41926e0b6fda54e12eff688da8c88c43d0a0f21c1514395a7f2af79f3fc12f2"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-in-place-encoding/manifest.json": {
+      "bytes": 10911,
+      "sha256": "0642b5d880ade44d2e5a6df435694d8aa48be881013838c8a3e2b3dbeee61a3b"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-in-place-independent-review/evidence.json": {
+      "bytes": 4724,
+      "sha256": "2ea55d4c2e2d860f6d158587cb36e044ac90aa689bc79532da63055a6b81c86f"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-in-place-independent-review/receipt.json": {
+      "bytes": 433,
+      "sha256": "357342c9d30ea6783278646e6f5b3f64c11f90ede699026301c9d27b3dc1b54c"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-in-place-independent-review/review.md": {
+      "bytes": 3755,
+      "sha256": "0c480fdd992b2af80a1896af5b04fd6679945b8c097d04f273832305821d81e5"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-payload-shapes-root-review/receipt.json": {
+      "bytes": 474,
+      "sha256": "8406251595248ba351c584af868f9b93e8cb9257de3e413f04612ec809dc7688"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-payload-shapes-root-review/review.md": {
+      "bytes": 1567,
+      "sha256": "372fdd61b115624b8cd136430fca4817ba6643a6d9b1ed92583623afe11b3426"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-payload-shapes/README.md": {
+      "bytes": 4978,
+      "sha256": "e25df8de56d01db4eed02bf00a01bf10b7a85c315753fdf619f2cc3051c7f526"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-payload-shapes/manifest.json": {
+      "bytes": 7994,
+      "sha256": "e78a1d2eebfd9174f73c9f7285f7526b0dc784c24250543768d9a7c03ae4205a"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-payload-shapes/payload-shapes.patch": {
+      "bytes": 37041,
+      "sha256": "6b2e9c49d20f1fee3d345c764a9566bd929eeee30ea9c9dbc3d6742edf414235"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-allocator-payload-shapes/producer-invariants.md": {
+      "bytes": 3187,
+      "sha256": "a5826125fd76bae1708d249970605e577139dc2aec5132c70a2106d65db8da7d"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-bounded-allocation-purge-independent-review/receipt.json": {
+      "bytes": 1145,
+      "sha256": "3a0cca7651c98ae5f2fd227f9f5b176dd6fff1d1c42bb826d755b5cd3f8b6eba"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-bounded-allocation-purge-independent-review/review.md": {
+      "bytes": 5191,
+      "sha256": "2c6cdfda4dc82b4b37623761304a03ac0ccb96924c81f7f3d43d4fc5d30f5283"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-bounded-allocation-purge/README.md": {
+      "bytes": 6749,
+      "sha256": "fd234ecde3e0682fec86d11f715c6cdaa7e30af081eb4eab877eeeb06e1634db"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-bounded-allocation-purge/manifest.json": {
+      "bytes": 1642,
+      "sha256": "dd1162c8f780f2cd2c96d924ab2471d7de5c506aaa075ee85fc52e4d347efaa6"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-bounded-allocation-purge/purge.patch": {
+      "bytes": 32650,
+      "sha256": "78a204853988603b83b3e18ef04f2c433a0c42687701fe7c4040963ac717150a"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-bounded-allocation-purge/receipt.json": {
+      "bytes": 549,
+      "sha256": "3f055f20647cbc47639b741c69e35118e4bff7ee94f89d9a889cb531d1414cbd"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-bounded-data-reclaim-root-review/receipt.json": {
+      "bytes": 706,
+      "sha256": "d826d30e1015f122bf68bd02c7bfec5088a7322b97523d283d43ca6857a64873"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-bounded-data-reclaim-root-review/review.md": {
+      "bytes": 4210,
+      "sha256": "a078a5fe9888e19323bee1083a74d2feb6803e231d0278c8186b01ae1037716c"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-bounded-data-reclaim/README.md": {
+      "bytes": 10547,
+      "sha256": "9c7e66d0a379fa9e76cf4272a68ade07a82a19692f1729dc2aec281be61809b9"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-bounded-data-reclaim/manifest.json": {
+      "bytes": 5727,
+      "sha256": "723f3a172c4a1af9fae04225f287899d5beb6024844a2d7256b7b08102223d32"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-bounded-data-reclaim/receipt.json": {
+      "bytes": 623,
+      "sha256": "f23ce8b54e78e717060d86b933ddc944b4b07264ffe3d411c5fb74247e260c70"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-bounded-data-reclaim/reclaim.patch": {
+      "bytes": 84139,
+      "sha256": "f2103f19fa5223101a83c8c6cdf230a658f1d26fcfb54be56ab2ea5660cb85f8"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-bounded-data-reclaim/selected-prefix-allocation-inventory.md": {
+      "bytes": 7602,
+      "sha256": "f79424a901a79c255baa801d1a52f93da89114e55b14bf6860484ec6a3e026b3"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-canonical-allocator-keys-opening-composed/README.md": {
+      "bytes": 2696,
+      "sha256": "52650faff2dcdac57e2ad82149f771466895448b1dac2cbb3dc4cfc14928758a"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-canonical-allocator-keys-opening-composed/canonical-key-scope.md": {
+      "bytes": 4084,
+      "sha256": "653bb659cf235c9311611b2df4301104851038ab2908da9bb67db13dd3f4f242"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-canonical-allocator-keys-opening-composed/canonical-keys.patch": {
+      "bytes": 22354,
+      "sha256": "50da013eb32a9733053eb5e3fc1a1ea61a2a507312e82fddf168d35443f9db1f"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-canonical-allocator-keys-opening-composed/manifest.json": {
+      "bytes": 10550,
+      "sha256": "1d939d32ded9f4ef3f08099a13f3c242e159bb284dfd4ba5ba05231f0062e42d"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-canonical-allocator-keys-opening-composed/opening-peer-review.md": {
+      "bytes": 1925,
+      "sha256": "25643ae6c79e3514515c3c25c19659814e393c7777f3b820b5e46c7011b4bf24"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-canonical-allocator-keys-root-review/receipt.json": {
+      "bytes": 390,
+      "sha256": "b859fc7e2ac0b9f9c3b82bcb95c1a6b3b9f2a4f4edef9b3a5c06722722684c02"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-canonical-allocator-keys-root-review/review.md": {
+      "bytes": 2043,
+      "sha256": "455489eaeb14fa9b496510cd3741e07e116ae8113fbe6289ee71e9221af0e2e8"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-fixed-cache-capacity-revision2-authority-review/receipt.json": {
+      "bytes": 803,
+      "sha256": "0e53cc96cd0bc8014e125a988a7ec2f12914337e6117511e9096449b6de97523"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-fixed-cache-capacity-revision2-authority-review/review.md": {
+      "bytes": 5303,
+      "sha256": "a2a860f4c7a85c12531cdb049de6ae04a0b8e1863c398dc754972f4c8e587b01"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-fixed-cache-capacity-revision2/README.md": {
+      "bytes": 8084,
+      "sha256": "1faa52af74067d83c83fc10e0dd05805b209077901cee0b82d00aafabfd7516a"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-fixed-cache-capacity-revision2/cache.patch": {
+      "bytes": 36491,
+      "sha256": "3f2548f12aad8c27f72a8645162296ec85079d9cdc9a2adf6363f5c9a1e4bcdc"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-fixed-cache-capacity-revision2/manifest.json": {
+      "bytes": 3218,
+      "sha256": "562bc4b6aadafd07dac3168b5793d460557afd264ffd74c03fb2e5f12e593f73"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-fixed-cache-capacity-revision2/revision1-to-revision2.patch": {
+      "bytes": 19287,
+      "sha256": "9112e6405d8216ea5b11ab0ad47844e47686ad8d0a025167e372194d40a3cb41"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-fixed-cache-clean-close-followup/correction.patch": {
+      "bytes": 825,
+      "sha256": "b71cc8d16ed8fef78a14426e41cfdc8ffc2582894d0d17c67b5b5e37a6879dc2"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-fixed-cache-clean-close-followup/manifest.json": {
+      "bytes": 716,
+      "sha256": "411000344b1d6e825744be87fcc95ed6589686d952d6c9d8442d55662a2a1117"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-fixed-cache-metadata-components/README.md": {
+      "bytes": 4221,
+      "sha256": "a41c6bf01de2412a112433296d0ebc18dbfee543fc557e0ccd57c97ab8743fdd"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-fixed-cache-metadata-components/manifest.json": {
+      "bytes": 2087,
+      "sha256": "2cf67bfddd90d86d0819472802ffd4850cf692c76c90e264900dc16f4325ff0d"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-page-list-key-copy-followup/README.md": {
+      "bytes": 904,
+      "sha256": "37dc5ae5b34c192829c96d2cc9fa7055d1f155f62c854feef08200a4905472bf"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-page-list-key-copy-followup/correction.patch": {
+      "bytes": 291,
+      "sha256": "368cd53ab8bfbad3a685e293278968ee7457de8d73a2d1e5f39b7074906caf52"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-page-list-key-copy-followup/manifest.json": {
+      "bytes": 542,
+      "sha256": "c38e85f78c447e6e1dbb507bb263d18f22818ea340030d332d883f6479b2bf7c"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-page-list-prerequisites-authority-review/receipt.json": {
+      "bytes": 2106,
+      "sha256": "798af5730dd6295b61bdf2b264a36fbbcbc82c99459dd96762c720b8316b2291"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-page-list-prerequisites-authority-review/review.md": {
+      "bytes": 5578,
+      "sha256": "6f2a8058b5ef3c00f3eeeb2a08f1189d8c4229cf16f5e219426109f505f6e43d"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-page-list-prerequisites-root-review/review.md": {
+      "bytes": 1857,
+      "sha256": "68ee42ae1fbaf7c537cc39b28fceae66e5098caef29f79d36fe2b417d3adfb03"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-page-list-prerequisites/README.md": {
+      "bytes": 6734,
+      "sha256": "f65cc759916f409b621c52b8d59dd584f8c4a91a69431ff287d7471f05a05dfb"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-page-list-prerequisites/manifest.json": {
+      "bytes": 1877,
+      "sha256": "e429fcbf0d1dfec0980bbfaafa2b537a3f58ba57e584ff309b485db8228acc95"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-page-list-prerequisites/prerequisites.patch": {
+      "bytes": 30657,
+      "sha256": "de8383c9c041c8dfd54ea8a7c0563de81dc8f46c86b0d95b65ffc2a9e1a688b8"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-retained-database-close-revision2-authority-review/receipt.json": {
+      "bytes": 603,
+      "sha256": "dc2380c0f8140089d8527116bcd43199a5a57acedd0e632bfff8e294bb378e66"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-retained-database-close-revision2-authority-review/review.md": {
+      "bytes": 5275,
+      "sha256": "7724f3e113643f5466b0e8cf2b0d89e54c5aa85845ea1665c5a8ae366cfeb5fc"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-retained-database-close-revision2/README.md": {
+      "bytes": 2469,
+      "sha256": "d5650211fc1f8bbb598087f5cc72dfb46834036f1c702d53e81bfc11a2792218"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-retained-database-close-revision2/close.patch": {
+      "bytes": 18866,
+      "sha256": "8e96155d16c4021d20fae2c6d8f8ef3b052ea8d6de522f6e6c6cf5812a09a74d"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-retained-database-close-revision2/manifest.json": {
+      "bytes": 1734,
+      "sha256": "2704b3b6f7e7b16ed4f6e6a6c494e307356cb39bcbdcc54b964cacb9a23d9f8d"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-retained-terminal-independent-review/receipt.json": {
+      "bytes": 2012,
+      "sha256": "87b337455640e7f8fc7294f76cbc5ec05d81d97a7d0a8412386dc03421c3e430"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-retained-terminal-independent-review/review.md": {
+      "bytes": 4866,
+      "sha256": "dfd8e283178c4b8164e0ffdbad625657ae355fe428374a6e01916cb181f82a7a"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-retained-terminal/README.md": {
+      "bytes": 7864,
+      "sha256": "c3181bac39b9403123cc0860d257b5a5a8ae1e20ca5b005de8db0d7b93ca84ec"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-retained-terminal/manifest.json": {
+      "bytes": 3735,
+      "sha256": "4889220dcac5912b9f444863348aec726fbedee5201f5b1c86d2198db65355f7"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/redb-retained-terminal/terminal.patch": {
+      "bytes": 29921,
+      "sha256": "0e24a98eb895f58ad55521f1b37a2f23268f79f6a11c6c29ad964a38e248782f"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/retained-opening-owner-revision2-independent-review/receipt.json": {
+      "bytes": 1333,
+      "sha256": "e3844b80e4d63cb6f2fe578a00fe063ff042f3587de4f483f885922cc3964893"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/retained-opening-owner-revision2-independent-review/review.md": {
+      "bytes": 4009,
+      "sha256": "11cb2df3888439c39646a09a5c34d71164e9241e2d537f41fd3cd1d6193ab2d4"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/retained-opening-owner-revision2-independent-review/source-checks.json": {
+      "bytes": 3519,
+      "sha256": "465228f3db9246ebf1aedb7cbb237e751462b86adae363d6b666f24b1d44c01a"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/retained-opening-owner-revision3/README.md": {
+      "bytes": 7044,
+      "sha256": "6accc7627beef669bfa09ec5d6825d5424986e560e542ee44108d3acc493910e"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/retained-opening-owner-revision3/fault-test-design.md": {
+      "bytes": 4151,
+      "sha256": "bc56cadc4b886ec0ed6bed438b7b4b2b1bfa9c651bd2441c1c362b377d70c35a"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/retained-opening-owner-revision3/manifest.json": {
+      "bytes": 3890,
+      "sha256": "68b2961e38a11b99e5e2a6c7b58d764f3b72ce29324f70808e31af9f32659075"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/retained-opening-owner-revision3/opening.patch": {
+      "bytes": 59149,
+      "sha256": "a28a3b438ed3138afb1c0faec7daab045f0812800ebf696b8ce8a93d86fd3cef"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/retained-opening-owner-revision3/revision2-to-revision3.patch": {
+      "bytes": 8612,
+      "sha256": "368ca4184d764688e4b912bd9f755ef7858e081f2422b652f9270d7ba489893e"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-157/157-result.json": {
+      "bytes": 719,
+      "sha256": "9fccb165669ea75166da023f2d659f3f611c791243a60efe0816bf57a368b20e"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-157/157-source-after.json": {
+      "bytes": 158547,
+      "sha256": "a6cb95430c7f546ce52197afe6d0aa0c8f72b2a02d04e12326f55dbc1e2aa430"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-157/157-source-before.json": {
+      "bytes": 158547,
+      "sha256": "a6cb95430c7f546ce52197afe6d0aa0c8f72b2a02d04e12326f55dbc1e2aa430"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-157/157-vendor-canonical-allocator-keys.log": {
+      "bytes": 62860,
+      "sha256": "cd4f6be3ad727c538080c7149c4e135361cfd8bca48680196ccc025ac6470d72"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-158/158-result.json": {
+      "bytes": 711,
+      "sha256": "1031cab670dfa028749ffdb8216046fb2ab45206ce2dcb4887d98549e48705a8"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-158/158-source-after.json": {
+      "bytes": 158547,
+      "sha256": "a6cb95430c7f546ce52197afe6d0aa0c8f72b2a02d04e12326f55dbc1e2aa430"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-158/158-source-before.json": {
+      "bytes": 158547,
+      "sha256": "a6cb95430c7f546ce52197afe6d0aa0c8f72b2a02d04e12326f55dbc1e2aa430"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-158/158-vendor-strict-clippy.log": {
+      "bytes": 146,
+      "sha256": "f403cf64c78cf8ef11e6d3484a3742de3d55d7045d147846cd5c44fb1f9d1708"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-159/159-result.json": {
+      "bytes": 672,
+      "sha256": "383b9e7902710f18ec542e62a7507303bcef95e839a966d19a87f92d78b95816"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-159/159-source-after.json": {
+      "bytes": 158547,
+      "sha256": "a6cb95430c7f546ce52197afe6d0aa0c8f72b2a02d04e12326f55dbc1e2aa430"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-159/159-source-before.json": {
+      "bytes": 158547,
+      "sha256": "a6cb95430c7f546ce52197afe6d0aa0c8f72b2a02d04e12326f55dbc1e2aa430"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-159/159-workspace-strict-clippy.log": {
+      "bytes": 1801,
+      "sha256": "327fa3b2eeefac83792e309a6e92273c4bbce672976ac7db2c023f51799d4106"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-160/160-format-phases.json": {
+      "bytes": 535,
+      "sha256": "8a4cf0ecff287336d83bff357824b67570c26537da982a9538ad26e53456202c"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-160/160-result.json": {
+      "bytes": 517,
+      "sha256": "1019ef85974fb6f1aff0d0c5fed8c6ef4da2df77caee366a04bc1b4455b16426"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-160/160-source-after.json": {
+      "bytes": 158547,
+      "sha256": "a6cb95430c7f546ce52197afe6d0aa0c8f72b2a02d04e12326f55dbc1e2aa430"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-160/160-source-before.json": {
+      "bytes": 158547,
+      "sha256": "a6cb95430c7f546ce52197afe6d0aa0c8f72b2a02d04e12326f55dbc1e2aa430"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-160/160-workspace-vendor-format.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-161/161-result.json": {
+      "bytes": 1194,
+      "sha256": "43a35cdc390ff5ec1fe24c6fb9e542ab1601323adb62aa3b3448b77808e71ffe"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-161/161-source-after.json": {
+      "bytes": 158547,
+      "sha256": "a6cb95430c7f546ce52197afe6d0aa0c8f72b2a02d04e12326f55dbc1e2aa430"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-161/161-source-before.json": {
+      "bytes": 158547,
+      "sha256": "a6cb95430c7f546ce52197afe6d0aa0c8f72b2a02d04e12326f55dbc1e2aa430"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-161/161-vendor-feature-public-integration.log": {
+      "bytes": 27440,
+      "sha256": "a3969088beacd112e1c19aa025c95bff8ae4c744b5d2f0a0698b1f87f5b67583"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-162/162-result.json": {
+      "bytes": 767,
+      "sha256": "aef50e9cee3f95de9adb8f7cf6a37abec32f818265c4b207fc0eacc1ae8dbbd4"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-162/162-source-after.json": {
+      "bytes": 158686,
+      "sha256": "7778c30105ea54b8f22baef3580a57fc72e838d27f3a967b02c32e9f81bce44b"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-162/162-source-before.json": {
+      "bytes": 158686,
+      "sha256": "7778c30105ea54b8f22baef3580a57fc72e838d27f3a967b02c32e9f81bce44b"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-162/162-vendor-canonical-allocator-payloads.log": {
+      "bytes": 63866,
+      "sha256": "9d5839aee97150c566817b26b9602d5493130024117178f1f30d0f1810efa128"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-163/163-result.json": {
+      "bytes": 711,
+      "sha256": "5d82a64f2f7539808be1194fe49532a7ac8e0a7133e4142b9c8aae2c1728669e"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-163/163-source-after.json": {
+      "bytes": 158686,
+      "sha256": "7778c30105ea54b8f22baef3580a57fc72e838d27f3a967b02c32e9f81bce44b"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-163/163-source-before.json": {
+      "bytes": 158686,
+      "sha256": "7778c30105ea54b8f22baef3580a57fc72e838d27f3a967b02c32e9f81bce44b"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-163/163-vendor-strict-clippy.log": {
+      "bytes": 146,
+      "sha256": "439605d20396fa084009e9411ba41b79fa1b363b49422350d7c11365cd5ef4f1"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-164/164-result.json": {
+      "bytes": 1206,
+      "sha256": "a5e882ffce69d3a57fca7ac0c00d27ae3b4673ade34785e256fdbecd6bbbf87f"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-164/164-source-after.json": {
+      "bytes": 158686,
+      "sha256": "7778c30105ea54b8f22baef3580a57fc72e838d27f3a967b02c32e9f81bce44b"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-164/164-source-before.json": {
+      "bytes": 158686,
+      "sha256": "7778c30105ea54b8f22baef3580a57fc72e838d27f3a967b02c32e9f81bce44b"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/bindings/run-164/164-vendor-feature-public-integration.log": {
+      "bytes": 27439,
+      "sha256": "081814d6a62241355f98438854b49d6b1b75b10d5f46d09ecf729646318e4b2b"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/changes-since-import.json": {
+      "bytes": 20100,
+      "sha256": "be9b04d6a4ebff7c220fad607a08191a4d05059f4fe70c72f3b20b23e8769516"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/evidence-bindings.json": {
+      "bytes": 107716,
+      "sha256": "1cf4ee731ddf2ad252b6fc43a5f945c947610379da56b996258f6edc2b0cedb0"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/provenance.json": {
+      "bytes": 68959,
+      "sha256": "2dace2b24932576a9c6a7ee061041ba836ec4aeaff1fc000b24a8e808ef65ed7"
+    },
+    "redb-current-provenance-checkpoint/proposed/docs/evidence/redb-current-source-20260922/source-inventory.json": {
+      "bytes": 18597,
+      "sha256": "eceae31f55429e0c4e9d8647db805f7eb29e3c2178d256aeda7373f2fb9eae98"
+    },
+    "redb-current-provenance-checkpoint/proposed/vendor/patch-manifest.json": {
+      "bytes": 199685,
+      "sha256": "390a5dc4fe90d800fb4255d9f77eaf5f816a2671635a1f68c2445f1f68e87fbd"
+    },
+    "redb-current-provenance-checkpoint/redb-inventory-candidate.json": {
+      "bytes": 18864,
+      "sha256": "ab735e6d19c9f922d26d6216842aa9ac716f519a709dd7b0330a799a3b61a240"
+    },
+    "redb-current-provenance-checkpoint/vendor-support-candidate.json": {
+      "bytes": 146,
+      "sha256": "e38c91a0e24ee3cbc0de026797587d63597750ce2ee3c769fefa1aeea7c76740"
+    },
+    "redb-current-provenance-checkpoint/verification.json": {
+      "bytes": 2431,
+      "sha256": "78da619cb68f0b96ef748841ee80753df3dfd79d4e50e78eebd824e87cd552b7"
+    },
+    "redb-current-provenance-checkpoint/verify_candidate.py": {
+      "bytes": 3529,
+      "sha256": "e856912e5ec3196ab8fa09960b5e37d30010dc8c573fc9296d7332dd1d539696"
+    },
+    "redb-current-provenance-checkpoint/verify_final_candidate.py": {
+      "bytes": 3446,
+      "sha256": "95d4acdf8c6c14396c46b4a1fc7501cb3b398774ee2d55609d1f1056d170044c"
+    },
+    "redb-current-provenance-root-review/receipt.json": {
+      "bytes": 849,
+      "sha256": "2b2ef521b74a9e26c6a617d159766fee47a55af4ea0efb3fa0930dae2f507523"
+    },
+    "redb-current-provenance-root-review/review.md": {
+      "bytes": 2027,
+      "sha256": "9cb77bbb49d36f06003666f02c32ae90eae8bb1552264f923b4637208fee6aab"
+    },
+    "run165.py": {
+      "bytes": 4257,
+      "sha256": "a53f8a41808efeb4136b68e8dab3488492f03ed26f5495389ee4c69d75ee6262"
+    },
+    "vendor-inventory-drift/README-before-changelog.md": {
+      "bytes": 5350,
+      "sha256": "f859b8e07f797ffe5f3ee66a4fd3891243cff57dfa888690aa749e7ba58433b1"
+    },
+    "vendor-inventory-drift/README.md": {
+      "bytes": 5714,
+      "sha256": "551059d8bf55d5a1ef16e1ce3fd86816fe04ac21771bd63b048f2d950a65f9ff"
+    },
+    "vendor-inventory-drift/audit-before-changelog.py": {
+      "bytes": 8562,
+      "sha256": "64891dd5055ebdb4bb04f57bd9d1e1f8ed584f4a0f87615be6dd80044c621d35"
+    },
+    "vendor-inventory-drift/audit-before-payload.py": {
+      "bytes": 6697,
+      "sha256": "0dbd0106c688f90c357529e9135c59e37811f93d5aa4d55dafd8dd04ee94525d"
+    },
+    "vendor-inventory-drift/audit.py": {
+      "bytes": 9114,
+      "sha256": "226524fe8ec9027e14e19d7c84863ae0aa59b79a96dba7e1cdd95dc3c7e00a94"
+    },
+    "vendor-inventory-drift/inventory-scan.json": {
+      "bytes": 20322,
+      "sha256": "f6ac2b1dc031c14b64d7a478074ee9284ecc04c296fbb4f911c9b86519e4ace7"
+    },
+    "vendor-inventory-drift/receipt-before-changelog.json": {
+      "bytes": 791,
+      "sha256": "3c39bb8ed7c2c9c2c0517d95f68f16d969dba34f431ad469d74f3ca6a15c3fc2"
+    },
+    "vendor-inventory-drift/receipt.json": {
+      "bytes": 1009,
+      "sha256": "daba05bea7e2eba487a7e3e049643e41100075ef7d080f84d07b659c851ed215"
+    },
+    "vendor-inventory-drift/report-before-changelog.json": {
+      "bytes": 31575,
+      "sha256": "e89d4f9d0af65e36509b5441e2daa80c7e1caf2934397d4463d47bba0dac3ba9"
+    },
+    "vendor-inventory-drift/report-before-payload.json": {
+      "bytes": 27073,
+      "sha256": "d39113dbfeef78f073c6a0bef390a59eae3ef8809b1a122851e02baf50bf940e"
+    },
+    "vendor-inventory-drift/report.json": {
+      "bytes": 32462,
+      "sha256": "7c70470878d442dceaaef176bba57e0c94368016b46c1e957e1fd0b0f806e809"
+    }
+  },
+  "package_roots": [
+    "redb-current-provenance-checkpoint",
+    "redb-current-provenance-root-review",
+    "vendor-inventory-drift"
+  ],
+  "terminal_runs": {
+    "165": {
+      "result_sha256": "eeae9b63594158536aadfae31fcb41003567529865971ed111cc6670fbe56e2c"
+    }
+  }
+}

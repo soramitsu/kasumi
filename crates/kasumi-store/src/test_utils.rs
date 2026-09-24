@@ -27,22 +27,170 @@ pub fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
         .tempdir()
 }
 
+/// Explicit fixture setup retry. Production and isolated single-attempt disk
+/// constructors never retry; only their typed registry-contention result may
+/// be retried here. Provider errors and filesystem ownership failures remain
+/// visible even when their underlying OS kind is WouldBlock.
+pub fn retry_disk_registry<T>(
+    mut open: impl FnMut() -> std::result::Result<T, crate::DiskOpenError>,
+) -> std::result::Result<T, crate::DiskOpenError> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match open() {
+            Err(crate::DiskOpenError::RegistryBusy) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Explicit bounded memory owner for physical-disk fixtures. It performs the
+/// same mandatory resident acquisition and owns every accepted lease until Drop;
+/// no production constructor selects this governor implicitly.
+pub struct TestDiskMemory {
+    storage_census: crate::StorageCensus,
+    max_bytes: u64,
+    max_reservations: usize,
+    state: std::sync::Mutex<TestDiskMemorySnapshot>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TestDiskMemorySnapshot {
+    /// Fixed provider and census backing, admitted before their allocations.
+    pub bookkeeping_bytes: u64,
+    /// Bytes held by live resident leases, additional to bookkeeping.
+    pub used_bytes: u64,
+    pub live_reservations: usize,
+    pub attempts: u64,
+}
+struct TestDiskLease {
+    owner: std::sync::Arc<TestDiskMemory>,
+    bytes: u64,
+}
+impl TestDiskMemory {
+    pub fn new(max_bytes: u64, max_reservations: usize) -> std::sync::Arc<Self> {
+        assert!(max_bytes > 0 && max_reservations > 0);
+        let base_bytes = Self::required_bookkeeping_bytes(max_reservations).unwrap();
+        assert!(
+            base_bytes <= max_bytes,
+            "fixture bookkeeping admission denied"
+        );
+        let storage_census = crate::StorageCensus::allocate(max_reservations).unwrap();
+        let owner = std::sync::Arc::new(Self {
+            storage_census,
+            max_bytes,
+            max_reservations,
+            state: std::sync::Mutex::new(TestDiskMemorySnapshot {
+                bookkeeping_bytes: base_bytes,
+                ..Default::default()
+            }),
+        });
+        drop(owner.state.lock().unwrap());
+        let provider: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission> = owner.clone();
+        owner.storage_census.bind_provider(&provider).unwrap();
+        owner
+    }
+    pub fn required_bookkeeping_bytes(max_reservations: usize) -> std::io::Result<u64> {
+        crate::disk_memory::add(
+            crate::disk_memory::arc::<Self>()?,
+            crate::StorageCensus::required_bytes(max_reservations)?,
+        )
+    }
+    pub fn required_reservation_bytes(bytes: u64) -> std::io::Result<u64> {
+        crate::disk_memory::add(bytes, crate::disk_memory::allocation::<TestDiskLease>(1)?)
+    }
+    pub fn snapshot(&self) -> TestDiskMemorySnapshot {
+        *self.state.lock().unwrap()
+    }
+}
+impl crate::NodeDiskMemoryAdmission for TestDiskMemory {
+    fn storage_census(&self) -> &crate::StorageCensus {
+        &self.storage_census
+    }
+    fn reserve_installed(
+        self: std::sync::Arc<Self>,
+        bytes: u64,
+    ) -> std::io::Result<crate::DiskMemoryLease> {
+        let bytes = Self::required_reservation_bytes(bytes)?;
+        let mut state = self.state.lock().map_err(|_| std::io::ErrorKind::Other)?;
+        state.attempts = state
+            .attempts
+            .checked_add(1)
+            .ok_or(std::io::ErrorKind::Other)?;
+        let next = state
+            .used_bytes
+            .checked_add(bytes)
+            .ok_or(std::io::ErrorKind::OutOfMemory)?;
+        if next
+            .checked_add(state.bookkeeping_bytes)
+            .is_none_or(|total| total > self.max_bytes)
+            || state.live_reservations >= self.max_reservations
+        {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
+        state.used_bytes = next;
+        state.live_reservations += 1;
+        drop(state);
+        Ok(crate::DiskMemoryLease::new(TestDiskLease {
+            owner: self,
+            bytes,
+        }))
+    }
+}
+impl Drop for TestDiskLease {
+    fn drop(&mut self) {
+        let mut state = self.owner.state.lock().unwrap();
+        state.used_bytes = state
+            .used_bytes
+            .checked_sub(self.bytes)
+            .expect("owned fixture bytes");
+        state.live_reservations = state
+            .live_reservations
+            .checked_sub(1)
+            .expect("owned fixture slot");
+    }
+}
+
 impl crate::NodeStore {
+    /// Synthetic redb I/O with an explicit admitted physical owner for engine
+    /// fixtures. This does not claim the backend itself is a physical file.
+    /// The exact persistent/scratch core is checked before redb can touch it.
+    pub fn open_fixture_backend_on_disk(
+        backend: impl redb::StorageBackend,
+        redb_admission: std::sync::Arc<dyn redb::StorageAdmission>,
+        persistent: std::sync::Arc<crate::NodeDisk>,
+        scratch: std::sync::Arc<crate::ScratchDisk>,
+    ) -> Result<std::sync::Arc<Self>> {
+        ensure!(
+            std::sync::Arc::ptr_eq(persistent.memory(), scratch.memory()),
+            "persistent and scratch disks require the same installed memory admission"
+        );
+        let db = redb::Database::builder(redb_admission).create_with_backend(backend)?;
+        Self::initialize_tables(&db)?;
+        Ok(Self::installed(db, None, Some(persistent), scratch))
+    }
+
     pub fn create_new_fixture(
         path: impl AsRef<std::path::Path>,
         id: uuid::Uuid,
+        memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
         scratch: std::sync::Arc<crate::ScratchDisk>,
     ) -> Result<std::sync::Arc<Self>> {
-        let disk = crate::NodeDisk::fixture_for_path(path.as_ref())?;
+        let disk = retry_disk_registry(|| {
+            crate::NodeDisk::fixture_for_path(path.as_ref(), memory.clone())
+        })?;
         Self::create_new(path, id, disk, scratch)
     }
 
     pub fn open_existing_fixture(
         path: impl AsRef<std::path::Path>,
         id: uuid::Uuid,
+        memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
         scratch: std::sync::Arc<crate::ScratchDisk>,
     ) -> Result<std::sync::Arc<Self>> {
-        let disk = crate::NodeDisk::fixture_for_path(path.as_ref())?;
+        let disk = retry_disk_registry(|| {
+            crate::NodeDisk::fixture_for_path(path.as_ref(), memory.clone())
+        })?;
         Self::open_existing(path, id, disk, scratch)
     }
 
@@ -50,17 +198,23 @@ impl crate::NodeStore {
         path: impl AsRef<std::path::Path>,
         identity: &crate::private_files::FileIdentity,
         id: uuid::Uuid,
+        memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
         scratch: std::sync::Arc<crate::ScratchDisk>,
     ) -> Result<std::sync::Arc<Self>> {
-        let disk = crate::NodeDisk::fixture_for_path(path.as_ref())?;
+        let disk = retry_disk_registry(|| {
+            crate::NodeDisk::fixture_for_path(path.as_ref(), memory.clone())
+        })?;
         Self::initialize_owned_empty(path, identity, id, disk, scratch)
     }
 
     pub fn claim_cleanup_fixture(
         path: impl AsRef<std::path::Path>,
         id: uuid::Uuid,
+        memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
     ) -> Result<crate::NodeFileCleanup> {
-        let disk = crate::NodeDisk::fixture_for_path(path.as_ref())?;
+        let disk = retry_disk_registry(|| {
+            crate::NodeDisk::fixture_for_path(path.as_ref(), memory.clone())
+        })?;
         Self::claim_cleanup(path, id, disk)
     }
 }
@@ -75,6 +229,14 @@ struct FixtureStorageAdmission {
 }
 
 impl redb::StorageAdmission for FixtureStorageAdmission {
+    fn reserve_workspace(
+        &self,
+        _bytes: u64,
+    ) -> core::result::Result<Box<dyn redb::ResidentLease>, redb::AdmissionError> {
+        self.check_owner()
+            .map_err(|_| redb::AdmissionError::OwnerFailed)?;
+        Ok(Box::new(()))
+    }
     fn check_owner(&self) -> std::result::Result<(), redb::OwnerFailed> {
         if self.failed.load(Ordering::Acquire) {
             Err(redb::OwnerFailed)
@@ -347,6 +509,9 @@ impl FaultState {
 }
 
 impl redb::StorageBackend for FaultBackend {
+    fn close(&self) -> redb::BackendCloseOutcome {
+        redb::BackendCloseOutcome::drained(Ok(()))
+    }
     fn len(&self) -> std::io::Result<u64> {
         Ok(self.0.lock().volatile.len() as u64)
     }
@@ -396,13 +561,36 @@ impl redb::StorageBackend for FaultBackend {
     }
 }
 
+// An absent destination must be created beneath an already installed owner.
+// Select that owner using the destination as a prospective leaf; for an existing
+// directory, retain the original fixture root selection via a child anchor.
+// Consumer constructors then perform exact managed open_or_create acquisition.
+fn fixture_directory_owner(
+    root: &std::path::Path,
+    memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
+) -> anyhow::Result<std::sync::Arc<crate::NodeDisk>> {
+    let anchor = root.join("directory-accounting-anchor");
+    if let Some(owner) =
+        retry_disk_registry(|| crate::NodeDisk::fixture_registered_for_path(&anchor, &memory))?
+    {
+        return Ok(owner);
+    }
+    let selection = if root.try_exists()? {
+        anchor
+    } else {
+        root.to_owned()
+    };
+    retry_disk_registry(|| crate::NodeDisk::fixture_for_path(&selection, memory.clone()))
+        .map_err(Into::into)
+}
+
 impl crate::FilesystemAuditArchive {
-    pub fn open_fixture(root: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+    pub fn open_fixture(
+        root: impl AsRef<std::path::Path>,
+        memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
+    ) -> anyhow::Result<Self> {
         let root = root.as_ref();
-        if !root.exists() {
-            crate::private_files::create_directory(root)?;
-        }
-        let disk = crate::NodeDisk::fixture_for_path(root.join("archive-accounting-anchor"))?;
+        let disk = fixture_directory_owner(root, memory)?;
         Self::open(root, disk)
     }
 }
@@ -411,12 +599,173 @@ impl crate::FilesystemBackupDestination {
     pub fn new_fixture(
         root: impl AsRef<std::path::Path>,
         max_bytes: usize,
+        memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
     ) -> anyhow::Result<Self> {
         let root = root.as_ref();
-        if !root.exists() {
-            crate::private_files::create_directory(root)?;
-        }
-        let disk = crate::NodeDisk::fixture_for_path(root.join("backup-accounting-anchor"))?;
+        let disk = fixture_directory_owner(root, memory)?;
         Self::new(root, max_bytes, disk)
+    }
+}
+
+#[cfg(test)]
+mod fixture_directory_tests {
+    use super::*;
+
+    #[test]
+    fn consumer_fixture_creation_uses_the_installed_owner_with_a_live_file() {
+        let root = private_tempdir().unwrap();
+        let memory = TestDiskMemory::new(256 << 20, 4096);
+        let disk = retry_disk_registry(|| {
+            crate::NodeDisk::fixture_for_path(root.path().join("owned"), memory.clone())
+        })
+        .unwrap();
+        let file = disk
+            .create_file(
+                "fixture",
+                std::path::Path::new("owned"),
+                crate::DiskWork::Foreground,
+            )
+            .unwrap();
+        let before = disk.snapshot();
+        let archive = crate::FilesystemAuditArchive::open_fixture(
+            root.path().join("archive"),
+            memory.clone(),
+        )
+        .unwrap();
+        let backup = crate::FilesystemBackupDestination::new_fixture(
+            root.path().join("backup"),
+            64 << 20,
+            memory.clone(),
+        )
+        .unwrap();
+        let after = disk.snapshot();
+        assert_eq!(after.phase, crate::NodeDiskPhase::Open);
+        assert_eq!(after.open_files, before.open_files);
+        assert_eq!(after.persistent_files, before.persistent_files);
+        assert_eq!(
+            after.persistent_directories,
+            before.persistent_directories + 2
+        );
+        assert_eq!(file.observed_len().unwrap(), 0);
+        drop((archive, backup, file));
+        disk.reconcile(&crate::CensusCancellation::default())
+            .unwrap();
+        assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+    }
+}
+
+#[cfg(test)]
+mod registry_retry_tests {
+    use super::*;
+    #[test]
+    fn fixture_retry_distinguishes_registry_busy_from_provider_would_block() {
+        let mut attempts = 0;
+        let value = retry_disk_registry(|| {
+            attempts += 1;
+            if attempts < 3 {
+                Err(crate::DiskOpenError::RegistryBusy)
+            } else {
+                Ok(71)
+            }
+        })
+        .unwrap();
+        assert_eq!(value, 71);
+        assert_eq!(attempts, 3);
+        attempts = 0;
+        let result: std::result::Result<(), _> = retry_disk_registry(|| {
+            attempts += 1;
+            Err(crate::DiskOpenError::Failed(
+                std::io::Error::from(std::io::ErrorKind::WouldBlock).into(),
+            ))
+        });
+        assert!(matches!(result, Err(crate::DiskOpenError::Failed(_))));
+        assert_eq!(attempts, 1);
+    }
+}
+
+#[cfg(test)]
+mod admitted_backend_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct UntouchedBackend;
+    impl redb::StorageBackend for UntouchedBackend {
+        fn len(&self) -> std::io::Result<u64> {
+            panic!("foreign-core backend was queried")
+        }
+        fn read(&self, _: u64, _: &mut [u8]) -> std::io::Result<()> {
+            panic!("foreign-core backend was read")
+        }
+        fn set_len(&self, _: u64) -> std::io::Result<()> {
+            panic!("foreign-core backend was resized")
+        }
+        fn sync_data(&self) -> std::io::Result<()> {
+            panic!("foreign-core backend was synchronized")
+        }
+        fn write(&self, _: u64, _: &[u8]) -> std::io::Result<()> {
+            panic!("foreign-core backend was written")
+        }
+        fn close(&self) -> redb::BackendCloseOutcome {
+            panic!("foreign-core backend was acquired")
+        }
+    }
+
+    #[tokio::test]
+    async fn admitted_backend_rejects_foreign_memory_before_io_and_retains_exact_owner() {
+        let persistent_directory = private_tempdir().unwrap();
+        let scratch_directory = private_tempdir().unwrap();
+        let foreign_directory = private_tempdir().unwrap();
+        let memory = TestDiskMemory::new(256 << 20, 4096);
+        let foreign_memory = TestDiskMemory::new(256 << 20, 4096);
+        let persistent = retry_disk_registry(|| {
+            crate::NodeDisk::fixture_for_path(
+                persistent_directory.path().join("node.redb"),
+                memory.clone(),
+            )
+        })
+        .unwrap();
+        let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+        let foreign = crate::ScratchDisk::fixture(foreign_directory.path(), foreign_memory.clone());
+        let before = memory.snapshot();
+        let foreign_before = foreign_memory.snapshot();
+        let error = crate::NodeStore::open_fixture_backend_on_disk(
+            UntouchedBackend,
+            storage_admission(),
+            persistent.clone(),
+            foreign,
+        )
+        .err()
+        .expect("foreign core must be rejected before backend I/O");
+        assert!(
+            error
+                .to_string()
+                .contains("same installed memory admission")
+        );
+        assert_eq!(memory.snapshot(), before);
+        assert_eq!(foreign_memory.snapshot(), foreign_before);
+        assert!(!persistent_directory.path().join("node.redb").exists());
+
+        let backend = FaultBackend::new();
+        let node = crate::NodeStore::open_fixture_backend_on_disk(
+            backend.clone(),
+            storage_admission(),
+            persistent.clone(),
+            scratch.clone(),
+        )
+        .unwrap();
+        assert!(
+            backend.operations() > 0,
+            "accepted backend was not initialized"
+        );
+        assert!(Arc::ptr_eq(node.persistent_disk(), &persistent));
+        assert!(Arc::ptr_eq(node.scratch_disk(), &scratch));
+        assert_eq!(
+            memory.snapshot(),
+            before,
+            "opening a synthetic backend invented a second disk owner"
+        );
+        node.shutdown().await.unwrap();
+        assert!(!persistent_directory.path().join("node.redb").exists());
     }
 }

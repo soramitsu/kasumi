@@ -1,0 +1,50 @@
+--- a/crates/kasumi-authority/src/service.rs
++++ b/crates/kasumi-authority/src/service.rs
+@@ -44,7 +44,14 @@
+         "independent authority is unavailable",
+     )
+ }
+-fn unknown(_: impl std::fmt::Display) -> Error {
++#[cfg_attr(test, track_caller)]
++fn unknown(_cause: impl std::fmt::Display) -> Error {
++    #[cfg(test)]
++    eprintln!(
++        "AUTHORITY_UNKNOWN at {}: {}",
++        std::panic::Location::caller(),
++        _cause
++    );
+     Error::new(
+         ErrorCode::UnknownOutcome,
+         "authority acknowledgement unavailable; resolve the exact permanent command identity",
+--- a/crates/kasumi-engine/src/target_activation_service.rs
++++ b/crates/kasumi-engine/src/target_activation_service.rs
+@@ -246,13 +246,27 @@
+         Ok(result)
+     }
+ }
+-fn denied(_: impl std::fmt::Display) -> Error {
++#[cfg_attr(any(test, feature = "test-utils"), track_caller)]
++fn denied(_cause: impl std::fmt::Display) -> Error {
++    #[cfg(any(test, feature = "test-utils"))]
++    eprintln!(
++        "TARGET_ACTIVATION_DENIED at {}: {}",
++        std::panic::Location::caller(),
++        _cause
++    );
+     Error::new(
+         ErrorCode::Unauthorized,
+         "original target activation authority unavailable",
+     )
+ }
+-fn unknown(_: impl std::fmt::Display) -> Error {
++#[cfg_attr(any(test, feature = "test-utils"), track_caller)]
++fn unknown(_cause: impl std::fmt::Display) -> Error {
++    #[cfg(any(test, feature = "test-utils"))]
++    eprintln!(
++        "TARGET_ACTIVATION_UNKNOWN at {}: {}",
++        std::panic::Location::caller(),
++        _cause
++    );
+     Error::new(
+         ErrorCode::UnknownOutcome,
+         "target activation acknowledgement unresolved; recover exact issuer winner and phase",

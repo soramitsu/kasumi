@@ -1,0 +1,9 @@
+# Changed lifecycle frame inspection after136 compilation
+
+Inspect the exact newly compiled lifecycle executable with llvm-nm and selected address-range llvm-objdump only. The test binary is never executed by these tools. Compiler136 passed after the preserved135 temporary-receiver compile failure. Exact binary and three relevant source files plus136 receipt and the prior128 static manifest match before/after inspection.
+
+Only changed preparation/continuation/outer frames, their two box adapters, and the new commit_next_intent poll/failure helper path are inspected. The previously reviewed bootstrap diagnostic constructors, unrelated phase paths and other Rust frames are not requalified here. The root reads the actual AArch64 prologues; stack probe loops allocate their whole target subtraction once, not the repeated page subtraction twice.
+
+Preparation is634752 bytes (+5520), continuation681504 (+288), outer110368 (+224); both adapters64 remain separate. Original phase-poll calls are still separate in the outer function. Commit helper poll is68944 bytes and its failure-report closure1616 bytes, with160/48/32-byte nested local-row helper frames. Named outer/adapter/preparation sum745184 and outer/adapter/continuation sum791936. Including the commit poll and failure closure gives862496 across these selected frames only; generic adapters, storage snapshots, formatting, runtime, native callees and all other stack use are omitted. These are static component sums, not a whole-thread peak or stack safety guarantee. No stack limit, election setting or deadline is raised.
+
+The full raw selected disassembly and exact command receipts are retained. Original128 frame evidence and135 compile error remain unchanged. Focused runtime verification still must execute the original two uncertain-activation cases with their existing workloads and assertions; source/binary identity will be checked independently by that runner.

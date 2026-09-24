@@ -1,0 +1,54 @@
+{
+  "status": "APPLIED_UNTESTED",
+  "time": 1789908554.1150231,
+  "packages": [
+    {
+      "patch": "gate77-store-fixes/store.patch",
+      "sha256": "56acdfabd43837a2ad3bab8da11776326dff8495752911e3947d9e0051454bea",
+      "before": {
+        "crates/kasumi-store/src/audit_archive.rs": "ce8e5724ed6d4efa56532fac5dde53d46d52d2437913d6d7eceb77c6cc242cd5",
+        "crates/kasumi-store/src/scratch_disk.rs": "736528caa5dd77b670779dd4d1bc39671b9271485292606a4e26521e8fd4cfb0",
+        "crates/kasumi-store/src/node_disk/file.rs": "e6bf8a371dd7ced9960d1f126b740613d2efb4ecf9fd71b504be76fe1fe59c35",
+        "crates/kasumi-store/src/device_disk.rs": "85e3cd08b398aac7bd0d1cce98840817d77c8d8c8363e20e0c077b6bbc66e414"
+      },
+      "after": {
+        "crates/kasumi-store/src/audit_archive.rs": "6e90ea64cce58f1d1c526a68e047d621a4e69618874bbad7a58916819465ef38",
+        "crates/kasumi-store/src/scratch_disk.rs": "c8a7dd96cdc960c7138290a315d67efacc2452af67e3552ca94b3dfeffa46882",
+        "crates/kasumi-store/src/node_disk/file.rs": "488a5b8182ff33ee20cfc1685749ff0e3887662cf7da0bf14c8224d5c0c2bdaa",
+        "crates/kasumi-store/src/device_disk.rs": "64ad6aa02bff422877c71185f3f84bd3614b001d1fdae9a6427c65b515737da9"
+      }
+    },
+    {
+      "patch": "77-server-corrections/server.patch",
+      "sha256": "9a2cec5b114ff5426f50315820f2915b0eec43c9b56da74a10ba42118cf1dc5e",
+      "before": {
+        "crates/kasumi-server/src/standalone.rs": "9a66e50c1a04e1335b9b944263bd11864b261a836238d3a3b4b03507cd219895"
+      },
+      "after": {
+        "crates/kasumi-server/src/standalone.rs": "f4a1711ad3d7c0f1214a40c89dd2d365cc2178812439956829e81b44efa31624"
+      }
+    },
+    {
+      "patch": "77-engine-fixture-successor/fix.patch",
+      "sha256": "a2f049f64a7edfcfcc2bec76b9b2d51c967cc72638559d26e79850ded09d4a60",
+      "before": {
+        "crates/kasumi-engine/src/service_retirement_tests.rs": "9b54a69751620e44276ec1855d135380bc2971b335929f1c02eac22ff3ccf8c4",
+        "crates/kasumi-engine/src/snapshot_codec.rs": "746e30002b40a14b69f2b1f6eb797e07325bf91090e94a74ad420dae27237886"
+      },
+      "after": {
+        "crates/kasumi-engine/src/service_retirement_tests.rs": "a2f8489f7390e07c175d0b9deb023ea0d34a2dbf27c341ef34ff8bb70e3bbe36",
+        "crates/kasumi-engine/src/snapshot_codec.rs": "007325e0c5d38856804590091cf415bbd9bade8ce774c5249571a351c65ceafa"
+      }
+    },
+    {
+      "patch": "gate77-root-fixes/root.patch",
+      "sha256": "367048005b60cfcadbb2dc3da791b5afcc898a111bcb14827b40e39cab07a5c9",
+      "before": {
+        "crates/kasumi-engine/tests/common/retirement_snapshot.rs": "f3ddb480c668942bb84330fa83770afb951b9c14dc61950fa8fd47038e7d36d5"
+      },
+      "after": {
+        "crates/kasumi-engine/tests/common/retirement_snapshot.rs": "8c80b9d436a8d8f89dc1660a16531003b35fe01aa135acdc24444232575131cc"
+      }
+    }
+  ]
+}

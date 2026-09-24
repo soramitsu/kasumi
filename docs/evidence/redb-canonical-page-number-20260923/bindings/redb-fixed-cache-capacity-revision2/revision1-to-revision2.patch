@@ -1,0 +1,425 @@
+--- revision1/vendor/redb-4.2.0/src/cache_admission_tests.rs
++++ revision2/vendor/redb-4.2.0/src/cache_admission_tests.rs
+@@ -1,9 +1,9 @@
+ #[cfg(feature = "experimental-api-5")]
+ use crate::ReadableTable;
+ use crate::{
+-    AdmissionError, CloseError, CommitError, Database, OwnerFailed, ReadableDatabase,
+-    RetainedWriteTransaction, StorageAdmission, StorageError, TableDefinition, TerminalObservation,
+-    WriteTerminalError, WriteTerminalSettlement,
++    AdmissionError, CloseError, CommitError, Database, DatabaseCloseSettlement, OwnerFailed,
++    ReadableDatabase, RetainedWriteTransaction, StorageAdmission, StorageError, TableDefinition,
++    TerminalObservation, WriteTerminalError, WriteTerminalSettlement,
+ };
+ use std::sync::{
+     Arc, Mutex,
+@@ -119,32 +119,45 @@
+ fn selected_page_is_rolled_back_and_admitted_growth_settles_on_abort() {
+     let f = fixture();
+     let mut tx = deny_after_admitted_growth(&f).retain();
++    let mut database = f.db.retain();
+     let report = tx.commit();
+-    assert_cache_error(&report);
++    let original = assert_cache_error(&report);
+     assert_eq!(report.settlement(), WriteTerminalSettlement::Settled);
+     assert!(matches!(
+         report.rollback(),
+         TerminalObservation::Returned(Ok(()))
+     ));
+-    drop(tx);
++    assert!(!tx.report().disposal_complete());
++    let disposed = tx.dispose_settled(&database);
++    assert!(disposed.disposal_complete());
++    assert_eq!(assert_cache_error(&disposed), original);
+     assert_eq!(
+         f.owner.settled.load(Ordering::Acquire),
+         f.file.as_file().metadata().unwrap().len()
+     );
+-    let read = f.db.begin_read().unwrap();
++    let read = database.database().unwrap().begin_read().unwrap();
+     let table = read.open_table(TABLE).unwrap();
+     assert_eq!(table.get(0).unwrap().unwrap().value(), b"committed");
+     assert!(table.get(1).unwrap().is_none());
+     assert!(table.get(2).unwrap().is_none());
+     drop(table);
+     drop(read);
+-    let tx = f.db.begin_write().unwrap();
+-    tx.open_table(TABLE)
++    // Reuse the actual writer while the first owner's original refusal stays
++    // retained. Settlement alone did not release that writer; disposal did.
++    let next = database.database().unwrap().begin_write().unwrap();
++    next.open_table(TABLE)
+         .unwrap()
+         .insert(1, b"retry".as_slice())
+         .unwrap();
+-    tx.commit().unwrap();
+-    f.db.close().unwrap();
++    let mut next = next.retain();
++    assert_eq!(next.commit().settlement(), WriteTerminalSettlement::Settled);
++    assert!(next.dispose_settled(&database).disposal_complete());
++    assert_eq!(assert_cache_error(&tx.report()), original);
++    assert_eq!(
++        database.close().settlement(),
++        DatabaseCloseSettlement::Settled
++    );
++    assert_eq!(assert_cache_error(&tx.report()), original);
+ }
+ 
+ struct Custody {
+--- revision1/vendor/redb-4.2.0/src/retained_transaction.rs
++++ revision2/vendor/redb-4.2.0/src/retained_transaction.rs
+@@ -2,8 +2,8 @@
+ //! This is a transaction boundary, not proof of database/backend close or a
+ //! bound on transaction, diagnostic, or opaque panic backing.
+ use super::{AllocatorStateLatch, WriteTransaction};
+-use crate::{CommitError, StorageError};
+-use core::any::Any;
++use crate::{CommitError, RetainedDatabase, StorageError};
++use core::{any::Any, convert::Infallible};
+ use std::panic::{AssertUnwindSafe, catch_unwind};
+ 
+ /// The first terminal operation accepted by a retained write transaction.
+@@ -61,8 +61,8 @@
+     fn observe(&mut self, operation: impl FnOnce() -> Result<(), E>) {
+         debug_assert!(matches!(self, Self::NotEntered));
+         *self = Self::Entered;
+-        // No potentially partial transaction state is reused after unwind. Its
+-        // exact owner and original payload remain in separate permanent cells.
++        // Preserve this phase's first result or original unwind payload. Each
++        // phase separately establishes which actual backing must stay owned.
+         *self = match catch_unwind(AssertUnwindSafe(operation)) {
+             Ok(result) => Self::Returned(result),
+             Err(payload) => Self::Panicked(payload),
+@@ -83,20 +83,21 @@
+ /// Keep this owner while settlement is [`WriteTerminalSettlement::Retained`].
+ /// Dropping it is not cleanup evidence; it may destroy unproved transaction
+ /// state and cannot replace an explicit caller-owned cleanup/drain protocol.
+-/// Even `Settled` requires separate transaction disposal and database/backend
++/// Even `Settled` requires `dispose_settled` and separate database/backend
+ /// close before the caller can release their charges or report complete drain.
+ /// This type does not establish a transaction-memory or panic-payload bound.
+ #[must_use = "retain this exact transaction owner until its cleanup is independently established"]
+ pub struct RetainedWriteTransaction {
+-    transaction: WriteTransaction,
++    transaction: Option<WriteTransaction>,
+     operation: Option<WriteTerminalOperation>,
+     terminal: Observation<WriteTerminalError>,
+     rollback: Observation<StorageError>,
++    disposal: Observation<Infallible>,
+     settlement: WriteTerminalSettlement,
+ }
+ 
+ /// Borrowed original outcomes; only the actual owner can construct this view.
+-#[must_use = "inspect settlement and the original terminal and rollback outcomes"]
++#[must_use = "inspect settlement, disposal, and the original terminal and rollback outcomes"]
+ pub struct WriteTerminalReport<'a> {
+     owner: &'a RetainedWriteTransaction,
+ }
+@@ -109,6 +110,14 @@
+     }
+     pub fn terminal(&self) -> TerminalObservation<'_, WriteTerminalError> {
+         self.owner.terminal.borrow()
++    }
++    /// Actual disposal is separate from commit/abort settlement. A panic keeps
++    /// its original payload here and can never become a successful disposal.
++    pub fn disposal(&self) -> TerminalObservation<'_, Infallible> {
++        self.owner.disposal.borrow()
++    }
++    pub fn disposal_complete(&self) -> bool {
++        self.owner.disposal.succeeded()
+     }
+     pub fn rollback(&self) -> TerminalObservation<'_, StorageError> {
+         self.owner.rollback.borrow()
+@@ -121,10 +130,11 @@
+     /// the owner's backing before dispatch. The API requires std unwinding.
+     pub fn retain(self) -> RetainedWriteTransaction {
+         RetainedWriteTransaction {
+-            transaction: self,
++            transaction: Some(self),
+             operation: None,
+             terminal: Observation::NotEntered,
+             rollback: Observation::NotEntered,
++            disposal: Observation::NotEntered,
+             settlement: WriteTerminalSettlement::Unstarted,
+         }
+     }
+@@ -133,10 +143,41 @@
+     /// Borrow the original transaction only before terminal entry. Table guards
+     /// borrow this owner and therefore must close before a mutable terminal call.
+     pub fn transaction(&self) -> Option<&WriteTransaction> {
+-        self.operation.is_none().then_some(&self.transaction)
++        self.transaction
++            .as_ref()
++            .filter(|_| self.operation.is_none())
+     }
+     pub fn report(&self) -> WriteTerminalReport<'_> {
+         WriteTerminalReport { owner: self }
++    }
++    /// Dispose of an actually settled transaction without discarding its original
++    /// terminal and rollback observations. Unstarted/uncertain transactions are
++    /// untouched. This never replays commit, abort or an interrupted disposal.
++    ///
++    /// A matching actual database owner must remain borrowed for this entire
++    /// operation. Open and waiting-for-transactions owners qualify; a different
++    /// database leaves this transaction and its observations untouched. This
++    /// prevents a deferred backend close from running inside transaction Drop.
++    /// Physical close belongs to the separately observed database owner.
++    ///
++    /// The transaction owner remains in its admitted census until these retained
++    /// diagnostic allocations are independently retired. Successful disposal
++    /// releases the actual writer slot; it is not database/backend close or
++    /// census retirement. A caught internal destructor panic does not establish
++    /// complete disposal and cannot be retried.
++    pub fn dispose_settled(&mut self, database: &RetainedDatabase) -> WriteTerminalReport<'_> {
++        if self.settlement == WriteTerminalSettlement::Settled
++            && matches!(self.disposal, Observation::NotEntered)
++            && self.transaction.as_ref().is_some_and(|transaction| {
++                database.owns_transaction(&transaction.transaction_tracker, &transaction.mem)
++            })
++        {
++            self.disposal.observe(|| {
++                drop(self.transaction.take());
++                Ok(())
++            });
++        }
++        self.report()
+     }
+     /// Enter one immediate-durable commit. Any later call only observes its
+     /// original outcome, even if that later call requests abort instead.
+@@ -146,19 +187,23 @@
+             self.settlement = WriteTerminalSettlement::Retained;
+             // Prevent WriteTransaction::drop from replaying terminal work. This
+             // flag alone is never interpreted as evidence of settled ownership.
+-            self.transaction.completed = true;
+-            let latch = AllocatorStateLatch::arm(self.transaction.mem.clone());
++            let transaction = self
++                .transaction
++                .as_mut()
++                .expect("unstarted transaction retained");
++            transaction.completed = true;
++            let latch = AllocatorStateLatch::arm(transaction.mem.clone());
+             self.terminal.observe(|| {
+-                if let Some(error) = self.transaction.mem.capacity_error() {
++                if let Some(error) = transaction.mem.capacity_error() {
+                     return Err(WriteTerminalError::Commit(error.into()));
+                 }
+-                if self.transaction.is_poisoned() {
++                if transaction.is_poisoned() {
+                     return Err(WriteTerminalError::Commit(CommitError::TransactionPoisoned));
+                 }
+                 // The helper performs the original durable protocol. Its parent
+                 // consuming API combines rollback errors; this owner must keep
+                 // the primary refusal and actual rollback outcome separately.
+-                self.transaction
++                transaction
+                     .commit_inner_helper()
+                     .map_err(WriteTerminalError::Commit)
+             });
+@@ -170,7 +215,7 @@
+                     ) | CommitError::TransactionPoisoned
+                 )))
+             ) {
+-                self.rollback.observe(|| self.transaction.abort_inner());
++                self.rollback.observe(|| transaction.abort_inner());
+                 if self.rollback.succeeded() {
+                     self.settlement = WriteTerminalSettlement::Settled;
+                     latch.disarm();
+@@ -189,13 +234,14 @@
+         if self.operation.is_none() {
+             self.operation = Some(WriteTerminalOperation::Abort);
+             self.settlement = WriteTerminalSettlement::Retained;
+-            self.transaction.completed = true;
+-            let latch = AllocatorStateLatch::arm(self.transaction.mem.clone());
+-            self.terminal.observe(|| {
+-                self.transaction
+-                    .abort_inner()
+-                    .map_err(WriteTerminalError::Abort)
+-            });
++            let transaction = self
++                .transaction
++                .as_mut()
++                .expect("unstarted transaction retained");
++            transaction.completed = true;
++            let latch = AllocatorStateLatch::arm(transaction.mem.clone());
++            self.terminal
++                .observe(|| transaction.abort_inner().map_err(WriteTerminalError::Abort));
+             if self.terminal.succeeded() {
+                 self.settlement = WriteTerminalSettlement::Settled;
+                 latch.disarm();
+--- revision1/vendor/redb-4.2.0/src/transactions.rs
++++ revision2/vendor/redb-4.2.0/src/transactions.rs
+@@ -883,7 +883,6 @@
+ pub struct WriteTransaction {
+     transaction_tracker: Arc<TransactionTracker>,
+     mem: Arc<TransactionalMemory>,
+-    transaction_guard: Arc<TransactionGuard>,
+     transaction_id: TransactionId,
+     tables: Mutex<TableNamespace>,
+     system_tables: Mutex<SystemNamespace>,
+@@ -896,6 +895,8 @@
+     // All transaction-local savepoint lifecycle state. See
+     // `SavepointTransactionState` for the commit/abort contract.
+     savepoint_state: Mutex<SavepointTransactionState>,
++    // Release the writer only after table/savepoint and deferred-page backing.
++    transaction_guard: Arc<TransactionGuard>,
+ }
+ 
+ impl WriteTransaction {
+--- revision1/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
++++ revision2/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
+@@ -99,19 +99,9 @@
+     }
+ 
+     fn pop_lowest_priority(&mut self) -> Option<(u64, Arc<[u8]>)> {
+-        for _ in 0..self.cache.len() {
+-            if let Some((k, v)) = self.cache.pop_lowest_priority() {
+-                if let Some(v_inner) = v {
+-                    return Some((k, v_inner));
+-                }
+-
+-                // Value is borrowed by take_value(). We can't evict it, so put it back.
+-                self.cache.insert(k, v);
+-            } else {
+-                break;
+-            }
+-        }
+-        None
++        self.cache
++            .pop_lowest_priority_if(Option::is_some)
++            .map(|(key, value)| (key, value.unwrap()))
+     }
+ 
+     fn clear(&mut self) {
+@@ -454,6 +444,12 @@
+         // One successful flush creates the required slot. An I/O failure keeps
+         // its original error and owner fence; it is never a capacity outcome.
+         self.flush_lowest_priority(cache, 1)?;
++        // Prove that eviction made room rather than inferring it from a
++        // successful I/O result: zero bytes may mean no entry was selected.
++        if cache.cache.len() >= self.write_entry_capacity() {
++            self.cache_capacity_denied.store(true, Ordering::Release);
++            return Err(StorageError::CacheCapacityDenied);
++        }
+         Ok(())
+     }
+ 
+@@ -1284,6 +1280,43 @@
+         assert_eq!(writes.load(Ordering::Acquire), calls + 1);
+         assert_eq!(cache.write_buffer_stripe(0).lock().unwrap().cache.len(), 1);
+         drop(second);
++    }
++
++    #[test]
++    fn mixed_borrowed_and_second_chance_entries_make_real_room_before_insert() {
++        let page_size = 128u64;
++        let stride = page_size * PagedCachedFile::lock_stripes();
++        let (backend, writes) = CountingBackend::new(stride * 3);
++        let cache =
++            PagedCachedFile::new(Box::new(backend), crate::test_admission(), page_size, 4096)
++                .unwrap();
++        cache.set_write_entry_capacity_for_test(2);
++        let mut borrowed = cache.write(0, page_size as usize, true).unwrap();
++        borrowed.mem_mut().fill(11);
++        // With only A borrowed, an attempted flush cannot select a page. The
++        // former remove/reinsert selector left A's flag false in this state.
++        assert_eq!(cache.flush_buffered_pages(1).unwrap(), 0);
++        let mut available = cache.write(stride, page_size as usize, true).unwrap();
++        available.mem_mut().fill(22);
++        drop(available); // Returning B gives it a second chance.
++        let before = cache.write_buffer_bytes.load(Ordering::Acquire);
++        let mut new_page = cache.write(stride * 2, page_size as usize, true).unwrap();
++        new_page.mem_mut().fill(33);
++        assert_eq!(writes.load(Ordering::Acquire), 1);
++        assert_eq!(cache.write_buffer_stripe(0).lock().unwrap().cache.len(), 2);
++        assert_eq!(cache.write_buffer_bytes.load(Ordering::Acquire), before);
++        assert!(cache.capacity_error().is_none());
++        assert!(borrowed.mem().iter().all(|byte| *byte == 11));
++        drop(new_page);
++        drop(borrowed);
++        cache.flush().unwrap();
++        for (offset, byte) in [(0, 11), (stride, 22), (stride * 2, 33)] {
++            let value = cache
++                .read(offset, page_size as usize, PageHint::Clean)
++                .unwrap();
++            assert!(value.iter().all(|actual| *actual == byte));
++        }
++        assert_eq!(cache.write_buffer_bytes.load(Ordering::Acquire), 0);
+     }
+ 
+     #[test]
+--- revision1/vendor/redb-4.2.0/src/tree_store/page_store/lru_cache.rs
++++ revision2/vendor/redb-4.2.0/src/tree_store/page_store/lru_cache.rs
+@@ -93,6 +93,32 @@
+         None
+     }
+ 
++    // Two complete queue passes suffice: the first gives each eligible entry
++    // its second chance, and the second selects the first eligible entry left.
++    // Ineligible entries retain their registration and flag while rotating.
++    // There is no removal/reinsertion that could repeatedly select one borrowed
++    // entry before an available entry receives its turn.
++    pub(crate) fn pop_lowest_priority_if(
++        &mut self,
++        eligible: impl Fn(&T) -> bool,
++    ) -> Option<(u64, T)> {
++        let entries = self.lru_queue.len();
++        for _ in 0..2 {
++            for _ in 0..entries {
++                let key = self.lru_queue.pop_front()?;
++                if let Some((value, second_chance)) = self.cache.get(&key) {
++                    if !eligible(value) || second_chance.swap(false, Ordering::AcqRel) {
++                        self.lru_queue.push_back(key);
++                    } else {
++                        let (value, _) = self.cache.remove(&key).unwrap();
++                        return Some((key, value));
++                    }
++                }
++            }
++        }
++        None
++    }
++
+     pub(crate) fn clear(&mut self) {
+         self.cache.shrink();
+         self.cache.clear();
+@@ -104,6 +130,40 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    #[test]
++    fn eligible_selection_keeps_borrowed_registration_and_honors_second_chance() {
++        let mut cache = LRUCache::new();
++        cache.insert(1, None);
++        cache.insert(2, Some(20));
++        assert_eq!(cache.get(2), Some(&Some(20)));
++        // A is ineligible with no second chance; B is eligible with a second
++        // chance. Removing and reinserting A can otherwise select it twice.
++        assert_eq!(
++            cache.pop_lowest_priority_if(Option::is_some),
++            Some((2, Some(20)))
++        );
++        assert_eq!(cache.len(), 1);
++        assert_eq!(cache.lru_queue.len(), 1);
++        let visits = core::cell::Cell::new(0);
++        assert_eq!(
++            cache.pop_lowest_priority_if(|value| {
++                visits.set(visits.get() + 1);
++                value.is_some()
++            }),
++            None
++        );
++        assert_eq!(visits.get(), 2);
++        assert_eq!(cache.len(), 1);
++        assert_eq!(cache.lru_queue.len(), 1);
++        assert_eq!(cache.insert(1, Some(10)), Some(None));
++        assert_eq!(
++            cache.pop_lowest_priority_if(Option::is_some),
++            Some((1, Some(10)))
++        );
++        assert_eq!(cache.len(), 0);
++        assert_eq!(cache.lru_queue.len(), 0);
++    }
+ 
+     #[test]
+     fn repeated_same_key_invalidation_keeps_one_queue_registration_per_live_page() {

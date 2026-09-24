@@ -1,0 +1,4042 @@
+diff --git a/crates/kasumi-bench/Cargo.toml b/crates/kasumi-bench/Cargo.toml
+--- a/crates/kasumi-bench/Cargo.toml
++++ b/crates/kasumi-bench/Cargo.toml
+@@ -11,7 +11,7 @@
+ [features]
+ embedded-fixture = ["dep:kasumi-engine", "dep:kasumi-raft", "dep:kasumi-store", "kasumi-store/test-utils", "kasumi-engine/test-utils"]
+ network = ["dep:kasumi-client", "dep:kasumi-transport", "dep:reqwest", "dep:tonic", "dep:zeroize", "dep:base64"]
+-loopback-fixture = ["network", "dep:kasumi-server", "kasumi-server/test-utils", "dep:rcgen", "dep:jsonwebtoken", "dep:base64", "dep:axum", "dep:async-trait"]
++loopback-fixture = ["network", "dep:kasumi-store", "kasumi-store/test-utils", "dep:kasumi-server", "kasumi-server/test-utils", "dep:rcgen", "dep:jsonwebtoken", "dep:base64", "dep:axum", "dep:async-trait"]
+ 
+ [[bin]]
+ name = "kasumi-bench"
+diff --git a/crates/kasumi-bench/src/bin/loopback.rs b/crates/kasumi-bench/src/bin/loopback.rs
+--- a/crates/kasumi-bench/src/bin/loopback.rs
++++ b/crates/kasumi-bench/src/bin/loopback.rs
+@@ -266,7 +266,7 @@
+     );
+     let [mcp, native, admin] = addresses()?;
+     let audience = format!("https://localhost:{}/mcp", mcp.port());
+-    let mut config = example_config();
++    let mut config = example_config(kasumi_store::DirectoryPolicy::fixture())?;
+     // This benchmark explicitly exercises the fixture-only local deployment.
+     // Its daemon must be built with kasumi-server/test-utils; production builds
+     // reject this configuration instead of bypassing the serving authority.
+diff --git a/crates/kasumi-server/src/api.rs b/crates/kasumi-server/src/api.rs
+--- a/crates/kasumi-server/src/api.rs
++++ b/crates/kasumi-server/src/api.rs
+@@ -1965,7 +1965,8 @@
+         }
+         let retained = control.engine().generation().unwrap().state.audits.len();
+         assert!(retained > 1);
+-        let mut config = crate::runtime::example_config();
++        let mut config =
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+         config.control.initial_policy = policy;
+         let manager = Administration::new(
+             config,
+diff --git a/crates/kasumi-server/src/audit_destination.rs b/crates/kasumi-server/src/audit_destination.rs
+--- a/crates/kasumi-server/src/audit_destination.rs
++++ b/crates/kasumi-server/src/audit_destination.rs
+@@ -120,7 +120,10 @@
+ 
+     #[test]
+     fn archive_installation_map_is_an_explicit_first_release_field() {
+-        let mut encoded = serde_json::to_value(crate::runtime::example_config()).unwrap();
++        let mut encoded = serde_json::to_value(
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap(),
++        )
++        .unwrap();
+         serde_json::from_value::<crate::runtime::RuntimeConfig>(encoded.clone()).unwrap();
+         encoded
+             .as_object_mut()
+@@ -154,7 +157,8 @@
+             )
+             .unwrap(),
+         );
+-        let mut installed = crate::runtime::example_config();
++        let mut installed =
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+         installed.tenant_audit_archives.insert(
+             "tenant".into(),
+             AuditDestinationConfig::Filesystem {
+@@ -178,7 +182,8 @@
+         let reopened = TenantStore::open_existing_fixture(node.clone(), "tenant".into(), provider)
+             .await
+             .unwrap();
+-        let empty = crate::runtime::example_config();
++        let empty =
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+         assert!(
+             empty
+                 .install_tenant_audit_archive(&reopened, Some(cache.clone()))
+diff --git a/crates/kasumi-server/src/bin/kasumid.rs b/crates/kasumi-server/src/bin/kasumid.rs
+--- a/crates/kasumi-server/src/bin/kasumid.rs
++++ b/crates/kasumi-server/src/bin/kasumid.rs
+@@ -37,8 +37,15 @@
+         return Ok(());
+     }
+     match arguments {
+-        [command] if command == "example-config" => {
+-            println!("{}", serde_json::to_string_pretty(&example_config())?);
++        [command, policy_flag, policy]
++            if command == "example-config" && policy_flag == "--directory-policy" =>
++        {
++            let policy =
++                kasumi_server::standalone_cli::directory_policy(std::path::Path::new(policy))?;
++            println!(
++                "{}",
++                serde_json::to_string_pretty(&example_config(policy)?)?
++            );
+             Ok(())
+         }
+         [command, path] if command == "check-config" => {
+@@ -87,7 +94,7 @@
+             result
+         }
+         _ => bail!(
+-            "usage: kasumid init --mode standalone <absolute-directory> [--tenant name] | initialize-target-journal <runtime.json> | example-config | check-config <configuration.json> | provision-node <configuration.json> | serve <configuration.json> | tenant stage <configuration.json> <request.json> | tenant stage-status <configuration.json> <operation-uuid> | credential create <control-profile> <request.json> <output-profile> | credential renew|watch <profile> | credential status|revoke <control-profile> <family-uuid> | maintenance rotate-wrapping-keys|rotate-signer|rotate-certificates <configuration.json> | recover-administrator <configuration.json> <new-private-directory> | backup-operator-keys <configuration.json> <new-private-directory> | verify-operator-keys <private-directory> | backup create <database-profile> <destination> <checkpoint.json> | backup status|verify <database-profile> <destination> <session-uuid> | backup abort <database-profile> <destination> <session-uuid> <reason> | backup cleanup <database-profile> <destination> <session-uuid> <max-objects> | audit status <control-profile> | audit export|archives <control-profile> <request.json> <output.json> | audit verify <control-profile> <stream-uuid> <index> | control-recovery configuration-digest|start|status|resume|stop|phase <arguments> | local-recovery start|status|resume|stop <configuration.json> <request.json-or-operation-uuid>"
++            "usage: kasumid init --mode standalone <absolute-directory> --directory-policy <policy.json> [--tenant name] | initialize-target-journal <runtime.json> | example-config --directory-policy <policy.json> | check-config <configuration.json> | provision-node <configuration.json> | serve <configuration.json> | tenant stage <configuration.json> <request.json> | tenant stage-status <configuration.json> <operation-uuid> | credential create <control-profile> <request.json> <output-profile> | credential renew|watch <profile> | credential status|revoke <control-profile> <family-uuid> | maintenance rotate-wrapping-keys|rotate-signer|rotate-certificates <configuration.json> | recover-administrator <configuration.json> <new-private-directory> | backup-operator-keys <configuration.json> <new-private-directory> | verify-operator-keys <private-directory> | backup create <database-profile> <destination> <checkpoint.json> | backup status|verify <database-profile> <destination> <session-uuid> | backup abort <database-profile> <destination> <session-uuid> <reason> | backup cleanup <database-profile> <destination> <session-uuid> <max-objects> | audit status <control-profile> | audit export|archives <control-profile> <request.json> <output.json> | audit verify <control-profile> <stream-uuid> <index> | control-recovery configuration-digest|start|status|resume|stop|phase <arguments> | local-recovery start|status|resume|stop <configuration.json> <request.json-or-operation-uuid>"
+         ),
+     }
+ }
+diff --git a/crates/kasumi-server/src/control_genesis_tests.rs b/crates/kasumi-server/src/control_genesis_tests.rs
+--- a/crates/kasumi-server/src/control_genesis_tests.rs
++++ b/crates/kasumi-server/src/control_genesis_tests.rs
+@@ -38,7 +38,8 @@
+ fn config(root: &Path) -> Result<(RuntimeConfig, crate::runtime_memory::RuntimeStorage)> {
+     use std::os::unix::fs::PermissionsExt;
+     std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
+-    let mut config = crate::runtime::example_config();
++    let mut config =
++        crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+     config.admission = Default::default();
+     config.persistent_disk = crate::persistent_disk::fixture_config(&root.join("data"));
+     config.database_path = root.join("data/node.redb");
+diff --git a/crates/kasumi-server/src/lifecycle_runtime.rs b/crates/kasumi-server/src/lifecycle_runtime.rs
+--- a/crates/kasumi-server/src/lifecycle_runtime.rs
++++ b/crates/kasumi-server/src/lifecycle_runtime.rs
+@@ -86,7 +86,10 @@
+ mod tests {
+     #[test]
+     fn lifecycle_startup_requires_explicit_configuration() {
+-        let mut value = serde_json::to_value(crate::runtime::example_config()).unwrap();
++        let mut value = serde_json::to_value(
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap(),
++        )
++        .unwrap();
+         assert!(serde_json::from_value::<crate::runtime::RuntimeConfig>(value.clone()).is_ok());
+         value["control"]
+             .as_object_mut()
+diff --git a/crates/kasumi-server/src/node_enrollment_tests.rs b/crates/kasumi-server/src/node_enrollment_tests.rs
+--- a/crates/kasumi-server/src/node_enrollment_tests.rs
++++ b/crates/kasumi-server/src/node_enrollment_tests.rs
+@@ -3,7 +3,8 @@
+ 
+ async fn fixture() -> Result<(tempfile::TempDir, Arc<NodeStore>, Arc<TenantStore>, Input)> {
+     let directory = kasumi_store::test_utils::private_tempdir()?;
+-    let mut configuration = crate::runtime::example_config();
++    let mut configuration =
++        crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+     configuration.admission = Default::default();
+     configuration.persistent_disk =
+         crate::persistent_disk::fixture_config(&directory.path().join("data"));
+diff --git a/crates/kasumi-server/src/persistent_disk.rs b/crates/kasumi-server/src/persistent_disk.rs
+--- a/crates/kasumi-server/src/persistent_disk.rs
++++ b/crates/kasumi-server/src/persistent_disk.rs
+@@ -65,17 +65,23 @@
+ 
+ /// Values written into a new installation/example, never deserialization
+ /// defaults or an enrollment fallback for an existing configuration.
+-pub(crate) fn initial_config(roots: BTreeMap<String, PathBuf>) -> NodeDiskConfig {
+-    NodeDiskConfig {
++pub(crate) fn initial_config(
++    roots: BTreeMap<String, PathBuf>,
++    directory_policy: kasumi_store::DirectoryPolicy,
++) -> Result<NodeDiskConfig> {
++    directory_policy.validate()?;
++    Ok(NodeDiskConfig {
+         roots,
+         max_bytes: 128 << 30,
+         maintenance_reserve_bytes: 1 << 30,
+         min_free_bytes: 256 << 20,
+         max_open_files: 4096,
++        max_open_directories: 4096,
++        directory_policy,
+         max_census_entries: 1_000_000,
+         max_depth: 64,
+         max_name_bytes: 255,
+-    }
++    })
+ }
+ 
+ impl crate::runtime::RuntimeConfig {
+@@ -135,13 +141,18 @@
+     if !root.exists() {
+         kasumi_store::private_files::create_directory(root).unwrap();
+     }
+-    let mut config = initial_config(BTreeMap::from([("fixture".into(), root.to_path_buf())]));
++    let mut config = initial_config(
++        BTreeMap::from([("fixture".into(), root.to_path_buf())]),
++        kasumi_store::DirectoryPolicy::fixture(),
++    )
++    .unwrap();
+     config.max_bytes = 256 << 30;
+     config.min_free_bytes = 0;
+     // A bounded test policy; the fixture's explicit RuntimeStorage installs its
+     // isolated owners under the same admitted memory core before storage use.
+     config.max_census_entries = 16_384;
+     config.max_open_files = 256;
++    config.max_open_directories = 256;
+     config
+ }
+ 
+@@ -149,16 +160,21 @@
+ mod tests {
+     #[test]
+     fn persistent_config_is_mandatory_and_does_not_infer_database_parent() {
+-        let mut value = serde_json::to_value(crate::runtime::example_config()).unwrap();
++        let mut value = serde_json::to_value(
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap(),
++        )
++        .unwrap();
+         value.as_object_mut().unwrap().remove("persistent_disk");
+         assert!(serde_json::from_value::<crate::runtime::RuntimeConfig>(value).is_err());
+-        let mut config = crate::runtime::example_config();
++        let mut config =
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+         config.database_path = "/different/node.redb".into();
+         assert!(config.validate_persistent_disk().is_err());
+     }
+     #[test]
+     fn persistent_roots_cannot_overlap_each_other_or_scratch() {
+-        let mut config = crate::runtime::example_config();
++        let mut config =
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+         config
+             .persistent_disk
+             .roots
+@@ -170,7 +186,8 @@
+     }
+     #[test]
+     fn auxiliary_filesystem_destinations_require_explicit_roots() {
+-        let mut config = crate::runtime::example_config();
++        let mut config =
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+         config.validate_persistent_disk().unwrap();
+         config.backup_destinations.insert(
+             "outside".into(),
+@@ -195,7 +212,8 @@
+ 
+     #[test]
+     fn parent_traversal_cannot_bypass_root_overlap_checks() {
+-        let mut config = crate::runtime::example_config();
++        let mut config =
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+         config
+             .persistent_disk
+             .roots
+diff --git a/crates/kasumi-server/src/rpc_recovery_tests.rs b/crates/kasumi-server/src/rpc_recovery_tests.rs
+--- a/crates/kasumi-server/src/rpc_recovery_tests.rs
++++ b/crates/kasumi-server/src/rpc_recovery_tests.rs
+@@ -168,7 +168,8 @@
+         source_custody: None,
+     };
+     request.dispatch_configuration_sha256 = route.digest(&configured).unwrap();
+-    let mut runtime = crate::runtime::example_config();
++    let mut runtime =
++        crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+     runtime.control.lifecycle = Some(crate::lifecycle_runtime::LifecycleRuntimeConfig {
+         command_id: Uuid::new_v4(),
+         installation: f.installation.clone(),
+diff --git a/crates/kasumi-server/src/runtime.rs b/crates/kasumi-server/src/runtime.rs
+--- a/crates/kasumi-server/src/runtime.rs
++++ b/crates/kasumi-server/src/runtime.rs
+@@ -2224,7 +2224,8 @@
+ }
+ 
+ /// Credential-free operator example, also emitted by `kasumid example-config`.
+-pub fn example_config() -> RuntimeConfig {
++pub fn example_config(directory_policy: kasumi_store::DirectoryPolicy) -> Result<RuntimeConfig> {
++    directory_policy.validate()?;
+     let tls = || TlsFiles {
+         certificate: "/etc/kasumi/server.pem".into(),
+         private_key: "/etc/kasumi/server-key.pem".into(),
+@@ -2253,14 +2254,17 @@
+         }],
+         strict_read_audit: false,
+     };
+-    RuntimeConfig {
+-        persistent_disk: crate::persistent_disk::initial_config(BTreeMap::from([
+-            ("data".into(), "/var/lib/kasumi/data".into()),
+-            ("verifier".into(), "/var/lib/kasumi/verifier".into()),
+-            ("targets".into(), "/var/lib/kasumi/targets".into()),
+-            ("archives".into(), "/var/lib/kasumi/archives".into()),
+-            ("backups".into(), "/var/lib/kasumi/backups".into()),
+-        ])),
++    Ok(RuntimeConfig {
++        persistent_disk: crate::persistent_disk::initial_config(
++            BTreeMap::from([
++                ("data".into(), "/var/lib/kasumi/data".into()),
++                ("verifier".into(), "/var/lib/kasumi/verifier".into()),
++                ("targets".into(), "/var/lib/kasumi/targets".into()),
++                ("archives".into(), "/var/lib/kasumi/archives".into()),
++                ("backups".into(), "/var/lib/kasumi/backups".into()),
++            ]),
++            directory_policy,
++        )?,
+         scratch_disk: kasumi_store::ScratchDiskConfig {
+             directory: "/var/lib/kasumi/scratch".into(),
+             max_bytes: 64 << 30,
+@@ -2382,7 +2386,7 @@
+                 })
+                 .collect(),
+         }),
+-    }
++    })
+ }
+ 
+ #[derive(Clone, Debug, Serialize, Deserialize)]
+@@ -2447,7 +2451,7 @@
+ 
+ #[cfg(test)]
+ fn fixture_config() -> RuntimeConfig {
+-    let mut config = example_config();
++    let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+     // Keep the original fixture policy; the new-install generator's explicit
+     // 2 GiB total is not a test workload budget increase.
+     config.admission = kasumi_engine::admission::AdmissionConfig::default();
+@@ -2637,7 +2641,9 @@
+ 
+     #[test]
+     fn runtime_config_requires_explicit_admission() {
+-        let mut encoded = serde_json::to_value(example_config()).unwrap();
++        let mut encoded =
++            serde_json::to_value(example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap())
++                .unwrap();
+         let decoded: RuntimeConfig = serde_json::from_value(encoded.clone()).unwrap();
+         decoded.validate().unwrap();
+         assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
+@@ -2650,7 +2656,7 @@
+ 
+     #[test]
+     fn operator_example_is_valid_secret_free_and_rejects_inline_credentials() {
+-        let config = example_config();
++        let config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+         config.validate().unwrap();
+         let mut value = serde_json::to_value(&config).unwrap();
+         assert!(value["tenants"][0]["keys"].get("token").is_none());
+@@ -2954,7 +2960,7 @@
+     #[test]
+     fn replicated_control_origin_identity_matches_genesis_for_root_url_forms() {
+         for trailing_slash in [false, true] {
+-            let mut config = example_config();
++            let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+             if trailing_slash {
+                 for peer in &mut config.replication.as_mut().unwrap().peers {
+                     peer.endpoint.push('/');
+diff --git a/crates/kasumi-server/src/runtime_memory.rs b/crates/kasumi-server/src/runtime_memory.rs
+--- a/crates/kasumi-server/src/runtime_memory.rs
++++ b/crates/kasumi-server/src/runtime_memory.rs
+@@ -114,6 +114,7 @@
+         NodeDiskConfig {
+             max_census_entries: 16_384,
+             max_open_files: 256,
++            max_open_directories: 256,
+             ..config
+         }
+     }
+@@ -121,19 +122,23 @@
+     pub(crate) fn fixture_installation_disk_config(
+         roots: BTreeMap<String, PathBuf>,
+     ) -> NodeDiskConfig {
+-        Self::fixture_disk_profile(crate::persistent_disk::initial_config(roots))
++        Self::fixture_disk_profile(
++            crate::persistent_disk::initial_config(roots, kasumi_store::DirectoryPolicy::fixture())
++                .unwrap(),
++        )
+     }
+     // Used only when generating a brand-new installation. Existing RuntimeConfig
+     // disk policies are always passed directly to open_persistent unchanged.
+     pub(crate) fn new_installation_disk_config(
+         &self,
+         roots: BTreeMap<String, PathBuf>,
+-    ) -> NodeDiskConfig {
+-        let config = crate::persistent_disk::initial_config(roots);
+-        match self.factory {
++        directory_policy: kasumi_store::DirectoryPolicy,
++    ) -> Result<NodeDiskConfig> {
++        let config = crate::persistent_disk::initial_config(roots, directory_policy)?;
++        Ok(match self.factory {
+             DiskFactory::Installed => config,
+             #[cfg(test)]
+             DiskFactory::IsolatedFixture => Self::fixture_disk_profile(config),
+-        }
++        })
+     }
+ }
+diff --git a/crates/kasumi-server/src/runtime_retired_source_tests.rs b/crates/kasumi-server/src/runtime_retired_source_tests.rs
+--- a/crates/kasumi-server/src/runtime_retired_source_tests.rs
++++ b/crates/kasumi-server/src/runtime_retired_source_tests.rs
+@@ -86,7 +86,7 @@
+ impl Fixture {
+     async fn new() -> Result<Self> {
+         let root = kasumi_store::test_utils::private_tempdir()?;
+-        let mut config = example_config();
++        let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+         config.database_id = Uuid::new_v4();
+         config.database_path = root.path().join("replica-1/persistent/source.redb");
+         let tenant = config.tenants[0].tenant.clone();
+diff --git a/crates/kasumi-server/src/runtime_serving_tests.rs b/crates/kasumi-server/src/runtime_serving_tests.rs
+--- a/crates/kasumi-server/src/runtime_serving_tests.rs
++++ b/crates/kasumi-server/src/runtime_serving_tests.rs
+@@ -17,7 +17,7 @@
+         Arc::new(FixtureAudit),
+         stopped,
+     ));
+-    let mut config = example_config();
++    let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+     // Preserve this pre-existing fixture's original total allowance.
+     config.admission = Default::default();
+     config.persistent_disk = crate::persistent_disk::fixture_config(&dir.path().join("data"));
+diff --git a/crates/kasumi-server/src/runtime_storage_fixtures.rs b/crates/kasumi-server/src/runtime_storage_fixtures.rs
+--- a/crates/kasumi-server/src/runtime_storage_fixtures.rs
++++ b/crates/kasumi-server/src/runtime_storage_fixtures.rs
+@@ -35,7 +35,9 @@
+     ]));
+     let scratch = ScratchDiskConfig {
+         directory: directory.join("scratch"),
+-        ..crate::runtime::example_config().scratch_disk
++        ..crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture())
++            .unwrap()
++            .scratch_disk
+     };
+     Ok((persistent, scratch))
+ }
+@@ -55,8 +57,13 @@
+     // These fixtures historically used the default total, not the newly
+     // generated production installation's explicit 2 GiB policy.
+     let storage = standalone_storage(directory, AdmissionConfig::default())?;
+-    let installed =
+-        crate::standalone::initialize_with_storage(directory, tenant, storage.clone()).await?;
++    let installed = crate::standalone::initialize_with_storage(
++        directory,
++        tenant,
++        kasumi_store::DirectoryPolicy::fixture(),
++        storage.clone(),
++    )
++    .await?;
+     Ok((installed, storage))
+ }
+ 
+diff --git a/crates/kasumi-server/src/serving_runtime.rs b/crates/kasumi-server/src/serving_runtime.rs
+--- a/crates/kasumi-server/src/serving_runtime.rs
++++ b/crates/kasumi-server/src/serving_runtime.rs
+@@ -429,7 +429,8 @@
+ mod partition_credential_tests {
+     use super::*;
+     fn configured() -> ServingAuthorityConfig {
+-        let mut config = crate::runtime::example_config()
++        let mut config = crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture())
++            .unwrap()
+             .serving_authorities
+             .remove("storage-fence")
+             .unwrap();
+@@ -491,7 +492,8 @@
+ 
+     #[test]
+     fn enrollment_input_preserves_nested_authority_endpoints_and_serialized_identity() {
+-        let mut configuration = crate::runtime::example_config();
++        let mut configuration =
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+         configuration
+             .serving_authorities
+             .insert("storage-fence".into(), configured());
+@@ -515,7 +517,8 @@
+ 
+     #[test]
+     fn enrollment_endpoint_decoder_rejects_aliases_duplicates_and_overflow_at_both_levels() {
+-        let mut configuration = crate::runtime::example_config();
++        let mut configuration =
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+         let authority = configured();
+         let endpoint = serde_json::to_string(&authority.endpoints[&0][&1]).unwrap();
+         let valid = serde_json::to_string(&authority.endpoints).unwrap();
+diff --git a/crates/kasumi-server/src/standalone.rs b/crates/kasumi-server/src/standalone.rs
+--- a/crates/kasumi-server/src/standalone.rs
++++ b/crates/kasumi-server/src/standalone.rs
+@@ -921,16 +921,24 @@
+ 
+ /// Creates an exclusive private directory. Failure leaves a visibly incomplete
+ /// private installation; it never overwrites or adopts an existing directory.
+-pub async fn initialize(directory: &Path, tenant: &str) -> Result<InitializedInstallation> {
+-    let storage = crate::runtime_memory::RuntimeStorage::installed(&example_config().admission)?;
+-    initialize_with_storage(directory, tenant, storage).await
++pub async fn initialize(
++    directory: &Path,
++    tenant: &str,
++    directory_policy: kasumi_store::DirectoryPolicy,
++) -> Result<InitializedInstallation> {
++    let storage = crate::runtime_memory::RuntimeStorage::installed(
++        &example_config(directory_policy)?.admission,
++    )?;
++    initialize_with_storage(directory, tenant, directory_policy, storage).await
+ }
+ 
+ pub(crate) async fn initialize_with_storage(
+     directory: &Path,
+     tenant: &str,
++    directory_policy: kasumi_store::DirectoryPolicy,
+     storage: crate::runtime_memory::RuntimeStorage,
+ ) -> Result<InitializedInstallation> {
++    directory_policy.validate()?;
+     // The owned operation retains its exclusive lock and drains every database
+     // even if the CLI invocation loses its reply. Installation completion is a
+     // durable marker written only after those owners have drained.
+@@ -940,6 +948,7 @@
+         initialize_owned(
+             &directory,
+             &tenant,
++            directory_policy,
+             InitializationOptions::default(),
+             storage,
+         )
+@@ -955,6 +964,7 @@
+ async fn initialize_owned(
+     directory: &Path,
+     tenant: &str,
++    directory_policy: kasumi_store::DirectoryPolicy,
+     options: InitializationOptions,
+     storage: crate::runtime_memory::RuntimeStorage,
+ ) -> Result<InitializedInstallation> {
+@@ -969,7 +979,7 @@
+         directory.is_absolute(),
+         "installation directory must be absolute"
+     );
+-    let mut config = example_config();
++    let mut config = example_config(directory_policy)?;
+     config.admission = storage.policy().clone();
+     let admission = storage.facade(&config.admission)?;
+     let mut pending = crate::startup_resources::Resources::default();
+@@ -985,10 +995,13 @@
+     let profiles = directory.join("profiles");
+     // Root directory creation remains the explicit installer boundary. Directory
+     // mutation/accounting below those roots still needs its own NodeDisk API.
+-    let persistent_config = storage.new_installation_disk_config(BTreeMap::from([
+-        ("data".into(), data.clone()),
+-        ("backups".into(), directory.join("backups")),
+-    ]));
++    let persistent_config = storage.new_installation_disk_config(
++        BTreeMap::from([
++            ("data".into(), data.clone()),
++            ("backups".into(), directory.join("backups")),
++        ]),
++        directory_policy,
++    )?;
+     let persistent_disk = crate::persistent_disk::open(&persistent_config, &storage)?;
+     pending.standalone_lock = Some(create_installed_file(
+         &persistent_config,
+diff --git a/crates/kasumi-server/src/standalone_cli.rs b/crates/kasumi-server/src/standalone_cli.rs
+--- a/crates/kasumi-server/src/standalone_cli.rs
++++ b/crates/kasumi-server/src/standalone_cli.rs
+@@ -123,23 +123,49 @@
+             }
+             _ => anyhow::bail!("unknown maintenance operation"),
+         },
+-        [command, mode_flag, mode, directory]
+-            if command == "init" && mode_flag == "--mode" && mode == "standalone" =>
+-        {
+-            println!(
+-                "{}",
+-                serde_json::to_string_pretty(&initialize(Path::new(directory), "default").await?)?
+-            );
+-        }
+-        [command, mode_flag, mode, directory, tenant_flag, tenant]
++        [command, mode_flag, mode, directory, policy_flag, policy]
+             if command == "init"
+                 && mode_flag == "--mode"
+                 && mode == "standalone"
+-                && tenant_flag == "--tenant" =>
+-        {
+-            println!(
+-                "{}",
+-                serde_json::to_string_pretty(&initialize(Path::new(directory), tenant).await?)?
++                && policy_flag == "--directory-policy" =>
++        {
++            println!(
++                "{}",
++                serde_json::to_string_pretty(
++                    &initialize(
++                        Path::new(directory),
++                        "default",
++                        directory_policy(Path::new(policy))?
++                    )
++                    .await?
++                )?
++            );
++        }
++        [
++            command,
++            mode_flag,
++            mode,
++            directory,
++            policy_flag,
++            policy,
++            tenant_flag,
++            tenant,
++        ] if command == "init"
++            && mode_flag == "--mode"
++            && mode == "standalone"
++            && policy_flag == "--directory-policy"
++            && tenant_flag == "--tenant" =>
++        {
++            println!(
++                "{}",
++                serde_json::to_string_pretty(
++                    &initialize(
++                        Path::new(directory),
++                        tenant,
++                        directory_policy(Path::new(policy))?
++                    )
++                    .await?
++                )?
+             );
+         }
+         [command, action, path]
+@@ -302,3 +328,43 @@
+     private_files::sync_parent(&journal)?;
+     Ok(issued.expires_at_ms)
+ }
++
++/// Load the caller's explicit namespace bounds before any installation work.
++/// Numeric validity does not replace qualification of the selected filesystem.
++pub fn directory_policy(path: &Path) -> Result<kasumi_store::DirectoryPolicy> {
++    use std::io::Read;
++    let mut bytes = Vec::new();
++    std::fs::File::open(path)?
++        .take(4097)
++        .read_to_end(&mut bytes)?;
++    anyhow::ensure!(bytes.len() <= 4096, "directory policy exceeds size limit");
++    let policy: kasumi_store::DirectoryPolicy = serde_json::from_slice(&bytes)?;
++    policy.validate()?;
++    Ok(policy)
++}
++
++#[cfg(test)]
++mod directory_policy_tests {
++    use super::*;
++    #[test]
++    fn explicit_policy_is_bounded_strict_and_preserves_caller_values() {
++        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
++        let path = directory.path().join("policy.json");
++        std::fs::write(&path, br#"{"extent_bytes":1048576,"max_entries":32768}"#).unwrap();
++        let policy = directory_policy(&path).unwrap();
++        assert_eq!(policy.extent_bytes, 1048576);
++        assert_eq!(policy.max_entries, 32768);
++        for bytes in [
++            br#"{}"#.as_slice(),
++            br#"{"extent_bytes":1048576}"#.as_slice(),
++            br#"{"extent_bytes":0,"max_entries":1}"#.as_slice(),
++            br#"{"extent_bytes":1,"max_entries":1,"legacy_default":true}"#.as_slice(),
++        ] {
++            std::fs::write(&path, bytes).unwrap();
++            assert!(directory_policy(&path).is_err());
++        }
++        std::fs::write(&path, vec![b' '; 4097]).unwrap();
++        assert!(directory_policy(&path).is_err());
++        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
++    }
++}
+diff --git a/crates/kasumi-server/src/standalone_operator_tests.rs b/crates/kasumi-server/src/standalone_operator_tests.rs
+--- a/crates/kasumi-server/src/standalone_operator_tests.rs
++++ b/crates/kasumi-server/src/standalone_operator_tests.rs
+@@ -189,6 +189,7 @@
+     let mut request = Box::pin(initialize_with_storage(
+         &directory,
+         "documents",
++        kasumi_store::DirectoryPolicy::fixture(),
+         storage.clone(),
+     ));
+     pending(&mut request).await;
+@@ -284,9 +285,14 @@
+     let storage =
+         crate::runtime_storage_fixtures::standalone_storage(&directory, Default::default())?;
+     assert!(
+-        initialize_with_storage(&directory, "documents", storage.clone())
+-            .await
+-            .is_err()
++        initialize_with_storage(
++            &directory,
++            "documents",
++            kasumi_store::DirectoryPolicy::fixture(),
++            storage.clone()
++        )
++        .await
++        .is_err()
+     );
+     assert!(!directory.join("kasumi.json").exists());
+     assert!(!directory.join("data/installation.json").exists());
+diff --git a/crates/kasumi-server/src/standalone_provision_tests.rs b/crates/kasumi-server/src/standalone_provision_tests.rs
+--- a/crates/kasumi-server/src/standalone_provision_tests.rs
++++ b/crates/kasumi-server/src/standalone_provision_tests.rs
+@@ -107,6 +107,7 @@
+     let result = initialize_owned(
+         &directory,
+         "documents",
++        kasumi_store::DirectoryPolicy::fixture(),
+         InitializationOptions {
+             obstruct_profile_publication: true,
+         },
+@@ -140,9 +141,14 @@
+     node.shutdown().await?;
+     drop(node);
+     ensure!(
+-        initialize_with_storage(&directory, "documents", storage)
+-            .await
+-            .is_err(),
++        initialize_with_storage(
++            &directory,
++            "documents",
++            kasumi_store::DirectoryPolicy::fixture(),
++            storage
++        )
++        .await
++        .is_err(),
+         "init adopted an incomplete existing directory"
+     );
+     Ok(())
+diff --git a/crates/kasumi-server/src/standalone_storage_tests.rs b/crates/kasumi-server/src/standalone_storage_tests.rs
+--- a/crates/kasumi-server/src/standalone_storage_tests.rs
++++ b/crates/kasumi-server/src/standalone_storage_tests.rs
+@@ -41,7 +41,7 @@
+ #[test]
+ fn installed_marker_pair_cannot_recreate_a_missing_installation_lock() -> Result<()> {
+     let directory = kasumi_store::test_utils::private_tempdir()?;
+-    let mut config = example_config();
++    let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+     config.mode = DeploymentMode::Standalone;
+     config.database_path = directory.path().join("node.redb");
+     config.persistent_disk = crate::persistent_disk::fixture_config(directory.path());
+diff --git a/crates/kasumi-server/src/standalone_tests.rs b/crates/kasumi-server/src/standalone_tests.rs
+--- a/crates/kasumi-server/src/standalone_tests.rs
++++ b/crates/kasumi-server/src/standalone_tests.rs
+@@ -25,9 +25,14 @@
+     .await
+     .unwrap();
+     assert!(
+-        initialize_with_storage(&root.path().join("kasumi"), "tenant-a", storage.clone())
+-            .await
+-            .is_err()
++        initialize_with_storage(
++            &root.path().join("kasumi"),
++            "tenant-a",
++            kasumi_store::DirectoryPolicy::fixture(),
++            storage.clone()
++        )
++        .await
++        .is_err()
+     );
+     let mut config = RuntimeConfig::load(&installation.configuration).unwrap();
+     let mut control = ClientProfile::load(&installation.control_profile).unwrap();
+diff --git a/crates/kasumi-server/src/target_runtime_shutdown_tests.rs b/crates/kasumi-server/src/target_runtime_shutdown_tests.rs
+--- a/crates/kasumi-server/src/target_runtime_shutdown_tests.rs
++++ b/crates/kasumi-server/src/target_runtime_shutdown_tests.rs
+@@ -80,7 +80,8 @@
+             Default::default(),
+         )
+         .unwrap();
+-        let config = crate::runtime::example_config();
++        let config =
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+         // No network or recovery operation is dispatched by this ownership fixture.
+         // The actual monitor is stopped at its first upgrade, before discovery.
+         let installed = TargetRecoveryConfig {
+diff --git a/crates/kasumi-store/src/lib.rs b/crates/kasumi-store/src/lib.rs
+--- a/crates/kasumi-store/src/lib.rs
++++ b/crates/kasumi-store/src/lib.rs
+@@ -35,8 +35,8 @@
+ pub mod node_store_ids;
+ mod read_view;
+ pub use node_disk::{
+-    CensusCancellation, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeDiskPhase,
+-    NodeDiskSnapshot,
++    CensusCancellation, DirectoryPolicy, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskDirectory,
++    NodeDiskFile, NodeDiskPhase, NodeDiskSnapshot,
+ };
+ mod scratch_disk;
+ mod scratch_table;
+diff --git a/crates/kasumi-store/src/node_disk/census.rs b/crates/kasumi-store/src/node_disk/census.rs
+--- a/crates/kasumi-store/src/node_disk/census.rs
++++ b/crates/kasumi-store/src/node_disk/census.rs
+@@ -1,5 +1,6 @@
+ use super::{
+-    AccountedFile, CensusCancellation, Identity, NamespaceBinding, NodeDiskConfig, extent,
++    AccountedDirectory, AccountedFile, AccountedInode, CensusCancellation, Identity,
++    NamespaceBinding, NodeDiskConfig, extent,
+ };
+ use anyhow::{Context, Result, ensure};
+ use std::{
+@@ -239,6 +240,7 @@
+ }
+ 
+ pub(super) struct Cursor {
++    identity: Identity,
+     binding: NamespaceBinding,
+     file: File,
+     entries: *mut libc::DIR,
+@@ -246,6 +248,7 @@
+ 
+ impl Cursor {
+     fn open(file: File, binding: NamespaceBinding) -> Result<Self> {
++        let identity = Identity::of(&file.metadata()?);
+         // A dup shares the directory offset and would make a later census start
+         // at EOF. Open a new file description anchored to this descriptor.
+         let fd = open_at(&file, c".", libc::O_RDONLY | libc::O_DIRECTORY)?.into_raw_fd();
+@@ -257,6 +260,7 @@
+             return Err(error.into());
+         }
+         Ok(Self {
++            identity,
+             file,
+             entries,
+             binding,
+@@ -303,7 +307,9 @@
+     pub(super) bytes: u64,
+     pub(super) pending: u64,
+     pub(super) files: u64,
+-    pub(super) accounted: HashMap<Identity, AccountedFile>,
++    pub(super) accounted: HashMap<Identity, AccountedInode>,
++    pub(super) directory_bytes: u64,
++    pub(super) directories: u64,
+ }
+ 
+ pub(super) fn census(
+@@ -316,6 +322,13 @@
+     let mut work = 0_u64;
+     for root in roots.values() {
+         root.verify()?;
++        enroll_directory(
++            &mut totals,
++            &root.file,
++            NamespaceBinding::root(root.identity),
++            None,
++            config.directory_policy,
++        )?;
+         let mut stack = vec![Cursor::open(
+             root.file.try_clone()?,
+             NamespaceBinding::root(root.identity),
+@@ -325,6 +338,7 @@
+             let current = stack.last_mut().expect("nonempty census stack");
+             let Some(name) = current.next(config.max_name_bytes)? else {
+                 current.file.sync_all()?;
++                verify_enrolled_directory(&totals, current)?;
+                 stack.pop();
+                 continue;
+             };
+@@ -336,6 +350,16 @@
+             if name.to_bytes() == b"." || name.to_bytes() == b".." {
+                 continue;
+             }
++            let parent = current.identity;
++            let enrolled = totals
++                .accounted
++                .get_mut(&parent)
++                .and_then(AccountedInode::directory_mut)
++                .expect("enrolled census directory");
++            enrolled.children = enrolled
++                .children
++                .checked_add(1)
++                .context("directory child count overflow")?;
+             let binding = current.binding.child(&name);
+             // Open nonblocking so a substituted FIFO cannot stall a bounded census.
+             let child = open_at(&current.file, &name, libc::O_RDONLY | libc::O_NONBLOCK)?;
+@@ -350,6 +374,13 @@
+                     stack.len() < config.max_depth as usize,
+                     "census depth exhausted"
+                 );
++                enroll_directory(
++                    &mut totals,
++                    &child,
++                    binding,
++                    Some(parent),
++                    config.directory_policy,
++                )?;
+                 stack.push(Cursor::open(child, binding)?);
+             } else {
+                 regular(&metadata, root.identity.0)?;
+@@ -371,7 +402,12 @@
+                         .accounted
+                         .insert(
+                             Identity::of(&verified),
+-                            AccountedFile::durable(binding, bytes, pending, verified.len()),
++                            AccountedInode::File(AccountedFile::durable(
++                                binding,
++                                bytes,
++                                pending,
++                                verified.len(),
++                            )),
+                         )
+                         .is_none(),
+                     "persistent census repeated an enrolled physical inode"
+@@ -395,3 +431,90 @@
+     cancel.check()?;
+     Ok(totals)
+ }
++
++// Directories are not sparse regular files: st_size is a namespace value, not
++// an admitted logical byte reservation. Charge observed allocation exactly.
++pub(super) fn directory_extent(metadata: &Metadata) -> io::Result<u64> {
++    metadata
++        .blocks()
++        .checked_mul(512)
++        .ok_or_else(|| io::ErrorKind::InvalidData.into())
++}
++
++fn enroll_directory(
++    totals: &mut Totals,
++    file: &File,
++    binding: NamespaceBinding,
++    parent: Option<Identity>,
++    policy: super::DirectoryPolicy,
++) -> Result<()> {
++    let metadata = file.metadata()?;
++    directory(&metadata)?;
++    let identity = Identity::of(&metadata);
++    let observed = directory_extent(&metadata)?;
++    let bytes = policy.extent_bytes.max(observed);
++    let pending = bytes - observed;
++    let next_bytes = totals
++        .bytes
++        .checked_add(bytes)
++        .context("directory extent overflow")?;
++    let next_directories = totals
++        .directory_bytes
++        .checked_add(observed)
++        .context("directory extent overflow")?;
++    totals
++        .accounted
++        .try_reserve(1)
++        .context("reserving census directory metadata")?;
++    ensure!(
++        totals
++            .accounted
++            .insert(
++                identity,
++                AccountedInode::Directory(AccountedDirectory {
++                    binding,
++                    parent,
++                    bytes,
++                    pending,
++                    settled: true,
++                    len: metadata.len(),
++                    children: 0,
++                    live_handles: 0,
++                })
++            )
++            .is_none(),
++        "persistent census repeated an enrolled directory"
++    );
++    totals.directories = totals
++        .directories
++        .checked_add(1)
++        .context("census directory count overflow")?;
++    totals.pending = totals
++        .pending
++        .checked_add(pending)
++        .context("directory promises overflow")?;
++    totals.bytes = next_bytes;
++    totals.directory_bytes = next_directories;
++    Ok(())
++}
++
++fn verify_enrolled_directory(totals: &Totals, cursor: &Cursor) -> Result<()> {
++    let metadata = cursor.file.metadata()?;
++    directory(&metadata)?;
++    let enrolled = totals
++        .accounted
++        .get(&cursor.identity)
++        .and_then(AccountedInode::directory)
++        .context("census directory missing")?;
++    ensure!(
++        Identity::of(&metadata) == cursor.identity
++            && metadata.len() == enrolled.len
++            && directory_extent(&metadata)?
++                == enrolled
++                    .bytes
++                    .checked_sub(enrolled.pending)
++                    .context("invalid directory promise")?,
++        "directory changed during persistent census"
++    );
++    Ok(())
++}
+diff --git a/crates/kasumi-store/src/node_disk/directory/tests.rs b/crates/kasumi-store/src/node_disk/directory/tests.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/directory/tests.rs
+@@ -0,0 +1,311 @@
++use super::super::{CensusCancellation, NodeDiskConfig};
++use super::*;
++use crate::test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry};
++use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
++
++fn fixture() -> (tempfile::TempDir, NodeDiskConfig, Arc<TestDiskMemory>) {
++    let directory = private_tempdir().unwrap();
++    let config = NodeDisk::fixture_config(directory.path().join("unused")).unwrap();
++    (directory, config, TestDiskMemory::new(256 << 20, 4096))
++}
++fn open(config: &NodeDiskConfig, memory: &Arc<TestDiskMemory>) -> Arc<NodeDisk> {
++    retry_disk_registry(|| {
++        NodeDisk::open_fixture(config, memory.clone(), &CensusCancellation::default())
++    })
++    .unwrap()
++}
++fn blocks(path: &Path) -> u64 {
++    path.metadata().unwrap().blocks().checked_mul(512).unwrap()
++}
++
++#[test]
++fn census_charges_directory_ceilings_and_records_actual_blocks_and_remaining_promises() {
++    let (directory, config, memory) = fixture();
++    let child = directory.path().join("child");
++    crate::private_files::create_directory(&child).unwrap();
++    let file = std::fs::OpenOptions::new()
++        .create_new(true)
++        .read(true)
++        .write(true)
++        .mode(0o600)
++        .open(child.join("data"))
++        .unwrap();
++    file.set_len(8192).unwrap();
++    file.sync_all().unwrap();
++    let disk = open(&config, &memory);
++    let directories = blocks(directory.path()) + blocks(&child);
++    let (file_bytes, file_pending) =
++        super::super::extent(&file.metadata().unwrap(), disk.unit).unwrap();
++    let snapshot = disk.snapshot();
++    assert_eq!(snapshot.persistent_directories, 2);
++    assert_eq!(snapshot.observed_directory_bytes, directories);
++    let directory_charge = config
++        .directory_policy
++        .extent_bytes
++        .max(blocks(directory.path()))
++        + config.directory_policy.extent_bytes.max(blocks(&child));
++    assert_eq!(snapshot.charged_bytes, directory_charge + file_bytes);
++    assert_eq!(
++        snapshot.pending_bytes,
++        directory_charge - directories + file_pending
++    );
++    assert_eq!(snapshot.persistent_files, 1);
++    let state = disk.lock_state();
++    let root = state.accounted[&Identity::of(&directory.path().metadata().unwrap())]
++        .directory()
++        .unwrap();
++    assert_eq!(root.children, 1);
++    let child = state.accounted[&Identity::of(&child.metadata().unwrap())]
++        .directory()
++        .unwrap();
++    assert_eq!(child.children, 1);
++    assert_eq!(
++        child.parent,
++        Some(Identity::of(&directory.path().metadata().unwrap()))
++    );
++}
++
++#[test]
++fn directory_quota_denies_before_allocation_and_preserves_file_quota() {
++    let (directory, mut config, memory) = fixture();
++    config.max_open_directories = 1;
++    let original_file_limit = config.max_open_files;
++    let disk = open(&config, &memory);
++    let handle = disk.open_directory("fixture", Path::new("")).unwrap();
++    let clone = handle.clone();
++    assert_eq!(disk.snapshot().open_directories, 1);
++    let (result, allocations) =
++        crate::allocation_tests::measure(|| disk.open_directory("fixture", Path::new("")));
++    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::StorageFull);
++    assert_eq!(allocations, 0);
++    assert_eq!(disk.config.max_open_files, original_file_limit);
++    assert_eq!(disk.snapshot().open_files, 0);
++    assert_eq!(
++        disk.snapshot().observed_directory_bytes,
++        blocks(directory.path())
++    );
++    drop(handle);
++    assert_eq!(disk.snapshot().open_directories, 1);
++    drop(clone);
++    assert_eq!(disk.snapshot().open_directories, 0);
++}
++
++#[test]
++fn admitted_directory_sync_read_and_last_drop_do_not_allocate_or_credit_extent() {
++    let (_directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let handle = disk.open_directory("fixture", Path::new("")).unwrap();
++    let before = disk.snapshot();
++    assert!(disk.pause().is_err());
++    let (result, allocations) = crate::allocation_tests::measure(|| -> io::Result<()> {
++        assert_eq!(
++            handle.observed_allocated_bytes()?,
++            before.observed_directory_bytes
++        );
++        handle.sync_all()?;
++        drop(handle);
++        Ok(())
++    });
++    result.unwrap();
++    assert_eq!(allocations, 0);
++    assert_eq!(disk.snapshot().open_directories, 0);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++}
++
++#[test]
++fn operational_drain_is_not_published_until_after_actual_directory_close() {
++    let (_directory, mut config, memory) = fixture();
++    config.max_open_directories = 1;
++    let disk = open(&config, &memory);
++    let handle = disk.open_directory("fixture", Path::new("")).unwrap();
++    let (entered_tx, entered) = std::sync::mpsc::sync_channel(0);
++    let (release, release_rx) = std::sync::mpsc::sync_channel(0);
++    *handle.owner().after_close.as_ref().unwrap().lock().unwrap() = Some(ClosePause {
++        entered: entered_tx,
++        release: release_rx,
++    });
++    let dropping = std::thread::spawn(move || drop(handle));
++    // This checkpoint is executed only after drop(actual File), before counters.
++    entered
++        .recv_timeout(std::time::Duration::from_secs(5))
++        .unwrap();
++    assert_eq!(disk.snapshot().open_directories, 1);
++    assert_eq!(
++        disk.open_directory("fixture", Path::new(""))
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::StorageFull
++    );
++    assert!(disk.pause().is_err());
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    release.send(()).unwrap();
++    dropping.join().unwrap();
++    assert_eq!(disk.snapshot().open_directories, 0);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++}
++
++#[test]
++fn unknown_final_directory_absence_is_healthy_but_known_disappearance_fences() {
++    let (directory, config, memory) = fixture();
++    let child = directory.path().join("child");
++    crate::private_files::create_directory(&child).unwrap();
++    let disk = open(&config, &memory);
++    assert_eq!(
++        disk.open_directory("fixture", Path::new("missing"))
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::NotFound
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    let handle = disk.open_directory("fixture", Path::new("child")).unwrap();
++    let before = disk.snapshot().charged_bytes;
++    std::fs::remove_dir(&child).unwrap();
++    let (result, allocations) = crate::allocation_tests::measure(|| handle.sync_all());
++    assert!(result.is_err());
++    assert_eq!(allocations, 0);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert_eq!(disk.snapshot().charged_bytes, before);
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    drop(handle);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    assert_eq!(disk.snapshot().persistent_directories, 1);
++}
++
++#[test]
++fn unchanged_final_directory_inode_does_not_hide_replaced_intermediate_ancestor() {
++    let (directory, config, memory) = fixture();
++    for relative in ["a", "a/b", "c"] {
++        crate::private_files::create_directory(&directory.path().join(relative)).unwrap();
++    }
++    let disk = open(&config, &memory);
++    let handle = disk.open_directory("fixture", Path::new("a/b")).unwrap();
++    let retained = handle.owner().identity;
++    let root_before = directory.path().metadata().unwrap();
++    let outside = private_tempdir().unwrap();
++    std::fs::rename(directory.path().join("a"), outside.path().join("swap")).unwrap();
++    std::fs::rename(directory.path().join("c"), directory.path().join("a")).unwrap();
++    std::fs::rename(outside.path().join("swap"), directory.path().join("c")).unwrap();
++    std::fs::rename(directory.path().join("c/b"), directory.path().join("a/b")).unwrap();
++    let root_after = directory.path().metadata().unwrap();
++    assert_eq!(
++        (root_before.len(), root_before.blocks()),
++        (root_after.len(), root_after.blocks()),
++        "counterexample must preserve root extent"
++    );
++    assert_eq!(
++        retained,
++        Identity::of(&directory.path().join("a/b").metadata().unwrap())
++    );
++    assert!(handle.sync_all().is_err());
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert!(disk.open_directory("fixture", Path::new("a/b")).is_err());
++}
++
++#[test]
++fn failed_directory_census_replacement_retains_previous_entries_and_charge() {
++    let (directory, config, memory) = fixture();
++    crate::private_files::create_directory(&directory.path().join("child")).unwrap();
++    let disk = open(&config, &memory);
++    let before = disk.snapshot();
++    let original = disk.lock_state().accounted.clone();
++    let cancel = CensusCancellation::default();
++    cancel.cancel();
++    assert!(disk.reconcile(&cancel).is_err());
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(disk.lock_state().accounted, original);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    assert_eq!(disk.lock_state().accounted, original);
++}
++
++#[test]
++fn required_directory_limit_is_not_deserialized_from_a_fallback() {
++    let (_directory, config, _memory) = fixture();
++    let mut value = serde_json::to_value(config).unwrap();
++    value
++        .as_object_mut()
++        .unwrap()
++        .remove("max_open_directories");
++    assert!(serde_json::from_value::<NodeDiskConfig>(value).is_err());
++}
++
++#[test]
++fn metadata_denial_precedes_directory_path_access_and_retains_no_partial_owner() {
++    let (directory, mut config, _memory) = fixture();
++    config
++        .roots
++        .insert("fixture".into(), directory.path().join("not-created"));
++    let memory = TestDiskMemory::new(1, 1);
++    let error = retry_disk_registry(|| {
++        NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
++    })
++    .unwrap_err();
++    let crate::DiskOpenError::Failed(error) = error else {
++        panic!("fixture registry retry exhausted");
++    };
++    assert_eq!(
++        error.downcast_ref::<io::Error>().unwrap().kind(),
++        io::ErrorKind::OutOfMemory
++    );
++    assert_eq!(memory.snapshot().attempts, 1);
++    assert_eq!(memory.snapshot().used_bytes, 0);
++    assert_eq!(memory.snapshot().live_reservations, 0);
++    assert!(!config.roots["fixture"].exists());
++}
++
++#[test]
++fn failed_shared_device_rejects_directory_sync_without_releasing_custody_or_bytes() {
++    let (_directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let handle = disk.open_directory("fixture", Path::new("")).unwrap();
++    let before = disk.snapshot();
++    disk.device.lock().fail_owner();
++    assert!(handle.sync_all().is_err());
++    assert!(handle.observed_allocated_bytes().is_err());
++    assert!(disk.open_directory("fixture", Path::new("")).is_err());
++    assert_eq!(disk.snapshot().open_directories, 1);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    drop(handle);
++    assert_eq!(disk.snapshot().open_directories, 0);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++}
++
++#[test]
++fn file_capacity_remains_independent_of_directory_membership() {
++    let (directory, mut config, memory) = fixture();
++    config.max_census_entries = 8;
++    crate::private_files::create_directory(&directory.path().join("child")).unwrap();
++    let disk = open(&config, &memory);
++    // Both directories remain enrolled as each of the original eight file
++    // slots is filled. Capping the union at N (+ roots) denies too early.
++    for index in 0..8 {
++        let relative = std::path::PathBuf::from(format!("file-{index}"));
++        let file = disk
++            .create_file("fixture", &relative, super::super::DiskWork::Foreground)
++            .unwrap();
++        file.sync_all().unwrap();
++        drop(file);
++    }
++    let state = disk.lock_state();
++    assert_eq!(state.files, 8);
++    assert_eq!(state.directories, 2);
++    assert_eq!(state.accounted.len(), 10);
++    drop(state);
++    assert_eq!(
++        disk.create_file(
++            "fixture",
++            std::path::Path::new("overflow"),
++            super::super::DiskWork::Foreground
++        )
++        .unwrap_err()
++        .kind(),
++        std::io::ErrorKind::StorageFull
++    );
++    assert!(!directory.path().join("overflow").exists());
++    // This unchanged work limit may reject recensus even though the files
++    // were individually admitted. Failure retains the entire old union.
++    let old = disk.lock_state().accounted.clone();
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    assert_eq!(disk.lock_state().accounted, old);
++}
+diff --git a/crates/kasumi-store/src/node_disk/directory.rs b/crates/kasumi-store/src/node_disk/directory.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/directory.rs
+@@ -0,0 +1,378 @@
++//! Enrolled, counted read/sync custody for installed directories.
++//!
++//! This primitive does not authorize namespace mutation. Census establishes the
++//! exact identities/extents. Managed file effects settle their affected parents
++//! under the same state guard; other namespace changes require actual drain and
++//! fresh census until their explicit mutation protocol is implemented.
++use super::{
++    AccountedDirectory, AccountedInode, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase, State,
++    census,
++};
++use std::{
++    ffi::CString,
++    fs::File,
++    io,
++    path::{Component, Path},
++    sync::Arc,
++};
++
++pub(super) struct DirectoryOwner {
++    disk: Arc<NodeDisk>,
++    root: String,
++    names: Box<[CString]>,
++    identity: Identity,
++    file: Option<File>,
++    #[cfg(test)]
++    after_close: Option<std::sync::Mutex<Option<ClosePause>>>,
++}
++
++/// An operational directory descriptor whose actual close participates in drain.
++/// The inner Arc is private: callers can clone custody, not retain an untracked
++/// Weak control block after the last physical owner closes.
++#[derive(Clone)]
++pub struct NodeDiskDirectory(Option<Arc<DirectoryOwner>>);
++impl std::fmt::Debug for NodeDiskDirectory {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("NodeDiskDirectory")
++            .field("identity", &self.owner().identity)
++            .finish_non_exhaustive()
++    }
++}
++
++#[cfg(test)]
++struct ClosePause {
++    entered: std::sync::mpsc::SyncSender<()>,
++    release: std::sync::mpsc::Receiver<()>,
++}
++
++struct LookupFailure {
++    error: io::Error,
++    fence: bool,
++}
++impl From<io::Error> for LookupFailure {
++    fn from(error: io::Error) -> Self {
++        Self { error, fence: true }
++    }
++}
++
++fn checked_entry<'a>(
++    state: &'a State,
++    file: &File,
++    binding: NamespaceBinding,
++    parent: Option<Identity>,
++) -> io::Result<(Identity, &'a AccountedDirectory)> {
++    let metadata = file.metadata()?;
++    census::directory_nonallocating(&metadata)?;
++    let identity = Identity::of(&metadata);
++    let Some(entry) = state
++        .accounted
++        .get(&identity)
++        .and_then(AccountedInode::directory)
++    else {
++        return Err(io::ErrorKind::InvalidData.into());
++    };
++    if !entry.settled
++        || entry.binding != binding
++        || entry.parent != parent
++        || entry
++            .bytes
++            .checked_sub(entry.pending)
++            .ok_or(io::ErrorKind::InvalidData)?
++            != census::directory_extent(&metadata)?
++        || entry.len != metadata.len()
++    {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    Ok((identity, entry))
++}
++
++// Each ancestor is compared with the retained ledger, not only the last inode.
++// Paths, hash state and descriptor walk require no heap allocation here.
++fn walk_observe(
++    disk: &NodeDisk,
++    state: &State,
++    root: &str,
++    names: &[CString],
++    absent_final: bool,
++    mut visited: impl FnMut(Identity),
++) -> Result<File, LookupFailure> {
++    let root = disk.roots.get(root).ok_or_else(|| LookupFailure {
++        error: io::ErrorKind::InvalidInput.into(),
++        fence: false,
++    })?;
++    root.verify_nonallocating()?;
++    let mut current = root.file.try_clone()?;
++    let mut binding = NamespaceBinding::root(root.identity);
++    let (mut parent, _) = checked_entry(state, &current, binding, None)?;
++    visited(parent);
++    for (index, name) in names.iter().enumerate() {
++        binding = binding.child(name);
++        let child = match census::open_at(&current, name, libc::O_RDONLY | libc::O_DIRECTORY) {
++            Ok(child) => child,
++            Err(error) => {
++                let known = state
++                    .accounted
++                    .values()
++                    .any(|entry| entry.binding() == binding);
++                // This is the one healthy absence: an unknown final component
++                // below a completely verified enrolled ancestry.
++                let fence = !(absent_final
++                    && index + 1 == names.len()
++                    && !known
++                    && error.kind() == io::ErrorKind::NotFound);
++                return Err(LookupFailure { error, fence });
++            }
++        };
++        let (identity, _) = checked_entry(state, &child, binding, Some(parent))?;
++        visited(identity);
++        parent = identity;
++        current = child;
++    }
++    Ok(current)
++}
++
++fn walk(
++    disk: &NodeDisk,
++    state: &State,
++    root: &str,
++    names: &[CString],
++    absent_final: bool,
++) -> Result<File, LookupFailure> {
++    walk_observe(disk, state, root, names, absent_final, |_| {})
++}
++
++pub(super) fn file_parent(
++    disk: &NodeDisk,
++    state: &State,
++    root: &str,
++    names: &[CString],
++) -> io::Result<(File, Box<[Identity]>)> {
++    let count = names
++        .len()
++        .checked_add(1)
++        .ok_or(io::ErrorKind::InvalidInput)?;
++    let mut ancestors = Vec::new();
++    ancestors
++        .try_reserve_exact(count)
++        .map_err(|_| io::ErrorKind::OutOfMemory)?;
++    let file = walk_observe(disk, state, root, names, false, |identity| {
++        ancestors.push(identity)
++    })
++    .map_err(|failure| failure.error)?;
++    Ok((file, ancestors.into_boxed_slice()))
++}
++
++fn names(relative: &Path, depth: u32, maximum: u32) -> io::Result<Box<[CString]>> {
++    use std::os::unix::ffi::OsStrExt;
++    let mut names = Vec::new();
++    for component in relative.components() {
++        let Component::Normal(name) = component else {
++            return Err(io::ErrorKind::InvalidInput.into());
++        };
++        if names.len() >= depth as usize || name.len() > maximum as usize {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        names
++            .try_reserve(1)
++            .map_err(|_| io::ErrorKind::OutOfMemory)?;
++        names.push(CString::new(name.as_bytes()).map_err(|_| io::ErrorKind::InvalidInput)?);
++    }
++    Ok(names.into_boxed_slice())
++}
++
++impl NodeDisk {
++    /// Open only an enrolled directory. Empty relative opens the configured root.
++    /// No namespace mutation, raw directory adoption or ancestor fallback occurs.
++    pub fn open_directory(
++        self: &Arc<Self>,
++        root: &str,
++        relative: &Path,
++    ) -> io::Result<NodeDiskDirectory> {
++        let mut state = self.lock_state();
++        if state.phase != NodeDiskPhase::Open || !self.device.lock().admission_ready() {
++            return Err(io::ErrorKind::Other.into());
++        }
++        if state.open_directories >= self.config.max_open_directories {
++            return Err(io::ErrorKind::StorageFull.into());
++        }
++        if !self.roots.contains_key(root) {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        // The installed envelope funds all these allocations and the temporary
++        // walk descriptors. No registered destructor exists before publication.
++        let names = names(relative, self.config.max_depth, self.config.max_name_bytes)?;
++        let root = root.to_owned();
++        let mut allocation = Arc::<DirectoryOwner>::new_uninit();
++        #[cfg(test)]
++        let after_close = {
++            let mutex = std::sync::Mutex::new(None);
++            drop(mutex.lock().expect("unpublished directory close hook"));
++            mutex
++        };
++        let file = match walk(self, &state, &root, &names, true) {
++            Ok(file) => file,
++            Err(error) => {
++                if error.fence {
++                    self.fail_locked(&mut state);
++                }
++                return Err(error.error);
++            }
++        };
++        let identity = match file.metadata() {
++            Ok(metadata) => Identity::of(&metadata),
++            Err(error) => {
++                self.fail_locked(&mut state);
++                return Err(error);
++            }
++        };
++        let entry = state
++            .accounted
++            .get_mut(&identity)
++            .and_then(AccountedInode::directory_mut)
++            .expect("verified directory enrollment");
++        let Some(next) = entry.live_handles.checked_add(1) else {
++            self.fail_locked(&mut state);
++            return Err(io::ErrorKind::InvalidData.into());
++        };
++        entry.live_handles = next;
++        state.open_directories += 1;
++        Arc::get_mut(&mut allocation)
++            .expect("unpublished directory owner")
++            .write(DirectoryOwner {
++                disk: self.clone(),
++                root,
++                names,
++                identity,
++                file: Some(file),
++                #[cfg(test)]
++                after_close: Some(after_close),
++            });
++        // SAFETY: the sole allocation has just been fully initialized. It is
++        // published only after actual FD acquisition and all ledger checks.
++        let owner = unsafe { allocation.assume_init() };
++        drop(state);
++        Ok(NodeDiskDirectory(Some(owner)))
++    }
++}
++
++impl NodeDiskDirectory {
++    fn owner(&self) -> &DirectoryOwner {
++        self.0.as_deref().expect("live directory custody")
++    }
++    fn verify(&self, state: &State) -> io::Result<()> {
++        let current = walk(
++            &self.owner().disk,
++            state,
++            &self.owner().root,
++            &self.owner().names,
++            false,
++        )
++        .map_err(|failure| failure.error)?;
++        let retained = self
++            .owner()
++            .file
++            .as_ref()
++            .expect("live directory descriptor");
++        if Identity::of(&current.metadata()?) != self.owner().identity
++            || Identity::of(&retained.metadata()?) != self.owner().identity
++        {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        Ok(())
++    }
++
++    pub fn observed_allocated_bytes(&self) -> io::Result<u64> {
++        let mut state = self.owner().disk.lock_state();
++        if state.phase == NodeDiskPhase::Failed
++            || !self.owner().disk.device.lock().admission_ready()
++        {
++            return Err(io::ErrorKind::Other.into());
++        }
++        self.verify(&state)
++            .inspect_err(|_| self.owner().disk.fail_locked(&mut state))?;
++        let entry = state.accounted[&self.owner().identity]
++            .directory()
++            .expect("verified directory enrollment");
++        entry
++            .bytes
++            .checked_sub(entry.pending)
++            .ok_or_else(|| io::ErrorKind::InvalidData.into())
++    }
++
++    /// Synchronize an unchanged enrolled directory through its retained FD.
++    /// Paused permits existing custody to drain; Failed never advertises success.
++    pub fn sync_all(&self) -> io::Result<()> {
++        let mut state = self.owner().disk.lock_state();
++        if state.phase == NodeDiskPhase::Failed
++            || !self.owner().disk.device.lock().admission_ready()
++        {
++            return Err(io::ErrorKind::Other.into());
++        }
++        let result = (|| {
++            self.verify(&state)?;
++            self.owner()
++                .file
++                .as_ref()
++                .expect("live directory descriptor")
++                .sync_all()?;
++            self.verify(&state)
++        })();
++        result.inspect_err(|_| self.owner().disk.fail_locked(&mut state))
++    }
++}
++
++// All strong handles retire through into_inner. Its exactly-one-winner rule
++// avoids try_unwrap races where the last Arc would run the owner destructor
++// before its allocation was released. No inner Arc or Weak escapes this module.
++impl Drop for NodeDiskDirectory {
++    fn drop(&mut self) {
++        if let Some(owner) = Arc::into_inner(self.0.take().expect("live directory custody")) {
++            drop(owner);
++        }
++    }
++}
++
++impl Drop for DirectoryOwner {
++    fn drop(&mut self) {
++        // Actual close precedes the drain counters. Nothing in this destructor
++        // enrolls namespace changes or returns disk extent credit.
++        drop(self.file.take());
++        #[cfg(test)]
++        if let Some(mut hook) = self.after_close.take() {
++            if let Some(pause) = hook.get_mut().unwrap().take() {
++                pause.entered.send(()).unwrap();
++                pause
++                    .release
++                    .recv_timeout(std::time::Duration::from_secs(5))
++                    .expect("release directory close fixture");
++            }
++            drop(hook);
++        }
++        // These variable allocations must die before another owner may spend
++        // this slot. The Arc backing already died in Arc::into_inner above.
++        drop(std::mem::take(&mut self.root));
++        drop(std::mem::replace(&mut self.names, Box::new([])));
++        let mut state = self.disk.lock_state();
++        let Some(entry) = state
++            .accounted
++            .get_mut(&self.identity)
++            .and_then(AccountedInode::directory_mut)
++        else {
++            self.disk.fail_locked(&mut state);
++            return;
++        };
++        let Some(next) = entry.live_handles.checked_sub(1) else {
++            self.disk.fail_locked(&mut state);
++            return;
++        };
++        entry.live_handles = next;
++        let Some(next) = state.open_directories.checked_sub(1) else {
++            self.disk.fail_locked(&mut state);
++            return;
++        };
++        state.open_directories = next;
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/kasumi-store/src/node_disk/file.rs b/crates/kasumi-store/src/node_disk/file.rs
+--- a/crates/kasumi-store/src/node_disk/file.rs
++++ b/crates/kasumi-store/src/node_disk/file.rs
+@@ -1,6 +1,8 @@
+ use super::{
+-    AccountedFile, DiskWork, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase, State, census,
+-    extent, rounded,
++    AccountedFile, AccountedInode, DiskWork, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase,
++    State, census, extent,
++    namespace::{self, FileParent, ParentTransition},
++    rounded,
+ };
+ use std::{
+     ffi::CString,
+@@ -43,7 +45,11 @@
+     // Parent path names are validated and allocated once during acquisition.
+     // I/O verifies every current ancestor using these original names.
+     parent_names: Box<[CString]>,
+-    parent: Option<File>,
++    parent: Option<FileParent>,
++    // Publication keeps both real descriptors until durability settles. Only
++    // one registration is active, transferred after the old FD actually closes.
++    retiring_parent: Option<FileParent>,
++    retired_parent: Option<Identity>,
+     name: Option<CString>,
+     identity: Identity,
+     binding: NamespaceBinding,
+@@ -129,11 +135,12 @@
+     root: String,
+     relative: PathBuf,
+     parent_names: Box<[CString]>,
+-    parent: File,
++    parent: FileParent,
+     name: CString,
+     device: u64,
+     binding: NamespaceBinding,
+     create: bool,
++    work: Option<DiskWork>,
+     budget: Mutex<Budget>,
+     state: std::sync::MutexGuard<'a, State>,
+ }
+@@ -141,9 +148,15 @@
+ impl PreparedFile<'_> {
+     #[cfg(test)]
+     pub(super) fn parent_descriptor(&self) -> std::os::fd::RawFd {
+-        self.parent.as_raw_fd()
++        self.parent.file().as_raw_fd()
+     }
+     pub(super) fn execute(mut self) -> io::Result<NodeDiskFile> {
++        verify_parent(
++            &self.disk.roots[&self.root],
++            &self.parent_names,
++            &self.parent,
++        )
++        .inspect_err(|_| self.disk.fail_locked(&mut self.state))?;
+         if self.create {
+             let result = verify_parent(
+                 &self.disk.roots[&self.root],
+@@ -154,7 +167,7 @@
+                 require_unenrolled_target(
+                     &self.state,
+                     self.binding,
+-                    &self.parent,
++                    self.parent.file(),
+                     &self.name,
+                     self.device,
+                     self.disk.unit,
+@@ -167,6 +180,17 @@
+                 return Err(error);
+             }
+         }
++        let mut transition = if self.create {
++            Some(ParentTransition::prepare(
++                self.disk,
++                &mut self.state,
++                (self.parent.identity(), 1),
++                None,
++                self.work,
++            )?)
++        } else {
++            None
++        };
+         let flags = libc::O_RDWR
+             | libc::O_NONBLOCK
+             | if self.create {
+@@ -174,9 +198,19 @@
+             } else {
+                 0
+             };
+-        let file = match census::open_at(&self.parent, &self.name, flags) {
++        let file = match census::open_at(self.parent.file(), &self.name, flags) {
+             Ok(file) => file,
+             Err(error) => {
++                if self.create && error.kind() == io::ErrorKind::AlreadyExists {
++                    if let Err(rollback) = transition
++                        .take()
++                        .expect("prepared creation parent")
++                        .unchanged(self.disk, &mut self.state, &[&self.parent])
++                    {
++                        self.disk.fail_locked(&mut self.state);
++                        return Err(rollback);
++                    }
++                }
+                 // An absent final leaf is harmless only if its complete name
+                 // was never enrolled and the prepared parent is still rooted.
+                 if !self.create
+@@ -185,6 +219,7 @@
+                         .state
+                         .accounted
+                         .values()
++                        .filter_map(AccountedInode::file)
+                         .any(|entry| entry.binding == self.binding)
+                 {
+                     if let Err(error) = verify_parent(
+@@ -216,7 +251,7 @@
+                     .state
+                     .accounted
+                     .get(&identity)
+-                    .is_some_and(|entry| entry.binding != self.binding)
++                    .is_some_and(|entry| entry.binding() != self.binding)
+             {
+                 return Err(io::ErrorKind::InvalidData.into());
+             }
+@@ -261,10 +296,10 @@
+             // survives a failed durability step in the retained census ledger.
+             self.state.accounted.insert(
+                 identity,
+-                AccountedFile {
++                AccountedInode::File(AccountedFile {
+                     settled: false,
+                     ..enrolled
+-                },
++                }),
+             );
+             self.state.files = files;
+             let durable = (|| -> io::Result<()> {
+@@ -275,7 +310,17 @@
+                 #[cfg(test)]
+                 self.disk
+                     .namespace_checkpoint(NamespaceFailure::CreateParentSync)?;
+-                self.parent.sync_all()
++                self.parent.file().sync_all()?;
++                verify_parent(
++                    &self.disk.roots[&self.root],
++                    &self.parent_names,
++                    &self.parent,
++                )?;
++                transition.take().expect("prepared creation parent").settle(
++                    self.disk,
++                    &mut self.state,
++                    &[&self.parent],
++                )
+             })();
+             if let Err(error) = durable {
+                 self.disk.fail_locked(&mut self.state);
+@@ -285,11 +330,21 @@
+                 .state
+                 .accounted
+                 .get_mut(&identity)
++                .and_then(AccountedInode::file_mut)
+                 .expect("new enrolled inode") = enrolled;
+-        } else if self.state.accounted.get(&identity) != Some(&enrolled) {
++        } else if self
++            .state
++            .accounted
++            .get(&identity)
++            .and_then(AccountedInode::file)
++            != Some(&enrolled)
++        {
+             self.disk.fail_locked(&mut self.state);
+             return Err(io::ErrorKind::InvalidData.into());
+         }
++        self.parent
++            .register(self.disk, &mut self.state)
++            .inspect_err(|_| self.disk.fail_locked(&mut self.state))?;
+         *self.budget.get_mut().expect("unpublished budget") = Budget {
+             file: Some(file),
+             bytes: enrolled.bytes,
+@@ -306,6 +361,8 @@
+                 relative: self.relative,
+                 parent_names: self.parent_names,
+                 parent: Some(self.parent),
++                retiring_parent: None,
++                retired_parent: None,
+                 name: Some(self.name),
+                 identity,
+                 binding: self.binding,
+@@ -330,7 +387,7 @@
+ pub(super) struct PreparedPublication<'a> {
+     disk: &'a Arc<NodeDisk>,
+     allocation: Arc<std::mem::MaybeUninit<FileOwner>>,
+-    parent: File,
++    parent: FileParent,
+     name: CString,
+     root: String,
+     relative: PathBuf,
+@@ -343,7 +400,7 @@
+ impl PreparedPublication<'_> {
+     #[cfg(test)]
+     pub(super) fn parent_descriptor(&self) -> std::os::fd::RawFd {
+-        self.parent.as_raw_fd()
++        self.parent.file().as_raw_fd()
+     }
+     pub(super) fn execute(self) -> io::Result<NodeDiskFile> {
+         let Self {
+@@ -359,6 +416,7 @@
+             binding,
+         } = self;
+         let mut renamed = false;
++        let mut transition = None;
+         let result = (|| -> io::Result<()> {
+             let owner = &mut retained;
+             if state.phase != NodeDiskPhase::Open || !disk.device.lock().admission_ready() {
+@@ -388,17 +446,24 @@
+             require_unenrolled_target(
+                 &state,
+                 binding,
+-                &parent,
++                parent.file(),
+                 &name,
+                 owner.identity.0,
+                 disk.unit,
+             )?;
++            transition = Some(ParentTransition::prepare(
++                disk,
++                &mut state,
++                (owner.parent_custody().identity(), -1),
++                Some((parent.identity(), 1)),
++                Some(DiskWork::Maintenance),
++            )?);
+             #[cfg(target_os = "linux")]
+             let status = unsafe {
+                 libc::renameat2(
+                     owner.parent().as_raw_fd(),
+                     owner.name().as_ptr(),
+-                    parent.as_raw_fd(),
++                    parent.file().as_raw_fd(),
+                     name.as_ptr(),
+                     libc::RENAME_NOREPLACE,
+                 )
+@@ -408,22 +473,30 @@
+                 libc::renameatx_np(
+                     owner.parent().as_raw_fd(),
+                     owner.name().as_ptr(),
+-                    parent.as_raw_fd(),
++                    parent.file().as_raw_fd(),
+                     name.as_ptr(),
+                     libc::RENAME_EXCL,
+                 )
+             };
+             if status != 0 {
+-                return Err(io::Error::last_os_error());
++                let error = io::Error::last_os_error();
++                if error.kind() == io::ErrorKind::AlreadyExists {
++                    transition
++                        .take()
++                        .expect("prepared publication parents")
++                        .unchanged(disk, &mut state, &[owner.parent_custody(), &parent])?;
++                }
++                return Err(error);
+             }
+             renamed = true;
+-            let old_parent = owner
+-                .parent
+-                .replace(parent)
+-                .expect("live publication parent");
+-            owner.root = root;
++            assert!(
++                owner.retiring_parent.is_none(),
++                "one prepared parent transfer"
++            );
++            owner.retiring_parent = owner.parent.replace(parent);
++            let old_root = std::mem::replace(&mut owner.root, root);
+             owner.relative = relative;
+-            owner.parent_names = parent_names;
++            let old_parent_names = std::mem::replace(&mut owner.parent_names, parent_names);
+             owner.name = Some(name);
+             owner.binding = binding;
+             // The source name stopped owning this inode at the rename. Update
+@@ -431,16 +504,30 @@
+             state
+                 .accounted
+                 .get_mut(&owner.identity)
++                .and_then(AccountedInode::file_mut)
+                 .expect("validated publication enrollment")
+                 .binding = binding;
+             // The descriptor now belongs to the new name even if durability or
+             // post-publication verification fails. Every error remains inline.
+             #[cfg(test)]
+             disk.namespace_checkpoint(NamespaceFailure::PublishSourceSync)?;
+-            old_parent.sync_all()?;
++            owner
++                .retiring_parent
++                .as_ref()
++                .expect("retained source parent")
++                .file()
++                .sync_all()?;
+             #[cfg(test)]
+             disk.namespace_checkpoint(NamespaceFailure::PublishDestinationSync)?;
+             owner.parent().sync_all()?;
++            verify_parent(
++                &disk.roots[&old_root],
++                &old_parent_names,
++                owner
++                    .retiring_parent
++                    .as_ref()
++                    .expect("retained source parent"),
++            )?;
+             #[cfg(test)]
+             disk.namespace_checkpoint(NamespaceFailure::PublishVerify)?;
+             let budget = owner
+@@ -456,6 +543,36 @@
+             {
+                 return Err(io::ErrorKind::InvalidData.into());
+             }
++            drop(budget);
++            transition
++                .take()
++                .expect("prepared publication parents")
++                .settle(
++                    disk,
++                    &mut state,
++                    &[
++                        owner
++                            .retiring_parent
++                            .as_ref()
++                            .expect("retained source parent"),
++                        owner.parent_custody(),
++                    ],
++                )?;
++            let old = owner
++                .retiring_parent
++                .take()
++                .expect("retained source parent")
++                .retire()
++                .expect("registered source parent");
++            if !namespace::can_retire_parent(&state, old) {
++                return Err(io::ErrorKind::InvalidData.into());
++            }
++            namespace::retire_parent(&mut state, old);
++            owner
++                .parent
++                .as_mut()
++                .expect("retained destination parent")
++                .register(disk, &mut state)?;
+             Ok(())
+         })();
+         if let Err(error) = result {
+@@ -542,7 +659,7 @@
+             return Err(io::ErrorKind::StorageFull.into());
+         }
+         if let Some(work) = create {
+-            if state.accounted.len() as u64 >= self.config.max_census_entries {
++            if state.files >= self.config.max_census_entries {
+                 return Err(io::ErrorKind::StorageFull.into());
+             }
+             self.reserve(&mut state, 0, work)?;
+@@ -563,6 +680,14 @@
+                 // Path preparation precedes every physical create/publication.
+                 io::Error::other(error)
+             })?;
++        let raw_parent = parent;
++        let parent = FileParent::prepare(self, &state, root, &parent_names)
++            .inspect_err(|_| self.fail_locked(&mut state))?;
++        if Identity::of(&raw_parent.metadata()?) != parent.identity() {
++            self.fail_locked(&mut state);
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        drop(raw_parent);
+         let budget = Mutex::new(Budget {
+             file: None,
+             bytes: 0,
+@@ -586,6 +711,7 @@
+             device: selected.identity.0,
+             binding,
+             create: create.is_some(),
++            work: create,
+             budget,
+         })
+     }
+@@ -635,6 +761,14 @@
+                 self.fail_locked(&mut state);
+                 io::Error::other(error)
+             })?;
++        let raw_parent = parent;
++        let parent = FileParent::prepare(self, &state, root, &parent_names)
++            .inspect_err(|_| self.fail_locked(&mut state))?;
++        if Identity::of(&raw_parent.metadata()?) != parent.identity() {
++            self.fail_locked(&mut state);
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        drop(raw_parent);
+         let root = root.to_owned();
+         let relative = relative.to_owned();
+         retained = match file.0.try_unwrap() {
+@@ -723,6 +857,13 @@
+                 extent(&actual.metadata()?, self.unit)
+             } else {
+                 actual.sync_all()?;
++                let transition = ParentTransition::prepare(
++                    self,
++                    &mut state,
++                    (owner.parent_custody().identity(), -1),
++                    None,
++                    None,
++                )?;
+                 if unsafe { libc::unlinkat(owner.parent().as_raw_fd(), owner.name().as_ptr(), 0) }
+                     != 0
+                 {
+@@ -731,6 +872,12 @@
+                 #[cfg(test)]
+                 self.namespace_checkpoint(NamespaceFailure::ReclaimParentSync)?;
+                 owner.parent().sync_all()?;
++                verify_parent(
++                    &self.roots[&owner.root],
++                    &owner.parent_names,
++                    owner.parent_custody(),
++                )?;
++                transition.settle(self, &mut state, &[owner.parent_custody()])?;
+                 Ok((0, 0))
+             }
+         })();
+@@ -778,6 +925,7 @@
+                                     *state
+                                         .accounted
+                                         .get_mut(&owner.identity)
++                                        .and_then(AccountedInode::file_mut)
+                                         .expect("validated reclaimed inode") =
+                                         AccountedFile::durable(owner.binding, bytes, pending, len);
+                                 } else {
+@@ -825,6 +973,7 @@
+     let Some((identity, enrolled)) = state
+         .accounted
+         .iter()
++        .filter_map(|(identity, entry)| entry.file().map(|file| (identity, file)))
+         .find(|(_, entry)| entry.binding == binding)
+     else {
+         return Ok(());
+@@ -848,19 +997,24 @@
+     Err(io::ErrorKind::AlreadyExists.into())
+ }
+ 
+-fn verify_parent(root: &census::Root, names: &[CString], retained: &File) -> io::Result<()> {
++fn verify_parent(root: &census::Root, names: &[CString], retained: &FileParent) -> io::Result<()> {
+     root.verify_nonallocating()?;
++    if retained.ancestors().len() != names.len() + 1 || retained.ancestors()[0] != root.identity {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
+     let mut current = root.file.try_clone()?;
+-    for name in names {
++    for (index, name) in names.iter().enumerate() {
+         let child = census::open_at(&current, name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+         let metadata = child.metadata()?;
+         census::directory_nonallocating(&metadata)?;
+-        if metadata.dev() != root.identity.0 {
++        if metadata.dev() != root.identity.0
++            || Identity::of(&metadata) != retained.ancestors()[index + 1]
++        {
+             return Err(io::ErrorKind::InvalidData.into());
+         }
+         current = child;
+     }
+-    if Identity::of(&current.metadata()?) != Identity::of(&retained.metadata()?) {
++    if Identity::of(&current.metadata()?) != Identity::of(&retained.file().metadata()?) {
+         return Err(io::ErrorKind::InvalidData.into());
+     }
+     Ok(())
+@@ -896,14 +1050,22 @@
+         self.name.as_ref().expect("live file name")
+     }
+     fn parent(&self) -> &File {
+-        self.parent.as_ref().expect("live parent descriptor")
++        self.parent_custody().file()
++    }
++    fn parent_custody(&self) -> &FileParent {
++        self.parent.as_ref().expect("live parent custody")
+     }
+     fn budget(&self) -> &Mutex<Budget> {
+         self.budget.as_ref().expect("live file budget")
+     }
+ 
+     fn check_enrollment(&self, state: &mut State, budget: &Budget) -> io::Result<()> {
+-        if state.accounted.get(&self.identity) != Some(&budget.accounted(self.binding)) {
++        if state
++            .accounted
++            .get(&self.identity)
++            .and_then(AccountedInode::file)
++            != Some(&budget.accounted(self.binding))
++        {
+             self.disk.fail_locked(state);
+             return Err(io::ErrorKind::InvalidData.into());
+         }
+@@ -916,6 +1078,7 @@
+         *state
+             .accounted
+             .get_mut(&self.identity)
++            .and_then(AccountedInode::file_mut)
+             .expect("validated enrolled inode") = budget.accounted(self.binding);
+     }
+ 
+@@ -939,7 +1102,7 @@
+         verify_parent(
+             &self.disk.roots[&self.root],
+             &self.parent_names,
+-            self.parent(),
++            self.parent_custody(),
+         )?;
+         let observed = census::open_at(
+             self.parent(),
+@@ -1472,7 +1635,17 @@
+         drop(budget.file.take());
+         #[cfg(test)]
+         self.close_checkpoint(CloseStage::DataClosed);
+-        drop(self.parent.take());
++        for parent in [self.parent.take(), self.retiring_parent.take()]
++            .into_iter()
++            .flatten()
++        {
++            if let Some(identity) = parent.retire() {
++                assert!(
++                    self.retired_parent.replace(identity).is_none(),
++                    "one file parent registration"
++                );
++            }
++        }
+         drop(std::mem::take(&mut self.root));
+         drop(std::mem::take(&mut self.relative));
+         drop(std::mem::replace(&mut self.parent_names, Box::new([])));
+@@ -1514,10 +1687,18 @@
+         let Some(next) = state.open_files.checked_sub(1) else {
+             return false;
+         };
++        let Some(parent) = self.retired_parent else {
++            return false;
++        };
++        if !namespace::can_retire_parent(state, parent) {
++            return false;
++        }
+         // Dropping the exact last Weak frees the original Arc allocation before
+         // the slot can fund another handle. No strong/weak reference escapes.
+         drop(state.live.remove(&self.identity));
+         self.registration = 0;
++        namespace::retire_parent(state, parent);
++        self.retired_parent = None;
+         state.open_files = next;
+         true
+     }
+@@ -1541,7 +1722,11 @@
+         let disk = self.disk.clone();
+         let mut state = disk.lock_state();
+         if !settled {
+-            if let Some(enrolled) = state.accounted.get_mut(&self.identity) {
++            if let Some(enrolled) = state
++                .accounted
++                .get_mut(&self.identity)
++                .and_then(AccountedInode::file_mut)
++            {
+                 enrolled.settled = false;
+             }
+             disk.fail_locked(&mut state);
+diff --git a/crates/kasumi-store/src/node_disk/ledger/tests.rs b/crates/kasumi-store/src/node_disk/ledger/tests.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/ledger/tests.rs
+@@ -0,0 +1,97 @@
++use super::super::Identity;
++use super::*;
++use std::collections::HashMap;
++
++fn file(binding: u8) -> AccountedFile {
++    AccountedFile::durable(NamespaceBinding([binding; 32]), 4096, 0, 12)
++}
++fn directory(binding: u8, parent: Option<Identity>) -> AccountedDirectory {
++    AccountedDirectory {
++        binding: NamespaceBinding([binding; 32]),
++        parent,
++        bytes: 8192,
++        pending: 0,
++        settled: true,
++        len: 24,
++        children: 3,
++        live_handles: 0,
++    }
++}
++
++#[test]
++fn typed_entries_never_reinterpret_another_inode_kind() {
++    let mut inode = AccountedInode::File(file(1));
++    assert_eq!(inode.binding(), NamespaceBinding([1; 32]));
++    assert!(inode.directory().is_none());
++    assert!(inode.directory_mut().is_none());
++    inode.file_mut().unwrap().pending = 19;
++    assert_eq!(inode.file().unwrap().pending, 19);
++    let mut inode = AccountedInode::Directory(directory(2, Some(Identity(4, 5))));
++    assert_eq!(inode.binding(), NamespaceBinding([2; 32]));
++    assert!(inode.file().is_none());
++    assert!(inode.file_mut().is_none());
++    inode.directory_mut().unwrap().live_handles = 7;
++    assert_eq!(inode.directory().unwrap().live_handles, 7);
++}
++
++#[test]
++fn unified_identity_rejects_cross_kind_double_enrollment() {
++    let id = Identity(4, 5);
++    let mut map = HashMap::new();
++    assert!(map.insert(id, AccountedInode::File(file(1))).is_none());
++    // Census requires every insert's previous entry to be None. A second
++    // kind under this physical identity therefore fails the same check.
++    assert!(
++        map.insert(id, AccountedInode::Directory(directory(2, None)))
++            .is_some()
++    );
++    assert_eq!(map.len(), 1);
++}
++
++#[test]
++fn retained_and_replacement_bounds_preserve_independent_file_capacity() {
++    let n = 8;
++    let roots = 2;
++    let (retained, replacement) = capacities(n, roots).unwrap();
++    // No dot-entry credit is assumed. Even N census directories plus roots
++    // leave room for the original N files admitted after census completes.
++    let mut old = HashMap::new();
++    for index in 0..n + roots {
++        old.insert(
++            Identity(1, index),
++            AccountedInode::Directory(directory(1, None)),
++        );
++    }
++    for index in 0..n {
++        old.insert(Identity(2, index), AccountedInode::File(file(2)));
++    }
++    assert_eq!(old.len() as u64, retained);
++    assert!(old.len() as u64 > replacement);
++    // A fresh census spends one work unit on each non-root inode, whatever
++    // its kind. Exhaust every mixture while the old allocation remains live.
++    for files in 0..=n {
++        let mut new = HashMap::new();
++        for index in 0..files {
++            new.insert(Identity(3, index), AccountedInode::File(file(3)));
++        }
++        for index in files..n + roots {
++            new.insert(
++                Identity(4, index),
++                AccountedInode::Directory(directory(4, None)),
++            );
++        }
++        assert_eq!(new.len() as u64, replacement);
++        assert_eq!((old.len() + new.len()) as u64, 3 * n + 2 * roots);
++    }
++}
++
++#[test]
++fn peak_cardinality_overflow_fails_before_allocation() {
++    assert_eq!(capacities(u64::MAX, 1), None);
++    assert_eq!(capacities(u64::MAX / 2 + 1, 0), None);
++    assert_eq!(
++        capacities(u64::MAX / 2, 1),
++        Some((u64::MAX, u64::MAX / 2 + 1))
++    );
++    assert_eq!(capacities(1_000_000, 1), Some((2_000_001, 1_000_001)));
++}
+diff --git a/crates/kasumi-store/src/node_disk/ledger.rs b/crates/kasumi-store/src/node_disk/ledger.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/ledger.rs
+@@ -0,0 +1,57 @@
++//! One physical-inode key space for file and directory enrollment.
++//!
++//! The retained owner can create up to N files after a census enrolled up to
++//! N + R directories. A replacement census visits at most N non-root entries,
++//! so its union is bounded by N + R. These different peaks must both be funded.
++use super::{AccountedDirectory, AccountedFile, NamespaceBinding};
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(super) enum AccountedInode {
++    File(AccountedFile),
++    Directory(AccountedDirectory),
++}
++impl AccountedInode {
++    pub(super) fn binding(&self) -> NamespaceBinding {
++        match self {
++            Self::File(entry) => entry.binding,
++            Self::Directory(entry) => entry.binding,
++        }
++    }
++    pub(super) fn file(&self) -> Option<&AccountedFile> {
++        match self {
++            Self::File(entry) => Some(entry),
++            Self::Directory(_) => None,
++        }
++    }
++    pub(super) fn file_mut(&mut self) -> Option<&mut AccountedFile> {
++        match self {
++            Self::File(entry) => Some(entry),
++            Self::Directory(_) => None,
++        }
++    }
++    pub(super) fn directory(&self) -> Option<&AccountedDirectory> {
++        match self {
++            Self::Directory(entry) => Some(entry),
++            Self::File(_) => None,
++        }
++    }
++    pub(super) fn directory_mut(&mut self) -> Option<&mut AccountedDirectory> {
++        match self {
++            Self::Directory(entry) => Some(entry),
++            Self::File(_) => None,
++        }
++    }
++}
++
++/// Checked cardinalities, independent of readdir's treatment of dot entries.
++/// Do not replace the retained limit by `census`: that reduces file admission
++/// when the owner retains directories from an earlier census.
++pub(super) fn capacities(entries: u64, roots: u64) -> Option<(u64, u64)> {
++    let census = entries.checked_add(roots)?;
++    let retained = census.checked_add(entries)?;
++    Some((retained, census))
++}
++
++#[cfg(test)]
++#[path = "ledger/tests.rs"]
++mod tests;
+diff --git a/crates/kasumi-store/src/node_disk/memory.rs b/crates/kasumi-store/src/node_disk/memory.rs
+--- a/crates/kasumi-store/src/node_disk/memory.rs
++++ b/crates/kasumi-store/src/node_disk/memory.rs
+@@ -1,5 +1,5 @@
+ //! Fixed, checked resident workspace for retained metadata and its replacement peak.
+-use super::{AccountedFile, Identity, NodeDisk, NodeDiskConfig, census, file};
++use super::{AccountedInode, Identity, NodeDisk, NodeDiskConfig, census, directory, file, ledger};
+ use crate::disk_memory::{self, add, mul, size};
+ use std::{io, os::unix::ffi::OsStrExt, sync::Weak};
+ 
+@@ -20,9 +20,17 @@
+         let depth = u64::from(config.max_depth);
+         let handles = u64::from(config.max_open_files);
+         let name = add(u64::from(config.max_name_bytes), 1)?;
+-        let ledgers = mul(
+-            2,
+-            table::<(Identity, AccountedFile)>(config.max_census_entries)?,
++        // Census visits at most N non-root entries, but later admission can
++        // fill N file slots while all census directories remain. Existing and
++        // replacement maps therefore have different simultaneous maxima.
++        let (retained, replacement) = ledger::capacities(
++            config.max_census_entries,
++            u64::try_from(config.roots.len()).map_err(|_| disk_memory::overflow())?,
++        )
++        .ok_or_else(disk_memory::overflow)?;
++        let ledgers = add(
++            table::<(Identity, AccountedInode)>(retained)?,
++            table::<(Identity, AccountedInode)>(replacement)?,
+         )?;
+         let live = table::<(Identity, Weak<file::FileOwner>)>(handles)?;
+         let components = mul(
+@@ -30,12 +38,24 @@
+             add(mul(2, size::<std::ffi::CString>()?)?, ALLOCATION_HEADROOM)?,
+         )?;
+         let paths = add(mul(2, name)?, mul(2, mul(depth, name)?)?)?;
++        let parent_ancestry = disk_memory::allocation::<Identity>(depth)?;
+         let handle = add(
+             add(size::<file::FileOwner>()?, 16)?,
+-            add(NATIVE_HANDLE_WORKSPACE, add(paths, components)?)?,
++            add(
++                NATIVE_HANDLE_WORKSPACE,
++                add(parent_ancestry, add(paths, components)?)?,
++            )?,
+         )?;
+         // Publication prepares a new owner/path while the old owner is live.
+         let owners = mul(add(handles, 1)?, handle)?;
++        let directory_owner = add(
++            add(size::<directory::DirectoryOwner>()?, 16)?,
++            add(NATIVE_HANDLE_WORKSPACE, add(paths, components)?)?,
++        )?;
++        let directory_owners = mul(
++            add(u64::from(config.max_open_directories), 1)?,
++            directory_owner,
++        )?;
+         let cursors = mul(
+             depth,
+             add(
+@@ -60,7 +80,13 @@
+         let base = add(FIXED_OWNER_WORKSPACE, disk_memory::arc::<Self>()?)?;
+         Ok(add(
+             base,
+-            add(ledgers, add(live, add(owners, add(census, roots)?)?)?)?,
++            add(
++                ledgers,
++                add(
++                    live,
++                    add(add(owners, directory_owners)?, add(census, roots)?)?,
++                )?,
++            )?,
+         )?)
+     }
+ }
+diff --git a/crates/kasumi-store/src/node_disk/namespace/tests.rs b/crates/kasumi-store/src/node_disk/namespace/tests.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/namespace/tests.rs
+@@ -0,0 +1,192 @@
++use super::super::{CensusCancellation, DirectoryPolicy, NodeDiskConfig};
++use super::*;
++use crate::test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry};
++use std::{
++    path::Path,
++    sync::{Arc, atomic::Ordering},
++};
++
++fn fixture() -> (tempfile::TempDir, NodeDiskConfig, Arc<TestDiskMemory>) {
++    let root = private_tempdir().unwrap();
++    let mut config = NodeDisk::fixture_config(root.path().join("unused")).unwrap();
++    config.directory_policy = DirectoryPolicy::new(1 << 20, 32_768).unwrap();
++    (root, config, TestDiskMemory::new(256 << 20, 4096))
++}
++fn open(config: &NodeDiskConfig, memory: &Arc<TestDiskMemory>) -> Arc<NodeDisk> {
++    retry_disk_registry(|| {
++        NodeDisk::open_fixture(config, memory.clone(), &CensusCancellation::default())
++    })
++    .unwrap()
++}
++fn entry(disk: &NodeDisk, path: &Path) -> AccountedDirectory {
++    *disk.lock_state().accounted[&Identity::of(&path.metadata().unwrap())]
++        .directory()
++        .unwrap()
++}
++fn assert_physical_parents(disk: &NodeDisk, paths: &[(&Path, u64, u32)]) {
++    let mut observed = 0;
++    let mut charged = 0;
++    let mut pending = 0;
++    for (path, children, handles) in paths {
++        let metadata = path.metadata().unwrap();
++        let actual = census::directory_extent(&metadata).unwrap();
++        let value = entry(disk, path);
++        assert!(value.settled);
++        assert_eq!(value.len, metadata.len());
++        assert_eq!(value.children, *children);
++        assert_eq!(value.live_handles, *handles);
++        assert_eq!(
++            value.bytes,
++            disk.config.directory_policy.extent_bytes.max(actual)
++        );
++        assert_eq!(value.pending, value.bytes - actual);
++        observed += actual;
++        charged += value.bytes;
++        pending += value.pending;
++    }
++    let state = disk.lock_state();
++    let file_bytes: u64 = state
++        .accounted
++        .values()
++        .filter_map(AccountedInode::file)
++        .map(|v| v.bytes)
++        .sum();
++    let file_pending: u64 = state
++        .accounted
++        .values()
++        .filter_map(AccountedInode::file)
++        .map(|v| v.pending)
++        .sum();
++    assert_eq!(state.directory_bytes, observed);
++    assert_eq!(state.bytes, charged + file_bytes);
++    assert_eq!(state.pending, pending + file_pending);
++    assert_eq!(*disk.device.lock(), state.pending);
++}
++
++#[test]
++fn create_same_parent_publish_cross_parent_publish_and_unlink_settle_actual_parents() {
++    let (root, mut config, memory) = fixture();
++    let child = root.path().join("child");
++    crate::private_files::create_directory(&child).unwrap();
++    config.max_open_directories = 1;
++    let disk = open(&config, &memory);
++    let independent = disk.open_directory("fixture", Path::new("")).unwrap();
++    let file = disk
++        .create_file("fixture", Path::new("first"), DiskWork::Foreground)
++        .unwrap();
++    assert_physical_parents(&disk, &[(root.path(), 2, 2), (&child, 0, 0)]);
++    independent.sync_all().unwrap();
++    let file = disk
++        .publish_file(file, "fixture", Path::new("second"))
++        .unwrap();
++    assert_physical_parents(&disk, &[(root.path(), 2, 2), (&child, 0, 0)]);
++    let file = disk
++        .publish_file(file, "fixture", Path::new("child/last"))
++        .unwrap();
++    assert_physical_parents(&disk, &[(root.path(), 1, 1), (&child, 1, 1)]);
++    independent.sync_all().unwrap();
++    assert_eq!(disk.snapshot().open_files, 1);
++    assert_eq!(disk.snapshot().open_directories, 1);
++    disk.delete_file(file).unwrap();
++    assert_physical_parents(&disk, &[(root.path(), 1, 1), (&child, 0, 0)]);
++    drop(independent);
++    assert_physical_parents(&disk, &[(root.path(), 1, 0), (&child, 0, 0)]);
++    disk.pause().unwrap();
++}
++
++#[test]
++fn required_policy_and_entry_limit_reject_before_create_without_reducing_cleanup() {
++    let (root, mut config, memory) = fixture();
++    let mut missing = serde_json::to_value(&config).unwrap();
++    missing.as_object_mut().unwrap().remove("directory_policy");
++    assert!(serde_json::from_value::<NodeDiskConfig>(missing).is_err());
++    for invalid in [
++        DirectoryPolicy {
++            extent_bytes: 0,
++            max_entries: 1,
++        },
++        DirectoryPolicy {
++            extent_bytes: 1,
++            max_entries: 0,
++        },
++    ] {
++        assert!(invalid.validate().is_err());
++    }
++    for bytes in [
++        r#"{}"#,
++        r#"{"extent_bytes":1048576}"#,
++        r#"{"extent_bytes":1048576,"max_entries":32768,"legacy_default":true}"#,
++        r#"{"max_directory_bytes":1048576,"max_entries":32768}"#,
++    ] {
++        assert!(serde_json::from_str::<DirectoryPolicy>(bytes).is_err());
++    }
++    config.directory_policy.max_entries = 1;
++    let disk = open(&config, &memory);
++    let file = disk
++        .create_file("fixture", Path::new("one"), DiskWork::Foreground)
++        .unwrap();
++    let before = disk.snapshot();
++    assert_eq!(
++        disk.create_file("fixture", Path::new("two"), DiskWork::Foreground)
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::StorageFull
++    );
++    assert!(!root.path().join("two").exists());
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    disk.delete_file(file).unwrap();
++    assert_physical_parents(&disk, &[(root.path(), 0, 0)]);
++}
++
++#[test]
++fn failed_parent_sync_retains_all_promises_and_an_unsettled_parent_until_census() {
++    let (root, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let before = disk.snapshot();
++    disk.namespace_failure.store(
++        super::super::file::NamespaceFailure::CreateParentSync as u8,
++        Ordering::Relaxed,
++    );
++    assert!(
++        disk.create_file("fixture", Path::new("uncertain"), DiskWork::Foreground)
++            .is_err()
++    );
++    assert!(root.path().join("uncertain").exists());
++    assert!(!entry(&disk, root.path()).settled);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
++    assert_eq!(disk.snapshot().open_files, 0);
++    assert_eq!(entry(&disk, root.path()).live_handles, 0);
++    assert!(disk.open_directory("fixture", Path::new("")).is_err());
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    assert_physical_parents(&disk, &[(root.path(), 1, 0)]);
++}
++
++#[test]
++fn file_custody_rejects_a_replaced_intermediate_ancestor_even_when_final_inode_survives() {
++    let (root, config, memory) = fixture();
++    for path in ["a", "a/b", "c"] {
++        crate::private_files::create_directory(&root.path().join(path)).unwrap();
++    }
++    let disk = open(&config, &memory);
++    let file = disk
++        .create_file("fixture", Path::new("a/b/file"), DiskWork::Foreground)
++        .unwrap();
++    let original = Identity::of(&root.path().join("a/b").metadata().unwrap());
++    let outside = private_tempdir().unwrap();
++    std::fs::rename(root.path().join("a"), outside.path().join("swap")).unwrap();
++    std::fs::rename(root.path().join("c"), root.path().join("a")).unwrap();
++    std::fs::rename(outside.path().join("swap"), root.path().join("c")).unwrap();
++    std::fs::rename(root.path().join("c/b"), root.path().join("a/b")).unwrap();
++    assert_eq!(
++        Identity::of(&root.path().join("a/b").metadata().unwrap()),
++        original
++    );
++    assert!(file.sync_all().is_err());
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    drop(file);
++    assert_eq!(disk.snapshot().open_files, 0);
++    assert_eq!(entry(&disk, &root.path().join("a/b")).live_handles, 0);
++}
+diff --git a/crates/kasumi-store/src/node_disk/namespace.rs b/crates/kasumi-store/src/node_disk/namespace.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/namespace.rs
+@@ -0,0 +1,313 @@
++//! Prepared directory custody and affected-parent namespace accounting.
++//! Only file namespace transitions use this module; no directory creation or
++//! externally adopted namespace is authorized by these private primitives.
++use super::{
++    AccountedDirectory, AccountedInode, DiskWork, Identity, NodeDisk, NodeDiskPhase, State, census,
++    directory,
++};
++use std::{ffi::CString, fs::File, io};
++
++/// Embedded in the admitted FileOwner. A prepared replacement is unregistered;
++/// its original parent's registration funds the transfer until actual close.
++/// No destructor here locks State: FileOwner retires resources before credit.
++pub(super) struct FileParent {
++    file: Option<File>,
++    identity: Identity,
++    ancestors: Box<[Identity]>,
++    registered: bool,
++}
++impl FileParent {
++    pub(super) fn prepare(
++        disk: &NodeDisk,
++        state: &State,
++        root: &str,
++        names: &[CString],
++    ) -> io::Result<Self> {
++        let (file, ancestors) = directory::file_parent(disk, state, root, names)?;
++        let identity = *ancestors.last().ok_or(io::ErrorKind::InvalidData)?;
++        Ok(Self {
++            file: Some(file),
++            identity,
++            ancestors,
++            registered: false,
++        })
++    }
++    pub(super) fn file(&self) -> &File {
++        self.file.as_ref().expect("retained parent descriptor")
++    }
++    pub(super) fn identity(&self) -> Identity {
++        self.identity
++    }
++    pub(super) fn ancestors(&self) -> &[Identity] {
++        &self.ancestors
++    }
++    pub(super) fn register(&mut self, _disk: &NodeDisk, state: &mut State) -> io::Result<()> {
++        // The file-owner quota and envelope fund this retained parent. Counting
++        // it again as an independent directory owner would reduce both quotas.
++        if self.registered {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        let entry = state
++            .accounted
++            .get_mut(&self.identity)
++            .and_then(AccountedInode::directory_mut)
++            .ok_or(io::ErrorKind::InvalidData)?;
++        let next = entry
++            .live_handles
++            .checked_add(1)
++            .ok_or(io::ErrorKind::InvalidData)?;
++        entry.live_handles = next;
++        self.registered = true;
++        Ok(())
++    }
++    /// Move the scalar registration across the resources' scope boundary.
++    /// Actual FD and ancestor allocation destruction precede returned credit.
++    pub(super) fn retire(self) -> Option<Identity> {
++        let Self {
++            file,
++            identity,
++            ancestors,
++            registered,
++        } = self;
++        drop(file);
++        drop(ancestors);
++        registered.then_some(identity)
++    }
++}
++
++pub(super) fn can_retire_parent(state: &State, identity: Identity) -> bool {
++    state
++        .accounted
++        .get(&identity)
++        .and_then(AccountedInode::directory)
++        .is_some_and(|entry| entry.live_handles != 0)
++}
++pub(super) fn retire_parent(state: &mut State, identity: Identity) {
++    let entry = state
++        .accounted
++        .get_mut(&identity)
++        .and_then(AccountedInode::directory_mut)
++        .expect("validated parent registration");
++    entry.live_handles -= 1;
++}
++
++#[derive(Clone, Copy)]
++struct Change {
++    identity: Identity,
++    before: AccountedDirectory,
++    children: u64,
++}
++/// Inline plan: preparation and all fallible arithmetic precede the effect.
++/// The caller owns State serialization and actual descriptors until settlement.
++pub(super) struct ParentTransition {
++    changes: [Option<Change>; 2],
++}
++impl ParentTransition {
++    pub(super) fn prepare(
++        disk: &NodeDisk,
++        state: &mut State,
++        first: (Identity, i8),
++        second: Option<(Identity, i8)>,
++        growth_work: Option<DiskWork>,
++    ) -> io::Result<Self> {
++        if state.phase == NodeDiskPhase::Failed || !disk.device.lock().admission_ready() {
++            return Err(io::ErrorKind::Other.into());
++        }
++        if let Some(work) = growth_work {
++            // Full parent allowances were promised by census. This checks the
++            // unchanged node/work/floor policy before consuming those promises.
++            disk.reserve(state, 0, work)?;
++        } else {
++            // Cleanup may proceed above the configured extent limit or paused,
++            // but it may not spend a shared promise without physical headroom.
++            let promises = disk.device.lock();
++            let needed = promises
++                .checked_add(promises.minimum_free_bytes())
++                .ok_or(io::ErrorKind::StorageFull)?;
++            if disk.available()? < needed {
++                return Err(io::ErrorKind::StorageFull.into());
++            }
++        }
++        let mut inputs = [Some(first), second];
++        if let Some((identity, delta)) = second
++            && identity == first.0
++        {
++            inputs = [
++                Some((
++                    identity,
++                    first
++                        .1
++                        .checked_add(delta)
++                        .ok_or(io::ErrorKind::InvalidData)?,
++                )),
++                None,
++            ];
++        }
++        let mut changes = [None, None];
++        for (slot, input) in changes.iter_mut().zip(inputs) {
++            let Some((identity, delta)) = input else {
++                continue;
++            };
++            let before = *state
++                .accounted
++                .get(&identity)
++                .and_then(AccountedInode::directory)
++                .ok_or(io::ErrorKind::InvalidData)?;
++            if !before.settled {
++                return Err(io::ErrorKind::InvalidData.into());
++            }
++            let children = before
++                .children
++                .checked_add_signed(i64::from(delta))
++                .ok_or(io::ErrorKind::InvalidData)?;
++            if delta > 0
++                && (children > disk.config.directory_policy.max_entries
++                    || before.bytes > disk.config.directory_policy.extent_bytes)
++            {
++                return Err(io::ErrorKind::StorageFull.into());
++            }
++            *slot = Some(Change {
++                identity,
++                before,
++                children,
++            });
++        }
++        // Validation has finished for both distinct parents. From this point,
++        // uncertainty keeps every existing byte promise and seals the owner.
++        for change in changes.iter().flatten() {
++            state
++                .accounted
++                .get_mut(&change.identity)
++                .and_then(AccountedInode::directory_mut)
++                .expect("prepared parent")
++                .settled = false;
++        }
++        Ok(Self { changes })
++    }
++
++    /// Only a definite no-effect result may restore the original snapshots.
++    /// The actual retained descriptors must still match both original extents.
++    pub(super) fn unchanged(
++        self,
++        disk: &NodeDisk,
++        state: &mut State,
++        parents: &[&FileParent],
++    ) -> io::Result<()> {
++        for change in self.changes.iter().flatten() {
++            let parent = parents
++                .iter()
++                .find(|parent| parent.identity == change.identity)
++                .ok_or(io::ErrorKind::InvalidData)?;
++            let metadata = parent.file().metadata()?;
++            if Identity::of(&metadata) != change.identity
++                || metadata.len() != change.before.len
++                || census::directory_extent(&metadata)?
++                    != change
++                        .before
++                        .bytes
++                        .checked_sub(change.before.pending)
++                        .ok_or(io::ErrorKind::InvalidData)?
++            {
++                disk.fail_locked(state);
++                return Err(io::ErrorKind::InvalidData.into());
++            }
++        }
++        for change in self.changes.iter().flatten() {
++            *state
++                .accounted
++                .get_mut(&change.identity)
++                .and_then(AccountedInode::directory_mut)
++                .expect("prepared parent") = change.before;
++        }
++        Ok(())
++    }
++
++    /// Called only after affected directory fsyncs and exact ancestry checks.
++    /// Observed allocation materializes the already-held promise. An observed
++    /// excess is fully recorded and fences admission; it never becomes a pass.
++    pub(super) fn settle(
++        self,
++        disk: &NodeDisk,
++        state: &mut State,
++        parents: &[&FileParent],
++    ) -> io::Result<()> {
++        let mut updated = [None, None];
++        let mut bytes = state.bytes;
++        let mut pending = state.pending;
++        let mut directory_bytes = state.directory_bytes;
++        let mut promises = disk.device.lock();
++        let mut shared = *promises;
++        let mut exceeded = false;
++        for (slot, change) in updated.iter_mut().zip(self.changes.iter()) {
++            let Some(change) = change else { continue };
++            let parent = parents
++                .iter()
++                .find(|parent| parent.identity == change.identity)
++                .ok_or(io::ErrorKind::InvalidData)?;
++            let metadata = parent.file().metadata()?;
++            census::directory_nonallocating(&metadata)?;
++            if Identity::of(&metadata) != change.identity {
++                return Err(io::ErrorKind::InvalidData.into());
++            }
++            let observed = census::directory_extent(&metadata)?;
++            let charged = change.before.bytes.max(observed);
++            let new_pending = charged
++                .checked_sub(observed)
++                .ok_or(io::ErrorKind::InvalidData)?;
++            let old_observed = change
++                .before
++                .bytes
++                .checked_sub(change.before.pending)
++                .ok_or(io::ErrorKind::InvalidData)?;
++            bytes = bytes
++                .checked_sub(change.before.bytes)
++                .and_then(|v| v.checked_add(charged))
++                .ok_or(io::ErrorKind::InvalidData)?;
++            pending = pending
++                .checked_sub(change.before.pending)
++                .and_then(|v| v.checked_add(new_pending))
++                .ok_or(io::ErrorKind::InvalidData)?;
++            shared = shared
++                .checked_sub(change.before.pending)
++                .and_then(|v| v.checked_add(new_pending))
++                .ok_or(io::ErrorKind::InvalidData)?;
++            directory_bytes = directory_bytes
++                .checked_sub(old_observed)
++                .and_then(|v| v.checked_add(observed))
++                .ok_or(io::ErrorKind::InvalidData)?;
++            exceeded |= observed > change.before.bytes;
++            *slot = Some((
++                change.identity,
++                AccountedDirectory {
++                    bytes: charged,
++                    pending: new_pending,
++                    len: metadata.len(),
++                    children: change.children,
++                    settled: observed <= change.before.bytes,
++                    ..change.before
++                },
++            ));
++        }
++        promises.set_pending(shared)?;
++        state.bytes = bytes;
++        state.pending = pending;
++        state.directory_bytes = directory_bytes;
++        for (identity, entry) in updated.into_iter().flatten() {
++            *state
++                .accounted
++                .get_mut(&identity)
++                .and_then(AccountedInode::directory_mut)
++                .expect("prepared parent") = entry;
++        }
++        if exceeded {
++            state.phase = NodeDiskPhase::Failed;
++            promises.fail_owner();
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        Ok(())
++    }
++}
++
++#[cfg(test)]
++#[path = "namespace/tests.rs"]
++mod tests;
+diff --git a/crates/kasumi-store/src/node_disk/tests.rs b/crates/kasumi-store/src/node_disk/tests.rs
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -14,6 +14,8 @@
+         maintenance_reserve_bytes: 1 << 20,
+         min_free_bytes: 0,
+         max_open_files: 16,
++        max_open_directories: 16,
++        directory_policy: DirectoryPolicy::fixture(),
+         max_census_entries: 10_000,
+         max_depth: 32,
+         max_name_bytes: 255,
+@@ -26,6 +28,26 @@
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     })
+     .unwrap()
++}
++
++// Existing file workloads retain their exact byte budgets. Namespace accounting
++// has its own independent assertions in namespace/tests.rs; these helpers add
++// the retained directory component to file-specific expected totals.
++fn namespace_charge(disk: &NodeDisk) -> u64 {
++    disk.lock_state()
++        .accounted
++        .values()
++        .filter_map(AccountedInode::directory)
++        .map(|entry| entry.bytes)
++        .sum()
++}
++fn namespace_pending(disk: &NodeDisk) -> u64 {
++    disk.lock_state()
++        .accounted
++        .values()
++        .filter_map(AccountedInode::directory)
++        .map(|entry| entry.pending)
++        .sum()
+ }
+ 
+ #[test]
+@@ -63,7 +85,10 @@
+         allocations, 0,
+         "admitted physical I/O allocated after preparation"
+     );
+-    assert_eq!(disk.snapshot().charged_bytes, 16 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (16 << 10)
++    );
+     let ((), allocations) = crate::allocation_tests::measure(|| drop(file));
+     assert_eq!(allocations, 0, "descriptor retirement allocated");
+     let file = disk.open_file("data", &relative).unwrap();
+@@ -116,12 +141,18 @@
+         .unwrap();
+     file.grow_reserved(32 << 10).unwrap();
+     file.settle_growth(32 << 10).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     assert!(file.grow_reserved(64 << 10).is_err());
+     let (result, allocations) = crate::allocation_tests::measure(|| file.settle_growth(0));
+     assert!(result.is_err());
+     assert_eq!(allocations, 0);
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     drop(file);
+     clean(&disk, &["file"]);
+@@ -146,8 +177,8 @@
+         let file = disk.open_file("data", Path::new(name)).unwrap();
+         disk.delete_file(file).unwrap();
+     }
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
+-    assert_eq!(disk.snapshot().pending_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
++    assert_eq!(disk.snapshot().pending_bytes, namespace_pending(&disk));
+     disk.pause().unwrap();
+ }
+ 
+@@ -159,7 +190,7 @@
+     seed(&config, "two", 32 << 10);
+     let disk = open(config.clone(), fixture_memory.clone());
+     let before = disk.snapshot();
+-    assert_eq!(before.charged_bytes, 96 << 10);
++    assert_eq!(before.charged_bytes, namespace_charge(&disk) + (96 << 10));
+     assert_eq!(before.persistent_files, 2);
+     for _ in 0..3 {
+         disk.pause().unwrap();
+@@ -204,7 +235,7 @@
+     file.reserve_growth(0, 64 << 10, DiskWork::Foreground)
+         .unwrap();
+     let charged = disk.snapshot();
+-    assert_eq!(charged.charged_bytes, 64 << 10);
++    assert_eq!(charged.charged_bytes, namespace_charge(&disk) + (64 << 10));
+     drop(file);
+     let stopped = disk.snapshot();
+     assert_eq!(stopped.phase, NodeDiskPhase::Failed);
+@@ -222,7 +253,7 @@
+     assert!(Arc::ptr_eq(&same, &disk));
+     assert_eq!(same.snapshot().charged_bytes, charged.charged_bytes);
+     disk.reconcile(&CensusCancellation::default()).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     assert!(disk.snapshot().filesystem_admission_ready);
+     clean(&disk, &["pending"]);
+ }
+@@ -262,7 +293,11 @@
+     let (_directory, mut config) = installation();
+     let root = File::open(&config.roots["data"]).unwrap();
+     let (_, unit) = filesystem(&root).unwrap();
+-    config.max_bytes = 3 * unit;
++    config.max_bytes = 3 * unit
++        + config
++            .directory_policy
++            .extent_bytes
++            .max(root.metadata().unwrap().blocks() * 512);
+     config.maintenance_reserve_bytes = unit;
+     let disk = open(config.clone(), fixture_memory.clone());
+     let file = disk
+@@ -302,14 +337,23 @@
+     let file = disk.open_file("data", Path::new("data")).unwrap();
+     let reader = file.clone();
+     assert!(disk.delete_file(file).is_err());
+-    assert_eq!(disk.snapshot().charged_bytes, 128 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (128 << 10)
++    );
+     assert!(config.roots["data"].join("data").exists());
+     disk.shrink_file(reader, 32 << 10).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     let file = disk.open_file("data", Path::new("data")).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     disk.delete_file(file).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     assert!(!config.roots["data"].join("data").exists());
+     disk.pause().unwrap();
+ }
+@@ -327,7 +371,10 @@
+     seed(&config, "data", 7);
+     assert!(disk.delete_file(file).is_err());
+     assert_eq!(std::fs::metadata(root.join("data")).unwrap().len(), 7);
+-    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (64 << 10)
++    );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     assert!(!sibling.lock().admission_ready());
+     // Repair the fixture's external substitution before its exclusive census.
+@@ -365,7 +412,10 @@
+         .is_err()
+     );
+     let disk = open(config, fixture_memory.clone());
+-    assert_eq!(disk.snapshot().charged_bytes, 96 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (96 << 10)
++    );
+     assert_eq!(disk.snapshot().persistent_files, 3);
+     clean(&disk, &["one", "two", "three"]);
+ }
+@@ -433,7 +483,10 @@
+     let one = disk.open_file("data", Path::new("one")).unwrap();
+     assert!(disk.open_file("data", Path::new("two")).is_err());
+     drop(one);
+-    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (64 << 10)
++    );
+     let two = disk.open_file("data", Path::new("two")).unwrap();
+     drop(two);
+     clean(&disk, &["one", "two"]);
+@@ -444,7 +497,7 @@
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     let (directory, config) = installation();
+     let disk = open(config, fixture_memory.clone());
+-    let available = 3 * disk.unit;
++    let available = 3 * disk.unit + namespace_pending(&disk);
+     *disk.available_override.lock().unwrap() = Some(available);
+     let scratch = crate::ScratchDisk::test_with_device(
+         directory.path().join("scratch"),
+@@ -462,7 +515,10 @@
+         io::ErrorKind::StorageFull
+     );
+     assert_eq!(scratch.snapshot().charged_bytes, 0);
+-    assert_eq!(scratch.snapshot().filesystem_pending_bytes, 2 * disk.unit);
++    assert_eq!(
++        scratch.snapshot().filesystem_pending_bytes,
++        2 * disk.unit + namespace_pending(&disk)
++    );
+     drop(file);
+     assert!(
+         charge.grow(disk.unit).is_err(),
+@@ -573,7 +629,10 @@
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     let same = current.clone();
+     assert_eq!(disk.snapshot().open_files, 1);
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     drop(same);
+     drop(current);
+     clean(&disk, &["file"]);
+@@ -599,7 +658,7 @@
+             .is_err()
+     );
+     assert_eq!(file.observed_len().unwrap(), 0);
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     assert!(charge.grow(disk.unit).is_err());
+     assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+@@ -693,7 +752,10 @@
+     file.sync_all().unwrap();
+     file.shrink(32 << 10).unwrap();
+     assert_eq!(file.observed_len().unwrap(), 32 << 10);
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     drop(file);
+     clean(&disk, &["data"]);
+@@ -720,7 +782,10 @@
+         identity
+     );
+     assert_eq!(std::fs::metadata(&path).unwrap().len(), 32 << 10);
+-    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (64 << 10)
++    );
+     assert_eq!(disk.snapshot().open_files, 1);
+     assert_eq!(disk.snapshot().persistent_files, 2);
+     assert!(disk.open_file("data", Path::new("data")).is_err());
+@@ -737,7 +802,10 @@
+         .unwrap();
+     reopened.grow_reserved(64 << 10).unwrap();
+     reopened.sync_all().unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 96 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (96 << 10)
++    );
+     let mut payload = [0; 26];
+     reopened.read_exact_at(&mut payload, 0).unwrap();
+     assert_eq!(&payload, b"retained encrypted payload");
+@@ -773,11 +841,12 @@
+         assert_eq!(allocations, 0, "uncertain shrink allocated: {failure:?}");
+         assert_eq!(
+             file.observed_len().unwrap(),
+-            if failure == file::ShrinkFailure::Truncate {
+-                128 << 10
+-            } else {
+-                32 << 10
+-            }
++            namespace_charge(&disk)
++                + if failure == file::ShrinkFailure::Truncate {
++                    128 << 10
++                } else {
++                    32 << 10
++                }
+         );
+         assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+         assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+@@ -805,11 +874,12 @@
+         disk.reconcile(&CensusCancellation::default()).unwrap();
+         assert_eq!(
+             disk.snapshot().charged_bytes,
+-            if failure == file::ShrinkFailure::Truncate {
+-                128 << 10
+-            } else {
+-                32 << 10
+-            }
++            namespace_charge(&disk)
++                + if failure == file::ShrinkFailure::Truncate {
++                    128 << 10
++                } else {
++                    32 << 10
++                }
+         );
+         assert!(scratch.snapshot().filesystem_admission_ready);
+         scratch_charge.grow(4096).unwrap();
+@@ -978,7 +1048,10 @@
+     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+     assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+     disk.reconcile(&CensusCancellation::default()).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (64 << 10)
++    );
+     assert!(disk.snapshot().filesystem_admission_ready);
+     let reopened = disk.open_file("data", Path::new("node")).unwrap();
+     assert_eq!(reopened.identity().unwrap(), identity);
+@@ -1013,7 +1086,7 @@
+     published.read_exact_at(&mut bytes, 0).unwrap();
+     assert_eq!(bytes, [41; 4096]);
+     disk.delete_file(published).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+ }
+ 
+ #[test]
+@@ -1081,13 +1154,16 @@
+     assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+     drop(retained);
+     disk.reconcile(&CensusCancellation::default()).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (64 << 10)
++    );
+     assert_eq!(disk.snapshot().persistent_files, 2);
+     let raw = disk.open_file("data", Path::new("raw")).unwrap();
+     disk.delete_file(raw).unwrap();
+     let retained = disk.open_file("data", Path::new("retained")).unwrap();
+     disk.delete_file(retained).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     assert_eq!(disk.snapshot().persistent_files, 0);
+     disk.pause().unwrap();
+ }
+@@ -1108,14 +1184,20 @@
+     drop(raw);
+     assert!(disk.open_file("data", Path::new("file")).is_err());
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     assert_eq!(disk.snapshot().persistent_files, 1);
+     assert_eq!(disk.snapshot().open_files, 0);
+     disk.reconcile(&CensusCancellation::default()).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 128 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (128 << 10)
++    );
+     let file = disk.open_file("data", Path::new("file")).unwrap();
+     disk.delete_file(file).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     assert_eq!(disk.snapshot().persistent_files, 0);
+     disk.pause().unwrap();
+ }
+@@ -1149,7 +1231,10 @@
+     file.shrink(64 << 10).unwrap();
+     drop(file);
+     file = disk.open_file("data", Path::new("file")).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (64 << 10)
++    );
+     disk.shrink_file(file, 32 << 10).unwrap();
+     file = disk.open_file("data", Path::new("file")).unwrap();
+     assert_eq!(file.observed_len().unwrap(), 32 << 10);
+@@ -1159,13 +1244,24 @@
+     assert_eq!(file.identity().unwrap(), identity);
+     drop(file);
+     file = disk.open_file("data", Path::new("published")).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     assert_eq!(disk.snapshot().persistent_files, 1);
+     disk.delete_file(file).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
+-    assert_eq!(disk.snapshot().pending_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
++    assert_eq!(disk.snapshot().pending_bytes, namespace_pending(&disk));
+     assert_eq!(disk.snapshot().persistent_files, 0);
+-    assert!(disk.state.lock().unwrap().accounted.is_empty());
++    assert!(
++        !disk
++            .state
++            .lock()
++            .unwrap()
++            .accounted
++            .values()
++            .any(|entry| entry.file().is_some())
++    );
+     disk.pause().unwrap();
+ }
+ 
+@@ -1188,7 +1284,16 @@
+     assert!(!config.roots["data"].join("four").exists());
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     assert_eq!(disk.snapshot().persistent_files, 3);
+-    assert_eq!(disk.state.lock().unwrap().accounted.len(), 3);
++    assert_eq!(
++        disk.state
++            .lock()
++            .unwrap()
++            .accounted
++            .values()
++            .filter(|entry| entry.file().is_some())
++            .count(),
++        3
++    );
+     for name in ["one", "two", "three"] {
+         let file = disk.open_file("data", Path::new(name)).unwrap();
+         disk.delete_file(file).unwrap();
+@@ -1319,7 +1424,12 @@
+         let raw = std::fs::File::open(&path).unwrap();
+         raw.try_lock().unwrap();
+         let identity = Identity::of(&raw.metadata().unwrap());
+-        assert!(!disk.lock_state().accounted[&identity].settled);
++        assert!(
++            !disk.lock_state().accounted[&identity]
++                .file()
++                .unwrap()
++                .settled
++        );
+         drop(raw);
+         clean(&disk, &["created"]);
+     }
+@@ -1385,18 +1495,24 @@
+     assert_eq!(allocations, 0);
+     assert_eq!(file.identity().unwrap(), identity);
+     assert!(!config.roots["data"].join(&source).exists());
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     let (result, allocations) =
+         crate::allocation_tests::measure(|| disk.shrink_file(file, 16 << 10));
+     result.unwrap();
+     assert_eq!(allocations, 0);
+-    assert_eq!(disk.snapshot().charged_bytes, 16 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (16 << 10)
++    );
+     assert_eq!(disk.snapshot().open_files, 0);
+     let file = disk.open_file("data", &destination).unwrap();
+     let (result, allocations) = crate::allocation_tests::measure(|| disk.delete_file(file));
+     result.unwrap();
+     assert_eq!(allocations, 0);
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     assert_eq!(disk.snapshot().persistent_files, 0);
+     assert_eq!(disk.snapshot().open_files, 0);
+ }
+@@ -1437,10 +1553,16 @@
+         assert_eq!(snapshot.phase, NodeDiskPhase::Failed);
+         assert_eq!(snapshot.open_files, 0);
+         assert_eq!(snapshot.persistent_files, 1);
+-        assert_eq!(snapshot.charged_bytes, 32 << 10);
++        assert_eq!(snapshot.charged_bytes, namespace_charge(&disk) + (32 << 10));
+         let binding = NamespaceBinding::root(disk.roots["data"].identity).child(c"destination");
+         assert_eq!(
+-            disk.lock_state().accounted.values().next().unwrap().binding,
++            disk.lock_state()
++                .accounted
++                .values()
++                .filter_map(AccountedInode::file)
++                .next()
++                .unwrap()
++                .binding,
+             binding
+         );
+         assert!(disk.open_file("data", Path::new("destination")).is_err());
+@@ -1481,7 +1603,7 @@
+         assert_eq!(snapshot.phase, NodeDiskPhase::Failed);
+         assert_eq!(snapshot.open_files, 0);
+         assert_eq!(snapshot.persistent_files, 1);
+-        assert_eq!(snapshot.charged_bytes, 32 << 10);
++        assert_eq!(snapshot.charged_bytes, namespace_charge(&disk) + (32 << 10));
+         let path = config.roots["data"].join("file");
+         if let Some(length) = length {
+             let raw = std::fs::File::open(&path).unwrap();
+@@ -1492,12 +1614,15 @@
+             assert!(!path.exists());
+         }
+         disk.reconcile(&CensusCancellation::default()).unwrap();
+-        assert_eq!(disk.snapshot().charged_bytes, length.unwrap_or(0));
++        assert_eq!(
++            disk.snapshot().charged_bytes,
++            namespace_charge(&disk) + (length.unwrap_or(0))
++        );
+         if length.is_some() {
+             let file = disk.open_file("data", Path::new("file")).unwrap();
+             disk.delete_file(file).unwrap();
+         }
+-        assert_eq!(disk.snapshot().charged_bytes, 0);
++        assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+         assert_eq!(disk.snapshot().persistent_files, 0);
+     }
+ }
+@@ -1593,7 +1718,7 @@
+         assert_eq!(disk.snapshot().persistent_files, 1);
+         assert_eq!(disk.snapshot().open_files, 0);
+         disk.reconcile(&CensusCancellation::default()).unwrap();
+-        assert_eq!(disk.snapshot().charged_bytes, 0);
++        assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+         assert_eq!(disk.snapshot().persistent_files, 0);
+         disk.pause().unwrap();
+     }
+@@ -1616,7 +1741,10 @@
+             .unwrap();
+             assert!(disk.open_file("data", Path::new(lookup)).is_err());
+             assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+-            assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++            assert_eq!(
++                disk.snapshot().charged_bytes,
++                namespace_charge(&disk) + (32 << 10)
++            );
+             assert_eq!(disk.snapshot().persistent_files, 1);
+             drop(retained);
+             clean(&disk, &["moved"]);
+@@ -1775,7 +1903,10 @@
+         io::ErrorKind::NotFound
+     );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     clean(&disk, &["moved/file"]);
+ }
+ 
+@@ -1799,7 +1930,10 @@
+                 .is_err()
+         );
+         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+-        assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++        assert_eq!(
++            disk.snapshot().charged_bytes,
++            namespace_charge(&disk) + (32 << 10)
++        );
+         assert_eq!(disk.snapshot().open_files, 0);
+         assert!(!moved.join("published").exists());
+         if replace_with_symlink {
+@@ -1826,7 +1960,10 @@
+             .is_err()
+     );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     assert_eq!(disk.snapshot().open_files, 0);
+     assert!(!root.join("published").exists());
+     assert!(moved.join("source").exists());
+@@ -1853,7 +1990,10 @@
+     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+     assert_eq!(allocations, 0);
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     assert_eq!(disk.snapshot().open_files, 0);
+     assert!(!parent.join("published").exists());
+     clean(&disk, &["moved/source"]);
+@@ -2301,13 +2441,15 @@
+         let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+         let (_directory, config) = installation();
+         seed(&config, "file", 32 << 10);
+-        let disk = open(config, memory.clone());
++        let disk = open(config.clone(), memory.clone());
+         let file = disk.open_file("data", Path::new("file")).unwrap();
+         file.reserve_growth(32 << 10, 64 << 10, DiskWork::Foreground)
+             .unwrap();
+         file.grow_reserved(64 << 10).unwrap();
+         file.sync_all().unwrap();
+         let before = disk.snapshot();
++        let old_parent_pending = namespace_pending(&disk);
++        let parent_charge = namespace_charge(&disk);
+         if fail {
+             disk.namespace_failure.store(
+                 file::NamespaceFailure::ReclaimParentSync as u8,
+@@ -2329,7 +2471,15 @@
+         // Resources are gone, but the exact Weak allocation/registration and
+         // device promises still belong to this serialized reclaim transition.
+         assert!(disk.state.try_lock().is_err());
+-        assert_eq!(*disk.device.lock(), before.filesystem_pending_bytes);
++        let expected_parent_pending = if fail {
++            old_parent_pending
++        } else {
++            parent_charge - config.roots["data"].metadata().unwrap().blocks() * 512
++        };
++        assert_eq!(
++            *disk.device.lock(),
++            before.filesystem_pending_bytes - old_parent_pending + expected_parent_pending
++        );
+         release.send(()).unwrap();
+         let result = closing.join().unwrap();
+         assert_eq!(result.is_err(), fail);
+@@ -2343,8 +2493,8 @@
+             assert_eq!(after.pending_bytes, before.pending_bytes);
+         } else {
+             assert_eq!(after.phase, NodeDiskPhase::Open);
+-            assert_eq!(after.charged_bytes, 0);
+-            assert_eq!(after.pending_bytes, 0);
++            assert_eq!(after.charged_bytes, namespace_charge(&disk) + (0));
++            assert_eq!(after.pending_bytes, namespace_pending(&disk));
+         }
+         disk.reconcile(&CensusCancellation::default()).unwrap();
+     }
+diff --git a/crates/kasumi-store/src/node_disk.rs b/crates/kasumi-store/src/node_disk.rs
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -20,12 +20,17 @@
+ };
+ 
+ mod census;
++mod directory;
+ mod file;
++mod ledger;
+ mod memory;
++mod namespace;
+ #[cfg(test)]
+ mod tests;
+ use census::{Root, census, open_roots};
++pub use directory::NodeDiskDirectory;
+ pub use file::NodeDiskFile;
++use ledger::AccountedInode;
+ 
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+@@ -37,7 +42,13 @@
+     pub min_free_bytes: u64,
+     /// Simultaneous file owners. Each owner retains at most two descriptors.
+     pub max_open_files: u32,
+-    /// Bounds census traversal work and retained file-accounting entries.
++    /// Independent operational directory descriptors, separate from file owners.
++    pub max_open_directories: u32,
++    /// Explicit per-directory namespace admission. No implicit filesystem bound.
++    pub directory_policy: DirectoryPolicy,
++    /// Bounds census traversal work and the separately admitted file count.
++    /// Directories also occupy the unified inode ledger. File creation retains
++    /// its full count allowance after census; it does not spend directory slots.
+     /// An incomplete census never opens admission; new files require a free slot.
+     pub max_census_entries: u64,
+     /// Bounds traversal stack, ownership ancestor locks and path walk depth.
+@@ -46,8 +57,44 @@
+     pub max_name_bytes: u32,
+ }
+ 
++/// Required first-release namespace allowance. These scalar bounds are not a
++/// filesystem growth qualification; the installed filesystem policy must prove
++/// that its namespace operations fit them before production admission is safe.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct DirectoryPolicy {
++    pub extent_bytes: u64,
++    pub max_entries: u64,
++}
++impl DirectoryPolicy {
++    pub fn new(extent_bytes: u64, max_entries: u64) -> Result<Self> {
++        let policy = Self {
++            extent_bytes,
++            max_entries,
++        };
++        policy.validate()?;
++        Ok(policy)
++    }
++    pub fn validate(&self) -> Result<()> {
++        ensure!(
++            self.extent_bytes > 0 && self.extent_bytes <= i64::MAX as u64,
++            "directory extent allowance is invalid"
++        );
++        ensure!(self.max_entries > 0, "directory entry allowance is zero");
++        Ok(())
++    }
++    #[cfg(any(test, feature = "test-utils"))]
++    pub fn fixture() -> Self {
++        Self {
++            extent_bytes: 1 << 20,
++            max_entries: 32_768,
++        }
++    }
++}
++
+ impl NodeDiskConfig {
+     pub fn validate(&self) -> Result<()> {
++        self.directory_policy.validate()?;
+         ensure!(!self.roots.is_empty(), "persistent disk roots are empty");
+         ensure!(
+             self.max_bytes > 0 && self.max_bytes <= i64::MAX as u64,
+@@ -58,6 +105,10 @@
+             "maintenance reserve must leave foreground capacity"
+         );
+         ensure!(self.max_open_files > 0, "open-file metadata budget is zero");
++        ensure!(
++            self.max_open_directories > 0,
++            "open-directory metadata budget is zero"
++        );
+         ensure!(self.max_census_entries > 0, "census work budget is zero");
+         ensure!(self.max_depth > 0, "census depth budget is zero");
+         ensure!(
+@@ -162,6 +213,9 @@
+     pub pending_bytes: u64,
+     pub persistent_files: u64,
+     pub open_files: u32,
++    pub persistent_directories: u64,
++    pub open_directories: u32,
++    pub observed_directory_bytes: u64,
+     pub max_bytes: u64,
+     pub maintenance_reserve_bytes: u64,
+     pub filesystem_pending_bytes: u64,
+@@ -230,14 +284,32 @@
+     }
+ }
+ 
++/// Read-only directory enrollment. Namespace mutation settlement is a separate
++/// transition; these entries must never silently adopt an observed change.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++struct AccountedDirectory {
++    binding: NamespaceBinding,
++    parent: Option<Identity>,
++    /// Charged total, including the unused admitted namespace promise.
++    bytes: u64,
++    pending: u64,
++    settled: bool,
++    len: u64,
++    children: u64,
++    live_handles: u32,
++}
++
+ struct State {
+     phase: NodeDiskPhase,
+     bytes: u64,
+     pending: u64,
+     files: u64,
+     open_files: u32,
++    open_directories: u32,
++    directory_bytes: u64,
++    directories: u64,
+     live: HashMap<Identity, Weak<file::FileOwner>>,
+-    accounted: HashMap<Identity, AccountedFile>,
++    accounted: HashMap<Identity, AccountedInode>,
+ }
+ 
+ /// An installed owner outlives all service/database handles. The strong registry
+@@ -383,6 +455,9 @@
+                 pending: totals.pending,
+                 files: totals.files,
+                 open_files: 0,
++                open_directories: 0,
++                directory_bytes: totals.directory_bytes,
++                directories: totals.directories,
+                 live: HashMap::new(),
+                 accounted: totals.accounted,
+             }),
+@@ -448,7 +523,8 @@
+             for root in owner.roots.values() {
+                 root.verify_nonallocating()?;
+             }
+-            if owner.snapshot().open_files == 0 {
++            let snapshot = owner.snapshot();
++            if snapshot.open_files == 0 && snapshot.open_directories == 0 {
+                 owner.reconcile(&CensusCancellation::default())?;
+             }
+             return Ok(owner);
+@@ -470,6 +546,8 @@
+             maintenance_reserve_bytes: 1 << 30,
+             min_free_bytes: 0,
+             max_open_files: 256,
++            max_open_directories: 256,
++            directory_policy: DirectoryPolicy::fixture(),
+             max_census_entries: 16_384,
+             max_depth: 64,
+             max_name_bytes: 255,
+@@ -485,6 +563,9 @@
+             pending_bytes: state.pending,
+             persistent_files: state.files,
+             open_files: state.open_files,
++            persistent_directories: state.directories,
++            open_directories: state.open_directories,
++            observed_directory_bytes: state.directory_bytes,
+             max_bytes: self.config.max_bytes,
+             maintenance_reserve_bytes: self.config.maintenance_reserve_bytes,
+             filesystem_pending_bytes: *promises,
+@@ -494,7 +575,7 @@
+         }
+     }
+ 
+-    /// Seal new mutation admission before waiting for file/backend owners to drain.
++    /// Seal new mutation admission before waiting for file/backend/directory owners to drain.
+     /// This never releases physical charges, filesystem promises, or root locks.
+     pub fn pause(&self) -> Result<()> {
+         let mut state = self.lock_state();
+@@ -502,13 +583,13 @@
+             state.phase = NodeDiskPhase::Paused;
+         }
+         ensure!(
+-            state.open_files == 0,
+-            "persistent file owners are still live"
++            state.open_files == 0 && state.open_directories == 0,
++            "persistent file or directory owners are still live"
+         );
+         Ok(())
+     }
+ 
+-    /// Recount only after every managed file owner has closed under the retained
++    /// Recount only after every managed file and directory owner has closed under the retained
+     /// exclusive root locks. Failure retains the prior accounting and seals access.
+     pub fn reconcile(&self, cancel: &CensusCancellation) -> Result<()> {
+         ensure!(
+@@ -518,8 +599,8 @@
+         let mut state = self.lock_state();
+         state.phase = NodeDiskPhase::Paused;
+         ensure!(
+-            state.open_files == 0,
+-            "persistent file owners are still live"
++            state.open_files == 0 && state.open_directories == 0,
++            "persistent file or directory owners are still live"
+         );
+         let result = census(&self.roots, &self.config, self.unit, cancel);
+         let totals = match result {
+@@ -545,6 +626,8 @@
+         state.bytes = totals.bytes;
+         state.pending = totals.pending;
+         state.files = totals.files;
++        state.directory_bytes = totals.directory_bytes;
++        state.directories = totals.directories;
+         state.accounted = totals.accounted;
+         state.live.clear();
+         state.phase = NodeDiskPhase::Open;
+diff --git a/docs/administration.md b/docs/administration.md
+--- a/docs/administration.md
++++ b/docs/administration.md
+@@ -1,6 +1,6 @@
+ # Runtime administration
+ 
+-`kasumid example-config` emits a credential-free JSON template. Configure a separate TLS 1.3 endpoint for MCP, a TLS 1.3/mTLS native data endpoint, and a TLS 1.3/mTLS administrative endpoint. Every native administrative call additionally requires a signed bearer credential for the selected resource. The verified token selects the tenant and principal; requests cannot override either. Control-group membership administration uses an explicitly authorized token for `__kasumi_control` and remains absent from data/MCP discovery.
++`kasumid example-config --directory-policy /etc/kasumi/directory-policy.json` emits a credential-free JSON template. Configure a separate TLS 1.3 endpoint for MCP, a TLS 1.3/mTLS native data endpoint, and a TLS 1.3/mTLS administrative endpoint. Every native administrative call additionally requires a signed bearer credential for the selected resource. The verified token selects the tenant and principal; requests cannot override either. Control-group membership administration uses an explicitly authorized token for `__kasumi_control` and remains absent from data/MCP discovery.
+ 
+ `kasumictl example-config` emits a client template. Store one client configuration per node, with its actual administrator certificate, CA, server certificate pin, and private renewable credential file. Keep private-key files readable only by their owner. The CLI never accepts access tokens as command-line arguments.
+ 
+diff --git a/docs/operations.md b/docs/operations.md
+--- a/docs/operations.md
++++ b/docs/operations.md
+@@ -10,7 +10,7 @@
+ 
+ ```sh
+ cargo build --release --locked -p kasumi-server --bins
+-target/release/kasumid example-config > node.example.json
++target/release/kasumid example-config --directory-policy /etc/kasumi/directory-policy.json > node.example.json
+ target/release/kasumictl example-config > client.example.json
+ ```
+ 
+diff --git a/docs/release-artifacts.md b/docs/release-artifacts.md
+--- a/docs/release-artifacts.md
++++ b/docs/release-artifacts.md
+@@ -157,7 +157,7 @@
+ ```sh
+ sudo useradd --system --user-group --home-dir /var/lib/kasumi --shell /usr/sbin/nologin kasumi
+ sudo install -d -o kasumi -g kasumi -m 0700 /var/lib/kasumi
+-sudo -u kasumi /usr/local/bin/kasumid init --mode standalone /var/lib/kasumi/installation
++sudo -u kasumi /usr/local/bin/kasumid init --mode standalone /var/lib/kasumi/installation --directory-policy /etc/kasumi/directory-policy.json
+ sudo install -m 0644 systemd/kasumid.service /etc/systemd/system/kasumid.service
+ sudo systemctl daemon-reload
+ sudo systemctl enable --now kasumid
+diff --git a/docs/standalone.md b/docs/standalone.md
+--- a/docs/standalone.md
++++ b/docs/standalone.md
+@@ -4,7 +4,7 @@
+ 
+ ```sh
+ cargo +1.97.1 build --release -p kasumi-server --bin kasumid
+-target/release/kasumid init --mode standalone /var/lib/kasumi --tenant default
++target/release/kasumid init --mode standalone /var/lib/kasumi --directory-policy /etc/kasumi/directory-policy.json --tenant default
+ target/release/kasumid serve /var/lib/kasumi/kasumi.json
+ ```
+ 
+@@ -181,3 +181,12 @@
+ verification, permanent abort outcomes, bounded cleanup passes, and key retention.
+ Use the resulting checkpoint as the exact source checkpoint in a stopped local
+ recovery request.
++
++The first-release directory owner requires `persistent_disk.max_open_directories`
++explicitly; the generated installed policy uses 4,096 directory owners alongside
++4,096 file owners. There is no default or legacy field alias. The inode ledger
++uses one physical-identity key space for files and directories. The one-million
++limit continues to bound census work and separately retained regular-file count;
++it is not a combined file/directory admission cap.
++
++The required `--directory-policy` file contains exactly `extent_bytes` and `max_entries`, both positive integers. The generated persistent disk configuration retains these explicit values; there is no production default. `extent_bytes` is a per-directory allocated-byte ceiling reserved before managed file namespace effects. `max_entries` limits positive membership changes; deletion retains cleanup access. Supply values qualified for the installed filesystem and supported namespace operations. Numeric validation alone does not establish that qualification. This target proposal has not yet established a supported filesystem growth bound, so production namespace admission remains a release blocker.
+diff --git a/scripts/small_native_smoke.py b/scripts/small_native_smoke.py
+--- a/scripts/small_native_smoke.py
++++ b/scripts/small_native_smoke.py
+@@ -311,6 +311,24 @@
+         self.runner.persist()
+ 
+ 
++def load_directory_policy(path):
++    def unique(pairs):
++        value = {}
++        for key, item in pairs:
++            require(key not in value, "duplicate directory policy field")
++            value[key] = item
++        return value
++    with path.open("rb") as source:
++        raw = source.read(4097)
++    require(len(raw) <= 4096, "directory policy exceeds input bound")
++    value = json.loads(raw, object_pairs_hook=unique)
++    require(isinstance(value, dict) and set(value) == {"extent_bytes", "max_entries"}
++            and all(type(item) is int and item > 0 for item in value.values())
++            and value["extent_bytes"] <= (1 << 63) - 1 and value["max_entries"] <= (1 << 64) - 1,
++            "invalid explicit directory policy")
++    return raw, value
++
++
+ class Runner:
+     def __init__(self, args):
+         self.args = args
+@@ -384,6 +402,12 @@
+         provenance.mkdir(mode=0o700)
+         private_write(provenance / "build-evidence.json", evidence_bytes)
+         private_write(provenance / "Cargo.lock", lock)
++        directory_policy_bytes, directory_policy = load_directory_policy(self.args.directory_policy)
++        self.directory_policy_file = provenance / "directory-policy.json"
++        private_write(self.directory_policy_file, directory_policy_bytes)
++        self.record["directory_policy"] = {"file": str(self.directory_policy_file),
++                                           "sha256": sha256(self.directory_policy_file),
++                                           "policy": directory_policy}
+         collection = git("show", commit + ":benchmarks/capacity-collection.json")
+         require(json.loads(collection)["name"] == "capacity", "unexpected source collection schema")
+         private_write(self.output / "collection.json", collection)
+@@ -527,11 +551,13 @@
+     def exercise(self):
+         daemon = self.binaries["kasumid"]
+         installation = self.output / "installation"
+-        self.command("init", [daemon, "init", "--mode", "standalone", installation, "--tenant", "capacity-smoke"])
++        self.command("init", [daemon, "init", "--mode", "standalone", installation, "--directory-policy", self.directory_policy_file, "--tenant", "capacity-smoke"])
+         self.config_file = installation / "kasumi.json"
+         config = read_json(self.config_file)
+         require(config["mode"] == "standalone" and not config["serving_authorities"]
+                 and config["replication"] is None, "init did not produce explicit standalone storage")
++        require(config["persistent_disk"]["directory_policy"] == self.record["directory_policy"]["policy"],
++                "init changed the supplied directory admission policy")
+         certificate = Path(config["mcp"]["tls"]["certificate"]).read_text()
+         self.mcp_pin = hashlib.sha256(ssl.PEM_cert_to_DER_cert(certificate)).hexdigest()
+         profile_file = installation / "profiles/default.json"
+@@ -656,6 +682,7 @@
+     parser.add_argument("--binaries", type=Path, required=True)
+     parser.add_argument("--build-evidence", type=Path, required=True,
+                         help="scripts/release_gate.py evidence.json for the actual binary builds")
++    parser.add_argument("--directory-policy", type=Path, required=True)
+     parser.add_argument("--source", required=True)
+     parser.add_argument("--repository", type=Path, required=True)
+     parser.add_argument("--output", type=Path, required=True)
+@@ -670,6 +697,7 @@
+     args.repository = args.repository.resolve(strict=True)
+     args.binaries = args.binaries.resolve(strict=True)
+     args.build_evidence = args.build_evidence.resolve(strict=True)
++    args.directory_policy = args.directory_policy.resolve(strict=True)
+     require(args.output.is_absolute() and not args.output.exists() and not args.output.is_symlink()
+             and not args.output.resolve().is_relative_to(args.repository),
+             "output must be a new absolute directory outside the repository")
+diff --git a/scripts/test_small_native_smoke.py b/scripts/test_small_native_smoke.py
+--- a/scripts/test_small_native_smoke.py
++++ b/scripts/test_small_native_smoke.py
+@@ -102,6 +102,9 @@
+                 runner = self.runner(output)
+                 runner.args.repository = root / "unused-repository"
+                 runner.args.source = "a" * 40
++                policy = root / "directory-policy.json"
++                policy.write_bytes(b'{"extent_bytes":1048576,"max_entries":32768}\n')
++                runner.args.directory_policy = policy
+                 runner.args.build_evidence = report
+                 runner.args.binaries = incoming
+                 def source_command(name, command):
+@@ -126,6 +129,8 @@
+                     else:
+                         runner.prepare()
+                         self.assertEqual(runner.record["build_overall_status"], "failed")
++                        self.assertEqual((output / "provenance/directory-policy.json").read_bytes(), policy.read_bytes())
++                        self.assertEqual(runner.record["directory_policy"]["sha256"], hashlib.sha256(policy.read_bytes()).hexdigest())
+                         self.assertEqual((output / "provenance/build-evidence.json").read_bytes(), report.read_bytes())
+                         for binary, path in runner.binaries.items():
+                             self.assertEqual(path.parent, output / "binaries")
+@@ -219,6 +224,22 @@
+         self.assertEqual(value["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"], "2026-07-28")
+         self.assertEqual(value["params"]["name"], "kasumi_get")
+ 
++    def test_required_directory_policy_preserves_exact_bytes_and_rejects_old_or_invalid_fields(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "policy.json"
++            raw = b'{ "extent_bytes": 1048576, "max_entries": 32768 }\n'
++            path.write_bytes(raw)
++            copied, policy = smoke.load_directory_policy(path)
++            self.assertEqual(copied, raw)
++            self.assertEqual(policy, {"extent_bytes": 1048576, "max_entries": 32768})
++            for invalid in [b'{}', b'{"extent_bytes":1}', b'{"extent_bytes":true,"max_entries":1}',
++                            b'{"extent_bytes":1,"max_entries":1,"legacy_default":true}',
++                            b'{"max_directory_bytes":1,"max_entries":1}',
++                            b'{"extent_bytes":1,"max_entries":1,"extent_bytes":2}', b' ' * 4097]:
++                path.write_bytes(invalid)
++                with self.assertRaises((ValueError, AssertionError, RuntimeError)):
++                    smoke.load_directory_policy(path)
++
+     def runner(self, root):
+         return smoke.Runner(SimpleNamespace(output=root, stop_timeout=1, command_timeout=1,
+                                             ready_timeout=1, execution_description="pure mocked tests"))
+diff --git a/scripts/validation/small-native-smoke.md b/scripts/validation/small-native-smoke.md
+--- a/scripts/validation/small-native-smoke.md
++++ b/scripts/validation/small-native-smoke.md
+@@ -46,19 +46,23 @@
+ that accepts an unverified `--source` label. Read-only mounts of the source
+ repository and build output are supported.
+ 
+-For the existing failed `3a8d512` Linux ARM64 checkpoint, use the following
+-command inside its recorded validation environment. Set the runner path to the
+-reviewed checked-in script and choose a new output directory. This is a
+-diagnostic of that failed checkpoint, not acceptance of a release candidate.
++Provide `--directory-policy` pointing at the explicitly qualified directory policy
++for the filesystem used by this diagnostic. Its two positive integer fields are
++`extent_bytes` and `max_entries`; this runner supplies no production defaults and
++does not establish filesystem qualification. It retains the exact input bytes and
++hash and requires the generated installation to contain the same policy. Use
++only binaries built from the current required-policy API; historical checkpoints
++remain historical evidence and are not accepted through a compatibility path.
+ 
+ ```sh
+ python3 /opt/kasumi-tools/small_native_smoke.py \
+-  --binaries /opt/kasumi-acceptance/3a8d512-functional-arm64/run/target/release \
+-  --build-evidence /opt/kasumi-acceptance/3a8d512-functional-arm64/run/evidence.json \
+-  --source 3a8d5121e1ddee14ae8a6d938d12152eaa04e417 \
+-  --repository /opt/kasumi-acceptance/3a8d512-git \
+-  --output /opt/kasumi-acceptance/3a8d512-small-standalone-001 \
+-  --execution-description 'Native Linux ARM64 in the recorded isolated validation environment; outbound networking disabled'
++  --binaries "$RELEASE_BINARIES" \
++  --build-evidence "$BUILD_EVIDENCE" \
++  --directory-policy /etc/kasumi/directory-policy.json \
++  --source "$RELEASE_COMMIT" \
++  --repository "$SOURCE_REPOSITORY" \
++  --output "$NEW_EVIDENCE_DIRECTORY" \
++  --execution-description 'Native Linux in the recorded isolated validation environment; outbound networking disabled'
+ ```
+ 
+ The description must match the actual environment. The parent directory must

@@ -1,3 +1,18 @@
+#[cfg(all(not(redb_no_std), panic = "unwind"))]
+#[path = "retained_opening.rs"]
+mod retained_opening;
+#[cfg(all(not(redb_no_std), panic = "unwind"))]
+pub use retained_opening::{
+    DatabaseOpenMode, DatabaseOpenPhase, DatabaseOpenReport, DatabaseOpenSettlement,
+    OpeningFenceReport, RetainedDatabaseOpening,
+};
+
+#[cfg(all(not(redb_no_std), panic = "unwind"))]
+#[path = "retained_database.rs"]
+mod retained_database;
+#[cfg(all(not(redb_no_std), panic = "unwind"))]
+pub use retained_database::{DatabaseCloseReport, DatabaseCloseSettlement, RetainedDatabase};
+
 use crate::io;
 use crate::transaction_tracker::{TransactionId, TransactionTracker};
 #[cfg(not(redb_no_std))]
@@ -17,6 +32,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::string::ToString;
 use core::fmt::{Debug, Display, Formatter};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use alloc::sync::Arc;
 use core::marker::PhantomData;
@@ -29,13 +45,76 @@ use crate::error::TransactionError;
 use crate::sealed::{Sealed, SealedInApi5};
 use crate::transactions::{
     ALLOCATOR_STATE_TABLE_NAME, AllocatorStateKey, AllocatorStateTree, DATA_ALLOCATED_TABLE,
-    DATA_FREED_TABLE, PageList, SYSTEM_FREED_TABLE, SystemTableDefinition,
-    TransactionIdWithPagination,
+    DATA_FREED_TABLE, OBSOLETE_SYSTEM_FREED_TABLE_NAME, PageList, TransactionIdWithPagination,
 };
 #[cfg(not(redb_no_std))]
 use crate::tree_store::file_backend::FileBackend;
 #[cfg(feature = "logging")]
 use log::{debug, warn};
+
+/// Native-resource knowledge returned by the exact backend close attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackendNativeDisposition {
+    /// Every native resource positively retired; retained diagnostics may remain.
+    Drained,
+    /// Native retirement is unproved; retain the exact owner and observations.
+    Retained,
+}
+
+/// The original logical outcome and independent native-resource disposition.
+/// An error with positive native drain is never a successful logical close.
+#[derive(Debug)]
+#[must_use = "retain the original error and inspect native-resource disposition"]
+pub struct BackendCloseOutcome {
+    result: core::result::Result<(), io::Error>,
+    native: BackendNativeDisposition,
+}
+impl BackendCloseOutcome {
+    pub fn drained(result: core::result::Result<(), io::Error>) -> Self {
+        Self {
+            result,
+            native: BackendNativeDisposition::Drained,
+        }
+    }
+    /// Logical completion without proof that native resources drained.
+    pub fn retained_result(result: core::result::Result<(), io::Error>) -> Self {
+        Self {
+            result,
+            native: BackendNativeDisposition::Retained,
+        }
+    }
+    pub fn retained(error: io::Error) -> Self {
+        Self {
+            result: Err(error),
+            native: BackendNativeDisposition::Retained,
+        }
+    }
+    pub fn native_disposition(&self) -> BackendNativeDisposition {
+        self.native
+    }
+    pub fn into_parts(
+        self,
+    ) -> (
+        core::result::Result<(), io::Error>,
+        BackendNativeDisposition,
+    ) {
+        (self.result, self.native)
+    }
+    /// Project only the logical outcome; this is not native-drain evidence.
+    pub fn into_result(self) -> core::result::Result<(), io::Error> {
+        self.result
+    }
+}
+
+pub(crate) fn require_native_drain(
+    (result, native): (crate::Result, BackendNativeDisposition),
+) -> crate::Result {
+    result?;
+    match native {
+        BackendNativeDisposition::Drained => Ok(()),
+        BackendNativeDisposition::Retained => Err(StorageError::OwnerFailed),
+    }
+}
 
 #[allow(clippy::len_without_is_empty)]
 /// Implements persistent storage for a database.
@@ -64,14 +143,13 @@ pub trait StorageBackend: 'static + Debug + Send + Sync {
     /// Writes the specified array to the storage.
     fn write(&self, offset: u64, data: &[u8]) -> core::result::Result<(), io::Error>;
 
-    /// Release any resources held by the backend
+    /// Attempt release once and return both the original logical result and
+    /// independent native-resource knowledge. No default success is provided.
     ///
     /// Note: redb will not access the backend after calling this method and will call it exactly
     /// once: when the [`Database`] is dropped, or, if a [`WriteTransaction`] was live at that
     /// point, when that transaction completes, or if opening the database fails
-    fn close(&self) -> core::result::Result<(), io::Error> {
-        Ok(())
-    }
+    fn close(&self) -> BackendCloseOutcome;
 }
 
 pub trait TableHandle: Sealed {
@@ -291,6 +369,7 @@ pub(crate) enum TransactionGuard {
     Read {
         tracker: Arc<TransactionTracker>,
         transaction_id: TransactionId,
+        released: AtomicBool,
     },
     Write {
         tracker: Arc<TransactionTracker>,
@@ -309,7 +388,29 @@ impl TransactionGuard {
         Self::Read {
             tracker,
             transaction_id,
+            released: AtomicBool::new(false),
         }
+    }
+
+    /// Release the tracked snapshot while the owning `ReadTransaction` remains
+    /// installed. A failed tracker lock/invariant leaves this guard armed and
+    /// the exact transaction available to its retained owner. The caller must
+    /// first prove no table has cloned this Arc.
+    pub(crate) fn release_read_retained(&self) -> Result {
+        let Self::Read {
+            tracker,
+            transaction_id,
+            released,
+        } = self
+        else {
+            return Err(StorageError::OwnerFailed);
+        };
+        if released.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        tracker.try_deallocate_read_transaction(*transaction_id)?;
+        released.store(true, Ordering::Release);
+        Ok(())
     }
 
     pub(crate) fn allocate_read(
@@ -353,7 +454,12 @@ impl Drop for TransactionGuard {
             Self::Read {
                 tracker,
                 transaction_id,
-            } => tracker.deallocate_read_transaction(*transaction_id),
+                released,
+            } => {
+                if !released.load(Ordering::Acquire) {
+                    tracker.deallocate_read_transaction(*transaction_id);
+                }
+            }
             Self::Write {
                 tracker,
                 transaction_id,
@@ -470,7 +576,7 @@ impl ReadOnlyDatabase {
         if Arc::strong_count(&self.transaction_tracker) != 1 {
             return Err(crate::CloseError::Busy(self));
         }
-        self.mem.abandon().map_err(crate::CloseError::Storage)
+        require_native_drain(self.mem.abandon()).map_err(crate::CloseError::Storage)
     }
 
     /// Opens an existing redb database.
@@ -500,9 +606,13 @@ impl ReadOnlyDatabase {
             page_size,
             region_size,
             cache_size,
-            true,
         )?;
         let mem = Arc::new(mem);
+        Database::require_canonical_system_tables(&mem)?;
+        if mem.opened_unclean() {
+            Database::require_canonical_allocator_keys(&mem)?;
+            return Err(DatabaseError::RepairAborted);
+        }
         // Load the allocator snapshot for this winner, or rebuild it if absent or stale.
         if let Some(tree) = Database::get_allocator_state_table(&mem)? {
             mem.load_allocator_state(&tree)?;
@@ -621,7 +731,41 @@ impl Database {
         self.mem.clone()
     }
 
+    pub(crate) fn require_canonical_system_tables(mem: &Arc<TransactionalMemory>) -> Result {
+        let tree = TableTree::new(
+            mem.get_system_root(),
+            PageHint::None,
+            Arc::new(TransactionGuard::untracked()),
+            PageResolver::new(mem.clone()),
+        )?;
+        if tree.contains_table_name(OBSOLETE_SYSTEM_FREED_TABLE_NAME)? {
+            return Err(StorageError::ObsoleteSystemTable);
+        }
+        Ok(())
+    }
+
+    fn require_canonical_allocator_keys(mem: &Arc<TransactionalMemory>) -> Result {
+        let resolver = PageResolver::new(mem.clone());
+        let tables = TableTree::new(
+            mem.get_system_root(),
+            PageHint::None,
+            Arc::new(TransactionGuard::untracked()),
+            resolver.clone(),
+        )?;
+        if let Some(InternalTableDefinition::Normal { table_root, .. }) = tables
+            .get_table::<AllocatorStateKey, &[u8]>(ALLOCATOR_STATE_TABLE_NAME, TableType::Normal)
+            .map_err(|error| {
+                error.into_storage_error_or_corrupted("Invalid allocator-state table")
+            })?
+        {
+            crate::tree_store::validate_allocator_state_keys(table_root, &resolver)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn verify_primary_checksums(mem: Arc<TransactionalMemory>) -> Result<bool> {
+        Self::require_canonical_system_tables(&mem)?;
+        Self::require_canonical_allocator_keys(&mem)?;
         let data_root = mem.get_data_root();
         let system_root = mem.get_system_root();
         Self::verify_checksums(mem, data_root, system_root)
@@ -732,8 +876,10 @@ impl Database {
 
     /// Relocates at most 64 candidate paths within the supplied old/new page-buffer
     /// byte allowance, then reclaims obsolete generations and trims unused extents.
-    /// Returns whether this bounded relocation batch moved any pages. Candidate
-    /// discovery still scans the database; callers must separately admit that work.
+    /// Returns true if relocation moved pages or bounded maintenance observed
+    /// DATA or allocation-history debt beyond its batch. A concurrent reader release can require one
+    /// extra observation; false never hides unselected reclaim debt.
+    /// Candidate discovery still scans the database; callers must separately admit that work.
     pub fn compact(
         &mut self,
         max_relocation_bytes: core::num::NonZeroUsize,
@@ -784,13 +930,15 @@ impl Database {
         } else {
             txn.abort()?;
         }
-        self.drain_pending_free_pages(ShrinkPolicy::Maximum)?;
-        Ok(progress)
+        let reclaim_pending = self.drain_pending_free_pages(ShrinkPolicy::Maximum)?;
+        Ok(progress || reclaim_pending)
     }
 
-    fn drain_pending_free_pages(&self, shrink_policy: ShrinkPolicy) -> Result {
-        // A commit's repair snapshot is itself retained bookkeeping. Bound
-        // maintenance to two generations rather than chasing its own tail.
+    fn drain_pending_free_pages(&self, shrink_policy: ShrinkPolicy) -> Result<bool> {
+        // Two commits remain a fixed per-call maintenance allowance. Current
+        // system frees are excluded directly, so this does not generate a new
+        // historical system tail. Report either retained metadata prefix.
+        let mut remaining = false;
         for _ in 0..2 {
             let mut txn = begin_write_with_allocation_policy(
                 &self.transaction_tracker,
@@ -799,9 +947,12 @@ impl Database {
             )
             .map_err(|e| e.into_storage_error())?;
             txn.set_shrink_policy(shrink_policy);
+            // No user mutation occurs between this bounded selection and this
+            // empty maintenance commit; the real writer guard excludes others.
+            remaining = txn.reclaim_backlog_after_batch()?;
             txn.commit().map_err(|e| e.into_storage_error())?;
         }
-        Ok(())
+        Ok(remaining)
     }
 
     #[cfg_attr(not(debug_assertions), expect(dead_code))]
@@ -835,8 +986,9 @@ impl Database {
             )?;
             for result in ReadableTable::iter(&table)? {
                 let (_, pages) = result?;
-                for i in 0..pages.value().len() {
-                    assert!(mem.is_allocated(pages.value().get(i)));
+                let pages = pages.value().checked()?;
+                for i in 0..pages.len() {
+                    assert!(mem.is_allocated(pages.get(i)));
                 }
             }
         }
@@ -844,9 +996,8 @@ impl Database {
         Ok(())
     }
 
-    fn visit_freed_tree<K: Key, V: Value, F>(
+    fn visit_pending_data_pages<F>(
         system_root: Option<BtreeHeader>,
-        table_def: SystemTableDefinition<K, V>,
         mem: Arc<TransactionalMemory>,
         mut visitor: F,
     ) -> Result
@@ -861,8 +1012,10 @@ impl Database {
             untracked_guard,
             resolver.clone(),
         )?;
-        let table_name = table_def.name();
-        let result = match system_tree.get_table::<K, V>(table_name, TableType::Normal) {
+        let table_name = DATA_FREED_TABLE.name();
+        let result = match system_tree
+            .get_table::<TransactionIdWithPagination, PageList>(table_name, TableType::Normal)
+        {
             Ok(result) => result,
             Err(TableError::Storage(err)) => {
                 return Err(err);
@@ -892,8 +1045,9 @@ impl Database {
                 )?;
             for result in ReadableTable::iter(&table)? {
                 let (_, page_list) = result?;
-                for i in 0..page_list.value().len() {
-                    visitor(page_list.value().get(i))?;
+                let pages = page_list.value().checked()?;
+                for i in 0..pages.len() {
+                    visitor(pages.get(i))?;
                 }
             }
         }
@@ -935,11 +1089,7 @@ impl Database {
             })?;
         }
 
-        Self::visit_freed_tree(system_root, DATA_FREED_TABLE, mem.clone(), |page| {
-            mem.mark_debug_allocated_page(page);
-            Ok(())
-        })?;
-        Self::visit_freed_tree(system_root, SYSTEM_FREED_TABLE, mem.clone(), |page| {
+        Self::visit_pending_data_pages(system_root, mem.clone(), |page| {
             mem.mark_debug_allocated_page(page);
             Ok(())
         })?;
@@ -995,6 +1145,8 @@ impl Database {
         mem: &mut Arc<TransactionalMemory>, // Only &mut to ensure exclusivity
         repair_callback: &(dyn Fn(&mut RepairSession) + 'static),
     ) -> Result<[Option<BtreeHeader>; 2], DatabaseError> {
+        Self::require_canonical_system_tables(mem)?;
+        Self::require_canonical_allocator_keys(mem)?;
         mem.reset_allocator_state()?;
 
         let data_root = {
@@ -1030,10 +1182,7 @@ impl Database {
             Self::with_recounted_length(root, system_tables.count_tables()?)
         };
 
-        Self::visit_freed_tree(system_root, DATA_FREED_TABLE, mem.clone(), |page| {
-            mem.mark_page_allocated(page)
-        })?;
-        Self::visit_freed_tree(system_root, SYSTEM_FREED_TABLE, mem.clone(), |page| {
+        Self::visit_pending_data_pages(system_root, mem.clone(), |page| {
             mem.mark_page_allocated(page)
         })?;
         #[cfg(debug_assertions)]
@@ -1068,7 +1217,6 @@ impl Database {
             page_size,
             region_size,
             cache_size,
-            false,
         )?;
         let mut mem = Arc::new(mem);
         // An allocator snapshot proves page ownership, not payload integrity. An
@@ -1140,6 +1288,7 @@ impl Database {
     fn get_allocator_state_table(
         mem: &Arc<TransactionalMemory>,
     ) -> Result<Option<AllocatorStateTree>> {
+        Self::require_canonical_system_tables(mem)?;
         // See if it's present in the system table tree
         let resolver = PageResolver::new(mem.clone());
         let system_table_tree = TableTree::new(
@@ -1159,6 +1308,10 @@ impl Database {
         let InternalTableDefinition::Normal { table_root, .. } = allocator_state_table else {
             unreachable!();
         };
+        // Validate every raw leaf key, branch separator and transaction stamp
+        // before the typed comparator can inspect even one key. Stale snapshots
+        // are distinguished only after this canonical validation succeeds.
+        crate::tree_store::validate_allocator_state_keys(table_root, &resolver)?;
         let tree = AllocatorStateTree::new(
             table_root,
             PageHint::None,
@@ -1177,6 +1330,14 @@ impl Database {
     /// Convenience method for [`Builder::new`]
     pub fn builder(admission: Arc<dyn crate::StorageAdmission>) -> Builder {
         Builder::new(admission)
+    }
+
+    /// Begin and immediately retain a snapshot without exposing the raw
+    /// transaction. No caller can create a table, untyped handle, cursor or
+    /// guard before retained custody is installed.
+    #[cfg(all(not(redb_no_std), panic = "unwind"))]
+    pub fn begin_read_retained(&self) -> Result<crate::RetainedReadTransaction, TransactionError> {
+        ReadableDatabase::begin_read(self).map(ReadTransaction::retain)
     }
 
     /// Begins a write transaction
@@ -1288,7 +1449,7 @@ pub struct Builder {
     page_size: usize,
     region_size: Option<u64>,
     cache_size: usize,
-    repair_callback: Box<dyn Fn(&mut RepairSession)>,
+    repair_callback: Box<dyn Fn(&mut RepairSession) + Send + Sync>,
 }
 
 impl Builder {
@@ -1320,7 +1481,7 @@ impl Builder {
     /// There is no upper limit on the number of times it may be called.
     pub fn set_repair_callback(
         &mut self,
-        callback: impl Fn(&mut RepairSession) + 'static,
+        callback: impl Fn(&mut RepairSession) + Send + Sync + 'static,
     ) -> &mut Self {
         self.repair_callback = Box::new(callback);
         self
@@ -1506,6 +1667,9 @@ mod test {
     }
 
     impl StorageBackend for FailingBackend {
+        fn close(&self) -> crate::BackendCloseOutcome {
+            self.inner.close()
+        }
         fn len(&self) -> Result<u64, std::io::Error> {
             self.inner.len()
         }
@@ -1602,7 +1766,7 @@ mod test {
         let result = tx.commit().err().unwrap();
         assert!(matches!(
             result,
-            CommitError::Storage(StorageError::OwnerFailed)
+            CommitError::Storage(StorageError::Io(error)) if error.kind() == ErrorKind::Other
         ));
         let result = db.begin_write().err().unwrap();
         assert!(matches!(

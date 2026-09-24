@@ -1,0 +1,10 @@
+{
+  "scope": "development-only overlap; not isolated host or final qualification",
+  "observed_at": 1789910375.640769,
+  "authority_attempt": 84,
+  "authority_process_group": 52567,
+  "authority_test_pid": 54551,
+  "clippy_attempt": 85,
+  "clippy_process_group": 58737,
+  "process_observation": "  PID  PPID  PGID ELAPSED  %CPU COMM\n52567 52546 52567   07:24   0.0 /Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo\n54551 52567 52567   05:05   0.2 /Users/mtakemiya/dev/kasumi/target/debug/deps/kasumi_authority-8a653d8f0b295bfb\n"
+}

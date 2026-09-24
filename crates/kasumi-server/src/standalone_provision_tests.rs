@@ -3,25 +3,41 @@ use super::*;
 use kasumi_engine::control::ControlPlane;
 use kasumi_store::TenantStorageSet;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn initialization_provisions_control_topology_and_application_before_completion_marker()
+#[test]
+fn initialization_provisions_control_topology_and_application_before_completion_marker()
+-> Result<()> {
+    ownership_tests::run_large_fixture(
+        "standalone initial-provisioning fixture",
+        initialization_provisions_control_topology_and_application_before_completion_marker_impl,
+    )
+}
+
+async fn initialization_provisions_control_topology_and_application_before_completion_marker_impl()
 -> Result<()> {
     let root = kasumi_store::test_utils::private_tempdir()?;
-    let installed = initialize(&root.path().join("database"), "documents").await?;
+    let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &root.path().join("database"),
+        "documents",
+    )
+    .await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
     let mut substituted = config.clone();
     substituted.database_id = Uuid::new_v4();
     ensure!(
-        OperatorState::open(&substituted).await.is_err(),
+        OperatorState::open(&substituted, storage.clone())
+            .await
+            .is_err(),
         "different configured physical database identity was accepted"
     );
     substituted = config.clone();
     substituted.control.incarnation = Some(Uuid::new_v4().to_string());
     ensure!(
-        OperatorState::open(&substituted).await.is_err(),
+        OperatorState::open(&substituted, storage.clone())
+            .await
+            .is_err(),
         "different configured immutable Control identity was accepted"
     );
-    let mut owner = OperatorState::open(&config).await?;
+    let mut owner = OperatorState::open(&config, storage.clone()).await?;
     let node = owner.node.clone();
     let audit = owner.audit.clone();
     let control = owner.control().await?;
@@ -69,7 +85,8 @@ async fn initialization_provisions_control_topology_and_application_before_compl
         16 << 10,
     )?)?;
     ensure!(
-        marker.format == 2
+        marker.format == 4
+            && marker.origin_node_id == STANDALONE_ORIGIN_NODE_ID
             && marker.database_id == config.database_id
             && marker.control_incarnation.to_string()
                 == config.control.incarnation.clone().unwrap(),
@@ -89,17 +106,31 @@ async fn initialization_provisions_control_topology_and_application_before_compl
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn failed_profile_publication_drains_owners_and_never_marks_partial_installation_complete()
+#[test]
+fn failed_profile_publication_drains_owners_and_never_marks_partial_installation_complete()
+-> Result<()> {
+    ownership_tests::run_large_fixture(
+        "standalone failed-profile-publication fixture",
+        failed_profile_publication_drains_owners_and_never_marks_partial_installation_complete_impl,
+    )
+}
+
+async fn failed_profile_publication_drains_owners_and_never_marks_partial_installation_complete_impl()
 -> Result<()> {
     let root = kasumi_store::test_utils::private_tempdir()?;
     let directory = root.path().join("database");
+    let storage =
+        crate::runtime_storage_fixtures::standalone_storage(&directory, Default::default())?;
     let result = initialize_owned(
         &directory,
         "documents",
+        kasumi_store::DirectoryPolicy::fixture(),
+        StandaloneNetwork::fixture(),
         InitializationOptions {
             obstruct_profile_publication: true,
+            ..Default::default()
         },
+        storage.clone(),
     )
     .await;
     ensure!(
@@ -107,34 +138,67 @@ async fn failed_profile_publication_drains_owners_and_never_marks_partial_instal
         "injected exclusive profile publication unexpectedly succeeded"
     );
     ensure!(
+        private_files::read(&directory.join("profiles/control.token"), 16)?.as_slice()
+            == b"blocked",
+        "initialization failed before the injected profile-publication obstruction"
+    );
+    ensure!(
         !directory.join("kasumi.json").exists()
             && !directory.join("data/installation.json").exists(),
         "failed initialization published a completion artifact"
     );
-    let _lock = private_files::ExclusiveLock::acquire(&directory.join("data/installation.lock"))?;
+    // The installer and NodeDisk fixture bind the canonical installed root.
+    // macOS TempDir may retain /var while that root is /private/var.
+    let directory = std::fs::canonicalize(&directory)?;
+    let (persistent, scratch) = crate::runtime_storage_fixtures::standalone_disks(&directory)?;
+    let disk = storage.open_persistent(&persistent)?;
+    let lock = directory.join("data/installation.lock");
+    let (root, relative) = persistent.binding(&lock)?;
+    let _lock = disk.open_file(root, relative)?;
     let prepared: Installation = serde_json::from_slice(&private_files::read(
         &directory.join("data/initialization.json"),
         16 << 10,
     )?)?;
-    let node = NodeStore::open_existing_fixture(
+    let node = NodeStore::open_existing(
         directory.join("data/node.redb"),
         prepared.database_id,
-        kasumi_store::ScratchDisk::fixture(),
+        disk,
+        storage.open_scratch(&scratch)?,
     )?;
+    node.shutdown().await?;
     drop(node);
     ensure!(
-        initialize(&directory, "documents").await.is_err(),
+        initialize_with_storage(
+            &directory,
+            "documents",
+            kasumi_store::DirectoryPolicy::fixture(),
+            StandaloneNetwork::fixture(),
+            storage
+        )
+        .await
+        .is_err(),
         "init adopted an incomplete existing directory"
     );
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stopped_operator_reopen_never_recreates_missing_control_bootstrap() -> Result<()> {
+#[test]
+fn stopped_operator_reopen_never_recreates_missing_control_bootstrap() -> Result<()> {
+    ownership_tests::run_large_fixture(
+        "standalone missing-Control-bootstrap fixture",
+        stopped_operator_reopen_never_recreates_missing_control_bootstrap_impl,
+    )
+}
+
+async fn stopped_operator_reopen_never_recreates_missing_control_bootstrap_impl() -> Result<()> {
     let root = kasumi_store::test_utils::private_tempdir()?;
-    let installed = initialize(&root.path().join("database"), "documents").await?;
+    let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &root.path().join("database"),
+        "documents",
+    )
+    .await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
-    let mut owner = OperatorState::open(&config).await?;
+    let mut owner = OperatorState::open(&config, storage.clone()).await?;
     let node = owner.node.clone();
     let audit = owner.audit.clone();
     let source = Arc::new(crate::runtime::file_secret);

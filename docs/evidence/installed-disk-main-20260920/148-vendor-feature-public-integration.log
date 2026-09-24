@@ -1,0 +1,542 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi/vendor/redb-4.2.0)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.43s
+     Running tests/basic_tests.rs (target/debug/deps/basic_tests-8c1498f7e9498404)
+
+running 112 tests
+test abort ... ok
+test array_type ... ok
+test ascending_inserts_pack_leaves ... ok
+test ascending_inserts_pack_leaves_across_transactions ... ok
+test bool_type ... ok
+test char_type ... ok
+test concurrent_write_transactions_block ... ok
+test create_open ... ok
+test custom_ordering ... ok
+test deferred_close_invalidates_read_transactions ... ok
+test delete ... ok
+test delete_open_table ... ok
+test delete_table ... ok
+test drop_database_then_drop_write_transaction ... ok
+test empty_type ... ok
+test entry_and_modify ... ok
+test entry_borrowed_key ... ok
+test entry_borrowed_key_in_loop ... ok
+test entry_occupied_methods ... ok
+test entry_or_insert ... ok
+test entry_or_insert_with ... ok
+test entry_vacant_into_key ... ok
+test extract_from_if_alternating_directions ... ok
+test extract_from_if_alternating_drain ... ok
+test extract_from_if_empty ... ok
+test extract_from_if_mixed_direction_early_drop_range ... ok
+test extract_from_if_next_back_large_range ... ok
+test extract_if ... ok
+test extract_if_all_guards_survive_iteration ... ok
+test extract_if_alternating_directions_dense_removals ... ok
+test extract_if_alternating_directions_held_guards ... ok
+test extract_if_alternating_directions_partial_consumption ... ok
+test extract_if_caller_panic_does_not_poison_transaction ... 
+thread 'extract_if_caller_panic_does_not_poison_transaction' (5682613) panicked at tests/basic_tests.rs:429:13:
+caller panic
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: basic_tests::extract_if_caller_panic_does_not_poison_transaction::{closure#0}
+             at ./tests/basic_tests.rs:429:13
+   3: <basic_tests::extract_if_caller_panic_does_not_poison_transaction::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+   4: <core::panic::unwind_safe::AssertUnwindSafe<basic_tests::extract_if_caller_panic_does_not_poison_transaction::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+   5: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<basic_tests::extract_if_caller_panic_does_not_poison_transaction::{closure#0}>, !>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+   6: ___rust_try
+   7: std::panicking::catch_unwind::<!, core::panic::unwind_safe::AssertUnwindSafe<basic_tests::extract_if_caller_panic_does_not_poison_transaction::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+   8: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<basic_tests::extract_if_caller_panic_does_not_poison_transaction::{closure#0}>, !>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+   9: basic_tests::extract_if_caller_panic_does_not_poison_transaction
+             at ./tests/basic_tests.rs:426:22
+  10: basic_tests::extract_if_caller_panic_does_not_poison_transaction::{closure#0}
+             at ./tests/basic_tests.rs:416:57
+  11: <basic_tests::extract_if_caller_panic_does_not_poison_transaction::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  12: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test extract_if_is_lazy_until_read ... ok
+test extract_if_mixed_direction_removes_only_yielded_entries ... ok
+test extract_if_mostly_forward_occasional_next_back ... ok
+test extract_if_predicate_panic_poisons_transaction ... 
+thread 'extract_if_predicate_panic_poisons_transaction' (5682670) panicked at tests/basic_tests.rs:399:21:
+assertion `left != right` failed
+  left: 2
+ right: 2
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+   3: core::panicking::assert_failed::<u64, u64>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:394:5
+   4: basic_tests::extract_if_predicate_panic_poisons_transaction::{closure#0}::{closure#0}
+             at ./tests/basic_tests.rs:399:21
+   5: <redb::tree_store::extract_if::BtreeExtractIf<u64, u64, basic_tests::extract_if_predicate_panic_poisons_transaction::{closure#0}::{closure#0}>>::next_inner
+             at ./src/tree_store/extract_if.rs:117:31
+   6: <redb::tree_store::extract_if::BtreeExtractIf<u64, u64, basic_tests::extract_if_predicate_panic_poisons_transaction::{closure#0}::{closure#0}>>::advance
+             at ./src/tree_store/extract_if.rs:170:22
+   7: <redb::tree_store::extract_if::BtreeExtractIf<u64, u64, basic_tests::extract_if_predicate_panic_poisons_transaction::{closure#0}::{closure#0}> as core::iter::traits::iterator::Iterator>::next
+             at ./src/tree_store/extract_if.rs:185:14
+   8: <redb::table::ExtractIf<u64, u64, basic_tests::extract_if_predicate_panic_poisons_transaction::{closure#0}::{closure#0}> as core::iter::traits::iterator::Iterator>::next
+             at ./src/table.rs:1103:20
+   9: basic_tests::extract_if_predicate_panic_poisons_transaction::{closure#0}
+             at ./tests/basic_tests.rs:404:31
+  10: <basic_tests::extract_if_predicate_panic_poisons_transaction::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  11: <core::panic::unwind_safe::AssertUnwindSafe<basic_tests::extract_if_predicate_panic_poisons_transaction::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  12: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<basic_tests::extract_if_predicate_panic_poisons_transaction::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  13: ___rust_try
+  14: std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<basic_tests::extract_if_predicate_panic_poisons_transaction::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  15: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<basic_tests::extract_if_predicate_panic_poisons_transaction::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  16: basic_tests::extract_if_predicate_panic_poisons_transaction
+             at ./tests/basic_tests.rs:396:22
+  17: basic_tests::extract_if_predicate_panic_poisons_transaction::{closure#0}
+             at ./tests/basic_tests.rs:386:52
+  18: <basic_tests::extract_if_predicate_panic_poisons_transaction::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  19: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test extract_if_returned_guards_survive_finalize ... ok
+test f32_type ... ok
+test first_last ... ok
+test generic_array_type ... ok
+test generic_signature_lifetimes ... ok
+test get_mut ... ok
+test i128_type ... ok
+test in_memory ... ok
+test insert_overwrite ... ok
+test insert_reserve ... ok
+test is_empty ... ok
+test iter ... ok
+test len ... ok
+test list_tables ... ok
+test multi_table_commit_writes_are_deterministic ... ok
+test multiple_tables ... ok
+test no_dirty_reads ... ok
+test open_multimap_table_as_regular ... ok
+test option_type ... ok
+test owned_get_signatures ... ok
+test packed_leaves_accept_interior_inserts ... ok
+test pop ... ok
+test range_arc ... ok
+test range_clone ... ok
+test range_empty ... ok
+test range_lifetime ... ok
+test range_signature_inference ... ok
+test read_isolation ... ok
+test read_isolation2 ... ok
+test read_only ... ok
+test ref_get_signatures ... ok
+test rename_open_table ... ok
+test rename_table ... ok
+test reopen_table ... ok
+test retain ... ok
+test retain_coalesces_sparse_survivors ... ok
+test retain_collapses_to_single_entry ... ok
+test retain_collapses_to_sparse_entries ... ok
+test retain_descending_removals_stay_merged ... ok
+test retain_in_empty ... ok
+test retain_in_rebuilds_range_boundaries ... ok
+test retain_in_upper_boundary_does_not_duplicate_subtrees ... ok
+test retain_large_values_bounded_run ... ok
+test retain_merges_sparse_boundary_leaf ... ok
+test retain_packs_moderate_density_survivors ... ok
+test retain_predicate_panic_poisons_transaction ... 
+thread 'retain_predicate_panic_poisons_transaction' (5682925) panicked at tests/basic_tests.rs:3074:21:
+assertion `left != right` failed: retain predicate panic
+  left: 2
+ right: 2
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+   3: core::panicking::assert_failed::<u64, u64>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:394:5
+   4: basic_tests::retain_predicate_panic_poisons_transaction::{closure#0}::{closure#0}
+             at ./tests/basic_tests.rs:3074:21
+   5: <redb::tree_store::btree::BtreeMut<u64, u64>>::retain_scan::<basic_tests::retain_predicate_panic_poisons_transaction::{closure#0}::{closure#0}>
+             at ./src/tree_store/btree.rs:834:16
+   6: <redb::tree_store::btree::BtreeMut<u64, u64>>::retain_in_helper::<basic_tests::retain_predicate_panic_poisons_transaction::{closure#0}::{closure#0}>
+             at ./src/tree_store/btree.rs:805:22
+   7: <redb::tree_store::btree::BtreeMut<u64, u64>>::retain_in_bounds::<basic_tests::retain_predicate_panic_poisons_transaction::{closure#0}::{closure#0}>
+             at ./src/tree_store/btree.rs:775:27
+   8: <redb::table::Table<u64, u64>>::retain_in_bounds::<basic_tests::retain_predicate_panic_poisons_transaction::{closure#0}::{closure#0}>
+             at ./src/table.rs:310:14
+   9: <redb::table::Table<u64, u64>>::retain::<basic_tests::retain_predicate_panic_poisons_transaction::{closure#0}::{closure#0}>
+             at ./src/table.rs:260:14
+  10: basic_tests::retain_predicate_panic_poisons_transaction::{closure#0}
+             at ./tests/basic_tests.rs:3073:18
+  11: <basic_tests::retain_predicate_panic_poisons_transaction::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  12: <core::panic::unwind_safe::AssertUnwindSafe<basic_tests::retain_predicate_panic_poisons_transaction::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  13: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<basic_tests::retain_predicate_panic_poisons_transaction::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  14: ___rust_try
+  15: std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<basic_tests::retain_predicate_panic_poisons_transaction::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  16: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<basic_tests::retain_predicate_panic_poisons_transaction::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  17: basic_tests::retain_predicate_panic_poisons_transaction
+             at ./tests/basic_tests.rs:3071:22
+  18: basic_tests::retain_predicate_panic_poisons_transaction::{closure#0}
+             at ./tests/basic_tests.rs:3051:48
+  19: <basic_tests::retain_predicate_panic_poisons_transaction::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  20: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test retain_rebuilds_changed_separators ... ok
+test retain_variable_sized_sparse_survivors_terminates ... ok
+test return_write_transaction_from_function ... ok
+test same_size_overwrite_preserves_snapshot ... ok
+test signature_lifetimes ... ok
+test stored_size ... ok
+test str_type ... ok
+test string_type ... ok
+test table_stats ... ok
+test tuple10_type ... ok
+test tuple11_type ... ok
+test tuple12_type ... ok
+test tuple2_type ... ok
+test tuple3_type ... ok
+test tuple4_type ... ok
+test tuple5_type ... ok
+test tuple6_type ... ok
+test tuple7_type ... ok
+test tuple8_type ... ok
+test tuple9_type ... ok
+test tuple_type_function_lifetime ... ok
+test tuple_type_lifetime ... ok
+test u64_type ... ok
+test u8_array_serialization ... ok
+test vec_fixed_width_value_type ... ok
+test vec_long_string_element ... ok
+test vec_var_width_value_type ... ok
+test vec_vec_type ... ok
+test write_transaction_keeps_database_open ... ok
+
+test result: ok. 112 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 27.01s
+
+     Running tests/canonical_format.rs (target/debug/deps/canonical_format-aa26145d8447ab56)
+
+running 5 tests
+test builtin_composite_does_not_alias_user_type ... ok
+test composite_of_user_type_does_not_alias_builtin ... ok
+test upstream_savepoints_do_not_enable_a_legacy_open ... ok
+test upstream_single_phase_files_are_rejected_without_migration ... ok
+test upstream_two_phase_layout_is_rejected_before_table_decoding ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.15s
+
+     Running tests/check_integrity_admitted.rs (target/debug/deps/check_integrity_admitted-3119d9a5b3b19e0f)
+
+running 5 tests
+test check_integrity_detects_truncation_after_admitted_growth ... ok
+test check_integrity_preserves_admitted_commit_that_creates_a_table ... ok
+test check_integrity_preserves_commits_after_external_extension ... ok
+test check_integrity_preserves_growing_admitted_commit ... ok
+test check_integrity_rejects_disk_corrupt_admitted_commit ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s
+
+     Running tests/check_integrity_failure.rs (target/debug/deps/check_integrity_failure-5d0619be84ae765c)
+
+running 1 test
+test writes_are_refused_after_a_failed_check_integrity ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/corrupted_btree_descent.rs (target/debug/deps/corrupted_btree_descent-865e6038bc929d9a)
+
+running 1 test
+test cyclic_branch_pointer_is_reported_rather_than_overflowing_the_stack ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/crash_consistency.rs (target/debug/deps/crash_consistency-d6b11cf3ac3eb319)
+
+running 1 test
+test crash_during_growing_commit_is_recoverable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.40s
+
+     Running tests/cursor_tests.rs (target/debug/deps/cursor_tests-3b1e40fedaf1e7f9)
+
+running 37 tests
+test abort_discards_cursor_inserts ... ok
+test append_to_existing_table ... ok
+test bound_positions ... ok
+test bulk_load_crosses_flush_threshold ... ok
+test bulk_load_descending ... ok
+test bulk_load_into_empty_table ... ok
+test bulk_load_large_values ... ok
+test descending_load_crosses_flush_threshold ... ok
+test empty_and_rejected_only_cursors ... ok
+test incremental_appends_across_transactions ... ok
+test insert_after_unordered_keys_rejected ... ok
+test insert_into_middle_gap ... ok
+test insert_into_middle_of_tall_tree ... ok
+test mixed_direction_inserts_and_peeks ... ok
+test moves_apply_pending_inserts ... ok
+test moves_cross_leaf_boundaries ... ok
+test moves_on_empty_table_and_at_edges ... ok
+test moves_walk_both_directions ... ok
+test peeks_during_pending_inserts ... ok
+test peeks_on_empty_table_and_at_start ... ok
+test read_cursor_all_bound_positions ... ok
+test read_cursor_empty_table ... ok
+test read_cursor_generic_over_readable_table ... ok
+test read_cursor_guards_outlive_cursor ... ok
+test read_cursor_keeps_transaction_alive ... ok
+test read_cursor_outlives_read_transaction ... ok
+test read_cursor_sees_uncommitted_writes ... ok
+test read_cursor_string_keys ... ok
+test read_cursor_walks_both_directions ... ok
+test removes_apply_pending_inserts ... ok
+test removes_cross_leaf_boundaries ... ok
+test removes_from_committed_pages ... ok
+test removes_keep_the_gap_in_place ... ok
+test removes_large_values ... ok
+test removes_on_empty_table_and_at_edges ... ok
+test removes_walk_both_directions ... ok
+test unordered_keys_rejected ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.35s
+
+     Running tests/integration_tests.rs (target/debug/deps/integration_tests-9052169a9986c10e)
+
+running 109 tests
+test alias_table ... ok
+test check_integrity_after_persistent_savepoint_delete ... ok
+test check_integrity_after_persistent_savepoint_restore_and_delete ... ok
+test check_integrity_clean ... ok
+test check_integrity_clean_after_delete ... ok
+test check_integrity_ephemeral_savepoint_drop_racing_commit ... ok
+test check_integrity_preserves_non_durable_commit ... ok
+test check_integrity_with_live_read_transaction ... ok
+test check_integrity_with_live_savepoint_on_nondurable_commit ... ok
+test check_integrity_with_persistent_savepoint_then_restore ... ok
+test close_called_exactly_once_on_shutdown_io_error ... ok
+test close_called_exactly_once_when_open_fails ... ok
+test commit_survives_drop_without_checkpoint ... ok
+test compact_after_non_durable_commit ... ok
+test compact_after_post_commit_page_reuse ... ok
+test compact_does_not_block_on_held_write_transaction_with_savepoint ... ok
+test compact_does_not_grow_file ... ok
+test compact_returns_ephemeral_savepoint_error ... ok
+test compact_returns_persistent_savepoint_error ... ok
+test compact_returns_persistent_savepoint_error_after_reopen ... ok
+test compact_returns_persistent_savepoint_error_before_commit ... ok
+test compact_returns_transaction_in_progress_error ... ok
+test compaction ... ok
+test corrupted_persistent_savepoint_record ... ok
+test custom_table_type ... ok
+test database_lock ... ok
+test delete_all_tables ... ok
+test delete_table ... ok
+test delete_table_panic_after_modification ... ok
+test does_not_exist ... ok
+test dropped_write ... ok
+test durable_overwrite_does_not_write_post_commit_metadata ... ok
+test dynamic_growth ... ok
+test ephemeral_savepoint_racing_first_open_no_leak ... ok
+test every_commit_writes_its_durable_state ... ok
+test explicit_close ... ok
+test extract_if_error_commit_reports_storage_failure ... ok
+test extract_if_error_latches ... ok
+test extract_if_next_then_next_back_panic ... ok
+test failed_reopen_preserves_staged_table ... ok
+test immediate_free ... ok
+test immediate_persistence ... ok
+test invalid_database_file ... ok
+test is_send ... ok
+test large_keys ... ok
+test large_values ... ok
+test many_pairs ... 0
+10000
+20000
+30000
+40000
+50000
+60000
+70000
+80000
+90000
+100000
+110000
+120000
+130000
+140000
+150000
+160000
+170000
+180000
+190000
+ok
+test multi_page_kv ... ok
+test multimap_stats ... ok
+test multimap_table_definition_new_panics_on_empty_name - should panic ... 
+thread 'multimap_table_definition_new_panics_on_empty_name' (5688806) panicked at src/db.rs:211:9:
+assertion failed: !name.is_empty()
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: core::panicking::panic
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:150:5
+   3: <redb::db::MultimapTableDefinition<u64, u64>>::new
+             at ./src/db.rs:211:9
+   4: integration_tests::multimap_table_definition_new_panics_on_empty_name
+             at ./tests/integration_tests.rs:5026:51
+   5: integration_tests::multimap_table_definition_new_panics_on_empty_name::{closure#0}
+             at ./tests/integration_tests.rs:5024:56
+   6: <integration_tests::multimap_table_definition_new_panics_on_empty_name::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test multimap_value_next_back_does_not_update_len ... ok
+test no_savepoint_resurrection ... ok
+test non_durable_read_isolation ... ok
+test non_page_size_multiple ... ok
+test nondurable_free ... ok
+test nondurable_live_and_free ... ok
+test page_reuse ... ok
+test page_reuse_after_persistent_savepoint_delete ... ok
+test page_reuse_after_unclean_reopen ... ok
+test page_reuse_with_racing_reader ... ok
+test persistent_savepoint ... ok
+test persistent_savepoint_abort_unbounded_leak ... ok
+test persistent_savepoint_commit_is_immediately_durable ... ok
+test previous_io_error ... ok
+test range_alternating_direction_meets_at_leaf_boundary ... ok
+test range_mixed_direction_no_duplicates_multi_page ... ok
+test range_query ... ok
+test range_query_reversed ... ok
+test read_only_get_guard_keeps_transaction_alive ... ok
+test read_only_range_guards_keep_transaction_alive ... ok
+test read_past_eof_errors ... ok
+test regression ... ok
+test regression10 ... ok
+test regression11 ... ok
+test regression12 ... ok
+test regression13 ... ok
+test regression14 ... ok
+test regression17 ... ok
+test regression18 ... ok
+test regression19 ... ok
+test regression2 ... ok
+test regression20 ... ok
+test regression21 ... ok
+test regression22 ... ok
+test regression23 ... ok
+test regression24 ... ok
+test regression25 ... ok
+test regression26 ... ok
+test regression27 ... ok
+test regression3 ... ok
+test regression7 ... ok
+test regression8 ... ok
+test regression9 ... ok
+test rename_table_with_modifications_data_loss ... ok
+test restore_savepoint_abort_after_ephemeral_drop ... ok
+test restore_savepoint_abort_unbounded_leak ... ok
+test restore_savepoint_from_foreign_database_panics ... ok
+test restore_savepoint_partial_revert_commits_as_data_loss ... ok
+test savepoint ... ok
+test savepoint_restore_data_loss_pending_table_updates ... ok
+test savepoint_restore_data_loss_stale_freed_pages ... ok
+test small_db_is_small_file ... ok
+test stats_with_open_table ... ok
+test stats_with_renamed_open_table ... ok
+test successive_immediate_commits ... ok
+test table_definition_new_panics_on_empty_name - should panic ... 
+thread 'table_definition_new_panics_on_empty_name' (5691671) panicked at src/db.rs:151:9:
+assertion failed: !name.is_empty()
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: core::panicking::panic
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:150:5
+   3: <redb::db::TableDefinition<u64, u64>>::new
+             at ./src/db.rs:151:9
+   4: integration_tests::table_definition_new_panics_on_empty_name
+             at ./tests/integration_tests.rs:5019:43
+   5: integration_tests::table_definition_new_panics_on_empty_name::{closure#0}
+             at ./tests/integration_tests.rs:5017:47
+   6: <integration_tests::table_definition_new_panics_on_empty_name::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test tree_balance ... ok
+test value_too_large ... ok
+test wrong_types ... ok
+
+test result: ok. 109 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 201.69s
+
+     Running tests/multimap_tests.rs (target/debug/deps/multimap_tests-9b6551bfa1a57d39)
+
+running 21 tests
+test cursor_constructors ... ok
+test delete ... ok
+test efficient_storage ... ok
+test get_arc_lifetime ... ok
+test insert ... ok
+test is_empty ... ok
+test iter ... ok
+test len ... ok
+test multimap_remove_collapses_committed_subtree_to_inline ... ok
+test multimap_remove_nonexistent_value_from_subtree_does_not_churn ... ok
+test multimap_remove_subtree_backed_key ... ok
+test multimap_signature_lifetimes ... ok
+test multimap_value_next_back_subtree ... ok
+test range_arc_lifetime ... ok
+test range_lifetime ... ok
+test range_query ... ok
+test read_only_get_value_guards_keep_transaction_alive ... ok
+test read_only_range_entries_keep_transaction_alive ... ok
+test remove_all_uncommitted_subtree_collect ... ok
+test reopen_table ... ok
+test wrong_types ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.10s
+
+     Running tests/multithreading_tests.rs (target/debug/deps/multithreading_tests-6589aa38f80f6428)
+
+running 4 tests
+test multithreading_test::len ... ok
+test multithreading_test::multithreaded_insert ... ok
+test multithreading_test::multithreaded_insert_and_remove ... ok
+test multithreading_test::multithreaded_re_read ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+

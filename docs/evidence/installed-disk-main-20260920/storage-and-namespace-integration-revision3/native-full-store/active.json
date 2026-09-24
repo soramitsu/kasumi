@@ -1,0 +1,12 @@
+{
+  "name": "store-inventory",
+  "pid": 83149,
+  "pgid": 83149,
+  "command": [
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-full-store/store-test-binary",
+    "--list"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/assembly",
+  "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-full-store/store-inventory.log",
+  "remaining_bound_seconds": 1118.228103792
+}

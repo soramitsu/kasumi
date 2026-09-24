@@ -1,0 +1,1868 @@
+{
+  "checkpoint": {
+    "bindings": {
+      "recovery-manifest.json": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "recovery-readme.md": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-readme.md",
+        "sha256": "16adfb5564c3d76a90f1dfdaaf043ba82113d1dc16d6713627118e5e190465b5"
+      },
+      "recovery.patch": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery.patch",
+        "sha256": "f61e8d598ede3cc72073a5c58bed43c998d4dd9d64b6b83d1355db80ba2463bc"
+      },
+      "source-scope.json": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/source-scope.json",
+        "sha256": "4daa40d07ae78368c50baad8a6685f52cea21bd7ed050b659e58e179ade8edcb"
+      }
+    },
+    "branch": "master",
+    "changes_since_prior": {
+      "files": 26,
+      "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/changes-since-prior.json",
+      "sha256": "919e16c640f00426eb8135c4be9dbddc7f1ffaeddc9733f23537d29fa5061bee"
+    },
+    "limitations": [
+      "This binds exact proposed source only; recovery revision8 has not completed native qualification.",
+      "Prior PageNumber, storage and backup results qualify their own immutable inputs, not this successor.",
+      "Original published and upstream-companion attribution is preserved; prior per-file history remains bound by the unchanged prior provenance.",
+      "Production constructor/writer adoption, implicit scratch destruction, complete cache/worker/opaque outcome/native/RSS admission remain open.",
+      "Upstream container, audit and fuzz release gates remain unpassed; no compatibility or fallback is added.",
+      "Source-only verifier results do not establish Cargo dependency selection; the official Cargo metadata gate remains required on the final composition."
+    ],
+    "prior_provenance": {
+      "path": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+      "sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+    },
+    "proposal_rebind": {
+      "changed_source_paths": [
+        "crates/kasumi-store/src/audit_archive_owned.rs"
+      ],
+      "correction": {
+        "bytes": 1502,
+        "mode": "0o644",
+        "sha256": "034da0d47ee16374de13948bb10047e6ae95b86c33788402ad61c76f8315b296"
+      },
+      "previous_provenance_overlay_manifest": {
+        "bytes": 5280,
+        "mode": "0o644",
+        "sha256": "05248ab5a4f7517815ffc55180adbacac6a1b38ef3a48f014b308f4048c43d7a"
+      },
+      "previous_provenance_overlay_patch": {
+        "bytes": 376457,
+        "mode": "0o644",
+        "sha256": "0a50382d04380861998a6eb703df67d9c90439f75d841632ee7851feb456403c"
+      },
+      "previous_recovery_manifest": {
+        "bytes": 20507,
+        "mode": "0o644",
+        "sha256": "950b9b1892237928e254755e82392b5ab049fab3b0ac68a01f8520efc127231a"
+      },
+      "previous_recovery_patch": {
+        "bytes": 186373,
+        "mode": "0o644",
+        "sha256": "9f9d611a8206a2b9035eb2958736d6fa09125bf833000ce899ee032a45ccdb29"
+      },
+      "status": "prior target-only proposal remains immutable and unpublished; authoritative applied provenance remains PageNumber checkpoint",
+      "vendor_source_changed": false
+    },
+    "repository": "/Users/mtakemiya/dev/kasumi",
+    "source_inventory": {
+      "files": 110,
+      "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/source-inventory.json",
+      "sha256": "d29cf381fa7425f3239a8f9f49ff28506f12b84299577be669073be827d5049b"
+    },
+    "status": "proposed-source-bound-recovery-revision8-not-native-or-release-acceptance"
+  },
+  "companion_archive_sha256": "3aabc11f3779daebfc463b077e4c63779c384adb4ea3a4a947f03ac3cc6a244f",
+  "companion_archive_url": "https://codeload.github.com/cberner/redb/tar.gz/23b6ba05473b13e69ed4db82f4b5bc07f0c33be9",
+  "files": [
+    {
+      "fork_bytes": 198,
+      "fork_mode": "0o644",
+      "fork_sha256": "83c651d589b603802a2ed4e29d41491c127efce5af71cc6b240611e87c9f9486",
+      "path": ".cargo/config.toml",
+      "prior_record": {
+        "fork_sha256": "83c651d589b603802a2ed4e29d41491c127efce5af71cc6b240611e87c9f9486",
+        "path": ".cargo/config.toml",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "83c651d589b603802a2ed4e29d41491c127efce5af71cc6b240611e87c9f9486",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 94,
+      "fork_mode": "0o644",
+      "fork_sha256": "536441fefbae6805ff9cb929fe7aa3a19163560a1c6681f8485951072cc34a59",
+      "path": ".cargo_vcs_info.json",
+      "prior_record": {
+        "fork_sha256": "536441fefbae6805ff9cb929fe7aa3a19163560a1c6681f8485951072cc34a59",
+        "path": ".cargo_vcs_info.json",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "536441fefbae6805ff9cb929fe7aa3a19163560a1c6681f8485951072cc34a59",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 240,
+      "fork_mode": "0o644",
+      "fork_sha256": "53b22a63cf2f1ff9c965cd17979a6daaf50133ffadf156232605a4f2310453e0",
+      "path": ".containerignore",
+      "prior_record": {
+        "fork_sha256": "53b22a63cf2f1ff9c965cd17979a6daaf50133ffadf156232605a4f2310453e0",
+        "path": ".containerignore",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "53b22a63cf2f1ff9c965cd17979a6daaf50133ffadf156232605a4f2310453e0",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 106,
+      "fork_mode": "0o644",
+      "fork_sha256": "da38493f994a6a9f7911a8cb6e8151314faf94ef2ac71c316d5186b4a8f5a278",
+      "path": ".dockerignore",
+      "prior_record": {
+        "fork_sha256": "da38493f994a6a9f7911a8cb6e8151314faf94ef2ac71c316d5186b4a8f5a278",
+        "path": ".dockerignore",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "da38493f994a6a9f7911a8cb6e8151314faf94ef2ac71c316d5186b4a8f5a278",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 169,
+      "fork_mode": "0o644",
+      "fork_sha256": "482c6321e0e6b87159265e9e00f64e1ee44a6be03994c9b6fbbf323119bc7d84",
+      "path": ".editorconfig",
+      "prior_record": {
+        "fork_sha256": "482c6321e0e6b87159265e9e00f64e1ee44a6be03994c9b6fbbf323119bc7d84",
+        "path": ".editorconfig",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "482c6321e0e6b87159265e9e00f64e1ee44a6be03994c9b6fbbf323119bc7d84",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 6825,
+      "fork_mode": "0o644",
+      "fork_sha256": "f638b1815749e500657b010a8c67cbb6c73f381156c8bc4b223b4e439d630bcc",
+      "path": ".github/workflows/ci.yml",
+      "prior_record": {
+        "fork_sha256": "f638b1815749e500657b010a8c67cbb6c73f381156c8bc4b223b4e439d630bcc",
+        "path": ".github/workflows/ci.yml",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "f638b1815749e500657b010a8c67cbb6c73f381156c8bc4b223b4e439d630bcc",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 498,
+      "fork_mode": "0o644",
+      "fork_sha256": "f0542f56caa7caa106058176b42d776a2250982b66b13bba42d4606f1fdac095",
+      "path": ".gitignore",
+      "prior_record": {
+        "fork_sha256": "f0542f56caa7caa106058176b42d776a2250982b66b13bba42d4606f1fdac095",
+        "path": ".gitignore",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "f0542f56caa7caa106058176b42d776a2250982b66b13bba42d4606f1fdac095",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 3679,
+      "fork_mode": "0o644",
+      "fork_sha256": "25332d730ac2f822c14e618817200ba4d2aca15b0b6cd0f35d5b45a2352b76dc",
+      "path": "AGENTS.md",
+      "prior_record": {
+        "fork_sha256": "25332d730ac2f822c14e618817200ba4d2aca15b0b6cd0f35d5b45a2352b76dc",
+        "path": "AGENTS.md",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "25332d730ac2f822c14e618817200ba4d2aca15b0b6cd0f35d5b45a2352b76dc",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 43410,
+      "fork_mode": "0o644",
+      "fork_sha256": "fb36a1ce9b3b2142a745c8f58d3e001e34e7bb9a0bec0d6ea1f2400704643424",
+      "path": "CHANGELOG.md",
+      "prior_record": {
+        "fork_sha256": "d44b41935dcb27e650c159671a5e6239a8122b4a06aedd787fd4ebe297860f38",
+        "path": "CHANGELOG.md",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "a7f205654695bc31595b0fd2cf72f037fb6a1b532019d7e21fbe99d835cd7cec",
+      "recovery_successor_change": "modified",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 61,
+      "fork_mode": "0o644",
+      "fork_sha256": "5f0bfba41a12795adf7cd4bbe1f81330c76b955f8b3648021bdeffcac680dcb1",
+      "path": "CLAUDE.md",
+      "prior_record": {
+        "fork_sha256": "5f0bfba41a12795adf7cd4bbe1f81330c76b955f8b3648021bdeffcac680dcb1",
+        "path": "CLAUDE.md",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "5f0bfba41a12795adf7cd4bbe1f81330c76b955f8b3648021bdeffcac680dcb1",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 12128,
+      "fork_mode": "0o644",
+      "fork_sha256": "939a05e6873b73ea86690ef47e978a6d824a73777ec091f0a286681b7526ba66",
+      "path": "Cargo.lock",
+      "prior_record": {
+        "fork_sha256": "939a05e6873b73ea86690ef47e978a6d824a73777ec091f0a286681b7526ba66",
+        "path": "Cargo.lock",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "bcccfce715a96865a7c82c4f97d64140b825ec90ea676d35c26e5deb048c0ce5",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 2864,
+      "fork_mode": "0o644",
+      "fork_sha256": "624da552a1cde5ae2a8a4d92054d3914c690d38dfab8895dac57c301f6b735f9",
+      "path": "Cargo.toml",
+      "prior_record": {
+        "fork_sha256": "fd49b4f13cf19789ecacc7a4e613e26fc2d67e4b09ca9cd83df07bc99dba165c",
+        "path": "Cargo.toml",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "e07da7e5428dc2e8a3767da78de1c351a9edb64f4ed2952c5e921df77c90c4eb",
+      "recovery_successor_change": "modified",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 2077,
+      "fork_mode": "0o644",
+      "fork_sha256": "a562cf842e7b35a249d3ad905c093f39d898f235a7c253e577baa02e12a8e2ba",
+      "path": "Cargo.toml.orig",
+      "prior_record": {
+        "fork_sha256": "a562cf842e7b35a249d3ad905c093f39d898f235a7c253e577baa02e12a8e2ba",
+        "path": "Cargo.toml.orig",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "a562cf842e7b35a249d3ad905c093f39d898f235a7c253e577baa02e12a8e2ba",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 1141,
+      "fork_mode": "0o644",
+      "fork_sha256": "1aa595cd1826b46be9558172a82adf11bdfb32d42651251dfe04d4a34dca4c21",
+      "path": "Containerfile.sandbox",
+      "prior_record": {
+        "fork_sha256": "1aa595cd1826b46be9558172a82adf11bdfb32d42651251dfe04d4a34dca4c21",
+        "path": "Containerfile.sandbox",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "1aa595cd1826b46be9558172a82adf11bdfb32d42651251dfe04d4a34dca4c21",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 411,
+      "fork_mode": "0o644",
+      "fork_sha256": "82a2b155802e2e6fb4bf01c41f1d49973a650eeb6d2e7448db4b8451caa1b509",
+      "path": "Dockerfile.bench",
+      "prior_record": {
+        "fork_sha256": "82a2b155802e2e6fb4bf01c41f1d49973a650eeb6d2e7448db4b8451caa1b509",
+        "path": "Dockerfile.bench",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "82a2b155802e2e6fb4bf01c41f1d49973a650eeb6d2e7448db4b8451caa1b509",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 12737,
+      "fork_mode": "0o644",
+      "fork_sha256": "d6f83980063c81ff28925bed8daf8e8e545fed1f5a20874a63fb374099a541b8",
+      "path": "KASUMI_PATCH.md",
+      "prior_record": {
+        "fork_sha256": "afe3e98dd0f5dadc9933970e46a7e10c9eb516ea695718064152800d8f650e38",
+        "path": "KASUMI_PATCH.md",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "modified",
+      "status": "added"
+    },
+    {
+      "fork_bytes": 11357,
+      "fork_mode": "0o644",
+      "fork_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "path": "LICENSE-APACHE",
+      "prior_record": {
+        "fork_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "path": "LICENSE-APACHE",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 1061,
+      "fork_mode": "0o644",
+      "fork_sha256": "9dc47584f810f4a0f88197b590bf428b154dc5a7f87237c06a39720241e0461f",
+      "path": "LICENSE-MIT",
+      "prior_record": {
+        "fork_sha256": "9dc47584f810f4a0f88197b590bf428b154dc5a7f87237c06a39720241e0461f",
+        "path": "LICENSE-MIT",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "9dc47584f810f4a0f88197b590bf428b154dc5a7f87237c06a39720241e0461f",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 5188,
+      "fork_mode": "0o644",
+      "fork_sha256": "83ef942aa5a16278eb2ad9660d6fc83f3423579a218e613c91cacfeee859a2be",
+      "path": "README.md",
+      "prior_record": {
+        "fork_sha256": "83ef942aa5a16278eb2ad9660d6fc83f3423579a218e613c91cacfeee859a2be",
+        "path": "README.md",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "8452936cd123eb1b4e07a8af517fe7fb6ef1526570ebe82cdd17236adc5f5273",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 968,
+      "fork_mode": "0o644",
+      "fork_sha256": "b80dce625adf90744856f3c3997ab738b4e447ebf9268e9709ab0b736a8e99b2",
+      "path": "build.rs",
+      "prior_record": {
+        "fork_sha256": "b80dce625adf90744856f3c3997ab738b4e447ebf9268e9709ab0b736a8e99b2",
+        "path": "build.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "b80dce625adf90744856f3c3997ab738b4e447ebf9268e9709ab0b736a8e99b2",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 51,
+      "fork_mode": "0o644",
+      "fork_sha256": "d33154e00ec1ffebafd2b7a707ad3b91c028df2706a49c4c4508c5f38c968936",
+      "path": "clippy.toml",
+      "prior_record": {
+        "fork_sha256": "d33154e00ec1ffebafd2b7a707ad3b91c028df2706a49c4c4508c5f38c968936",
+        "path": "clippy.toml",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "d33154e00ec1ffebafd2b7a707ad3b91c028df2706a49c4c4508c5f38c968936",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 189,
+      "fork_mode": "0o644",
+      "fork_sha256": "be103dfb433f8e93ee520c2c21d60d7a0afc6fc11984491003a75d657dc904e3",
+      "path": "codecov.yml",
+      "prior_record": {
+        "fork_sha256": "be103dfb433f8e93ee520c2c21d60d7a0afc6fc11984491003a75d657dc904e3",
+        "path": "codecov.yml",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "be103dfb433f8e93ee520c2c21d60d7a0afc6fc11984491003a75d657dc904e3",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 7837,
+      "fork_mode": "0o644",
+      "fork_sha256": "19a9f67b82879874dd8188f61953af3c12ca32f0a9ac74f1850a9909953b6c2e",
+      "path": "crates/redb-derive/Cargo.lock",
+      "prior_record": {
+        "fork_sha256": "19a9f67b82879874dd8188f61953af3c12ca32f0a9ac74f1850a9909953b6c2e",
+        "path": "crates/redb-derive/Cargo.lock",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "unchanged",
+      "status": "added"
+    },
+    {
+      "fork_bytes": 822,
+      "fork_mode": "0o644",
+      "fork_sha256": "60151cc337ec63f127ca928ae9e2382a8b49e4a0f4f4e8e44e2d3e3b433b9469",
+      "path": "crates/redb-derive/Cargo.toml",
+      "prior_record": {
+        "fork_sha256": "60151cc337ec63f127ca928ae9e2382a8b49e4a0f4f4e8e44e2d3e3b433b9469",
+        "path": "crates/redb-derive/Cargo.toml",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "unchanged",
+      "status": "added",
+      "upstream_companion_sha256": "56cc98db4485033d269ef2bbd0c4c1ebc99bdd812c8275022c19589bd37e592b"
+    },
+    {
+      "fork_bytes": 781,
+      "fork_mode": "0o644",
+      "fork_sha256": "56cc98db4485033d269ef2bbd0c4c1ebc99bdd812c8275022c19589bd37e592b",
+      "path": "crates/redb-derive/Cargo.toml.upstream",
+      "prior_record": {
+        "fork_sha256": "56cc98db4485033d269ef2bbd0c4c1ebc99bdd812c8275022c19589bd37e592b",
+        "path": "crates/redb-derive/Cargo.toml.upstream",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "unchanged",
+      "status": "added"
+    },
+    {
+      "fork_bytes": 20445,
+      "fork_mode": "0o644",
+      "fork_sha256": "b02ac36ef02fec8d1a99d8fc067bb887b8d5b455088cc0cd40266b9f701b5b05",
+      "path": "crates/redb-derive/src/lib.rs",
+      "prior_record": {
+        "fork_sha256": "b02ac36ef02fec8d1a99d8fc067bb887b8d5b455088cc0cd40266b9f701b5b05",
+        "path": "crates/redb-derive/src/lib.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "unchanged",
+      "status": "added",
+      "upstream_companion_sha256": "b02ac36ef02fec8d1a99d8fc067bb887b8d5b455088cc0cd40266b9f701b5b05"
+    },
+    {
+      "fork_bytes": 4672,
+      "fork_mode": "0o644",
+      "fork_sha256": "03e53f7ea695d71578b1510a1e88bb7c95ae8fcd3009c0d8015ebdee69c7fffc",
+      "path": "crates/redb-derive/tests/crate_attr_tests.rs",
+      "prior_record": {
+        "fork_sha256": "03e53f7ea695d71578b1510a1e88bb7c95ae8fcd3009c0d8015ebdee69c7fffc",
+        "path": "crates/redb-derive/tests/crate_attr_tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "unchanged",
+      "status": "added",
+      "upstream_companion_sha256": "8d5f1537615444214960d1c09dcc8ea7c01a7aecd3614e16259e4357160fe2e6"
+    },
+    {
+      "fork_bytes": 18902,
+      "fork_mode": "0o644",
+      "fork_sha256": "ee9a5bbcb2cacad159f700552f60a12716d6fddb4bd11b1aeeeb7c537398cb63",
+      "path": "crates/redb-derive/tests/derive_tests.rs",
+      "prior_record": {
+        "fork_sha256": "ee9a5bbcb2cacad159f700552f60a12716d6fddb4bd11b1aeeeb7c537398cb63",
+        "path": "crates/redb-derive/tests/derive_tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "unchanged",
+      "status": "added",
+      "upstream_companion_sha256": "b5ab1e4848ac353c11696baf83bb16c31df49ac9a9109ee24e060439e10c1eba"
+    },
+    {
+      "fork_bytes": 6346,
+      "fork_mode": "0o644",
+      "fork_sha256": "c8d85448f52033a767701a1acc1d42daa3d7b026465e57dfc61ff75d70039c63",
+      "path": "deny.toml",
+      "prior_record": {
+        "fork_sha256": "c8d85448f52033a767701a1acc1d42daa3d7b026465e57dfc61ff75d70039c63",
+        "path": "deny.toml",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "c8d85448f52033a767701a1acc1d42daa3d7b026465e57dfc61ff75d70039c63",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 29640,
+      "fork_mode": "0o644",
+      "fork_sha256": "6aed09c72b81014decae5c5f3ad0e75026e9aa48bd3e6baa20adab919047545f",
+      "path": "docs/design.md",
+      "prior_record": {
+        "fork_sha256": "6aed09c72b81014decae5c5f3ad0e75026e9aa48bd3e6baa20adab919047545f",
+        "path": "docs/design.md",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "6aed09c72b81014decae5c5f3ad0e75026e9aa48bd3e6baa20adab919047545f",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 831,
+      "fork_mode": "0o644",
+      "fork_sha256": "bf476ddebb5caf15bfe8eaeac1ee3c84266be4cfecd70d0666552499b45bbde3",
+      "path": "examples/derive_value_impl.rs",
+      "prior_record": {
+        "fork_sha256": "bf476ddebb5caf15bfe8eaeac1ee3c84266be4cfecd70d0666552499b45bbde3",
+        "path": "examples/derive_value_impl.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "fddf041167d382c71e14220544c8734cc6d9eb32ec7626e19b97a3deebddd640",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 610,
+      "fork_mode": "0o644",
+      "fork_sha256": "3b72ec30b8d0c4e3f94140887231b10ca01740e02fa75e423f478b3a7d886606",
+      "path": "examples/int_keys.rs",
+      "prior_record": {
+        "fork_sha256": "3b72ec30b8d0c4e3f94140887231b10ca01740e02fa75e423f478b3a7d886606",
+        "path": "examples/int_keys.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "7fde85698129b70ce0a77f92f15d674130833614108d82066b262280d4d11321",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 3125,
+      "fork_mode": "0o644",
+      "fork_sha256": "0c0b6ead1941c7826a97e4bc0d54496b9f60f85e5ff5032792fae07a1b3648f0",
+      "path": "examples/multithread.rs",
+      "prior_record": {
+        "fork_sha256": "0c0b6ead1941c7826a97e4bc0d54496b9f60f85e5ff5032792fae07a1b3648f0",
+        "path": "examples/multithread.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "9ada94b888fc750dd9a5c8474976de59f7235be593efc1d6d49661c5fb39f2d1",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 3886,
+      "fork_mode": "0o644",
+      "fork_sha256": "1339e698865c5a6640d6655cfd30ba954778ed0d3e2e558f8871ebf872dafe88",
+      "path": "examples/special_values.rs",
+      "prior_record": {
+        "fork_sha256": "1339e698865c5a6640d6655cfd30ba954778ed0d3e2e558f8871ebf872dafe88",
+        "path": "examples/special_values.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "d736c72c981f35d0d7d727ac302e67c6fe452283ca254c32c1f2f533d44b5780",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 1244,
+      "fork_mode": "0o644",
+      "fork_sha256": "72c1796be6b42010519f4e7d61135d915caf38fb13c390aa87d652afa28292c2",
+      "path": "examples/support/mod.rs",
+      "prior_record": {
+        "fork_sha256": "72c1796be6b42010519f4e7d61135d915caf38fb13c390aa87d652afa28292c2",
+        "path": "examples/support/mod.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "unchanged",
+      "status": "added"
+    },
+    {
+      "fork_bytes": 4883,
+      "fork_mode": "0o644",
+      "fork_sha256": "5ed175fadafd3ca9be4455a11f6d06ee190215cae289662279caacdf9a2c3e04",
+      "path": "justfile",
+      "prior_record": {
+        "fork_sha256": "5ed175fadafd3ca9be4455a11f6d06ee190215cae289662279caacdf9a2c3e04",
+        "path": "justfile",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "5ed175fadafd3ca9be4455a11f6d06ee190215cae289662279caacdf9a2c3e04",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 5,
+      "fork_mode": "0o644",
+      "fork_sha256": "56c783cb4dcc395a4dfa7496e32f8c0f7429a58cf9d514a4476b6801ca529478",
+      "path": "rust-toolchain",
+      "prior_record": {
+        "fork_sha256": "56c783cb4dcc395a4dfa7496e32f8c0f7429a58cf9d514a4476b6801ca529478",
+        "path": "rust-toolchain",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "56c783cb4dcc395a4dfa7496e32f8c0f7429a58cf9d514a4476b6801ca529478",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 16,
+      "fork_mode": "0o644",
+      "fork_sha256": "7e1c845eb4c10735ee1060760592a18b47a53aaf45e63b7e0932c005b523a6ea",
+      "path": "rustfmt.toml",
+      "prior_record": {
+        "fork_sha256": "7e1c845eb4c10735ee1060760592a18b47a53aaf45e63b7e0932c005b523a6ea",
+        "path": "rustfmt.toml",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "7e1c845eb4c10735ee1060760592a18b47a53aaf45e63b7e0932c005b523a6ea",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 1282,
+      "fork_mode": "0o755",
+      "fork_sha256": "dc6e7eb76d8c619bc07c3f9828570c218e0a893685ec93b3b2ce3375819f93eb",
+      "path": "scripts/podman-sandbox.sh",
+      "prior_record": {
+        "fork_sha256": "dc6e7eb76d8c619bc07c3f9828570c218e0a893685ec93b3b2ce3375819f93eb",
+        "path": "scripts/podman-sandbox.sh",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "dc6e7eb76d8c619bc07c3f9828570c218e0a893685ec93b3b2ce3375819f93eb",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 2426,
+      "fork_mode": "0o644",
+      "fork_sha256": "89b088b56bea18ad301e7e27dafc221bc9167c7aea261eb2b3eed00b1e2f87e2",
+      "path": "src/admission.rs",
+      "prior_record": {
+        "fork_sha256": "89b088b56bea18ad301e7e27dafc221bc9167c7aea261eb2b3eed00b1e2f87e2",
+        "path": "src/admission.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "unchanged",
+      "status": "added"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 26417,
+      "fork_mode": "0o644",
+      "fork_sha256": "99bfdd506a6a9a6af95add0b306ceb76034b16c2f7a606a67cd77d9e5acff953",
+      "path": "src/admission/tests.rs",
+      "prior_record": {
+        "fork_sha256": "82351c92ff8b8dc69b76e640407980f30590641d1c3df0292aa147e4b071b3ab",
+        "path": "src/admission/tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "modified",
+      "status": "added"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 11053,
+      "fork_mode": "0o644",
+      "fork_sha256": "6694206b788ebc139e4bf1a7a7ad1062f7d10f6fb9e765d2858d4607ed19b771",
+      "path": "src/allocator_state_key_tests.rs",
+      "prior_record": {
+        "fork_sha256": "264a6ff593652d087671d91c967735d093228dfc957f165617ceb0bc2d3d1968",
+        "path": "src/allocator_state_key_tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "modified",
+      "status": "added"
+    },
+    {
+      "fork_bytes": 123,
+      "fork_mode": "0o644",
+      "fork_sha256": "ef9c2a44c87d4ae9d8c0f71e6c80f141d2679b49d6af73b44c3ddd537a5c6479",
+      "path": "src/backends.rs",
+      "prior_record": {
+        "fork_sha256": "ef9c2a44c87d4ae9d8c0f71e6c80f141d2679b49d6af73b44c3ddd537a5c6479",
+        "path": "src/backends.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "ef9c2a44c87d4ae9d8c0f71e6c80f141d2679b49d6af73b44c3ddd537a5c6479",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 8336,
+      "fork_mode": "0o644",
+      "fork_sha256": "b40e2fa66cce535d96e4296a65c757f04476a3e2aeaaefed0acfdb5c0da61004",
+      "path": "src/cache_admission_tests.rs",
+      "prior_record": {
+        "fork_sha256": "b40e2fa66cce535d96e4296a65c757f04476a3e2aeaaefed0acfdb5c0da61004",
+        "path": "src/cache_admission_tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "unchanged",
+      "status": "added"
+    },
+    {
+      "fork_bytes": 2879,
+      "fork_mode": "0o644",
+      "fork_sha256": "3a5760ad35a98c2b5a6e056608a5404392699efc3cc5ef5a6a215b00ecc4d669",
+      "path": "src/complex_types.rs",
+      "prior_record": {
+        "fork_sha256": "3a5760ad35a98c2b5a6e056608a5404392699efc3cc5ef5a6a215b00ecc4d669",
+        "path": "src/complex_types.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "3a5760ad35a98c2b5a6e056608a5404392699efc3cc5ef5a6a215b00ecc4d669",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 71368,
+      "fork_mode": "0o644",
+      "fork_sha256": "76e50b39e797242d9bcdb9cc585005434f7dc55550aeef01e3167b5551dbb157",
+      "path": "src/db.rs",
+      "prior_record": {
+        "fork_sha256": "87491f49056422c24c23848d9b1aec7d4466794963ea863cb46eb812364d3a9c",
+        "path": "src/db.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "ae0e73b1fd57f9c40ff00568dfc3869f6037d6863233868b1b3978744bc26dbc",
+      "recovery_successor_change": "modified",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 25241,
+      "fork_mode": "0o644",
+      "fork_sha256": "d06dd7441556729c086ccda470f4057e262fec40d46f533799834548e4868881",
+      "path": "src/error.rs",
+      "prior_record": {
+        "fork_sha256": "d06dd7441556729c086ccda470f4057e262fec40d46f533799834548e4868881",
+        "path": "src/error.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "0b394a9fa15e2ccc59a836f5a280bb19d62a382ea98123bc238531cbb11eaee7",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 3110,
+      "fork_mode": "0o644",
+      "fork_sha256": "7f5317f02e80af2cbae3b75b2045b8362eebfca778649ef1200f8868300d5740",
+      "path": "src/io.rs",
+      "prior_record": {
+        "fork_sha256": "7f5317f02e80af2cbae3b75b2045b8362eebfca778649ef1200f8868300d5740",
+        "path": "src/io.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "7f5317f02e80af2cbae3b75b2045b8362eebfca778649ef1200f8868300d5740",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 2138,
+      "fork_mode": "0o644",
+      "fork_sha256": "db8a2654ce8e03576925f4da984f4d2582a09dd1556717d4c420c90dbf470d33",
+      "path": "src/key_range.rs",
+      "prior_record": {
+        "fork_sha256": "db8a2654ce8e03576925f4da984f4d2582a09dd1556717d4c420c90dbf470d33",
+        "path": "src/key_range.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "db8a2654ce8e03576925f4da984f4d2582a09dd1556717d4c420c90dbf470d33",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 6420,
+      "fork_mode": "0o644",
+      "fork_sha256": "d328d232b11769870504dd3de3296ac4b2b034a58368c9c5c03476ddd9b2186d",
+      "path": "src/lib.rs",
+      "prior_record": {
+        "fork_sha256": "8460da21c47cc89b62bb0b91728b488a143b796eda20f4b682c2908e6f3987b8",
+        "path": "src/lib.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "81db5d7d7cbc62a22d62854eb0de0793a62a33be620a3be1bb3cd4730899ce3f",
+      "recovery_successor_change": "modified",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 54408,
+      "fork_mode": "0o644",
+      "fork_sha256": "0ae2109dd00d0e5ba0a917fea0dc0bb817745e0d8d2d858102504fdcc64a0bdb",
+      "path": "src/multimap_table.rs",
+      "prior_record": {
+        "fork_sha256": "0ae2109dd00d0e5ba0a917fea0dc0bb817745e0d8d2d858102504fdcc64a0bdb",
+        "path": "src/multimap_table.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "157361f57dbf1658827bf662f304af0f4973119566718cc935bd157e6f818836",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 42260,
+      "fork_mode": "0o644",
+      "fork_sha256": "4423083f490241e8f8ccfe3e7d6e644dc583ebf40b852b106f9693097dcb3c53",
+      "path": "src/page_list_tests.rs",
+      "prior_record": {
+        "fork_sha256": "c9e88976f84b1937db204e5a66c52edaf188beedc79667a823543e32a4e87fc2",
+        "path": "src/page_list_tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "modified",
+      "status": "added"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 7966,
+      "fork_mode": "0o644",
+      "fork_sha256": "f2ca7f5edcbb1e30e9963e173d46ef68005ad432d7e4305a9e4701e42f247a6e",
+      "path": "src/retained_database.rs",
+      "prior_record": {
+        "fork_sha256": "fb005b0b87c4c7ee26c8418e19eeeca2eb928ea521324c4adffbabded25db263",
+        "path": "src/retained_database.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "modified",
+      "status": "added"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 15919,
+      "fork_mode": "0o644",
+      "fork_sha256": "58661c3255b0a754c579679986221d2190777be6f3c19af20cbddebdd6dcc3f3",
+      "path": "src/retained_database_tests.rs",
+      "prior_record": {
+        "fork_sha256": "8a563d68d5239fb38ad6459b69f87c8e2bf63d2823badab3032364b6f5171f0b",
+        "path": "src/retained_database_tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "modified",
+      "status": "added"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 24610,
+      "fork_mode": "0o644",
+      "fork_sha256": "7a26995387d914bc0255063366e6e6bec4ecd6754e4a141170a0b5536977c902",
+      "path": "src/retained_opening.rs",
+      "prior_record": {
+        "fork_sha256": "7a496f7d3355a377d40f8e7a7bff7f80608bc9c729de807b52d58fa5ef941f8b",
+        "path": "src/retained_opening.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "modified",
+      "status": "added"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 28634,
+      "fork_mode": "0o644",
+      "fork_sha256": "7ffec0dfbbb65238caf92de68f6f6ed0a9022f45b93940bc27599aac0ee56d78",
+      "path": "src/retained_opening_tests.rs",
+      "prior_record": {
+        "fork_sha256": "bb894a5852ef4bb044e5d14de33eabdb037844ba1ff253ba8de73285c6aad081",
+        "path": "src/retained_opening_tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "modified",
+      "status": "added"
+    },
+    {
+      "fork_bytes": 11525,
+      "fork_mode": "0o644",
+      "fork_sha256": "7dcc471bacab91d6ca1e0119e46b664cf194a87adbfc33deca6e1d6906ee7ee3",
+      "path": "src/retained_transaction.rs",
+      "prior_record": {
+        "fork_sha256": "7dcc471bacab91d6ca1e0119e46b664cf194a87adbfc33deca6e1d6906ee7ee3",
+        "path": "src/retained_transaction.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "unchanged",
+      "status": "added"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 27148,
+      "fork_mode": "0o644",
+      "fork_sha256": "0d5854c8271bb4ee7cc086ae0a42fcd8545dc8ac5261ca651e16df79be4d425b",
+      "path": "src/retained_transaction_tests.rs",
+      "prior_record": {
+        "fork_sha256": "245cec07782e3353da405a6a49ae3d6d8c1a8e80c54dfa0ec7addc2fec387cb6",
+        "path": "src/retained_transaction_tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "modified",
+      "status": "added"
+    },
+    {
+      "fork_bytes": 540,
+      "fork_mode": "0o644",
+      "fork_sha256": "0531923f11e02e6fdf605add80953c21aa9a3bd48166c25af2934597590bf70b",
+      "path": "src/sealed.rs",
+      "prior_record": {
+        "fork_sha256": "0531923f11e02e6fdf605add80953c21aa9a3bd48166c25af2934597590bf70b",
+        "path": "src/sealed.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "0531923f11e02e6fdf605add80953c21aa9a3bd48166c25af2934597590bf70b",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 14558,
+      "fork_mode": "0o644",
+      "fork_sha256": "933159b9b6b93500df1d517f961fe8c07c3fc07ed54aa2527a0f95a4ffea5016",
+      "path": "src/sync.rs",
+      "prior_record": {
+        "fork_sha256": "933159b9b6b93500df1d517f961fe8c07c3fc07ed54aa2527a0f95a4ffea5016",
+        "path": "src/sync.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "933159b9b6b93500df1d517f961fe8c07c3fc07ed54aa2527a0f95a4ffea5016",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 68231,
+      "fork_mode": "0o644",
+      "fork_sha256": "419f979536fa019dd55e0c8826d0c4c522d7246e715b0b7e117e437c24eaab76",
+      "path": "src/table.rs",
+      "prior_record": {
+        "fork_sha256": "419f979536fa019dd55e0c8826d0c4c522d7246e715b0b7e117e437c24eaab76",
+        "path": "src/table.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "36e67599f7228e35fe80552c99bc3d50bf8ca2cdec7b23c7bf07ec9e52d0c501",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 10619,
+      "fork_mode": "0o644",
+      "fork_sha256": "5d673a923d5c6995251ec6ec1a519be4e3b1e7db385f99f16410b375315ee8ab",
+      "path": "src/transaction_tracker.rs",
+      "prior_record": {
+        "fork_sha256": "5d673a923d5c6995251ec6ec1a519be4e3b1e7db385f99f16410b375315ee8ab",
+        "path": "src/transaction_tracker.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "337b9234f0bf1a5bb82ba874bc9dd1626bee43c902effec5252305741537a03d",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 96689,
+      "fork_mode": "0o644",
+      "fork_sha256": "03a46dcb58f865950a290e2a6e27fbdbb9c5348e53eaf17962e88c60e49fbd6f",
+      "path": "src/transactions.rs",
+      "prior_record": {
+        "fork_sha256": "03a46dcb58f865950a290e2a6e27fbdbb9c5348e53eaf17962e88c60e49fbd6f",
+        "path": "src/transactions.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "18fc74991b203b8426275d095c21ba60fc9a10eb63ffbbb84ad3908d6e7f474e",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 15498,
+      "fork_mode": "0o644",
+      "fork_sha256": "ecae9c026a06984a134935065522966bf8de98952ccf124f330a0ad93a3cf661",
+      "path": "src/tree_store/allocator_state.rs",
+      "prior_record": {
+        "fork_sha256": "ecae9c026a06984a134935065522966bf8de98952ccf124f330a0ad93a3cf661",
+        "path": "src/tree_store/allocator_state.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "unchanged",
+      "status": "added"
+    },
+    {
+      "fork_bytes": 54092,
+      "fork_mode": "0o644",
+      "fork_sha256": "99d9bf6768cb32dda6cbe25fc746aa47a906f5fa3c7664dbb09c78c726b3535d",
+      "path": "src/tree_store/btree.rs",
+      "prior_record": {
+        "fork_sha256": "99d9bf6768cb32dda6cbe25fc746aa47a906f5fa3c7664dbb09c78c726b3535d",
+        "path": "src/tree_store/btree.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "1635d8eac6e4d5f02edc77954bf4d46f6ab0993a723ded3d333e1590b3c38c56",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 89538,
+      "fork_mode": "0o644",
+      "fork_sha256": "db1ae26998a7f62ec6a3dee8b5af6121c352cd7e3ddf7f6863f058fda6c930af",
+      "path": "src/tree_store/btree_base.rs",
+      "prior_record": {
+        "fork_sha256": "db1ae26998a7f62ec6a3dee8b5af6121c352cd7e3ddf7f6863f058fda6c930af",
+        "path": "src/tree_store/btree_base.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "591ee994f706e4e14089aef0e077a463038bb2ef15e45dc6ddbe8396124c6009",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 119085,
+      "fork_mode": "0o644",
+      "fork_sha256": "66f99b513d01a75bc973054f5690d2642051c3a945ccc8045bceefebc62858ee",
+      "path": "src/tree_store/btree_cursor.rs",
+      "prior_record": {
+        "fork_sha256": "66f99b513d01a75bc973054f5690d2642051c3a945ccc8045bceefebc62858ee",
+        "path": "src/tree_store/btree_cursor.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "dc527491a833f7312439e7eb4a89bab13dd12e93d10d8611243bb9c771c2d28d",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 7866,
+      "fork_mode": "0o644",
+      "fork_sha256": "ac743b16c410245f8ad366d7226254c457438a663b619dc150879b9f4bee46b7",
+      "path": "src/tree_store/btree_cursor_range.rs",
+      "prior_record": {
+        "fork_sha256": "ac743b16c410245f8ad366d7226254c457438a663b619dc150879b9f4bee46b7",
+        "path": "src/tree_store/btree_cursor_range.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "ac743b16c410245f8ad366d7226254c457438a663b619dc150879b9f4bee46b7",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 4018,
+      "fork_mode": "0o644",
+      "fork_sha256": "c20882d9c86d0a648993cbd6ac48028d1895cdc740ffa1ccca2c686b326a1b9c",
+      "path": "src/tree_store/btree_iters.rs",
+      "prior_record": {
+        "fork_sha256": "c20882d9c86d0a648993cbd6ac48028d1895cdc740ffa1ccca2c686b326a1b9c",
+        "path": "src/tree_store/btree_iters.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "34ecf2117b570e563a59876e95c9191d0fe9b8bdad89c7e04fb3a97dcb5f2abb",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 88661,
+      "fork_mode": "0o644",
+      "fork_sha256": "fb6e0d28e063c0348dc04ee4b55d80ea108e9b99606f117e87b6d7623a64aba7",
+      "path": "src/tree_store/btree_mutator.rs",
+      "prior_record": {
+        "fork_sha256": "fb6e0d28e063c0348dc04ee4b55d80ea108e9b99606f117e87b6d7623a64aba7",
+        "path": "src/tree_store/btree_mutator.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "8f40df7380fec88a18ad3dbf4eafd59d1089edfdcbe74483a72bf6ceccf4a9dd",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 6799,
+      "fork_mode": "0o644",
+      "fork_sha256": "7b35def784b51faf82aab9e51574a910153ecf1d074bbf2a92cbb76fdf20f298",
+      "path": "src/tree_store/extract_if.rs",
+      "prior_record": {
+        "fork_sha256": "7b35def784b51faf82aab9e51574a910153ecf1d074bbf2a92cbb76fdf20f298",
+        "path": "src/tree_store/extract_if.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "7b35def784b51faf82aab9e51574a910153ecf1d074bbf2a92cbb76fdf20f298",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 1619,
+      "fork_mode": "0o644",
+      "fork_sha256": "ff99a8e14856d8dfa29bac7dc661f32affa087e28ca253986ab9a5fcc801363d",
+      "path": "src/tree_store/mod.rs",
+      "prior_record": {
+        "fork_sha256": "ff99a8e14856d8dfa29bac7dc661f32affa087e28ca253986ab9a5fcc801363d",
+        "path": "src/tree_store/mod.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "b8d1fd29ad6ec673ef00bfe9544586736fcc66e5048fb4fa5a11e075a5137a2a",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 26053,
+      "fork_mode": "0o644",
+      "fork_sha256": "f9dfa62c521e066f42a8a157e40267e849f9eb7aa400c1d84078699ff1186418",
+      "path": "src/tree_store/multimap_btree.rs",
+      "prior_record": {
+        "fork_sha256": "f9dfa62c521e066f42a8a157e40267e849f9eb7aa400c1d84078699ff1186418",
+        "path": "src/tree_store/multimap_btree.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "e9e9c86b75b05111dbde3220fc5133a55e98d2681c6d9fdc71737364d3a59702",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 22593,
+      "fork_mode": "0o644",
+      "fork_sha256": "81622f3608ac4576520ee8854b2ddaa10ee396cfece7d8a26963e0580a6d363c",
+      "path": "src/tree_store/page_store/allocator_snapshot.rs",
+      "prior_record": {
+        "fork_sha256": "81622f3608ac4576520ee8854b2ddaa10ee396cfece7d8a26963e0580a6d363c",
+        "path": "src/tree_store/page_store/allocator_snapshot.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "unchanged",
+      "status": "added"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 3125,
+      "fork_mode": "0o644",
+      "fork_sha256": "e1d6cc61fd69367eda6c1d2056b4f6354754aa7551fb997cb156e511a0e0d171",
+      "path": "src/tree_store/page_store/backends.rs",
+      "prior_record": {
+        "fork_sha256": "98828c24c7d951523bb5e52ae7447ff2ba8eb09b234354e3c7d1c4cab47719bf",
+        "path": "src/tree_store/page_store/backends.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "98828c24c7d951523bb5e52ae7447ff2ba8eb09b234354e3c7d1c4cab47719bf",
+      "recovery_successor_change": "modified",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 17664,
+      "fork_mode": "0o644",
+      "fork_sha256": "0eea5d9c4ef3d196b196795eca8e2a75d89e8058481b3fc909c4768218b042fa",
+      "path": "src/tree_store/page_store/base.rs",
+      "prior_record": {
+        "fork_sha256": "0eea5d9c4ef3d196b196795eca8e2a75d89e8058481b3fc909c4768218b042fa",
+        "path": "src/tree_store/page_store/base.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "45ccd8d54128782bb85d1c59519521b8b95cddb5c984556092eb1d193978a23e",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 30149,
+      "fork_mode": "0o644",
+      "fork_sha256": "1c66d0a834c11d20babad113ea5b6f79645d4ebfa58421e11923a65bb483be1a",
+      "path": "src/tree_store/page_store/bitmap.rs",
+      "prior_record": {
+        "fork_sha256": "1c66d0a834c11d20babad113ea5b6f79645d4ebfa58421e11923a65bb483be1a",
+        "path": "src/tree_store/page_store/bitmap.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "d57724dcbc9701e8fb7a2e268febba1fbe2ff2a00e14e000c27a703afe3af9ff",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 27614,
+      "fork_mode": "0o644",
+      "fork_sha256": "289f6b3f52d77f2ac40bdaaaca9c693c16ed62b8c2819d5539df9f7b80f12d92",
+      "path": "src/tree_store/page_store/buddy_allocator.rs",
+      "prior_record": {
+        "fork_sha256": "289f6b3f52d77f2ac40bdaaaca9c693c16ed62b8c2819d5539df9f7b80f12d92",
+        "path": "src/tree_store/page_store/buddy_allocator.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "88e6c4df1e0fa85651bd0373eeab653d2d2299a18b241fd337a127d13025fb26",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 58432,
+      "fork_mode": "0o644",
+      "fork_sha256": "c0d86350cd22850f877a57ef1f4db562d2e0bf88711621da5c66ff8a34dd8f17",
+      "path": "src/tree_store/page_store/cached_file.rs",
+      "prior_record": {
+        "fork_sha256": "0341e792cb1da6e1f6e3c0f99617533ec5492065f8e75cf463a3efd07a0ea180",
+        "path": "src/tree_store/page_store/cached_file.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "3670f99df6e83d70327d4ac6680e0eedde14e0dc3602c17d0bf706156907aeb5",
+      "recovery_successor_change": "modified",
+      "status": "modified"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 7165,
+      "fork_mode": "0o644",
+      "fork_sha256": "cde52a36661f99e76f69b6a4f2e4bfc15c8748651e02357c669678863bbf4d16",
+      "path": "src/tree_store/page_store/checked_backend_tests.rs",
+      "prior_record": {
+        "fork_sha256": "8f713ff6b5a28a1016f917fdfceb9721bf36f524099d0e1b4d009c15fdaaa2a1",
+        "path": "src/tree_store/page_store/checked_backend_tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "modified",
+      "status": "added"
+    },
+    {
+      "fork_bytes": 2869,
+      "fork_mode": "0o644",
+      "fork_sha256": "aad4660f34971d858c55016cf1b6d88ce49804be2b3d42e24f59f37e58bdca78",
+      "path": "src/tree_store/page_store/fast_hash.rs",
+      "prior_record": {
+        "fork_sha256": "aad4660f34971d858c55016cf1b6d88ce49804be2b3d42e24f59f37e58bdca78",
+        "path": "src/tree_store/page_store/fast_hash.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "aad4660f34971d858c55016cf1b6d88ce49804be2b3d42e24f59f37e58bdca78",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 1794,
+      "fork_mode": "0o644",
+      "fork_sha256": "3c6460458e443368fc53db54d5c0622325e61aa1a69515df3b8f1d9b7dcc882f",
+      "path": "src/tree_store/page_store/file_backend/fallback.rs",
+      "prior_record": {
+        "fork_sha256": "c370a83dbee3807794c9a1073917bf4c73e74b60c0eb3de4a7d28f8c6918978a",
+        "path": "src/tree_store/page_store/file_backend/fallback.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "c370a83dbee3807794c9a1073917bf4c73e74b60c0eb3de4a7d28f8c6918978a",
+      "recovery_successor_change": "modified",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 291,
+      "fork_mode": "0o644",
+      "fork_sha256": "6a339c227547418cb366e851ef5796273a0dd70757b7dbdf63e5aa61c8b995cc",
+      "path": "src/tree_store/page_store/file_backend/mod.rs",
+      "prior_record": {
+        "fork_sha256": "6a339c227547418cb366e851ef5796273a0dd70757b7dbdf63e5aa61c8b995cc",
+        "path": "src/tree_store/page_store/file_backend/mod.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "6a339c227547418cb366e851ef5796273a0dd70757b7dbdf63e5aa61c8b995cc",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 12537,
+      "fork_mode": "0o644",
+      "fork_sha256": "535eaf01ca1877c0914f6609b0471b46c5f02c4a3ffc16dbc091e46e42ff7c95",
+      "path": "src/tree_store/page_store/file_backend/optimized.rs",
+      "prior_record": {
+        "fork_sha256": "3958ba710e9d482c0ba2191a30de18ff5227b2307bc9f924efcb80db6cb21e60",
+        "path": "src/tree_store/page_store/file_backend/optimized.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "3958ba710e9d482c0ba2191a30de18ff5227b2307bc9f924efcb80db6cb21e60",
+      "recovery_successor_change": "modified",
+      "status": "modified"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 74607,
+      "fork_mode": "0o644",
+      "fork_sha256": "398b56a2f0538db800e1e2d882a10aa9a401b821fc90d5839944086d25f98411",
+      "path": "src/tree_store/page_store/header.rs",
+      "prior_record": {
+        "fork_sha256": "aa6ef10fec56d66894e0245cf99dba46d64b6b695b6beffeb450945edb29f913",
+        "path": "src/tree_store/page_store/header.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "f7a7c36722542818c3f26fac8ad88edd405da191f7d095f22142ff776d9a60f5",
+      "recovery_successor_change": "modified",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 8105,
+      "fork_mode": "0o644",
+      "fork_sha256": "0b559f9a739c6960bfdc0fd84c03f3bd8e083a824a74f9ea41b162f1fb99d670",
+      "path": "src/tree_store/page_store/layout.rs",
+      "prior_record": {
+        "fork_sha256": "0b559f9a739c6960bfdc0fd84c03f3bd8e083a824a74f9ea41b162f1fb99d670",
+        "path": "src/tree_store/page_store/layout.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "0b559f9a739c6960bfdc0fd84c03f3bd8e083a824a74f9ea41b162f1fb99d670",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 7749,
+      "fork_mode": "0o644",
+      "fork_sha256": "4d18d2b645316ffd6721ee3740b13f77180a068afe50245a9f6f8f417859d48b",
+      "path": "src/tree_store/page_store/lru_cache.rs",
+      "prior_record": {
+        "fork_sha256": "4d18d2b645316ffd6721ee3740b13f77180a068afe50245a9f6f8f417859d48b",
+        "path": "src/tree_store/page_store/lru_cache.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "d17a92a700a492dbbb3a8989722d1e43c2da7c1df6d7e742a3de8c90f797bac8",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 1007,
+      "fork_mode": "0o644",
+      "fork_sha256": "d120df8081dba0415d34e7719cf4b126cf267aa9f638e095db2e662b32eb9574",
+      "path": "src/tree_store/page_store/mod.rs",
+      "prior_record": {
+        "fork_sha256": "d120df8081dba0415d34e7719cf4b126cf267aa9f638e095db2e662b32eb9574",
+        "path": "src/tree_store/page_store/mod.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "d8b37c9f5edfd92b8ad0f7ddd47e402b9e5a093a93c62767d97812c5d97e5a87",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 63779,
+      "fork_mode": "0o644",
+      "fork_sha256": "7fa546fc7edaf9e1fdb69fd464199f2744c19bd7173eac61e7a8f3a7cdcd9a2d",
+      "path": "src/tree_store/page_store/page_manager.rs",
+      "prior_record": {
+        "fork_sha256": "f02fee871c94e05261eba80c90633bbe09d5673b23e1db250f1532345287a47c",
+        "path": "src/tree_store/page_store/page_manager.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "b20394a7904eb8d79a6920070caf8de1a56237288501449532af47e471e2271b",
+      "recovery_successor_change": "modified",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 15480,
+      "fork_mode": "0o644",
+      "fork_sha256": "2f1b8a7ddb86f8000df47f9f68d24752f93df5489b377c9f3312d0a6203ff086",
+      "path": "src/tree_store/page_store/region.rs",
+      "prior_record": {
+        "fork_sha256": "2f1b8a7ddb86f8000df47f9f68d24752f93df5489b377c9f3312d0a6203ff086",
+        "path": "src/tree_store/page_store/region.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "ae6fb0a6f050de1739afe80fb5706b1634e6629cba3b5baeeff74935fbf367e0",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 9773,
+      "fork_mode": "0o644",
+      "fork_sha256": "ed2d619e9ddc439ffe0641398dea33a7d81dd868be7c1d1cd3e42fd2346c24a2",
+      "path": "src/tree_store/page_store/savepoint.rs",
+      "prior_record": {
+        "fork_sha256": "ed2d619e9ddc439ffe0641398dea33a7d81dd868be7c1d1cd3e42fd2346c24a2",
+        "path": "src/tree_store/page_store/savepoint.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "6f5732fd47215e3c4964b09932315042a6e56d2c21160465bbbe228088883569",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 27630,
+      "fork_mode": "0o644",
+      "fork_sha256": "70090eb9b698cae809c63f1c938e81f97115d0494489ebdba92af4566c774844",
+      "path": "src/tree_store/page_store/xxh3.rs",
+      "prior_record": {
+        "fork_sha256": "70090eb9b698cae809c63f1c938e81f97115d0494489ebdba92af4566c774844",
+        "path": "src/tree_store/page_store/xxh3.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "70090eb9b698cae809c63f1c938e81f97115d0494489ebdba92af4566c774844",
+      "recovery_successor_change": "unchanged",
+      "status": "unchanged"
+    },
+    {
+      "fork_bytes": 36421,
+      "fork_mode": "0o644",
+      "fork_sha256": "7fbc653eeed2097f19d3e9512b39df19e987f93c2db1a1facfec830b7a9bd618",
+      "path": "src/tree_store/table_tree.rs",
+      "prior_record": {
+        "fork_sha256": "7fbc653eeed2097f19d3e9512b39df19e987f93c2db1a1facfec830b7a9bd618",
+        "path": "src/tree_store/table_tree.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "c7f10807906dfdc7f5a86732dede38de5e1d95f866a3113ffa2938990589fa2f",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 22018,
+      "fork_mode": "0o644",
+      "fork_sha256": "b1f7394949182822436190c94d8ab92bc611ad50fa3a500b73a144dac8925b9d",
+      "path": "src/tree_store/table_tree_base.rs",
+      "prior_record": {
+        "fork_sha256": "b1f7394949182822436190c94d8ab92bc611ad50fa3a500b73a144dac8925b9d",
+        "path": "src/tree_store/table_tree_base.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "506252bc6576fe98bbea58beb509939b126219db36e37731abce941eec358b30",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 11197,
+      "fork_mode": "0o644",
+      "fork_sha256": "799d113a13d6624215df9eea052964d8506b5d9623c0d419b6d1445bdf0c9d05",
+      "path": "src/tuple_types.rs",
+      "prior_record": {
+        "fork_sha256": "799d113a13d6624215df9eea052964d8506b5d9623c0d419b6d1445bdf0c9d05",
+        "path": "src/tuple_types.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "96648f1a1e61a964e2d23cf08fbf02903f174b696908565c55a2258e39f3791b",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 22729,
+      "fork_mode": "0o644",
+      "fork_sha256": "ee657c146e3a94b53098df3ad2a1e37bb17cfaa1da95269245a417c384334df6",
+      "path": "src/types.rs",
+      "prior_record": {
+        "fork_sha256": "ee657c146e3a94b53098df3ad2a1e37bb17cfaa1da95269245a417c384334df6",
+        "path": "src/types.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "ac2203428baff42c36e7058ca8db7f24e01f14ca119b9866567209b9a9c59e8a",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 19349,
+      "fork_mode": "0o644",
+      "fork_sha256": "873dc0b3e877d17854fb749c02df93bcd372907015ef124cf4453ec98d7a972a",
+      "path": "src/types/chrono_v0_4.rs",
+      "prior_record": {
+        "fork_sha256": "873dc0b3e877d17854fb749c02df93bcd372907015ef124cf4453ec98d7a972a",
+        "path": "src/types/chrono_v0_4.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "4b03b70c1a7aba7fd29f268cb8df7b1bc2bfec79c5a3e689b08374affd91e1b3",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 2072,
+      "fork_mode": "0o644",
+      "fork_sha256": "e2b2e4892baece5b8c420034a278ae51fb97cd94bef4fff2197411a98d3ac429",
+      "path": "src/types/uuid.rs",
+      "prior_record": {
+        "fork_sha256": "e2b2e4892baece5b8c420034a278ae51fb97cd94bef4fff2197411a98d3ac429",
+        "path": "src/types/uuid.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "b0341d0b8e482afac46133b54f7092b3acf4d6aafceeafa4b402d25bd2fd8ac1",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": null,
+      "fork_mode": null,
+      "fork_sha256": null,
+      "path": "tests/backward_compatibility.rs",
+      "prior_record": {
+        "fork_sha256": null,
+        "path": "tests/backward_compatibility.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "1f166bb59b4036ea08f35485cd22c6e8c5e89efa5ed868193f3d4640eedfaba2",
+      "recovery_successor_change": "unchanged",
+      "status": "removed"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 128511,
+      "fork_mode": "0o644",
+      "fork_sha256": "018ff9668979a27e83a6f2757db204f237665cfe8997e9b10654ab388bb3c245",
+      "path": "tests/basic_tests.rs",
+      "prior_record": {
+        "fork_sha256": "d3426fb6ab81ac00cced47569248539831efe1d1ebca443656946b351b250320",
+        "path": "tests/basic_tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "434e63293d9c752c654905f8640c44264e6c6a98c6f79f8a3659903b26c25626",
+      "recovery_successor_change": "modified",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 6876,
+      "fork_mode": "0o644",
+      "fork_sha256": "73747213371f9f2ee05c5f8bdafb18758d4646465ac25c8035df381d4bec47bb",
+      "path": "tests/canonical_format.rs",
+      "prior_record": {
+        "fork_sha256": "73747213371f9f2ee05c5f8bdafb18758d4646465ac25c8035df381d4bec47bb",
+        "path": "tests/canonical_format.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "unchanged",
+      "status": "added"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 9998,
+      "fork_mode": "0o644",
+      "fork_sha256": "e47d5dd50b07157a32c0c762de965713cda7ab0d69dadeebf97c0696b4b98019",
+      "path": "tests/check_integrity_admitted.rs",
+      "prior_record": {
+        "fork_sha256": "bc897e2e9a6f366fe703cdac6e5cf166c02e4172fd5e1634dbfadc62d4a678da",
+        "path": "tests/check_integrity_admitted.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "modified",
+      "status": "added"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 4654,
+      "fork_mode": "0o644",
+      "fork_sha256": "516e197a752c1e252f9ca6978637b86c317e18415f2d2da09ad99345476c5528",
+      "path": "tests/check_integrity_failure.rs",
+      "prior_record": {
+        "fork_sha256": "14f402296a4b05bcc3b6750893c8bff3209d0c91ae24f82f6e5650494ddf8a5b",
+        "path": "tests/check_integrity_failure.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "89bc16b5300ca3a59ab6e5af51afdfcdc05873e92f20d0da6adcda6688afea75",
+      "recovery_successor_change": "modified",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": null,
+      "fork_mode": null,
+      "fork_sha256": null,
+      "path": "tests/check_integrity_nondurable.rs",
+      "prior_record": {
+        "fork_sha256": null,
+        "path": "tests/check_integrity_nondurable.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "a4ae21046bfea9f8e2a5894a91dd1ee5bc7981b87f5a26e0911d74d8ccc2028a",
+      "recovery_successor_change": "unchanged",
+      "status": "removed"
+    },
+    {
+      "fork_bytes": 615,
+      "fork_mode": "0o644",
+      "fork_sha256": "5fd29e7c8d00fa17275672df0ede4992528ae7ddf60a1b5283e6fea2f451a1e4",
+      "path": "tests/common/admission.rs",
+      "prior_record": {
+        "fork_sha256": "5fd29e7c8d00fa17275672df0ede4992528ae7ddf60a1b5283e6fea2f451a1e4",
+        "path": "tests/common/admission.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": null,
+      "recovery_successor_change": "unchanged",
+      "status": "added"
+    },
+    {
+      "fork_bytes": 6006,
+      "fork_mode": "0o644",
+      "fork_sha256": "571ecc011c318d0018e65736f565505e9707f14ebc577f4c4e69a5c7378e5249",
+      "path": "tests/corrupted_btree_descent.rs",
+      "prior_record": {
+        "fork_sha256": "571ecc011c318d0018e65736f565505e9707f14ebc577f4c4e69a5c7378e5249",
+        "path": "tests/corrupted_btree_descent.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "caab8758feec147cc1033729729980a167cb801879805cff7b921464db71060c",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 6381,
+      "fork_mode": "0o644",
+      "fork_sha256": "b948cb625fec8deb8b76006099fef124bdab489e4b38d584e46ccf3e3a18b4cc",
+      "path": "tests/crash_consistency.rs",
+      "prior_record": {
+        "fork_sha256": "d855b9f493094d744b1b2eafc80bb1422049fac7d3c2b6b52b7faddd9f624269",
+        "path": "tests/crash_consistency.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "2187e55d97d8a013800af57510a478f90e25ae2e0d58f2f5769e258b87ad02b5",
+      "recovery_successor_change": "modified",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 45990,
+      "fork_mode": "0o644",
+      "fork_sha256": "741e7d8d61f29d7c2a9b009144718ff7ff2688e33b89be66493a909f6debbc3c",
+      "path": "tests/cursor_tests.rs",
+      "prior_record": {
+        "fork_sha256": "741e7d8d61f29d7c2a9b009144718ff7ff2688e33b89be66493a909f6debbc3c",
+        "path": "tests/cursor_tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "160874c6b8e9eb058a6f5d9d8095fc71fb56b35c1a74caadd7230b77eb78ef4b",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 166973,
+      "fork_mode": "0o644",
+      "fork_sha256": "b41ce766542006493e9fac155bde8a4c0bd2622b2cc74d89af22e4c9609c0c83",
+      "path": "tests/integration_tests.rs",
+      "prior_record": {
+        "fork_sha256": "0b9e1fce3a14498a9ebb5f5b9d8e622c48b0b74eced7685819c6c4a9dfbdbde2",
+        "path": "tests/integration_tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "3633de780185d26242ba4a992835cdf919094e9bd582fffac7522fd6a4df2d46",
+      "recovery_successor_change": "modified",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 28712,
+      "fork_mode": "0o644",
+      "fork_sha256": "14fe61d6f2bbd4283f267c760d1e9eb56bb49bd79d3ff44f360f9e2f1d1b2719",
+      "path": "tests/multimap_tests.rs",
+      "prior_record": {
+        "fork_sha256": "14fe61d6f2bbd4283f267c760d1e9eb56bb49bd79d3ff44f360f9e2f1d1b2719",
+        "path": "tests/multimap_tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "71c6867abfe86897ce6438c844c54e262e14bb4572910da0468d7553a2304cb8",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "fork_bytes": 7220,
+      "fork_mode": "0o644",
+      "fork_sha256": "32bb8ca2d4591c64b7c8d11b34300f53ce136aad57fc15541808edb9ca3f981c",
+      "path": "tests/multithreading_tests.rs",
+      "prior_record": {
+        "fork_sha256": "32bb8ca2d4591c64b7c8d11b34300f53ce136aad57fc15541808edb9ca3f981c",
+        "path": "tests/multithreading_tests.rs",
+        "provenance": "docs/evidence/redb-canonical-page-number-20260923/provenance.json",
+        "provenance_sha256": "dec9ca32eb309ba3e9884532288fff55a97329325dd0c6ee44c0e84e216bacd8"
+      },
+      "published_sha256": "8bb34fedcf062f246788f1a3a6319ad7c335ca3e4d9f44e36564793539fed75e",
+      "recovery_successor_change": "unchanged",
+      "status": "modified"
+    },
+    {
+      "candidate_binding": {
+        "path": "docs/evidence/redb-failed-opening-recovery-20260923-rev8/bindings/recovery-manifest.json",
+        "sha256": "4268f989447359992f5dd40f9e28536ba7af2adb0bb8e6a345716a810b351433"
+      },
+      "fork_bytes": 4993,
+      "fork_mode": "0o644",
+      "fork_sha256": "ef8cb03da7a65512050670423c3058479560d5fa5db014e4caba9c7e9991f4ab",
+      "path": "tests/retained_opening_admission.rs",
+      "published_sha256": null,
+      "recovery_successor_change": "added",
+      "status": "added"
+    }
+  ],
+  "published_crate_sha256": "de6c3b63e007e90ce536ec2ae4690826136a20ec8dbbbb400daef1bb999d2e36",
+  "published_crate_url": "https://static.crates.io/crates/redb/redb-4.2.0.crate",
+  "upstream_commit": "23b6ba05473b13e69ed4db82f4b5bc07f0c33be9"
+}

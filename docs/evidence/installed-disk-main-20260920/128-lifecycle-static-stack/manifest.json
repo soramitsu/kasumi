@@ -1,0 +1,219 @@
+{
+  "mode": "STATIC_ONLY",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "source_edits": false,
+  "cargo_or_test_runs": false,
+  "binary_or_debugger_execution": false,
+  "binary_and_sources_unchanged": true,
+  "before": {
+    "target/debug/deps/lifecycle-377b80b89ca111b0": "631110f244e868c72e9966ec5af1df0d484b63bb8c26ffcde3d8c00a730ec098",
+    "crates/kasumi-engine/tests/lifecycle.rs": "b39feadc979cbab5a4646a687fd44552cfe4687220e36ada287b72e94db3004c",
+    "crates/kasumi-engine/tests/common/recovery_control.rs": "df389a1f5903728287ed45d01281119b797a3778b50d1d60adc17c62f2548eb3",
+    "crates/kasumi-engine/tests/common/bootstrap_vote_probe.rs": "bc13c13060a5de8427d79f72a5c073e3dbf7deb341c688c20434a8a6c44b597d",
+    "target/installed-disk-validation/128-result.json": "b63568f785f607b9a63fa2c7d66f08a6117bdfe78b674502d3834fd31f970524",
+    "target/installed-disk-validation/123-lifecycle-static-stack/manifest.json": "ac24bec4732c65f6600f2b9017b4d0cefab0ba0c609d50028834d0940880a604"
+  },
+  "after": {
+    "target/debug/deps/lifecycle-377b80b89ca111b0": "631110f244e868c72e9966ec5af1df0d484b63bb8c26ffcde3d8c00a730ec098",
+    "crates/kasumi-engine/tests/lifecycle.rs": "b39feadc979cbab5a4646a687fd44552cfe4687220e36ada287b72e94db3004c",
+    "crates/kasumi-engine/tests/common/recovery_control.rs": "df389a1f5903728287ed45d01281119b797a3778b50d1d60adc17c62f2548eb3",
+    "crates/kasumi-engine/tests/common/bootstrap_vote_probe.rs": "bc13c13060a5de8427d79f72a5c073e3dbf7deb341c688c20434a8a6c44b597d",
+    "target/installed-disk-validation/128-result.json": "b63568f785f607b9a63fa2c7d66f08a6117bdfe78b674502d3834fd31f970524",
+    "target/installed-disk-validation/123-lifecycle-static-stack/manifest.json": "ac24bec4732c65f6600f2b9017b4d0cefab0ba0c609d50028834d0940880a604"
+  },
+  "frames": {
+    "prepare_completion_poll": 629232,
+    "complete_recovery_poll": 681216,
+    "exercise_completed_recovery_poll": 110144,
+    "resolve_expired_completion_poll": 312256,
+    "exercise_route_publication_poll": 390368,
+    "fixture_new_poll": 21200,
+    "fixture_open_poll": 28912,
+    "fixture_limits_poll": 20944,
+    "fixture_configured_poll": 71264,
+    "probe_new": 35664,
+    "probe_begin": 1520,
+    "probe_candidate": 464,
+    "probe_history": 64,
+    "probe_finish": 352,
+    "probe_guard_drop": 192,
+    "probe_send_constructor": 672,
+    "probe_send_poll": 2864,
+    "probe_arc_new": 12064,
+    "probe_slots_from_fn": 11840,
+    "probe_slots_try_from_fn": 35408,
+    "probe_slots_try_from_fn_erased": 3232,
+    "prepare_completion_box_poll": 64,
+    "complete_recovery_box_poll": 64,
+    "resolve_expired_completion_box_poll": 64,
+    "exercise_route_publication_box_poll": 64
+  },
+  "comparison_to_123": {
+    "prepare_completion_poll": {
+      "run123_bytes": 623632,
+      "run128_bytes": 629232,
+      "delta_bytes": 5600
+    },
+    "complete_recovery_poll": {
+      "run123_bytes": 681136,
+      "run128_bytes": 681216,
+      "delta_bytes": 80
+    },
+    "exercise_completed_recovery_poll": {
+      "run123_bytes": 109760,
+      "run128_bytes": 110144,
+      "delta_bytes": 384
+    },
+    "resolve_expired_completion_poll": {
+      "run123_bytes": 312256,
+      "run128_bytes": 312256,
+      "delta_bytes": 0
+    },
+    "exercise_route_publication_poll": {
+      "run123_bytes": 390336,
+      "run128_bytes": 390368,
+      "delta_bytes": 32
+    },
+    "prepare_completion_box_poll": {
+      "run123_bytes": 64,
+      "run128_bytes": 64,
+      "delta_bytes": 0
+    },
+    "complete_recovery_box_poll": {
+      "run123_bytes": 64,
+      "run128_bytes": 64,
+      "delta_bytes": 0
+    },
+    "resolve_expired_completion_box_poll": {
+      "run123_bytes": 64,
+      "run128_bytes": 64,
+      "delta_bytes": 0
+    },
+    "exercise_route_publication_box_poll": {
+      "run123_bytes": 64,
+      "run128_bytes": 64,
+      "delta_bytes": 0
+    }
+  },
+  "phase_compositions": {
+    "outer_plus_one_adapter_plus_phase": {
+      "prepare_completion": 739440,
+      "complete_recovery": 791424,
+      "resolve_expired_completion": 422464,
+      "exercise_route_publication": 500576
+    },
+    "selected_array_constructor_chain": {
+      "functions": [
+        "probe_new",
+        "probe_slots_from_fn",
+        "probe_slots_try_from_fn",
+        "probe_slots_try_from_fn_erased"
+      ],
+      "bytes": 86144
+    },
+    "selected_fixture_parent_chain": {
+      "functions": [
+        "fixture_new_poll",
+        "fixture_limits_poll",
+        "fixture_configured_poll"
+      ],
+      "bytes": 113408
+    },
+    "scope": "Only named simultaneously active frames; excludes other helper/runtime/storage/destructor frames. Not a whole-thread bound."
+  },
+  "separate_phase_edges_preserved": true,
+  "whole_thread_stack_bound_claimed": false,
+  "commands_recorded": 26,
+  "files": {
+    "README.md": "40a566d97038a46931c625ffc3172b775100b92e0821e6e8d8b38c7c6e729349",
+    "addresses.json": "af40223aedffa11721bb6f04098ba2c06401a4a39f0791e521d69aefc82b3d8b",
+    "after.json": "51f46abf735a2e9cfad7f074cf6244f737ad68ee46d7ec0a5442803e5d6fdd98",
+    "before.json": "51f46abf735a2e9cfad7f074cf6244f737ad68ee46d7ec0a5442803e5d6fdd98",
+    "command-receipts.json": "6f500caedadf353891f54c2b9c54765cc9d1a74f0f767febf11df3764f2636ee",
+    "comparison-to-123.json": "c0a9fa877edb2d9ef4d914a6c5e6cce86a5a6b7b585dfb7d65de0b3e4df19448",
+    "complete_recovery_box_poll-calls.txt": "0c6368bf10bd0e8748e09987679a119587755ec23df30c71b4b0af8eb5ac41b2",
+    "complete_recovery_box_poll-full.txt": "16f6ccd0aecaa9fc3d526fa7c8fad686f67276a9ba6e6cd55d5a29c5f44effdd",
+    "complete_recovery_box_poll-prologue.txt": "16f6ccd0aecaa9fc3d526fa7c8fad686f67276a9ba6e6cd55d5a29c5f44effdd",
+    "complete_recovery_poll-calls.txt": "ea720c2f7271b215062b0aed1329f61df63916775721bc35cf82151cc876d22d",
+    "complete_recovery_poll-full.txt": "ca091c08ef9f0cc588ca4ba695094ea96aaabd111cc5579376c0a341c4abcf56",
+    "complete_recovery_poll-prologue.txt": "79853187879abef8ff700dc0f710c64487b96b01e304fa220efe65d72bd7ca12",
+    "exercise_completed_recovery_poll-calls.txt": "77b00457c98f844fb1d8861204c91c43ecc360b394460fa6148e23a0fb999ab2",
+    "exercise_completed_recovery_poll-full.txt": "7c2e16ae87bbd80dca1ec1514f71945c43eebb40788a83a7c972ddcbb4cf909b",
+    "exercise_completed_recovery_poll-prologue.txt": "9b9eedaaa46725f843990f6ad7469ca50c5809fc682ff6479253bc55f24582d1",
+    "exercise_route_publication_box_poll-calls.txt": "5a52e2504865bc1b8a04408d454c16c0b422db80fb2467057bc2edf74fbcd0fe",
+    "exercise_route_publication_box_poll-full.txt": "0da6f9ffb44310860ca670138ffa69b144877260c1f9bfdce16803f36520a457",
+    "exercise_route_publication_box_poll-prologue.txt": "0da6f9ffb44310860ca670138ffa69b144877260c1f9bfdce16803f36520a457",
+    "exercise_route_publication_poll-calls.txt": "f989ab26a25921390a6a6d330eba849179062e7d3a107ca740a91c8fceda811f",
+    "exercise_route_publication_poll-full.txt": "2fba7d5aa573af54bc74e4f9f8622cc6661c4123b6729344c92a225b85722e49",
+    "exercise_route_publication_poll-prologue.txt": "ad73e13e28e46dec67b2f22000de1f6d26b69c5e3c2fd20321bb62fa45e033ca",
+    "fixture_configured_poll-calls.txt": "f32dcfda43ec795147c8a5b536060e1b362624d7a185670ca65edbf35f65687b",
+    "fixture_configured_poll-full.txt": "65347b8e14cd8aed9e8ebb5e47e72963b3872ce5058ec8f013a547ab07e0807d",
+    "fixture_configured_poll-prologue.txt": "65fea0cd867bbf570ca87e4e08bcdfa85760c6035d7f60cc61dbd00d00726148",
+    "fixture_limits_poll-calls.txt": "116e81491b03cdf39927632ea561502baf4ed0a89679b2b129867c33db227a27",
+    "fixture_limits_poll-full.txt": "e4ebdcb2d17b1c68bf27a2ac951ccce0042abb72cb0560cd1573b2dcb131d2e4",
+    "fixture_limits_poll-prologue.txt": "aea284a100bb74f2c063612191a75651d496f65efe6568ca3b92012bf6c4b81e",
+    "fixture_new_poll-calls.txt": "7aad960aa052b385f712fe1396e98295cc2067b66089003b6fa73139f54c8a5a",
+    "fixture_new_poll-full.txt": "7fb8e9ada838f5cd585e26f63d7bdc7491af9e826c4101b78fc6a82fce9d07a3",
+    "fixture_new_poll-prologue.txt": "d61bb788e9e69806c1d27d1ba7c9ea7499213149830035cdcdcac017817f5a53",
+    "fixture_open_poll-calls.txt": "f30c84a53470812280323ac41df054974c460392a72bb0595d0880b58b4ca4e2",
+    "fixture_open_poll-full.txt": "e2cf27318d08411dc4bbd108d6a2d9d35ea040bdc8af04d17826934647e5e3bd",
+    "fixture_open_poll-prologue.txt": "4347b5e9e39167337b8972652926b6246afd8399de4f5daa5318ca5870907438",
+    "frame-sizes.json": "1478146dbd055776ecba4236873fb50df05ba11e36e7f3c876c1b677342df742",
+    "nm.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "phase-compositions.json": "e0b154473aecb2c002ae12ee419f02bcbfc3d13f4efb968539c023a66626f828",
+    "prepare_completion_box_poll-calls.txt": "ff83b2d7a30b0f8d9e0bd982a0397b831bd2a5af3ac5988a3756e591a5ca37f3",
+    "prepare_completion_box_poll-full.txt": "3b565f7468a1dd605e5a5da5bf3b372b54f925539c9ddef060409c758b0d39dd",
+    "prepare_completion_box_poll-prologue.txt": "3b565f7468a1dd605e5a5da5bf3b372b54f925539c9ddef060409c758b0d39dd",
+    "prepare_completion_poll-calls.txt": "9689febc2031f91a5cdf4ec80ebd7f2fc84c885630d2269a5c1277e8404116a9",
+    "prepare_completion_poll-full.txt": "e89bbed4101f67a0dea7e9f0474ad2971eeec89bcf91fe21789502d7835e922b",
+    "prepare_completion_poll-prologue.txt": "844f878986ed1d27b5c6b4da92d91099429a05bef2d2de6869789c32b95e2026",
+    "probe_arc_new-calls.txt": "a066b14f4c93222e65eea2c54e8cb2ebb37a7988d69293dfd369fe5d9e569bed",
+    "probe_arc_new-full.txt": "4447b0f246c148da9002486eb9c8c75c21819ad829fe567508c7064507a93fe2",
+    "probe_arc_new-prologue.txt": "9fdd7880164fcdf36551eca299047962001939f78ead3da96bd57e9dbafee998",
+    "probe_begin-calls.txt": "495da3b504c055d5647abb658d20e85afad46da1c17155a75bddc6601fdec40e",
+    "probe_begin-full.txt": "d03b605dde4f37cdbc5d8d0713d60ebc833339b6d3886423c7aceb58c736b9fe",
+    "probe_begin-prologue.txt": "a3055c097b0a3d9eae5c655926ec0ee82cadc08f9d0cd18e6052e5c560b58099",
+    "probe_candidate-calls.txt": "23a4729969fbffdff5ea119f9f524c63af3ac4051978ce27c04c1fcbb29230c0",
+    "probe_candidate-full.txt": "44a81edc4c860e77af1dafc32ea525799a9eb6f23ea31077acf54014741f3691",
+    "probe_candidate-prologue.txt": "64f9a9feb601e526d427a43b384e918839cf0f15b8f18f10549e374c216725b6",
+    "probe_finish-calls.txt": "d4a6d3f4a641dc1cee41b7f3aafc6f93f98ae66db7e2c7e43dda2133a21ca9f0",
+    "probe_finish-full.txt": "3d6df4f9e6fdc9b91cdaaaab5f07c9cb7014dd602789795fdb8472c0193cccdf",
+    "probe_finish-prologue.txt": "b4c1fe8b92ac16e196b3890f57b5b80d625857b739bc7b2067e23c3cef9ba654",
+    "probe_guard_drop-calls.txt": "5b2dd8463c511babcec2f173f5b778df636a9fbefdfd0c7bd95c7541b727121b",
+    "probe_guard_drop-full.txt": "6ce398ebb8472af66b551895bba1e3b70777500be01006ddfed9bc295983cd93",
+    "probe_guard_drop-prologue.txt": "6ce398ebb8472af66b551895bba1e3b70777500be01006ddfed9bc295983cd93",
+    "probe_history-calls.txt": "0dfcaa93b5cc566de34ee1627405afadb335f23fd170afcde8e19bcc0af2a0aa",
+    "probe_history-full.txt": "2ab5c567179f3a34dc9db7d2f9f40e4f8bb471e2e4815ce36aadce6a5efb1b6b",
+    "probe_history-prologue.txt": "2ab5c567179f3a34dc9db7d2f9f40e4f8bb471e2e4815ce36aadce6a5efb1b6b",
+    "probe_new-calls.txt": "d6a9c02b0a74c253d164976f17ec5616bfb3089aaf9af8705bb71d455487695a",
+    "probe_new-full.txt": "17383fb35772d683d002e2ec5f91919fad8840e419559091cf6ad144f9ee53e6",
+    "probe_new-prologue.txt": "f17b0a26d80930487a04d99c3ef1391d69e10899c5ed406ef99aa20cce4402e0",
+    "probe_send_constructor-calls.txt": "96a459efe8b6059cb55e26b5394b1c51e9b22c97daebe4b40f16d25b7a311642",
+    "probe_send_constructor-full.txt": "9ec17df407b461fa6cbb1aaa16bc5540eb42e54ce661063b467267dc2116d8d7",
+    "probe_send_constructor-prologue.txt": "089bf020fce48e52efdc7a7182959b8f87d1c354ba83d52924985c9c304358be",
+    "probe_send_poll-calls.txt": "e0664b91c39d42134d8201574906d7b6f98a5b035641f41611d7a27af4f0125b",
+    "probe_send_poll-full.txt": "3c7413742cf816e9e8c5edf67c54dc796a1c7e2cb0f9827b18bb40e0ea2b89c8",
+    "probe_send_poll-prologue.txt": "630d0fd7273be32bfd5ddf4263b1740ac0145a038b1fbe2ab3bdc8938d4badaf",
+    "probe_slots_from_fn-calls.txt": "de092160e7132c6ef05a92c53201547e6e9108b1a8fe071142cc8e55349444c2",
+    "probe_slots_from_fn-full.txt": "d5fc0e9ae3c4fd8ade9f6740aea0880b3676f2519b8bc79e9ece00a841504535",
+    "probe_slots_from_fn-prologue.txt": "d5fc0e9ae3c4fd8ade9f6740aea0880b3676f2519b8bc79e9ece00a841504535",
+    "probe_slots_try_from_fn-calls.txt": "599f93c39dc4e698c128745cabdc3485ce721c6f04e15ce5e95e5c9ce0c11791",
+    "probe_slots_try_from_fn-full.txt": "796739c58fe3547caa51de882d0bd42ab897e42a0675283a62ceee1fed1e00e8",
+    "probe_slots_try_from_fn-prologue.txt": "ad074cbf04d4fa77664e14b01a2b8d0b5445f11e585ad3a304b74f8cef365e4f",
+    "probe_slots_try_from_fn_erased-calls.txt": "7b21deb7eec07989aae759f74c7c1109368b1100a5d3007ce8fc464364dc4b90",
+    "probe_slots_try_from_fn_erased-full.txt": "1e67f1850f9da24995bf14b48b2b92b76d9b2b423e1d7e4815ff0a515aaaa2e3",
+    "probe_slots_try_from_fn_erased-prologue.txt": "2388bfc261512b3c71857c6acb33d1319d117617cff92f18b3de40b27bc65ddc",
+    "resolve_expired_completion_box_poll-calls.txt": "96c4811ba24fe2a46c9c10424cc62fe7bd5c2b961a973c22772f9a4b76a6c7db",
+    "resolve_expired_completion_box_poll-full.txt": "38d3afe77aa986c1ce55a7b5c43eba37fc4b2c329f7279770e059a4de5a9da7c",
+    "resolve_expired_completion_box_poll-prologue.txt": "38d3afe77aa986c1ce55a7b5c43eba37fc4b2c329f7279770e059a4de5a9da7c",
+    "resolve_expired_completion_poll-calls.txt": "b2bd5e8658d5a8ced0d51893e5e680e595d85261d02e2c50c06532d19e7be7c6",
+    "resolve_expired_completion_poll-full.txt": "c6393bee1615a80df521b34b009f69d28575ebbb946fad1286b1a2108111b422",
+    "resolve_expired_completion_poll-prologue.txt": "17c3fae3fc688fb438d6a39dcf092c144c315c9ca8633c4d33e26e1d86b29c07",
+    "selected-call-edges.json": "fcd9016b75acf841b1b21da86b9cfd47de79d36f781227f7e9cd88ce4fa5693e",
+    "selected-symbols.txt": "8ce3d44bacac711656e3a5acbdbbbafe6fed2ac5fb8c2a7782dbd4593d52e782",
+    "source-excerpts.json": "e6ad2488d0eab56f724d8b5a4cb6396d1e02f0533f5933251ecae58e1a88fbe4",
+    "static-parser-interruption.json": "c8304a6daabde128e7a42bd31019480fadb006bf566562f8bc7e7fb5844528bf",
+    "text-symbols.txt": "8d793a87fdc86c51cf4222e22473731ac3542d0ad4be9425f3ff350e2305802f"
+  }
+}

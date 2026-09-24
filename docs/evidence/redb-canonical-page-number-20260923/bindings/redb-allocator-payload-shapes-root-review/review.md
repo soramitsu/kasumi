@@ -1,0 +1,7 @@
+# Root review of canonical allocator payload validation
+
+Scoped approval for root integration and native validation; not final acceptance.
+
+Checked all five exact live bases, all nine producer/supporting hashes, proposed hashes and clean patch application. Read raw-tree traversal, all new borrowed validators, producer constructors/resizes/encoding, load/repair call paths and prepared tests. Branch bounds use the actual comparator routing (lower exclusive, upper inclusive); retained separators need not equal a child maximum. The mandatory callback precedes typed allocator decoding and stale repair selection. Exact nested offsets and logical lengths protect checked views before unchecked scalar reads. Buddy overlap/merge validation and current-winner discarded-suffix checks preserve the snapshot-before-shrink publication order. Stale internally valid snapshots remain repairable. The tracker accepts retained logical capacity and optimistic existing-region hints while rejecting missing-region references.
+
+All-order producer tail and shrink invariants require the prepared native run. Helpers allocate no collection on success, but errors still allocate the existing Corrupted string. Full reachable-root allocation correspondence, tracker false-full consistency, canonical PageNumber, raw traversal/page guards/native stack, decoder and prepared-copy memory, protected maintenance and total process bounds remain open. This review does not qualify any production owner census or caller adoption. Existing failed gates are not superseded by static review.

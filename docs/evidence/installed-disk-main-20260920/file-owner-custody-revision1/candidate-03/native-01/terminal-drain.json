@@ -1,0 +1,15 @@
+{
+  "groups_drained": {
+    "30248": true,
+    "30260": true,
+    "30262": true,
+    "30274": true,
+    "30302": true,
+    "30307": true,
+    "30313": true
+  },
+  "source_inventories_equal": true,
+  "results_sha256": "c67369461f154aa0013ccdcebf12efe86900c695d5e3e98f0612bcb8e51b77a2",
+  "status": "RUNTIME_FAILED",
+  "tests_executed": true
+}

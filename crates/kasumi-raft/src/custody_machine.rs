@@ -75,8 +75,16 @@ pub(crate) fn publish(
     retirement.validate(&snapshot.meta)?;
     let bytes = snapshot.encode(limit)?;
     let digest = bytes.sha256().to_owned();
-    let (chunks, manifest) = crate::custody_snapshot_storage::stage(&bytes, limit)?;
     let backend_digest = crate::command::sha256(&[]);
+    let coverage_bytes = crate::storage::encode_snapshot_coverage(&SnapshotCoverage {
+        kind: SnapshotKind::Custody,
+        manifest_id: uuid::Uuid::new_v4().to_string(),
+        snapshot_sha256: digest.clone(),
+        backend_sha256: backend_digest.clone(),
+        meta: snapshot.meta.clone(),
+    })?;
+    // Bound control coverage before staging chunks or publishing custody.
+    let (chunks, manifest) = crate::custody_snapshot_storage::stage(&bytes, limit)?;
     let mut install = crate::snapshot_custody::installation_writes(
         custody,
         &snapshot.meta,
@@ -84,17 +92,9 @@ pub(crate) fn publish(
         &backend_digest,
         &digest,
     )?;
-    install.writes.push(WriteOp::put(
-        META,
-        b"snapshot_coverage",
-        serde_json::to_vec(&SnapshotCoverage {
-            kind: SnapshotKind::Custody,
-            manifest_id: uuid::Uuid::new_v4().to_string(),
-            snapshot_sha256: digest,
-            backend_sha256: backend_digest,
-            meta: snapshot.meta.clone(),
-        })?,
-    ));
+    install
+        .writes
+        .push(WriteOp::put(META, b"snapshot_coverage", coverage_bytes));
     install.writes.push(manifest);
     let mut replacements = install
         .records
@@ -120,7 +120,7 @@ pub(crate) fn load_snapshot(
             && snapshot.backend.is_empty(),
         "application payload forbidden in custody snapshot"
     );
-    let coverage: SnapshotCoverage = load(custody.store(), META, b"snapshot_coverage")?
+    let coverage = crate::storage::load_snapshot_coverage(custody.store())?
         .context("closed snapshot lacks control coverage")?;
     ensure!(
         coverage.kind == SnapshotKind::Custody
@@ -433,9 +433,108 @@ mod tests {
             },
         }
     }
+    fn replace_with_alternate_json(
+        store: &kasumi_store::TenantStore,
+        namespace: &str,
+        key: &[u8],
+    ) -> Result<Vec<u8>> {
+        let original = store
+            .get(namespace, key)?
+            .context("expected current custody point row")?;
+        let mut alternate = vec![b' '];
+        alternate.extend_from_slice(&original);
+        ensure!(
+            serde_json::from_slice::<serde_json::Value>(&alternate)?
+                == serde_json::from_slice::<serde_json::Value>(&original)?,
+            "alternate JSON changed custody point value"
+        );
+        store.write_batch(&[WriteOp::put(namespace, key, alternate)])?;
+        Ok(original)
+    }
+    fn restore_json(
+        store: &kasumi_store::TenantStore,
+        namespace: &str,
+        key: &[u8],
+        original: Vec<u8>,
+    ) -> Result<()> {
+        store.write_batch(&[WriteOp::put(namespace, key, original)])
+    }
+    #[tokio::test]
+    async fn custody_point_reads_require_exact_current_writer_bytes() -> Result<()> {
+        let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+        let (domains, _, _, mut log) =
+            fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+        log.blocking_append([membership(), retirement_entry()?])
+            .await?;
+        log.save_committed(Some(id(1))).await?;
+        assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
+        let initial = control::custody_state(domains.custody())?;
+        let command = rotation(&initial.origin.request);
+        log.blocking_append([Entry {
+            log_id: id(2),
+            payload: EntryPayload::Normal(crate::RaftCommand::custody(&command)?),
+        }])
+        .await?;
+        log.save_committed(Some(id(2))).await?;
+        let (_, membership) = applied(domains.custody())?;
+        control::apply_custody(
+            domains.custody(),
+            &AppliedEntryContext {
+                log_id: id(2),
+                previous: Some(id(1)),
+                membership,
+                retirement_seed: None,
+                command_sha256: crate::command::sha256(&command.encoded()?),
+            },
+            &command,
+        )?;
+        let expected = control::custody_state(domains.custody())?;
+        let store = domains.custody().store();
+        let records = crate::custody_records::Records::capture(store)?;
+
+        let original = replace_with_alternate_json(store, META, crate::custody_tables::HEAD)?;
+        assert!(control::custody_head(domains.custody()).is_err());
+        assert!(crate::custody_records::Records::capture(store).is_err());
+        assert!(crate::custody_tables::prepare_replacement(store, records.clone()).is_err());
+        restore_json(store, META, crate::custody_tables::HEAD, original)?;
+        assert_eq!(control::custody_state(domains.custody())?, expected);
+        assert!(crate::custody_tables::prepare_replacement(store, records.clone()).is_ok());
+
+        let original =
+            replace_with_alternate_json(store, crate::custody_tables::COMMANDS, b"rotate")?;
+        assert!(crate::custody_tables::receipt(store, "rotate").is_err());
+        assert!(crate::custody_records::Records::capture(store).is_err());
+        restore_json(store, crate::custody_tables::COMMANDS, b"rotate", original)?;
+        assert_eq!(
+            crate::custody_tables::receipt(store, "rotate")?,
+            expected.commands.get("rotate").cloned()
+        );
+        assert!(crate::custody_records::Records::capture(store).is_ok());
+
+        let audit_key = 0u64.to_be_bytes();
+        let original =
+            replace_with_alternate_json(store, crate::custody_tables::AUDIT, &audit_key)?;
+        assert!(crate::custody_records::Records::capture(store).is_err());
+        assert!(crate::custody_tables::snapshot(store).is_err());
+        restore_json(store, crate::custody_tables::AUDIT, &audit_key, original)?;
+        assert_eq!(control::custody_state(domains.custody())?, expected);
+        assert_eq!(
+            crate::custody_records::Records::capture(store)?.sha256(),
+            records.sha256()
+        );
+        Ok(())
+    }
     #[tokio::test]
     async fn same_entry_position_snapshot_cannot_substitute_rotated_custody_state() -> Result<()> {
-        let (domains, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
+        let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+        let (domains, _, _, mut log) =
+            fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -480,7 +579,10 @@ mod tests {
         let mut substituted = before.clone();
         substituted.commands.get_mut("rotate").unwrap().principal = "substituted".into();
         substituted.audit[0].principal = "substituted".into();
-        let records = crate::custody_records::Records::from_state(&substituted)?;
+        let records = crate::custody_records::Records::from_state(
+            &substituted,
+            domains.custody().store().scratch_disk(),
+        )?;
         let retirement = later.retirement.as_mut().unwrap();
         retirement.custody = records.head.clone();
         retirement.history_sha256 = records.sha256().into();
@@ -496,7 +598,12 @@ mod tests {
 
     #[tokio::test]
     async fn existing_quorum_runs_closed_commands_after_application_key_revocation() -> Result<()> {
-        let (domains, app, _, mut log) = fixture(FaultBackend::new(), true).await?;
+        let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+        let (domains, app, _, mut log) =
+            fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -537,6 +644,10 @@ mod tests {
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn closed_custody_requires_fresh_existing_quorum_after_isolation() -> Result<()> {
+        let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
         let router = Arc::new(crate::InProcessRouter::default());
         let mut stores = Vec::new();
         let mut groups = Vec::new();
@@ -553,7 +664,8 @@ mod tests {
             )),
         };
         for node in voters {
-            let (domains, app, _, mut log) = fixture(FaultBackend::new(), true).await?;
+            let (domains, app, _, mut log) =
+                fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
             // This is installed consensus metadata for each distinct replica;
             // the source retirement producer is exercised by engine tests.
             domains.custody().store().write_batch(&[WriteOp::put(
@@ -616,8 +728,12 @@ mod tests {
     #[tokio::test]
     async fn custody_point_head_receipt_audit_and_applied_cursor_survive_each_write_failure()
     -> Result<()> {
+        let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
         let disk = FaultBackend::new();
-        let (domains, _, _, mut log) = fixture(disk.clone(), true).await?;
+        let (domains, _, _, mut log) = fixture(disk.clone(), true, fixture_scratch.clone()).await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -642,7 +758,7 @@ mod tests {
         drop(log);
         drop(domains);
         let measured = baseline.crash();
-        let (domains, _, _, _) = fixture(measured.clone(), false).await?;
+        let (domains, _, _, _) = fixture(measured.clone(), false, fixture_scratch.clone()).await?;
         let start = measured.operations();
         control::apply_custody(domains.custody(), &position, &command)?;
         let operations = measured.operations() - start;
@@ -653,13 +769,13 @@ mod tests {
         drop(domains);
         for failure in 0..=operations {
             let disk = baseline.crash();
-            let (domains, _, _, _) = fixture(disk.clone(), false).await?;
+            let (domains, _, _, _) = fixture(disk.clone(), false, fixture_scratch.clone()).await?;
             disk.fail_after(failure);
             let result = control::apply_custody(domains.custody(), &position, &command);
             let crash = disk.crash();
             disk.disarm();
             drop(domains);
-            let (reopened, _, _, _) = fixture(crash, false).await?;
+            let (reopened, _, _, _) = fixture(crash, false, fixture_scratch.clone()).await?;
             let actual = control::custody_state(reopened.custody())?;
             let (cursor, _) = applied(reopened.custody())?;
             if actual == initial {
@@ -682,7 +798,12 @@ mod tests {
     #[tokio::test]
     async fn closed_snapshot_rejects_prior_format_without_rewriting_permanent_storage() -> Result<()>
     {
-        let (domains, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
+        let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+        let (domains, _, _, mut log) =
+            fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -711,8 +832,13 @@ mod tests {
     }
     #[tokio::test]
     async fn canonical_custody_stream_authenticates_counts_digest_and_record_order() -> Result<()> {
+        let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
         use sha2::{Digest, Sha256};
-        let (domains, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
+        let (domains, _, _, mut log) =
+            fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -746,7 +872,7 @@ mod tests {
             .encode(MAX_CLOSED_SNAPSHOT_BYTES)?
             .read_bounded(MAX_CLOSED_SNAPSHOT_BYTES as usize)?;
         let decoded = SnapshotEnvelope::decode(
-            &kasumi_store::ScratchDisk::fixture(),
+            &fixture_scratch.clone(),
             &mut bytes.as_slice(),
             MAX_CLOSED_SNAPSHOT_BYTES,
         )?;
@@ -794,7 +920,7 @@ mod tests {
             }
             assert!(
                 SnapshotEnvelope::decode(
-                    &kasumi_store::ScratchDisk::fixture(),
+                    &fixture_scratch.clone(),
                     &mut bad.as_slice(),
                     MAX_CLOSED_SNAPSHOT_BYTES
                 )
@@ -807,8 +933,12 @@ mod tests {
     #[tokio::test]
     async fn streamed_custody_tables_and_snapshot_coverage_publish_at_one_crash_boundary()
     -> Result<()> {
+        let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
         let disk = FaultBackend::new();
-        let (domains, _, _, mut log) = fixture(disk.clone(), true).await?;
+        let (domains, _, _, mut log) = fixture(disk.clone(), true, fixture_scratch.clone()).await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -837,7 +967,7 @@ mod tests {
         drop(log);
         drop(domains);
         let measure = baseline.crash();
-        let (domains, _, _, _) = fixture(measure.clone(), false).await?;
+        let (domains, _, _, _) = fixture(measure.clone(), false, fixture_scratch.clone()).await?;
         let snapshot = capture(domains.custody())?;
         let start = measure.operations();
         publish(domains.custody(), &snapshot)?;
@@ -846,14 +976,14 @@ mod tests {
         drop(domains);
         for failure in 0..=operations {
             let disk = baseline.crash();
-            let (domains, _, _, _) = fixture(disk.clone(), false).await?;
+            let (domains, _, _, _) = fixture(disk.clone(), false, fixture_scratch.clone()).await?;
             let snapshot = capture(domains.custody())?;
             disk.fail_after(failure);
             let result = publish(domains.custody(), &snapshot);
             let crash = disk.crash();
             disk.disarm();
             drop(domains);
-            let (reopened, _, _, _) = fixture(crash, false).await?;
+            let (reopened, _, _, _) = fixture(crash, false, fixture_scratch.clone()).await?;
             assert_eq!(
                 control::custody_state(reopened.custody())?,
                 original,
@@ -870,6 +1000,52 @@ mod tests {
                 assert!(matches!(cursor, AppliedCursor::Entry(_)));
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn closed_snapshot_near_metadata_limit_publishes_readable_coverage() -> Result<()> {
+        let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+        let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+        let (source, _, _, mut log) = fixture(FaultBackend::new(), true, scratch.clone()).await?;
+        log.blocking_append([membership(), retirement_entry()?])
+            .await?;
+        log.save_committed(Some(id(1))).await?;
+        assert!(crate::ControlLog::open(source.custody().clone(), 1, group())?.recover_retired()?);
+        let mut snapshot = capture(source.custody())?;
+        let membership = |address: String| {
+            StoredMembership::new(
+                None,
+                openraft::Membership::from(BTreeMap::from([(1u64, BasicNode::new(address))])),
+            )
+        };
+        snapshot.meta.last_membership = membership(String::new());
+        let base = snapshot
+            .encode(MAX_CLOSED_SNAPSHOT_BYTES)?
+            .read_bounded(usize::try_from(MAX_CLOSED_SNAPSHOT_BYTES)?)?;
+        let base_metadata_len = usize::try_from(u64::from_be_bytes(base[9..17].try_into()?))?;
+        let address_len = crate::snapshot_codec::MAX_METADATA
+            .checked_sub(base_metadata_len + 4096)
+            .context("base closed metadata exceeds test budget")?;
+        snapshot.meta.last_membership = membership("x".repeat(address_len));
+        let encoded = snapshot
+            .encode(MAX_CLOSED_SNAPSHOT_BYTES)?
+            .read_bounded(usize::try_from(MAX_CLOSED_SNAPSHOT_BYTES)?)?;
+        assert_eq!(
+            usize::try_from(u64::from_be_bytes(encoded[9..17].try_into()?))?,
+            crate::snapshot_codec::MAX_METADATA - 4096
+        );
+        let (target, _, _, _) = fixture(FaultBackend::new(), true, scratch).await?;
+        publish(target.custody(), &snapshot)?;
+        let coverage_bytes = target
+            .custody()
+            .store()
+            .get(META, b"snapshot_coverage")?
+            .context("closed coverage absent")?;
+        assert!(coverage_bytes.len() <= crate::storage::MAX_SNAPSHOT_COVERAGE_BYTES);
+        assert!(crate::storage::load_snapshot_coverage(target.custody().store())?.is_some());
+        assert!(load_snapshot(target.custody())?.is_some());
         Ok(())
     }
 }

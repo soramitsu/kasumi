@@ -124,7 +124,7 @@ impl Jobs {
         command: Command,
         max_bytes: usize,
     ) -> Result<Call<Response>> {
-        self.start_task(async move {
+        self.start_task(Box::pin(async move {
             let bytes = work.run(command, max_bytes).await?;
             work._reservation.retain_workspace();
             Ok(Response {
@@ -132,7 +132,7 @@ impl Jobs {
                 _reservation: work._reservation,
                 _registration: work._registration,
             })
-        })
+        }))
     }
 
     fn start_task<T: Send + 'static>(

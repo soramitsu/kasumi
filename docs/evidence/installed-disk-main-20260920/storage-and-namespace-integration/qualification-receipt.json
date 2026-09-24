@@ -1,0 +1,23 @@
+{
+  "status": "FAILED workspace production compile; strict Clippy unrun",
+  "manifest_sha256": "86aab58bf781ad6f6eb84873f1f0c958efe476e8c342aed578a922ea7cb7a2d4",
+  "patch_sha256": "6cad8de6cbb02335ab15271bb70b46259a0ac8ec4fc4cf7b3b42c755d362f8e8",
+  "native_result": {
+    "source_unchanged": true,
+    "changed_inputs": [],
+    "source_count": 3220,
+    "completed_stages": 1,
+    "expected_stages": 2,
+    "all_passed": false,
+    "cohort_elapsed_seconds": 92.142471958,
+    "cohort_bound_seconds": 1200,
+    "results_sha256": "57393de689e4ba45409ad2ac9e0fb7877357c5a0009f65b85c99ee67cae5807e",
+    "native_runtime_tests": false,
+    "artifact_scope": "Exact check/Clippy compiler artifacts and tool binaries; no runnable test execution."
+  },
+  "production_error": "E0063 missing _directory in async FilesystemAuditArchive worker construction",
+  "warning": "unused MetadataExt import in managed directory module",
+  "independent_overlap_review_sha256": "d97532ad8a30c76e0e7f4ee034a2acc0c5ecb8ae6b04bbb120167f54f9c6dbb4",
+  "source_editing": "No actual or frozen candidate sources changed",
+  "next": "Distinct successor with owner-custody field, unused import and inherited EOF test assertion corrections"
+}

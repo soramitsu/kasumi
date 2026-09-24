@@ -4,9 +4,10 @@ async fn retirement_input(
     deadline: u64,
 ) -> PreparedRetirement {
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new_fixture(
-            fixture._directory.path().join(id),
+        kasumi_store::FilesystemBackupDestination::new(
+            fixture._directory.path().join("persistent").join(id),
             16 << 20,
+            fixture.storage.persistent.clone(),
         )
         .unwrap(),
     );

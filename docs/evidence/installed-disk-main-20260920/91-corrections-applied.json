@@ -1,0 +1,204 @@
+{
+  "status": "APPLIED_UNTESTED",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "predecessors": {
+    "84": {
+      "scope": "development complete authority mandatory disk-memory caller regression, not final release qualification",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kasumi-authority",
+        "--all-features",
+        "--lib",
+        "--tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/Users/mtakemiya/dev/kasumi",
+      "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+      "process_group": 52567,
+      "exit_code": -15,
+      "timeout": true,
+      "signals": [
+        "SIGTERM"
+      ],
+      "drained": true,
+      "elapsed_seconds": 1200.124745130539,
+      "inventoried_source_unchanged": true
+    },
+    "85": {
+      "scope": "development combined workspace strict lint diagnostic, not final release qualification",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "clippy",
+        "--keep-going",
+        "--offline",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/Users/mtakemiya/dev/kasumi",
+      "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+      "process_group": 58737,
+      "exit_code": 101,
+      "timeout": false,
+      "signals": [],
+      "drained": true,
+      "elapsed_seconds": 16.675561904907227,
+      "inventoried_source_unchanged": true
+    },
+    "86": {
+      "scope": "development engine library mandatory disk-memory caller regression; known unresolved 512x256 restore case explicitly excluded, not final release qualification",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--keep-going",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--skip",
+        "public_restore_admits_resident_state_without_charging_permanent_stream_as_ram"
+      ],
+      "cwd": "/Users/mtakemiya/dev/kasumi",
+      "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+      "process_group": 60043,
+      "exit_code": 1,
+      "timeout": false,
+      "signals": [],
+      "drained": true,
+      "elapsed_seconds": 0.10756397247314453,
+      "inventoried_source_unchanged": true
+    },
+    "89": {
+      "scope": "development successor after invalid Cargo test argument; engine library mandatory disk-memory caller regression; known unresolved 512x256 restore case explicitly excluded, not final release qualification",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--no-fail-fast",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--skip",
+        "public_restore_admits_resident_state_without_charging_permanent_stream_as_ram"
+      ],
+      "cwd": "/Users/mtakemiya/dev/kasumi",
+      "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+      "process_group": 60452,
+      "exit_code": 101,
+      "timeout": false,
+      "signals": [],
+      "drained": true,
+      "elapsed_seconds": 525.118289232254,
+      "inventoried_source_unchanged": true
+    },
+    "90": {
+      "scope": "development isolated replay of observed authority84 failure using its already-built exact binary; overlaps still-stalled84 and engine89, not final release qualification",
+      "command": [
+        "/Users/mtakemiya/dev/kasumi/target/debug/deps/kasumi_authority-8a653d8f0b295bfb",
+        "--exact",
+        "service::tests::coverage_dispatch_precedes_permission_and_survives_exact_encrypted_restart",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "cwd": "/Users/mtakemiya/dev/kasumi",
+      "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+      "process_group": 62277,
+      "exit_code": 0,
+      "timeout": false,
+      "signals": [],
+      "drained": true,
+      "elapsed_seconds": 32.57651472091675,
+      "inventoried_source_unchanged": true,
+      "binary_sha256": "695ee72e9c2efec45a555edb6d2252c832a7c9d56fe60debc2eb2bd816dac7cd",
+      "binary_unchanged": true
+    }
+  },
+  "packages": [
+    {
+      "package": "authority-lint-corrections",
+      "patch_sha256": "d91147a6f98403ef6d88ee241a91704375efa74355cd2bc9082b655e4077a151",
+      "files": [
+        {
+          "path": "crates/kasumi-store/src/node_disk.rs",
+          "before_sha256": "5dc73974ebd7daa5e232f148423148a4b5bdfdac8ad404a35a028e51df316e7b",
+          "proposed_sha256": "f230ff417b9abcfe5f15815aba38ab6fe8131d4920db9187894ec184cdf803f7"
+        },
+        {
+          "path": "crates/kasumi-authority/src/activation_gate_tests.rs",
+          "before_sha256": "3f4f88eb705bfa793eef8845b77696975cbfcc9d2d4a219d019cc115ad9c1da3",
+          "proposed_sha256": "4c9f924b9f01b34d300ab508163ecd8edc198dc9efe1028f24c9cb8db1d78b74"
+        }
+      ]
+    },
+    {
+      "package": "file-owner-retirement",
+      "patch_sha256": "676ad67135a8f9b97ee21f141348bba26c81957819e384b9d9327132e31157e9",
+      "files": [
+        {
+          "path": "crates/kasumi-store/src/node_disk/file.rs",
+          "before_sha256": "488a5b8182ff33ee20cfc1685749ff0e3887662cf7da0bf14c8224d5c0c2bdaa",
+          "proposed_sha256": "24934b329c935269f578118d70a4e2e9e108f6cf62c3e68455d232aee51843e5",
+          "new_test_functions": [],
+          "removed_or_renamed_test_functions": []
+        },
+        {
+          "path": "crates/kasumi-store/src/node_disk/tests.rs",
+          "before_sha256": "2f0f2d3890daae76a8f3eec6f374c04db20fe94221c8e81cb0e894c72b4e2fdf",
+          "proposed_sha256": "9825a52cea3a3392bf16a5dd5f7f737370c64b833bc8a50026a073071c8cf1f4",
+          "new_test_functions": [
+            "a_retiring_predecessor_keeps_exclusive_registration_until_all_resources_close",
+            "abandoned_preparation_closes_target_descriptors_before_the_next_preparation",
+            "concurrent_final_file_clones_retire_exactly_one_registration",
+            "prepared_publication_abandonment_retires_old_weak_registration_once_without_allocation",
+            "reclaim_retires_parent_metadata_and_weak_backing_before_releasing_promises",
+            "retiring_file_cannot_lend_handle_or_metadata_credit_before_parent_and_backing_release"
+          ],
+          "removed_or_renamed_test_functions": [
+            "a_closed_predecessor_cannot_unregister_the_new_owner_of_the_same_inode"
+          ]
+        }
+      ]
+    },
+    {
+      "package": "89-audit-metadata-fixture",
+      "patch_sha256": "9f31ad09ae51e14689cef4820f7b061ffc5423fd2603fe08220dc28e249a36a5",
+      "files": [
+        {
+          "path": "crates/kasumi-engine/src/security_audit_retention.rs",
+          "before_sha256": "e91634d5e19782ab35d6617c0536dcdf585bf896f3440b95e22629134df73e32",
+          "proposed_sha256": "fffd504ecef824cf627c4ead985152a345897aa27e1fd09e76ffedf743ac832c"
+        }
+      ]
+    },
+    {
+      "package": "89-tenant-audit-policy-fixture",
+      "patch_sha256": "0f14d93b9dd917ca11faddfbe0ab98642ecb86985e51a23960965a6400c31334",
+      "files": [
+        {
+          "path": "crates/kasumi-engine/src/tenant_audit_memory_tests.rs",
+          "before_sha256": "bfc4e7370fba8461253d12abe392784e8e31cbf1a9c2693dcff60bfab0071470",
+          "proposed_sha256": "5be4d89d946114741f582b1f6f5944fd403e530779ce166512519dcb27998a50"
+        }
+      ]
+    }
+  ]
+}

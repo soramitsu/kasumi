@@ -1,0 +1,13 @@
+{
+  "expected": [
+    "admission::disk_memory::tests::installed_box_stays_charged_after_facade_drop_with_operation_slots_full",
+    "admission::disk_memory::tests::installed_storage_census_is_fixed_precharged_and_matches_the_exact_core",
+    "admission::disk_memory::tests::lease_overhead_is_admitted_before_boxing_and_denial_preserves_counters"
+  ],
+  "actual": [
+    "admission::disk_memory::tests::installed_box_stays_charged_after_facade_drop_with_operation_slots_full",
+    "admission::disk_memory::tests::installed_storage_census_is_fixed_precharged_and_matches_the_exact_core",
+    "admission::disk_memory::tests::lease_overhead_is_admitted_before_boxing_and_denial_preserves_counters"
+  ],
+  "matches": true
+}

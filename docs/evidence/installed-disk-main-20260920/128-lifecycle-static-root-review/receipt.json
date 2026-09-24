@@ -1,0 +1,15 @@
+{
+  "status": "READY_FOR_ORIGINAL_RUNTIME",
+  "manifest_sha256": "28f63932b925f80d25dff779059007bea0c185bdce0000e563337ef124f63dbe",
+  "binary_sha256": "631110f244e868c72e9966ec5af1df0d484b63bb8c26ffcde3d8c00a730ec098",
+  "review_sha256": "187be1f314385078bc5ed06eb069681b3a1aac798efda90fd904cb0ea1e1f46a",
+  "native_map_groups_drained": [
+    54738,
+    54740,
+    54747,
+    54752,
+    54753
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master"
+}

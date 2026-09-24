@@ -1,0 +1,15 @@
+{
+  "status": "READ_ONLY_CONFIRMED_FINDINGS_NO_BUILD",
+  "review_sha256": "116b0cd61ecc4288e18d317acd78210492f6c96ee4c89ab99de6dfb425613be1",
+  "reviewed_files": {
+    "target/installed-disk-validation/snapshot-work-foundation/foundation.patch": "047dcc8abcff53eff8eee12d663ac9be41a66cedaa1902c7a6fb35e116a90f80",
+    "target/installed-disk-validation/snapshot-work-foundation/manifest.json": "bce1700335fad4aeb03509ee162c6e7144f4d4c2007693dc3cf59850359eadac",
+    "target/installed-disk-validation/snapshot-work-foundation/README.md": "71f9a7ad83460534055150ffa8a7d5e2e697f9446ea4ff8e9685db83bc56be5d",
+    "target/installed-disk-validation/snapshot-work-foundation/proposed/crates/kasumi-engine/src/admission/snapshot_work.rs": "9644a04aa06d49b122ec5eb5edd32ddeb53621845a7a78b283b2308cfb3a49eb",
+    "target/installed-disk-validation/snapshot-work-foundation/proposed/crates/kasumi-engine/src/admission/snapshot_work_tests.rs": "c6260bd219fe0450d92fa5a84b4cbc6d4b92776b30f9cf5394eab703879cbcb3",
+    "target/installed-disk-validation/snapshot-work-foundation/proposed/crates/kasumi-engine/src/admission.rs": "a6e4fbdfbe0d97532f1d3953c35a0ced97b58e0417c16075609a3aa38ce4b96b",
+    "target/installed-disk-validation/snapshot-work-foundation/proposed/crates/kasumi-query/src/cancellation.rs": "c062ea749011fcc5d02c3b999053084f503d820cb4d59e227b349e83f0a03eee"
+  },
+  "actual_source_modified": false,
+  "builds_or_tests_run": false
+}

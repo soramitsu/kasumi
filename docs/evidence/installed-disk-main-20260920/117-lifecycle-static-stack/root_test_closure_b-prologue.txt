@@ -1,0 +1,42 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001001506c0 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}>:
+1001506c0: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1001506c4: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1001506c8: 910043fd    	add	x29, sp, #0x10
+1001506cc: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+1001506d0: f90003ff    	str	xzr, [sp]
+1001506d4: d11903ff    	sub	sp, sp, #0x640
+1001506d8: f90003ff    	str	xzr, [sp]
+1001506dc: d10107a8    	sub	x8, x29, #0x41
+1001506e0: f9000be8    	str	x8, [sp, #0x10]
+1001506e4: f9000fe0    	str	x0, [sp, #0x18]
+1001506e8: f90017e1    	str	x1, [sp, #0x28]
+1001506ec: aa0003e8    	mov	x8, x0
+1001506f0: f81c03a8    	stur	x8, [x29, #-0x40]
+1001506f4: aa0003e8    	mov	x8, x0
+1001506f8: f81d03a8    	stur	x8, [x29, #-0x30]
+1001506fc: 396ba008    	ldrb	w8, [x0, #0xae8]
+100150700: b90027e8    	str	w8, [sp, #0x24]
+100150704: 34000168    	cbz	w8, 0x100150730 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x70>
+100150708: 14000001    	b	0x10015070c <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x4c>
+10015070c: b94027e8    	ldr	w8, [sp, #0x24]
+100150710: 71000508    	subs	w8, w8, #0x1
+100150714: 540001e0    	b.eq	0x100150750 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x90>
+100150718: 14000001    	b	0x10015071c <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x5c>
+10015071c: b94027e8    	ldr	w8, [sp, #0x24]
+100150720: 71000908    	subs	w8, w8, #0x2
+100150724: 540001c0    	b.eq	0x10015075c <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x9c>
+100150728: 14000001    	b	0x10015072c <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x6c>
+10015072c: 1400000f    	b	0x100150768 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0xa8>
+100150730: 912c83e8    	add	x8, sp, #0xb20
+100150734: 5280000a    	mov	w10, #0x0               ; =0
+100150738: 52800029    	mov	w9, #0x1                ; =1
+10015073c: 12000140    	and	w0, w10, #0x1
+100150740: aa0903e1    	mov	x1, x9
+100150744: 12000122    	and	w2, w9, #0x1
+100150748: 97fdea4a    	bl	0x1000cb070 <lifecycle::recovery_control::exercise_completed_recovery>
+10015074c: 14000013    	b	0x100150798 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0xd8>

@@ -1,0 +1,21 @@
+1000e7aa0: 94887b17    	bl	0x1023066fc <<std::time::Instant>::now>
+1000e7aac: 14000009    	b	0x1000e7ad0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x70>
+1000e7ab4: 940bf2b8    	bl	0x1003e4594 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_raft::network::InProcessRouter>>>
+1000e7ab8: 14000042    	b	0x1000e7bc0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x160>
+1000e7acc: 17fffff9    	b	0x1000e7ab0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x50>
+1000e7ad4: 97ffa38a    	bl	0x1000d08fc <core::array::from_fn::<core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, 3, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#0}>>
+1000e7ad8: 14000001    	b	0x1000e7adc <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x7c>
+1000e7ae4: 97ff6dee    	bl	0x1000c329c <<std::sync::poison::mutex::Mutex<[core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>; 3]>>::new>
+1000e7ae8: 14000001    	b	0x1000e7aec <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x8c>
+1000e7af4: 97ffa391    	bl	0x1000d0938 <core::array::from_fn::<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>, 32, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>>
+1000e7af8: 14000009    	b	0x1000e7b1c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0xbc>
+1000e7b00: 97fed49d    	bl	0x10009cd74 <core::ptr::drop_glue::<std::sync::poison::mutex::Mutex<[core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>; 3]>>>
+1000e7b04: 17ffffeb    	b	0x1000e7ab0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x50>
+1000e7b18: 17fffff9    	b	0x1000e7afc <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x9c>
+1000e7b38: 948a9ef8    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e7b5c: 97ff6def    	bl	0x1000c3318 <<std::sync::poison::mutex::Mutex<lifecycle::bootstrap_vote_probe::History>>::new>
+1000e7b60: 14000001    	b	0x1000e7b64 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x104>
+1000e7b8c: 948a9ee3    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e7ba4: 948a9edd    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e7bbc: 948a9cae    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+1000e7bc8: 948a9e17    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>

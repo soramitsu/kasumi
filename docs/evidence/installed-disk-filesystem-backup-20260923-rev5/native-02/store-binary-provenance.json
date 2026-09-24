@@ -1,0 +1,39 @@
+{
+  "selected": {
+    "reason": "compiler-artifact",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "profile": {
+      "opt_level": "0",
+      "debuginfo": 2,
+      "debug_assertions": true,
+      "overflow_checks": true,
+      "test": true
+    },
+    "features": [
+      "test-utils"
+    ],
+    "filenames": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/cargo-target/debug/deps/kasumi_store-da802ca493244251"
+    ],
+    "executable": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/cargo-target/debug/deps/kasumi_store-da802ca493244251",
+    "fresh": false
+  },
+  "retained_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-test-binary",
+  "sha256": "8c4a6a6aa5aad8a7e5fc95c0a2f0f041aed0b41b759acb9903cd3a8f4d266b90",
+  "bytes": 54831152
+}

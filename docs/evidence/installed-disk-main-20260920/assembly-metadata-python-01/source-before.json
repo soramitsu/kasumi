@@ -1,0 +1,42 @@
+{
+  "scripts/gate_process.py": {
+    "bytes": 9055,
+    "mode": "0o644",
+    "sha256": "ba7437cc9c68d189d37b679e6e067da0e8dbb98928959b5d27cdf78b4361cf08"
+  },
+  "scripts/package_release.py": {
+    "bytes": 32703,
+    "mode": "0o644",
+    "sha256": "ce19cea0753531fe2cd5887c0134cb21571cd107755cfcc7b589d25dcff9c968"
+  },
+  "scripts/release_gate.py": {
+    "bytes": 19923,
+    "mode": "0o644",
+    "sha256": "57a31477598d441b6f0e0deb00918ef2299fadaddb4ae5e343518eafad2ffa16"
+  },
+  "scripts/test_package_metadata.py": {
+    "bytes": 8511,
+    "mode": "0o644",
+    "sha256": "a3d9b5f1ff763153497d005ca4a2bb64b0eb27ce584eaa16f1c49de54009f2d0"
+  },
+  "scripts/test_package_release.py": {
+    "bytes": 13578,
+    "mode": "0o644",
+    "sha256": "c03e6af24bae3f539d03e67ef5bea887f8595b6b0cde356f1c041e4af8a32452"
+  },
+  "scripts/test_release_gate.py": {
+    "bytes": 18211,
+    "mode": "0o644",
+    "sha256": "f537f5c5647d657f56df59e2420f89f5d6417e74100c25ba2f66598c8a9c028a"
+  },
+  "scripts/test_verify_release_acceptance.py": {
+    "bytes": 25485,
+    "mode": "0o644",
+    "sha256": "9dcecece915acd321748c533e5d2f27d31270629f978f516d63fc246706183e9"
+  },
+  "scripts/verify_release_acceptance.py": {
+    "bytes": 52026,
+    "mode": "0o644",
+    "sha256": "377878450940cf1048144dc67d0ed601213e324230336129ee3792606e23ca67"
+  }
+}

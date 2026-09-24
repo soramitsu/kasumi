@@ -130,13 +130,11 @@ impl SignerVerifierConfig {
             .store(credential, false, persistent_disk, scratch_disk)
             .await?;
         let administrator = Arc::new(ScopedSignerAdministrator::default());
-        let result = (|| -> Result<BTreeMap<String, Arc<LiveSignerTrust>>> {
-            let installed: VerifierInstallation = serde_json::from_slice(
-                &store
-                    .get_bounded(NS, b"installation", 256 << 10)?
-                    .context("signer verifier initialization is incomplete")?,
-            )?;
-            installed.validate()?;
+        let result = (|| -> Result<(TrustVerifierIdentity, BTreeMap<String, Arc<LiveSignerTrust>>)> {
+            let installed_bytes = store
+                .get_bounded(NS, b"installation", 256 << 10)?
+                .context("signer verifier initialization is incomplete")?;
+            let installed = VerifierInstallation::decode_current(&installed_bytes)?;
             ensure!(
                 installed.identity == self.identity && installed.domains.keys().eq(domains.keys()),
                 "exact installed verifier domain set differs"
@@ -157,10 +155,10 @@ impl SignerVerifierConfig {
                 );
                 owners.insert(digest, owner);
             }
-            Ok(owners)
+            Ok((installed.identity, owners))
         })();
-        let owners = match result {
-            Ok(owners) => owners,
+        let (installed_identity, owners) = match result {
+            Ok(verified) => verified,
             Err(error) => {
                 let mut pending = crate::startup_resources::Resources::default();
                 pending.owned_nodes.push(node);
@@ -174,6 +172,7 @@ impl SignerVerifierConfig {
         Ok(Arc::new(InstalledSignerVerifier {
             node,
             store,
+            installed_identity,
             owners,
             administrator,
             drain_report: Default::default(),
@@ -183,11 +182,29 @@ impl SignerVerifierConfig {
 pub(crate) struct InstalledSignerVerifier {
     node: Arc<NodeStore>,
     store: Arc<TenantStore>,
+    // Captured from the checked encrypted installation record, never config.
+    #[allow(dead_code, reason = "retained for G05 installed destination handoff")]
+    installed_identity: TrustVerifierIdentity,
     owners: BTreeMap<String, Arc<LiveSignerTrust>>,
     administrator: Arc<ScopedSignerAdministrator>,
     drain_report: std::sync::Mutex<kasumi_types::drain::DrainReport>,
 }
 impl InstalledSignerVerifier {
+    /// Only the live verifier on this exact installed disk may supply the
+    /// replicated physical owner to destination opening.
+    #[allow(dead_code, reason = "retained for G05 installed destination handoff")]
+    pub(crate) fn identity_for(
+        &self,
+        disk: &Arc<kasumi_store::NodeDisk>,
+    ) -> Result<TrustVerifierIdentity> {
+        ensure!(
+            Arc::ptr_eq(self.node.persistent_disk(), disk),
+            "installed verifier belongs to another persistent disk"
+        );
+        self.store.check_access()?;
+        Ok(self.installed_identity.clone())
+    }
+
     pub(crate) async fn authorize_control(
         &self,
         request: &ControlSignerRequest,
@@ -366,6 +383,42 @@ struct VerifierInstallation {
     domains: BTreeMap<String, String>,
 }
 impl VerifierInstallation {
+    fn decode_current(bytes: &[u8]) -> Result<Self> {
+        let installed: Self = serde_json::from_slice(bytes)?;
+        installed.validate()?;
+        struct Exact<'a> {
+            original: &'a [u8],
+            offset: usize,
+        }
+        impl std::io::Write for Exact<'_> {
+            fn write(&mut self, encoded: &[u8]) -> std::io::Result<usize> {
+                let end = self.offset.checked_add(encoded.len()).ok_or_else(|| {
+                    std::io::Error::other("noncanonical signer verifier installation")
+                })?;
+                if self.original.get(self.offset..end) != Some(encoded) {
+                    return Err(std::io::Error::other(
+                        "noncanonical signer verifier installation",
+                    ));
+                }
+                self.offset = end;
+                Ok(encoded.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut exact = Exact {
+            original: bytes,
+            offset: 0,
+        };
+        serde_json::to_writer(&mut exact, &installed)
+            .context("noncanonical signer verifier installation")?;
+        ensure!(
+            exact.offset == bytes.len(),
+            "noncanonical signer verifier installation"
+        );
+        Ok(installed)
+    }
     fn validate(&self) -> Result<()> {
         ensure!(
             self.format == 1 && !self.domains.is_empty() && self.domains.len() <= 1024,
@@ -402,9 +455,18 @@ impl crate::startup_owner::Runtime for InitializedVerifier {
 }
 impl InitializeSignerVerifier {
     pub async fn initialize(&self) -> Result<()> {
+        let storage = crate::runtime_memory::RuntimeStorage::installed(&self.admission)?;
+        self.initialize_with_storage(storage).await
+    }
+
+    pub(crate) async fn initialize_with_storage(
+        &self,
+        storage: crate::runtime_memory::RuntimeStorage,
+    ) -> Result<()> {
+        storage.require_policy(&self.admission)?;
         crate::startup_owner::open(
             crate::startup_owner::Kind::SignerVerifier,
-            self.clone().initialize_owned(),
+            self.clone().initialize_owned(storage),
         )
         .await?;
         Ok(())
@@ -414,14 +476,19 @@ impl InitializeSignerVerifier {
     pub async fn drain_initializations() -> Result<()> {
         crate::startup_owner::drain(crate::startup_owner::Kind::SignerVerifier).await
     }
-    async fn initialize_owned(self) -> Result<InitializedVerifier> {
+    async fn initialize_owned(
+        self,
+        storage: crate::runtime_memory::RuntimeStorage,
+    ) -> Result<InitializedVerifier> {
         self.verifier.validate()?;
         crate::persistent_disk::validate(
             &self.persistent_disk,
             &self.scratch_disk,
             [self.verifier.database_path.as_path()],
         )?;
-        let admission = kasumi_engine::admission::NodeAdmission::new(self.admission.clone())?;
+        let admission = storage.facade(&self.admission)?;
+        let mut pending = crate::startup_resources::Resources::default();
+        pending.owned_admissions.push(admission.clone());
         let bytes = BackgroundWorkBudget::required_bytes(
             self.verifier.max_background_workers,
             self.initial_certificates.len(),
@@ -463,15 +530,14 @@ impl InitializeSignerVerifier {
         }
         #[cfg(test)]
         let database_id = kasumi_store::node_store_ids::signer_verifier(&self.verifier.identity)?;
-        let mut pending = crate::startup_resources::Resources::default();
         let result = crate::startup_preparation::capture("signer verifier installation", async {
             let (node, store) = self
                 .verifier
                 .store(
                     Arc::new(file_secret),
                     true,
-                    crate::persistent_disk::open(&self.persistent_disk)?,
-                    kasumi_store::ScratchDisk::open(self.scratch_disk.clone())?,
+                    crate::persistent_disk::open(&self.persistent_disk, &storage)?,
+                    storage.open_scratch(&self.scratch_disk)?,
                 )
                 .await?;
             pending.owned_nodes.push(node);

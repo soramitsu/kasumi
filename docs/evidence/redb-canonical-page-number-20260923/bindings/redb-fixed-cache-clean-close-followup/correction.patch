@@ -1,0 +1,23 @@
+--- a/vendor/redb-4.2.0/src/cache_admission_tests.rs
++++ b/vendor/redb-4.2.0/src/cache_admission_tests.rs
+@@ -153,10 +153,16 @@
+     assert_eq!(next.commit().settlement(), WriteTerminalSettlement::Settled);
+     assert!(next.dispose_settled(&database).disposal_complete());
+     assert_eq!(assert_cache_error(&tx.report()), original);
+-    assert_eq!(
+-        database.close().settlement(),
+-        DatabaseCloseSettlement::Settled
+-    );
++    let close = database.close();
++    assert_eq!(close.settlement(), DatabaseCloseSettlement::Settled);
++    assert!(matches!(
++        close.shutdown(),
++        TerminalObservation::Returned(Ok(()))
++    ));
++    assert!(matches!(
++        close.backend(),
++        TerminalObservation::Returned(Ok(()))
++    ));
+     assert_eq!(assert_cache_error(&tx.report()), original);
+ }
+ 

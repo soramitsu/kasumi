@@ -6,6 +6,7 @@ use kasumi_store::{
     test_utils::{FaultBackend, LocalKeyProvider, ManualClock},
 };
 use kasumi_types::*;
+use openraft::RaftLogReader;
 use openraft::storage::{RaftLogStorage, RaftLogStorageExt};
 use std::collections::BTreeSet;
 
@@ -141,6 +142,7 @@ pub(crate) fn ordinary(index: u64) -> Entry<TypeConfig> {
 pub(crate) async fn fixture(
     disk: FaultBackend,
     create: bool,
+    fixture_scratch: Arc<kasumi_store::ScratchDisk>,
 ) -> Result<(
     Arc<TenantStorageSet>,
     Arc<LocalKeyProvider>,
@@ -150,7 +152,7 @@ pub(crate) async fn fixture(
     let node = NodeStore::open_with_backend(
         disk,
         kasumi_store::test_utils::storage_admission(),
-        kasumi_store::ScratchDisk::fixture(),
+        fixture_scratch.clone(),
     )?;
     let app_provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([12; 32]));
@@ -222,11 +224,146 @@ pub(crate) async fn fixture(
     Ok((stores, app_provider, custody_provider, log))
 }
 
+fn replace_with_alternate_json(
+    store: &TenantStore,
+    namespace: &str,
+    key: &[u8],
+) -> Result<Vec<u8>> {
+    let original = store
+        .get(namespace, key)?
+        .context("expected current Raft metadata row")?;
+    let mut alternate = Vec::with_capacity(original.len() + 1);
+    alternate.push(b' ');
+    alternate.extend_from_slice(&original);
+    ensure!(
+        serde_json::from_slice::<serde_json::Value>(&original)?
+            == serde_json::from_slice::<serde_json::Value>(&alternate)?,
+        "alternate JSON changed the record value"
+    );
+    store.write_batch(&[WriteOp::put(namespace, key, alternate)])?;
+    Ok(original)
+}
+
+fn restore_json(store: &TenantStore, namespace: &str, key: &[u8], original: Vec<u8>) -> Result<()> {
+    store.write_batch(&[WriteOp::put(namespace, key, original)])
+}
+
+#[tokio::test]
+async fn raft_control_metadata_requires_current_writer_bytes_on_every_live_read() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let (stores, _, _, mut log) =
+        fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+    log.blocking_append([ordinary(0), retirement_entry()?])
+        .await?;
+    log.save_vote(&openraft::Vote::new_committed(3, 1)).await?;
+    log.save_committed(Some(id(1))).await?;
+    let store = stores.custody().store();
+    let view = ControlLog::open(stores.custody().clone(), 1, group())?;
+    assert_eq!(view.committed()?, Some(id(1)));
+    assert!(view.retirement_seed(1)?.is_some());
+    assert_eq!(log.try_get_log_entries(0..=1).await?.len(), 2);
+
+    let original = replace_with_alternate_json(store, META, b"node_id")?;
+    assert!(LogStore::open(stores.clone(), 1).await.is_err());
+    assert!(ControlLog::installed(stores.custody().clone()).is_err());
+    restore_json(store, META, b"node_id", original)?;
+    LogStore::open(stores.clone(), 1).await?;
+    ControlLog::installed(stores.custody().clone())?.context("restored control identity absent")?;
+
+    let original = replace_with_alternate_json(store, META, b"group")?;
+    assert!(log.bind_group(group()).await.is_err());
+    assert!(ControlLog::open(stores.custody().clone(), 1, group()).is_err());
+    restore_json(store, META, b"group", original)?;
+    log.bind_group(group()).await?;
+
+    let original = replace_with_alternate_json(store, META, b"vote")?;
+    assert!(log.read_vote().await.is_err());
+    assert!(view.read_vote().is_err());
+    restore_json(store, META, b"vote", original)?;
+    assert_eq!(
+        log.read_vote().await?,
+        Some(openraft::Vote::new_committed(3, 1))
+    );
+
+    let original = replace_with_alternate_json(store, META, b"committed")?;
+    assert!(log.read_committed().await.is_err());
+    assert!(view.committed().is_err());
+    restore_json(store, META, b"committed", original)?;
+    assert_eq!(log.read_committed().await?, Some(id(1)));
+
+    let original = replace_with_alternate_json(store, META, b"application_bootstrap_sha256")?;
+    assert!(view.retirement_seed(1).is_err());
+    restore_json(store, META, b"application_bootstrap_sha256", original)?;
+    assert!(view.retirement_seed(1)?.is_some());
+
+    let key = 1u64.to_be_bytes();
+    let original = replace_with_alternate_json(store, SEEDS, &key)?;
+    assert!(view.retirement_seed(1).is_err());
+    restore_json(store, SEEDS, &key, original)?;
+    assert!(view.retirement_seed(1)?.is_some());
+
+    let original = replace_with_alternate_json(store, HEADERS, &key)?;
+    assert!(LogStore::open(stores.clone(), 1).await.is_err());
+    assert!(log.try_get_log_entries(0..=1).await.is_err());
+    restore_json(store, HEADERS, &key, original)?;
+    LogStore::open(stores.clone(), 1).await?;
+    assert_eq!(log.try_get_log_entries(0..=1).await?.len(), 2);
+
+    log.purge(id(1)).await?;
+    let original = replace_with_alternate_json(store, META, b"purged")?;
+    assert!(log.get_log_state().await.is_err());
+    assert!(view.retirement_seed(1).is_err());
+    restore_json(store, META, b"purged", original)?;
+    assert_eq!(log.get_log_state().await?.last_purged_log_id, Some(id(1)));
+    assert!(view.retirement_seed(1)?.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn noncanonical_recovery_scan_header_cannot_publish_retirement() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let (stores, _, _, mut log) =
+        fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+    log.blocking_append([membership(0), retirement_entry()?])
+        .await?;
+    log.save_committed(Some(id(1))).await?;
+    let view = ControlLog::open(stores.custody().clone(), 1, group())?;
+    let store = stores.custody().store();
+    let key = 0u64.to_be_bytes();
+    let original = replace_with_alternate_json(store, HEADERS, &key)?;
+    assert!(view.recover_retired().is_err());
+    assert!(store.get(META, b"applied")?.is_none());
+    assert!(store.get(META, b"retired_boundary")?.is_none());
+    restore_json(store, HEADERS, &key, original)?;
+    assert!(view.recover_retired()?);
+    assert!(store.get(META, b"applied")?.is_some());
+    assert!(store.get(META, b"retired_boundary")?.is_some());
+
+    let original = replace_with_alternate_json(store, META, b"applied")?;
+    assert!(crate::custody_machine::applied(stores.custody()).is_err());
+    restore_json(store, META, b"applied", original)?;
+    assert!(crate::custody_machine::applied(stores.custody()).is_ok());
+
+    let original = replace_with_alternate_json(store, META, b"retired_boundary")?;
+    assert!(retired_boundary(stores.custody()).is_err());
+    restore_json(store, META, b"retired_boundary", original)?;
+    assert!(retired_boundary(stores.custody())?.is_some());
+    Ok(())
+}
+
 #[tokio::test]
 async fn committed_seed_reopens_before_any_projection_without_application_key_access() -> Result<()>
 {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = FaultBackend::new();
-    let (stores, app_provider, custody_provider, mut log) = fixture(disk.clone(), true).await?;
+    let (stores, app_provider, custody_provider, mut log) =
+        fixture(disk.clone(), true, fixture_scratch.clone()).await?;
     log.blocking_append([ordinary(0), retirement_entry()?])
         .await?;
     let view = ControlLog::open(stores.custody().clone(), 1, group())?;
@@ -249,7 +386,7 @@ async fn committed_seed_reopens_before_any_projection_without_application_key_ac
         NodeStore::open_with_backend(
             crash,
             kasumi_store::test_utils::storage_admission(),
-            kasumi_store::ScratchDisk::fixture(),
+            fixture_scratch.clone(),
         )?,
         "tenant".into(),
         custody_provider,
@@ -272,8 +409,12 @@ async fn committed_seed_reopens_before_any_projection_without_application_key_ac
 #[tokio::test]
 async fn truncation_permanently_removes_uncommitted_seed_before_overwrite_and_restart() -> Result<()>
 {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = FaultBackend::new();
-    let (stores, _, provider, mut log) = fixture(disk.clone(), true).await?;
+    let (stores, _, provider, mut log) =
+        fixture(disk.clone(), true, fixture_scratch.clone()).await?;
     log.blocking_append([ordinary(0), retirement_entry()?])
         .await?;
     log.save_committed(Some(id(0))).await?;
@@ -298,7 +439,7 @@ async fn truncation_permanently_removes_uncommitted_seed_before_overwrite_and_re
         NodeStore::open_with_backend(
             crash,
             kasumi_store::test_utils::storage_admission(),
-            kasumi_store::ScratchDisk::fixture(),
+            fixture_scratch.clone(),
         )?,
         "tenant".into(),
         provider,
@@ -316,8 +457,11 @@ async fn truncation_permanently_removes_uncommitted_seed_before_overwrite_and_re
 #[tokio::test]
 async fn interrupted_raft_append_never_persists_seed_without_matching_body_and_header() -> Result<()>
 {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let seed_disk = FaultBackend::new();
-    let (stores, _, _, mut log) = fixture(seed_disk.clone(), true).await?;
+    let (stores, _, _, mut log) = fixture(seed_disk.clone(), true, fixture_scratch.clone()).await?;
     log.blocking_append([ordinary(0)]).await?;
     log.save_committed(Some(id(0))).await?;
     let baseline = seed_disk.crash();
@@ -327,14 +471,14 @@ async fn interrupted_raft_append_never_persists_seed_without_matching_body_and_h
     let mut succeeded = 0;
     for failure in 0..40 {
         let disk = baseline.crash();
-        let (stores, _, _, mut log) = fixture(disk.clone(), false).await?;
+        let (stores, _, _, mut log) = fixture(disk.clone(), false, fixture_scratch.clone()).await?;
         disk.fail_after(failure);
         let appended = log.blocking_append([retirement_entry()?]).await;
         let crash = disk.crash();
         disk.disarm();
         drop(log);
         drop(stores);
-        let (reopened, _, _, _) = fixture(crash, false).await?;
+        let (reopened, _, _, _) = fixture(crash, false, fixture_scratch.clone()).await?;
         let control = reopened.custody().store();
         let body = reopened
             .application()
@@ -361,7 +505,11 @@ async fn interrupted_raft_append_never_persists_seed_without_matching_body_and_h
 
 #[tokio::test]
 async fn substituted_seed_bootstrap_or_command_and_uncovered_commit_fail_closed() -> Result<()> {
-    let (stores, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let (stores, _, _, mut log) =
+        fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
     log.blocking_append([ordinary(0), retirement_entry()?])
         .await?;
     assert!(log.save_committed(Some(id(9))).await.is_err());
@@ -391,7 +539,11 @@ async fn substituted_seed_bootstrap_or_command_and_uncovered_commit_fail_closed(
 #[tokio::test]
 async fn ordinary_purge_deletes_bodies_and_nonretirement_overwrite_cannot_leave_a_seed()
 -> Result<()> {
-    let (stores, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let (stores, _, _, mut log) =
+        fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
     log.blocking_append([ordinary(0), retirement_entry()?])
         .await?;
     log.save_committed(Some(id(0))).await?;
@@ -424,8 +576,11 @@ async fn ordinary_purge_deletes_bodies_and_nonretirement_overwrite_cannot_leave_
 #[tokio::test]
 async fn accepted_boundary_and_exact_applied_position_publish_atomically_before_retained_purge()
 -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let seed_disk = FaultBackend::new();
-    let (stores, _, _, mut log) = fixture(seed_disk.clone(), true).await?;
+    let (stores, _, _, mut log) = fixture(seed_disk.clone(), true, fixture_scratch.clone()).await?;
     let entry = retirement_entry()?;
     let EntryPayload::Normal(command) = &entry.payload else {
         unreachable!()
@@ -459,13 +614,13 @@ async fn accepted_boundary_and_exact_applied_position_publish_atomically_before_
     let mut successes = 0;
     for failure in 0..40 {
         let disk = baseline.crash();
-        let (stores, _, _, _) = fixture(disk.clone(), false).await?;
+        let (stores, _, _, _) = fixture(disk.clone(), false, fixture_scratch.clone()).await?;
         disk.fail_after(failure);
         let result = persist_applied(&stores, &context, Some(receipt.clone()));
         let crash = disk.crash();
         disk.disarm();
         drop(stores);
-        let (reopened, _, _, mut log) = fixture(crash, false).await?;
+        let (reopened, _, _, mut log) = fixture(crash, false, fixture_scratch.clone()).await?;
         let applied: Option<AppliedCursor> = load(reopened.custody().store(), META, b"applied")?;
         let boundary = retired_boundary(reopened.custody())?;
         assert_eq!(
@@ -512,8 +667,12 @@ fn membership(index: u64) -> Entry<TypeConfig> {
 #[tokio::test]
 async fn reserved_committed_retirement_recovers_atomic_custody_after_crash_without_app_key()
 -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = FaultBackend::new();
-    let (stores, app_provider, custody_provider, mut log) = fixture(disk.clone(), true).await?;
+    let (stores, app_provider, custody_provider, mut log) =
+        fixture(disk.clone(), true, fixture_scratch.clone()).await?;
     log.blocking_append([membership(0), retirement_entry()?])
         .await?;
     let reader = ControlLog::open(stores.custody().clone(), 1, group())?;
@@ -533,7 +692,7 @@ async fn reserved_committed_retirement_recovers_atomic_custody_after_crash_witho
         NodeStore::open_with_backend(
             crash.clone(),
             kasumi_store::test_utils::storage_admission(),
-            kasumi_store::ScratchDisk::fixture(),
+            fixture_scratch.clone(),
         )?,
         "tenant".into(),
         custody_provider.clone(),
@@ -553,7 +712,7 @@ async fn reserved_committed_retirement_recovers_atomic_custody_after_crash_witho
         NodeStore::open_with_backend(
             restarted,
             kasumi_store::test_utils::storage_admission(),
-            kasumi_store::ScratchDisk::fixture(),
+            fixture_scratch.clone(),
         )?,
         "tenant".into(),
         custody_provider,
@@ -568,7 +727,11 @@ async fn reserved_committed_retirement_recovers_atomic_custody_after_crash_witho
 #[tokio::test]
 async fn retirement_recovery_crosses_former_seed_count_ceiling_without_promoting_a_tail()
 -> Result<()> {
-    let (stores, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let (stores, _, _, mut log) =
+        fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
     log.blocking_append([membership(0), retirement_entry()?])
         .await?;
     // These authenticated physical rows are outside committed coverage. Their
@@ -605,7 +768,11 @@ async fn retirement_recovery_crosses_former_seed_count_ceiling_without_promoting
 
 #[tokio::test]
 async fn retirement_recovery_never_selects_between_multiple_committed_successes() -> Result<()> {
-    let (stores, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let (stores, _, _, mut log) =
+        fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
     let mut second = retirement_entry()?;
     second.log_id = id(2);
     log.blocking_append([membership(0), retirement_entry()?, second])
@@ -631,8 +798,11 @@ async fn retirement_recovery_never_selects_between_multiple_committed_successes(
 
 #[tokio::test]
 async fn exhausted_seed_completion_budget_cannot_promote_a_committed_candidate() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = FaultBackend::new();
-    let (stores, _, _, mut log) = fixture(disk, true).await?;
+    let (stores, _, _, mut log) = fixture(disk, true, fixture_scratch.clone()).await?;
     let (command, prior) = seed()?;
     let mut source = prior.source().clone();
     source.max_snapshot_bytes = source.snapshot_bytes + 100;
@@ -666,8 +836,11 @@ async fn exhausted_seed_completion_budget_cannot_promote_a_committed_candidate()
 #[tokio::test]
 async fn failed_or_already_applied_without_boundary_cannot_be_reinterpreted_as_retired()
 -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = FaultBackend::new();
-    let (stores, _, _, mut log) = fixture(disk, true).await?;
+    let (stores, _, _, mut log) = fixture(disk, true, fixture_scratch.clone()).await?;
     let (mut command, prior) = seed()?;
     command.timestamp_ms = 1001;
     let seed = RetirementLogSeed::prepare(&command, prior.source().clone())?;
@@ -685,7 +858,7 @@ async fn failed_or_already_applied_without_boundary_cannot_be_reinterpreted_as_r
     log.save_committed(Some(id(1))).await?;
     assert!(!ControlLog::open(stores.custody().clone(), 1, group())?.recover_retired()?);
     let disk = FaultBackend::new();
-    let (stores, _, _, mut log) = fixture(disk, true).await?;
+    let (stores, _, _, mut log) = fixture(disk, true, fixture_scratch.clone()).await?;
     let entry = retirement_entry()?;
     let digest = match &entry.payload {
         EntryPayload::Normal(command) => sha256(command.bytes()),

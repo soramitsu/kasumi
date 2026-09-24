@@ -1,10 +1,11 @@
-use crate::Result;
 use crate::sync::Mutex;
 use crate::tree_store::page_store::cached_file::WritablePage;
 #[cfg(debug_assertions)]
 use crate::tree_store::page_store::fast_hash::PageNumberHashMap;
 use crate::tree_store::page_store::fast_hash::PageNumberHashSet;
 use crate::tree_store::page_store::page_manager::MAX_MAX_PAGE_ORDER;
+use crate::{Result, StorageError};
+use alloc::string::ToString;
 use alloc::sync::Arc;
 use core::cmp::Ordering;
 use core::fmt::{Debug, Formatter};
@@ -24,7 +25,7 @@ pub(crate) const MAX_REGIONS: u32 = 0x0010_0000;
 // are actually used, in these reserved bits, so that the reads to the PagedCachedFile layer can avoid
 // reading all the zeros at the end of the page.
 // lowest 20bits: page index within the region. Only the lowest `20 - order_exponent` bits may be read.
-// The remaining bits are reserved for future use and must be ignored
+// The remaining bits and bits 40..59 are reserved and must be zero.
 // second 20bits: region number
 // 19bits: reserved
 // highest 5bits: page order exponent
@@ -32,16 +33,16 @@ pub(crate) const MAX_REGIONS: u32 = 0x0010_0000;
 // Assuming a reasonable page size, like 4kiB, this allows for 4kiB * 2^20 * 2^20 = 4PiB of usable space
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) struct PageNumber {
-    pub(crate) region: u32,
-    pub(crate) page_index: u32,
-    pub(crate) page_order: u8,
+    region: u32,
+    page_index: u32,
+    page_order: u8,
 }
 
 impl Hash for PageNumber {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let mut temp = 0x000F_FFFF & u64::from(self.page_index);
-        temp |= (0x000F_FFFF & u64::from(self.region)) << 20;
-        temp |= (0b0001_1111 & u64::from(self.page_order)) << 59;
+        let mut temp = u64::from(self.page_index);
+        temp |= u64::from(self.region) << 20;
+        temp |= u64::from(self.page_order) << 59;
         state.write_u64(temp);
     }
 }
@@ -76,10 +77,10 @@ impl PageNumber {
         8
     }
 
-    pub(crate) fn new(region: u32, page_index: u32, page_order: u8) -> Self {
-        debug_assert!(region <= 0x000F_FFFF);
-        debug_assert!(page_index <= MAX_PAGE_INDEX);
-        debug_assert!(page_order <= MAX_MAX_PAGE_ORDER);
+    pub(crate) const fn new(region: u32, page_index: u32, page_order: u8) -> Self {
+        assert!(region < MAX_REGIONS);
+        assert!(page_order <= MAX_MAX_PAGE_ORDER);
+        assert!(page_index <= MAX_PAGE_INDEX >> page_order);
         Self {
             region,
             page_index,
@@ -88,23 +89,38 @@ impl PageNumber {
     }
 
     pub(crate) fn to_le_bytes(self) -> [u8; 8] {
-        let mut temp = 0x000F_FFFF & u64::from(self.page_index);
-        temp |= (0x000F_FFFF & u64::from(self.region)) << 20;
-        temp |= (0b0001_1111 & u64::from(self.page_order)) << 59;
+        let mut temp = u64::from(self.page_index);
+        temp |= u64::from(self.region) << 20;
+        temp |= u64::from(self.page_order) << 59;
         temp.to_le_bytes()
     }
 
-    pub(crate) fn from_le_bytes(bytes: [u8; 8]) -> Self {
-        let temp = u64::from_le_bytes(bytes);
-        let order = (temp >> 59) as u8;
-        let index = u32::try_from(temp & (0x000F_FFFF >> order)).unwrap();
-        let region = ((temp >> 20) & 0x000F_FFFF) as u32;
-
-        Self {
-            region,
-            page_index: index,
-            page_order: order,
+    // This is the sole raw decoder. A PageNumber always carries the canonical
+    // representation proof, including when it reaches an infallible free path.
+    pub(crate) fn from_le_bytes(bytes: [u8; 8]) -> Result<Self> {
+        let raw = u64::from_le_bytes(bytes);
+        let order = (raw >> 59) as u8;
+        let index =
+            u32::try_from(raw & u64::from(MAX_PAGE_INDEX)).expect("masked page index fits in u32");
+        if order > MAX_MAX_PAGE_ORDER
+            || raw & (0x7_FFFF_u64 << 40) != 0
+            || index > MAX_PAGE_INDEX >> order
+        {
+            return Err(StorageError::Corrupted(
+                "Noncanonical page number".to_string(),
+            ));
         }
+        Ok(Self::new(((raw >> 20) & 0xF_FFFF) as u32, index, order))
+    }
+
+    pub(crate) const fn region(self) -> u32 {
+        self.region
+    }
+    pub(crate) const fn page_index(self) -> u32 {
+        self.page_index
+    }
+    pub(crate) const fn page_order(self) -> u8 {
+        self.page_order
     }
 
     #[cfg(test)]
@@ -454,6 +470,65 @@ mod test {
         let mut bytes = page_number.to_le_bytes();
         bytes[1] = 0xFF;
         let page_number2 = PageNumber::from_le_bytes(bytes);
-        assert_eq!(page_number, page_number2);
+        assert!(matches!(
+            page_number2,
+            Err(crate::StorageError::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn canonical_page_number_preserves_all_orders_and_rejects_each_alias_bit() {
+        use super::{MAX_PAGE_INDEX, MAX_REGIONS};
+        use crate::tree_store::page_store::page_manager::MAX_MAX_PAGE_ORDER;
+        for order in 0..=MAX_MAX_PAGE_ORDER {
+            let max_index = MAX_PAGE_INDEX >> order;
+            for region in [0, 1, MAX_REGIONS - 1] {
+                for index in [0, max_index / 2, max_index] {
+                    let page = PageNumber::new(region, index, order);
+                    let bytes = page.to_le_bytes();
+                    let (decoded, allocations) = crate::admission::observe_test_allocations(|| {
+                        PageNumber::from_le_bytes(bytes)
+                    });
+                    assert_eq!(allocations, 0);
+                    let decoded = decoded.unwrap();
+                    assert_eq!(decoded, page);
+                    assert_eq!(decoded.to_le_bytes(), bytes);
+                    let raw = u64::from_le_bytes(bytes);
+                    let mut combined = raw;
+                    for bit in (40..59).chain((20 - u32::from(order))..20) {
+                        let alias = raw | (1_u64 << bit);
+                        assert!(matches!(
+                            PageNumber::from_le_bytes(alias.to_le_bytes()),
+                            Err(crate::StorageError::Corrupted(_))
+                        ));
+                        combined |= 1_u64 << bit;
+                    }
+                    assert!(PageNumber::from_le_bytes(combined.to_le_bytes()).is_err());
+                }
+            }
+        }
+        for order in 21_u64..32 {
+            assert!(PageNumber::from_le_bytes((order << 59).to_le_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn canonical_page_number_accepts_actual_buddy_producers_after_resize_and_free() {
+        use super::{MAX_PAGE_INDEX, MAX_REGIONS};
+        use crate::tree_store::page_store::buddy_allocator::BuddyAllocator;
+        let capacity = MAX_PAGE_INDEX + 1;
+        let mut allocator = BuddyAllocator::new(capacity, capacity);
+        for size in [capacity, capacity / 2, capacity] {
+            allocator.resize(size);
+            let max_order = u8::try_from(size.ilog2()).unwrap();
+            for order in 0..=max_order {
+                let index = allocator.alloc(order).unwrap();
+                for region in [0, 1, MAX_REGIONS - 1] {
+                    let page = PageNumber::new(region, index, order);
+                    assert_eq!(PageNumber::from_le_bytes(page.to_le_bytes()).unwrap(), page);
+                }
+                allocator.free(index, order);
+            }
+        }
     }
 }

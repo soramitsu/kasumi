@@ -38,6 +38,7 @@ pub(crate) mod tenant_audit;
 pub struct Generation {
     pub state: TenantState,
     pub(crate) receipts: crate::mutation_receipt::View,
+    pub(crate) backup_bindings: crate::backup_binding::View,
     pub(crate) terminals: crate::staged_terminal::View,
     pub(crate) target_resolutions: crate::target_resolution::View,
     pub indexes: Arc<QueryIndexes>,
@@ -53,6 +54,7 @@ impl Generation {
         state.history_archives = self.state.history_archives.clone();
         Self {
             receipts: self.receipts.clone(),
+            backup_bindings: self.backup_bindings.clone(),
             terminals: self.terminals.clone(),
             target_resolutions: self.target_resolutions.clone(),
             state,
@@ -71,6 +73,7 @@ impl Generation {
         state.collections = collections;
         Self {
             receipts: self.receipts.clone(),
+            backup_bindings: self.backup_bindings.clone(),
             terminals: self.terminals.clone(),
             target_resolutions: self.target_resolutions.clone(),
             state,
@@ -109,6 +112,43 @@ pub struct TenantEngine {
         Mutex<Option<Arc<crate::audit_maintenance::NodeAuditMaintenance>>>,
 }
 
+enum ApplyScope {
+    Committed,
+    #[cfg(any(test, feature = "test-utils"))]
+    Fixture(Arc<kasumi_store::ScratchDisk>),
+}
+
+/// Raft stores exact first-release command bytes. A decoded predecessor shape
+/// must not acquire current defaults or discard fields during replay.
+fn decode_canonical_json<T: serde::de::DeserializeOwned + serde::Serialize>(
+    bytes: &[u8],
+) -> anyhow::Result<T> {
+    struct ExactJson<'a>(&'a [u8]);
+    impl std::io::Write for ExactJson<'_> {
+        fn write(&mut self, encoded: &[u8]) -> std::io::Result<usize> {
+            if !self.0.starts_with(encoded) {
+                return Err(std::io::Error::other("noncanonical committed command"));
+            }
+            self.0 = &self.0[encoded.len()..];
+            Ok(encoded.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let command: T = serde_json::from_slice(bytes)?;
+    let mut exact = ExactJson(bytes);
+    serde_json::to_writer(&mut exact, &command)?;
+    anyhow::ensure!(exact.0.is_empty(), "noncanonical committed command");
+    Ok(command)
+}
+
+fn decode_committed_command(bytes: &[u8]) -> anyhow::Result<Command> {
+    decode_canonical_json(bytes)
+}
+
 impl kasumi_raft::StateMachineBackend for TenantEngine {
     fn close_application(&self) {
         self.seal();
@@ -127,7 +167,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         if bytes.starts_with(tenant_audit::PREFIX) {
             return self.apply_audit_prune(position, bytes);
         }
-        let command: Command = serde_json::from_slice(bytes)?;
+        let command = decode_committed_command(bytes)?;
         anyhow::ensure!(
             !matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
                 || position.retirement_seed.is_some(),
@@ -160,7 +200,8 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             command.timestamp_ms,
             position,
         )?;
-        let outcome = self.apply_command_ordered(revision, command, applied)?;
+        let outcome =
+            self.apply_command_ordered(revision, command, applied, ApplyScope::Committed)?;
         let retirement = if outcome.is_ok() {
             if let Some(reference) = reference {
                 let generation = self.generation()?;
@@ -199,6 +240,10 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                     &checkpoint_generation.state,
                     &context.checkpoint_sha256()?,
                 )?;
+                writes.extend(checkpoint_generation.backup_bindings.checkpoint_writes(
+                    &checkpoint_generation.state,
+                    &context.checkpoint_sha256()?,
+                )?);
                 writes.extend(checkpoint_generation.terminals.checkpoint_writes(
                     &checkpoint_generation.state,
                     &context.checkpoint_sha256()?,
@@ -247,6 +292,13 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
         )?;
         generation.receipts = receipt_installation.view.clone();
+        let binding_installation = generation.backup_bindings.prepare_install(
+            store,
+            &generation.state,
+            &context.checkpoint_sha256()?,
+            context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+        )?;
+        generation.backup_bindings = binding_installation.view.clone();
         let installation = generation.terminals.prepare_install(
             store,
             &generation.state,
@@ -262,6 +314,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         )?;
         generation.target_resolutions = target_installation.view.clone();
         let mut writes = receipt_installation.writes().to_vec();
+        writes.extend_from_slice(binding_installation.writes());
         writes.extend_from_slice(installation.writes());
         writes.extend_from_slice(target_installation.writes());
         let retirement = custody_snapshot::retired(&generation.state)?;
@@ -269,6 +322,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             engine: self,
             generation,
             receipt_installation,
+            binding_installation,
             installation,
             target_installation,
             writes,
@@ -282,6 +336,7 @@ struct PreparedTenantRestore<'a> {
     engine: &'a TenantEngine,
     generation: Generation,
     receipt_installation: crate::mutation_receipt::Installation,
+    binding_installation: crate::backup_binding::Installation,
     installation: crate::staged_terminal::Installation,
     target_installation: crate::target_resolution::Installation,
     writes: Vec<kasumi_store::WriteOp>,
@@ -294,6 +349,7 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
     }
     fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
         let mut replacements = self.receipt_installation.replacements();
+        replacements.extend(self.binding_installation.replacements());
         replacements.extend(self.installation.replacements());
         replacements.extend(self.target_installation.replacements());
         replacements
@@ -456,6 +512,14 @@ impl TenantEngine {
                 "joint terminal bootstrap catalogs differ",
             ));
         }
+        let binding_catalog = crate::backup_binding::View::checkpoint_exists(store, &checkpoint)
+            .map_err(terminal_error)?;
+        if binding_catalog != (reopen && previous.state.tenant == crate::control::CONTROL_TENANT) {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "joint backup binding bootstrap catalog differs",
+            ));
+        }
         if crate::mutation_receipt::View::checkpoint_exists(store, &checkpoint)
             .map_err(terminal_error)?
             != reopen
@@ -469,6 +533,10 @@ impl TenantEngine {
             .receipts
             .prepare_install(store, &previous.state, &checkpoint, reopen)
             .map_err(terminal_error)?;
+        let binding_installation = previous
+            .backup_bindings
+            .prepare_install(store, &previous.state, &checkpoint, reopen)
+            .map_err(terminal_error)?;
         let installation = previous
             .terminals
             .prepare_install(store, &previous.state, &checkpoint, reopen)
@@ -478,9 +546,11 @@ impl TenantEngine {
             .prepare_install(store, &previous.state, &checkpoint, reopen)
             .map_err(terminal_error)?;
         let mut replacements = receipt_installation.replacements();
+        replacements.extend(binding_installation.replacements());
         replacements.extend(installation.replacements());
         replacements.extend(target_installation.replacements());
         let mut writes = receipt_installation.writes().to_vec();
+        writes.extend_from_slice(binding_installation.writes());
         writes.extend_from_slice(installation.writes());
         writes.extend_from_slice(target_installation.writes());
         store
@@ -490,6 +560,7 @@ impl TenantEngine {
         self.publish_generation(Some(Arc::new(Generation {
             state: previous.state.clone(),
             receipts: receipt_installation.view,
+            backup_bindings: binding_installation.view,
             terminals: installation.view,
             target_resolutions: target_installation.view,
             indexes: previous.indexes.clone(),
@@ -591,6 +662,7 @@ impl TenantEngine {
             limits,
             collections: BTreeMap::new(),
             mutation_receipt_head: MutationReceiptHead::empty(&tenant, &incarnation)?,
+            backup_binding_head: BackupBindingHead::empty(&incarnation)?,
             staged_transactions: imbl::OrdMap::new(),
             active_staged_transactions: BTreeSet::new(),
             permanent_staged_bytes: 0,
@@ -646,6 +718,8 @@ impl TenantEngine {
                 .map_err(terminal_error)?,
                 receipts: crate::mutation_receipt::View::empty(&state.tenant, &state.incarnation)
                     .map_err(terminal_error)?,
+                backup_bindings: crate::backup_binding::View::empty(&state.incarnation)
+                    .map_err(terminal_error)?,
                 terminals: crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)
                     .map_err(terminal_error)?,
                 state,
@@ -672,6 +746,7 @@ impl TenantEngine {
             expected_tenant,
             decoded.state,
             decoded.receipts,
+            decoded.backup_bindings,
             decoded.terminals,
             decoded.target_resolutions,
         )?;
@@ -686,6 +761,7 @@ impl TenantEngine {
         expected_tenant: &str,
         state: TenantState,
         receipts: crate::mutation_receipt::View,
+        backup_bindings: crate::backup_binding::View,
         terminals: crate::staged_terminal::View,
         target_resolutions: crate::target_resolution::View,
     ) -> Result<Self> {
@@ -710,7 +786,13 @@ impl TenantEngine {
             sealed_restore_observation: Mutex::new(None),
             current: ArcSwapOption::empty(),
         };
-        let generation = engine.prepare_state(state, receipts, terminals, target_resolutions)?;
+        let generation = engine.prepare_state(
+            state,
+            receipts,
+            backup_bindings,
+            terminals,
+            target_resolutions,
+        )?;
         engine.publish_generation(Some(Arc::new(generation)));
         Ok(engine)
     }
@@ -726,6 +808,7 @@ impl TenantEngine {
         let crate::snapshot_codec::Decoded {
             mut state,
             receipts,
+            backup_bindings,
             terminals,
             target_resolutions,
             ..
@@ -744,6 +827,7 @@ impl TenantEngine {
                 crate::snapshot_codec::write(
                     &state,
                     &receipts,
+                    &backup_bindings,
                     &terminals,
                     &target_resolutions,
                     writer,
@@ -849,6 +933,7 @@ impl TenantEngine {
         let crate::snapshot_codec::Decoded {
             mut state,
             receipts,
+            backup_bindings,
             terminals,
             target_resolutions,
             ..
@@ -860,6 +945,7 @@ impl TenantEngine {
             expected_tenant,
             state,
             receipts,
+            backup_bindings,
             terminals,
             target_resolutions,
         )?;
@@ -925,6 +1011,7 @@ impl TenantEngine {
         verifier.prepare_state(
             state.clone(),
             decoded.receipts,
+            decoded.backup_bindings,
             decoded.terminals,
             decoded.target_resolutions,
         )?;
@@ -1013,7 +1100,12 @@ impl TenantEngine {
     /// Outer errors mean the replica cannot materialize committed state and must stop serving.
     /// Inner errors are deterministic command rejections and still advance the applied revision.
     #[cfg(any(test, feature = "test-utils"))]
-    pub fn apply_command(&self, revision: u64, command: Command) -> Result<Result<WriteReceipt>> {
+    pub fn apply_command(
+        &self,
+        disk: &Arc<kasumi_store::ScratchDisk>,
+        revision: u64,
+        command: Command,
+    ) -> Result<Result<WriteReceipt>> {
         if self
             .snapshot_store
             .get()
@@ -1033,13 +1125,19 @@ impl TenantEngine {
             )?)),
             origin: crate::staged_terminal::AppliedOrigin::Fixture,
         };
-        self.apply_command_ordered(revision, command, applied)
+        self.apply_command_ordered(
+            revision,
+            command,
+            applied,
+            ApplyScope::Fixture(disk.clone()),
+        )
     }
     fn apply_command_ordered(
         &self,
         revision: u64,
         command: Command,
         applied: crate::staged_terminal::AppliedIdentity,
+        scope: ApplyScope,
     ) -> Result<Result<WriteReceipt>> {
         let _guard = self
             .apply_lock
@@ -1060,19 +1158,15 @@ impl TenantEngine {
             )));
         }
         if let Operation::Mutate(batch) = &command.operation {
-            return self.apply_mutation_ordered(&previous, &command, batch, &applied);
+            return self.apply_mutation_ordered(&previous, &command, batch, &applied, &scope);
         }
-        let terminal_owner = previous.terminals.clone();
-        #[cfg(any(test, feature = "test-utils"))]
-        let terminal_owner = if matches!(
-            applied.origin,
-            crate::staged_terminal::AppliedOrigin::Fixture
-        ) {
-            terminal_owner
-                .fixture_owner(&previous.state)
-                .map_err(terminal_error)?
-        } else {
-            terminal_owner
+        let terminal_owner = match &scope {
+            ApplyScope::Committed => previous.terminals.clone(),
+            #[cfg(any(test, feature = "test-utils"))]
+            ApplyScope::Fixture(disk) => previous
+                .terminals
+                .fixture_owner(disk, &previous.state)
+                .map_err(terminal_error)?,
         };
         let mut next = previous.state.clone();
         next.revision = revision;
@@ -1154,6 +1248,7 @@ impl TenantEngine {
             rejected.revision = revision;
             self.publish_generation(Some(Arc::new(Generation {
                 receipts: previous.receipts.clone(),
+                backup_bindings: previous.backup_bindings.clone(),
                 terminals: previous.terminals.clone(),
                 target_resolutions: previous.target_resolutions.clone(),
                 state: rejected,
@@ -1216,6 +1311,7 @@ impl TenantEngine {
         let terminals = terminal_pending.persist().map_err(terminal_error)?;
         self.publish_generation(Some(Arc::new(Generation {
             receipts: previous.receipts.clone(),
+            backup_bindings: previous.backup_bindings.clone(),
             target_resolutions: previous.target_resolutions.clone(),
             terminals,
             state: next,
@@ -1295,6 +1391,7 @@ impl TenantEngine {
                 let terminals = rejected_terminals.persist().map_err(terminal_error)?;
                 self.publish_generation(Some(Arc::new(Generation {
                     receipts: previous.receipts.clone(),
+                    backup_bindings: previous.backup_bindings.clone(),
                     target_resolutions: previous.target_resolutions.clone(),
                     terminals,
                     state: rejected,
@@ -1311,6 +1408,7 @@ impl TenantEngine {
         rejected.revision = revision;
         self.publish_generation(Some(Arc::new(Generation {
             receipts: previous.receipts.clone(),
+            backup_bindings: previous.backup_bindings.clone(),
             terminals: previous.terminals.clone(),
             target_resolutions: previous.target_resolutions.clone(),
             state: rejected,
@@ -1337,6 +1435,7 @@ impl TenantEngine {
         crate::snapshot_codec::write(
             &generation.state,
             &generation.receipts,
+            &generation.backup_bindings,
             &generation.terminals,
             &generation.target_resolutions,
             writer,
@@ -1393,6 +1492,7 @@ impl TenantEngine {
         let crate::snapshot_codec::Decoded {
             state,
             receipts,
+            backup_bindings,
             terminals,
             target_resolutions,
             summary,
@@ -1404,13 +1504,20 @@ impl TenantEngine {
                 "snapshot differs from admitted typed framing",
             ));
         }
-        self.prepare_state(state, receipts, terminals, target_resolutions)
+        self.prepare_state(
+            state,
+            receipts,
+            backup_bindings,
+            terminals,
+            target_resolutions,
+        )
     }
 
     fn prepare_state(
         &self,
         state: TenantState,
         receipts: crate::mutation_receipt::View,
+        backup_bindings: crate::backup_binding::View,
         terminals: crate::staged_terminal::View,
         target_resolutions: crate::target_resolution::View,
     ) -> Result<Generation> {
@@ -1601,6 +1708,7 @@ impl TenantEngine {
             || count > state.limits.max_documents
             || logical_bytes > state.limits.max_logical_bytes
             || state.mutation_receipt_head.encoded_bytes > state.limits.max_mutation_receipt_bytes
+            || state.backup_binding_head.encoded_bytes > state.limits.max_backup_binding_bytes
         {
             return Err(Error::new(
                 ErrorCode::Corruption,
@@ -1718,6 +1826,32 @@ impl TenantEngine {
             &state.restore_lineage,
         )
         .map_err(|_| Error::new(ErrorCode::Corruption, "invalid restore lineage"))?;
+        backup_bindings
+            .validate_state(&state)
+            .map_err(terminal_error)?;
+        for row in backup_bindings.records() {
+            row.map_err(terminal_error)?
+                .validate(&state)
+                .map_err(terminal_error)?;
+        }
+        if let Ok(current) = self.generation() {
+            let old = current.backup_bindings.head();
+            if old.origin_incarnation != state.backup_binding_head.origin_incarnation
+                || old.count > state.backup_binding_head.count
+                || (old.count > 0
+                    && backup_bindings
+                        .row(old.count)
+                        .map_err(terminal_error)?
+                        .sha256()
+                        .map_err(terminal_error)?
+                        != old.sha256)
+            {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "snapshot removed or substituted permanent backup bindings",
+                ));
+            }
+        }
         receipts.validate_state(&state).map_err(terminal_error)?;
         for row in receipts.records() {
             row.map_err(terminal_error)?
@@ -1775,6 +1909,7 @@ impl TenantEngine {
         let indexes = Arc::new(QueryIndexes::build(&state.collections)?);
         Ok(Generation {
             receipts,
+            backup_bindings,
             terminals,
             target_resolutions,
             state,
@@ -1960,6 +2095,7 @@ fn apply_operation(
             if state.document_count > limits.max_documents
                 || state.logical_bytes > limits.max_logical_bytes
                 || state.mutation_receipt_head.encoded_bytes > limits.max_mutation_receipt_bytes
+                || state.backup_binding_head.encoded_bytes > limits.max_backup_binding_bytes
                 || state.history_archives.len() > limits.history.max_archive_segments
                 || state.audit_retention.hot_bytes > limits.audit_retention.hot_bytes
                 || state.audit_retention.archive_bytes > limits.audit_retention.archive_bytes
@@ -2400,6 +2536,7 @@ pub(super) fn validate_limits(limits: &Limits) -> Result<()> {
         || limits.max_result_bytes == 0
         || limits.max_result_bytes > (8 << 20)
         || limits.max_mutation_receipt_bytes == 0
+        || limits.max_backup_binding_bytes == 0
         || limits.max_documents == 0
         || limits.max_logical_bytes == 0
         || limits.max_snapshot_bytes < 4096
@@ -2562,10 +2699,239 @@ fn staged_command_key(command: &Command) -> Result<Option<String>> {
 }
 
 #[cfg(test)]
+mod first_release_command_tests {
+    use super::*;
+
+    #[test]
+    fn committed_command_rejects_defaulted_old_shape_and_discarded_fields() {
+        let command = Command {
+            context: RequestContext {
+                authorization: kasumi_types::RequestAuthorization::service_identity(),
+                principal: "owner".into(),
+                tenant: "tenant".into(),
+                scopes: BTreeSet::from([Action::Admin]),
+                request_id: "request".into(),
+            },
+            timestamp_ms: 1,
+            operation: Operation::CreateCollection(CollectionDefinition {
+                name: "docs".into(),
+                write_mode: CollectionWriteMode::Mutable,
+                retention_class: CollectionRetentionClass::Operational,
+                schema: serde_json::json!({"type":"object"}),
+                indexes: vec![],
+                strict_read_audit: false,
+            }),
+        };
+        let encoded = serde_json::to_vec(&command).unwrap();
+        assert!(decode_committed_command(&encoded).is_ok());
+        let current = String::from_utf8(encoded).unwrap();
+        for old in [
+            current.replacen(",\"indexes\":[]", "", 1),
+            current.replacen(",\"strict_read_audit\":false", "", 1),
+        ] {
+            assert_ne!(old, current);
+            assert!(serde_json::from_slice::<Command>(old.as_bytes()).is_ok());
+            assert!(decode_committed_command(old.as_bytes()).is_err());
+        }
+        let with_unknown = format!("{},\"obsolete\":true}}", &current[..current.len() - 1]);
+        assert!(serde_json::from_str::<Command>(&with_unknown).is_ok());
+        assert!(decode_committed_command(with_unknown.as_bytes()).is_err());
+        assert!(decode_committed_command(format!(" {current} ").as_bytes()).is_err());
+    }
+
+    #[test]
+    fn prefixed_recovery_replay_requires_exact_current_writer_bytes() {
+        let command = recovery::RecoveryCommand {
+            authorization: recovery::RecoveryAuthorization {
+                context: RequestContext {
+                    authorization: RequestAuthorization::service_identity(),
+                    principal: "owner".into(),
+                    tenant: "__kasumi_control".into(),
+                    scopes: BTreeSet::from([Action::Admin]),
+                    request_id: "request".into(),
+                },
+                policy_epoch: 1,
+                admitted_at_ms: 2,
+                expires_at_ms: 3,
+            },
+            mutation: recovery::RecoveryMutation::Stop {
+                operation_id: uuid::Uuid::from_u128(1),
+                command_id: uuid::Uuid::from_u128(2),
+            },
+        };
+        let encoded = command.encode().unwrap();
+        let payload = &encoded[recovery::PREFIX.len()..];
+        assert!(decode_canonical_json::<recovery::RecoveryCommand>(payload).is_ok());
+        let canonical = std::str::from_utf8(payload).unwrap();
+        let reordered = format!(
+            "{{\"mutation\":{},\"authorization\":{}}}",
+            serde_json::to_string(&command.mutation).unwrap(),
+            serde_json::to_string(&command.authorization).unwrap(),
+        );
+        assert!(serde_json::from_str::<recovery::RecoveryCommand>(&reordered).is_ok());
+        assert!(decode_canonical_json::<recovery::RecoveryCommand>(reordered.as_bytes()).is_err());
+        assert!(
+            decode_canonical_json::<recovery::RecoveryCommand>(format!(" {canonical} ").as_bytes())
+                .is_err()
+        );
+        let context = serde_json::to_string(&command.authorization.context).unwrap();
+        let obsolete_context = format!("{},\"obsolete\":true}}", &context[..context.len() - 1]);
+        let obsolete = canonical.replacen(&context, &obsolete_context, 1);
+        assert_ne!(obsolete, canonical);
+        assert!(decode_canonical_json::<recovery::RecoveryCommand>(obsolete.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn noncanonical_target_envelope_is_rejected_before_state_change() {
+        let origin = crate::target_completion_machine::tests::origin();
+        let node = &origin.materialization.request.target_nodes[&1];
+        let authority_id = uuid::Uuid::from_u128(42);
+        let manifest_sha256 = "66".repeat(32);
+        let root_public_key = "aa".repeat(32);
+        let signature = GenerationSignature {
+            certificate: SigningCertificate {
+                identity: SigningGeneration {
+                    domain: SigningDomain {
+                        authority_id,
+                        partition: 0,
+                        manifest_sha256: manifest_sha256.clone(),
+                        root_public_key: root_public_key.clone(),
+                        retirement_drain_ms: 100,
+                    },
+                    generation: 1,
+                    public_key: "bb".repeat(32),
+                },
+                root_signature: "cc".repeat(64),
+            },
+            signature: "dd".repeat(64),
+        };
+        // The signed record has a complete wire shape. The test stops at
+        // replay decoding, before authority verification or mutation.
+        let grant = kasumi_serving::SignedLifecycleLease {
+            claims: kasumi_serving::LifecycleLeaseClaims {
+                request: kasumi_serving::LifecycleLeaseRequest {
+                    authority_manifest_sha256: manifest_sha256.clone(),
+                    reference: LifecycleAuthorityReference {
+                        control_incarnation: origin.materialization.control_incarnation,
+                        control_policy_epoch: 1,
+                        identity: LifecycleAuthorityIdentity::Intent(
+                            origin.materialization.request.command_id,
+                        ),
+                    },
+                    intent_sha256: "ee".repeat(32),
+                    target_node: NodeIdentity {
+                        node_id: node.node_id,
+                        verifier: node.verifier.clone(),
+                        principal: node.principal.clone(),
+                        certificate_sha256: node.certificate_sha256.clone(),
+                    },
+                    boot_id: uuid::Uuid::from_u128(43),
+                    attempt_id: uuid::Uuid::from_u128(44),
+                },
+                commitment: ControlIntentCommitment {
+                    intent: origin.materialization.clone(),
+                    root: ControlSigningRoot {
+                        control_incarnation: origin.materialization.control_incarnation,
+                        public_key: root_public_key.clone(),
+                    },
+                    authority_partition: ControlAuthorityPartition {
+                        authority_id,
+                        manifest_sha256: manifest_sha256.clone(),
+                        partition: 0,
+                        signing_public_key: root_public_key.clone(),
+                        maximum_lifetime_ms: 100,
+                        drain_ms: 100,
+                    },
+                    partition_set_sha256: "ff".repeat(32),
+                    observed_policy_epoch: 1,
+                    observed_revision: 1,
+                    observed_term: 1,
+                },
+                authority_id,
+                partition: 0,
+                authority_term: 1,
+                authority_revision: 1,
+                application_purpose: None,
+                lifetime_ms: 100,
+                credential_lifetime_ms: 100,
+            },
+            signature,
+        };
+        let command = target::TargetCommand::MaintainBudget {
+            authorization: crate::target_invocation::PreparedTargetAuthorization {
+                context: RequestContext {
+                    authorization: RequestAuthorization::service_identity(),
+                    principal: "owner".into(),
+                    tenant: "__kasumi_control".into(),
+                    scopes: BTreeSet::from([Action::Admin]),
+                    request_id: "target-command".into(),
+                },
+                grant,
+                admitted_at_ms: 2,
+                dispatch_not_after_ms: 3,
+            },
+            input: TargetResolutionBudgetInput {
+                operation_id: uuid::Uuid::from_u128(45),
+                origin_sha256: origin.digest().unwrap(),
+                expected_bytes: 1,
+                maximum_bytes: 2,
+            },
+        };
+        let canonical = command.encode().unwrap();
+        let payload = &canonical[target::PREFIX.len()..];
+        assert!(decode_canonical_json::<target::TargetCommand>(payload).is_ok());
+        let mut noncanonical = target::PREFIX.to_vec();
+        noncanonical.push(b' ');
+        noncanonical.extend_from_slice(payload);
+        assert!(
+            serde_json::from_slice::<target::TargetCommand>(&noncanonical[target::PREFIX.len()..])
+                .is_ok()
+        );
+
+        let engine = TenantEngine::new(
+            origin.materialization.request.tenant.clone(),
+            origin.input.target_incarnation.to_string(),
+            Policy {
+                grants: vec![Grant {
+                    principal: "owner".into(),
+                    collection: None,
+                    actions: BTreeSet::from([Action::Admin]),
+                }],
+                strict_read_audit: false,
+            },
+            Limits::default(),
+        )
+        .unwrap();
+        let before = engine.generation().unwrap();
+        let position = kasumi_raft::AppliedEntryContext {
+            log_id: openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), 1),
+            previous: None,
+            membership: Default::default(),
+            command_sha256: hex::encode(Sha256::digest(&noncanonical)),
+            retirement_seed: None,
+        };
+        let Err(failure) =
+            kasumi_raft::StateMachineBackend::apply(&engine, &position, &noncanonical)
+        else {
+            panic!("noncanonical target command was applied");
+        };
+        assert!(format!("{failure:#}").contains("noncanonical committed command"));
+        let after = engine.generation().unwrap();
+        assert!(Arc::ptr_eq(&before, &after));
+        assert_eq!(after.state.revision, 0);
+    }
+}
+
+#[cfg(test)]
 mod restore_budget_tests {
     use super::*;
     #[test]
     fn restored_identity_metadata_is_validated_before_bootstrap_persistence() {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
         let context = RequestContext {
             authorization: kasumi_types::RequestAuthorization::service_identity(),
             principal: "owner".into(),
@@ -2590,6 +2956,7 @@ mod restore_budget_tests {
         .unwrap();
         engine
             .apply_command(
+                disk,
                 1,
                 Command {
                     context: context.clone(),
@@ -2608,6 +2975,7 @@ mod restore_budget_tests {
             .unwrap();
         engine
             .apply_command(
+                disk,
                 2,
                 Command {
                     context,
@@ -2631,7 +2999,7 @@ mod restore_budget_tests {
         // Keep the original resident-state budget; permanent receipts have a
         // separate bound, but the recoverable image must include their owner.
         state.limits.max_snapshot_bytes =
-            crate::test_utils::encode_snapshot_candidate(&state, 64 << 20)
+            crate::test_utils::encode_snapshot_candidate(disk, &state, 64 << 20)
                 .unwrap()
                 .len() as u64
                 + 20;
@@ -2639,11 +3007,12 @@ mod restore_budget_tests {
             .prepare_state(
                 state,
                 current.receipts.clone(),
+                current.backup_bindings.clone(),
                 current.terminals.clone(),
                 current.target_resolutions.clone(),
             )
             .unwrap();
-        let bytes = crate::test_utils::encode_snapshot_candidate(&source, 64 << 20).unwrap();
+        let bytes = crate::test_utils::encode_snapshot_candidate(disk, &source, 64 << 20).unwrap();
         engine.restore_candidate(&bytes).unwrap(); // Source itself is a valid recoverable snapshot.
         let outcome = TenantEngine::restored_bootstrap(
             &bytes,

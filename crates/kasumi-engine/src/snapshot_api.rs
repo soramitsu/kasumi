@@ -78,6 +78,22 @@ fn error(error: anyhow::Error) -> Error {
         .unwrap_or_else(|| Error::new(ErrorCode::Corruption, error.to_string()))
 }
 impl TenantEngine {
+    fn admitted_snapshot_store(&self, admission: &NodeAdmission) -> Result<Arc<TenantStore>> {
+        let store =
+            self.snapshot_store.get().cloned().ok_or_else(|| {
+                Error::new(ErrorCode::Unavailable, "snapshot storage not installed")
+            })?;
+        admission
+            .memory()
+            .require_store_memory(&store)
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::Conflict,
+                    "snapshot admission and physical storage memory owners differ",
+                )
+            })?;
+        Ok(store)
+    }
     /// Capture a complete backend bundle, including retained audit ciphertext.
     /// This image is not a Raft LogId/membership envelope and cannot independently
     /// overwrite a running group. Timeout/cancellation drains owned work rather
@@ -87,13 +103,10 @@ impl TenantEngine {
         admission: Arc<NodeAdmission>,
         timeout_ms: u64,
     ) -> Result<SnapshotImage> {
+        let store = self.admitted_snapshot_store(&admission)?;
         let deadline = VerificationDeadline::new(timeout_ms).map_err(error)?;
         let token = QueryCancellation::default();
         let _cancel = CancelOnDrop(token.clone());
-        let store =
-            self.snapshot_store.get().cloned().ok_or_else(|| {
-                Error::new(ErrorCode::Unavailable, "snapshot storage not installed")
-            })?;
         let generation = self.generation()?;
         let logical = u64::try_from(generation.snapshot_bytes()?)
             .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot size overflow"))?
@@ -148,13 +161,10 @@ impl TenantEngine {
         admission: Arc<NodeAdmission>,
         timeout_ms: u64,
     ) -> Result<PreparedSnapshotRestore> {
+        let store = self.admitted_snapshot_store(&admission)?;
         let deadline = VerificationDeadline::new(timeout_ms).map_err(error)?;
         let token = QueryCancellation::default();
         let _cancel = CancelOnDrop(token.clone());
-        let store =
-            self.snapshot_store.get().cloned().ok_or_else(|| {
-                Error::new(ErrorCode::Unavailable, "snapshot storage not installed")
-            })?;
         let engine = self.clone();
         let mut work = Work {
             store,
@@ -220,6 +230,7 @@ impl TenantEngine {
         self: &Arc<Self>,
         admission: Arc<NodeAdmission>,
     ) -> anyhow::Result<()> {
+        let store = self.admitted_snapshot_store(&admission)?;
         if self
             .generation()?
             .state
@@ -232,11 +243,6 @@ impl TenantEngine {
         let deadline = VerificationDeadline::new(600_000)?;
         let token = QueryCancellation::default();
         let _cancel = CancelOnDrop(token.clone());
-        let store = self
-            .snapshot_store
-            .get()
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("bootstrap archive store not installed"))?;
         let engine = self.clone();
         let work = Work {
             store,

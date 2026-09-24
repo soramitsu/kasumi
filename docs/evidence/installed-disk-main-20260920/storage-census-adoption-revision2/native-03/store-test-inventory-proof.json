@@ -1,0 +1,41 @@
+{
+  "expected": [
+    "storage_census::tests::constructor_unwind_is_classified_before_dispatch_and_keeps_exact_payload",
+    "storage_census::tests::facade_cancellation_preserves_actual_owner_and_census_drives_later_retirement",
+    "storage_census::tests::fixed_census_is_precharged_and_bound_to_the_exact_provider",
+    "storage_census::tests::hard_capacity_and_byte_denial_precede_owner_construction",
+    "storage_census::tests::payload_destructor_panic_keeps_original_and_charge_and_never_replays",
+    "storage_census::tests::post_drive_metadata_contention_keeps_completion_in_fixed_slot_without_waiting",
+    "storage_census::tests::retained_original_observation_never_holds_metadata_or_stalls_another_owner",
+    "storage_census::tests::settlement_unwind_keeps_the_actual_owner_and_exact_original_payload",
+    "storage_opening::tests::a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close",
+    "storage_opening::tests::abandoned_failed_open_keeps_original_after_positive_close_until_explicit_report_release",
+    "storage_opening::tests::actual_body_error_is_retained_before_abort_and_disposal_without_replay",
+    "storage_opening::tests::actual_queued_worker_keeps_request_without_blocking_close_and_cancels_after_seal",
+    "storage_opening::tests::busy_worker_cannot_acknowledge_the_body_error_that_it_has_not_produced_yet",
+    "storage_opening::tests::queued_relinquishment_seals_the_request_before_another_facade_can_run",
+    "storage_opening::tests::real_commit_and_abort_failures_keep_actual_request_after_all_facades_cancel",
+    "storage_opening::tests::registered_node_tables_retains_actual_transaction_and_reports_through_physical_close",
+    "storage_opening::tests::registered_opening_exists_before_actual_creation_and_abandoned_prepare_has_no_file_effect"
+  ],
+  "actual": [
+    "storage_census::tests::constructor_unwind_is_classified_before_dispatch_and_keeps_exact_payload",
+    "storage_census::tests::facade_cancellation_preserves_actual_owner_and_census_drives_later_retirement",
+    "storage_census::tests::fixed_census_is_precharged_and_bound_to_the_exact_provider",
+    "storage_census::tests::hard_capacity_and_byte_denial_precede_owner_construction",
+    "storage_census::tests::payload_destructor_panic_keeps_original_and_charge_and_never_replays",
+    "storage_census::tests::post_drive_metadata_contention_keeps_completion_in_fixed_slot_without_waiting",
+    "storage_census::tests::retained_original_observation_never_holds_metadata_or_stalls_another_owner",
+    "storage_census::tests::settlement_unwind_keeps_the_actual_owner_and_exact_original_payload",
+    "storage_opening::tests::a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close",
+    "storage_opening::tests::abandoned_failed_open_keeps_original_after_positive_close_until_explicit_report_release",
+    "storage_opening::tests::actual_body_error_is_retained_before_abort_and_disposal_without_replay",
+    "storage_opening::tests::actual_queued_worker_keeps_request_without_blocking_close_and_cancels_after_seal",
+    "storage_opening::tests::busy_worker_cannot_acknowledge_the_body_error_that_it_has_not_produced_yet",
+    "storage_opening::tests::queued_relinquishment_seals_the_request_before_another_facade_can_run",
+    "storage_opening::tests::real_commit_and_abort_failures_keep_actual_request_after_all_facades_cancel",
+    "storage_opening::tests::registered_node_tables_retains_actual_transaction_and_reports_through_physical_close",
+    "storage_opening::tests::registered_opening_exists_before_actual_creation_and_abandoned_prepare_has_no_file_effect"
+  ],
+  "matches": true
+}

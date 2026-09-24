@@ -1,0 +1,20 @@
+{
+  "argv": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "target/installed-disk-validation/directory-managed-namespace/proposed/crates/kasumi-store/src/node_disk/directory/managed.rs",
+    "target/installed-disk-validation/directory-managed-namespace/proposed/crates/kasumi-store/src/node_disk/directory/managed/tests.rs"
+  ],
+  "exit_code": 0,
+  "before": {
+    "target/installed-disk-validation/directory-managed-namespace/proposed/crates/kasumi-store/src/node_disk/directory/managed.rs": "8be4569fb05796bc57b795d2b08329e5304e2951dc0050a84d1a9179cce3e82e",
+    "target/installed-disk-validation/directory-managed-namespace/proposed/crates/kasumi-store/src/node_disk/directory/managed/tests.rs": "f906db63f47387ea24730454f8b09b3459fa9f3df60dd3181b9a89e8d02d15f9"
+  },
+  "after": {
+    "target/installed-disk-validation/directory-managed-namespace/proposed/crates/kasumi-store/src/node_disk/directory/managed.rs": "f9151d79c725c38afcf1ce3d786c19fa04ceda9ee47f372526d70bbbc89439d2",
+    "target/installed-disk-validation/directory-managed-namespace/proposed/crates/kasumi-store/src/node_disk/directory/managed/tests.rs": "167a6735b4f48c72762c98d1a569fd09eba891c73323689931a74015f195704d"
+  }
+}

@@ -1,0 +1,18 @@
+--- a/crates/kasumi-authority/src/service.rs
++++ b/crates/kasumi-authority/src/service.rs
+@@ -31,7 +31,14 @@
+ #[path = "tests.rs"]
+ mod tests;
+ 
+-fn unavailable(_: impl std::fmt::Display) -> Error {
++#[cfg_attr(test, track_caller)]
++fn unavailable(_cause: impl std::fmt::Display) -> Error {
++    #[cfg(test)]
++    eprintln!(
++        "AUTHORITY_UNAVAILABLE at {}: {}",
++        std::panic::Location::caller(),
++        _cause
++    );
+     Error::new(
+         ErrorCode::Unavailable,
+         "independent authority is unavailable",

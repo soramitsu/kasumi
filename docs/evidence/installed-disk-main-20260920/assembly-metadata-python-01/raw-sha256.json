@@ -1,0 +1,19 @@
+{
+  "README.md": "0803c08363e0e64098e726020aeb952d7d26d0b55210c57b23e43b44d62bf9cf",
+  "invocation.json": "bcce9fa76fc2285a183b8a1d9779e45d2f9ef1bdc36fe1357a117935870a46b6",
+  "process.json": "987afd7093f72208465879ae2b3d96ed711bbe08e9444dd4e0b649744f99c01d",
+  "result.json": "7238846b59a44b5b3d659be71539d4910b7a9ee39afba275110dba4c7bed45b5",
+  "run.py": "e76353982e1ad7e42db823185bac589a73e15d3b88f7c5f8efa9583aec03e576",
+  "source-after.json": "23cfd4f48e17725023f7b7090980e8a4c6e62f1ce818a198616f1be56b6a811a",
+  "source-before.json": "23cfd4f48e17725023f7b7090980e8a4c6e62f1ce818a198616f1be56b6a811a",
+  "sources/scripts/gate_process.py": "ba7437cc9c68d189d37b679e6e067da0e8dbb98928959b5d27cdf78b4361cf08",
+  "sources/scripts/package_release.py": "ce19cea0753531fe2cd5887c0134cb21571cd107755cfcc7b589d25dcff9c968",
+  "sources/scripts/release_gate.py": "57a31477598d441b6f0e0deb00918ef2299fadaddb4ae5e343518eafad2ffa16",
+  "sources/scripts/test_package_metadata.py": "a3d9b5f1ff763153497d005ca4a2bb64b0eb27ce584eaa16f1c49de54009f2d0",
+  "sources/scripts/test_package_release.py": "c03e6af24bae3f539d03e67ef5bea887f8595b6b0cde356f1c041e4af8a32452",
+  "sources/scripts/test_release_gate.py": "f537f5c5647d657f56df59e2420f89f5d6417e74100c25ba2f66598c8a9c028a",
+  "sources/scripts/test_verify_release_acceptance.py": "9dcecece915acd321748c533e5d2f27d31270629f978f516d63fc246706183e9",
+  "sources/scripts/verify_release_acceptance.py": "377878450940cf1048144dc67d0ed601213e324230336129ee3792606e23ca67",
+  "stderr.log": "78d8bf80ef5191b48928f77368db53dc20ad423b4f55b434a1370f1b566b0e35",
+  "stdout.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

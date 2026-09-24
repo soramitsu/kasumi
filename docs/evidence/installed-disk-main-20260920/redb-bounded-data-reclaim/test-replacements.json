@@ -1,0 +1,66 @@
+{
+  "patch_sha256": "f2103f19fa5223101a83c8c6cdf230a658f1d26fcfb54be56ab2ea5660cb85f8",
+  "status": "uncompiled successor contract replacements; original tests/evidence preserved unchanged",
+  "replacements": [
+    {
+      "before": "canonical_page_list_shapes_accept_used_entries_and_reject_other_shapes_without_allocating",
+      "after": [
+        "canonical_data_page_list_rejects_obsolete_system_shape_without_allocating",
+        "obsolete_system_namespace_is_rejected_before_writable_readonly_or_repair_mutation"
+      ],
+      "reason": "SYSTEM shape acceptance is removed; exact canonical DATA acceptance remains and obsolete SYSTEM1602 is rejected without a decoder"
+    },
+    {
+      "before": "malformed_record_in_either_namespace_is_rejected_before_any_pending_removal",
+      "after": [
+        "malformed_selected_data_record_is_rejected_before_any_pending_removal",
+        "obsolete_system_namespace_is_rejected_before_writable_readonly_or_repair_mutation"
+      ],
+      "reason": "Two supported namespaces are replaced directly by DATA plus forbidden raw SYSTEM table name. Selected first/second DATA malformed records preserve no-removal guarantee."
+    },
+    {
+      "before": "early_extraction_close_failure_keeps_original_error_and_fences_publication",
+      "after": [
+        "early_extraction_close_failure_keeps_original_error_and_fences_publication"
+      ],
+      "reason": "Same actual eight-page/growth/sync-error/original-error/retained-custody workload; canonical DATA3202 replaces obsolete SYSTEM1602, so dynamic close-growth proof must rerun."
+    },
+    {
+      "before": "savepoint::test::corrupted_record version9 case",
+      "after": [
+        "same test expanded versions0,1,2,3,5,9,255"
+      ],
+      "reason": "Only format4 savepoint records accepted; no legacy versions/decoder"
+    },
+    {
+      "before": "header slot reader version3 branch, versions1/2 UpgradeRequired and unknown Corrupted",
+      "after": [
+        "only_canonical_format_four_opens_without_mutating_rejected_files"
+      ],
+      "reason": "Single version4 branch; direct UnsupportedFileFormat error. Both slots/readonly/writable rejection and unchanged-byte assertions."
+    }
+  ],
+  "historical_evidence": [
+    {
+      "path": "target/installed-disk-validation/126-result.json",
+      "sha256": "b2d19b97ff70b7a88148f24b8c8efdb5c8ad96d943cd635b5a4ae7fe943e2449",
+      "scope": "Complete vendor redb library after checked PageList records and explicit extraction close plus required copied transaction key; no final acceptance",
+      "exit_code": 101,
+      "drained": true
+    },
+    {
+      "path": "target/installed-disk-validation/132-result.json",
+      "sha256": "efbaff8e01b4f7655230510bf485233126f34fe26829f077ed6edf3b0115b939",
+      "scope": "Complete vendor redb library after checked PageList records and explicit extraction close plus copied key and FnMut/macro compile corrections; no final acceptance",
+      "exit_code": 0,
+      "drained": true
+    },
+    {
+      "path": "target/installed-disk-validation/134-result.json",
+      "sha256": "befde5a202e3419482cd32f0c80796c6f57e4f1aca3a18b17b5778e0ddfb0ed1",
+      "scope": "Complete authority library after exact stopped-epoch resolution and vendor prerequisites; no final acceptance",
+      "exit_code": 101,
+      "drained": true
+    }
+  ]
+}

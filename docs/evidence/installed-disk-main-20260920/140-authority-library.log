@@ -1,0 +1,11 @@
+   Compiling kasumi-authority v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.72s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_authority-c9f40d981df0df58)
+
+running 1 test
+test service::tests::issuer_tests::target_materialization_tests::activated_target_keeps_operational_suspension_and_membership_across_restart ... TARGET_ACTIVATION_DENIED at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5: installed target attestation signature invalid
+TARGET_ACTIVATION_DENIED at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5: installed target attestation signature invalid
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 62 filtered out; finished in 65.12s
+

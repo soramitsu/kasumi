@@ -1,0 +1,22 @@
+{
+  "mode": "TARGET_PROPOSAL_ONLY",
+  "branch": "master",
+  "actual_source_edits": false,
+  "cargo_or_tests": false,
+  "patch_sha256": "fdba3ab745f6262bc8998b8d3adcc50db3ab135af4028dfd84f6402239174b96",
+  "files_changed": [
+    {
+      "path": "crates/kasumi-authority/src/issuer_tests.rs",
+      "before_sha256": "77fbb82454695d3fec5fb019a6d34963fc80d1875ad7766a89ade264e90f4b7e",
+      "after_sha256": "b916cc088a1c029d10302dcf5ba3276d939d815a2769cf2e337f2b3795e7c7d3"
+    }
+  ],
+  "artifacts": {
+    "README.md": "a606abba3da104855cee496a1547835afd3f0419aa5034bc54a093230bf8d203",
+    "base/crates/kasumi-authority/src/issuer_tests.rs": "77fbb82454695d3fec5fb019a6d34963fc80d1875ad7766a89ade264e90f4b7e",
+    "evidence.json": "870e7e34036fdbc42a439b1a923bfdb108c2f5e4a26bce27c45121f5f980b361",
+    "fixture.patch": "fdba3ab745f6262bc8998b8d3adcc50db3ab135af4028dfd84f6402239174b96",
+    "proposed/crates/kasumi-authority/src/issuer_tests.rs": "b916cc088a1c029d10302dcf5ba3276d939d815a2769cf2e337f2b3795e7c7d3",
+    "validation.json": "7bd1011de4a23d9f847d972dfe1e0623e995c12ed3d722082c24d68749a5eb89"
+  }
+}

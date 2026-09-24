@@ -5,6 +5,7 @@ use crate::tree_store::{
     BtreeHeader, PageAllocator, PageHint, PageNumber, PageNumberHashMap, PageResolver,
 };
 use crate::{Key, Result, TableError, TypeName, Value};
+use alloc::borrow::Cow;
 use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec;
@@ -19,12 +20,6 @@ const ALIGNMENT: usize = 1;
 pub(crate) enum TableType {
     Normal,
     Multimap,
-}
-
-impl TableType {
-    fn is_legacy(value: u8) -> bool {
-        value == 1 || value == 2
-    }
 }
 
 #[allow(clippy::from_over_into)]
@@ -352,25 +347,92 @@ impl InternalTableDefinition {
     }
 }
 
-impl Value for InternalTableDefinition {
-    type SelfType<'a> = InternalTableDefinition;
-    type AsBytes<'a> = Vec<u8>;
+/// Raw master-table bytes cannot expose a root until checked conversion.
+#[derive(Debug)]
+pub(crate) struct RawTableDefinition<'a> {
+    data: Cow<'a, [u8]>,
+}
 
+impl RawTableDefinition<'_> {
+    pub(crate) fn checked(&self) -> Result<InternalTableDefinition> {
+        InternalTableDefinition::checked(&self.data)
+    }
+}
+
+impl Value for RawTableDefinition<'_> {
+    type SelfType<'a>
+        = RawTableDefinition<'a>
+    where
+        Self: 'a;
+    type AsBytes<'a>
+        = &'a [u8]
+    where
+        Self: 'a;
     fn fixed_width() -> Option<usize> {
         None
     }
-
-    fn from_bytes<'a>(data: &'a [u8]) -> Self
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
     where
         Self: 'a,
     {
-        debug_assert!(data.len() > 22);
-        let mut offset = 0;
-        let legacy = TableType::is_legacy(data[offset]);
-        assert!(!legacy);
-        let table_type = TableType::from(data[offset]);
-        offset += 1;
+        RawTableDefinition {
+            data: Cow::Borrowed(data),
+        }
+    }
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> &'a [u8]
+    where
+        Self: 'b,
+    {
+        &value.data
+    }
+    fn type_name() -> TypeName {
+        TypeName::internal("redb::InternalTableDefinition")
+    }
+}
 
+impl InternalTableDefinition {
+    pub(crate) fn as_raw(&self) -> RawTableDefinition<'static> {
+        RawTableDefinition {
+            data: Cow::Owned(self.as_bytes()),
+        }
+    }
+
+    pub(crate) fn checked(data: &[u8]) -> Result<Self> {
+        const KEY_LENGTH_OFFSET: usize = 1 + 8 + 1 + BtreeHeader::serialized_size() + 5 + 5 + 4 + 4;
+        const TYPE_START: usize = KEY_LENGTH_OFFSET + 4;
+        let malformed =
+            || crate::StorageError::Corrupted("Corrupted internal table definition".to_string());
+        if data.len() < TYPE_START {
+            return Err(malformed());
+        }
+        let table_type = match data[0] {
+            3 => TableType::Normal,
+            4 => TableType::Multimap,
+            _ => return Err(malformed()),
+        };
+        for position in [
+            9,
+            10 + BtreeHeader::serialized_size(),
+            15 + BtreeHeader::serialized_size(),
+        ] {
+            if data[position] > 1 {
+                return Err(malformed());
+            }
+        }
+        let key_len =
+            u32::from_le_bytes(data[KEY_LENGTH_OFFSET..TYPE_START].try_into().unwrap()) as usize;
+        let value_start = TYPE_START.checked_add(key_len).ok_or_else(malformed)?;
+        let key = data.get(TYPE_START..value_start).ok_or_else(malformed)?;
+        let value = data.get(value_start..).ok_or_else(malformed)?;
+        for name in [key, value] {
+            if name.is_empty()
+                || !matches!(name[0], 1 | 2 | 4)
+                || core::str::from_utf8(&name[1..]).is_err()
+            {
+                return Err(malformed());
+            }
+        }
+        let mut offset = 1;
         let table_length = u64::from_le_bytes(
             data[offset..(offset + size_of::<u64>())]
                 .try_into()
@@ -385,7 +447,7 @@ impl Value for InternalTableDefinition {
                 data[offset..(offset + BtreeHeader::serialized_size())]
                     .try_into()
                     .unwrap(),
-            ))
+            )?)
         } else {
             None
         };
@@ -441,7 +503,7 @@ impl Value for InternalTableDefinition {
         offset += key_type_len;
         let value_type = TypeName::from_bytes(&data[offset..]);
 
-        match table_type {
+        Ok(match table_type {
             TableType::Normal => InternalTableDefinition::Normal {
                 table_root,
                 table_length,
@@ -462,17 +524,15 @@ impl Value for InternalTableDefinition {
                 key_type,
                 value_type,
             },
-        }
+        })
     }
 
     // Be careful if you change this serialization format! The InternalTableDefinition for
     // a given table needs to have a consistent serialized length, regardless of the table
     // contents, so that create_table_and_flush_table_root() can update the allocator state
     // table without causing more allocations
-    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Vec<u8>
-    where
-        Self: 'b,
-    {
+    pub(crate) fn as_bytes(&self) -> Vec<u8> {
+        let value = self;
         let mut result = vec![value.get_type().into()];
         result.extend_from_slice(&value.get_length().to_le_bytes());
         if let Some(header) = value.private_get_root() {
@@ -513,10 +573,6 @@ impl Value for InternalTableDefinition {
 
         result
     }
-
-    fn type_name() -> TypeName {
-        TypeName::internal("redb::InternalTableDefinition")
-    }
 }
 
 #[cfg(test)]
@@ -550,5 +606,42 @@ mod canonical_identity_tests {
             definition.check_match_untyped(TableType::Normal, "old"),
             Err(TableError::Storage(crate::StorageError::Corrupted(_)))
         ));
+    }
+
+    #[test]
+    fn raw_table_metadata_rejects_aliased_roots_before_decoding_owned_types() {
+        for table_type in [TableType::Normal, TableType::Multimap] {
+            for order in 0..=20 {
+                let root = BtreeHeader::new(PageNumber::new(3, 0, order), 17, 99);
+                let definition =
+                    InternalTableDefinition::new::<u64, &[u8]>(table_type, Some(root), 99);
+                let bytes = definition.as_bytes();
+                let raw = RawTableDefinition::from_bytes(&bytes);
+                assert_eq!(raw.checked().unwrap(), definition);
+                assert_eq!(raw.checked().unwrap().as_bytes(), bytes);
+                for bit in (40..59).chain((20 - u32::from(order))..20) {
+                    let mut bad = bytes.clone();
+                    bad[10 + bit as usize / 8] |= 1 << (bit % 8);
+                    let (result, allocations) = crate::admission::observe_test_allocations(|| {
+                        RawTableDefinition::from_bytes(&bad).checked()
+                    });
+                    assert!(matches!(result, Err(crate::StorageError::Corrupted(_))));
+                    // Only the returned corruption string is allocated; neither
+                    // key nor value TypeName is allocated before root rejection.
+                    assert_eq!(allocations, 1);
+                }
+                for length in 0..bytes.len() {
+                    // Truncating a type's text can be a different valid identity;
+                    // fixed metadata/root and empty type shapes must reject.
+                    if length <= 64 {
+                        assert!(
+                            RawTableDefinition::from_bytes(&bytes[..length])
+                                .checked()
+                                .is_err()
+                        );
+                    }
+                }
+            }
+        }
     }
 }

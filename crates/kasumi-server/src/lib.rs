@@ -29,7 +29,12 @@ mod recovery_cli;
 pub mod recovery_runtime;
 pub mod rpc;
 pub mod runtime;
+#[cfg(test)]
+mod runtime_cluster_storage;
 mod runtime_drain;
+mod runtime_memory;
+#[cfg(test)]
+mod runtime_storage_fixtures;
 mod runtime_worker;
 mod serving_owner;
 pub mod serving_runtime;

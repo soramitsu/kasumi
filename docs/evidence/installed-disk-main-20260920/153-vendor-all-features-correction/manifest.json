@@ -1,0 +1,17 @@
+{
+  "status": "narrow correction to original153 compile/lint failures",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/page_list_tests.rs",
+      "before_sha256": "ee6c0ebc6d89596b03ea6efa6be31b1f480440a02a88c98ebb48dc01500c77f0",
+      "after_sha256": "ec0a42b13fdb961ca598776a4f457625a5e9b9169a7fff0bd26eaebed6eda599"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+      "before_sha256": "712705a50997d9e586f6008d1a2a3fe00e1a3f333797d8f289ff3e039cb3e6ef",
+      "after_sha256": "621029cf39ec62587600a2f8a58745e50e32eff8d1bf375b75c30e9f7adc8694"
+    }
+  ],
+  "patch_sha256": "e3b68f2421435db6e2b4c42a014a88515f1509d840ace0a49fa2b2c2ac082197",
+  "scope": "API5-only trait import and checked stripe-count conversion; no workload/limit/deadline changes"
+}

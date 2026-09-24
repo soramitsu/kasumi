@@ -1,0 +1,25 @@
+[
+  {
+    "argv": [
+      "git",
+      "apply",
+      "--check",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/review-snapshot-02/successor.patch"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session-independent-review/apply-check",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "apply",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/review-snapshot-02/successor.patch"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session-independent-review/apply-check",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  }
+]

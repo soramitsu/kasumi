@@ -20,9 +20,11 @@ pub(crate) struct Resources {
     pub(crate) databases: Vec<Arc<kasumi_engine::Database>>,
     pub(crate) custodies: Vec<Arc<kasumi_engine::RetiredCustody>>,
     pub(crate) authorities: Vec<Arc<kasumi_authority::IndependentAuthority>>,
-    // Fields drop in declaration order: exclusive installation ownership must
-    // outlive every retained worker and physical node handle.
+    // The uninitialized lock exists only while provisioning the paired records.
+    // Once installed, the checked identity and same lock travel as one owner.
+    // Both outlive every retained worker and physical node handle.
     pub(crate) standalone_lock: Option<kasumi_store::NodeDiskFile>,
+    pub(crate) standalone_owner: Option<Arc<crate::standalone::InstalledStandaloneOwner>>,
 }
 impl Resources {
     pub(crate) async fn close(&self) -> DrainResult {

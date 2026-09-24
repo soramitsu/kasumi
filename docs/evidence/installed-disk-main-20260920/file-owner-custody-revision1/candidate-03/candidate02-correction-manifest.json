@@ -1,0 +1,14 @@
+{
+  "before": "target/installed-disk-validation/file-owner-custody-revision1/candidate-02/proposed",
+  "after": "target/installed-disk-validation/file-owner-custody-revision1/candidate-03/proposed",
+  "patch_sha256": "9a95aab83f490b8d07f2a4696c35be00067c3d13c5e4c54eddc60d1d7763849f",
+  "files": [
+    {
+      "path": "crates/kasumi-store/src/node_disk/census/tests.rs",
+      "before_sha256": "c51068e1549971efccc868a215c5ca6a6f532466844075e6a9c16483554dbb53",
+      "after_sha256": "56505d8c20a15094f4ac6342b07257dba5ec482c03184e1f1837c0e55dc906cd",
+      "before_bytes": 24097,
+      "after_bytes": 24217
+    }
+  ]
+}

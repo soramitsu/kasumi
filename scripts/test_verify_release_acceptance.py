@@ -55,7 +55,8 @@ class AcceptanceTests(unittest.TestCase):
                 "emulated": False, "reservation": {"id": "unit-reservation", "starts_at": "2026-01-01T00:00:00+00:00",
                     "ends_at": "2026-01-04T00:00:00+00:00", "cpu_count": 4,
                     "memory_bytes": 16 << 30, "disk_bytes": 128 << 30},
-                "preflight": self.value("host.json", {"schema": 1, "requested_target": acceptance.REFERENCE,
+                "preflight": self.value("host.json", {"schema": 2, "os": "Linux", "machine": "aarch64",
+                    "requested_target": acceptance.REFERENCE,
                     "errors": [], "translated": False, "effective_memory_bytes": 16 << 30}),
                 "attestation": self.file("host-attestation.txt")}
 
@@ -263,6 +264,41 @@ class AcceptanceTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 acceptance.check_host(self.root, host, acceptance.REFERENCE, started, finished)
 
+    def test_native_host_rejects_preflight_from_another_platform(self):
+        started = dt.datetime(2026, 1, 2, tzinfo=dt.timezone.utc)
+        finished = started + dt.timedelta(hours=1)
+        for target, system, machine in ((acceptance.REFERENCE, "Linux", "aarch64"),
+                                        ("x86_64-unknown-linux-gnu", "Linux", "x86_64"),
+                                        ("aarch64-apple-darwin", "Darwin", "arm64")):
+            host = self.host()
+            host["physical_machine"] = "x86_64" if target.startswith("x86_64") else "aarch64"
+            host["execution_machine"] = host["physical_machine"]
+            preflight = acceptance.json_reference(self.root, host["preflight"])
+            preflight.update(os=system, machine=machine, requested_target=target)
+            host["preflight"] = self.value("host.json", preflight)
+            with self.subTest(target=target, change="valid"):
+                acceptance.check_host(self.root, host, target, started, finished)
+            other_os, other_machine = ("Linux", "x86_64") if target == acceptance.REFERENCE else ("Linux", "aarch64")
+            wrong = {**preflight, "os": other_os, "machine": other_machine}
+            host["preflight"] = self.value("host.json", wrong)
+            with self.subTest(target=target, change="another-supported-target"), self.assertRaisesRegex(
+                    ValueError, "native host preflight platform differs"):
+                acceptance.check_host(self.root, host, target, started, finished)
+            for field, value in (("machine", "other"), ("os", "Other"),
+                                 ("machine", None), ("os", None)):
+                wrong = dict(preflight)
+                wrong[field] = value
+                host["preflight"] = self.value("host.json", wrong)
+                with self.subTest(target=target, change=field, value=value), self.assertRaisesRegex(
+                        ValueError, "native host preflight platform differs"):
+                    acceptance.check_host(self.root, host, target, started, finished)
+            legacy = dict(preflight)
+            legacy["schema"] = 1
+            host["preflight"] = self.value("host.json", legacy)
+            with self.subTest(target=target, change="old-schema"), self.assertRaisesRegex(
+                    ValueError, "native host preflight failed"):
+                acceptance.check_host(self.root, host, target, started, finished)
+
     def test_ha_topology_needs_nine_distinct_owned_processes_and_certificates(self):
         binaries = {"kasumid": "a" * 64, "kasumi-authority": "b" * 64}
         topology, processes = [], []
@@ -314,7 +350,50 @@ class AcceptanceTests(unittest.TestCase):
                       "details": {"report": self.file("opaque-success.txt", b"all checks passed")}}
             gate = {"id": record["id"], "evidence": self.value("opaque.json", record)}
             with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "adapter is not implemented"):
-                acceptance.verify_gate(self.root, gate, {}, source, {}, {}, {})
+                acceptance.verify_gate(self.root, gate, {}, source, {}, {}, {}, {})
+
+    def test_repeatable_assembly_bridge_binds_exact_selected_primary_receipt(self):
+        def fixture(name, consumed=b'{"candidate":"selected"}\n'):
+            selected = self.file(name + "/selected/evidence.json", b'{"candidate":"selected"}\n')
+            copied = self.file(name + "/owned/assembly/blobs/functional.json", consumed)
+            frozen = self.value(name + "/owned/assembly/frozen-inputs.json", {
+                "evidence.json": {"identity": {"sha256": copied["sha256"],
+                                               "bytes": copied["bytes"], "executable": False},
+                                  "file": {**copied, "path": "blobs/functional.json"}}})
+            report = self.value(name + "/owned/assembly/attempt.json", {
+                "frozen_inputs": {**frozen, "path": "frozen-inputs.json"}})
+            launcher = self.value(name + "/owned/launcher.json", {"status": "passed"})
+            domain = {"id": "repeatable-assembly:" + acceptance.REFERENCE,
+                      "details": {"launcher": launcher, "report": report,
+                                  "second_package": {}, "second_source": {}}}
+            candidate = {"primary": {"functional": selected}}
+            return domain, candidate, copied
+
+        domain, candidate, _ = fixture("valid")
+        with patch("repeatable_assembly.domain_adapter") as owned_bridge:
+            acceptance.repeatable_assembly_adapter(self.root, domain, {}, {}, {},
+                                                    {acceptance.REFERENCE: candidate})
+            owned_bridge.assert_called_once_with(self.root, domain, {}, {}, {})
+
+        wrong_primary = copy.deepcopy(candidate)
+        wrong_primary["primary"]["functional"] = self.file(
+            "valid/other/evidence.json", b'{"candidate":"unselected"}\n')
+        with self.assertRaisesRegex(ValueError, "another primary"):
+            acceptance.check_repeatable_assembly_primary(self.root, domain, wrong_primary)
+
+        substituted = copy.deepcopy(domain)
+        substituted["details"]["report"] = self.value("valid/other/attempt.json", {})
+        with self.assertRaisesRegex(ValueError, "original report"):
+            acceptance.check_repeatable_assembly_primary(self.root, substituted, candidate)
+
+        corrupted, selected_candidate, copied = fixture("corrupt")
+        (self.root / copied["path"]).write_bytes(b"changed after custody")
+        with self.assertRaises(ValueError):
+            acceptance.check_repeatable_assembly_primary(self.root, corrupted, selected_candidate)
+
+        different, selected_candidate, _ = fixture("different", b'{"candidate":"other"}\n')
+        with self.assertRaisesRegex(ValueError, "another primary"):
+            acceptance.check_repeatable_assembly_primary(self.root, different, selected_candidate)
 
     def test_manifest_cannot_omit_platform_or_gate_or_duplicate_identifier(self):
         gates = [{"id": name, "evidence": {}} for name in sorted(acceptance.required_gates())]
@@ -425,6 +504,39 @@ class AcceptanceTests(unittest.TestCase):
         self.value("attempts/omitted/attempt.json", attempt)
         with self.assertRaises(ValueError):
             acceptance.verify_attempts(self.root, attempts, set())
+
+    def test_failed_attempt_cannot_claim_drain_of_another_process_group(self):
+        process, receipt = self.process()
+        receipt.update(status="failed", exit_code=7, process_exit_code=7)
+        receipt["cleanup"]["process_returncode"] = 7
+        evidence = self.file("failed-result.json")
+        attempt = {"schema": acceptance.SCHEMA, "id": "failed-1", "status": "failed", "evidence": evidence,
+                   "started_at": "2026-01-02T00:00:00+00:00", "finished_at": "2026-01-02T00:00:10+00:00",
+                   "processes": [process]}
+        process["receipt"] = self.value("process.json", receipt)
+        ref = self.value("attempts/failed-1/attempt.json", attempt)
+        acceptance.verify_attempts(self.root, [{"id": "failed-1", "receipt": ref}], set())
+        for change in ("wrong-group", "boolean-group", "missing-group", "wrong-returncode",
+                       "boolean-exit-code", "missing-cleanup"):
+            wrong = copy.deepcopy(receipt)
+            if change == "wrong-group":
+                wrong["cleanup"]["group"] = 999
+            elif change == "boolean-group":
+                wrong["process_group"] = 1
+                wrong["cleanup"]["group"] = True
+            elif change == "missing-group":
+                del wrong["process_group"]
+            elif change == "wrong-returncode":
+                wrong["cleanup"]["process_returncode"] = 8
+            elif change == "boolean-exit-code":
+                wrong["process_exit_code"] = False
+                wrong["cleanup"]["process_returncode"] = 0
+            else:
+                wrong["cleanup"] = None
+            process["receipt"] = self.value("process.json", wrong)
+            ref = self.value("attempts/failed-1/attempt.json", attempt)
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "process ownership has not drained"):
+                acceptance.verify_attempts(self.root, [{"id": "failed-1", "receipt": ref}], set())
 
 
 if __name__ == "__main__":

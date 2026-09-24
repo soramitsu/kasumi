@@ -108,9 +108,9 @@ async fn recovery_uncertain_activation_requires_permanent_stop_before_target_cle
 async fn recovery_expired_completion_resolves_its_exact_positive_fact_before_activation() {
     exercise_completed_recovery(false, Some(true), true).await;
 }
-/// Transfer the exact live fixture only after the completion/activation future
-/// has returned. Polling route publication inside that large future composes
-/// both debug poll frames on the same thread and can exhaust its normal stack.
+/// Transfer the exact live fixture only after a phase future has returned.
+/// Polling large phases inside another composes their debug poll frames on the
+/// same thread and can exhaust its normal stack.
 struct RoutePublicationFixture {
     fixture: Fixture,
     database: Arc<Database>,
@@ -121,11 +121,47 @@ async fn exercise_completed_recovery(
     activation_outcome: Option<bool>,
     inspect_completion: bool,
 ) {
+    let CompletionFixture {
+        live:
+            RoutePublicationFixture {
+                fixture: f,
+                database: db,
+                request,
+            },
+        attestation,
+        complete_phase,
+        completed,
+        outcome,
+    } = {
+        let prepared = Box::pin(prepare_completion(planned, inspect_completion));
+        prepared.await
+    };
+    // The preparation poll frame has returned before resolving the original
+    // completion. Keep the same live owners, signed fact, phase, and deadlines.
+    let id = request.operation_id;
+    if inspect_completion {
+        Box::pin(resolve_expired_completion(
+            &f,
+            &db,
+            id,
+            complete_phase,
+            completed,
+            &attestation,
+        ))
+        .await;
+    } else {
+        Box::pin(resolve_phase(&f, id, complete_phase, outcome)).await;
+    }
     let route = {
         let completed = Box::pin(complete_recovery(
+            RoutePublicationFixture {
+                fixture: f,
+                database: db,
+                request,
+            },
+            attestation,
             planned,
             activation_outcome,
-            inspect_completion,
         ));
         completed.await
     };
@@ -141,11 +177,16 @@ async fn exercise_completed_recovery(
         Box::pin(exercise_route_publication(&mut fixture, database, &request)).await;
     }
 }
-async fn complete_recovery(
-    planned: bool,
-    activation_outcome: Option<bool>,
-    inspect_completion: bool,
-) -> Option<RoutePublicationFixture> {
+// Carry the exact prepared completion out of the preparation future before
+// polling either completion resolution or the activation/retirement continuation.
+struct CompletionFixture {
+    live: RoutePublicationFixture,
+    attestation: BTreeMap<u64, Ed25519KeyPair>,
+    complete_phase: Uuid,
+    completed: TargetCompletionFact,
+    outcome: RecoveryDispatchOutcome,
+}
+async fn prepare_completion(planned: bool, inspect_completion: bool) -> CompletionFixture {
     let mut f = Fixture::new().await;
     let mut request = request(&f);
     let mut attestation = BTreeMap::new();
@@ -180,17 +221,47 @@ async fn complete_recovery(
     assert_eq!(started.record().phase, RecoveryPhase::Prepare);
     let created = started.record().created_revision;
     drop(started);
-    assert_eq!(
-        db.recovery_control(
+    let duplicate = db
+        .recovery_control(
             f.context("owner"),
-            RecoveryControlCommand::Start(Box::new(request.clone()))
+            RecoveryControlCommand::Start(Box::new(request.clone())),
         )
-        .await
-        .unwrap()
-        .record()
-        .created_revision,
-        created
-    );
+        .await;
+    let replay = match duplicate {
+        Ok(status) => status,
+        Err(error)
+            if matches!(
+                error.code,
+                ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+            ) =>
+        {
+            // The original Start was definitely retained. Resolve an uncertain
+            // duplicate acknowledgement by reading that same operation only.
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match f
+                        .leader()
+                        .await
+                        .recovery_status(f.context("owner"), id)
+                        .await
+                    {
+                        Ok(status) => return status,
+                        Err(error)
+                            if matches!(
+                                error.code,
+                                ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                            ) => {}
+                        Err(error) => panic!("original Start read rejected: {error:?}"),
+                    }
+                }
+            })
+            .await
+            .expect("original Start read did not resolve")
+        }
+        Err(error) => panic!("duplicate Start rejected: {error:?}"),
+    };
+    assert_eq!(replay.record().created_revision, created);
+    drop(replay);
     let mut alias = request.clone();
     alias.operation_id = Uuid::new_v4();
     alias.dispatch_configuration_sha256 = "92".repeat(32);
@@ -206,8 +277,13 @@ async fn complete_recovery(
         ErrorCode::Conflict
     );
     let phase_id = Uuid::new_v4();
+    // The earlier control calls may outlive this node's leadership. Keep the
+    // original finite observation context while selecting the current route.
+    let context = f.context("owner");
+    drop(db);
+    let db = f.leader().await;
     let input = db
-        .next_recovery_dispatch(&f.context("owner"), id, phase_id)
+        .next_recovery_dispatch(&context, id, phase_id)
         .await
         .unwrap()
         .unwrap();
@@ -243,21 +319,27 @@ async fn complete_recovery(
     let signed = prepare_receipt(&f, &input);
     let mut forged = signed.clone();
     forged.receipt.command.command_id = Uuid::new_v4();
-    assert!(
-        db.resolve_recovery_dispatch(
+    let authority_attempt =
+        consume_fixture_effect(&f, id, phase_id, RecoveryEffect::AuthorityCommand).await;
+    let Err(error) = db
+        .resolve_recovery_dispatch(
             f.context("owner"),
             id,
             phase_id,
-            RecoveryDispatchOutcome::Authority(Box::new(forged))
+            RecoveryDispatchOutcome::Authority(Box::new(forged)),
         )
         .await
-        .is_err()
-    );
-    let materialize = resolve_phase(
+    else {
+        panic!("forged issuer receipt accepted");
+    };
+    assert_eq!(error.code, ErrorCode::Forbidden);
+    assert_eq!(error.message, "invalid signed recovery issuer outcome");
+    let materialize = resolve_phase_with_prior(
         &f,
         id,
         phase_id,
         RecoveryDispatchOutcome::Authority(Box::new(signed)),
+        Some((RecoveryEffect::AuthorityCommand, authority_attempt)),
     )
     .await;
     assert_eq!(materialize.record().phase, RecoveryPhase::Materialize);
@@ -283,6 +365,7 @@ async fn complete_recovery(
     )
     .await
     .unwrap();
+    consume_fixture_effect(&f, id, intent_phase, RecoveryEffect::ControlIntent).await;
     db.lifecycle_control(
         invocation,
         LifecycleControlCommand::CommitIntent(commit.clone()),
@@ -608,8 +691,14 @@ async fn complete_recovery(
         old, completion,
         "peer retry must preserve original command and absolute deadline"
     );
+    // Planning resolves its exact phase through the current leader. Observe
+    // that same phase on the current route, retaining the original context
+    // across leader selection and the complete read. The fixture still owns
+    // every original database and physical resource.
+    let context = f.context("owner");
+    let db = f.leader().await;
     assert!(
-        db.recovery_phase(f.context("owner"), id, unresolved)
+        db.recovery_phase(context, id, unresolved)
             .await
             .unwrap()
             .record()
@@ -653,11 +742,30 @@ async fn complete_recovery(
         node_id,
         outcome: TargetRuntimeOutcome::Completed(Box::new(signed)),
     }));
-    if inspect_completion {
-        resolve_expired_completion(&f, &db, id, complete_phase, completed, &attestation).await;
-    } else {
-        resolve_phase(&f, id, complete_phase, outcome).await;
+    CompletionFixture {
+        live: RoutePublicationFixture {
+            fixture: f,
+            database: db,
+            request,
+        },
+        attestation,
+        complete_phase,
+        completed,
+        outcome,
     }
+}
+async fn complete_recovery(
+    live: RoutePublicationFixture,
+    attestation: BTreeMap<u64, Ed25519KeyPair>,
+    planned: bool,
+    activation_outcome: Option<bool>,
+) -> Option<RoutePublicationFixture> {
+    let RoutePublicationFixture {
+        fixture: mut f,
+        database: db,
+        request,
+    } = live;
+    let id = request.operation_id;
     let retirement_phase = if planned {
         let status = db.recovery_status(f.context("owner"), id).await.unwrap();
         assert_eq!(status.record().phase, RecoveryPhase::RetireSource);
@@ -700,22 +808,28 @@ async fn complete_recovery(
             checkpoint: request.checkpoint.clone(),
             closure_digest: "e1".repeat(32),
         };
-        assert!(
-            db.resolve_recovery_dispatch(
+        let retirement_attempt =
+            consume_fixture_effect(&f, id, phase_id, RecoveryEffect::SourceRetirement).await;
+        let Err(error) = db
+            .resolve_recovery_dispatch(
                 f.context("owner"),
                 id,
                 phase_id,
-                RecoveryDispatchOutcome::SourceRetired(Box::new(receipt.clone()))
+                RecoveryDispatchOutcome::SourceRetired(Box::new(receipt.clone())),
             )
             .await
-            .is_err()
-        );
+        else {
+            panic!("wrong source retirement accepted");
+        };
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert_eq!(error.message, "planned source retirement evidence differs");
         receipt.target_incarnation = request.target_incarnation.to_string();
-        resolve_phase(
+        resolve_phase_with_prior(
             &f,
             id,
             phase_id,
             RecoveryDispatchOutcome::SourceRetired(Box::new(receipt)),
+            Some((RecoveryEffect::SourceRetirement, retirement_attempt)),
         )
         .await;
         Some(phase_id)
@@ -764,25 +878,31 @@ async fn complete_recovery(
             .unwrap(),
         receipt: receipt.clone(),
     };
-    assert!(
-        db.resolve_recovery_dispatch(
+    let fence_attempt =
+        consume_fixture_effect(&f, id, fence_phase, RecoveryEffect::AuthorityCommand).await;
+    let Err(error) = db
+        .resolve_recovery_dispatch(
             f.context("owner"),
             id,
             fence_phase,
-            RecoveryDispatchOutcome::Authority(Box::new(sign(&receipt)))
+            RecoveryDispatchOutcome::Authority(Box::new(sign(&receipt))),
         )
         .await
-        .is_err()
-    );
+    else {
+        panic!("wrong source fence accepted");
+    };
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert_eq!(error.message, "issuer returned another recovery outcome");
     receipt.outcome = AuthorityOutcome::Fenced {
         incarnation: request.source_incarnation,
         authority_epoch: request.source_authority_epoch,
     };
-    let fenced = resolve_phase(
+    let fenced = resolve_phase_with_prior(
         &f,
         id,
         fence_phase,
         RecoveryDispatchOutcome::Authority(Box::new(sign(&receipt))),
+        Some((RecoveryEffect::AuthorityCommand, fence_attempt)),
     )
     .await;
     assert_eq!(fenced.record().source_fence, Some(fence_phase));
@@ -882,21 +1002,30 @@ async fn complete_recovery(
             original.command.command_id = Uuid::new_v4();
             original.command_digest = original.command.digest().unwrap();
         }
-        assert!(
-            db.resolve_recovery_dispatch(
+        let stop_attempt =
+            consume_fixture_effect(&f, id, stop_phase, RecoveryEffect::AuthorityCommand).await;
+        let Err(error) = db
+            .resolve_recovery_dispatch(
                 f.context("owner"),
                 id,
                 stop_phase,
-                RecoveryDispatchOutcome::Authority(Box::new(sign(&wrong)))
+                RecoveryDispatchOutcome::Authority(Box::new(sign(&wrong))),
             )
             .await
-            .is_err()
+        else {
+            panic!("wrong activation resolution accepted");
+        };
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert_eq!(
+            error.message,
+            "issuer receipt differs from exact permanent command"
         );
-        let resolved = resolve_phase(
+        let resolved = resolve_phase_with_prior(
             &f,
             id,
             stop_phase,
             RecoveryDispatchOutcome::Authority(Box::new(sign(&stopped))),
+            Some((RecoveryEffect::AuthorityCommand, stop_attempt)),
         )
         .await;
         assert_eq!(
@@ -998,8 +1127,14 @@ async fn complete_recovery(
             };
             assert_eq!((first_node, node_id), (1, 2));
             assert_eq!(local, first);
+            // Both preparations follow actual leadership independently. Read
+            // the original unresolved phase through that current leader too;
+            // the database retained before them may now be a follower.
+            let phase_context = f.context("owner");
+            let current = f.leader().await;
             assert!(
-                db.recovery_phase(f.context("owner"), id, ambiguous)
+                current
+                    .recovery_phase(phase_context, id, ambiguous)
                     .await
                     .unwrap()
                     .record()
@@ -1179,6 +1314,7 @@ async fn complete_recovery(
         .with_expiry_limit(phase.dispatch_limit().await.unwrap())
         .unwrap();
     drop(phase);
+    consume_fixture_effect(&f, id, cleanup_phase, RecoveryEffect::ControlIntent).await;
     db.lifecycle_control(invocation, LifecycleControlCommand::CommitIntent(commit))
         .await
         .unwrap();
@@ -1395,40 +1531,42 @@ async fn read_topology(f: &Fixture) -> kasumi_engine::control::VersionedTopology
     .expect("original topology read did not acquire its durable release fence")
 }
 async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request: &RecoveryStart) {
-    use kasumi_engine::control::{
-        ControlNode, ControlPlane, ControlTopology, DeploymentMode, TenantRoute,
-    };
+    use kasumi_engine::control::{ControlNode, ControlPlane, DeploymentMode, TenantRoute};
     let plane = ControlPlane::new(db.clone()).unwrap();
-    plane.initialize(f.context("owner")).await.unwrap();
-    let mut topology = ControlTopology {
-        nodes: request
-            .target_nodes
-            .iter()
-            .map(|(node, identity)| {
-                (
-                    *node,
-                    ControlNode {
-                        endpoint: request.materialization.voters[node].endpoint.clone(),
-                        failure_domain: request.materialization.voters[node].failure_domain.clone(),
-                        certificate_pins: BTreeSet::from([identity.certificate_sha256.clone()]),
-                    },
-                )
-            })
-            .collect(),
-        tenants: BTreeMap::from([(
-            request.tenant.clone(),
-            TenantRoute {
-                incarnation: request.source_incarnation.to_string(),
-                mode: DeploymentMode::Replicated,
-                voters: request.target_nodes.keys().copied().collect(),
+    plane
+        .require_initialized(&f.context("owner"))
+        .await
+        .unwrap();
+    let installed = read_topology(f).await;
+    let mut topology = installed.topology;
+    for (node, identity) in &request.target_nodes {
+        topology.nodes.insert(
+            *node,
+            ControlNode {
+                endpoint: request.materialization.voters[node].endpoint.clone(),
+                failure_domain: request.materialization.voters[node].failure_domain.clone(),
+                certificate_pins: BTreeSet::from([identity.certificate_sha256.clone()]),
             },
-        )]),
-    };
+        );
+    }
+    assert!(
+        topology
+            .tenants
+            .insert(
+                request.tenant.clone(),
+                TenantRoute {
+                    incarnation: request.source_incarnation.to_string(),
+                    mode: DeploymentMode::Replicated,
+                    voters: request.target_nodes.keys().copied().collect(),
+                },
+            )
+            .is_none()
+    );
     plane
         .replace_topology(
             f.context("owner"),
             topology.clone(),
-            Precondition::Absent,
+            Precondition::Version(installed.version),
             "recovery-source-topology".into(),
         )
         .await
@@ -1623,6 +1761,71 @@ async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request:
     drop(db);
     f.close().await;
 }
+// These Control-only tests synthesize external outcomes. A real one-use
+// BeginEffect ticket must precede each fabricated issuer/retirement result
+// or direct Control intent write.
+async fn consume_fixture_effect(
+    f: &Fixture,
+    operation: Uuid,
+    phase_id: Uuid,
+    effect: RecoveryEffect,
+) -> Uuid {
+    let context = f.context("owner");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let db = f.leader().await;
+            let observed = match db
+                .recovery_phase(context.clone(), operation, phase_id)
+                .await
+            {
+                Ok(phase) => phase,
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => panic!("fixture effect phase unavailable: {error:?}"),
+            };
+            assert!(
+                observed.record().outcome.is_none()
+                    && !observed.record().effect_attempts.contains_key(&effect),
+                "fixture cannot obtain a ticket from a retained marker or outcome"
+            );
+            let frozen = observed.record().input.clone();
+            let ticket = match observed.begin_effect(effect).await {
+                Ok(ticket) => ticket,
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable | ErrorCode::Conflict
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => panic!("fixture effect marker rejected: {error:?}"),
+            };
+            let attempt_id = ticket.attempt_id();
+            match ticket.consume(&frozen).await {
+                Ok(()) => return attempt_id,
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable | ErrorCode::Conflict
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => panic!("fixture effect ticket rejected: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("fixture effect did not acquire a definite one-use ticket")
+}
+
 // A phase outcome may commit before the current-quorum response fence closes.
 // Resolve that exact retained phase before advancing; all retries preserve its
 // input, signed outcome, command identity, and original authorization deadline.
@@ -1632,7 +1835,17 @@ async fn resolve_phase(
     phase_id: Uuid,
     outcome: RecoveryDispatchOutcome,
 ) -> kasumi_engine::VerifiedRecoveryStatus {
+    resolve_phase_with_prior(f, operation, phase_id, outcome, None).await
+}
+async fn resolve_phase_with_prior(
+    f: &Fixture,
+    operation: Uuid,
+    phase_id: Uuid,
+    outcome: RecoveryDispatchOutcome,
+    consumed_prior: Option<(RecoveryEffect, Uuid)>,
+) -> kasumi_engine::VerifiedRecoveryStatus {
     let context = f.context("owner");
+    let mut consumed_synthetic_attempt = consumed_prior;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let db = f.leader().await;
@@ -1657,6 +1870,62 @@ async fn resolve_phase(
             } else {
                 false
             };
+            // These Control-only fixtures fabricate issuer, retirement, and
+            // initial target acknowledgements. A retained marker alone never
+            // grants permission to synthesize a response after ambiguity.
+            let synthetic_effect = match (&observed.record().input, &outcome) {
+                (RecoveryDispatch::Authority(_), RecoveryDispatchOutcome::Authority(_)) => {
+                    Some(RecoveryEffect::AuthorityCommand)
+                }
+                (RecoveryDispatch::RetireSource(_), RecoveryDispatchOutcome::SourceRetired(_)) => {
+                    Some(RecoveryEffect::SourceRetirement)
+                }
+                (RecoveryDispatch::Target { request, .. }, RecoveryDispatchOutcome::Target(_))
+                    if matches!(
+                        request.step,
+                        TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
+                            | TargetRuntimeStep::Initialize(_)
+                    ) =>
+                {
+                    Some(RecoveryEffect::TargetCommand)
+                }
+                _ => None,
+            };
+            if let Some(effect) = synthetic_effect.filter(|_| !resolved) {
+                if let Some(marker) = observed.record().effect_attempts.get(&effect) {
+                    assert_eq!(
+                        consumed_synthetic_attempt,
+                        Some((effect, marker.attempt_id)),
+                        "fixture cannot fabricate a response after an uncertain marker or ticket"
+                    );
+                } else {
+                    assert!(
+                        consumed_synthetic_attempt.is_none(),
+                        "consumed synthetic effect marker vanished from Control"
+                    );
+                    drop(observed);
+                    let attempt = consume_fixture_effect(f, operation, phase_id, effect).await;
+                    consumed_synthetic_attempt = Some((effect, attempt));
+                    continue;
+                }
+            }
+            if !resolved
+                && matches!(
+                    (&observed.record().input, &outcome),
+                    (
+                        RecoveryDispatch::ControlIntent(_),
+                        RecoveryDispatchOutcome::ControlIntent(_)
+                    )
+                )
+            {
+                assert!(
+                    observed
+                        .record()
+                        .effect_attempts
+                        .contains_key(&RecoveryEffect::ControlIntent),
+                    "direct Control intent fixture omitted its prior one-use marker"
+                );
+            }
             drop(observed);
             let result = if resolved {
                 db.recovery_status(context.clone(), operation).await
@@ -1683,8 +1952,12 @@ async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) ->
     let RecoveryDispatch::ControlIntent(command) = input else {
         panic!("committed Control phase required")
     };
+    // Preparation follows the current leader; the caller's cached handle can
+    // now be a follower. Pin one original read credential before reacquiring it.
+    let phase_context = f.context("owner");
+    let db = f.leader().await;
     let prepared = db
-        .recovery_phase(f.context("owner"), operation, phase_id)
+        .recovery_phase(phase_context, operation, phase_id)
         .await
         .unwrap();
     let mut context = f.context("owner");
@@ -1693,9 +1966,68 @@ async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) ->
         .with_expiry_limit(prepared.dispatch_limit().await.unwrap())
         .unwrap();
     drop(prepared);
+    let requested_phase = command.phase;
+    let requested_id = command.command_id;
+    let before = {
+        let receiver = db.raft_group().raft().metrics();
+        let metrics = receiver.borrow();
+        (
+            metrics.id,
+            metrics.current_term,
+            metrics.current_leader,
+            metrics.state,
+        )
+    };
+    let started = std::time::Instant::now();
+    consume_fixture_effect(f, operation, phase_id, RecoveryEffect::ControlIntent).await;
     db.lifecycle_control(context, LifecycleControlCommand::CommitIntent(command))
         .await
-        .unwrap();
+        .unwrap_or_else(|error| {
+            // Local rows are diagnostic, never verified authority. Preserve the
+            // failed single call: no read request, retry or deadline refresh.
+            eprintln!(
+                "RECOVERY_INTENT_COMMIT_FAILED: operation={operation} phase_id={phase_id} \
+                 requested_id={requested_id} phase={requested_phase:?} \
+                 elapsed={:?} before={before:?} error={error:?}",
+                started.elapsed()
+            );
+            for (node, database) in &f.nodes {
+                let access = database.raft_group().check_access();
+                let retained = database.engine().generation().map(|generation| {
+                    let intent = generation
+                        .state
+                        .lifecycle_control
+                        .as_ref()
+                        .and_then(|control| control.intents.get(&requested_id));
+                    (
+                        generation.state.revision,
+                        intent.map(|intent| {
+                            (
+                                intent.request.command_id,
+                                intent.request.phase,
+                                intent.revision,
+                                intent.accepted_at_ms,
+                                intent.original_credential_expires_at_ms,
+                            )
+                        }),
+                    )
+                });
+                eprintln!(
+                    "RECOVERY_INTENT_MEMBER: node={node} access={access:?} \
+                     retained={retained:?} metrics={:?}",
+                    database.raft_group().raft().metrics().borrow()
+                );
+                let physical = &f.physical[node].storage;
+                eprintln!(
+                    "RECOVERY_INTENT_STORAGE: node={node} persistent={:?} scratch={:?} memory={:?}",
+                    physical.persistent.snapshot(),
+                    physical.scratch.snapshot(),
+                    physical.admission.snapshot()
+                );
+            }
+            eprintln!("RECOVERY_INTENT_VOTES: {}", f.vote_probe.diagnostic());
+            panic!("original lifecycle intent commit failed: {error:?}")
+        });
     let intent = db
         .engine()
         .generation()
@@ -1862,6 +2194,7 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
     drop(original);
     let mut fresh = f.context_for("owner", 60_000);
     fresh.authorization = fresh.authorization.with_expiry_limit(limit).unwrap();
+    consume_fixture_effect(&f, operation, original_id, RecoveryEffect::ControlIntent).await;
     db.lifecycle_control(fresh, LifecycleControlCommand::CommitIntent(request))
         .await
         .unwrap();
@@ -1994,6 +2327,7 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
         .with_expiry_limit(fresh_phase.dispatch_limit().await.unwrap())
         .unwrap();
     drop(fresh_phase);
+    consume_fixture_effect(&f, operation, resumed, RecoveryEffect::ControlIntent).await;
     db.lifecycle_control(context, LifecycleControlCommand::CommitIntent(request))
         .await
         .unwrap();
@@ -2054,8 +2388,12 @@ async fn commit_next_control_for(
     let RecoveryDispatch::ControlIntent(command) = input else {
         panic!("Control phase required")
     };
+    // Keep the same prepared command and dispatch limit through leadership
+    // changes; this selects a current route before the single phase read.
+    let phase_context = f.context("owner");
+    let db = f.leader().await;
     let phase = db
-        .recovery_phase(f.context("owner"), operation, phase_id)
+        .recovery_phase(phase_context, operation, phase_id)
         .await
         .unwrap();
     let mut context = f.context_for("owner", duration);
@@ -2064,6 +2402,7 @@ async fn commit_next_control_for(
         .with_expiry_limit(phase.dispatch_limit().await.unwrap())
         .unwrap();
     drop(phase);
+    consume_fixture_effect(f, operation, phase_id, RecoveryEffect::ControlIntent).await;
     db.lifecycle_control(context, LifecycleControlCommand::CommitIntent(command))
         .await
         .unwrap();

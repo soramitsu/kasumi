@@ -1,0 +1,7 @@
+{
+  "manifest_sha256": "1ac6fe03f47fb0b7987f0d65f318f7503f2d13b08b3cb788a0ed954123ae5335",
+  "source": "crates/kasumi-engine/tests/common/recovery_control.rs",
+  "after_sha256": "5a404fabbd2cbbff1eb5d3c90a842dd617c898ae2e26504ed7595c45949dd27b",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master"
+}

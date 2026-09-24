@@ -1,0 +1,22 @@
+{
+  "all_actual_bases_match": true,
+  "all_proposed_readbacks_match": true,
+  "branch": "master",
+  "custody04_fixture_byte_equal": true,
+  "files_verified": 75,
+  "focused_plan_sha256": "16d0d2514abd94b0582bf6930ca2f80312866cfc9fa69f7bd6720fd6d0caee08",
+  "git_apply_check": "passed",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "manifest_sha256": "64a8b440408c734c05b442aafbb9fa969862d78662178b8029a287dd66578b2e",
+  "patch_sha256": "f240092b164897c61be4d21c5a395d78f2c1a9d5d253a101af7306b4ed365ed6",
+  "rev4_delta_paths": [
+    "crates/kasumi-store/src/node_disk/file.rs",
+    "crates/kasumi-store/src/node_disk/file/custody.rs",
+    "crates/kasumi-store/src/node_disk/namespace/tests.rs",
+    "crates/kasumi-store/src/node_disk/tests.rs",
+    "crates/kasumi-store/src/node_file.rs",
+    "crates/kasumi-store/src/node_file/tests.rs"
+  ],
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "status": "PASS source-bound target-only review; native qualification pending"
+}

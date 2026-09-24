@@ -104,6 +104,10 @@ impl StorageBackend for CrashBackend {
         }
         Ok(())
     }
+
+    fn close(&self) -> redb::BackendCloseOutcome {
+        redb::BackendCloseOutcome::drained(Ok(()))
+    }
 }
 
 // Runs a small workload that commits a baseline durably and then commits a transaction large

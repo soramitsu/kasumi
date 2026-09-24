@@ -1,0 +1,340 @@
+{
+  "scope": "current crates/scripts/docs (excluding frozen docs/evidence) overlaid by48-file dependency then3-file caller successor",
+  "legacy_occurrences": [
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "line": 208,
+      "text": "policy.insert(\"max_census_entries\".into(), 1_000_000.into());",
+      "owner": "intentional rejection test"
+    },
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "line": 211,
+      "text": "mixed[\"persistent_disk\"][\"max_census_entries\"] = 1_000_000.into();",
+      "owner": "intentional rejection test"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk.rs",
+      "line": 57,
+      "text": "pub max_census_entries: u64,",
+      "owner": "assembly node_disk internals"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk.rs",
+      "line": 116,
+      "text": "ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+      "owner": "assembly node_disk internals"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk.rs",
+      "line": 570,
+      "text": "max_census_entries: 16_384,",
+      "owner": "assembly node_disk internals"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/census.rs",
+      "line": 366,
+      "text": "work <= config.max_census_entries,",
+      "owner": "assembly node_disk internals"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/directory/cursor.rs",
+      "line": 302,
+      "text": "if self.work > disk.config.max_census_entries {",
+      "owner": "assembly node_disk internals"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/directory/tests.rs",
+      "line": 296,
+      "text": "config.max_census_entries = 8;",
+      "owner": "assembly node_disk internals"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/file.rs",
+      "line": 662,
+      "text": "if state.files >= self.config.max_census_entries {",
+      "owner": "assembly node_disk internals"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/fixed_map/tests.rs",
+      "line": 287,
+      "text": "max_census_entries: 1_000_000,",
+      "owner": "assembly node_disk internals"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/ledger.rs",
+      "line": 63,
+      "text": "capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;",
+      "owner": "assembly node_disk internals"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "line": 19,
+      "text": "max_census_entries: 10_000,",
+      "owner": "assembly node_disk internals"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "line": 405,
+      "text": "bounded.max_census_entries = 2;",
+      "owner": "assembly node_disk internals"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "line": 1272,
+      "text": "config.max_census_entries = 3;",
+      "owner": "assembly node_disk internals"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "line": 2328,
+      "text": "config.max_census_entries = u64::MAX;",
+      "owner": "assembly node_disk internals"
+    }
+  ],
+  "constructor_and_generator_routes": [
+    {
+      "path": "crates/kasumi-bench/src/bin/loopback.rs",
+      "line": 269,
+      "text": "let mut config = example_config(kasumi_store::DirectoryPolicy::fixture())?;"
+    },
+    {
+      "path": "crates/kasumi-server/src/api.rs",
+      "line": 1969,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/audit_destination.rs",
+      "line": 124,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap(),"
+    },
+    {
+      "path": "crates/kasumi-server/src/audit_destination.rs",
+      "line": 161,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/audit_destination.rs",
+      "line": 186,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/bin/kasumid.rs",
+      "line": 47,
+      "text": "serde_json::to_string_pretty(&example_config(policy)?)?"
+    },
+    {
+      "path": "crates/kasumi-server/src/control_genesis_tests.rs",
+      "line": 42,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/lifecycle_runtime.rs",
+      "line": 90,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap(),"
+    },
+    {
+      "path": "crates/kasumi-server/src/node_enrollment_tests.rs",
+      "line": 7,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "line": 68,
+      "text": "pub(crate) fn initial_config("
+    },
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "line": 73,
+      "text": "Ok(NodeDiskConfig {"
+    },
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "line": 142,
+      "text": "pub(crate) fn fixture_config(root: &Path) -> NodeDiskConfig {"
+    },
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "line": 146,
+      "text": "let mut config = initial_config("
+    },
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "line": 168,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap(),"
+    },
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "line": 174,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "line": 181,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "line": 217,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "line": 230,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "line": 256,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/rpc_recovery_tests.rs",
+      "line": 172,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime.rs",
+      "line": 2227,
+      "text": "pub fn example_config(directory_policy: kasumi_store::DirectoryPolicy) -> Result<RuntimeConfig> {"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime.rs",
+      "line": 2258,
+      "text": "persistent_disk: crate::persistent_disk::initial_config("
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime.rs",
+      "line": 2454,
+      "text": "let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime.rs",
+      "line": 2645,
+      "text": "serde_json::to_value(example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap())"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime.rs",
+      "line": 2659,
+      "text": "let config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime.rs",
+      "line": 2963,
+      "text": "let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime_memory.rs",
+      "line": 113,
+      "text": "fn fixture_disk_profile(config: NodeDiskConfig) -> NodeDiskConfig {"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime_memory.rs",
+      "line": 114,
+      "text": "NodeDiskConfig {"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime_memory.rs",
+      "line": 126,
+      "text": ") -> NodeDiskConfig {"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime_memory.rs",
+      "line": 128,
+      "text": "crate::persistent_disk::initial_config(roots, kasumi_store::DirectoryPolicy::fixture())"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime_memory.rs",
+      "line": 134,
+      "text": "pub(crate) fn new_installation_disk_config("
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime_memory.rs",
+      "line": 139,
+      "text": "let config = crate::persistent_disk::initial_config(roots, directory_policy)?;"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime_retired_source_tests.rs",
+      "line": 89,
+      "text": "let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime_serving_tests.rs",
+      "line": 20,
+      "text": "let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime_storage_fixtures.rs",
+      "line": 38,
+      "text": "..crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture())"
+    },
+    {
+      "path": "crates/kasumi-server/src/serving_runtime.rs",
+      "line": 432,
+      "text": "let mut config = crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture())"
+    },
+    {
+      "path": "crates/kasumi-server/src/serving_runtime.rs",
+      "line": 496,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/serving_runtime.rs",
+      "line": 521,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/standalone.rs",
+      "line": 930,
+      "text": "&example_config(directory_policy)?.admission,"
+    },
+    {
+      "path": "crates/kasumi-server/src/standalone.rs",
+      "line": 982,
+      "text": "let mut config = example_config(directory_policy)?;"
+    },
+    {
+      "path": "crates/kasumi-server/src/standalone.rs",
+      "line": 998,
+      "text": "let persistent_config = storage.new_installation_disk_config("
+    },
+    {
+      "path": "crates/kasumi-server/src/standalone_storage_tests.rs",
+      "line": 44,
+      "text": "let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-server/src/target_runtime_shutdown_tests.rs",
+      "line": 84,
+      "text": "crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk.rs",
+      "line": 41,
+      "text": "pub struct NodeDiskConfig {"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk.rs",
+      "line": 99,
+      "text": "impl NodeDiskConfig {"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk.rs",
+      "line": 562,
+      "text": "Ok(NodeDiskConfig {"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/fixed_map/tests.rs",
+      "line": 279,
+      "text": "let config = NodeDiskConfig {"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "line": 11,
+      "text": "let config = NodeDiskConfig {"
+    }
+  ],
+  "external_production_legacy_references": 0,
+  "intentional_legacy_rejection_strings": 2,
+  "assembly_owned_remaining_legacy_references": 13
+}

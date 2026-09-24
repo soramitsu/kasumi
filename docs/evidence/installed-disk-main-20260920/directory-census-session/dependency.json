@@ -1,0 +1,12 @@
+{
+  "path": "target/installed-disk-validation/directory-fixed-maps",
+  "cumulative_patch_sha256": "ef2c07b01c7d4a9acc7b5e606a023cb530cda354a5ec342d60bf3ee9c3a302f0",
+  "manifest_sha256": "981d4bf8e40a0e37529be5e0beab07c927aaf4ff88caa9fe6d545755d398a97d",
+  "baseline": "prior frozen proposal, not installed actual source",
+  "native_execution": "held by root authority134",
+  "authority_disjoint_files": [
+    "crates/kasumi-server/src/persistent_disk.rs",
+    "crates/kasumi-server/src/runtime_memory.rs",
+    "docs/standalone.md"
+  ]
+}

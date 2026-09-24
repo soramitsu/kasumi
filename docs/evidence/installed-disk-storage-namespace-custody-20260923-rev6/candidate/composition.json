@@ -1,0 +1,223 @@
+{
+  "inputs": [
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/manifest.json",
+      "sha256": "2b3f0ef55c95be88eb086b7cdfd9793406123d7efcf4f0a0f8396e883625d24f"
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-owner-custody-revision1/candidate-04/manifest.json",
+      "sha256": "89bf760a949096fe2c9c21a1907342bf21ecdfcdc5196f5e68785ba40800708d"
+    }
+  ],
+  "original_preview_manifest_sha256": "891d1ebb1a53a26431d4d80ce3265b5d978abe45c4b9f7b061ef329b4f202633",
+  "preview_note": "Reproduced the three diff3 conflict blocks from exact source inputs; this new preview preserves absolute path labels from the recorded command. Original read-only preview metadata remains unchanged.",
+  "files": [
+    {
+      "path": "crates/kasumi-store/src/node_disk/census/tests.rs",
+      "git_conflict_count": 0,
+      "marker_blocks": 0,
+      "preview_sha256": "56505d8c20a15094f4ac6342b07257dba5ec482c03184e1f1837c0e55dc906cd",
+      "integration_sha256": "c51068e1549971efccc868a215c5ca6a6f532466844075e6a9c16483554dbb53",
+      "custody_base_sha256": "c51068e1549971efccc868a215c5ca6a6f532466844075e6a9c16483554dbb53",
+      "custody_proposed_sha256": "56505d8c20a15094f4ac6342b07257dba5ec482c03184e1f1837c0e55dc906cd",
+      "resolved_before_format_sha256": "56505d8c20a15094f4ac6342b07257dba5ec482c03184e1f1837c0e55dc906cd",
+      "resolved_sha256": "56505d8c20a15094f4ac6342b07257dba5ec482c03184e1f1837c0e55dc906cd"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/directory.rs",
+      "git_conflict_count": 0,
+      "marker_blocks": 0,
+      "preview_sha256": "e8c3b1a5c9e4dc33f32e69f15b42cf101f74f912f84ffbbfca023259b5f2b7fc",
+      "integration_sha256": "6500420c036c95826f6a47ef9818a1163b8739dced1a7c7a25dec168b449f253",
+      "custody_base_sha256": "6500420c036c95826f6a47ef9818a1163b8739dced1a7c7a25dec168b449f253",
+      "custody_proposed_sha256": "e8c3b1a5c9e4dc33f32e69f15b42cf101f74f912f84ffbbfca023259b5f2b7fc",
+      "resolved_before_format_sha256": "e8c3b1a5c9e4dc33f32e69f15b42cf101f74f912f84ffbbfca023259b5f2b7fc",
+      "resolved_sha256": "e8c3b1a5c9e4dc33f32e69f15b42cf101f74f912f84ffbbfca023259b5f2b7fc"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/file/custody.rs",
+      "git_conflict_count": 0,
+      "marker_blocks": 0,
+      "preview_sha256": "8b42f70a6eeef46cfddbdc005b6f1f7c0977d60161900260964ac54a405024d1",
+      "integration_sha256": null,
+      "custody_base_sha256": null,
+      "custody_proposed_sha256": "8b42f70a6eeef46cfddbdc005b6f1f7c0977d60161900260964ac54a405024d1",
+      "resolved_before_format_sha256": "8b42f70a6eeef46cfddbdc005b6f1f7c0977d60161900260964ac54a405024d1",
+      "resolved_sha256": "8b42f70a6eeef46cfddbdc005b6f1f7c0977d60161900260964ac54a405024d1"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/file.rs",
+      "git_conflict_count": 2,
+      "marker_blocks": 2,
+      "preview_sha256": "8043fbbce9f0ba9f3cab99ded9528eac84fa44f2c45a9b96c06bb20bd849071c",
+      "integration_sha256": "9b5b82048f209bbe3b853dfd369852004313ada44618f0902fc9be74b9b41a19",
+      "custody_base_sha256": "57d496028ed570b438dc8ec5501f7f1e4b8ddc50df96ced454d8426d095bdf81",
+      "custody_proposed_sha256": "e9674de40f9433c83881ebc65e0efcf337333124a710c02038b475eaf2ec454f",
+      "resolution": "Keep revision6 let-chain and return ordering with custody04 create/disk/state/retained-parent resources.",
+      "resolved_before_format_sha256": "7cb89ab1d1bd5b2475f0331a49d0842f7d96606471ad0f16b6d931e3da5a434c",
+      "resolved_sha256": "7cb89ab1d1bd5b2475f0331a49d0842f7d96606471ad0f16b6d931e3da5a434c"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/memory.rs",
+      "git_conflict_count": 0,
+      "marker_blocks": 0,
+      "preview_sha256": "51ba4f6004ca479710aead3a5a06ff94094472b1419345a0c9385506b1bfdeae",
+      "integration_sha256": "9b6997b96f1444128f39fdfdd304e5fcfa2746563c12d73f441fc90f0ffe6185",
+      "custody_base_sha256": "9b6997b96f1444128f39fdfdd304e5fcfa2746563c12d73f441fc90f0ffe6185",
+      "custody_proposed_sha256": "51ba4f6004ca479710aead3a5a06ff94094472b1419345a0c9385506b1bfdeae",
+      "resolved_before_format_sha256": "51ba4f6004ca479710aead3a5a06ff94094472b1419345a0c9385506b1bfdeae",
+      "resolved_sha256": "51ba4f6004ca479710aead3a5a06ff94094472b1419345a0c9385506b1bfdeae"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/namespace.rs",
+      "git_conflict_count": 0,
+      "marker_blocks": 0,
+      "preview_sha256": "4aac316e2283695350a2c6d0ce06e073f2ee0fe6b5049c253f5708583f16bccf",
+      "integration_sha256": "f8d055b3cac9e69c4b0fbca09b89e2353f4ac159c6de68cb939f969967a3b76a",
+      "custody_base_sha256": "031535732bc263bf17abef5b48bd3c6d24b4a00e29cc89554becad70b52de469",
+      "custody_proposed_sha256": "4935201c879c61f3505625d795b0f3f090e7d79db158e0b3b5199e0f9fd75fed",
+      "resolved_before_format_sha256": "4aac316e2283695350a2c6d0ce06e073f2ee0fe6b5049c253f5708583f16bccf",
+      "resolved_sha256": "4aac316e2283695350a2c6d0ce06e073f2ee0fe6b5049c253f5708583f16bccf"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/native_file.rs",
+      "git_conflict_count": 0,
+      "marker_blocks": 0,
+      "preview_sha256": "094675c132b74c3bcd75842810a212a0c715dca25b15485bfc523fa27398b8e7",
+      "integration_sha256": null,
+      "custody_base_sha256": null,
+      "custody_proposed_sha256": "094675c132b74c3bcd75842810a212a0c715dca25b15485bfc523fa27398b8e7",
+      "resolved_before_format_sha256": "094675c132b74c3bcd75842810a212a0c715dca25b15485bfc523fa27398b8e7",
+      "resolved_sha256": "094675c132b74c3bcd75842810a212a0c715dca25b15485bfc523fa27398b8e7"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "git_conflict_count": 1,
+      "marker_blocks": 1,
+      "preview_sha256": "785e7bb2ef9e66be73f00112d441946704f39fdea402c44b49d682887aad3da4",
+      "integration_sha256": "abf250671cc70e373f1a34ed5bef9a74c55b3c074ecda11ca0234761ba0c8098",
+      "custody_base_sha256": "fb16dae6a29c87d8b2ba5fb200740e9e7fcd6cfd2aa15236c494af3803f447ad",
+      "custody_proposed_sha256": "0a1c8a2c41078268c13f69aa493e318bb38efc535a34d1d9c4cdbd2c68d46698",
+      "resolution": "Keep the entire custody04 fixture function byte-for-byte, including both preparation-timing branches, zero-allocation assertion, byte/charge/no-publication checks and late1/early0 open-file count.",
+      "resolved_before_format_sha256": "d395ea21d31ce3b7b954127c41d2086359d64c9c1ad2bd469f9ac0f2a6b9f33b",
+      "resolved_sha256": "24e8ec5be11eebdc87183e2a33a151577d6cba09a7096ee52b0dd32205337912"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk.rs",
+      "git_conflict_count": 0,
+      "marker_blocks": 0,
+      "preview_sha256": "59eda268ae220c0862fe4779a020ec74177ffe1c9addb31fc55faa20da04e77c",
+      "integration_sha256": "1b55573f52bc2b8be86c099c57d91e6db49f09c5910be6087ebf05763c8d2a63",
+      "custody_base_sha256": "4b07e79678a413e44a3245a60a3891805118ef3737144d62eff4ef3386cf8060",
+      "custody_proposed_sha256": "6e2c9ace4c6379f2210410a0c48215374de86ffff4c40be480b9609ab70dc614",
+      "resolved_before_format_sha256": "59eda268ae220c0862fe4779a020ec74177ffe1c9addb31fc55faa20da04e77c",
+      "resolved_sha256": "59eda268ae220c0862fe4779a020ec74177ffe1c9addb31fc55faa20da04e77c"
+    }
+  ],
+  "supersedes_incorrect_test_resolution": {
+    "manifest": "685c94e8e7b80349d9488c925de9347d02a4d9db2e27d4b78a91f7ad72f30209",
+    "no_native_dispatched": true,
+    "original_retained": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration"
+  },
+  "post_composition_lint_correction": {
+    "prior_manifest": "93ce8996fc13e0c84d77ddf22f9b71875124286c7de12367c216eea3c0026d24",
+    "prior_native_result": "d27b945afd05b5fd1e3daee1e6f1ab49b4c7ea7abb39984c461e4f689f625819",
+    "prior_results": "3deefd637cfa2689bc3e1f0567309ee9534a54756bc213441fc37c2255a73b3e",
+    "paths": [
+      "crates/kasumi-store/src/node_disk/census.rs",
+      "crates/kasumi-store/src/node_disk/namespace.rs",
+      "crates/kasumi-store/src/node_disk/file.rs"
+    ],
+    "changes": [
+      "Delete uncalled superseded census::parent and orphaned Component import.",
+      "Delete uncalled raw RetainedParent::verify; retain verify_file with its descriptor custody.",
+      "Remove two redundant borrows and collapse one conditional without changing predicate or mutation order."
+    ],
+    "tests_changed": false,
+    "expected_test_count": 331
+  },
+  "test_import_correction": {
+    "prior_manifest": "09b411af5662c5e14a7a93b1ab2dd476ef2e4925c3f42cbbd21f95a3019828c7",
+    "prior_native_result": "f633a6e653c60e9dd7a072796241d4f3d80632fb3e65e41cca2d1fd252154c70",
+    "prior_results": "0bd11cfa4ecafb9e720f340ccea703b87ee92955aec14746da62ed0d2ddd2b43",
+    "paths": [
+      "crates/kasumi-store/src/node_disk/census.rs",
+      "crates/kasumi-store/src/node_disk/census/tests.rs"
+    ],
+    "changes": [
+      "Move Path import from production census module to its only consumers in the existing test module."
+    ],
+    "test_functions_or_assertions_changed": false,
+    "expected_test_count": 331
+  },
+  "revision5": {
+    "prior_manifest": "83ab0cf18c5ee3d5b4b00309c4073200faa1d753254b9f871da2837018b4faec",
+    "prior_native_result": "4e3783247f69f43c5082cf9558288e67be405cdf7ddf3955b4ffcc9bb9b11231",
+    "prior_failed_case_count": 4,
+    "input_manifests": [
+      {
+        "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/custody-fenced-observation-fixture-correction/manifest.json",
+        "sha256": "3e19767c4dffc58f669baa3ed40b7ae0790f45e6012191a22c16e0e4f5e38bd2"
+      },
+      {
+        "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/namespace-ancestor-custody-fixture-correction/manifest.json",
+        "sha256": "ef183c403290bed614f6474627e437b3a65b6b16cdd85410fb7d10e06769a91d"
+      },
+      {
+        "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-explicit-close-revision1/candidate-01/manifest.json",
+        "sha256": "ce3e396af747696be59d6c1a77452bba0a1e95d15d8d8b1bd817047245167cca"
+      }
+    ],
+    "composed_paths": [
+      "crates/kasumi-store/src/node_disk/file.rs",
+      "crates/kasumi-store/src/node_disk/file/custody.rs",
+      "crates/kasumi-store/src/node_disk/namespace/tests.rs",
+      "crates/kasumi-store/src/node_disk/tests.rs",
+      "crates/kasumi-store/src/node_file.rs",
+      "crates/kasumi-store/src/node_file/tests.rs"
+    ],
+    "merge": [
+      {
+        "path": "crates/kasumi-store/src/node_disk/tests.rs",
+        "merge_exit": 0,
+        "observation_sha256": "a2f306309fd6f71e47571f2aa5e0a771dd9afdfeacdf8cef9fbc0d41d0807d53",
+        "close_sha256": "1314c78d8906872f8feff13c9f1ac61270b4db1888346f2883d228d0d9115f78",
+        "merged_sha256": "478b43ab3013b55532bfc8cb24cba90098fa43043d31a109e98cd3a026d83719"
+      }
+    ],
+    "original_test_names_preserved": true,
+    "added_tests": [
+      "node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages",
+      "node_disk::tests::explicit_file_close_drains_original_resources_before_credit_and_closed_calls",
+      "node_disk::tests::explicit_owner_failure_or_unsettled_extent_cannot_report_positive_close",
+      "node_disk::tests::explicit_unknown_data_close_keeps_exact_owner_error_and_never_retries_integer",
+      "node_disk::tests::explicit_unknown_parent_close_keeps_registration_and_original_diagnostic",
+      "node_file::tests::backend_close_preserves_busy_owner_then_retires_before_positive_idempotent_close",
+      "node_file::tests::backend_close_reports_native_error_and_keeps_exact_file_and_original_outcome"
+    ],
+    "focused_test_count": 12
+  },
+  "revision6": {
+    "prior_manifest": "64a8b440408c734c05b442aafbb9fa969862d78662178b8029a287dd66578b2e",
+    "prior_native_result": "bb91421f37b42bcb88b4656a41ea7e8862f663e455fb262e83ad2ac06aa0b122",
+    "prior_failed_case_count": 2,
+    "input_manifests": [
+      {
+        "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/audit-archive-custody-fixture-correction/manifest.json",
+        "sha256": "75a316e99dd498f2e7a309315ba2d4ced8701e56804ad764a9249f4166ba6ff5"
+      },
+      {
+        "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-opening-explicit-close-fixture-correction-revision2/manifest.json",
+        "sha256": "3e691433246ee3fbe43a516d65ede88a2bfa16eb65343126f497ed78a4b63f9b"
+      }
+    ],
+    "composed_paths": [
+      "crates/kasumi-store/src/audit_archive_owned.rs",
+      "crates/kasumi-store/src/node_file.rs",
+      "crates/kasumi-store/src/storage_opening_tests.rs"
+    ],
+    "original_test_names_preserved": true,
+    "added_tests": [],
+    "focused_test_count": 14
+  }
+}

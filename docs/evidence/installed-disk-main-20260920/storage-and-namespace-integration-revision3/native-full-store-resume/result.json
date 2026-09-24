@@ -1,0 +1,10 @@
+{
+  "source_unchanged": true,
+  "changed_inputs": [],
+  "source_count": 3157,
+  "completed_stages": 2,
+  "expected_stages": 4,
+  "all_passed": false,
+  "cohort_elapsed_seconds": 97.486699459,
+  "results_sha256": "24f2609e6de1b26c864006840a09ea81260ba279c3f0db5446fbd140b56bc668"
+}

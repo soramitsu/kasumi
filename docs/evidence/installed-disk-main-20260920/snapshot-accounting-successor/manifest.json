@@ -1,0 +1,65 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED",
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "baseline": "Actual source after root 102-corrections-applied.json; run98 failures preserved",
+  "patch_sha256": "0dc464fbc5ce629a06bed6f23cee99a04373b2aeea2d86384267dc77958722d0",
+  "readme_sha256": "316f303295a148823b57666cfb6e369a017d1226ed537a86ebe9df49037adf9a",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/snapshot_codec.rs",
+      "before_sha256": "007325e0c5d38856804590091cf415bbd9bade8ce774c5249571a351c65ceafa",
+      "proposed_sha256": "a3ad31592bedf83184e9aef80ca1cc9583c079871d34257d4761a4b1f3ac1db5",
+      "lines": 1310
+    },
+    {
+      "path": "crates/kasumi-engine/src/snapshot_recovery_tests.rs",
+      "before_sha256": "7770367c31ea879dafc2fa97637376b15668ef5ef2de692fd407023c24bc2b39",
+      "proposed_sha256": "ddded37a166e39608803a2d3a5c105630adf0ac94c37c48a21a6287a8fdce349",
+      "lines": 382
+    },
+    {
+      "path": "crates/kasumi-engine/src/test_utils.rs",
+      "before_sha256": "6d382db443fd1e792243cb4c43cb79959968f6f82cf81729a6eb787654bd3eb2",
+      "proposed_sha256": "6baa53fbfbee6f8dbd8b85af934628464ad9fa72dbd984ca37a6fb88b4c89d27",
+      "lines": 409
+    },
+    {
+      "path": "crates/kasumi-engine/tests/guarded_staging.rs",
+      "before_sha256": "39206520b25cd2ca73f20acfefd37360658fe3f6e2d3849db82d190847df79b2",
+      "proposed_sha256": "a7b2e0bbae32cd8fbb73c9f9030b7f6cafe512a02c55387dfffe2bd06157144d",
+      "lines": 1023
+    },
+    {
+      "path": "crates/kasumi-engine/tests/history.rs",
+      "before_sha256": "68d40f8c095975ebec5d87a8866896d053b587c7fa58ef5d7f25628d6030ad48",
+      "proposed_sha256": "d01c5af703c03bc6deee6dd61720172a701ef44d43fc993224f22ac787ba7192",
+      "lines": 1230
+    },
+    {
+      "path": "crates/kasumi-engine/tests/schema_activation.rs",
+      "before_sha256": "19e95f834fc144d24a5e3398bafe5f80edc79fe6adc2fe2e264eb2645fc4a811",
+      "proposed_sha256": "45357982e2a4e979e18c2e324c1b67a736f3827210c5aa5e84957120f9d9dbfd",
+      "lines": 1267
+    },
+    {
+      "path": "crates/kasumi-engine/tests/staged_transactions.rs",
+      "before_sha256": "434a0693d63af0de55ff220b4e45d90beff59c294cbabd4a00ca2089a3515151",
+      "proposed_sha256": "49bc683c5f4f474e5c815e7c7c17383344c3d9a729bbae0b866c2dea86e81325",
+      "lines": 1405
+    }
+  ],
+  "renamed_supported_exact_assertions": 6,
+  "new_tests": [
+    "snapshot_codec::recovery_tests::completion_history_stream_is_resident_and_counts_in_snapshot_admission_and_quota"
+  ],
+  "caller_changes_verified": "Byte-exact helper-name replacement only; quotas/workloads/deadlines/assertion operators unchanged",
+  "rustfmt_stdin": "passed all seven proposed files",
+  "apply_check": {
+    "exit_code": 0,
+    "stderr": ""
+  },
+  "tests_or_builds_run": false,
+  "actual_source_modified": false
+}

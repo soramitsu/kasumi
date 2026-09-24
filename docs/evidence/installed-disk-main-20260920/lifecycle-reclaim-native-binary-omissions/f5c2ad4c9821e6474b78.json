@@ -1,0 +1,21 @@
+{
+  "external_inventory_only": [
+    {
+      "path": "target/debug/deps/lifecycle-377b80b89ca111b0",
+      "provenance": [
+        "136-lifecycle-static-stack/before.json"
+      ],
+      "sha256": "0f393accc494917f40fb35c4cee06bd88d20532bda6b9ca88eca06a74537dc2f",
+      "verification": "Supplied immutable inventory only; referenced bytes not reread."
+    }
+  ],
+  "native_input_inventory_pairs": [
+    {
+      "after": "136-lifecycle-static-stack/after.json",
+      "before": "136-lifecycle-static-stack/before.json",
+      "before_after_equal": true
+    }
+  ],
+  "policy": "No native or dependency bytes copied. No paths outside repository opened. Original failures retained.",
+  "selected_binary_omissions": []
+}

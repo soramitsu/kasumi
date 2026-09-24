@@ -1,0 +1,25 @@
+diff --git a/crates/kasumi-store/src/storage_opening.rs b/crates/kasumi-store/src/storage_opening.rs
+--- a/crates/kasumi-store/src/storage_opening.rs
++++ b/crates/kasumi-store/src/storage_opening.rs
+@@ -11,8 +11,8 @@
+ };
+ use parking_lot::{Mutex, MutexGuard};
+ use redb::{
+-    DatabaseOpenMode, DatabaseOpenSettlement, ReadableDatabase, RetainedDatabaseOpening,
+-    RetainedWriteTransaction, TerminalObservation,
++    DatabaseOpenMode, DatabaseOpenSettlement, RetainedDatabaseOpening, RetainedWriteTransaction,
++    TerminalObservation,
+ };
+ use std::{
+     any::Any,
+diff --git a/crates/kasumi-store/src/storage_opening_tests.rs b/crates/kasumi-store/src/storage_opening_tests.rs
+--- a/crates/kasumi-store/src/storage_opening_tests.rs
++++ b/crates/kasumi-store/src/storage_opening_tests.rs
+@@ -3,6 +3,7 @@
+     NodeDiskMemoryAdmission,
+     test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry},
+ };
++use redb::ReadableDatabase;
+ use std::time::{Duration, Instant};
+ 
+ fn disk(path: &Path, memory: &Arc<TestDiskMemory>) -> Arc<NodeDisk> {

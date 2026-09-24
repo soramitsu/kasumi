@@ -193,7 +193,7 @@ impl<'a, V: Key + 'static> MultimapValue<'a, V> {
                 Self::new_inline(leaf_iter, guard)
             }
             SubtreeV2 => {
-                let root = collection.value().as_subtree().root;
+                let root = collection.value().as_subtree()?.root;
                 Self::new_subtree(
                     BtreeCursorRange::new::<RangeFull, &V::SelfType<'_>>(
                         &(..),
@@ -201,7 +201,7 @@ impl<'a, V: Key + 'static> MultimapValue<'a, V> {
                         mem,
                         PageHint::None,
                     )?,
-                    collection.value().get_num_values(),
+                    collection.value().get_num_values()?,
                     guard,
                 )
             }
@@ -216,7 +216,7 @@ impl<'a, V: Key + 'static> MultimapValue<'a, V> {
         guard: Arc<TransactionGuard>,
         page_allocator: PageAllocator,
     ) -> Result<Self> {
-        let num_values = collection.value().get_num_values();
+        let num_values = collection.value().get_num_values()?;
         Ok(match collection.value().collection_type() {
             Inline => {
                 let leaf_iter =
@@ -224,7 +224,7 @@ impl<'a, V: Key + 'static> MultimapValue<'a, V> {
                 Self::new_inline(leaf_iter, guard)
             }
             SubtreeV2 => {
-                let root = collection.value().as_subtree().root;
+                let root = collection.value().as_subtree()?.root;
                 let inner = BtreeCursorRange::new::<RangeFull, &V::SelfType<'_>>(
                     &(..),
                     Some(root),
@@ -659,7 +659,7 @@ impl<'txn, K: Key + 'static, V: Key + 'static> MultimapTable<'txn, K, V> {
                 }
                 SubtreeV2 => {
                     let mut subtree: BtreeMut<V, ()> = BtreeMut::new(
-                        Some(guard.value().as_subtree()),
+                        Some(guard.value().as_subtree()?),
                         self.transaction.transaction_guard(),
                         self.page_allocator.clone(),
                         self.freed_pages.clone(),
@@ -786,7 +786,7 @@ impl<'txn, K: Key + 'static, V: Key + 'static> MultimapTable<'txn, K, V> {
             }
             SubtreeV2 => {
                 let mut subtree: BtreeMut<V, ()> = BtreeMut::new(
-                    Some(v.as_subtree()),
+                    Some(v.as_subtree()?),
                     self.transaction.transaction_guard(),
                     self.page_allocator.clone(),
                     self.freed_pages.clone(),
@@ -873,25 +873,29 @@ impl<'txn, K: Key + 'static, V: Key + 'static> MultimapTable<'txn, K, V> {
         &mut self,
         key: impl Borrow<K::SelfType<'a>>,
     ) -> Result<MultimapValue<'_, V>> {
-        let iter = if let Some(collection) = self.tree.remove(key.borrow())? {
-            let mut pages = vec![];
-            if matches!(
+        if let Some(collection) = self.tree.get(key.borrow())? {
+            collection.value().get_num_values()?;
+        }
+        let mut pages = vec![];
+        if let Some(collection) = self.tree.get(key.borrow())?
+            && matches!(
                 collection.value().collection_type(),
                 DynamicCollectionType::SubtreeV2
-            ) {
-                let root = collection.value().as_subtree().root;
-                let all_pages = AllPageNumbersBtreeIter::new(
-                    root,
-                    V::fixed_width(),
-                    self.page_allocator.resolver(),
-                    PageHint::None,
-                );
-                for page in all_pages {
-                    pages.push(page?);
-                }
+            )
+        {
+            let root = collection.value().as_subtree()?.root;
+            let all_pages = AllPageNumbersBtreeIter::new(
+                root,
+                V::fixed_width(),
+                self.page_allocator.resolver(),
+                PageHint::None,
+            );
+            for page in all_pages {
+                pages.push(page?);
             }
-
-            self.num_values -= collection.value().get_num_values();
+        }
+        let iter = if let Some(collection) = self.tree.remove(key.borrow())? {
+            self.num_values -= collection.value().get_num_values()?;
 
             MultimapValue::from_collection_free_on_drop(
                 collection,
@@ -1108,6 +1112,8 @@ pub struct ReadOnlyUntypedMultimapTable {
     fixed_key_size: Option<usize>,
     fixed_value_size: Option<usize>,
     mem: PageResolver,
+    // Keep the read snapshot registered until after all resolver backing drops.
+    _transaction_guard: Arc<TransactionGuard>,
 }
 
 impl Sealed for ReadOnlyUntypedMultimapTable {}
@@ -1145,6 +1151,8 @@ impl ReadableTableMetadata for ReadOnlyUntypedMultimapTable {
 }
 
 impl ReadOnlyUntypedMultimapTable {
+    // Persisted layout fields are positional; the extra guard pins the read root.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         name: &str,
         root: Option<BtreeHeader>,
@@ -1152,6 +1160,7 @@ impl ReadOnlyUntypedMultimapTable {
         hint: PageHint,
         fixed_key_size: Option<usize>,
         fixed_value_size: Option<usize>,
+        guard: Arc<TransactionGuard>,
         mem: PageResolver,
     ) -> Self {
         Self {
@@ -1168,6 +1177,7 @@ impl ReadOnlyUntypedMultimapTable {
             fixed_key_size,
             fixed_value_size,
             mem,
+            _transaction_guard: guard,
         }
     }
 }

@@ -36,7 +36,26 @@ fn node() -> Arc<NodeAdmission> {
     )
     .unwrap()
 }
-fn fixture(count: usize, body_bytes: usize, budget: usize) -> TenantEngine {
+struct CodecFixture {
+    engine: TenantEngine,
+    disk: Arc<kasumi_store::ScratchDisk>,
+    _directory: tempfile::TempDir,
+}
+impl std::ops::Deref for CodecFixture {
+    type Target = TenantEngine;
+    fn deref(&self) -> &Self::Target {
+        &self.engine
+    }
+}
+fn fixture(
+    memory: Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+    count: usize,
+    body_bytes: usize,
+    budget: usize,
+) -> CodecFixture {
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let disk = kasumi_store::ScratchDisk::fixture(directory.path().join("scratch"), memory);
+
     let policy = Policy {
         grants: vec![Grant {
             principal: "owner".into(),
@@ -88,7 +107,11 @@ fn fixture(count: usize, body_bytes: usize, budget: usize) -> TenantEngine {
         },
     );
     install(&engine, state);
-    engine
+    CodecFixture {
+        engine,
+        disk,
+        _directory: directory,
+    }
 }
 fn install(engine: &TenantEngine, state: TenantState) {
     let indexes = Arc::new(QueryIndexes::build(&state.collections).unwrap());
@@ -99,14 +122,16 @@ fn install(engine: &TenantEngine, state: TenantState) {
         state,
         indexes,
         receipts: engine.generation().unwrap().receipts.clone(),
+        backup_bindings: engine.generation().unwrap().backup_bindings.clone(),
         snapshot_accounting,
         _read_reservations: vec![],
     })));
 }
-fn write(engine: &TenantEngine, mutation: Mutation) -> WriteReceipt {
+fn write(engine: &CodecFixture, mutation: Mutation) -> WriteReceipt {
     let revision = engine.generation().unwrap().state.revision + 1;
     engine
         .apply_command(
+            &engine.disk,
             revision,
             Command {
                 context: context(),
@@ -163,7 +188,12 @@ fn select(
 
 #[test]
 fn publication_expires_full_roots_while_two_inflight_selections_keep_only_bounded_pages() {
-    let engine = fixture(64, 64 << 10, 64 << 10);
+    let engine = fixture(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        64,
+        64 << 10,
+        64 << 10,
+    );
     let node = node();
     let clock = Arc::new(Clock::default());
     let lease = open(&engine, &node, &clock);
@@ -237,7 +267,12 @@ fn publication_expires_full_roots_while_two_inflight_selections_keep_only_bounde
 
 #[test]
 fn publication_enforces_aggregate_retention_before_another_page_or_monitor_tick() {
-    let engine = fixture(128, 32, 256 << 10);
+    let engine = fixture(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        128,
+        32,
+        256 << 10,
+    );
     let node = node();
     let clock = Arc::new(Clock::default());
     let first = open(&engine, &node, &clock);
@@ -286,7 +321,12 @@ fn publication_enforces_aggregate_retention_before_another_page_or_monitor_tick(
 
 #[test]
 fn primary_id_paths_stay_charged_after_temporary_insert_and_delete() {
-    let engine = fixture(128, 32, 1 << 20);
+    let engine = fixture(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        128,
+        32,
+        1 << 20,
+    );
     let node = node();
     let clock = Arc::new(Clock::default());
     let lease = open(&engine, &node, &clock);
@@ -316,7 +356,12 @@ fn primary_id_paths_stay_charged_after_temporary_insert_and_delete() {
 
 #[test]
 fn metadata_allocation_is_charged_before_opening_and_snapshot_replace_invalidates_handles() {
-    let engine = fixture(1, 0, 32 << 10);
+    let engine = fixture(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        1,
+        0,
+        32 << 10,
+    );
     let node = node();
     let clock = Arc::new(Clock::default());
     let lease = open(&engine, &node, &clock);
@@ -338,7 +383,12 @@ fn metadata_allocation_is_charged_before_opening_and_snapshot_replace_invalidate
 
 #[test]
 fn archive_leaf_clones_share_unchanged_large_values_and_manifest_payloads() {
-    let engine = fixture(0, 0, 64 << 10);
+    let engine = fixture(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        0,
+        0,
+        64 << 10,
+    );
     let node = node();
     let clock = Arc::new(Clock::default());
     let mut state = engine.generation().unwrap().state.clone();

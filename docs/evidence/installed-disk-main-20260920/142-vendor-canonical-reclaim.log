@@ -1,0 +1,144 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi/vendor/redb-4.2.0)
+error[E0425]: cannot find value `dirty` in this scope
+   --> src/transactions.rs:701:9
+    |
+701 |         dirty.store(true, Ordering::Release);
+    |         ^^^^^ not found in this scope
+
+error[E0425]: cannot find value `transaction` in this scope
+   --> src/transactions.rs:800:24
+    |
+800 |         self.set_dirty(transaction);
+    |                        ^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `transaction` in this scope
+   --> src/transactions.rs:813:24
+    |
+813 |         self.set_dirty(transaction);
+    |                        ^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `transaction` in this scope
+   --> src/transactions.rs:830:24
+    |
+830 |         self.set_dirty(transaction);
+    |                        ^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `transaction` in this scope
+   --> src/transactions.rs:842:24
+    |
+842 |         self.set_dirty(transaction);
+    |                        ^^^^^^^^^^^ not found in this scope
+
+error[E0599]: no method named `stats` found for struct `transactions::WriteTransaction` in the current scope
+   --> src/admission/tests.rs:469:30
+    |
+469 |         allocated.push(write.stats().unwrap().allocated_pages());
+    |                              ^^^^^ method not found in `transactions::WriteTransaction`
+    |
+   ::: src/transactions.rs:959:1
+    |
+959 | pub struct WriteTransaction {
+    | --------------------------- method `stats` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following traits define an item `stats`, perhaps you need to implement one of them:
+            candidate #1: `ReadableTableMetadata`
+            candidate #2: `redb::ReadableTableMetadata`
+
+error[E0308]: mismatched types
+    --> src/transactions.rs:1491:27
+     |
+1491 |             .rename_table(self, &name, new_name.name())
+     |              ------------ ^^^^ expected `&Atomic<bool>`, found `&WriteTransaction`
+     |              |
+     |              arguments to this method are incorrect
+     |
+     = note: expected reference `&Atomic<bool>`
+                found reference `&transactions::WriteTransaction`
+note: method defined here
+    --> src/transactions.rs:792:8
+     |
+ 792 |     fn rename_table(
+     |        ^^^^^^^^^^^^
+ 793 |         &mut self,
+ 794 |         dirty: &AtomicBool,
+     |         ------------------
+
+error[E0308]: mismatched types
+    --> src/transactions.rs:1506:36
+     |
+1506 |             .rename_multimap_table(self, &name, new_name.name())
+     |              --------------------- ^^^^ expected `&Atomic<bool>`, found `&WriteTransaction`
+     |              |
+     |              arguments to this method are incorrect
+     |
+     = note: expected reference `&Atomic<bool>`
+                found reference `&transactions::WriteTransaction`
+note: method defined here
+    --> src/transactions.rs:805:8
+     |
+ 805 |     fn rename_multimap_table(
+     |        ^^^^^^^^^^^^^^^^^^^^^
+ 806 |         &mut self,
+ 807 |         dirty: &AtomicBool,
+     |         ------------------
+
+error[E0308]: mismatched types
+    --> src/transactions.rs:1516:50
+     |
+1516 |         self.tables.lock().unwrap().delete_table(self, &name)
+     |                                     ------------ ^^^^ expected `&Atomic<bool>`, found `&WriteTransaction`
+     |                                     |
+     |                                     arguments to this method are incorrect
+     |
+     = note: expected reference `&Atomic<bool>`
+                found reference `&transactions::WriteTransaction`
+note: method defined here
+    --> src/transactions.rs:827:8
+     |
+ 827 |     fn delete_table(&mut self, dirty: &AtomicBool, name: &str) -> Result<bool, TableError> {
+     |        ^^^^^^^^^^^^            ------------------
+
+error[E0308]: mismatched types
+    --> src/transactions.rs:1532:36
+     |
+1532 |             .delete_multimap_table(self, &name)
+     |              --------------------- ^^^^ expected `&Atomic<bool>`, found `&WriteTransaction`
+     |              |
+     |              arguments to this method are incorrect
+     |
+     = note: expected reference `&Atomic<bool>`
+                found reference `&transactions::WriteTransaction`
+note: method defined here
+    --> src/transactions.rs:835:8
+     |
+ 835 |     fn delete_multimap_table(
+     |        ^^^^^^^^^^^^^^^^^^^^^
+ 836 |         &mut self,
+ 837 |         dirty: &AtomicBool,
+     |         ------------------
+
+error[E0599]: no method named `begin_read` found for reference `&db::Database` in the current scope
+   --> src/page_list_tests.rs:474:45
+    |
+474 |     let read = database.database().unwrap().begin_read().unwrap();
+    |                                             ^^^^^^^^^^ method not found in `&db::Database`
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `ReadableDatabase` which provides `begin_read` is implemented but not in scope; perhaps you want to import it
+    |
+  1 + use crate::db::ReadableDatabase;
+    |
+
+warning: unused import: `ReadableTable`
+   --> src/page_list_tests.rs:526:35
+    |
+526 |     use crate::{ReadableDatabase, ReadableTable};
+    |                                   ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+Some errors have detailed explanations: E0308, E0425, E0599.
+For more information about an error, try `rustc --explain E0308`.
+warning: `redb` (lib test) generated 1 warning
+error: could not compile `redb` (lib test) due to 11 previous errors; 1 warning emitted

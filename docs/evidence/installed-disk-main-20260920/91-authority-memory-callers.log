@@ -1,0 +1,115 @@
+   Compiling kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 41s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_authority-8a653d8f0b295bfb)
+
+running 61 tests
+test service::tests::actual_authority_quorum_loss_rejects_lease_and_activation_without_source_fallback ... ok
+test service::tests::actual_encrypted_source_materialization_is_fenced_but_independent_custody_stays_available ... ok
+test service::tests::authority_signer_cannot_substitute_another_physical_verifier_with_the_same_node_id ... ok
+test service::tests::bootstrap_open_tests::strict_authority_binds_immutable_installation_and_physical_verifier ... ok
+test service::tests::bootstrap_open_tests::strict_authority_rejects_corrupt_and_unsupported_genesis_without_replacement ... ok
+test service::tests::bootstrap_open_tests::strict_authority_reopens_original_genesis_after_complete_owner_drain ... ok
+test service::tests::bootstrap_open_tests::strict_authority_requires_every_published_head_without_recreating_it ... ok
+test service::tests::completed_drain_witness_eviction_preserves_active_waits_and_restarts_evicted_identity ... ok
+test service::tests::coverage_dispatch_precedes_permission_and_survives_exact_encrypted_restart ... 
+thread 'service::tests::coverage_dispatch_precedes_permission_and_survives_exact_encrypted_restart' (3980454) panicked at crates/kasumi-authority/src/signer_coverage_tests.rs:237:5:
+assertion `left == right` failed
+  left: Unavailable
+ right: UnknownOutcome
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test service::tests::current_admin_self_revocation_yields_unknown_and_new_custodian_recovers_exact_identity ... ok
+test service::tests::encrypted_restart_restarts_full_drain_and_never_reuses_an_old_incarnation ... 
+thread 'service::tests::encrypted_restart_restarts_full_drain_and_never_reuses_an_old_incarnation' (3981678) panicked at crates/kasumi-authority/src/tests.rs:1096:10:
+called `Result::unwrap()` on an `Err` value: Error { code: Unavailable, message: "independent authority is unavailable" }
+FAILED
+test service::tests::exact_stop_defeats_delayed_activation_and_committed_activation_wins_resolution ... ok
+test service::tests::exact_target_preparation_cannot_serve_and_needs_a_fresh_active_lease_after_drain ... ok
+test service::tests::frozen_signer_roster_cannot_be_bypassed_by_source_unavailable_activation ... ok
+test service::tests::independent_quorum_fence_drains_original_lease_and_competing_activations_cannot_overlap ... ok
+test service::tests::issuer_permission_retains_original_policy_while_current_admin_can_read_its_receipt ... ok
+test service::tests::issuer_tests::activation_gate_tests::committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encrypted_recovery ... ok
+test service::tests::issuer_tests::activation_gate_tests::resolved_completion_activates_only_with_its_distinct_positive_inspection_signature ... ok
+test service::tests::issuer_tests::activation_gate_tests::stopped_control_epoch_and_queued_original_expiry_defeat_new_activation_effects ... ok
+test service::tests::issuer_tests::activation_gate_tests::target_storage_retains_original_phase_and_cannot_install_late_renewal_or_new_gate ... ok
+test service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain ... 
+thread 'service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain' (3986616) panicked at crates/kasumi-authority/src/issuer_tests.rs:284:10:
+called `Result::unwrap()` on an `Err` value: Error { code: Unavailable, message: "independent authority is unavailable" }
+FAILED
+test service::tests::issuer_tests::control_signer_tests::remote_control_directives_bind_physical_receiver_and_forward_winner_across_restart ... ok
+test service::tests::issuer_tests::control_stop_before_intent_and_reserved_capacity_defeat_late_publication ... ok
+test service::tests::issuer_tests::lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snapshot_history ... ok
+test service::tests::issuer_tests::lifecycle_original_deadline_survives_queued_acceptance_delayed_reply_and_clock_regression ... ok
+test service::tests::issuer_tests::signer_roster_covers_control_and_prepared_targets_and_freezes_exact_admissions ... ok
+test service::tests::issuer_tests::target_materialization_tests::activated_target_keeps_operational_suspension_and_membership_across_restart ... 
+thread 'service::tests::issuer_tests::target_materialization_tests::activated_target_keeps_operational_suspension_and_membership_across_restart' (3992081) panicked at crates/kasumi-authority/src/target_serving_tests.rs:298:6:
+called `Result::unwrap()` on an `Err` value: Elapsed(())
+FAILED
+test service::tests::issuer_tests::target_materialization_tests::actual_target_materialization_preserves_image_and_original_operation_fence ... ok
+test service::tests::issuer_tests::target_materialization_tests::dropping_target_on_non_runtime_thread_retains_shutdown_work_until_real_drain ... ok
+test service::tests::issuer_tests::target_materialization_tests::exact_actual_completion_is_required_for_issuer_and_target_activation ... 
+thread 'service::tests::issuer_tests::target_materialization_tests::exact_actual_completion_is_required_for_issuer_and_target_activation' (3996618) panicked at crates/kasumi-authority/src/target_materialization_tests.rs:801:35:
+called `Result::unwrap()` on an `Err` value: DrainFailure { completion: Complete, issues: [DrainIssue { component: "OpenRaft runtime", instance: 0, error: raft shutdown failed (core: None, core join: None, ticker join: None, state machine: Some(Storage(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: domain transaction committed; access expired before acknowledgment; outcome unknown, backtrace: None } })), snapshot builder: None, replications: [], auxiliary: [], incoming snapshot: None) }] }
+FAILED
+test service::tests::issuer_tests::target_materialization_tests::expired_completion_with_missing_journal_recovers_only_exact_inspection_facts ... 
+thread 'service::tests::issuer_tests::target_materialization_tests::expired_completion_with_missing_journal_recovers_only_exact_inspection_facts' (3997800) panicked at crates/kasumi-authority/src/target_materialization_tests.rs:801:35:
+called `Result::unwrap()` on an `Err` value: DrainFailure { completion: Complete, issues: [DrainIssue { component: "OpenRaft runtime", instance: 0, error: raft shutdown failed (core: None, core join: None, ticker join: None, state machine: Some(Storage(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: tenant is sealed: key-access lease unavailable or expired, backtrace: None } })), snapshot builder: None, replications: [], auxiliary: [], incoming snapshot: None) }] }
+FAILED
+test service::tests::issuer_tests::target_materialization_tests::followup_request_keeps_both_original_credential_fences_and_cannot_reopen_phase ... ok
+test service::tests::issuer_tests::target_materialization_tests::fresh_materialization_admission_preserves_expired_origin_and_exact_published_image ... ok
+test service::tests::issuer_tests::target_materialization_tests::independent_target_journal_reserves_stop_after_normal_quota_and_recovers_encrypted ... ok
+test service::tests::issuer_tests::target_materialization_tests::materialization_rejects_authenticated_backup_purpose_substitution_before_publication ... ok
+test service::tests::issuer_tests::target_materialization_tests::target_file_creation_outcome_distinguishes_original_creation_from_strict_replay ... ok
+test service::tests::issuer_tests::target_materialization_tests::three_actual_materializations_initialize_and_commit_completion_with_restart_proof ... 
+thread 'service::tests::issuer_tests::target_materialization_tests::three_actual_materializations_initialize_and_commit_completion_with_restart_proof' (4001554) panicked at crates/kasumi-authority/src/target_materialization_tests.rs:801:35:
+called `Result::unwrap()` on an `Err` value: DrainFailure { completion: Complete, issues: [DrainIssue { component: "OpenRaft runtime", instance: 0, error: raft shutdown failed (core: None, core join: None, ticker join: None, state machine: Some(Storage(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: domain transaction committed; access expired before acknowledgment; outcome unknown, backtrace: None } })), snapshot builder: None, replications: [], auxiliary: [], incoming snapshot: None) }] }
+FAILED
+test service::tests::maintenance_byte_budget_expands_after_exhaustion_and_preserves_exact_history ... ok
+test service::tests::maintenance_learner_must_fit_current_capacity_after_bootstrap_growth ... ok
+test service::tests::maintenance_prepared_stop_and_dispatched_restart_are_exact ... ok
+test service::tests::maintenance_removing_the_leader_resumes_the_same_committed_operation ... ok
+test service::tests::maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_drain ... ok
+test service::tests::maintenance_requires_every_installed_peer_before_admission ... ok
+test service::tests::maintenance_resource_acknowledgement_survives_lost_reply_before_admission ... ok
+test service::tests::maintenance_store_cannot_reopen_as_another_member_identity ... ok
+test service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain ... 
+thread 'service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain' (4004631) panicked at crates/kasumi-authority/src/target_stop_tests.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Error { code: Unavailable, message: "independent authority is unavailable" }
+FAILED
+test service::tests::replicated_signer_head_fences_unchanged_local_keys_and_rejects_snapshot_regression ... ok
+test service::tests::request_drain_tests::acknowledgement_timeout_keeps_original_command_owner_and_actual_completion ... ok
+test service::tests::request_drain_tests::actual_child_panic_fences_admission_and_cancelled_drain_keeps_original_join_error ... 
+thread 'service::tests::request_drain_tests::actual_child_panic_fences_admission_and_cancelled_drain_keeps_original_join_error' (4005469) panicked at crates/kasumi-authority/src/request_drain_tests.rs:152:13:
+original accepted authority child panic
+ok
+test service::tests::request_drain_tests::authority_shutdown_retains_admitted_jobs_and_returned_fences_after_waiter_cancellation ... ok
+test service::tests::request_drain_tests::cancelled_public_command_waiter_keeps_actual_child_until_its_receipt_commits ... ok
+test service::tests::request_drain_tests::ordinary_command_rejection_is_preserved_without_fencing_or_failed_drain ... ok
+test service::tests::request_drain_tests::original_signer_authorization_is_reused_when_all_native_slots_are_occupied ... ok
+test service::tests::request_drain_tests::request_child_inventory_is_bounded_and_capacity_denial_does_not_fence_owner ... ok
+test service::tests::request_drain_tests::request_registry_metadata_charge_outlives_cancelled_waiters_and_dropped_facade ... ok
+test service::tests::signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_snapshots ... ok
+test service::tests::signer_replacement_requires_current_authorization_and_exact_live_owner ... ok
+test service::tests::target_stop_and_activation_ordering_preserves_committed_winner_and_current_admin_release ... ok
+test service::tests::target_stop_history_exceeds_former_record_ceiling_and_current_fences_are_explicit ... ok
+test service::tests::target_stop_queued_past_original_credential_expiry_accepts_no_tombstone ... ok
+test state::activation::tests::activation_cannot_substitute_a_physical_verifier_behind_the_same_node_and_certificate ... ok
+
+failures:
+
+failures:
+    service::tests::coverage_dispatch_precedes_permission_and_survives_exact_encrypted_restart
+    service::tests::encrypted_restart_restarts_full_drain_and_never_reuses_an_old_incarnation
+    service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain
+    service::tests::issuer_tests::target_materialization_tests::activated_target_keeps_operational_suspension_and_membership_across_restart
+    service::tests::issuer_tests::target_materialization_tests::exact_actual_completion_is_required_for_issuer_and_target_activation
+    service::tests::issuer_tests::target_materialization_tests::expired_completion_with_missing_journal_recovers_only_exact_inspection_facts
+    service::tests::issuer_tests::target_materialization_tests::three_actual_materializations_initialize_and_commit_completion_with_restart_proof
+    service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain
+
+test result: FAILED. 53 passed; 8 failed; 0 ignored; 0 measured; 0 filtered out; finished in 711.30s
+
+error: test failed, to rerun pass `-p kasumi-authority --lib`

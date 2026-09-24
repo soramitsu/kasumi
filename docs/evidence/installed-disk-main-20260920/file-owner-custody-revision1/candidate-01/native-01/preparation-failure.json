@@ -1,0 +1,5 @@
+{
+  "status": "PREPARATION_FAILED_BEFORE_NATIVE",
+  "reason": "Inherited single-line result parser counted 66 prior cases; actual prior terminal receipt proves 67, including geometry case with multiline output. No compiler/native process was started.",
+  "script_sha256": "3a68a19275b62bdab1aaf94c4d4c0fd67aa23331812b98cd35f75b95c59fda62"
+}

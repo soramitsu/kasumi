@@ -1,0 +1,668 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi/vendor/redb-4.2.0)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.77s
+     Running unittests src/lib.rs (target/debug/deps/redb-1a01cd164be5367b)
+
+running 204 tests
+test admission::cache_admission_tests::cache_denial_keeps_original_error_and_failed_or_panicked_abort ... 
+thread 'admission::cache_admission_tests::cache_denial_keeps_original_error_and_failed_or_panicked_abort' (5786959) panicked at src/cache_admission_tests.rs:41:18:
+Box<dyn Any>
+stack backtrace:
+   0: std::panicking::begin_panic::<alloc::sync::Arc<redb::admission::cache_admission_tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:761:5
+   1: std::panic::panic_any::<alloc::sync::Arc<redb::admission::cache_admission_tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:260:5
+   2: <redb::admission::cache_admission_tests::Owner as redb::admission::StorageAdmission>::settle_growth
+             at ./src/cache_admission_tests.rs:41:18
+   3: <redb::tree_store::page_store::cached_file::CheckedBackend>::sync_data
+             at ./src/tree_store/page_store/cached_file.rs:212:24
+   4: <redb::tree_store::page_store::cached_file::CheckedBackend>::settle_growth
+             at ./src/tree_store/page_store/cached_file.rs:205:14
+   5: <redb::tree_store::page_store::cached_file::PagedCachedFile>::settle_growth
+             at ./src/tree_store/page_store/cached_file.rs:407:19
+   6: <redb::tree_store::page_store::page_manager::TransactionalMemory>::settle_growth
+             at ./src/tree_store/page_store/page_manager.rs:412:22
+   7: <redb::transactions::WriteTransaction>::abort_inner
+             at ./src/transactions.rs:1841:18
+   8: <redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#1}
+             at ./src/retained_transaction.rs:223:54
+   9: <core::panic::unwind_safe::AssertUnwindSafe<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#1}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  10: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#1}>, core::result::Result<(), redb::error::StorageError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  11: ___rust_try
+  12: std::panicking::catch_unwind::<core::result::Result<(), redb::error::StorageError>, core::panic::unwind_safe::AssertUnwindSafe<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#1}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  13: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#1}>, core::result::Result<(), redb::error::StorageError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  14: <redb::transactions::retained_transaction::Observation<redb::error::StorageError>>::observe::<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#1}>
+             at ./src/retained_transaction.rs:66:23
+  15: <redb::transactions::retained_transaction::RetainedWriteTransaction>::commit
+             at ./src/retained_transaction.rs:223:31
+  16: redb::admission::cache_admission_tests::cache_denial_keeps_original_error_and_failed_or_panicked_abort
+             at ./src/cache_admission_tests.rs:181:25
+  17: redb::admission::cache_admission_tests::cache_denial_keeps_original_error_and_failed_or_panicked_abort::{closure#0}
+             at ./src/cache_admission_tests.rs:176:68
+  18: <redb::admission::cache_admission_tests::cache_denial_keeps_original_error_and_failed_or_panicked_abort::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  19: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test admission::cache_admission_tests::consuming_commit_also_aborts_a_latched_cache_denial ... ok
+test admission::cache_admission_tests::selected_page_is_rolled_back_and_admitted_growth_settles_on_abort ... ok
+test admission::tests::both_abort_forms_retain_successful_growth_and_permit_later_writes ... ok
+test admission::tests::caught_capacity_denial_aborts_all_tables_and_keeps_pinned_read_root ... ok
+test admission::tests::commit_metadata_denial_rolls_back_before_winning_header ... ok
+test admission::tests::compaction_respects_relocation_allowance_and_retry_physically_shrinks ... ok
+test admission::tests::construction_denial_never_grows_or_fails_owner ... ok
+test admission::tests::deferred_close_and_empty_transaction_drop_do_not_allocate ... ok
+test admission::tests::explicit_close_propagates_failure_and_never_closes_backend_twice ... ok
+test admission::tests::explicit_close_returns_busy_owner_and_drop_does_not_reserve_checkpoint_growth ... ok
+test admission::tests::full_repair_publishes_its_allocator_snapshot_before_returning ... ok
+test admission::tests::persistent_savepoints_survive_explicit_close_but_borrowed_handles_block_it ... ok
+test admission::tests::publication_and_sync_uncertainty_fences_once_and_reopens_an_atomic_root ... ok
+test admission::tests::read_only_close_retains_busy_database_until_handles_drain ... ok
+test admission::tests::repair_at_capacity_respects_admission_and_keeps_committed_root ... ok
+test admission::tests::repeated_reopen_reclaims_deleted_pages_without_leaking_capacity ... ok
+test admission::tests::rollback_and_savepoint_publication_do_not_allocate_after_their_fallible_work ... ok
+test admission::tests::uncertain_winning_header_failure_is_nonallocating_and_fences_once ... ok
+test admission::tests::winning_header_and_destructor_are_followed_by_no_heap_allocations ... ok
+test db::retained_database::tests::backend_unwind_retains_database_payload_and_actual_locked_file_without_retry ... 
+thread 'db::retained_database::tests::backend_unwind_retains_database_payload_and_actual_locked_file_without_retry' (5787365) panicked at src/retained_database_tests.rs:70:18:
+Box<dyn Any>
+stack backtrace:
+   0: std::panicking::begin_panic::<alloc::sync::Arc<redb::db::retained_database::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:761:5
+   1: std::panic::panic_any::<alloc::sync::Arc<redb::db::retained_database::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:260:5
+   2: <redb::db::retained_database::tests::Backend as redb::db::StorageBackend>::close
+             at ./src/retained_database_tests.rs:70:18
+   3: <redb::tree_store::page_store::cached_file::CheckedBackend>::close
+             at ./src/tree_store/page_store/cached_file.rs:172:27
+   4: <redb::tree_store::page_store::cached_file::PagedCachedFile>::close
+             at ./src/tree_store/page_store/cached_file.rs:403:19
+   5: <redb::tree_store::page_store::page_manager::TransactionalMemory>::abandon
+             at ./src/tree_store/page_store/page_manager.rs:415:22
+   6: <redb::db::retained_database::RetainedDatabase>::close::{closure#1}
+             at ./src/retained_database.rs:130:55
+   7: <core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_database::RetainedDatabase>::close::{closure#1}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+   8: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_database::RetainedDatabase>::close::{closure#1}>, core::result::Result<(), redb::error::StorageError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+   9: ___rust_try
+  10: std::panicking::catch_unwind::<core::result::Result<(), redb::error::StorageError>, core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_database::RetainedDatabase>::close::{closure#1}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  11: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_database::RetainedDatabase>::close::{closure#1}>, core::result::Result<(), redb::error::StorageError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  12: <redb::db::retained_database::Observation>::observe::<<redb::db::retained_database::RetainedDatabase>::close::{closure#1}>
+             at ./src/retained_database.rs:33:23
+  13: <redb::db::retained_database::RetainedDatabase>::close
+             at ./src/retained_database.rs:130:26
+  14: redb::db::retained_database::tests::backend_unwind_retains_database_payload_and_actual_locked_file_without_retry
+             at ./src/retained_database_tests.rs:294:32
+  15: redb::db::retained_database::tests::backend_unwind_retains_database_payload_and_actual_locked_file_without_retry::{closure#0}
+             at ./src/retained_database_tests.rs:290:82
+  16: <redb::db::retained_database::tests::backend_unwind_retains_database_payload_and_actual_locked_file_without_retry::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  17: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test db::retained_database::tests::both_original_errors_and_actual_locked_file_survive_repeated_close ... ok
+test db::retained_database::tests::existing_reader_keeps_close_waiting_then_actual_success_is_never_replayed ... ok
+test db::retained_database::tests::original_shutdown_error_survives_successful_backend_release ... ok
+test db::retained_database::tests::shutdown_unwind_retains_original_payload_even_after_backend_release ... 
+thread 'db::retained_database::tests::shutdown_unwind_retains_original_payload_even_after_backend_release' (5787373) panicked at src/retained_database_tests.rs:60:18:
+Box<dyn Any>
+stack backtrace:
+   0: std::panicking::begin_panic::<alloc::sync::Arc<redb::db::retained_database::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:761:5
+   1: std::panic::panic_any::<alloc::sync::Arc<redb::db::retained_database::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:260:5
+   2: <redb::db::retained_database::tests::Backend as redb::db::StorageBackend>::sync_data
+             at ./src/retained_database_tests.rs:60:18
+   3: <redb::tree_store::page_store::cached_file::CheckedBackend>::sync_data
+             at ./src/tree_store/page_store/cached_file.rs:210:27
+   4: <redb::tree_store::page_store::cached_file::PagedCachedFile>::flush
+             at ./src/tree_store/page_store/cached_file.rs:630:19
+   5: <redb::tree_store::page_store::page_manager::TransactionalMemory>::flush_shutdown_header
+             at ./src/tree_store/page_store/page_manager.rs:1412:30
+   6: <redb::tree_store::page_store::page_manager::TransactionalMemory>::prepare_close
+             at ./src/tree_store/page_store/page_manager.rs:1392:14
+   7: <redb::db::retained_database::RetainedDatabase>::close::{closure#0}
+             at ./src/retained_database.rs:126:56
+   8: <core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_database::RetainedDatabase>::close::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+   9: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_database::RetainedDatabase>::close::{closure#0}>, core::result::Result<(), redb::error::StorageError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  10: ___rust_try
+  11: std::panicking::catch_unwind::<core::result::Result<(), redb::error::StorageError>, core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_database::RetainedDatabase>::close::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  12: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_database::RetainedDatabase>::close::{closure#0}>, core::result::Result<(), redb::error::StorageError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  13: <redb::db::retained_database::Observation>::observe::<<redb::db::retained_database::RetainedDatabase>::close::{closure#0}>
+             at ./src/retained_database.rs:33:23
+  14: <redb::db::retained_database::RetainedDatabase>::close
+             at ./src/retained_database.rs:126:27
+  15: redb::db::retained_database::tests::shutdown_unwind_retains_original_payload_even_after_backend_release
+             at ./src/retained_database_tests.rs:272:32
+  16: redb::db::retained_database::tests::shutdown_unwind_retains_original_payload_even_after_backend_release::{closure#0}
+             at ./src/retained_database_tests.rs:269:73
+  17: <redb::db::retained_database::tests::shutdown_unwind_retains_original_payload_even_after_backend_release::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  18: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test db::retained_opening::tests::actual_corrupted_savepoint_body_error_retains_original_then_aborts_and_disposes_bootstrap ... ok
+test db::retained_opening::tests::bootstrap_commit_io_failure_never_replays_or_closes_its_retained_writer_backend ... ok
+test db::retained_opening::tests::bootstrap_commit_refusal_keeps_original_phase_after_successful_rollback_and_disposal ... ok
+test db::retained_opening::tests::bootstrap_refusal_and_actual_failed_rollback_retain_original_transaction_and_lock ... ok
+test db::retained_opening::tests::first_io_and_secondary_close_failure_keep_both_originals_and_locked_backend ... ok
+test db::retained_opening::tests::initialization_write_unwind_keeps_payload_and_partial_cache_until_positive_release ... 
+thread 'db::retained_opening::tests::initialization_write_unwind_keeps_payload_and_partial_cache_until_positive_release' (5787382) panicked at src/retained_opening_tests.rs:53:18:
+Box<dyn Any>
+stack backtrace:
+   0: std::panicking::begin_panic::<alloc::sync::Arc<redb::db::retained_opening::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:761:5
+   1: std::panic::panic_any::<alloc::sync::Arc<redb::db::retained_opening::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:260:5
+   2: <redb::db::retained_opening::tests::Control>::fault
+             at ./src/retained_opening_tests.rs:53:18
+   3: <redb::db::retained_opening::tests::Backend as redb::db::StorageBackend>::write
+             at ./src/retained_opening_tests.rs:85:22
+   4: <redb::tree_store::page_store::cached_file::CheckedBackend>::write
+             at ./src/tree_store/page_store/cached_file.rs:220:27
+   5: <redb::tree_store::page_store::cached_file::PagedCachedFile>::flush_write_buffer
+             at ./src/tree_store/page_store/cached_file.rs:546:27
+   6: <redb::tree_store::page_store::cached_file::PagedCachedFile>::flush
+             at ./src/tree_store/page_store/cached_file.rs:628:14
+   7: <redb::tree_store::page_store::page_manager::TransactionalMemory>::initialize_retained_storage
+             at ./src/tree_store/page_store/page_manager.rs:521:21
+   8: <redb::tree_store::page_store::page_manager::TransactionalMemoryOpening>::initialize
+             at ./src/tree_store/page_store/page_manager.rs:373:9
+   9: <redb::db::retained_opening::RetainedDatabaseOpening>::open_body
+             at ./src/retained_opening.rs:375:50
+  10: <redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}
+             at ./src/retained_opening.rs:329:68
+  11: <<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  12: <core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  13: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}>, core::result::Result<(), redb::error::DatabaseError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  14: ___rust_try
+  15: std::panicking::catch_unwind::<core::result::Result<(), redb::error::DatabaseError>, core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  16: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}>, core::result::Result<(), redb::error::DatabaseError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  17: <redb::db::retained_opening::RetainedDatabaseOpening>::begin_open
+             at ./src/retained_opening.rs:329:30
+  18: <redb::db::retained_opening::RetainedDatabaseOpening>::open
+             at ./src/retained_opening.rs:315:17
+  19: redb::db::retained_opening::tests::initialization_write_unwind_keeps_payload_and_partial_cache_until_positive_release
+             at ./src/retained_opening_tests.rs:248:32
+  20: redb::db::retained_opening::tests::initialization_write_unwind_keeps_payload_and_partial_cache_until_positive_release::{closure#0}
+             at ./src/retained_opening_tests.rs:245:88
+  21: <redb::db::retained_opening::tests::initialization_write_unwind_keeps_payload_and_partial_cache_until_positive_release::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  22: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test db::retained_opening::tests::original_io_survives_admission_fence_panic_and_proxy_fences_before_callback ... 
+thread 'db::retained_opening::tests::original_io_survives_admission_fence_panic_and_proxy_fences_before_callback' (5787383) panicked at src/retained_opening_tests.rs:392:9:
+Box<dyn Any>
+stack backtrace:
+   0: std::panicking::begin_panic::<alloc::sync::Arc<redb::db::retained_opening::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:761:5
+   1: std::panic::panic_any::<alloc::sync::Arc<redb::db::retained_opening::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:260:5
+   2: <redb::db::retained_opening::tests::PanickingAdmission as redb::admission::StorageAdmission>::owner_failed
+             at ./src/retained_opening_tests.rs:392:9
+   3: <redb::db::retained_opening::OpeningAdmission as redb::admission::StorageAdmission>::owner_failed::{closure#0}
+             at ./src/retained_opening.rs:133:73
+   4: <<redb::db::retained_opening::OpeningAdmission as redb::admission::StorageAdmission>::owner_failed::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+   5: <core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::OpeningAdmission as redb::admission::StorageAdmission>::owner_failed::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+   6: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::OpeningAdmission as redb::admission::StorageAdmission>::owner_failed::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+   7: ___rust_try
+   8: std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::OpeningAdmission as redb::admission::StorageAdmission>::owner_failed::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+   9: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::OpeningAdmission as redb::admission::StorageAdmission>::owner_failed::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  10: <redb::db::retained_opening::OpeningAdmission as redb::admission::StorageAdmission>::owner_failed
+             at ./src/retained_opening.rs:133:29
+  11: <redb::tree_store::page_store::cached_file::CheckedBackend>::fail_owner
+             at ./src/tree_store/page_store/cached_file.rs:142:28
+  12: <redb::tree_store::page_store::cached_file::CheckedBackend>::io::<u64>::{closure#0}
+             at ./src/tree_store/page_store/cached_file.rs:163:18
+  13: <core::result::Result<u64, std::io::error::Error>>::map_err::<redb::error::StorageError, <redb::tree_store::page_store::cached_file::CheckedBackend>::io<u64>::{closure#0}>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:968:27
+  14: <redb::tree_store::page_store::cached_file::CheckedBackend>::io::<u64>
+             at ./src/tree_store/page_store/cached_file.rs:160:16
+  15: <redb::tree_store::page_store::cached_file::CheckedBackend>::len
+             at ./src/tree_store/page_store/cached_file.rs:177:14
+  16: <redb::tree_store::page_store::cached_file::PagedCachedFile>::raw_file_len
+             at ./src/tree_store/page_store/cached_file.rs:500:19
+  17: <redb::tree_store::page_store::page_manager::TransactionalMemory>::initialize_retained_storage
+             at ./src/tree_store/page_store/page_manager.rs:450:43
+  18: <redb::tree_store::page_store::page_manager::TransactionalMemoryOpening>::initialize
+             at ./src/tree_store/page_store/page_manager.rs:373:9
+  19: <redb::db::retained_opening::RetainedDatabaseOpening>::open_body
+             at ./src/retained_opening.rs:375:50
+  20: <redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}
+             at ./src/retained_opening.rs:329:68
+  21: <<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  22: <core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  23: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}>, core::result::Result<(), redb::error::DatabaseError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  24: ___rust_try
+  25: std::panicking::catch_unwind::<core::result::Result<(), redb::error::DatabaseError>, core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  26: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}>, core::result::Result<(), redb::error::DatabaseError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  27: <redb::db::retained_opening::RetainedDatabaseOpening>::begin_open
+             at ./src/retained_opening.rs:329:30
+  28: <redb::db::retained_opening::RetainedDatabaseOpening>::open
+             at ./src/retained_opening.rs:315:17
+  29: redb::db::retained_opening::tests::original_io_survives_admission_fence_panic_and_proxy_fences_before_callback
+             at ./src/retained_opening_tests.rs:409:32
+  30: redb::db::retained_opening::tests::original_io_survives_admission_fence_panic_and_proxy_fences_before_callback::{closure#0}
+             at ./src/retained_opening_tests.rs:397:81
+  31: <redb::db::retained_opening::tests::original_io_survives_admission_fence_panic_and_proxy_fences_before_callback::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  32: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test db::retained_opening::tests::prepare_has_no_backend_effect_and_close_before_open_never_initializes ... ok
+test db::retained_opening::tests::repair_callback_unwind_keeps_actual_memory_and_original_callback_payload ... 
+thread 'db::retained_opening::tests::repair_callback_unwind_keeps_actual_memory_and_original_callback_payload' (5787385) panicked at src/retained_opening_tests.rs:277:39:
+Box<dyn Any>
+stack backtrace:
+   0: std::panicking::begin_panic::<alloc::sync::Arc<redb::db::retained_opening::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:761:5
+   1: std::panic::panic_any::<alloc::sync::Arc<redb::db::retained_opening::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:260:5
+   2: redb::db::retained_opening::tests::repair_callback_unwind_keeps_actual_memory_and_original_callback_payload::{closure#0}
+             at ./src/retained_opening_tests.rs:277:39
+   3: <alloc::boxed::Box<dyn for<'a> core::ops::function::Fn<(&'a mut redb::db::RepairSession,), Output = ()> + core::marker::Sync + core::marker::Send> as core::ops::function::Fn<(&mut redb::db::RepairSession,)>>::call
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/alloc/src/boxed.rs:2289:9
+   4: <redb::db::retained_opening::RetainedDatabaseOpening>::open_body
+             at ./src/retained_opening.rs:404:13
+   5: <redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}
+             at ./src/retained_opening.rs:329:68
+   6: <<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+   7: <core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+   8: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}>, core::result::Result<(), redb::error::DatabaseError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+   9: ___rust_try
+  10: std::panicking::catch_unwind::<core::result::Result<(), redb::error::DatabaseError>, core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  11: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<<redb::db::retained_opening::RetainedDatabaseOpening>::begin_open::{closure#0}>, core::result::Result<(), redb::error::DatabaseError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  12: <redb::db::retained_opening::RetainedDatabaseOpening>::begin_open
+             at ./src/retained_opening.rs:329:30
+  13: <redb::db::retained_opening::RetainedDatabaseOpening>::open
+             at ./src/retained_opening.rs:315:17
+  14: redb::db::retained_opening::tests::repair_callback_unwind_keeps_actual_memory_and_original_callback_payload
+             at ./src/retained_opening_tests.rs:278:32
+  15: redb::db::retained_opening::tests::repair_callback_unwind_keeps_actual_memory_and_original_callback_payload::{closure#0}
+             at ./src/retained_opening_tests.rs:271:78
+  16: <redb::db::retained_opening::tests::repair_callback_unwind_keeps_actual_memory_and_original_callback_payload::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  17: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test db::retained_opening::tests::successful_repair_bootstrap_is_committed_disposed_and_preserved_through_reader_drain ... ok
+test db::retained_opening::tests::user_retained_writer_disposes_through_matching_witness_while_close_waits ... ok
+test db::test::crash_regression4 ... ok
+test db::test::create_new_db_in_empty_file ... ok
+test db::test::dynamic_shrink ... ok
+test db::test::open_empty_file ... ok
+test db::test::open_missing_file ... ok
+test db::test::small_pages ... ok
+test db::test::small_pages2 ... ok
+test db::test::small_pages3 ... ok
+test db::test::small_pages4 ... ok
+test db::test::transient_io_error ... ok
+test io::no_std::test::accepts_an_owned_message ... ok
+test io::no_std::test::display_is_the_message ... ok
+test sync::spin::test::condvar_wakes_waiter ... ok
+test sync::spin::test::mutex_debug ... ok
+test sync::spin::test::mutex_is_exclusive ... ok
+test sync::spin::test::mutex_try_lock ... ok
+test sync::spin::test::rwlock_readers_are_concurrent ... ok
+test sync::spin::test::rwlock_writer_is_exclusive ... ok
+test transactions::allocator_state_key_tests::allocator_keys_have_only_exact_canonical_tags_width_and_padding ... ok
+test transactions::allocator_state_key_tests::exact_canonical_stale_allocator_stamp_still_uses_verified_repair ... ok
+test transactions::allocator_state_key_tests::integrity_rejects_noncanonical_allocator_keys_without_storage_writes ... ok
+test transactions::allocator_state_key_tests::malformed_allocator_transaction_stamp_is_corruption_before_stale_repair ... ok
+test transactions::allocator_state_key_tests::obsolete_unknown_and_aliased_allocator_keys_never_repair_or_mutate_on_open ... ok
+test transactions::page_list_tests::allocation_prefix_close_failure_retains_actual_transaction_and_original_error ... ok
+test transactions::page_list_tests::allocation_preview_retains_debt_across_savepoint_release_before_commit ... ok
+test transactions::page_list_tests::both_selected_prefixes_are_validated_before_either_namespace_is_removed ... ok
+test transactions::page_list_tests::bounded_allocation_debt_blocks_data_free_and_cold_reopens_after_every_batch ... ok
+test transactions::page_list_tests::bounded_data_prefix_leaves_unselected_records_and_reopens_between_batches ... ok
+test transactions::page_list_tests::canonical_data_page_list_rejects_obsolete_system_shape_without_allocating ... ok
+test transactions::page_list_tests::consuming_compaction_reports_retained_data_backlog_without_chasing_a_system_tail ... ok
+test transactions::page_list_tests::early_extraction_close_failure_keeps_original_error_and_fences_publication ... ok
+test transactions::page_list_tests::fixed_deferred_storage_preserves_exact_capacity_and_never_allocates ... ok
+test transactions::page_list_tests::maintenance_preview_cannot_hide_debt_when_the_reader_horizon_advances ... ok
+test transactions::page_list_tests::malformed_selected_data_record_is_rejected_before_any_pending_removal ... ok
+test transactions::page_list_tests::obsolete_system_namespace_is_rejected_before_writable_readonly_or_repair_mutation ... ok
+test transactions::page_list_tests::persistent_savepoint_restores_original_payload_with_retained_allocation_debt ... ok
+test transactions::page_list_tests::pinned_user_reader_survives_system_retirement_and_data_reclaim_waits_for_its_horizon ... ok
+test transactions::page_list_tests::purging_allocation_history_does_not_advance_the_original_user_reader_horizon ... ok
+test transactions::page_list_tests::selected_data_pages_remain_allocated_until_winning_commit_and_abort_restores_records ... ok
+test transactions::retained_transaction::tests::actual_capacity_refusal_keeps_primary_error_and_successful_rollback ... ok
+test transactions::retained_transaction::tests::capacity_rollback_panic_keeps_primary_refusal_and_actual_panic_payload ... 
+thread 'transactions::retained_transaction::tests::capacity_rollback_panic_keeps_primary_refusal_and_actual_panic_payload' (5787706) panicked at src/retained_transaction_tests.rs:53:18:
+Box<dyn Any>
+stack backtrace:
+   0: std::panicking::begin_panic::<alloc::sync::Arc<redb::transactions::retained_transaction::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:761:5
+   1: std::panic::panic_any::<alloc::sync::Arc<redb::transactions::retained_transaction::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:260:5
+   2: <redb::transactions::retained_transaction::tests::Owner as redb::admission::StorageAdmission>::settle_growth
+             at ./src/retained_transaction_tests.rs:53:18
+   3: <redb::tree_store::page_store::cached_file::CheckedBackend>::sync_data
+             at ./src/tree_store/page_store/cached_file.rs:212:24
+   4: <redb::tree_store::page_store::cached_file::CheckedBackend>::settle_growth
+             at ./src/tree_store/page_store/cached_file.rs:205:14
+   5: <redb::tree_store::page_store::cached_file::PagedCachedFile>::settle_growth
+             at ./src/tree_store/page_store/cached_file.rs:407:19
+   6: <redb::tree_store::page_store::page_manager::TransactionalMemory>::settle_growth
+             at ./src/tree_store/page_store/page_manager.rs:412:22
+   7: <redb::transactions::WriteTransaction>::abort_inner
+             at ./src/transactions.rs:1841:18
+   8: <redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#1}
+             at ./src/retained_transaction.rs:223:54
+   9: <core::panic::unwind_safe::AssertUnwindSafe<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#1}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  10: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#1}>, core::result::Result<(), redb::error::StorageError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  11: ___rust_try
+  12: std::panicking::catch_unwind::<core::result::Result<(), redb::error::StorageError>, core::panic::unwind_safe::AssertUnwindSafe<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#1}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  13: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#1}>, core::result::Result<(), redb::error::StorageError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  14: <redb::transactions::retained_transaction::Observation<redb::error::StorageError>>::observe::<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#1}>
+             at ./src/retained_transaction.rs:66:23
+  15: <redb::transactions::retained_transaction::RetainedWriteTransaction>::commit
+             at ./src/retained_transaction.rs:223:31
+  16: redb::transactions::retained_transaction::tests::capacity_rollback_panic_keeps_primary_refusal_and_actual_panic_payload
+             at ./src/retained_transaction_tests.rs:638:24
+  17: redb::transactions::retained_transaction::tests::capacity_rollback_panic_keeps_primary_refusal_and_actual_panic_payload::{closure#0}
+             at ./src/retained_transaction_tests.rs:634:76
+  18: <redb::transactions::retained_transaction::tests::capacity_rollback_panic_keeps_primary_refusal_and_actual_panic_payload::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  19: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test transactions::retained_transaction::tests::commit_sync_failure_retains_exact_transaction_and_original_io_object ... ok
+test transactions::retained_transaction::tests::failed_abort_settlement_is_retained_and_never_reclassified_as_capacity ... ok
+test transactions::retained_transaction::tests::failed_capacity_rollback_preserves_both_original_outcomes ... ok
+test transactions::retained_transaction::tests::matching_waiting_database_witness_allows_actual_disposal_before_physical_close ... ok
+test transactions::retained_transaction::tests::panic_after_actual_winning_header_sync_retains_payload_and_never_replays ... 
+thread 'transactions::retained_transaction::tests::panic_after_actual_winning_header_sync_retains_payload_and_never_replays' (5787740) panicked at src/retained_transaction_tests.rs:103:17:
+Box<dyn Any>
+stack backtrace:
+   0: std::panicking::begin_panic::<alloc::sync::Arc<redb::transactions::retained_transaction::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:761:5
+   1: std::panic::panic_any::<alloc::sync::Arc<redb::transactions::retained_transaction::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:260:5
+   2: <redb::transactions::retained_transaction::tests::Backend as redb::db::StorageBackend>::sync_data
+             at ./src/retained_transaction_tests.rs:103:17
+   3: <redb::tree_store::page_store::cached_file::CheckedBackend>::sync_data
+             at ./src/tree_store/page_store/cached_file.rs:210:27
+   4: <redb::tree_store::page_store::cached_file::PagedCachedFile>::sync_file
+             at ./src/tree_store/page_store/cached_file.rs:638:19
+   5: <redb::tree_store::page_store::page_manager::TransactionalMemory>::commit
+             at ./src/tree_store/page_store/page_manager.rs:990:22
+   6: <redb::transactions::WriteTransaction>::durable_commit
+             at ./src/transactions.rs:1919:18
+   7: <redb::transactions::WriteTransaction>::commit_inner_helper
+             at ./src/transactions.rs:1664:14
+   8: <redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#0}
+             at ./src/retained_transaction.rs:212:22
+   9: <core::panic::unwind_safe::AssertUnwindSafe<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  10: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#0}>, core::result::Result<(), redb::transactions::retained_transaction::WriteTerminalError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  11: ___rust_try
+  12: std::panicking::catch_unwind::<core::result::Result<(), redb::transactions::retained_transaction::WriteTerminalError>, core::panic::unwind_safe::AssertUnwindSafe<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  13: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#0}>, core::result::Result<(), redb::transactions::retained_transaction::WriteTerminalError>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  14: <redb::transactions::retained_transaction::Observation<redb::transactions::retained_transaction::WriteTerminalError>>::observe::<<redb::transactions::retained_transaction::RetainedWriteTransaction>::commit::{closure#0}>
+             at ./src/retained_transaction.rs:66:23
+  15: <redb::transactions::retained_transaction::RetainedWriteTransaction>::commit
+             at ./src/retained_transaction.rs:201:27
+  16: redb::transactions::retained_transaction::tests::panic_after_actual_winning_header_sync_retains_payload_and_never_replays
+             at ./src/retained_transaction_tests.rs:585:24
+  17: redb::transactions::retained_transaction::tests::panic_after_actual_winning_header_sync_retains_payload_and_never_replays::{closure#0}
+             at ./src/retained_transaction_tests.rs:580:78
+  18: <redb::transactions::retained_transaction::tests::panic_after_actual_winning_header_sync_retains_payload_and_never_replays::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  19: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback ... 
+thread 'transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback' (5787741) panicked at src/retained_transaction_tests.rs:410:28:
+Box<dyn Any>
+stack backtrace:
+   0: std::panicking::begin_panic::<alloc::sync::Arc<redb::transactions::retained_transaction::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:761:5
+   1: std::panic::panic_any::<alloc::sync::Arc<redb::transactions::retained_transaction::tests::Marker>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:260:5
+   2: redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback::{closure#0}::{closure#0}
+             at ./src/retained_transaction_tests.rs:410:28
+   3: <redb::tree_store::btree::BtreeMut<u64, &[u8]>>::retain_scan::<redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback::{closure#0}::{closure#0}>
+             at ./src/tree_store/btree.rs:834:16
+   4: <redb::tree_store::btree::BtreeMut<u64, &[u8]>>::retain_in_helper::<redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback::{closure#0}::{closure#0}>
+             at ./src/tree_store/btree.rs:805:22
+   5: <redb::tree_store::btree::BtreeMut<u64, &[u8]>>::retain_in_bounds::<redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback::{closure#0}::{closure#0}>
+             at ./src/tree_store/btree.rs:775:27
+   6: <redb::table::Table<u64, &[u8]>>::retain_in_bounds::<redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback::{closure#0}::{closure#0}>
+             at ./src/table.rs:310:14
+   7: <redb::table::Table<u64, &[u8]>>::retain::<redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback::{closure#0}::{closure#0}>
+             at ./src/table.rs:260:14
+   8: redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback::{closure#0}
+             at ./src/retained_transaction_tests.rs:410:14
+   9: <redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  10: <core::panic::unwind_safe::AssertUnwindSafe<redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  11: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  12: ___rust_try
+  13: std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  14: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  15: redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback
+             at ./src/retained_transaction_tests.rs:404:20
+  16: redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback::{closure#0}
+             at ./src/retained_transaction_tests.rs:401:81
+  17: <redb::transactions::retained_transaction::tests::poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  18: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test transactions::retained_transaction::tests::settled_disposal_refuses_a_different_database_without_releasing_the_writer ... ok
+test transactions::retained_transaction::tests::successful_terminal_calls_are_never_replayed_and_disposal_precedes_close ... ok
+test transactions::retained_transaction::tests::unstarted_disposal_keeps_actual_transaction_usable_until_positive_abort ... ok
+test transactions::test::committed_deletion_has_no_allocating_epilogue ... ok
+test transactions::test::discarded_allocator_state_poisons_database ... ok
+test transactions::test::transaction_id_persistence ... ok
+test tree_store::allocator_state::tests::allocator_raw_leaf_geometry_is_checked_before_key_or_value_access ... ok
+test tree_store::allocator_state::tests::allocator_raw_walk_rejects_bad_branch_separator_and_cycle_without_comparison ... ok
+test tree_store::btree::tests::test_cycle_detection_in_btree ... ok
+test tree_store::btree::tests::test_page_path_cycle_detection ... ok
+test tree_store::btree::tests::test_verify_checksum_cycle_detection ... ok
+test tree_store::btree_base::tests::branch_split_respects_max_keys_by_count ... ok
+test tree_store::btree_base::tests::leaf_inplace_append_up_to_max_pairs ... ok
+test tree_store::btree_base::tests::leaf_inplace_insert_rejected_at_max_pairs ... ok
+test tree_store::btree_base::tests::leaf_split_respects_max_pairs ... ok
+test tree_store::btree_base::tests::leaf_split_respects_max_pairs_by_count ... ok
+test tree_store::btree_cursor::tests::cursor_mut_stays_parked_at_tree_edge ... ok
+test tree_store::btree_cursor::tests::cursor_preserves_boundary_gap_after_failed_next ... ok
+test tree_store::btree_cursor::tests::cursor_preserves_boundary_gap_after_failed_prev ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_after_rejects_unordered_keys ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_builds_tree_from_empty ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_descending_from_empty ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_grows_multiple_levels ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_into_leaf_middle ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_into_middle_of_tall_tree ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_mixed_directions ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_rejects_unordered_keys ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_splits_root_leaf ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_swaps_ancestors_in_place ... ok
+test tree_store::btree_cursor::tests::poisoned_cursor_mut_re_raises ... ok
+test tree_store::btree_mutator::tests::branch_packing_fills_page_to_max_keys ... ok
+test tree_store::btree_mutator::tests::branch_packing_splits_at_max_keys ... ok
+test tree_store::page_store::base::test::last_page ... ok
+test tree_store::page_store::base::test::reserved_bits ... ok
+test tree_store::page_store::bitmap::test::all_space_used ... ok
+test tree_store::page_store::bitmap::test::alloc ... ok
+test tree_store::page_store::bitmap::test::checked_encoded_lengths_match_serializers_without_allocating ... ok
+test tree_store::page_store::bitmap::test::checked_encoded_lengths_reject_missing_bitmap_backing ... ok
+test tree_store::page_store::bitmap::test::checked_offset_geometry_rejects_overflow_without_allocating ... ok
+test tree_store::page_store::bitmap::test::find_free ... ok
+test tree_store::page_store::bitmap::test::free ... ok
+test tree_store::page_store::bitmap::test::in_place_bitmap_encoding_matches_original_bytes_across_resize ... ok
+test tree_store::page_store::bitmap::test::in_place_bitmap_encoding_rejects_geometry_before_writing ... ok
+test tree_store::page_store::bitmap::test::in_place_grouped_encoding_matches_original_bytes_without_allocation ... ok
+test tree_store::page_store::bitmap::test::random_pattern ... seed=6404855148044738890
+ok
+test tree_store::page_store::bitmap::test::record_alloc ... ok
+test tree_store::page_store::bitmap::test::resize_beyond_initial_capacity ... ok
+test tree_store::page_store::bitmap::test::reuse_lowest ... ok
+test tree_store::page_store::buddy_allocator::test::alloc_large ... ok
+test tree_store::page_store::buddy_allocator::test::buddy_merge ... ok
+test tree_store::page_store::buddy_allocator::test::checked_encoded_lengths_cover_all_supported_orders_and_mutations ... ok
+test tree_store::page_store::buddy_allocator::test::checked_encoded_lengths_reject_missing_order_bitmap ... ok
+test tree_store::page_store::buddy_allocator::test::in_place_buddy_encoding_matches_original_bytes_at_all_supported_orders ... ok
+test tree_store::page_store::buddy_allocator::test::in_place_buddy_encoding_rejects_geometry_before_writing ... ok
+test tree_store::page_store::buddy_allocator::test::record_alloc_buddy ... ok
+test tree_store::page_store::buddy_allocator::test::serialized_size ... ok
+test tree_store::page_store::cached_file::checked_backend_tests::every_backend_io_failure_preserves_original_object_and_fences_later_access ... ok
+test tree_store::page_store::cached_file::test::all_borrowed_entry_denial_is_nonallocating_and_leaves_caches_unchanged ... ok
+test tree_store::page_store::cached_file::test::buffered_pages_spill_under_pressure ... ok
+test tree_store::page_store::cached_file::test::cache_leak ... ok
+test tree_store::page_store::cached_file::test::discard_write_buffer_drops_buffered_pages ... ok
+test tree_store::page_store::cached_file::test::entry_eviction_io_keeps_original_failure_and_never_becomes_capacity ... ok
+test tree_store::page_store::cached_file::test::long_same_stripe_traversal_preserves_entry_caps_and_payload ... ok
+test tree_store::page_store::cached_file::test::mixed_borrowed_and_second_chance_entries_make_real_room_before_insert ... ok
+test tree_store::page_store::cached_file::test::resize_preserves_cached_pages ... ok
+test tree_store::page_store::cached_file::test::retained_pages_do_not_starve_read_cache ... ok
+test tree_store::page_store::cached_file::test::write_barrier_issues_no_file_writes ... ok
+test tree_store::page_store::cached_file::test::write_buffer_budget_enforced_across_stripes ... ok
+test tree_store::page_store::cached_file::test::zero_size_cache_stays_empty_after_reclaim ... ok
+test tree_store::page_store::header::test::abort_repair ... ok
+test tree_store::page_store::header::test::check_integrity_recomputes_root_lengths ... ok
+test tree_store::page_store::header::test::corrupt_header_layout_fields_are_rejected ... ok
+test tree_store::page_store::header::test::drop_releases_backend_without_clean_checkpoint ... ok
+test tree_store::page_store::header::test::externally_extended_file_is_rejected ... ok
+test tree_store::page_store::header::test::magic_number ... ok
+test tree_store::page_store::header::test::only_canonical_format_four_opens_without_mutating_rejected_files ... ok
+test tree_store::page_store::header::test::oversized_region_count_file_is_rejected ... ok
+test tree_store::page_store::header::test::oversized_root_page_order_is_reported_as_corruption ... ok
+test tree_store::page_store::header::test::oversized_system_root_page_order_is_reported_as_corruption_read_only ... ok
+test tree_store::page_store::header::test::recovery_does_not_launder_torn_slot ... ok
+test tree_store::page_store::header::test::repair_empty ... ok
+test tree_store::page_store::header::test::repair_insert_reserve_regression ... ok
+test tree_store::page_store::header::test::repair_rejects_invalid_primary_root_without_legacy_rollback ... ok
+test tree_store::page_store::header::test::torn_layout_fields_recover_from_file_length ... ok
+test tree_store::page_store::header::test::truncated_file_is_rejected ... ok
+test tree_store::page_store::header::test::winning_checksum_corruption_fails_closed_after_io_error ... ok
+test tree_store::page_store::lru_cache::tests::eligible_selection_keeps_borrowed_registration_and_honors_second_chance ... ok
+test tree_store::page_store::lru_cache::tests::invalidation_preserves_other_pages_priority_and_second_chance ... ok
+test tree_store::page_store::lru_cache::tests::repeated_same_key_invalidation_keeps_one_queue_registration_per_live_page ... live_pages=3 queue_entries=3 queue_capacity=4
+ok
+test tree_store::page_store::page_manager::test::free_merge_remarks_region_tracker ... ok
+test tree_store::page_store::page_manager::test::invalidate_allocator_state_tolerates_poison ... 
+thread '<unnamed>' (5788258) panicked at src/tree_store/page_store/page_manager.rs:1502:21:
+poison the state mutex
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: redb::tree_store::page_store::page_manager::test::invalidate_allocator_state_tolerates_poison::{closure#0}::{closure#0}
+             at ./src/tree_store/page_store/page_manager.rs:1502:21
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test tree_store::page_store::page_manager::test::mark_page_allocated_rejects_corrupt_page_numbers ... ok
+test tree_store::page_store::page_manager::test::out_of_regions ... ok
+test tree_store::page_store::page_manager::test::oversized_page_order_is_rejected ... ok
+test tree_store::page_store::page_manager::test::panic ... 
+thread 'tree_store::page_store::page_manager::test::panic' (5788389) panicked at src/tree_store/page_store/page_manager.rs:1471:13:
+explicit panic
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: core::panicking::panic
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:150:5
+   3: redb::tree_store::page_store::page_manager::test::panic::{closure#0}
+             at ./src/tree_store/page_store/page_manager.rs:1471:13
+   4: std::panicking::catch_unwind::do_call::<redb::tree_store::page_store::page_manager::test::panic::{closure#0}, !>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+   5: ___rust_try
+   6: std::panicking::catch_unwind::<!, redb::tree_store::page_store::page_manager::test::panic::{closure#0}>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+   7: std::panic::catch_unwind::<redb::tree_store::page_store::page_manager::test::panic::{closure#0}, !>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+   8: redb::tree_store::page_store::page_manager::test::panic
+             at ./src/tree_store/page_store/page_manager.rs:1467:17
+   9: redb::tree_store::page_store::page_manager::test::panic::{closure#0}
+             at ./src/tree_store/page_store/page_manager.rs:1463:15
+  10: <redb::tree_store::page_store::page_manager::test::panic::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  11: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test tree_store::page_store::region::encoding_tests::checked_tracker_length_arithmetic_handles_field_and_total_limits ... ok
+test tree_store::page_store::region::encoding_tests::checked_tracker_lengths_match_bytes_at_region_and_order_boundaries ... ok
+test tree_store::page_store::region::encoding_tests::in_place_tracker_encoding_matches_original_bytes_at_region_boundaries ... ok
+test tree_store::page_store::region::encoding_tests::in_place_tracker_encoding_rejects_child_geometry_before_writing ... ok
+test tree_store::page_store::savepoint::test::corrupted_record_errors ... ok
+test tree_store::page_store::xxh3::test::test_empty ... ok
+test tree_store::table_tree::test::round_trip ... ok
+test tree_store::table_tree_base::canonical_identity_tests::stored_legacy_composite_cannot_select_the_current_value_decoder ... ok
+test tree_store::table_tree_base::canonical_identity_tests::unsupported_type_marker_is_rejected_even_by_untyped_open ... ok
+test tuple_types::test::width ... ok
+test types::chrono_v0_4::tests::test_date_time_fixed_offset ... ok
+test types::chrono_v0_4::tests::test_datetime_fixed_offset_table ... ok
+test types::chrono_v0_4::tests::test_fixed_offset ... ok
+test types::chrono_v0_4::tests::test_fixed_offset_table ... ok
+test types::chrono_v0_4::tests::test_naive_date ... ok
+test types::chrono_v0_4::tests::test_naive_date_table ... ok
+test types::chrono_v0_4::tests::test_naive_date_time ... ok
+test types::chrono_v0_4::tests::test_naive_datetime_table ... ok
+test types::chrono_v0_4::tests::test_naive_time ... ok
+test types::chrono_v0_4::tests::test_naive_time_table ... ok
+test types::tests::builtin_composites_use_only_canonical_classification ... ok
+test types::tests::classification_is_readable_through_reconstruction ... ok
+test types::tests::composite_of_user_type_no_longer_collides_with_builtin ... ok
+test types::tests::legacy_composite_names_never_match_canonical_types ... ok
+test types::uuid::tests::test_uuid_ordering ... ok
+test types::uuid::tests::test_uuid_table ... ok
+
+test result: ok. 204 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 89.79s
+

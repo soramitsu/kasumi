@@ -17,7 +17,24 @@ fn command(operation: Operation, revision: u64) -> Command {
         operation,
     }
 }
-fn engine(max_snapshot_bytes: u64) -> TenantEngine {
+struct CodecFixture {
+    engine: TenantEngine,
+    disk: Arc<kasumi_store::ScratchDisk>,
+    _directory: tempfile::TempDir,
+}
+impl std::ops::Deref for CodecFixture {
+    type Target = TenantEngine;
+    fn deref(&self) -> &Self::Target {
+        &self.engine
+    }
+}
+fn engine(
+    memory: Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+    max_snapshot_bytes: u64,
+) -> CodecFixture {
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let disk = kasumi_store::ScratchDisk::fixture(directory.path().join("scratch"), memory);
+
     let engine = TenantEngine::new(
         "tenant".into(),
         "incarnation".into(),
@@ -41,6 +58,7 @@ fn engine(max_snapshot_bytes: u64) -> TenantEngine {
     .unwrap();
     engine
         .apply_command(
+            &disk,
             1,
             command(
                 Operation::CreateCollection(CollectionDefinition {
@@ -56,7 +74,11 @@ fn engine(max_snapshot_bytes: u64) -> TenantEngine {
         )
         .unwrap()
         .unwrap();
-    engine
+    CodecFixture {
+        engine,
+        disk,
+        _directory: directory,
+    }
 }
 fn batch(key: &str, id: &str, size: usize) -> MutationBatch {
     MutationBatch {
@@ -70,14 +92,17 @@ fn batch(key: &str, id: &str, size: usize) -> MutationBatch {
         }],
     }
 }
-fn apply(engine: &TenantEngine, revision: u64, operation: Operation) -> Result<WriteReceipt> {
+fn apply(engine: &CodecFixture, revision: u64, operation: Operation) -> Result<WriteReceipt> {
     engine
-        .apply_command(revision, command(operation, revision))
+        .apply_command(&engine.disk, revision, command(operation, revision))
         .unwrap()
 }
 #[test]
 fn admitted_failure_survives_byte_exhaustion_expansion_and_snapshot_replay() {
-    let engine = engine(16 << 10);
+    let engine = engine(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        16 << 10,
+    );
     let original = batch("original", "row", 100_000);
     let failure = apply(&engine, 2, Operation::Mutate(original.clone())).unwrap_err();
     assert_eq!(failure.code, ErrorCode::QuotaExceeded);
@@ -125,7 +150,7 @@ fn admitted_failure_survives_byte_exhaustion_expansion_and_snapshot_replay() {
     limits.max_mutation_receipt_bytes += 2 << 20;
     apply(&engine, 7, Operation::SetLimits(limits)).unwrap();
     engine
-        .fixture_restore(&engine.fixture_snapshot().unwrap())
+        .fixture_restore(&engine.fixture_snapshot(&engine.disk).unwrap())
         .unwrap();
     // The original body would fit now; its original failure is still final.
     assert_eq!(
@@ -155,7 +180,10 @@ fn admitted_failure_survives_byte_exhaustion_expansion_and_snapshot_replay() {
 }
 #[test]
 fn hot_audit_exhaustion_cannot_rewrite_original_or_admit_a_new_identity() {
-    let engine = engine(2 << 20);
+    let engine = engine(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        2 << 20,
+    );
     let original = batch("original", "row", 10);
     let result = apply(&engine, 2, Operation::Mutate(original.clone())).unwrap();
     let head = engine
@@ -189,7 +217,10 @@ fn hot_audit_exhaustion_cannot_rewrite_original_or_admit_a_new_identity() {
         let mut input = command(Operation::Audit(event.clone()), revision);
         input.context.request_id = event.request_id;
         drop(generation);
-        engine.apply_command(revision, input).unwrap().unwrap();
+        engine
+            .apply_command(&engine.disk, revision, input)
+            .unwrap()
+            .unwrap();
         revision += 1;
     }
     assert_eq!(
@@ -245,7 +276,10 @@ fn hot_audit_exhaustion_cannot_rewrite_original_or_admit_a_new_identity() {
 }
 #[test]
 fn terminal_reservation_covers_error_codes_escaped_versions_and_counter_widths() {
-    let engine = engine(2 << 20);
+    let engine = engine(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        2 << 20,
+    );
     let mut state = engine.generation().unwrap().state.clone();
     state.revision = 100;
     state.mutation_receipt_head.count = 99;
@@ -325,11 +359,14 @@ fn terminal_reservation_covers_error_codes_escaped_versions_and_counter_widths()
 #[ignore = "explicit permanent-receipt capacity cohort; streams 100,000 encrypted point rows"]
 fn verified_point_history_crosses_former_count_limit_before_a_real_new_mutation() {
     const PREVIOUS_LIMIT: u64 = 100_000;
-    let source = engine(2 << 20);
+    let source = engine(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        2 << 20,
+    );
     let previous = source.generation().unwrap();
     let mut state = previous.state.clone();
     state.revision = PREVIOUS_LIMIT + 1;
-    let disk = kasumi_store::ScratchDisk::fixture();
+    let disk = source.disk.clone();
     let mut builder = crate::mutation_receipt::Builder::new(
         &disk,
         crate::mutation_receipt::scratch_limit(state.limits.max_mutation_receipt_bytes).unwrap(),
@@ -382,6 +419,7 @@ fn verified_point_history_crosses_former_count_limit_before_a_real_new_mutation(
         .prepare_state(
             state,
             receipts,
+            previous.backup_bindings.clone(),
             previous.terminals.clone(),
             previous.target_resolutions.clone(),
         )
@@ -389,7 +427,10 @@ fn verified_point_history_crosses_former_count_limit_before_a_real_new_mutation(
     source.publish_generation(Some(Arc::new(generation)));
     drop(previous);
     let snapshot = source.logical_snapshot(&disk).unwrap();
-    let restored = engine(2 << 20);
+    let restored = engine(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        2 << 20,
+    );
     restored.fixture_restore(&snapshot).unwrap();
     // The history is deliberately manufactured canonical fixture state. The
     // post-restore admission below executes the real deterministic mutation path;

@@ -1,0 +1,28 @@
+--- a/crates/kasumi-engine/src/service.rs
++++ b/crates/kasumi-engine/src/service.rs
+@@ -1801,14 +1801,14 @@
+         strict: bool,
+         policy_epoch: u64,
+     ) -> Result<()> {
+-        self.release_event(
++        Box::pin(self.release_event(
+             context,
+             Some(collection),
+             revision,
+             strict,
+             policy_epoch,
+             "read",
+-        )
++        ))
+         .await
+     }
+ 
+@@ -1832,7 +1832,7 @@
+                 outcome: "authorized_release".into(),
+                 collection: collection.map(Into::into),
+             };
+-            self.submit(context.clone(), Operation::Audit(event))
++            Box::pin(self.submit(context.clone(), Operation::Audit(event)))
+                 .await
+                 .map_err(|error| {
+                     if matches!(error.code, ErrorCode::Forbidden | ErrorCode::Sealed) {

@@ -1,0 +1,6 @@
+
+running 1 test
+test service::tests::coverage_dispatch_precedes_permission_and_survives_exact_encrypted_restart ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 60 filtered out; finished in 32.33s
+

@@ -1,0 +1,13 @@
+{
+  "status": "target-only; stacks after metadata revision2; not compiled",
+  "dependency_sha256": "10ebc1c6ee2a0df7c65b67302757b537ddedcb000008ea5391a82d030fab5259",
+  "patch_sha256": "2c9971827a928bd3dd412e944f4f55df2c235e5e9edf723514d5411b2ee53b84",
+  "files": [
+    {
+      "path": "crates/kasumi-store/src/test_utils.rs",
+      "actual_before_sha256": "02f425b64442e01896ce5479ee6fac327cebd0165c3dceeb8303731b3ee9f9c9",
+      "metadata_revision2_sha256": "bed1f004ff1201287420899840e96746d4c95e2bde279cfeb00c88f80e8338ff",
+      "proposed_sha256": "be918f6720f750f3c21beb4aa6a89081016592e342ac4f1d3de883029503b05d"
+    }
+  ]
+}

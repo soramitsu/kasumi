@@ -1,0 +1,108 @@
+{
+  "status": "BLOCKED_PENDING_SUCCESSOR",
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "subject_manifest_sha256": "ec860ed3dc624fb840100f75fb7681b541ae99004edda7e42ff710883730123b",
+  "subject_patch_sha256": "189b9d482c1920783c5d661bc5fcdb330e311b66cad04a1da527f493e76ef786",
+  "readme_sha256": "d626f521d188f699ec51fe3b807441468422937b9f20d70a1a4ab38927440298",
+  "reviewed_files": [
+    {
+      "path": "crates/kasumi-engine/src/admission/disk_memory.rs",
+      "actual_base_sha256": "79b0a02f65b6915a15a2ba2677601f6b5c7cdda5030dbff04e7a6498cb6c5add",
+      "frozen_proposed_sha256": "60737492f3ad52355209b501370eac7ce0198cf1f55800244e0f5bfc440ec31b"
+    },
+    {
+      "path": "crates/kasumi-engine/src/admission.rs",
+      "actual_base_sha256": "6892f831a432b75a92da7457cde6d2094890e9b8e544c37a6c53e7f85264c227",
+      "frozen_proposed_sha256": "5d21118b9e6c768dbad99a3db0b6e4cb76c3a1e725983c314e3f634f77255a5f"
+    },
+    {
+      "path": "crates/kasumi-store/src/device_disk.rs",
+      "actual_base_sha256": "64ad6aa02bff422877c71185f3f84bd3614b001d1fdae9a6427c65b515737da9",
+      "frozen_proposed_sha256": "7644ba8f27bcc20dbff1e2faaa8ba5480e55c9ff3dcef6b8cd1bad730c53d3eb"
+    },
+    {
+      "path": "crates/kasumi-store/src/disk_memory.rs",
+      "actual_base_sha256": "7795b70e22e97faff5d7e7448a6e743606fcb038d465602cb8a616873d642ea3",
+      "frozen_proposed_sha256": "5d1997281199f09ac1bf219692310f371ae5dbc4c32a5a3800a85d714a18a0fb"
+    },
+    {
+      "path": "crates/kasumi-store/src/disk_memory_tests.rs",
+      "actual_base_sha256": "4d20d4e8ebaa076bf31c2834d15787ee1727a6e5902e99eaa313999cfa92480d",
+      "frozen_proposed_sha256": "61295015024cbb9349d78eae85f8191f90aa464c1ede9e2587a78f332cb9cbb0"
+    },
+    {
+      "path": "crates/kasumi-store/src/lib.rs",
+      "actual_base_sha256": "88f45bae174564f5496dff8bba211ca46ff28597c7e97501fac0a7dbe3c19225",
+      "frozen_proposed_sha256": "f532ad0ea1918de7f0ac7058e00f4e54aeb67f4b233530993092e8c50f411d69"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "actual_base_sha256": "9825a52cea3a3392bf16a5dd5f7f737370c64b833bc8a50026a073071c8cf1f4",
+      "frozen_proposed_sha256": "0ad50f09806aa6880afd1117674055461dbeb4e7ac6cfa0feed6c6639f4f4ff8"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_file.rs",
+      "actual_base_sha256": "67e5f88753eaf38c1a2b83ffc5b6cba7c8165a55ed0c86caaca93a924d35d1ca",
+      "frozen_proposed_sha256": "44778b3b9f038a6991ff2209d9d48cee63573b6bd8f6d60cc00b001df676dcf9"
+    },
+    {
+      "path": "crates/kasumi-store/src/scratch_disk.rs",
+      "actual_base_sha256": "c8a7dd96cdc960c7138290a315d67efacc2452af67e3552ca94b3dfeffa46882",
+      "frozen_proposed_sha256": "43b6f7fc5e5f8d3c75f84a4a3c58f8e87c446e662fccd23a8435ed2b5c578779"
+    },
+    {
+      "path": "crates/kasumi-store/src/storage_census.rs",
+      "actual_base_sha256": null,
+      "frozen_proposed_sha256": "553423be605f5838882ffa17386ae05cfb692036f4dbf734f5b3febccde4e9a5"
+    },
+    {
+      "path": "crates/kasumi-store/src/storage_census_tests.rs",
+      "actual_base_sha256": null,
+      "frozen_proposed_sha256": "bd231e69baf34bee62aaad52803ae07fa3e1fc656bbcc44d75983d198807ee46"
+    },
+    {
+      "path": "crates/kasumi-store/src/storage_opening.rs",
+      "actual_base_sha256": null,
+      "frozen_proposed_sha256": "d642c6ab9bb8cd90d69c6e88204f163c7a10f4e2c3e5f4fd4abb33f3fbb9366e"
+    },
+    {
+      "path": "crates/kasumi-store/src/storage_opening_tests.rs",
+      "actual_base_sha256": null,
+      "frozen_proposed_sha256": "8a72570378847f0935c7f96bfad0b3d887170eafa7cd62a7e05628f2f8bdd489"
+    },
+    {
+      "path": "crates/kasumi-store/src/test_utils.rs",
+      "actual_base_sha256": "f926d9cf9b2f467cec941e46bd185ef4c88c85b427c620f500c6717c5522c4e9",
+      "frozen_proposed_sha256": "9fe33447d3c1f372c62b59ee0d16c9e29318ed016513eacb7f308206631d0de7"
+    }
+  ],
+  "supporting_actual_sources": {
+    "vendor/redb-4.2.0/src/retained_database.rs": "fb005b0b87c4c7ee26c8418e19eeeca2eb928ea521324c4adffbabded25db263",
+    "vendor/redb-4.2.0/src/retained_database_tests.rs": "8a563d68d5239fb38ad6459b69f87c8e2bf63d2823badab3032364b6f5171f0b",
+    "vendor/redb-4.2.0/src/retained_opening.rs": "7a496f7d3355a377d40f8e7a7bff7f80608bc9c729de807b52d58fa5ef941f8b",
+    "vendor/redb-4.2.0/src/retained_transaction.rs": "7dcc471bacab91d6ca1e0119e46b664cf194a87adbfc33deca6e1d6906ee7ee3",
+    "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs": "e33035e264daca748c6d3f90bf95b95763d6e9e14a0ad593187e29a87bc18f80",
+    "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs": "0341e792cb1da6e1f6e3c0f99617533ec5492065f8e75cf463a3efd07a0ea180",
+    "crates/kasumi-engine/src/admission.rs": "6892f831a432b75a92da7457cde6d2094890e9b8e544c37a6c53e7f85264c227"
+  },
+  "blockers": [
+    {
+      "id": "P1-future-outcome-relinquishment",
+      "path": "crates/kasumi-store/src/storage_opening.rs",
+      "lines": [
+        254,
+        443
+      ],
+      "confirmed_by_author": true,
+      "confirmed_by_root": true,
+      "requires_successor": true
+    }
+  ],
+  "native01_must_remain_immutable": true,
+  "actual_source_edits": false,
+  "proposal_edits": false,
+  "cargo_native_or_formatter_execution": false,
+  "runtime_validation_claimed": false,
+  "scope": "Static custody/concurrency/accounting prerequisite review only; not production migration or release acceptance."
+}

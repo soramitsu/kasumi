@@ -1,0 +1,8 @@
+[
+  {
+    "pid": 93281,
+    "ppid": 92304,
+    "pgid": 93281,
+    "command": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/store-test-binary --exact node_file::tests::validated_descriptor_handoff_never_reopens_a_substituted_path --test-threads=1 --nocapture"
+  }
+]

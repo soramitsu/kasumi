@@ -59,6 +59,9 @@ impl StateMachineBackend for PausedSnapshot {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownership() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let path = directory.path().join("shutdown.redb");
     let (entered, ready) = tokio::sync::oneshot::channel();
@@ -67,7 +70,8 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
         NodeStore::create_new_fixture(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+            fixture_scratch.memory().clone(),
+            fixture_scratch.clone(),
         )?,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([19; 32])),
@@ -134,7 +138,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
     let group = RaftGroup::local(
         1,
         "tenant-a".into(),
-        common::store(&path, false).await?,
+        common::store(&path, false, fixture_scratch.clone()).await?,
         recovered.clone(),
         common::snapshot_owner(),
     )

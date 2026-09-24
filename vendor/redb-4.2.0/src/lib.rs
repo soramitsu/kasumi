@@ -73,9 +73,15 @@ extern crate alloc;
 #[cfg(not(redb_no_std))]
 pub use db::ReadOnlyDatabase;
 pub use db::{
-    Builder, CacheStats, Database, MultimapTableDefinition, MultimapTableHandle, ReadableDatabase,
-    RepairSession, StorageBackend, TableDefinition, TableHandle, UntypedMultimapTableHandle,
-    UntypedTableHandle,
+    BackendCloseOutcome, BackendNativeDisposition, Builder, CacheStats, Database,
+    MultimapTableDefinition, MultimapTableHandle, ReadableDatabase, RepairSession, StorageBackend,
+    TableDefinition, TableHandle, UntypedMultimapTableHandle, UntypedTableHandle,
+};
+#[cfg(all(not(redb_no_std), panic = "unwind"))]
+pub use db::{
+    DatabaseCloseReport, DatabaseCloseSettlement, DatabaseOpenMode, DatabaseOpenPhase,
+    DatabaseOpenReport, DatabaseOpenSettlement, OpeningFenceReport, RetainedDatabase,
+    RetainedDatabaseOpening,
 };
 pub use error::{
     CloseError, CommitError, CompactionError, DatabaseError, Error, SavepointError, StorageError,
@@ -97,6 +103,12 @@ pub use table::{
     Entry, ExtractIf, OccupiedEntry, OwnedAccessGuard, OwnedRange, Range, ReadOnlyTable,
     ReadOnlyUntypedTable, ReadableTable, ReadableTableMetadata, Table, TableStats, VacantEntry,
 };
+#[cfg(all(not(redb_no_std), panic = "unwind"))]
+pub use transactions::{
+    BoundedReadError, BoundedReadRow, ReadCloseReport, ReadCloseSettlement,
+    RetainedReadTransaction, RetainedWriteTransaction, TerminalObservation, WriteTerminalError,
+    WriteTerminalOperation, WriteTerminalReport, WriteTerminalSettlement,
+};
 pub use transactions::{DatabaseStats, ReadTransaction, WriteTransaction};
 pub use tree_store::{AccessGuard, AccessGuardMut, AccessGuardMutInPlace, Savepoint};
 pub use types::{Key, MutInPlaceValue, TypeName, Value};
@@ -108,7 +120,7 @@ pub mod backends;
 mod complex_types;
 #[cfg(test)]
 pub(crate) use admission::test_admission;
-pub use admission::{AdmissionError, OwnerFailed, StorageAdmission};
+pub use admission::{AdmissionError, OwnerFailed, ResidentLease, StorageAdmission};
 mod db;
 mod error;
 // Public only where it is needed: without std a backend author has to be able to name these types

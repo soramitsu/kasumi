@@ -1,0 +1,16 @@
+{
+  "scope": "Workspace and vendor formatting after retained opening and canonical allocator validation; no final acceptance",
+  "command": [
+    "python3",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/format160.py"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 17763,
+  "exit_code": 0,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 2.228501081466675,
+  "inventoried_source_unchanged": true
+}

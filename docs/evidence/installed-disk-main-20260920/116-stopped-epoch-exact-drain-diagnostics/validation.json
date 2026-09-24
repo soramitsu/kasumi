@@ -1,0 +1,23 @@
+{
+  "mode": "STATIC_ONLY",
+  "rustfmt_proposed_only": "PASS",
+  "git_apply_check": "PASS",
+  "actual_source_unchanged": true,
+  "assertion_scope": "four waiting observations strengthened; original positive checks and final Conflict retained",
+  "preserved": {
+    "contexts": 26,
+    "stop_verifications": 6,
+    "awaits": 66,
+    "clock_values": [
+      "999",
+      "1000",
+      "1999",
+      "2000",
+      "500",
+      "600",
+      "400",
+      "700"
+    ],
+    "durations": 2
+  }
+}

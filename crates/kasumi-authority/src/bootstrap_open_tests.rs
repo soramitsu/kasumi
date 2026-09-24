@@ -4,7 +4,7 @@ use kasumi_store::WriteOp;
 type RetainedRows = Vec<Vec<(Vec<u8>, Vec<u8>)>>;
 
 struct InstalledFixture {
-    directory: tempfile::TempDir,
+    physical: PhysicalFixture,
     stores: Arc<TenantStorageSet>,
     installation: AuthorityInstallation,
     bootstrap: crate::AuthorityBootstrap,
@@ -13,7 +13,7 @@ struct InstalledFixture {
 }
 impl InstalledFixture {
     async fn new() -> anyhow::Result<Self> {
-        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let physical = PhysicalFixture::new()?;
         let key = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
             .map_err(|_| anyhow::anyhow!("fixture root generation failed"))?;
         let root = kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(key.as_ref())?;
@@ -35,10 +35,9 @@ impl InstalledFixture {
         };
         let signing = root.install(installation.manifest.clone(), 0)?;
         let (bootstrap, settings) = test_settings(4 << 20, signing.signer.certificate().clone());
-        let node = NodeStore::create_new_fixture(
-            directory.path().join("authority.redb"),
+        let node = physical.create_new(
+            physical.path("authority.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
         )?;
         let stores = TenantStorageSet::initialize_catalogs(
             node,
@@ -49,7 +48,7 @@ impl InstalledFixture {
         )
         .await?;
         Ok(Self {
-            directory,
+            physical,
             stores,
             installation,
             bootstrap,
@@ -87,8 +86,8 @@ impl InstalledFixture {
             settings,
             Arc::new(InProcessRouter::default()),
             Config::default(),
-            request_budget(),
-            kasumi_raft::SnapshotBufferOwner::fixture(),
+            request_budget(&self.physical.admission),
+            self.physical.admission.snapshot_buffer_owner().unwrap(),
             EpochClock::system()?,
         )
         .await
@@ -145,7 +144,7 @@ impl InstalledFixture {
     async fn reopen(self) -> anyhow::Result<Self> {
         self.close().await;
         let Self {
-            directory,
+            physical,
             stores,
             installation,
             bootstrap,
@@ -153,10 +152,9 @@ impl InstalledFixture {
             signing,
         } = self;
         drop(stores);
-        let node = NodeStore::open_existing_fixture(
-            directory.path().join("authority.redb"),
+        let node = physical.open_existing(
+            physical.path("authority.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
         )?;
         let stores = TenantStorageSet::open_existing(
             node,
@@ -167,7 +165,7 @@ impl InstalledFixture {
         )
         .await?;
         Ok(Self {
-            directory,
+            physical,
             stores,
             installation,
             bootstrap,
@@ -267,6 +265,89 @@ async fn strict_authority_rejects_corrupt_and_unsupported_genesis_without_replac
 }
 
 #[tokio::test]
+async fn strict_authority_rejects_alternate_installation_bytes_and_restores_writer_rows()
+-> anyhow::Result<()> {
+    let fixture = InstalledFixture::new().await?;
+    fixture.initialize()?;
+    let verifier = &fixture.settings.installed_members[&1].verifier;
+    for (key, diagnostic, paired) in [
+        (
+            b"binding".as_slice(),
+            "noncanonical authority installation descriptor",
+            true,
+        ),
+        (
+            b"local-member".as_slice(),
+            "noncanonical authority local member",
+            true,
+        ),
+        (
+            b"resource-floor".as_slice(),
+            "noncanonical authority resource floor",
+            false,
+        ),
+    ] {
+        let original = fixture
+            .stores
+            .application()
+            .get("authority.installation", key)?
+            .unwrap();
+        assert_eq!(
+            fixture
+                .stores
+                .custody()
+                .store()
+                .get("authority.installation", key)?,
+            paired.then(|| original.clone())
+        );
+        let write = |bytes: &[u8]| -> anyhow::Result<()> {
+            if paired {
+                fixture.stores.write_batch(
+                    &[WriteOp::put("authority.installation", key, bytes)],
+                    &[WriteOp::put("authority.installation", key, bytes)],
+                )?;
+            } else {
+                fixture.stores.application().write_batch(&[WriteOp::put(
+                    "authority.installation",
+                    key,
+                    bytes,
+                )])?;
+            }
+            Ok(())
+        };
+        let mut alternate = original.clone();
+        alternate.push(b' ');
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&alternate)?,
+            serde_json::from_slice::<serde_json::Value>(&original)?
+        );
+        write(&alternate)?;
+        let Err(error) = crate::bootstrap::load(&fixture.stores, &fixture.installation, verifier)
+        else {
+            panic!("equivalent alternate bytes must fail");
+        };
+        assert!(format!("{error:#}").contains(diagnostic), "{error:#}");
+        fixture.reject().await?;
+        write(&original)?;
+        let restored = crate::bootstrap::load(&fixture.stores, &fixture.installation, verifier)?;
+        assert_eq!(
+            restored.binding,
+            fixture
+                .stores
+                .application()
+                .get("authority.installation", b"binding")?
+                .unwrap()
+        );
+    }
+    let service = fixture.open().await?;
+    assert_eq!(service.bootstrap(), &fixture.bootstrap);
+    service.shutdown().await?;
+    drop(service);
+    fixture.close().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn strict_authority_binds_immutable_installation_and_physical_verifier() -> anyhow::Result<()>
 {
     let fixture = InstalledFixture::new().await?;
@@ -328,6 +409,61 @@ async fn strict_authority_reopens_original_genesis_after_complete_owner_drain() 
     assert_eq!(service.bootstrap(), &fixture.bootstrap);
     assert_eq!(service.bootstrap_digest(), digest);
     assert!(fixture.initialize().is_err());
+    service.shutdown().await?;
+    drop(service);
+    fixture.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn live_maintenance_resource_floor_rejects_alternate_bytes_and_accepts_restored_writer_bytes()
+-> anyhow::Result<()> {
+    let fixture = InstalledFixture::new().await?;
+    fixture.initialize()?;
+    let service = fixture.open().await?;
+    let original = fixture
+        .stores
+        .application()
+        .get("authority.installation", b"resource-floor")?
+        .unwrap();
+    let mut alternate = original.clone();
+    alternate.push(b' ');
+    assert_eq!(
+        serde_json::from_slice::<u64>(&alternate)?,
+        serde_json::from_slice::<u64>(&original)?
+    );
+    fixture.stores.application().write_batch(&[WriteOp::put(
+        "authority.installation",
+        b"resource-floor",
+        alternate.as_slice(),
+    )])?;
+    let Err(error) = service.backend.reserve_node_resources(0) else {
+        panic!("live maintenance accepted alternate resource-floor bytes");
+    };
+    assert!(
+        format!("{error:#}").contains("noncanonical authority resource floor"),
+        "{error:#}"
+    );
+    assert_eq!(
+        fixture
+            .stores
+            .application()
+            .get("authority.installation", b"resource-floor")?,
+        Some(alternate)
+    );
+    fixture.stores.application().write_batch(&[WriteOp::put(
+        "authority.installation",
+        b"resource-floor",
+        original.as_slice(),
+    )])?;
+    service.backend.reserve_node_resources(0)?;
+    assert_eq!(
+        fixture
+            .stores
+            .application()
+            .get("authority.installation", b"resource-floor")?,
+        Some(original)
+    );
     service.shutdown().await?;
     drop(service);
     fixture.close().await;

@@ -1,0 +1,32 @@
+{
+  "status": "FROZEN_TARGET_ONLY_TEST_CORRECTION; NATIVE_PENDING",
+  "at_utc": "2026-09-23T01:18:10.206587+00:00",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "files": [
+    {
+      "path": "crates/kasumi-authority/src/target_stop_tests.rs",
+      "before_sha256": "185b35a02312fa4a15d8b28390f798026e4a5a670744d62c4c113811dc9c8f38",
+      "after_sha256": "33b3a3f13eee6e1ec859a01e8977de010613fba9a25e6c8e0bc9685225d26574",
+      "before_mode": "0o644",
+      "after_mode": "0o644"
+    }
+  ],
+  "patch_sha256": "19dbeef91d95304eeea60dba22cca7b7956618f4dfac3eb12697a023cf802403",
+  "readback_exact": true,
+  "actual_source_matches_original_native_bound_file": true,
+  "failure_log_sha256": "0b55e7e086d65e15cc1a994f08d313bd2cba80043bfd66001d9a5d16129081be",
+  "failure_receipt_sha256": "b19300bba957a5446cbc12e16ca1e33bdd6504dcd66758b280833e0dc097ef75",
+  "original_test_name": "service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain",
+  "test_names_added_or_removed": 0,
+  "production_changes": false,
+  "reason": "Fixture exact_administrative setup may follow a new leader; later cached service Arc can be a follower. Preserve the same final activate command and credentials through the existing bounded exact-identity helper; continue asserting the final logical Rejected outcome.",
+  "helper_contract": "Existing 20-second timeout; each attempt selects current leader, repeats exact command and original context, releases successful response fence, and retries only UnknownOutcome/Unavailable. No timeout or production behavior changed.",
+  "scope_limits": [
+    "This does not make a native failure pass retroactively or repair the separate main trial source drift.",
+    "The full authority executable and remaining workspace targets require qualification on a newly frozen combined source set.",
+    "Earlier negative pre-drain assertion and all restart, proof, identity and semantic rejection assertions remain unchanged."
+  ],
+  "native_dispatched": false,
+  "actual_source_modified": false
+}

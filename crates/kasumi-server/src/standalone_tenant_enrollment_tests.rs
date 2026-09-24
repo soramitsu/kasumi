@@ -45,9 +45,14 @@ async fn installation() -> Result<(
     tempfile::TempDir,
     InitializedInstallation,
     StageTenantRequest,
+    crate::runtime_memory::RuntimeStorage,
 )> {
     let root = kasumi_store::test_utils::private_tempdir()?;
-    let installed = initialize(&root.path().join("installed"), "tenant-a").await?;
+    let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &root.path().join("installed"),
+        "tenant-a",
+    )
+    .await?;
     let mut config = RuntimeConfig::load(&installed.configuration)?;
     let listeners = (0..3)
         .map(|_| std::net::TcpListener::bind("127.0.0.1:0"))
@@ -67,7 +72,7 @@ async fn installation() -> Result<(
             format!("https://localhost:{}", config.admin.listen.port());
         private_files::replace(path, &serde_json::to_vec_pretty(&profile)?)?;
     }
-    configure_test_topology(&config).await;
+    configure_test_topology(&config, storage.clone()).await;
     private_files::replace(
         &installed.configuration,
         &serde_json::to_vec_pretty(&config)?,
@@ -80,13 +85,13 @@ async fn installation() -> Result<(
         initial_policy: config.tenants[0].initial_policy.clone(),
         initial_limits: config.tenants[0].initial_limits.clone(),
     };
-    stage_tenant(&installed.configuration, request.clone()).await?;
-    Ok((root, installed, request))
+    stage_tenant_with_storage(&installed.configuration, request.clone(), storage.clone()).await?;
+    Ok((root, installed, request, storage))
 }
 
 #[tokio::test]
 async fn unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs() -> Result<()> {
-    let (_root, installed, request) = installation().await?;
+    let (_root, installed, request, storage) = installation().await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
     let staged = config
         .tenants
@@ -99,7 +104,12 @@ async fn unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs
     let original = private_files::read(path, 1 << 20)?;
     std::fs::remove_file(path)?;
     private_files::sync_parent(path)?;
-    let mut runtime = NodeRuntime::open(config.clone()).await?;
+    let mut runtime = NodeRuntime::open_using_storage(
+        config.clone(),
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await?;
     let manager = runtime.administration_for_enrollment_test();
     assert!(runtime.enrollment_for_test(&request.tenant)?.is_none());
     assert!(!kasumi_store::CustodyStore::catalog_installed(
@@ -116,7 +126,7 @@ async fn unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs
     drop(manager);
     drop(runtime);
     // Installed maintenance also selects only required, completed ledger rows.
-    rotate_wrapping_keys(&installed.configuration).await?;
+    rotate_wrapping_keys_with_storage(&installed.configuration, storage.clone()).await?;
     assert!(!path.exists());
     private_files::create(path, &original)?;
     Ok(())
@@ -125,11 +135,16 @@ async fn unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs
 #[tokio::test]
 async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_survives_restart()
 -> Result<()> {
-    let (_root, installed, staged) = installation().await?;
+    let (_root, installed, staged, storage) = installation().await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
     let control_profile = ClientProfile::load(&installed.control_profile)?;
     let original_profile = ClientProfile::load(&installed.tenant_profile)?;
-    let runtime = NodeRuntime::open(config.clone()).await?;
+    let runtime = NodeRuntime::open_using_storage(
+        config.clone(),
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await?;
     let manager = runtime.administration_for_enrollment_test();
     let registry = runtime.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
@@ -272,7 +287,12 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
     stop.send_replace(true);
     serving.await??;
     drop(registry);
-    let mut reopened = NodeRuntime::open(config.clone()).await?;
+    let mut reopened = NodeRuntime::open_using_storage(
+        config.clone(),
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await?;
     let record = reopened.enrollment_for_test(&staged.tenant)?.unwrap();
     assert_eq!(
         record,
@@ -291,7 +311,7 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
     drop(reopened);
     // A later tenant is not part of immutable genesis. Its routed enrollment
     // row must still be required by every stopped maintenance selector.
-    let mut maintenance = OperatorState::open(&config).await?;
+    let mut maintenance = OperatorState::open(&config, storage.clone()).await?;
     let ledger_key = format!("tenant/{}", staged.tenant);
     let saved = maintenance
         .audit
@@ -315,7 +335,7 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
     };
     let before = private_files::read(control_keyring, 1 << 20)?;
     assert!(
-        rotate_wrapping_keys(&installed.configuration)
+        rotate_wrapping_keys_with_storage(&installed.configuration, storage.clone())
             .await
             .is_err()
     );
@@ -325,12 +345,16 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
     );
     let recovery_output = installation_root(&config)?.join("must-not-create-profile");
     assert!(
-        recover_administrator(&installed.configuration, &recovery_output)
-            .await
-            .is_err()
+        recover_administrator_with_storage(
+            &installed.configuration,
+            &recovery_output,
+            storage.clone()
+        )
+        .await
+        .is_err()
     );
     assert!(!recovery_output.exists());
-    let mut maintenance = OperatorState::open(&config).await?;
+    let mut maintenance = OperatorState::open(&config, storage.clone()).await?;
     maintenance
         .audit
         .store()

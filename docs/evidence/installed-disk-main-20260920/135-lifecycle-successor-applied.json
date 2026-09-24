@@ -1,0 +1,12 @@
+{
+  "status": "APPLIED_UNCOMMITTED_UNCOMPILED",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "source": "crates/kasumi-engine/tests/common/recovery_control.rs",
+  "before_sha256": "df389a1f5903728287ed45d01281119b797a3778b50d1d60adc17c62f2548eb3",
+  "after_sha256": "2147b8684336bf4e81f0b1104fdab747309e9f15721f1bc8138d005b592e816a",
+  "manifest_sha256": "60999c6c2d1c5fffda703c7e57e1d8a5e0a52bb10c73b2459a5402974f47cf09",
+  "patch_sha256": "8f72e1b173d406be15b7a5ce0a616a457f0fa23d987e9ab7aa15a318193aa911",
+  "independent_review_sha256": "cfd7ca0aef2c29169e7f87ae20baf1878a591b2fd871c5d0b5cb0f204969f177",
+  "prior_drained_run134_sha256": "befde5a202e3419482cd32f0c80796c6f57e4f1aca3a18b17b5778e0ddfb0ed1"
+}

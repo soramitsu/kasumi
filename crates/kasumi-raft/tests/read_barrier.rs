@@ -44,9 +44,14 @@ struct Fixture {
     transport: Arc<PausedTransport>,
     groups: Vec<RaftGroup>,
     stores: Vec<Arc<TenantStorageSet>>,
+    _scratch_directory: tempfile::TempDir,
 }
 impl Fixture {
     async fn new() -> Result<Self> {
+        let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
         let dir = kasumi_store::test_utils::private_tempdir()?;
         let transport = Arc::new(PausedTransport {
             router: InProcessRouter::default(),
@@ -56,7 +61,12 @@ impl Fixture {
         let mut groups = Vec::new();
         let mut stores = Vec::new();
         for id in 1..=3 {
-            let store = common::store(&dir.path().join(format!("{id}.redb")), true).await?;
+            let store = common::store(
+                &dir.path().join(format!("{id}.redb")),
+                true,
+                fixture_scratch.clone(),
+            )
+            .await?;
             let config = kasumi_raft::Config {
                 enable_elect: false,
                 snapshot_policy: kasumi_raft::SnapshotPolicy::Never,
@@ -93,6 +103,7 @@ impl Fixture {
         groups[0].write(b"committed before pause".to_vec()).await?;
         groups[0].linearizable_barrier().await?;
         Ok(Self {
+            _scratch_directory: scratch_directory,
             _dir: dir,
             transport,
             groups,

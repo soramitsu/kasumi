@@ -7,7 +7,7 @@ use axum::{
     Json, Router,
     body::{Body, to_bytes},
     extract::{Request, State},
-    http::{HeaderValue, StatusCode},
+    http::{HeaderValue, StatusCode, header::CONTENT_LENGTH},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
@@ -42,6 +42,13 @@ use std::{
 #[cfg(test)]
 #[path = "mcp_credential_tests.rs"]
 mod credential_tests;
+#[cfg(test)]
+pub(crate) use credential_tests::ReleaseGate;
+
+#[cfg(test)]
+fn release_gate_slot() -> Arc<Mutex<Option<Arc<ReleaseGate>>>> {
+    Arc::new(Mutex::new(None))
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,6 +57,9 @@ pub struct McpConfig {
     pub allowed_hosts: Vec<String>,
     /// Empty means browser-origin requests are forbidden, not unchecked.
     pub allowed_origins: Vec<String>,
+    #[cfg(test)]
+    #[serde(skip, default = "release_gate_slot")]
+    pub(crate) release_gate: Arc<Mutex<Option<Arc<ReleaseGate>>>>,
 }
 
 impl McpConfig {
@@ -60,6 +70,8 @@ impl McpConfig {
             public_url,
             allowed_hosts: vec![authority.to_owned()],
             allowed_origins: Vec::new(),
+            #[cfg(test)]
+            release_gate: release_gate_slot(),
         })
     }
     fn validate(&self) -> anyhow::Result<()> {
@@ -167,6 +179,8 @@ struct HttpAuth {
     auth: Arc<Authenticator>,
     challenge: HeaderValue,
     origins: Vec<String>,
+    #[cfg(test)]
+    release_gate: Arc<Mutex<Option<Arc<ReleaseGate>>>>,
 }
 
 async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next: Next) -> Response {
@@ -203,8 +217,15 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
             #[cfg(test)]
             let gate = request
                 .extensions()
-                .get::<Arc<credential_tests::ReleaseGate>>()
-                .cloned();
+                .get::<Arc<ReleaseGate>>()
+                .cloned()
+                .or_else(|| {
+                    state
+                        .release_gate
+                        .lock()
+                        .ok()
+                        .and_then(|mut gate| gate.take())
+                });
             let response = next.run(request).await;
             let fence = match invocation.take_response_fence() {
                 Ok(fence) => fence,
@@ -286,6 +307,23 @@ async fn materialize_response(response: Response) -> kasumi_types::Result<Respon
             "MCP response exceeds byte limit",
         ));
     }
+    // An explicit wire length is part of the terminal response. Reject a
+    // conflicting or ambiguous value before the final credential check, since
+    // HTTP framing could otherwise truncate a fully materialized body.
+    let mut declared_lengths = response.headers().get_all(CONTENT_LENGTH).iter();
+    if let Some(declared) = declared_lengths.next()
+        && (declared_lengths.next().is_some()
+            || declared
+                .to_str()
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                != length)
+    {
+        return Err(Error::new(
+            ErrorCode::Unavailable,
+            "MCP terminal response content length conflicts with body",
+        ));
+    }
     let (parts, body) = response.into_parts();
     let bytes = to_bytes(body, MAX_RESPONSE_BYTES).await.map_err(|error| {
         use std::error::Error as _;
@@ -352,6 +390,8 @@ pub fn router(
             .iter()
             .map(|origin| normalized_origin(origin))
             .collect::<anyhow::Result<_>>()?,
+        #[cfg(test)]
+        release_gate: config.release_gate.clone(),
     };
     let sdk_config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)

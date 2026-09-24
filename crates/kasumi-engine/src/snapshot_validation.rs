@@ -207,7 +207,10 @@ impl ValidatedApplicationSnapshot {
                 && self.index.count(18)? == 0
                 && self.index.count(19)? == 0
                 && self.index.count(20)? == 0
-                && self.index.count(23)? == 0,
+                && self.index.count(23)? == 0
+                && self.index.count(24)? == 0
+                && h.backup_binding_head
+                    == BackupBindingHead::empty(&h.backup_binding_head.origin_incarnation)?,
             "Control state cannot be an application backup"
         );
         ensure!(
@@ -336,6 +339,13 @@ impl ValidatedApplicationSnapshot {
                 |v| v.target_incarnation == h.incarnation && v.checkpoint.revision < h.revision
             ),
             "restore lineage current incarnation differs"
+        );
+        ensure!(
+            h.backup_binding_head.origin_incarnation == h.incarnation
+                || self
+                    .lineage_source(&h.backup_binding_head.origin_incarnation)?
+                    .is_some(),
+            "backup binding origin is outside verified lineage"
         );
         Ok(())
     }
@@ -1253,8 +1263,8 @@ mod tests {
         .unwrap();
         state
     }
-    fn image(state: &TenantState) -> SnapshotImage {
-        SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), 128 << 20, |writer| {
+    fn image(disk: &Arc<kasumi_store::ScratchDisk>, state: &TenantState) -> SnapshotImage {
+        SnapshotImage::capture(disk, 128 << 20, |writer| {
             crate::snapshot_codec::write(
                 state,
                 &crate::mutation_receipt::View::empty(
@@ -1262,6 +1272,7 @@ mod tests {
                     &state.mutation_receipt_head.origin_incarnation,
                 )
                 .unwrap(),
+                &crate::backup_binding::View::empty(&state.backup_binding_head.origin_incarnation)?,
                 &crate::staged_terminal::View::empty(
                     &state.tenant,
                     &state.staged_terminal_head.origin_incarnation,
@@ -1275,11 +1286,19 @@ mod tests {
         })
         .unwrap()
     }
-    fn indexed(state: &TenantState) -> anyhow::Result<ValidatedApplicationSnapshot> {
-        ValidatedApplicationSnapshot::validate(image(state), 128 << 20, || Ok(()))
+    fn indexed(
+        disk: &Arc<kasumi_store::ScratchDisk>,
+        state: &TenantState,
+    ) -> anyhow::Result<ValidatedApplicationSnapshot> {
+        ValidatedApplicationSnapshot::validate(image(disk, state), 128 << 20, || Ok(()))
     }
     #[test]
     fn indexed_terminal_provenance_retains_the_intermediate_incarnation_genesis() {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
         use crate::staged_terminal::{AppliedIdentity, AppliedOrigin, Row};
 
         fn link(source: &str, target: &str, revision: u64) -> RestoreLineageLink {
@@ -1296,12 +1315,15 @@ mod tests {
                 target_incarnation: target.into(),
             }
         }
-        fn proof(state: &TenantState, row: &Row) -> ValidatedApplicationSnapshot {
+        fn proof(
+            disk: &Arc<kasumi_store::ScratchDisk>,
+            state: &TenantState,
+            row: &Row,
+        ) -> ValidatedApplicationSnapshot {
             let mut header = crate::snapshot_codec::metadata(state);
             crate::staged_terminal::advance(&mut header.staged_terminal_head, row).unwrap();
             header.permanent_staged_bytes = header.staged_terminal_head.encoded_bytes;
-            let disk = kasumi_store::ScratchDisk::fixture();
-            let image = SnapshotImage::capture(&disk, 128 << 20, |writer| {
+            let image = SnapshotImage::capture(disk, 128 << 20, |writer| {
                 let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
                 encoder.record(Record::Header(Box::new(header.clone())))?;
                 for (ordinal, link) in state.restore_lineage.iter().enumerate() {
@@ -1314,7 +1336,7 @@ mod tests {
             let proof = ValidatedApplicationSnapshot {
                 index: StagedSnapshot::new(image, 128 << 20, || Ok(())).unwrap(),
                 header: Box::new(header),
-                lineage: EncryptedTable::new(&disk, 128 << 20).unwrap(),
+                lineage: EncryptedTable::new(disk, 128 << 20).unwrap(),
             };
             proof.validate_lineage(&mut || Ok(())).unwrap();
             proof
@@ -1366,7 +1388,7 @@ mod tests {
             stage,
         };
         row.validate(&state).unwrap();
-        let indexed = proof(&state, &row);
+        let indexed = proof(disk, &state, &row);
         indexed.validate_staging(&mut || Ok(())).unwrap();
         let selected = indexed.staging_lineage("middle", Some("middle")).unwrap();
         assert_eq!(selected.restore_lineage.len(), 2);
@@ -1378,7 +1400,7 @@ mod tests {
         relabelled.applied.incarnation = "current".into();
         assert!(relabelled.validate(&state).is_err());
         assert!(
-            proof(&state, &relabelled)
+            proof(disk, &state, &relabelled)
                 .validate_staging(&mut || Ok(()))
                 .is_err()
         );
@@ -1388,14 +1410,19 @@ mod tests {
         }
         assert!(wrong_position.validate(&state).is_err());
         assert!(
-            proof(&state, &wrong_position)
+            proof(disk, &state, &wrong_position)
                 .validate_staging(&mut || Ok(()))
                 .is_err()
         );
     }
     #[test]
     fn indexed_verification_keeps_all_staging_on_the_image_owner_until_drain() {
-        let initial = image(&state());
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
+        let initial = image(disk, &state());
         let disk = initial.disk().clone();
         let image_bytes = disk.snapshot().charged_bytes;
         assert_eq!(disk.snapshot().live_files, 1);
@@ -1410,7 +1437,7 @@ mod tests {
         assert_eq!(disk.snapshot().live_files, 0);
         assert_eq!(disk.snapshot().charged_bytes, 0);
 
-        let invalid = image(&state());
+        let invalid = image(&disk, &state());
         let disk = invalid.disk().clone();
         let mut checks = 0;
         assert!(
@@ -1427,9 +1454,14 @@ mod tests {
 
     #[test]
     fn indexed_validation_matches_full_restore_and_canonical_closure() {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
         let state = state();
-        TenantEngine::verify_logical_snapshot(&image(&state), &state).unwrap();
-        let indexed = indexed(&state).unwrap();
+        TenantEngine::verify_logical_snapshot(&image(disk, &state), &state).unwrap();
+        let indexed = indexed(disk, &state).unwrap();
         let records = indexed
             .index
             .cursor(3, Some("rows"))
@@ -1457,9 +1489,18 @@ mod tests {
     }
     #[test]
     fn receipt_original_scope_and_position_are_checked_in_both_snapshot_paths() {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
         use crate::mutation_receipt::{Row, advance};
         use crate::staged_terminal::{AppliedIdentity, AppliedOrigin};
-        fn encoded(state: &TenantState, row: &Row) -> SnapshotImage {
+        fn encoded(
+            disk: &Arc<kasumi_store::ScratchDisk>,
+            state: &TenantState,
+            row: &Row,
+        ) -> SnapshotImage {
             let mut header = state.clone();
             header.mutation_receipt_head = MutationReceiptHead::empty(
                 &state.tenant,
@@ -1469,7 +1510,7 @@ mod tests {
             // Recompute the frame/root on purpose. Semantic defects must be
             // rejected even when every transport count and digest is consistent.
             advance(&mut header.mutation_receipt_head, row).unwrap();
-            SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), 128 << 20, |writer| {
+            SnapshotImage::capture(disk, 128 << 20, |writer| {
                 let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
                 for kind in (0..21).chain(std::iter::once(23)) {
                     if kind == 5 {
@@ -1483,8 +1524,14 @@ mod tests {
             })
             .unwrap()
         }
-        fn verify(state: &TenantState, row: &Row, accepted: bool, case: &str) {
-            let image = encoded(state, row);
+        fn verify(
+            disk: &Arc<kasumi_store::ScratchDisk>,
+            state: &TenantState,
+            row: &Row,
+            accepted: bool,
+            case: &str,
+        ) {
+            let image = encoded(disk, state, row);
             let full = crate::snapshot_codec::read(image.disk(), &mut image.reader()).and_then(
                 |decoded| {
                     TenantEngine::verify_logical_snapshot(&image, &decoded.state)
@@ -1528,7 +1575,7 @@ mod tests {
                 }),
             },
         };
-        verify(&original, &row, true, "original");
+        verify(disk, &original, &row, true, "original");
         for case in 0..9 {
             let mut candidate = row.clone();
             match case {
@@ -1547,12 +1594,14 @@ mod tests {
                 }
             }
             verify(
+                disk,
                 &original,
                 &candidate,
                 false,
                 &format!("substitution {case}"),
             );
         }
+        let binding_origin = original.backup_binding_head.origin_incarnation.clone();
         let mut restored = original;
         // The state deliberately retains the original point head across each
         // new genesis; original rows and their applying positions never relabel.
@@ -1577,16 +1626,39 @@ mod tests {
             restored.suspended = false;
             restored.revision += 2;
         }
-        verify(&restored, &row, true, "unchanged two-hop source");
+        assert_eq!(
+            restored.backup_binding_head.origin_incarnation,
+            binding_origin
+        );
+        assert_ne!(
+            restored.backup_binding_head.origin_incarnation,
+            restored.incarnation
+        );
+        verify(disk, &restored, &row, true, "unchanged two-hop source");
+        let mut unrelated = restored.clone();
+        unrelated.backup_binding_head =
+            BackupBindingHead::empty("unretained-binding-origin").unwrap();
+        verify(
+            disk,
+            &unrelated,
+            &row,
+            false,
+            "unrelated empty backup binding origin",
+        );
         for incarnation in ["intermediate", "current-target"] {
             let mut candidate = row.clone();
             candidate.receipt.scope.incarnation = incarnation.into();
             candidate.applied.incarnation = incarnation.into();
-            verify(&restored, &candidate, false, incarnation);
+            verify(disk, &restored, &candidate, false, incarnation);
         }
     }
     #[test]
     fn authenticated_semantic_substitutions_fail_both_validation_paths() {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
         for case in 0..18 {
             let mut candidate = state();
             match case {
@@ -1661,16 +1733,22 @@ mod tests {
                 }
             }
             assert!(
-                TenantEngine::verify_logical_snapshot(&image(&candidate), &candidate).is_err(),
+                TenantEngine::verify_logical_snapshot(&image(disk, &candidate), &candidate)
+                    .is_err(),
                 "resident case {case}"
             );
-            assert!(indexed(&candidate).is_err(), "indexed case {case}");
+            assert!(indexed(disk, &candidate).is_err(), "indexed case {case}");
         }
     }
     #[test]
     fn indexing_never_returns_a_proof_after_cancellation_or_corrupt_footer() {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
         let state = state();
-        let image = image(&state);
+        let image = image(disk, &state);
         let mut calls = 0;
         assert!(
             ValidatedApplicationSnapshot::validate(image.clone(), 128 << 20, || {
@@ -1684,12 +1762,11 @@ mod tests {
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut image.reader(), &mut bytes).unwrap();
         *bytes.last_mut().unwrap() ^= 1;
-        let corrupt =
-            SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), 128 << 20, |writer| {
-                writer.write_all(&bytes)?;
-                Ok(())
-            })
-            .unwrap();
+        let corrupt = SnapshotImage::capture(disk, 128 << 20, |writer| {
+            writer.write_all(&bytes)?;
+            Ok(())
+        })
+        .unwrap();
         assert!(ValidatedApplicationSnapshot::validate(corrupt, 128 << 20, || Ok(())).is_err());
     }
 }

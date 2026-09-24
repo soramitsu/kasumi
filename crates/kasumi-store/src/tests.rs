@@ -3,7 +3,10 @@ use crate::test_utils::{FaultBackend, LocalKeyProvider, ManualClock};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-async fn fixture() -> (
+async fn fixture(
+    fixture_memory: Arc<dyn crate::NodeDiskMemoryAdmission>,
+    fixture_scratch: std::sync::Arc<crate::ScratchDisk>,
+) -> (
     tempfile::TempDir,
     Arc<TenantStore>,
     Arc<LocalKeyProvider>,
@@ -13,7 +16,8 @@ async fn fixture() -> (
     let node = NodeStore::create_new_fixture(
         dir.path().join("database.redb"),
         crate::test_utils::NODE_STORE_ID,
-        crate::ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )
     .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([41; 32]));
@@ -31,6 +35,10 @@ async fn fixture() -> (
 
 #[tokio::test(start_paused = true)]
 async fn periodic_probes_start_every_twenty_seconds_despite_provider_latency() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     struct Delayed {
         inner: LocalKeyProvider,
         delay: AtomicBool,
@@ -73,7 +81,8 @@ async fn periodic_probes_start_every_twenty_seconds_despite_provider_latency() {
         NodeStore::create_new_fixture(
             directory.path().join("cadence.redb"),
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         "cadence".into(),
@@ -101,6 +110,10 @@ async fn periodic_probes_start_every_twenty_seconds_despite_provider_latency() {
 
 #[tokio::test(start_paused = true)]
 async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     struct Blocked {
         inner: LocalKeyProvider,
         block: AtomicBool,
@@ -135,7 +148,8 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
     let node = NodeStore::create_new_fixture(
         &path,
         crate::test_utils::NODE_STORE_ID,
-        crate::ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )
     .unwrap();
     let weak_node = Arc::downgrade(&node);
@@ -201,7 +215,8 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
         NodeStore::open_existing_fixture(
             &path,
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         "shutdown".into(),
@@ -219,7 +234,12 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
 
 #[tokio::test]
 async fn dormant_store_workers_stop_cooperatively_and_external_abort_is_reported() {
-    let (_directory, store, _provider, _clock) = fixture().await;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_directory, store, _provider, _clock) =
+        fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     let (_activate, ready) = watch::channel(false);
     TenantStore::prepare_renewal(&store, ready).await;
     tokio::time::timeout(Duration::from_secs(5), store.shutdown())
@@ -228,7 +248,8 @@ async fn dormant_store_workers_stop_cooperatively_and_external_abort_is_reported
         .unwrap();
     assert!(store.background.lock().await.handles.is_empty());
 
-    let (_directory, store, _provider, _clock) = fixture().await;
+    let (_directory, store, _provider, _clock) =
+        fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     TenantStore::start_renewal(&store).await;
     store.background.lock().await.handles[0].abort();
     let first = store.shutdown().await.unwrap_err();
@@ -250,8 +271,13 @@ async fn dormant_store_workers_stop_cooperatively_and_external_abort_is_reported
 
 #[tokio::test]
 async fn cancelled_store_drain_retains_joined_panic_and_pending_physical_owner() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     use std::{future::Future, task::Poll};
-    let (directory, store, provider, clock) = fixture().await;
+    let (directory, store, provider, clock) =
+        fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     store
         .write_batch(&[WriteOp::put("documents", b"retained", b"value")])
         .unwrap();
@@ -299,7 +325,8 @@ async fn cancelled_store_drain_retains_joined_panic_and_pending_physical_owner()
         NodeStore::open_existing_fixture(
             &path,
             crate::test_utils::NODE_STORE_ID,
-            ScratchDisk::fixture()
+            fixture_memory.clone(),
+            fixture_scratch.clone()
         )
         .is_err()
     );
@@ -329,7 +356,8 @@ async fn cancelled_store_drain_retains_joined_panic_and_pending_physical_owner()
         NodeStore::open_existing_fixture(
             &path,
             crate::test_utils::NODE_STORE_ID,
-            ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         "tenant-a".into(),
@@ -347,7 +375,12 @@ async fn cancelled_store_drain_retains_joined_panic_and_pending_physical_owner()
 
 #[tokio::test]
 async fn shutdown_fences_a_waiting_background_task_registration() {
-    let (_directory, store, _provider, _clock) = fixture().await;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_directory, store, _provider, _clock) =
+        fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     let registration = store.background.lock().await;
     let starter = tokio::spawn({
         let store = store.clone();
@@ -371,7 +404,12 @@ async fn shutdown_fences_a_waiting_background_task_registration() {
 
 #[tokio::test]
 async fn atomic_batches_and_cross_namespace_isolation_survive_reopen() {
-    let (dir, store, provider, clock) = fixture().await;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (dir, store, provider, clock) =
+        fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     store
         .write_batch(&[
             WriteOp::put("documents", b"b", b"two"),
@@ -413,7 +451,8 @@ async fn atomic_batches_and_cross_namespace_isolation_survive_reopen() {
         NodeStore::open_existing_fixture(
             dir.path().join("database.redb"),
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         "tenant-a".into(),
@@ -432,7 +471,11 @@ async fn atomic_batches_and_cross_namespace_isolation_survive_reopen() {
 
 #[tokio::test]
 async fn invalid_batch_does_not_apply_earlier_operations() {
-    let (_dir, store, _, _) = fixture().await;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_dir, store, _, _) = fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     store
         .write_batch(&[WriteOp::put("documents", b"a", b"before")])
         .unwrap();
@@ -457,7 +500,11 @@ async fn invalid_batch_does_not_apply_earlier_operations() {
 
 #[tokio::test]
 async fn names_keys_and_values_are_absent_from_disk_and_nonce_changes_on_overwrite() {
-    let (dir, store, _, _) = fixture().await;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (dir, store, _, _) = fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     let ns = "secret-collection-75aa0b497f";
     let key = b"sensitive-document-key-cb3c328";
     let value = b"secret-document-value-d75ab117818c";
@@ -485,7 +532,12 @@ async fn names_keys_and_values_are_absent_from_disk_and_nonce_changes_on_overwri
 
 #[tokio::test]
 async fn ciphertext_corruption_swapping_and_wrong_tenant_are_rejected() {
-    let (_dir, store, provider, clock) = fixture().await;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_dir, store, provider, clock) =
+        fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     let other = TenantStore::initialize_catalog_fixture_with_clock(
         store.node.clone(),
         "tenant-b".into(),
@@ -553,7 +605,11 @@ async fn ciphertext_corruption_swapping_and_wrong_tenant_are_rejected() {
 
 #[tokio::test]
 async fn a_fresh_probe_covers_every_retained_version_and_revocation_seals_warm_state() {
-    let (_dir, store, provider, _) = fixture().await;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_dir, store, provider, _) = fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     assert_eq!(provider.probe_count(), 2); // Fresh decrypts, never generation plaintext.
     store
         .write_batch(&[WriteOp::put("docs", b"old", b"old value")])
@@ -581,7 +637,12 @@ async fn a_fresh_probe_covers_every_retained_version_and_revocation_seals_warm_s
 
 #[tokio::test]
 async fn sixty_second_suspend_aware_expiry_and_explicit_recovery() {
-    let (_dir, store, provider, clock) = fixture().await;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_dir, store, provider, clock) =
+        fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     clock.advance(Duration::from_secs(59));
     store.check_access().unwrap();
     clock.advance(Duration::from_secs(1));
@@ -636,6 +697,10 @@ impl KeyProvider for DelayedProvider {
 
 #[tokio::test]
 async fn delayed_probe_cannot_extend_a_lease_past_sixty_seconds_from_start() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let dir = crate::test_utils::private_tempdir().unwrap();
     let provider = Arc::new(DelayedProvider::new());
     let clock = Arc::new(ManualClock::new());
@@ -643,7 +708,8 @@ async fn delayed_probe_cannot_extend_a_lease_past_sixty_seconds_from_start() {
         NodeStore::create_new_fixture(
             dir.path().join("db"),
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         "a".into(),
@@ -667,13 +733,18 @@ async fn delayed_probe_cannot_extend_a_lease_past_sixty_seconds_from_start() {
 
 #[tokio::test]
 async fn a_late_success_cannot_undo_an_explicit_seal() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let dir = crate::test_utils::private_tempdir().unwrap();
     let provider = Arc::new(DelayedProvider::new());
     let store = TenantStore::initialize_catalog_fixture_with_clock(
         NodeStore::create_new_fixture(
             dir.path().join("db"),
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         "a".into(),
@@ -696,7 +767,12 @@ async fn a_late_success_cannot_undo_an_explicit_seal() {
 
 #[tokio::test]
 async fn rewrap_preserves_documents_after_retiring_old_wrapping_versions() {
-    let (dir, store, provider, clock) = fixture().await;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (dir, store, provider, clock) =
+        fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     store
         .write_batch(&[WriteOp::put("docs", b"a", b"before rotation")])
         .unwrap();
@@ -709,7 +785,8 @@ async fn rewrap_preserves_documents_after_retiring_old_wrapping_versions() {
         NodeStore::open_existing_fixture(
             dir.path().join("database.redb"),
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         "tenant-a".into(),
@@ -726,13 +803,17 @@ async fn rewrap_preserves_documents_after_retiring_old_wrapping_versions() {
 
 #[tokio::test]
 async fn every_injected_commit_failure_recovers_whole_batch_or_previous_state() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let backend = FaultBackend::new();
     let provider = Arc::new(LocalKeyProvider::new([51; 32]));
     let clock = Arc::new(ManualClock::new());
     let node = NodeStore::open_with_backend(
         backend.clone(),
         crate::test_utils::storage_admission(),
-        crate::ScratchDisk::fixture(),
+        fixture_scratch.clone(),
     )
     .unwrap();
     let store = TenantStore::initialize_catalog_fixture_with_clock(
@@ -762,7 +843,7 @@ async fn every_injected_commit_failure_recovers_whole_batch_or_previous_state() 
         let node = NodeStore::open_with_backend(
             backend.clone(),
             crate::test_utils::storage_admission(),
-            crate::ScratchDisk::fixture(),
+            fixture_scratch.clone(),
         )
         .unwrap();
         let store = TenantStore::open_existing_fixture_with_clock(
@@ -782,7 +863,7 @@ async fn every_injected_commit_failure_recovers_whole_batch_or_previous_state() 
             NodeStore::open_with_backend(
                 synchronized,
                 crate::test_utils::storage_admission(),
-                crate::ScratchDisk::fixture(),
+                fixture_scratch.clone(),
             )
             .unwrap(),
             "crash".into(),
@@ -818,7 +899,11 @@ async fn every_injected_commit_failure_recovers_whole_batch_or_previous_state() 
 
 #[tokio::test]
 async fn expiry_watchdog_discards_keys_and_notifies_without_an_incoming_request() {
-    let (_dir, store, _, clock) = fixture().await;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_dir, store, _, clock) = fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     let mut receiver = store.seal_notifications();
     TenantStore::start_renewal(&store).await;
     clock.advance(MAX_KEY_LEASE);
@@ -831,12 +916,17 @@ async fn expiry_watchdog_discards_keys_and_notifies_without_an_incoming_request(
 
 #[tokio::test]
 async fn different_tenants_do_not_share_a_slow_key_service_open_gate() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let dir = crate::test_utils::private_tempdir().unwrap();
     let provider = Arc::new(DelayedProvider::new());
     let node = NodeStore::create_new_fixture(
         dir.path().join("db"),
         crate::test_utils::NODE_STORE_ID,
-        crate::ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )
     .unwrap();
     provider.delayed.store(true, Ordering::SeqCst);
@@ -887,6 +977,10 @@ impl KeyProvider for BadRewrapProvider {
 
 #[tokio::test]
 async fn faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let dir = crate::test_utils::private_tempdir().unwrap();
     let provider = Arc::new(BadRewrapProvider(LocalKeyProvider::new([30; 32])));
     let clock = Arc::new(ManualClock::new());
@@ -894,7 +988,8 @@ async fn faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery() {
         NodeStore::create_new_fixture(
             dir.path().join("db"),
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         "t".into(),
@@ -919,7 +1014,8 @@ async fn faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery() {
         NodeStore::open_existing_fixture(
             dir.path().join("db"),
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         "t".into(),
@@ -936,6 +1032,10 @@ async fn faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery() {
 
 #[tokio::test]
 async fn wrapping_catalog_is_atomic_across_every_injected_commit_failure() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let backend = FaultBackend::new();
     let provider = Arc::new(LocalKeyProvider::new([19; 32]));
     let clock = Arc::new(ManualClock::new());
@@ -943,7 +1043,7 @@ async fn wrapping_catalog_is_atomic_across_every_injected_commit_failure() {
         NodeStore::open_with_backend(
             backend.clone(),
             crate::test_utils::storage_admission(),
-            crate::ScratchDisk::fixture(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         "rewrap-crash".into(),
@@ -963,7 +1063,7 @@ async fn wrapping_catalog_is_atomic_across_every_injected_commit_failure() {
             NodeStore::open_with_backend(
                 disk.clone(),
                 crate::test_utils::storage_admission(),
-                crate::ScratchDisk::fixture(),
+                fixture_scratch.clone(),
             )
             .unwrap(),
             "rewrap-crash".into(),
@@ -981,7 +1081,7 @@ async fn wrapping_catalog_is_atomic_across_every_injected_commit_failure() {
             NodeStore::open_with_backend(
                 durable,
                 crate::test_utils::storage_admission(),
-                crate::ScratchDisk::fixture(),
+                fixture_scratch.clone(),
             )
             .unwrap(),
             "rewrap-crash".into(),
@@ -1016,6 +1116,10 @@ async fn wrapping_catalog_is_atomic_across_every_injected_commit_failure() {
 
 #[tokio::test]
 async fn expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_batch() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let disk = FaultBackend::new();
     let provider = Arc::new(LocalKeyProvider::new([38; 32]));
     let clock = Arc::new(ManualClock::new());
@@ -1023,7 +1127,7 @@ async fn expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_bat
         NodeStore::open_with_backend(
             disk.clone(),
             crate::test_utils::storage_admission(),
-            crate::ScratchDisk::fixture(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         "fsync-expiry".into(),
@@ -1045,7 +1149,7 @@ async fn expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_bat
         NodeStore::open_with_backend(
             disk.crash(),
             crate::test_utils::storage_admission(),
-            crate::ScratchDisk::fixture(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         "fsync-expiry".into(),
@@ -1066,6 +1170,10 @@ async fn expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_bat
 
 #[tokio::test]
 async fn expiry_during_key_catalog_fsync_does_not_acknowledge_rotation() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let disk = FaultBackend::new();
     let provider = Arc::new(LocalKeyProvider::new([39; 32]));
     let clock = Arc::new(ManualClock::new());
@@ -1073,7 +1181,7 @@ async fn expiry_during_key_catalog_fsync_does_not_acknowledge_rotation() {
         NodeStore::open_with_backend(
             disk.clone(),
             crate::test_utils::storage_admission(),
-            crate::ScratchDisk::fixture(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         "rotation-expiry".into(),
@@ -1093,7 +1201,7 @@ async fn expiry_during_key_catalog_fsync_does_not_acknowledge_rotation() {
         NodeStore::open_with_backend(
             disk.crash(),
             crate::test_utils::storage_admission(),
-            crate::ScratchDisk::fixture(),
+            fixture_scratch.clone(),
         )
         .unwrap(),
         "rotation-expiry".into(),
@@ -1111,7 +1219,11 @@ async fn expiry_during_key_catalog_fsync_does_not_acknowledge_rotation() {
 
 #[tokio::test]
 async fn bounded_encrypted_reads_reject_payload_before_plaintext_allocation() {
-    let (_dir, store, _, _) = fixture().await;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_dir, store, _, _) = fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     store
         .write_batch(&[WriteOp::put("closed-control", b"current", vec![7; 8192])])
         .unwrap();
@@ -1151,7 +1263,12 @@ async fn bounded_encrypted_reads_reject_payload_before_plaintext_allocation() {
 
 #[tokio::test]
 async fn completed_shutdown_allows_distinct_store_without_reviving_retained_handles() {
-    let (_directory, original, provider, clock) = fixture().await;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_directory, original, provider, clock) =
+        fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     original
         .write_batch(&[WriteOp::Put {
             namespace: "docs".into(),
@@ -1197,6 +1314,10 @@ async fn completed_shutdown_allows_distinct_store_without_reviving_retained_hand
 #[cfg(unix)]
 #[test]
 fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     use std::os::unix::fs::{PermissionsExt, symlink};
     let root = crate::test_utils::private_tempdir().unwrap();
     let directory = root.path().join("private");
@@ -1205,7 +1326,8 @@ fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
     let node = NodeStore::create_new_fixture(
         &path,
         crate::test_utils::NODE_STORE_ID,
-        crate::ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )
     .unwrap();
     assert_eq!(
@@ -1216,7 +1338,8 @@ fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
         NodeStore::open_existing_fixture(
             &path,
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture()
+            fixture_memory.clone(),
+            fixture_scratch.clone()
         )
         .is_err()
     );
@@ -1227,7 +1350,8 @@ fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
         NodeStore::open_existing_fixture(
             &path,
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture()
+            fixture_memory.clone(),
+            fixture_scratch.clone()
         )
         .is_err()
     );
@@ -1238,7 +1362,8 @@ fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
         NodeStore::open_existing_fixture(
             &alias,
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture()
+            fixture_memory.clone(),
+            fixture_scratch.clone()
         )
         .is_err()
     );
@@ -1251,7 +1376,8 @@ fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
         NodeStore::open_existing_fixture(
             &path,
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture()
+            fixture_memory.clone(),
+            fixture_scratch.clone()
         )
         .is_err()
     );
@@ -1261,7 +1387,8 @@ fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
         NodeStore::open_existing_fixture(
             &path,
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture()
+            fixture_memory.clone(),
+            fixture_scratch.clone()
         )
         .is_ok()
     );
@@ -1269,7 +1396,11 @@ fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
 
 #[tokio::test]
 async fn pinned_read_roots_and_streamed_namespace_publication_preserve_isolation() {
-    let (_directory, store, _, _) = fixture().await;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_directory, store, _, _) = fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     store
         .write_batch(&[
             WriteOp::put("authority", b"old", b"original"),
@@ -1277,7 +1408,7 @@ async fn pinned_read_roots_and_streamed_namespace_publication_preserve_isolation
         ])
         .unwrap();
     let pinned = store.read_view().unwrap();
-    let staged = EncryptedTable::new(&ScratchDisk::fixture(), 64 << 20).unwrap();
+    let staged = EncryptedTable::new(&fixture_scratch.clone(), 64 << 20).unwrap();
     staged.insert(b"new", b"replacement").unwrap();
     assert!(staged.insert(b"new", b"substituted").is_err());
     store
@@ -1326,22 +1457,28 @@ async fn pinned_read_roots_and_streamed_namespace_publication_preserve_isolation
 
 #[tokio::test]
 async fn separate_node_stores_and_pinned_reads_share_one_scratch_budget() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let directory = crate::test_utils::private_tempdir().unwrap();
-    let disk = ScratchDisk::open(ScratchDiskConfig {
-        directory: directory.path().join("scratch"),
-        max_bytes: 192 << 10,
-        min_free_bytes: 0,
-    })
+    let disk = ScratchDisk::open_fixture(
+        &ScratchDiskConfig {
+            directory: directory.path().join("scratch"),
+            max_bytes: 192 << 10,
+            min_free_bytes: 0,
+        },
+        fixture_memory.clone(),
+    )
     .unwrap();
     let first = NodeStore::create_new_fixture(
         directory.path().join("application.redb"),
         crate::test_utils::NODE_STORE_ID,
+        fixture_memory.clone(),
         disk.clone(),
     )
     .unwrap();
     let second = NodeStore::create_new_fixture(
         directory.path().join("trust.redb"),
         crate::test_utils::NODE_STORE_ID,
+        fixture_memory.clone(),
         disk.clone(),
     )
     .unwrap();

@@ -16,9 +16,24 @@ pub(crate) async fn initialize(config: AuthorityRuntimeConfig) -> Result<()> {
         config.replication.voters()? == config.bootstrap.membership.voters,
         "authority first enrollment requires its exact original voters"
     );
+    let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+    initialize_with_storage(config, storage).await
+}
+
+pub(crate) async fn initialize_with_storage(
+    config: AuthorityRuntimeConfig,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<()> {
+    config.validate()?;
+    config.bootstrap.validate()?;
+    ensure!(
+        config.replication.voters()? == config.bootstrap.membership.voters,
+        "authority first enrollment requires its exact original voters"
+    );
+    storage.require_policy(&config.admission)?;
     crate::startup_owner::open(
         crate::startup_owner::Kind::Authority,
-        initialize_owned(config),
+        initialize_owned(config, storage),
     )
     .await?;
     Ok(())
@@ -36,13 +51,17 @@ impl crate::startup_owner::Runtime for Enrolled {
     }
 }
 
-async fn initialize_owned(config: AuthorityRuntimeConfig) -> Result<Enrolled> {
+async fn initialize_owned(
+    config: AuthorityRuntimeConfig,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<Enrolled> {
     let mut pending = crate::startup_resources::Resources::default();
     // Keep a dispatched blocking child outside the caught future too. An unwind
     // after dispatch cannot replace its exact join with a storage-close guess.
     let mut genesis = None;
     let result = crate::startup_preparation::capture("authority enrollment", async {
-        let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
+        let admission = storage.facade(&config.admission)?;
+        pending.owned_admissions.push(admission.clone());
         let (node, audit) = crate::node_provision::create(
             &config.database_path,
             config.database_id,
@@ -50,6 +69,7 @@ async fn initialize_owned(config: AuthorityRuntimeConfig) -> Result<Enrolled> {
             &config.scratch_disk,
             &config.security_audit,
             admission.clone(),
+            &storage,
         )
         .await?;
         pending.owned_nodes.push(node.clone());

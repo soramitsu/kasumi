@@ -1,0 +1,595 @@
+{
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "status": "QUALIFIED THREE-FILE BACKUP CANDIDATE; NOT YET APPLIED; NOT RELEASE ACCEPTED",
+  "payloads": [
+    {
+      "path": "candidate/adoption.patch",
+      "sha256": "85b9d536668569b8e2f1d7bd984b0975eac180696ec9f1562b35681a60f2f58d",
+      "bytes": 16432,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/adoption.patch",
+      "uncompressed_sha256": "85b9d536668569b8e2f1d7bd984b0975eac180696ec9f1562b35681a60f2f58d",
+      "uncompressed_bytes": 16432,
+      "compression": null
+    },
+    {
+      "path": "candidate/manifest.json",
+      "sha256": "7b10428c0b5cea9eba7b03ac57ca3ba1e86eb32fbacbbf50b03d8123420c908a",
+      "bytes": 2076,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/manifest.json",
+      "uncompressed_sha256": "7b10428c0b5cea9eba7b03ac57ca3ba1e86eb32fbacbbf50b03d8123420c908a",
+      "uncompressed_bytes": 2076,
+      "compression": null
+    },
+    {
+      "path": "candidate/expected-store-tests.json",
+      "sha256": "bb03979f33994ad5fb09e22e2a4639658b03a6ca55ecfcf01340c709092657fa",
+      "bytes": 35912,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/expected-store-tests.json",
+      "uncompressed_sha256": "bb03979f33994ad5fb09e22e2a4639658b03a6ca55ecfcf01340c709092657fa",
+      "uncompressed_bytes": 35912,
+      "compression": null
+    },
+    {
+      "path": "candidate/qualification-plan.json",
+      "sha256": "9ab4e237eb58bb468db3cb61c243110ab09d5f3d4e4847358aa65ec4a99f41e2",
+      "bytes": 2639,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/qualification-plan.json",
+      "uncompressed_sha256": "9ab4e237eb58bb468db3cb61c243110ab09d5f3d4e4847358aa65ec4a99f41e2",
+      "uncompressed_bytes": 2639,
+      "compression": null
+    },
+    {
+      "path": "candidate/apply-readback.json",
+      "sha256": "d9a7139df3aec0a3f2af7b0ad260486fe2881cd9a4b3d97b1a276501de3562b2",
+      "bytes": 640,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/apply-readback.json",
+      "uncompressed_sha256": "d9a7139df3aec0a3f2af7b0ad260486fe2881cd9a4b3d97b1a276501de3562b2",
+      "uncompressed_bytes": 640,
+      "compression": null
+    },
+    {
+      "path": "candidate/HANDOFF.md",
+      "sha256": "a7149a9b8a71bd865215d213f79d8fa3093ae40848a5c3de93ac25cb8de4a774",
+      "bytes": 2439,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/HANDOFF.md",
+      "uncompressed_sha256": "a7149a9b8a71bd865215d213f79d8fa3093ae40848a5c3de93ac25cb8de4a774",
+      "uncompressed_bytes": 2439,
+      "compression": null
+    },
+    {
+      "path": "candidate/runner-lineage.json",
+      "sha256": "6a922ae2e2a8815abb4d1058bad8dfa69d0b8a1dc1c84941b0ed1a691ed053fe",
+      "bytes": 829,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/runner-lineage.json",
+      "uncompressed_sha256": "6a922ae2e2a8815abb4d1058bad8dfa69d0b8a1dc1c84941b0ed1a691ed053fe",
+      "uncompressed_bytes": 829,
+      "compression": null
+    },
+    {
+      "path": "candidate/prepare_native_revision2.py",
+      "sha256": "7b7d8e36cb2dca56b13bb3a908d7121991cdca6ef4aaea74f78007378aae4046",
+      "bytes": 4441,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/prepare_native_revision2.py",
+      "uncompressed_sha256": "7b7d8e36cb2dca56b13bb3a908d7121991cdca6ef4aaea74f78007378aae4046",
+      "uncompressed_bytes": 4441,
+      "compression": null
+    },
+    {
+      "path": "candidate/check_runner_gates_revision2.py",
+      "sha256": "c30d2d51d21802d88c7865d000a281e43035675d47519e82b170ba1c58d21aab",
+      "bytes": 4758,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/check_runner_gates_revision2.py",
+      "uncompressed_sha256": "c30d2d51d21802d88c7865d000a281e43035675d47519e82b170ba1c58d21aab",
+      "uncompressed_bytes": 4758,
+      "compression": null
+    },
+    {
+      "path": "candidate/terminal-receipt.json",
+      "sha256": "5b9df248d47b94ad4fd94b66aecc2f0849674ecd9745e47096cc975284e96f01",
+      "bytes": 3065,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/terminal-receipt.json",
+      "uncompressed_sha256": "5b9df248d47b94ad4fd94b66aecc2f0849674ecd9745e47096cc975284e96f01",
+      "uncompressed_bytes": 3065,
+      "compression": null
+    },
+    {
+      "path": "candidate/freeze_evidence.py",
+      "sha256": "f24e49b4ac87242bdab1d5b0d3905afa4988734ab3b3169024015a6d50bda808",
+      "bytes": 8712,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/freeze_evidence.py",
+      "uncompressed_sha256": "f24e49b4ac87242bdab1d5b0d3905afa4988734ab3b3169024015a6d50bda808",
+      "uncompressed_bytes": 8712,
+      "compression": null
+    },
+    {
+      "path": "base/crates/kasumi-store/src/backup.rs",
+      "sha256": "643d97a3f63e0935a2ce38dad7df13b323cddb2c17a206d45afbe08666a7d1cf",
+      "bytes": 62958,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/base/crates/kasumi-store/src/backup.rs",
+      "uncompressed_sha256": "643d97a3f63e0935a2ce38dad7df13b323cddb2c17a206d45afbe08666a7d1cf",
+      "uncompressed_bytes": 62958,
+      "compression": null
+    },
+    {
+      "path": "base/crates/kasumi-store/src/backup_sessions_fs.rs",
+      "sha256": "e5a22b9d7a099e03f8486d3eb0afce127f63be04631ec697da8187a088c849ff",
+      "bytes": 29005,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/base/crates/kasumi-store/src/backup_sessions_fs.rs",
+      "uncompressed_sha256": "e5a22b9d7a099e03f8486d3eb0afce127f63be04631ec697da8187a088c849ff",
+      "uncompressed_bytes": 29005,
+      "compression": null
+    },
+    {
+      "path": "proposed/crates/kasumi-store/src/backup.rs",
+      "sha256": "3ff9104e7db3b4dffcc3df285fff2ba57d7d7e25c4b87d49689d3a9baa294cf5",
+      "bytes": 61901,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/proposed/crates/kasumi-store/src/backup.rs",
+      "uncompressed_sha256": "3ff9104e7db3b4dffcc3df285fff2ba57d7d7e25c4b87d49689d3a9baa294cf5",
+      "uncompressed_bytes": 61901,
+      "compression": null
+    },
+    {
+      "path": "proposed/crates/kasumi-store/src/backup_file_admission_tests.rs",
+      "sha256": "873553967acb20153a2aac89bbc8758db5c11b7a7511ca444d8f2d7ba68303bb",
+      "bytes": 10229,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/proposed/crates/kasumi-store/src/backup_file_admission_tests.rs",
+      "uncompressed_sha256": "873553967acb20153a2aac89bbc8758db5c11b7a7511ca444d8f2d7ba68303bb",
+      "uncompressed_bytes": 10229,
+      "compression": null
+    },
+    {
+      "path": "proposed/crates/kasumi-store/src/backup_sessions_fs.rs",
+      "sha256": "5dc5b3dad089839638a1a3c8a0a167ccc3a50b6a28cdf45b206bd2dbd29802c2",
+      "bytes": 31948,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/proposed/crates/kasumi-store/src/backup_sessions_fs.rs",
+      "uncompressed_sha256": "5dc5b3dad089839638a1a3c8a0a167ccc3a50b6a28cdf45b206bd2dbd29802c2",
+      "uncompressed_bytes": 31948,
+      "compression": null
+    },
+    {
+      "path": "native-02/compile-store-artifacts.json.gz",
+      "sha256": "9c25fa38ba1716ea5b5ac59101f5cbf2ce755c2c9330d36c39cee9e50be8c4d5",
+      "bytes": 26018,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/compile-store-artifacts.json",
+      "uncompressed_sha256": "cff9439640c7c1cfe63b70afc47a4f02f6c89f63974afcee9d85d81cd4379b3c",
+      "uncompressed_bytes": 204908,
+      "compression": "gzip"
+    },
+    {
+      "path": "native-02/compile-store-diagnostics.json",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "bytes": 3,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/compile-store-diagnostics.json",
+      "uncompressed_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "uncompressed_bytes": 3,
+      "compression": null
+    },
+    {
+      "path": "native-02/compile-store-diagnostics.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/compile-store-diagnostics.txt",
+      "uncompressed_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0,
+      "compression": null
+    },
+    {
+      "path": "native-02/compile-store-processes.json.gz",
+      "sha256": "6fe1059a79a722f8de405414afe62010cf537f0447dd6b7aa77118c8bd2bd2e9",
+      "bytes": 28031,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/compile-store-processes.json",
+      "uncompressed_sha256": "3430422173856cc1fc6d3386232248e726a134712b2e47c964e082f664de262d",
+      "uncompressed_bytes": 288643,
+      "compression": "gzip"
+    },
+    {
+      "path": "native-02/compile-store.log.gz",
+      "sha256": "601f26c6d01e230cd82d2aff02b55c145babcc6ddbd27a846f2de61e843157c3",
+      "bytes": 13266,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/compile-store.log",
+      "uncompressed_sha256": "8e53f1d4f7c7ceeb0ddc306eb75f4502f1b37aa81478381eec9b18c58bcbac02",
+      "uncompressed_bytes": 200357,
+      "compression": "gzip"
+    },
+    {
+      "path": "native-02/compiled-artifacts-after.json.gz",
+      "sha256": "7d65904d79dc15c3afcb50649dc5039a6b63daf938436093b422a7465d7ed454",
+      "bytes": 69198,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/compiled-artifacts-after.json",
+      "uncompressed_sha256": "1958371d86f8ff1fd69954a028baedd2ceb71897c13bf6b6f2f155b31cdcca56",
+      "uncompressed_bytes": 521824,
+      "compression": "gzip"
+    },
+    {
+      "path": "native-02/compiled-artifacts-before.json.gz",
+      "sha256": "7d65904d79dc15c3afcb50649dc5039a6b63daf938436093b422a7465d7ed454",
+      "bytes": 69198,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/compiled-artifacts-before.json",
+      "uncompressed_sha256": "1958371d86f8ff1fd69954a028baedd2ceb71897c13bf6b6f2f155b31cdcca56",
+      "uncompressed_bytes": 521824,
+      "compression": "gzip"
+    },
+    {
+      "path": "native-02/preflight.json.gz",
+      "sha256": "adbdcfce3f17c849c1370a3812c6a1aa57dc8117b55d1a3e288ab7929dadb553",
+      "bytes": 600911,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/preflight.json",
+      "uncompressed_sha256": "07446a156e54333a280eec17c26c61a93598d3a276986e47d4e8a429ea476dba",
+      "uncompressed_bytes": 5013038,
+      "compression": "gzip"
+    },
+    {
+      "path": "native-02/result.json",
+      "sha256": "f269ea228bfc953d20bccf8827ec138b820cdaf5b895d3f593d2f48f6e8fc7e0",
+      "bytes": 989,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/result.json",
+      "uncompressed_sha256": "f269ea228bfc953d20bccf8827ec138b820cdaf5b895d3f593d2f48f6e8fc7e0",
+      "uncompressed_bytes": 989,
+      "compression": null
+    },
+    {
+      "path": "native-02/results.json",
+      "sha256": "61c17ac659b342bb6d4315db1751cd00a4395cc2eadf3c6fec5bc48ef3b7f2f9",
+      "bytes": 7442,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/results.json",
+      "uncompressed_sha256": "61c17ac659b342bb6d4315db1751cd00a4395cc2eadf3c6fec5bc48ef3b7f2f9",
+      "uncompressed_bytes": 7442,
+      "compression": null
+    },
+    {
+      "path": "native-02/run.py",
+      "sha256": "2295bf365c477df784c7fe4ab0ea9089b69a7ec764f5328ce368640fc7a30832",
+      "bytes": 12668,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/run.py",
+      "uncompressed_sha256": "2295bf365c477df784c7fe4ab0ea9089b69a7ec764f5328ce368640fc7a30832",
+      "uncompressed_bytes": 12668,
+      "compression": null
+    },
+    {
+      "path": "native-02/runner-gate-tests.json",
+      "sha256": "076c391e9cb6ce8b7f304fd7323c9ebca9ffd4e37f3bcbb63a90a9706a2c60d0",
+      "bytes": 1845,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/runner-gate-tests.json",
+      "uncompressed_sha256": "076c391e9cb6ce8b7f304fd7323c9ebca9ffd4e37f3bcbb63a90a9706a2c60d0",
+      "uncompressed_bytes": 1845,
+      "compression": null
+    },
+    {
+      "path": "native-02/source-after.json.gz",
+      "sha256": "1789f51a5d0b0e244bd383fabaf6b0b3c4cc7fbc10e8d97449e1f5b88e45f60c",
+      "bytes": 602312,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/source-after.json",
+      "uncompressed_sha256": "9000c147ca56063bbc1701d3b7398fed34ae1aefc2e4bfd83e120579b9b8e650",
+      "uncompressed_bytes": 5083465,
+      "compression": "gzip"
+    },
+    {
+      "path": "native-02/source-before.json.gz",
+      "sha256": "1789f51a5d0b0e244bd383fabaf6b0b3c4cc7fbc10e8d97449e1f5b88e45f60c",
+      "bytes": 602312,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/source-before.json",
+      "uncompressed_sha256": "9000c147ca56063bbc1701d3b7398fed34ae1aefc2e4bfd83e120579b9b8e650",
+      "uncompressed_bytes": 5083465,
+      "compression": "gzip"
+    },
+    {
+      "path": "native-02/store-binary-provenance.json",
+      "sha256": "918d00e8539b9942b7a3df2342144aff3c7367be1056be1f1f077f378afd2ea5",
+      "bytes": 1649,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-binary-provenance.json",
+      "uncompressed_sha256": "918d00e8539b9942b7a3df2342144aff3c7367be1056be1f1f077f378afd2ea5",
+      "uncompressed_bytes": 1649,
+      "compression": null
+    },
+    {
+      "path": "native-02/store-full-processes.json",
+      "sha256": "a3e0c558eea7652251cce68e7a401e8db54766094b2192aab2f90a2f07884d87",
+      "bytes": 1246,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-full-processes.json",
+      "uncompressed_sha256": "a3e0c558eea7652251cce68e7a401e8db54766094b2192aab2f90a2f07884d87",
+      "uncompressed_bytes": 1246,
+      "compression": null
+    },
+    {
+      "path": "native-02/store-full.log.gz",
+      "sha256": "50cdb69896db3cbeb96e4a8385c973b50a53c0bb6a66b43a3a32af34b24707ec",
+      "bytes": 15808,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-full.log",
+      "uncompressed_sha256": "4957fb5e2c44a3d595b6dc2c56ffc95463462f17cc20740b562242a5dab136c6",
+      "uncompressed_bytes": 131568,
+      "compression": "gzip"
+    },
+    {
+      "path": "native-02/store-inventory-processes.json",
+      "sha256": "9af4940fdf11d47a13b4f75292f4bdd5b4f2d63c2fff820fab69321c7d585dc5",
+      "bytes": 217,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-inventory-processes.json",
+      "uncompressed_sha256": "9af4940fdf11d47a13b4f75292f4bdd5b4f2d63c2fff820fab69321c7d585dc5",
+      "uncompressed_bytes": 217,
+      "compression": null
+    },
+    {
+      "path": "native-02/store-inventory-proof.json",
+      "sha256": "1afd7e062cb6f9e293d7f39c3c1a1c92377f12e608871c8fe4b3826ef40e4014",
+      "bytes": 34880,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-inventory-proof.json",
+      "uncompressed_sha256": "1afd7e062cb6f9e293d7f39c3c1a1c92377f12e608871c8fe4b3826ef40e4014",
+      "uncompressed_bytes": 34880,
+      "compression": null
+    },
+    {
+      "path": "native-02/store-inventory.log",
+      "sha256": "55015b9b9697c6453dfdde055a23d3b2a544d5668e8da21e21656e7d98e9c03b",
+      "bytes": 34415,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-inventory.log",
+      "uncompressed_sha256": "55015b9b9697c6453dfdde055a23d3b2a544d5668e8da21e21656e7d98e9c03b",
+      "uncompressed_bytes": 34415,
+      "compression": null
+    },
+    {
+      "path": "native-02/workspace-check-artifacts.json.gz",
+      "sha256": "a91321618558ff207ab8d4ba75159607c4a58546fe8485dbc6f8d5a3cba46bb3",
+      "bytes": 57963,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/workspace-check-artifacts.json",
+      "uncompressed_sha256": "d6115d4338bb8ee5babc49b382bc3942185115d35ffad0332b313f4bdaf13224",
+      "uncompressed_bytes": 535783,
+      "compression": "gzip"
+    },
+    {
+      "path": "native-02/workspace-check-diagnostics.json",
+      "sha256": "4fee1abc3ee7200bbbda89ddace00e55ae5064c53c9ab905597de76dc8a7cf9b",
+      "bytes": 8474,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/workspace-check-diagnostics.json",
+      "uncompressed_sha256": "4fee1abc3ee7200bbbda89ddace00e55ae5064c53c9ab905597de76dc8a7cf9b",
+      "uncompressed_bytes": 8474,
+      "compression": null
+    },
+    {
+      "path": "native-02/workspace-check-diagnostics.txt",
+      "sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "bytes": 1104,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/workspace-check-diagnostics.txt",
+      "uncompressed_sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "uncompressed_bytes": 1104,
+      "compression": null
+    },
+    {
+      "path": "native-02/workspace-check-processes.json.gz",
+      "sha256": "efa32cecd4688925245de6c04f77f4dc5e989fa0815ecf540d3fdf13c9b75409",
+      "bytes": 67580,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/workspace-check-processes.json",
+      "uncompressed_sha256": "a7ec43cf5702d1ee5e438616ad069efd1c1490ff015dc7747d5e005f4238eb16",
+      "uncompressed_bytes": 967496,
+      "compression": "gzip"
+    },
+    {
+      "path": "native-02/workspace-check.log.gz",
+      "sha256": "e9240b51295aca806e0f6bf90be60682502d96382da3d5c9dace4377d814e376",
+      "bytes": 38025,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/workspace-check.log",
+      "uncompressed_sha256": "22c2d3a56ea65c420c656cd481846f931b1551336dea0e57c913c35197f2c9a7",
+      "uncompressed_bytes": 579559,
+      "compression": "gzip"
+    },
+    {
+      "path": "native-02/workspace-clippy-artifacts.json.gz",
+      "sha256": "c628c2bd1460f286e3dae8ebc943c0424e7b4c98565fb992862d5df252c74a38",
+      "bytes": 57894,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/workspace-clippy-artifacts.json",
+      "uncompressed_sha256": "bd76167c4175db6473cad19f18b35e326849cf4779c6da223caf27f4ac6b8513",
+      "uncompressed_bytes": 535249,
+      "compression": "gzip"
+    },
+    {
+      "path": "native-02/workspace-clippy-diagnostics.json",
+      "sha256": "4fee1abc3ee7200bbbda89ddace00e55ae5064c53c9ab905597de76dc8a7cf9b",
+      "bytes": 8474,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/workspace-clippy-diagnostics.json",
+      "uncompressed_sha256": "4fee1abc3ee7200bbbda89ddace00e55ae5064c53c9ab905597de76dc8a7cf9b",
+      "uncompressed_bytes": 8474,
+      "compression": null
+    },
+    {
+      "path": "native-02/workspace-clippy-diagnostics.txt",
+      "sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "bytes": 1104,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/workspace-clippy-diagnostics.txt",
+      "uncompressed_sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "uncompressed_bytes": 1104,
+      "compression": null
+    },
+    {
+      "path": "native-02/workspace-clippy-processes.json.gz",
+      "sha256": "052f41c3a56cd5bb86ed2bf96cd083f179b172695611a20dbf0324a7f17db940",
+      "bytes": 10065,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/workspace-clippy-processes.json",
+      "uncompressed_sha256": "50990bcd5d989cdf99635c65a334a68df6a863a4d464945b5389084696657920",
+      "uncompressed_bytes": 368721,
+      "compression": "gzip"
+    },
+    {
+      "path": "native-02/workspace-clippy.log.gz",
+      "sha256": "d1bfcbb7ada403dee0112b901261d15e42ea82307ccf64fb28e27989a43cc823",
+      "bytes": 34472,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/workspace-clippy.log",
+      "uncompressed_sha256": "cfa2063f49c771481e37f6f357a20cc17866d9cd424f97e1fe9833066cd25ddf",
+      "uncompressed_bytes": 565154,
+      "compression": "gzip"
+    },
+    {
+      "path": "format-01/preparation-failure.json",
+      "sha256": "65701505d2574b617a4fc012d0b172affd7760e90b1c9bbb62c303894d17fff7",
+      "bytes": 455,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/format-01/preparation-failure.json",
+      "uncompressed_sha256": "65701505d2574b617a4fc012d0b172affd7760e90b1c9bbb62c303894d17fff7",
+      "uncompressed_bytes": 455,
+      "compression": null
+    },
+    {
+      "path": "format-01/run.py",
+      "sha256": "f2e3210462ec5edf0f17164c851c3614bc53b513b31e889bde2c76f10631a01a",
+      "bytes": 3383,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/format-01/run.py",
+      "uncompressed_sha256": "f2e3210462ec5edf0f17164c851c3614bc53b513b31e889bde2c76f10631a01a",
+      "uncompressed_bytes": 3383,
+      "compression": null
+    },
+    {
+      "path": "format-01/source-before.json.gz",
+      "sha256": "5dd53d5fdcb039d1c78b7073ef7f46b0541961b6107da128bf25e10dbd71b6ad",
+      "bytes": 602474,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/format-01/source-before.json",
+      "uncompressed_sha256": "3269fcb4500e377a1b6122da84267d348df1f0219e56bd83717daa074d172241",
+      "uncompressed_bytes": 5083890,
+      "compression": "gzip"
+    },
+    {
+      "path": "format-02/format.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/format-02/format.log",
+      "uncompressed_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0,
+      "compression": null
+    },
+    {
+      "path": "format-02/result.json",
+      "sha256": "374402535fe2ed0a70d5bda3e146866d3fdf681130e9ee3a25826f7d4bb0fd15",
+      "bytes": 666,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/format-02/result.json",
+      "uncompressed_sha256": "374402535fe2ed0a70d5bda3e146866d3fdf681130e9ee3a25826f7d4bb0fd15",
+      "uncompressed_bytes": 666,
+      "compression": null
+    },
+    {
+      "path": "format-02/run.py",
+      "sha256": "8793b0164c190e84e21e0d5a20c677b9a1b06d86da9032db4268f339049136ca",
+      "bytes": 3396,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/format-02/run.py",
+      "uncompressed_sha256": "8793b0164c190e84e21e0d5a20c677b9a1b06d86da9032db4268f339049136ca",
+      "uncompressed_bytes": 3396,
+      "compression": null
+    },
+    {
+      "path": "format-02/source-after.json.gz",
+      "sha256": "e06b77abb531be48198a65dc008783bd08b7bca1897a49822e25804a53f3223b",
+      "bytes": 602596,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/format-02/source-after.json",
+      "uncompressed_sha256": "375480a27f4244dd8380f550a23f913c586a11367461c4179f21f436998ba66c",
+      "uncompressed_bytes": 5084140,
+      "compression": "gzip"
+    },
+    {
+      "path": "format-02/source-before.json.gz",
+      "sha256": "e06b77abb531be48198a65dc008783bd08b7bca1897a49822e25804a53f3223b",
+      "bytes": 602596,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-admission-revision5/format-02/source-before.json",
+      "uncompressed_sha256": "375480a27f4244dd8380f550a23f913c586a11367461c4179f21f436998ba66c",
+      "uncompressed_bytes": 5084140,
+      "compression": "gzip"
+    },
+    {
+      "path": "reviews/filesystem-backup-rev3-root-review/receipt.json",
+      "sha256": "346a20c683e339e34b7dfdada72a2aa2911e73e053bd3c3d240c825076290efb",
+      "bytes": 917,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-rev3-root-review/receipt.json",
+      "uncompressed_sha256": "346a20c683e339e34b7dfdada72a2aa2911e73e053bd3c3d240c825076290efb",
+      "uncompressed_bytes": 917,
+      "compression": null
+    },
+    {
+      "path": "reviews/filesystem-backup-revision4-runner-independent-review/receipt.json",
+      "sha256": "99606f214982757003bb6872bd05979644114948cf7155824e2bca012e3e4dcf",
+      "bytes": 4470,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-revision4-runner-independent-review/receipt.json",
+      "uncompressed_sha256": "99606f214982757003bb6872bd05979644114948cf7155824e2bca012e3e4dcf",
+      "uncompressed_bytes": 4470,
+      "compression": null
+    },
+    {
+      "path": "reviews/filesystem-backup-revision4-runner-independent-review/native-02/receipt.json",
+      "sha256": "c643766df6f21731ba5c385e465cc48ade94d7b00d520cfa50e8790ef1d990b3",
+      "bytes": 2831,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/filesystem-backup-revision4-runner-independent-review/native-02/receipt.json",
+      "uncompressed_sha256": "c643766df6f21731ba5c385e465cc48ade94d7b00d520cfa50e8790ef1d990b3",
+      "uncompressed_bytes": 2831,
+      "compression": null
+    },
+    {
+      "path": "reviews/actual-application-storage-rev6/receipt.json",
+      "sha256": "0aecf46b677b7724904f7399ba8bac514654844b9c33d4cf9e3721aa22df043c",
+      "bytes": 559,
+      "mode": "0o644",
+      "source": "target/installed-disk-validation/actual-application-storage-rev6/receipt.json",
+      "uncompressed_sha256": "0aecf46b677b7724904f7399ba8bac514654844b9c33d4cf9e3721aa22df043c",
+      "uncompressed_bytes": 559,
+      "compression": null
+    },
+    {
+      "path": "README.md",
+      "sha256": "0ec06a316f3d9927b0f854544e63a3cfea0a88ab61f6df1242a62105724d4cbf",
+      "bytes": 2111,
+      "mode": "0o644",
+      "source": null
+    }
+  ],
+  "count": 59,
+  "terminal_receipt_sha256": "5b9df248d47b94ad4fd94b66aecc2f0849674ecd9745e47096cc975284e96f01"
+}

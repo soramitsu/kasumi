@@ -1,0 +1,7 @@
+
+running 2 tests
+test device_disk::memory_tests::device_registry_and_registration_have_exact_independent_lifetime_charges ... ok
+test device_disk::memory_tests::failed_registration_and_foreign_core_do_not_grow_retained_device_metadata ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+

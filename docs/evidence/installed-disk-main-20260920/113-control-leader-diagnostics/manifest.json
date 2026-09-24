@@ -1,0 +1,16 @@
+{
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "status": "TARGET_ONLY_UNCOMPILED",
+  "patch_sha256": "9a5b74cdd303e7eb8aff4c95167b2a4576582ac18234015fcbd9a967e9e23910",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/tests/lifecycle.rs",
+      "before_sha256": "3b6e06580a1835154bce5fefe3a16358788ea336dab82d96e789584f735f16fb",
+      "proposed_sha256": "ecd9058d5d6dcc8026364ce2414897c3b09b380a4171d1ab59331cdd4ed0dbc4"
+    }
+  ],
+  "scope": "Report actual3voter metrics only after original10sleader-selection timeout; futureownedrunnerwilladdRUST_BACKTRACE=1 to identify callsite; no deadline,retry or assertion changes",
+  "actual_source_modified": false,
+  "cargo_executed": false
+}

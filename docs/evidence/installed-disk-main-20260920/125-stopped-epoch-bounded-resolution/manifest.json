@@ -1,0 +1,19 @@
+{
+  "status": "frozen target-only fixture proposal; not applied or compiled",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "source_paths": [
+    "crates/kasumi-authority/src/issuer_tests.rs"
+  ],
+  "files": {
+    "README.md": "886fbb941793ff8c6d12594f4057077614e5ee6479701acbddd6d550d4448699",
+    "base/crates/kasumi-authority/src/issuer_tests.rs": "b916cc088a1c029d10302dcf5ba3276d939d815a2769cf2e337f2b3795e7c7d3",
+    "evidence.txt": "1777bbe08a2492321fd96a1da997350dbd6808e6691d4d30b20c33be12c157ff",
+    "fixture.patch": "7e7a01f1f0de982da6754008a1fc3e82a45146ade60fcc17ef3c14c9ad594fc0",
+    "observed-input-hashes.json": "c8f23edd4dc1ecb217deb1f0734d704afdb652a2ba7f414bf0b89a8701dbde63",
+    "proposed/crates/kasumi-authority/src/issuer_tests.rs": "cadcc75c5201075f1cbf285b9db21cd924be248bfac39d80d997d2cc0722aec4",
+    "static-checks.json": "1b778e97bbf2e7bebf56751b82548cd5e548c987727f1f28b805e59b6e33dfb0",
+    "validation.json": "b9d12c2615ad8d4276c52a6c47e244c3db41b0df1739530e3b635f7064f16465"
+  }
+}

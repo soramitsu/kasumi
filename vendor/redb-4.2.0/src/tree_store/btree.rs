@@ -122,15 +122,18 @@ impl UntypedBtree {
                 "Btree exceeded maximum depth".to_string(),
             ));
         }
-        visitor(&path)?;
         let page = self.mem.get_page(path.page_number(), self.hint)?;
+        if page.memory()[0] == BRANCH {
+            BranchAccessor::new(&page, self.key_width)?;
+        }
+        visitor(&path)?;
 
         match page.memory()[0] {
             LEAF => {
                 // No-op
             }
             BRANCH => {
-                let accessor = BranchAccessor::new(&page, self.key_width);
+                let accessor = BranchAccessor::new(&page, self.key_width)?;
                 for i in 0..accessor.count_children() {
                     let child_page = accessor.child_page(i).unwrap();
                     if path.parents().contains(&child_page) || path.page_number() == child_page {
@@ -206,7 +209,7 @@ impl UntypedBtreeMut {
         match page.memory()[0] {
             LEAF => leaf_checksum(&page, self.key_width, self.value_width),
             BRANCH => {
-                let accessor = BranchAccessor::new(&page, self.key_width);
+                let accessor = BranchAccessor::new(&page, self.key_width)?;
                 let mut new_children = vec![];
                 for i in 0..accessor.count_children() {
                     let child_page = accessor.child_page(i).unwrap();
@@ -219,7 +222,7 @@ impl UntypedBtreeMut {
                     }
                 }
 
-                let mut mutator = BranchMutator::new(page.memory_mut());
+                let mut mutator = BranchMutator::new(page.memory_mut())?;
                 for (child_index, child_page, child_checksum) in new_children.into_iter().flatten()
                 {
                     mutator.write_child_page(child_index, child_page, child_checksum);
@@ -270,7 +273,7 @@ impl UntypedBtreeMut {
                 visitor(LeafPageMut::new(page, self.key_width, self.value_width))?;
             }
             BRANCH => {
-                let accessor = BranchAccessor::new(&page, self.key_width);
+                let accessor = BranchAccessor::new(&page, self.key_width)?;
                 for i in 0..accessor.count_children() {
                     let child_page = accessor.child_page(i).unwrap();
                     if self.page_allocator.uncommitted(child_page) {
@@ -288,6 +291,9 @@ impl UntypedBtreeMut {
         &mut self,
         relocation_map: &PageNumberHashMap<PageNumber>,
     ) -> Result<bool> {
+        if let Some(root) = self.get_root() {
+            self.preflight_relocation(root.root, relocation_map, &mut [None; MAX_BTREE_DEPTH], 0)?;
+        }
         if let Some(root) = self.get_root()
             && let Some((new_root, new_checksum)) =
                 self.relocate_helper(root.root, relocation_map)?
@@ -298,18 +304,51 @@ impl UntypedBtreeMut {
         Ok(false)
     }
 
+    pub(super) fn preflight_relocation(
+        &self,
+        page_number: PageNumber,
+        relocation_map: &PageNumberHashMap<PageNumber>,
+        path: &mut [Option<PageNumber>; MAX_BTREE_DEPTH],
+        depth: usize,
+    ) -> Result {
+        if !relocation_map.contains_key(&page_number) {
+            return Ok(());
+        }
+        if depth >= path.len() || path[..depth].contains(&Some(page_number)) {
+            return Err(StorageError::Corrupted(
+                "Invalid relocation path".to_string(),
+            ));
+        }
+        path[depth] = Some(page_number);
+        let page = self.page_allocator.get_page(page_number, PageHint::None)?;
+        if page.memory()[0] == BRANCH {
+            let accessor = BranchAccessor::new(&page, self.key_width)?;
+            for index in 0..accessor.count_children() {
+                self.preflight_relocation(
+                    accessor.child_page(index).unwrap(),
+                    relocation_map,
+                    path,
+                    depth + 1,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     // Relocates the given subtree to the pages specified in relocation_map
     fn relocate_helper(
         &mut self,
         page_number: PageNumber,
         relocation_map: &PageNumberHashMap<PageNumber>,
     ) -> Result<Option<(PageNumber, Checksum)>> {
-        let old_page = self.page_allocator.get_page(page_number, PageHint::None)?;
-        let mut new_page = if let Some(new_page_number) = relocation_map.get(&page_number) {
-            self.page_allocator.get_page_mut(*new_page_number)?
-        } else {
+        let Some(new_page_number) = relocation_map.get(&page_number) else {
             return Ok(None);
         };
+        let old_page = self.page_allocator.get_page(page_number, PageHint::None)?;
+        if old_page.memory()[0] == BRANCH {
+            BranchAccessor::new(&old_page, self.key_width)?;
+        }
+        let mut new_page = self.page_allocator.get_page_mut(*new_page_number)?;
         new_page.memory_mut().copy_from_slice(old_page.memory());
 
         let node_mem = old_page.memory();
@@ -318,8 +357,8 @@ impl UntypedBtreeMut {
                 // No-op
             }
             BRANCH => {
-                let accessor = BranchAccessor::new(&old_page, self.key_width);
-                let mut mutator = BranchMutator::new(new_page.memory_mut());
+                let accessor = BranchAccessor::new(&old_page, self.key_width)?;
+                let mut mutator = BranchMutator::new(new_page.memory_mut())?;
                 for i in 0..accessor.count_children() {
                     let child = accessor.child_page(i).unwrap();
                     if let Some((new_child, new_checksum)) =
@@ -496,26 +535,6 @@ impl<K: Key + 'static, V: Value + 'static> BtreeMut<K, V> {
         Ok(())
     }
 
-    // Reserves `key` (inserting `placeholder` if absent, preserving its value otherwise)
-    // and CoWs the path to it, so a subsequent insert_inplace() with a value of
-    // equal-or-smaller serialized size won't allocate or free pages. Returns the
-    // serialized bytes currently stored at `key`.
-    pub(crate) fn force_uncommitted(
-        &mut self,
-        key: &K::SelfType<'_>,
-        placeholder: &V::SelfType<'_>,
-    ) -> Result<Vec<u8>> {
-        let existing_bytes = self
-            .get(key)?
-            .map(|guard| V::as_bytes(&guard.value()).as_ref().to_vec());
-        let bytes = existing_bytes.unwrap_or_else(|| V::as_bytes(placeholder).as_ref().to_vec());
-        {
-            let value = V::from_bytes(&bytes);
-            self.insert(key, &value)?;
-        }
-        Ok(bytes)
-    }
-
     pub(crate) fn remove(&mut self, key: &K::SelfType<'_>) -> Result<Option<AccessGuard<'_, V>>> {
         #[cfg(feature = "logging")]
         trace!("Btree(root={:?}): Deleting {:?}", self.root, key);
@@ -593,6 +612,9 @@ impl<K: Key + 'static, V: Value + 'static> BtreeMut<K, V> {
         &mut self,
         key: &K::SelfType<'_>,
     ) -> Result<Option<AccessGuardMut<'_, V>>> {
+        // Validate every branch on the selected path before copy-on-write can
+        // replace an ancestor or allocate a descendant buffer.
+        drop(self.get(key)?);
         if let Some(ref mut root) = self.root {
             let key_bytes = K::as_bytes(key);
             let query = key_bytes.as_ref();
@@ -653,7 +675,7 @@ impl<K: Key + 'static, V: Value + 'static> BtreeMut<K, V> {
             }
             BRANCH => {
                 let (child_index, child_page) = {
-                    let accessor = BranchAccessor::new(&page, K::fixed_width());
+                    let accessor = BranchAccessor::new(&page, K::fixed_width())?;
                     accessor.child_for_key::<K>(query)
                 };
                 let child_page_mut = if self.page_allocator.uncommitted(child_page) {
@@ -675,7 +697,7 @@ impl<K: Key + 'static, V: Value + 'static> BtreeMut<K, V> {
                     drop(old_child_page);
                     freed_pages.push(child_page);
 
-                    let mut mutator = BranchMutator::new(page.memory_mut());
+                    let mut mutator = BranchMutator::new(page.memory_mut())?;
                     mutator.write_child_page(child_index, new_page.get_page_number(), DEFERRED);
                     new_page
                 };
@@ -978,6 +1000,7 @@ impl RawBtree {
                 }
             }
             BRANCH => {
+                BranchAccessor::new(&page, self.fixed_key_size)?;
                 if let Ok(computed) = branch_checksum(&page, self.fixed_key_size) {
                     if expected_checksum != computed {
                         return Ok(false);
@@ -985,7 +1008,7 @@ impl RawBtree {
                 } else {
                     return Ok(false);
                 }
-                let accessor = BranchAccessor::new(&page, self.fixed_key_size);
+                let accessor = BranchAccessor::new(&page, self.fixed_key_size)?;
                 for i in 0..accessor.count_children() {
                     if !self.verify_checksum_helper(
                         accessor.child_page(i).unwrap(),
@@ -1106,7 +1129,7 @@ impl<K: Key, V: Value> Btree<K, V> {
                     }));
                 }
                 BRANCH => {
-                    let accessor = BranchAccessor::new(page, K::fixed_width());
+                    let accessor = BranchAccessor::new(page, K::fixed_width())?;
                     accessor.child_for_key::<K>(query).1
                 }
                 _ => unreachable!(),
@@ -1151,7 +1174,7 @@ impl<K: Key, V: Value> Btree<K, V> {
                 Ok(Some((key_guard, value_guard)))
             }
             BRANCH => {
-                let accessor = BranchAccessor::new(&page, K::fixed_width());
+                let accessor = BranchAccessor::new(&page, K::fixed_width())?;
                 let child_page = accessor.child_page(0).unwrap();
                 self.first_helper(self.mem.get_page(child_page, self.hint)?, depth + 1)
             }
@@ -1191,7 +1214,7 @@ impl<K: Key, V: Value> Btree<K, V> {
                 Ok(Some((key_guard, value_guard)))
             }
             BRANCH => {
-                let accessor = BranchAccessor::new(&page, K::fixed_width());
+                let accessor = BranchAccessor::new(&page, K::fixed_width())?;
                 let child_page = accessor.child_page(accessor.count_children() - 1).unwrap();
                 self.last_helper(self.mem.get_page(child_page, self.hint)?, depth + 1)
             }
@@ -1256,7 +1279,7 @@ impl<K: Key, V: Value> Btree<K, V> {
                             eprint!("]");
                         }
                         BRANCH => {
-                            let accessor = BranchAccessor::new(&page, K::fixed_width());
+                            let accessor = BranchAccessor::new(&page, K::fixed_width())?;
                             for i in 0..accessor.count_children() {
                                 let child = accessor.child_page(i).unwrap();
                                 next_children.push(self.mem.get_page(child, self.hint)?);
@@ -1330,7 +1353,7 @@ fn stats_helper(
             })
         }
         BRANCH => {
-            let accessor = BranchAccessor::new(&page, fixed_key_size);
+            let accessor = BranchAccessor::new(&page, fixed_key_size)?;
             let mut max_child_height = 0;
             let mut leaf_pages = 0;
             let mut branch_pages = 1;
@@ -1368,21 +1391,9 @@ mod tests {
 
     #[test]
     fn test_page_path_cycle_detection() {
-        let p1 = PageNumber {
-            region: 0,
-            page_index: 1,
-            page_order: 0,
-        };
-        let p2 = PageNumber {
-            region: 0,
-            page_index: 2,
-            page_order: 0,
-        };
-        let p3 = PageNumber {
-            region: 0,
-            page_index: 3,
-            page_order: 0,
-        };
+        let p1 = PageNumber::new(0, 1, 0);
+        let p2 = PageNumber::new(0, 2, 0);
+        let p3 = PageNumber::new(0, 3, 0);
 
         let path = PagePath::new_root(p1);
         // No cycle yet: children p2 and p3 are clean
@@ -1400,16 +1411,8 @@ mod tests {
 
     #[test]
     fn test_verify_checksum_cycle_detection() {
-        let p1 = PageNumber {
-            region: 0,
-            page_index: 1,
-            page_order: 0,
-        };
-        let p2 = PageNumber {
-            region: 0,
-            page_index: 2,
-            page_order: 0,
-        };
+        let p1 = PageNumber::new(0, 1, 0);
+        let p2 = PageNumber::new(0, 2, 0);
 
         let visited = [p1, p2];
 
@@ -1418,11 +1421,7 @@ mod tests {
         assert!(visited.contains(&p2));
 
         // p3 is not in the active path, so no cycle
-        let p3 = PageNumber {
-            region: 0,
-            page_index: 3,
-            page_order: 0,
-        };
+        let p3 = PageNumber::new(0, 3, 0);
         assert!(!visited.contains(&p3));
     }
 
@@ -1440,7 +1439,6 @@ mod tests {
             PAGE_SIZE,
             None,
             0,
-            false,
         )
         .unwrap();
         mem.reset_allocator_state().unwrap();
@@ -1512,5 +1510,67 @@ mod tests {
             err_str.contains("Cycle detected in Btree pages"),
             "Expected cycle error, got: {err_str}"
         );
+    }
+}
+
+#[cfg(test)]
+mod canonical_relocation_tests {
+    use super::*;
+    use crate::tree_store::{AllocationPolicy, InMemoryBackend, TransactionalMemory};
+    #[test]
+    fn alias_in_later_branch_pointer_precedes_relocation_copy_and_checksum_walk() {
+        let mem = Arc::new(
+            TransactionalMemory::new(
+                Box::new(InMemoryBackend::new()),
+                crate::test_admission(),
+                true,
+                4096,
+                None,
+                0,
+            )
+            .unwrap(),
+        );
+        mem.reset_allocator_state().unwrap();
+        let allocator = PageAllocator::new(mem.clone(), AllocationPolicy::Default);
+        let tracker = PageTracker::new_tracking();
+        let mut source = allocator.allocate(4096, &tracker).unwrap();
+        source.memory_mut().fill(0);
+        source.memory_mut()[0] = BRANCH;
+        source.memory_mut()[2..4].copy_from_slice(&1_u16.to_le_bytes());
+        source.memory_mut()[40..48].copy_from_slice(&PageNumber::new(0, 0, 0).to_le_bytes());
+        source.memory_mut()[48..56].copy_from_slice(&(1_u64 << 40).to_le_bytes());
+        let source_number = source.get_page_number();
+        drop(source);
+        let mut target = allocator.allocate(4096, &tracker).unwrap();
+        target.memory_mut().fill(0xa5);
+        let target_number = target.get_page_number();
+        let before = target.memory().to_vec();
+        drop(target);
+        let root = Some(BtreeHeader::new(source_number, 0, 2));
+        let freed = Arc::new(Mutex::new(vec![]));
+        let mut tree =
+            UntypedBtreeMut::new(root, allocator.clone(), freed.clone(), Some(8), Some(8));
+        let mut map = PageNumberHashMap::default();
+        map.insert(source_number, target_number);
+        let allocated = mem.count_allocated_pages().unwrap();
+        assert!(matches!(
+            tree.relocate(&map),
+            Err(StorageError::Corrupted(_))
+        ));
+        assert_eq!(tree.get_root(), root);
+        assert!(freed.lock().unwrap().is_empty());
+        assert_eq!(mem.count_allocated_pages().unwrap(), allocated);
+        assert_eq!(
+            allocator
+                .get_page(target_number, PageHint::None)
+                .unwrap()
+                .memory(),
+            before
+        );
+        let raw = RawBtree::new(root, Some(8), Some(8), allocator.resolver(), PageHint::None);
+        assert!(matches!(
+            raw.verify_checksum(),
+            Err(StorageError::Corrupted(_))
+        ));
     }
 }

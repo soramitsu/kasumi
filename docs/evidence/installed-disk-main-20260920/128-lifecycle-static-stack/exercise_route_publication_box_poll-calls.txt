@@ -1,0 +1,2 @@
+1000d4dd4: 9400d26c    	bl	0x100109784 <<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}> as core::ops::deref::DerefMut>::deref_mut>
+1000d4de4: 9401c14c    	bl	0x100145314 <lifecycle::recovery_control::exercise_route_publication::{closure#0}>

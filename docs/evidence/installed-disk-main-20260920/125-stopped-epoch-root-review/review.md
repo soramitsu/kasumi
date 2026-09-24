@@ -1,0 +1,7 @@
+# Root review: stopped-epoch resolution fixture
+
+Accepted for application and the original focused test. Run125 confirms all six exact witness/drain checks and captures the failing late proposal changing from term1 to healthy term2/Follower. The patch changes only the late-intent assertion: one signed request and original verified context are cloned, with one five-second caller timeout around all executions and subsequent leader selections. The production execute_lifecycle deadline remains five seconds. Initial leader selection remains before the call as previously. No election timing, workload, identity, authorization, or expected reducer rejection is relaxed.
+
+Before and after every execution, every actual fixture Raft group must pass check_access. UnknownOutcome/Unavailable permit resolution only after observed executing-node term, leader or role movement. Stable-route errors fail immediately. Success is forbidden; only Conflict with exact message `control epoch permanently stopped` completes the assertion. Metrics snapshots are not an atomic sole-cause proof, and caller timeout does not terminate retained accepted children. The original close/drain follows successful resolution. A failure remains evidence and must be investigated without extending deadlines.
+
+Verified package manifest, exact source baseline, terminal run125 diagnostic and terminal/drained run132. No runtime pass is claimed by this review.

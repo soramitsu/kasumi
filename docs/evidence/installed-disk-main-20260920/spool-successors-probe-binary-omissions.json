@@ -1,0 +1,14 @@
+[
+  {
+    "path": "redb-workspace-estimator/geometry-debug-tests",
+    "bytes": 1229496,
+    "sha256": "4c2975dcfea7764693e0e6b9414c1e21afe306553af80776b126fa794d2b70a0",
+    "reason": "Native development executable retained under target; source, receipts and exact digest archived."
+  },
+  {
+    "path": "redb-workspace-estimator/geometry-release-tests",
+    "bytes": 1043448,
+    "sha256": "a3d45b037c1e591fb7e0d4a52025e355147772f08596893c284be811f43726c7",
+    "reason": "Native development executable retained under target; source, receipts and exact digest archived."
+  }
+]

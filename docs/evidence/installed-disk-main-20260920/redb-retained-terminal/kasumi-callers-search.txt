@@ -1,0 +1,87 @@
+crates/kasumi-server/src/standalone_tests.rs:263:    watcher.abort();
+crates/kasumi-server/src/serving_owner_tests.rs:262:        task.abort();
+crates/kasumi-server/src/observability.rs:759:        task.abort();
+crates/kasumi-server/src/serving_task_drain_tests.rs:196:    aborted.abort();
+crates/kasumi-server/src/bin/kasumi-authority.rs:67:            signal.abort();
+crates/kasumi-server/src/bin/kasumid.rs:86:            signal.abort();
+crates/kasumi-query/src/search.rs:228:        writer.commit().map_err(search_error)?;
+crates/kasumi-query/src/search.rs:304:        writer.commit().map_err(search_error)?;
+crates/kasumi-server/src/runtime_audit_tests.rs:317:    cancelled.abort();
+crates/kasumi-engine/src/security_audit_jobs.rs:174:        caller.abort();
+crates/kasumi-engine/src/security_audit_jobs.rs:304:        caller.abort();
+crates/kasumi-raft/src/snapshot_buffer_tests.rs:46:async fn begin_write(buffer: &mut SnapshotBuffer) {
+crates/kasumi-raft/src/snapshot_buffer_tests.rs:64:    begin_write(&mut buffer).await;
+crates/kasumi-raft/src/snapshot_buffer_tests.rs:103:    begin_write(&mut buffer).await;
+crates/kasumi-raft/src/snapshot_buffer_tests.rs:150:    begin_write(&mut buffer).await;
+crates/kasumi-raft/src/snapshot_buffer_tests.rs:248:    begin_write(&mut buffer).await;
+crates/kasumi-raft/src/snapshot_buffer_tests.rs:284:    begin_write(&mut buffer).await;
+crates/kasumi-raft/src/storage/worker_failure_tests.rs:139:    waiter.abort();
+crates/kasumi-raft/src/storage/tests.rs:80:    operation.abort();
+crates/kasumi-raft/src/storage/joint_publication_tests.rs:346:    waiter.abort();
+crates/kasumi-authority/src/request_drain_tests.rs:27:    caller.abort();
+crates/kasumi-client/src/literal_decode/tests.rs:679:    task.abort();
+crates/kasumi-engine/src/audit_maintenance_service.rs:298:                task.abort();
+crates/kasumi-engine/src/security_audit_retention.rs:850:        caller.abort();
+crates/kasumi-engine/src/database_worker_outcome_tests.rs:250:    database.seal_monitor.lock().await.as_ref().unwrap().abort();
+crates/kasumi-engine/src/database_worker_outcome_tests.rs:375:        .abort();
+crates/kasumi-serving/src/background_work_tests.rs:138:    owner.task.lock().await.as_ref().unwrap().abort();
+crates/kasumi-serving/src/background_work_tests.rs:184:    waiter.abort();
+crates/kasumi-engine/src/backup_history_work.rs:232:        task.abort();
+crates/kasumi-serving/src/live_trust.rs:560:        if let Err(error) = self.persistence.commit(&state.record, &next, &receipt) {
+crates/kasumi-engine/tests/backup_checkpoint.rs:317:    task.abort();
+crates/kasumi-server/src/target_runtime.rs:1545:        task.abort();
+crates/kasumi-store/src/storage_domains/catalog_initialization.rs:314:    let tx = application.node.db.begin_write()?;
+crates/kasumi-store/src/storage_domains/catalog_initialization.rs:341:    tx.commit()
+crates/kasumi-store/src/lib.rs:326:        let tx = db.begin_write()?;
+crates/kasumi-store/src/lib.rs:331:        tx.commit()?;
+crates/kasumi-store/src/lib.rs:376:        let tx = self.db.begin_write()?;
+crates/kasumi-store/src/lib.rs:381:        tx.commit().context("committing wrapped-key catalog")
+crates/kasumi-store/src/lib.rs:490:            task.abort();
+crates/kasumi-store/src/lib.rs:948:        let tx = self.node.db.begin_write()?;
+crates/kasumi-store/src/lib.rs:951:        tx.commit()
+crates/kasumi-store/src/lib.rs:1092:    tx: &redb::WriteTransaction,
+crates/kasumi-store/src/catalog_budget.rs:156:    let tx = node.db.begin_write().unwrap();
+crates/kasumi-store/src/catalog_budget.rs:161:    tx.commit().unwrap();
+crates/kasumi-store/src/storage_domains/catalog_initialization/tests.rs:280:    let tx = node.db.begin_write()?;
+crates/kasumi-store/src/storage_domains/catalog_initialization/tests.rs:283:    tx.commit()?;
+crates/kasumi-store/src/node_file/tests.rs:27:fn commit_probe(transaction: redb::WriteTransaction) {
+crates/kasumi-store/src/node_file/tests.rs:33:    transaction.commit().unwrap();
+crates/kasumi-store/src/node_file/tests.rs:100:            commit_probe(db.begin_write().unwrap());
+crates/kasumi-store/src/node_file/tests.rs:591:            commit_probe(db.begin_write().unwrap());
+crates/kasumi-store/src/node_file/tests.rs:608:            commit_probe(node.db.begin_write().unwrap());
+crates/kasumi-store/src/live_trust.rs:118:        let tx = self.store.node.db.begin_write()?;
+crates/kasumi-store/src/live_trust.rs:121:        tx.commit()
+crates/kasumi-store/src/storage_existing_tests.rs:113:    let transaction = node.db.begin_write()?;
+crates/kasumi-store/src/storage_existing_tests.rs:117:    transaction.commit()?;
+crates/kasumi-store/src/storage_existing_tests.rs:163:    let transaction = node.db.begin_write()?;
+crates/kasumi-store/src/storage_existing_tests.rs:168:    transaction.commit()?;
+crates/kasumi-store/src/single_catalog/tests.rs:171:            let tx = node.db.begin_write()?;
+crates/kasumi-store/src/single_catalog/tests.rs:182:            tx.commit()?;
+crates/kasumi-store/src/single_catalog.rs:334:    let tx = store.node.db.begin_write()?;
+crates/kasumi-store/src/single_catalog.rs:350:    tx.commit()
+crates/kasumi-store/src/tls_fixture.rs:15:        self.task.abort();
+crates/kasumi-store/src/tests.rs:254:    store.background.lock().await.handles[0].abort();
+crates/kasumi-store/src/tests.rs:574:        let tx = store.node.db.begin_write().unwrap();
+crates/kasumi-store/src/tests.rs:578:        tx.commit().unwrap();
+crates/kasumi-store/src/live_trust_tests.rs:409:        self.persistence.commit(previous, next, receipt)?;
+crates/kasumi-store/src/scratch_table.rs:124:        let tx = database.begin_write()?;
+crates/kasumi-store/src/scratch_table.rs:126:        tx.commit()?;
+crates/kasumi-store/src/scratch_table.rs:141:        let tx = self.database.begin_write()?;
+crates/kasumi-store/src/scratch_table.rs:146:        tx.commit()?;
+crates/kasumi-store/src/scratch_table.rs:161:        let tx = self.database.begin_write()?;
+crates/kasumi-store/src/scratch_table.rs:165:        tx.commit()?;
+crates/kasumi-store/src/storage_domains.rs:190:            let tx = application.node.db.begin_write()?;
+crates/kasumi-store/src/storage_domains.rs:200:            tx.commit()
+crates/kasumi-store/src/storage_domains.rs:337:        let tx = application.node.db.begin_write()?;
+crates/kasumi-store/src/storage_domains.rs:358:        tx.commit()
+crates/kasumi-store/src/storage_domains.rs:367:    tx: &redb::WriteTransaction,
+crates/kasumi-store/src/read_view.rs:28:        let tx = self.node.db.begin_write()?;
+crates/kasumi-store/src/read_view.rs:37:        tx.commit()
+crates/kasumi-store/src/read_view.rs:168:    tx: &redb::WriteTransaction,
+crates/kasumi-store/src/node_database.rs:73:    pub(crate) fn begin_write(&self) -> Result<WriteTransaction, TransactionError> {
+crates/kasumi-store/src/node_database.rs:76:        self.accepted()?.begin_write()
+crates/kasumi-store/src/node_database.rs:153:        assert!(database.begin_write().is_err());
+crates/kasumi-store/src/node_database.rs:163:        let first = database.begin_write().unwrap();
+crates/kasumi-store/src/node_database.rs:165:        let thread = std::thread::spawn(move || second.begin_write().unwrap().commit().unwrap());
+crates/kasumi-store/src/node_database.rs:183:        first.abort().unwrap();
+crates/kasumi-store/src/node_database.rs:242:        assert!(database.begin_write().is_err());

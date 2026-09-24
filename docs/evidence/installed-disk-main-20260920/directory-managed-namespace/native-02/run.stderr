@@ -1,0 +1,27 @@
+
+thread 'node_disk::census::tests::provisional_arc_allocation_retires_before_lease_on_error_and_unwind' (5729249) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace/native-02/node_disk/census/tests.rs:580:21:
+original provisional publication panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'node_disk::census::tests::uncertain_initial_close_retains_registered_outcome_and_resources_through_error_or_unwind' (5729250) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace/native-02/node_disk/census/tests.rs:429:17:
+injected initial census unwind
+
+thread 'node_disk::census::tests::unfinished_or_unwound_session_cannot_publish_partial_candidate' (5729252) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace/native-02/node_disk/census/tests.rs:281:21:
+injected census unwind
+
+thread 'node_disk::directory::managed::tests::managed_child_creation_open_and_removal_preserve_exact_enrollment_and_charge' (5729267) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace/native-02/node_disk/directory/managed/tests.rs:58:29:
+called `Result::unwrap()` on an `Err` value: Kind(InvalidData)
+
+thread 'node_disk::directory::managed::tests::managed_child_names_depth_existing_identity_and_root_removal_are_exact' (5729268) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace/native-02/node_disk/directory/managed/tests.rs:15:6:
+called `Result::unwrap()` on an `Err` value: Failed(persistent ancestor lock depth exhausted)
+
+thread 'node_disk::directory::managed::tests::retained_child_parent_prevents_removal_with_live_descendant_custody' (5729274) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace/native-02/node_disk/directory/managed/tests.rs:154:34:
+called `Result::unwrap()` on an `Err` value: Kind(InvalidData)
+
+thread 'node_disk::directory::managed::tests::unknown_child_absence_retires_prepared_backing_and_descriptors_before_slot_reuse' (5729278) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace/native-02/node_disk/directory/managed/tests.rs:301:10:
+called `Result::unwrap()` on an `Err` value: Kind(InvalidData)
+
+thread 'node_disk::fixed_map::tests::panic_during_spare_copy_preserves_complete_published_active_map' (5729285) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace/native-02/node_disk/fixed_map/tests.rs:102:13:
+assertion `left != right` failed: injected third-copy failure
+  left: 2
+ right: 2

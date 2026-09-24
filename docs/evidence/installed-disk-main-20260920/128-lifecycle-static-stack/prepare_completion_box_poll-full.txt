@@ -1,0 +1,25 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000d4d64 <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>> as core::future::future::Future>::poll>:
+1000d4d64: d10103ff    	sub	sp, sp, #0x40
+1000d4d68: a9037bfd    	stp	x29, x30, [sp, #0x30]
+1000d4d6c: 9100c3fd    	add	x29, sp, #0x30
+1000d4d70: f90003e8    	str	x8, [sp]
+1000d4d74: f90007e1    	str	x1, [sp, #0x8]
+1000d4d78: aa0003e8    	mov	x8, x0
+1000d4d7c: f9000be8    	str	x8, [sp, #0x10]
+1000d4d80: f9000fe1    	str	x1, [sp, #0x18]
+1000d4d84: aa0003e8    	mov	x8, x0
+1000d4d88: f81f03a8    	stur	x8, [x29, #-0x10]
+1000d4d8c: 9400d278    	bl	0x10010976c <<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}> as core::ops::deref::DerefMut>::deref_mut>
+1000d4d90: f94003e8    	ldr	x8, [sp]
+1000d4d94: f94007e1    	ldr	x1, [sp, #0x8]
+1000d4d98: aa0003e9    	mov	x9, x0
+1000d4d9c: f81f83a9    	stur	x9, [x29, #-0x8]
+1000d4da0: 94018384    	bl	0x100135bb0 <lifecycle::recovery_control::prepare_completion::{closure#0}>
+1000d4da4: a9437bfd    	ldp	x29, x30, [sp, #0x30]
+1000d4da8: 910103ff    	add	sp, sp, #0x40
+1000d4dac: d65f03c0    	ret

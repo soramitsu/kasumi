@@ -1,0 +1,25 @@
+{
+  "scope": "development complete authority caller regression after exact leader and physical outcome corrections; no final native qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--no-fail-fast",
+    "-p",
+    "kasumi-authority",
+    "--all-features",
+    "--",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 18632,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 898.2309722900391,
+  "inventoried_source_unchanged": true
+}

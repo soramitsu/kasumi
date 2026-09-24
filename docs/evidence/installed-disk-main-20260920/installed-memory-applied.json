@@ -1,0 +1,10 @@
+{
+  "status": "APPLIED_UNTESTED",
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "patch_sha256": "be2dad44d5a0c261a6c36023af37780c91effa65723f7bd3e0896de0cc2dbddb",
+  "files": 178,
+  "all_proposed_hashes_match": true,
+  "time": 1789908281.415977
+}

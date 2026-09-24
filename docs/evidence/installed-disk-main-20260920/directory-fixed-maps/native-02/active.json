@@ -1,0 +1,11 @@
+{
+  "name": "run",
+  "pid": 54753,
+  "pgid": 54753,
+  "argv": [
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-fixed-maps/native-02/tests",
+    "node_disk::",
+    "--nocapture",
+    "--test-threads=1"
+  ]
+}

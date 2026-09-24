@@ -1,0 +1,4 @@
+10014ffc0: 942f201b    	bl	0x100d1802c <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+100150014: 942bcc53    	bl	0x100c43160 <<kasumi_engine::service::Database>::engine>
+1001501bc: 942f1f9c    	bl	0x100d1802c <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+1001501cc: 942bcbe5    	bl	0x100c43160 <<kasumi_engine::service::Database>::engine>

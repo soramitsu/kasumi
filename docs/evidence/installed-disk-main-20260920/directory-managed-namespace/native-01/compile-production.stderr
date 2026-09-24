@@ -1,0 +1,17 @@
+error[E0282]: type annotations needed for `Result<directory::NodeDiskDirectory, _>`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace/native-01/node_disk/directory/managed.rs:324:13
+    |
+324 |         let result = (|| {
+    |             ^^^^^^
+...
+373 |             let absent = error.kind() == io::ErrorKind::NotFound
+    |                          ----- type must be known at this point
+    |
+help: consider giving `result` an explicit type, where the placeholders `_` are specified
+    |
+324 |         let result: Result<_, E> = (|| {
+    |                   ++++++++++++++
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0282`.

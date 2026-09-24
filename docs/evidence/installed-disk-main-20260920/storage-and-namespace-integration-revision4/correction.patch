@@ -1,0 +1,452 @@
+diff --git a/crates/kasumi-store/src/node_disk.rs b/crates/kasumi-store/src/node_disk.rs
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -755,20 +755,33 @@
+         path: impl AsRef<std::path::Path>,
+         memory: Arc<dyn NodeDiskMemoryAdmission>,
+     ) -> std::result::Result<Arc<Self>, DiskOpenError> {
++        if let Some(owner) = Self::fixture_registered_for_path(path.as_ref(), &memory)? {
++            return Ok(owner);
++        }
++        let config = Self::fixture_config(path.as_ref())?;
++        Self::open_fixture(&config, memory, &CensusCancellation::default())
++    }
++    /// Test-only lookup keeps known installed custody authoritative even if a
++    /// destination path disappeared. Absence alone permits fresh fixture setup.
++    #[cfg(any(test, feature = "test-utils"))]
++    pub(crate) fn fixture_registered_for_path(
++        path: &std::path::Path,
++        memory: &Arc<dyn NodeDiskMemoryAdmission>,
++    ) -> std::result::Result<Option<Arc<Self>>, DiskOpenError> {
+         let existing = {
+             let installed = registry().try_lock().ok_or(DiskOpenError::RegistryBusy)?;
+             installed
+                 .find(|entry| {
+                     entry
+                         .config()
+-                        .is_some_and(|config| config.binding(path.as_ref()).is_ok())
++                        .is_some_and(|config| config.binding(path).is_ok())
+                 })
+                 .map(|entry| entry.owner().cloned())
+                 .transpose()?
+         };
+         if let Some(owner) = existing {
+             disk_memory::require(
+-                Arc::ptr_eq(owner.memory(), &memory),
++                Arc::ptr_eq(owner.memory(), memory),
+                 "fixture persistent owner has different memory admission",
+             )?;
+             for root in owner.roots.values() {
+@@ -782,10 +795,9 @@
+             {
+                 owner.reconcile(&CensusCancellation::default())?;
+             }
+-            return Ok(owner);
+-        }
+-        let config = Self::fixture_config(path.as_ref())?;
+-        Self::open_fixture(&config, memory, &CensusCancellation::default())
++            return Ok(Some(owner));
++        }
++        Ok(None)
+     }
+     /// Explicit bounded generic fixture policy. Production installation policy
+     /// retains one million files, one million subdirectories and 4096 owners in the server generator.
+diff --git a/crates/kasumi-store/src/node_disk/directory/tests.rs b/crates/kasumi-store/src/node_disk/directory/tests.rs
+--- a/crates/kasumi-store/src/node_disk/directory/tests.rs
++++ b/crates/kasumi-store/src/node_disk/directory/tests.rs
+@@ -255,7 +255,10 @@
+     config
+         .roots
+         .insert("fixture".into(), directory.path().join("not-created"));
+-    let memory = TestDiskMemory::new(1, 1);
++    let memory = TestDiskMemory::new(
++        TestDiskMemory::required_bookkeeping_bytes(1).unwrap() + 1,
++        1,
++    );
+     let error = retry_disk_registry(|| {
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     })
+diff --git a/crates/kasumi-store/src/node_disk/tests.rs b/crates/kasumi-store/src/node_disk/tests.rs
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -1688,7 +1688,9 @@
+ #[test]
+ fn disappeared_censused_and_closed_created_names_fence_without_credit() {
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+-    for censused in [true, false] {
++    for (censused, before_preparation) in
++        [(true, true), (true, false), (false, true), (false, false)]
++    {
+         let (_directory, config) = installation();
+         crate::private_files::create_directory(&config.roots["data"].join("nested")).unwrap();
+         if censused {
+@@ -1707,13 +1709,24 @@
+         }
+         drop(disk.open_file("data", Path::new("nested/file")).unwrap());
+         let before = disk.snapshot();
+-        std::fs::remove_file(config.roots["data"].join("nested/file")).unwrap();
+-        let prepared = disk
+-            .prepare_file("data", Path::new("nested/file"), None)
+-            .unwrap();
+-        let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+-        assert_eq!(allocations, 0);
++        let path = config.roots["data"].join("nested/file");
++        if before_preparation {
++            std::fs::remove_file(&path).unwrap();
++            // The enrolled parent's changed metadata now fences preparation.
++            let error = disk
++                .prepare_file("data", Path::new("nested/file"), None)
++                .err()
++                .unwrap();
++            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
++        } else {
++            let prepared = disk
++                .prepare_file("data", Path::new("nested/file"), None)
++                .unwrap();
++            std::fs::remove_file(&path).unwrap();
++            let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
++            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
++            assert_eq!(allocations, 0);
++        }
+         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+         assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+         assert_eq!(disk.snapshot().persistent_files, 1);
+@@ -1796,7 +1809,9 @@
+ #[test]
+ fn missing_enrolled_target_cannot_be_recreated_or_published_over() {
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+-    for publish in [false, true] {
++    for (publish, before_preparation) in
++        [(false, true), (false, false), (true, true), (true, false)]
++    {
+         let (_directory, config) = installation();
+         seed(&config, "target", 32 << 10);
+         let disk = open(config.clone(), fixture_memory.clone());
+@@ -1805,21 +1820,50 @@
+                 .unwrap()
+         });
+         let before = disk.snapshot();
+-        std::fs::remove_file(config.roots["data"].join("target")).unwrap();
+-        let (result, allocations) = if let Some(source) = source {
+-            let prepared = disk
+-                .prepare_publication(source, "data", Path::new("target"))
+-                .unwrap();
+-            crate::allocation_tests::measure(|| prepared.execute())
++        let target = config.roots["data"].join("target");
++        if before_preparation {
++            std::fs::remove_file(&target).unwrap();
++        }
++        let result = if let Some(source) = source {
++            match disk.prepare_publication(source, "data", Path::new("target")) {
++                Ok(prepared) => {
++                    assert!(!before_preparation);
++                    std::fs::remove_file(&target).unwrap();
++                    let (result, allocations) =
++                        crate::allocation_tests::measure(|| prepared.execute());
++                    assert_eq!(allocations, 0);
++                    result
++                }
++                Err(error) => {
++                    assert!(before_preparation);
++                    Err(error)
++                }
++            }
+         } else {
+-            let prepared = disk
+-                .prepare_file("data", Path::new("target"), Some(DiskWork::Foreground))
+-                .unwrap();
+-            crate::allocation_tests::measure(|| prepared.execute())
++            match disk.prepare_file("data", Path::new("target"), Some(DiskWork::Foreground)) {
++                Ok(prepared) => {
++                    assert!(!before_preparation);
++                    std::fs::remove_file(&target).unwrap();
++                    let (result, allocations) =
++                        crate::allocation_tests::measure(|| prepared.execute());
++                    assert_eq!(allocations, 0);
++                    result
++                }
++                Err(error) => {
++                    assert!(before_preparation);
++                    Err(error)
++                }
++            }
+         };
+-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+-        assert_eq!(allocations, 0);
+-        assert!(!config.roots["data"].join("target").exists());
++        assert_eq!(
++            result.unwrap_err().kind(),
++            if before_preparation {
++                io::ErrorKind::InvalidData
++            } else {
++                io::ErrorKind::NotFound
++            }
++        );
++        assert!(!target.exists());
+         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+         assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+         assert_eq!(disk.snapshot().persistent_files, before.persistent_files);
+@@ -1901,12 +1945,20 @@
+         disk.open_file("data", Path::new("nested/file"))
+             .unwrap_err()
+             .kind(),
+-        io::ErrorKind::NotFound
++        io::ErrorKind::InvalidData
+     );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     assert_eq!(
+         disk.snapshot().charged_bytes,
+         namespace_charge(&disk) + (32 << 10)
++    );
++    assert_eq!(
++        config.roots["data"]
++            .join("moved/file")
++            .metadata()
++            .unwrap()
++            .len(),
++        32 << 10
+     );
+     clean(&disk, &["moved/file"]);
+ }
+@@ -1976,28 +2028,41 @@
+ #[test]
+ fn publication_replaced_private_source_ancestor_fences_before_rename() {
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+-    let (_directory, config) = installation();
+-    let parent = config.roots["data"].join("nested");
+-    crate::private_files::create_directory(&parent).unwrap();
+-    seed(&config, "nested/source", 32 << 10);
+-    let disk = open(config.clone(), fixture_memory.clone());
+-    let source = disk.open_file("data", Path::new("nested/source")).unwrap();
+-    std::fs::rename(&parent, config.roots["data"].join("moved")).unwrap();
+-    crate::private_files::create_directory(&parent).unwrap();
+-    let prepared = disk
+-        .prepare_publication(source, "data", Path::new("nested/published"))
+-        .unwrap();
+-    let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+-    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+-    assert_eq!(allocations, 0);
+-    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+-    assert_eq!(
+-        disk.snapshot().charged_bytes,
+-        namespace_charge(&disk) + (32 << 10)
+-    );
+-    assert_eq!(disk.snapshot().open_files, 0);
+-    assert!(!parent.join("published").exists());
+-    clean(&disk, &["moved/source"]);
++    for before_preparation in [true, false] {
++        let (_directory, config) = installation();
++        let parent = config.roots["data"].join("nested");
++        let moved = config.roots["data"].join("moved");
++        crate::private_files::create_directory(&parent).unwrap();
++        seed(&config, "nested/source", 32 << 10);
++        let disk = open(config.clone(), fixture_memory.clone());
++        let source = disk.open_file("data", Path::new("nested/source")).unwrap();
++        let before = disk.snapshot();
++        if before_preparation {
++            std::fs::rename(&parent, &moved).unwrap();
++            crate::private_files::create_directory(&parent).unwrap();
++            let error = disk
++                .prepare_publication(source, "data", Path::new("nested/published"))
++                .err()
++                .unwrap();
++            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
++        } else {
++            let prepared = disk
++                .prepare_publication(source, "data", Path::new("nested/published"))
++                .unwrap();
++            std::fs::rename(&parent, &moved).unwrap();
++            crate::private_files::create_directory(&parent).unwrap();
++            let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
++            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
++            assert_eq!(allocations, 0);
++        }
++        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++        assert_eq!(disk.snapshot().open_files, 0);
++        assert!(!parent.join("published").exists());
++        assert!(!moved.join("published").exists());
++        assert_eq!(moved.join("source").metadata().unwrap().len(), 32 << 10);
++        clean(&disk, &["moved/source"]);
++    }
+ }
+ 
+ #[test]
+diff --git a/crates/kasumi-store/src/node_file/tests.rs b/crates/kasumi-store/src/node_file/tests.rs
+--- a/crates/kasumi-store/src/node_file/tests.rs
++++ b/crates/kasumi-store/src/node_file/tests.rs
+@@ -420,10 +420,15 @@
+     let unrelated = std::fs::read(&path).unwrap();
+     let original = std::fs::read(&moved).unwrap();
+ 
+-    assert!(
+-        Database::builder(owner.clone())
+-            .create_with_backend(owner.backend())
+-            .is_err()
++    let mut opening = Database::builder(owner.clone())
++        .retain_backend(Box::new(owner.backend()), redb::DatabaseOpenMode::Existing);
++    let original_failure = match opening.open().opening() {
++        redb::TerminalObservation::Returned(Err(error)) => std::ptr::from_ref(error),
++        _ => panic!("substituted descriptor opening must retain its original error"),
++    };
++    assert_eq!(
++        opening.report().settlement(),
++        redb::DatabaseOpenSettlement::Retained
+     );
+     assert_eq!(original, std::fs::read(&moved).unwrap());
+     assert_eq!(unrelated, std::fs::read(&path).unwrap());
+@@ -432,8 +437,18 @@
+     assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+     assert!(owner.backend().write(0, b"must not write").is_err());
+     assert!(NodeStore::open_existing(&moved, ID, disk.clone(), fixture_scratch.clone()).is_err());
+-    // Failed database construction closes the actual backend even while this
+-    // NodeFile Arc survives. Only an explicit drained census reopens admission.
++    // The canonical opening owner keeps the actual backend and original error
++    // until explicit positive close, even while this NodeFile Arc survives.
++    assert_eq!(disk.snapshot().open_files, 1);
++    assert_eq!(
++        opening.close().settlement(),
++        redb::DatabaseOpenSettlement::Closed
++    );
++    let redb::TerminalObservation::Returned(Err(error)) = opening.report().opening() else {
++        panic!("positive close must preserve the original opening error");
++    };
++    assert_eq!(std::ptr::from_ref(error), original_failure);
++    // Only an explicit drained census reopens admission.
+     assert_eq!(disk.snapshot().open_files, 0);
+     assert!(owner.backend().len().is_err());
+     disk.reconcile(&crate::CensusCancellation::default())
+diff --git a/crates/kasumi-store/src/single_catalog/tests.rs b/crates/kasumi-store/src/single_catalog/tests.rs
+--- a/crates/kasumi-store/src/single_catalog/tests.rs
++++ b/crates/kasumi-store/src/single_catalog/tests.rs
+@@ -229,12 +229,14 @@
+ #[tokio::test]
+ async fn buffered_singleton_success_publishes_only_on_claim_and_abandonment_preserves_borrowers()
+ -> Result<()> {
+-    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+-    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+-    let fixture_scratch =
+-        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+     for installed in ["fresh", "closed", "borrowed"] {
+         for claim in [false, true] {
++            // Each case models one independent installed node. Its physical
++            // registry keeps the admitted owner envelope for that installation.
++            let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++            let scratch_directory = crate::test_utils::private_tempdir().unwrap();
++            let fixture_scratch =
++                crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+             let (_directory, node) = node(fixture_memory.clone(), fixture_scratch.clone())?;
+             let mut original = if installed != "fresh" {
+                 Some(open(input(node.clone(), Mode::Initialize)).await?)
+diff --git a/crates/kasumi-store/src/test_utils.rs b/crates/kasumi-store/src/test_utils.rs
+--- a/crates/kasumi-store/src/test_utils.rs
++++ b/crates/kasumi-store/src/test_utils.rs
+@@ -550,21 +550,36 @@
+     }
+ }
+ 
++// An absent destination must be created beneath an already installed owner.
++// Select that owner using the destination as a prospective leaf; for an existing
++// directory, retain the original fixture root selection via a child anchor.
++// Consumer constructors then perform exact managed open_or_create acquisition.
++fn fixture_directory_owner(
++    root: &std::path::Path,
++    memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
++) -> anyhow::Result<std::sync::Arc<crate::NodeDisk>> {
++    let anchor = root.join("directory-accounting-anchor");
++    if let Some(owner) =
++        retry_disk_registry(|| crate::NodeDisk::fixture_registered_for_path(&anchor, &memory))?
++    {
++        return Ok(owner);
++    }
++    let selection = if root.try_exists()? {
++        anchor
++    } else {
++        root.to_owned()
++    };
++    retry_disk_registry(|| crate::NodeDisk::fixture_for_path(&selection, memory.clone()))
++        .map_err(Into::into)
++}
++
+ impl crate::FilesystemAuditArchive {
+     pub fn open_fixture(
+         root: impl AsRef<std::path::Path>,
+         memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
+     ) -> anyhow::Result<Self> {
+         let root = root.as_ref();
+-        if !root.exists() {
+-            crate::private_files::create_directory(root)?;
+-        }
+-        let disk = retry_disk_registry(|| {
+-            crate::NodeDisk::fixture_for_path(
+-                root.join("archive-accounting-anchor"),
+-                memory.clone(),
+-            )
+-        })?;
++        let disk = fixture_directory_owner(root, memory)?;
+         Self::open(root, disk)
+     }
+ }
+@@ -576,13 +591,55 @@
+         memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
+     ) -> anyhow::Result<Self> {
+         let root = root.as_ref();
+-        if !root.exists() {
+-            crate::private_files::create_directory(root)?;
+-        }
++        let disk = fixture_directory_owner(root, memory)?;
++        Self::new(root, max_bytes, disk)
++    }
++}
++
++#[cfg(test)]
++mod fixture_directory_tests {
++    use super::*;
++
++    #[test]
++    fn consumer_fixture_creation_uses_the_installed_owner_with_a_live_file() {
++        let root = private_tempdir().unwrap();
++        let memory = TestDiskMemory::new(256 << 20, 4096);
+         let disk = retry_disk_registry(|| {
+-            crate::NodeDisk::fixture_for_path(root.join("backup-accounting-anchor"), memory.clone())
+-        })?;
+-        Self::new(root, max_bytes, disk)
++            crate::NodeDisk::fixture_for_path(root.path().join("owned"), memory.clone())
++        })
++        .unwrap();
++        let file = disk
++            .create_file(
++                "fixture",
++                std::path::Path::new("owned"),
++                crate::DiskWork::Foreground,
++            )
++            .unwrap();
++        let before = disk.snapshot();
++        let archive = crate::FilesystemAuditArchive::open_fixture(
++            root.path().join("archive"),
++            memory.clone(),
++        )
++        .unwrap();
++        let backup = crate::FilesystemBackupDestination::new_fixture(
++            root.path().join("backup"),
++            64 << 20,
++            memory.clone(),
++        )
++        .unwrap();
++        let after = disk.snapshot();
++        assert_eq!(after.phase, crate::NodeDiskPhase::Open);
++        assert_eq!(after.open_files, before.open_files);
++        assert_eq!(after.persistent_files, before.persistent_files);
++        assert_eq!(
++            after.persistent_directories,
++            before.persistent_directories + 2
++        );
++        assert_eq!(file.observed_len().unwrap(), 0);
++        drop((archive, backup, file));
++        disk.reconcile(&crate::CensusCancellation::default())
++            .unwrap();
++        assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+     }
+ }
+ 

@@ -1,0 +1,22 @@
+--- 113-base/lifecycle.rs
++++ current/lifecycle.rs
+@@ -297,7 +297,18 @@
+             }
+         })
+         .await
+-        .unwrap()
++        .unwrap_or_else(|error| {
++            panic!(
++                "control leader wait failed: {error}; states: {:?}",
++                self.nodes
++                    .iter()
++                    .map(|(id, db)| (
++                        *id,
++                        format!("{:?}", db.raft_group().raft().metrics().borrow())
++                    ))
++                    .collect::<Vec<_>>()
++            )
++        })
+     }
+     // A lost Raft acknowledgement is ambiguous even for an input expected to
+     // reject. Resolve the exact permanent phase and retry the unchanged input

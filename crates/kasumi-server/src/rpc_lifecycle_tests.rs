@@ -3,9 +3,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use kasumi_client::{KasumiClientConfig, KasumiLifecycleClient};
 use kasumi_engine::{LifecycleSigner, ReplicaPlacement, ReplicatedBootstrap};
 use kasumi_serving::{ControlTrust, digest};
-use kasumi_store::{
-    NodeStore, StorageAccess, TenantStorageSet, TenantStore, test_utils::LocalKeyProvider,
-};
+use kasumi_store::{StorageAccess, TenantStorageSet, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_transport::ClientAuthentication;
 use kasumi_types::*;
 use serde_json::json;
@@ -14,6 +12,17 @@ use std::{
     time::Duration,
 };
 use uuid::Uuid;
+
+// This fixture's native TLS listeners isolate the request and receipt path
+// from per-connection durable audit latency. The Authenticator and Control
+// Raft retain their real SecurityAudit; only this listener sink changes.
+struct FixtureListenerAudit;
+#[async_trait::async_trait]
+impl crate::tls::TlsHandshakeAudit for FixtureListenerAudit {
+    async fn record(&self, _: &crate::tls::TlsHandshakeEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition()
@@ -36,13 +45,21 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         jwks,
     )
     .await;
-    let audit_store = TenantStore::initialize_catalog(
-        NodeStore::create_new_fixture(
-            directory.path().join("audit.redb"),
+    kasumi_store::private_files::create_directory(&directory.path().join("control")).unwrap();
+    let physical = crate::runtime_storage_fixtures::physical(
+        &directory.path().join("control"),
+        Default::default(),
+    )
+    .unwrap();
+    let audit_node = physical
+        .create_new(
+            directory.path().join("control/persistent/audit.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
         )
-        .unwrap(),
+        .unwrap();
+    let mut physical_nodes = vec![audit_node.clone()];
+    let audit_store = TenantStore::initialize_catalog(
+        audit_node,
         kasumi_engine::SECURITY_TENANT.into(),
         Arc::new(LocalKeyProvider::new([88; 32])),
         StorageAccess::security_audit(),
@@ -52,7 +69,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let audit = kasumi_engine::SecurityAudit::initialize(
         audit_store.clone(),
         kasumi_types::AuditRetentionBudget::default(),
-        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        physical.admission.clone(),
     )
     .unwrap();
     auth.install_audit(audit.clone()).unwrap();
@@ -93,13 +110,19 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let issuer_router = Arc::new(kasumi_raft::InProcessRouter::default());
     let mut issuers = Vec::new();
     for id in 1..=3 {
-        let stores = TenantStorageSet::initialize_catalogs(
-            NodeStore::create_new_fixture(
-                directory.path().join(format!("issuer-{id}.redb")),
+        let issuer_root = directory.path().join(format!("issuer-{id}"));
+        kasumi_store::private_files::create_directory(&issuer_root).unwrap();
+        let issuer_physical =
+            crate::runtime_storage_fixtures::physical(&issuer_root, Default::default()).unwrap();
+        let node = issuer_physical
+            .create_new(
+                issuer_root.join("persistent/issuer.redb"),
                 kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
             )
-            .unwrap(),
+            .unwrap();
+        physical_nodes.push(node.clone());
+        let stores = TenantStorageSet::initialize_catalogs(
+            node,
             issuer_install.tenant(),
             Arc::new(LocalKeyProvider::new([id as u8 + 50; 32])),
             Arc::new(LocalKeyProvider::new([id as u8 + 60; 32])),
@@ -164,17 +187,9 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
                     .collect(),
             },
             issuer_router.clone(),
-            kasumi_raft::Config {
-                heartbeat_interval: 30,
-                election_timeout_min: 100,
-                election_timeout_max: 180,
-                ..Default::default()
-            },
-            crate::authority_runtime::request_budget(
-                &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
-            )
-            .unwrap(),
-            kasumi_raft::SnapshotBufferOwner::fixture(),
+            kasumi_raft::server_config(),
+            crate::authority_runtime::request_budget(&issuer_physical.admission).unwrap(),
+            issuer_physical.admission.snapshot_buffer_owner().unwrap(),
         )
         .await
         .unwrap();
@@ -186,12 +201,19 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         issuers.push(issuer);
     }
     issuers[0].initialize().await.unwrap();
-    let issuer = tokio::time::timeout(Duration::from_secs(10), async {
+    let issuer = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             for issuer in &issuers {
                 let m = issuer.raft_group().raft().metrics().borrow().clone();
                 if m.current_leader == Some(m.id)
-                    && issuer.raft_group().linearizable_barrier().await.is_ok()
+                    && matches!(
+                        tokio::time::timeout(
+                            Duration::from_secs(2),
+                            issuer.raft_group().linearizable_barrier()
+                        )
+                        .await,
+                        Ok(Ok(_))
+                    )
                 {
                     return issuer.clone();
                 }
@@ -200,7 +222,15 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         }
     })
     .await
-    .unwrap();
+    .unwrap_or_else(|_| {
+        panic!(
+            "issuer quorum readiness timed out: {:?}",
+            issuers
+                .iter()
+                .map(|issuer| issuer.raft_group().raft().metrics().borrow().clone())
+                .collect::<Vec<_>>()
+        )
+    });
     let installation = LifecycleInstallation {
         root: root.clone(),
         generation: 1,
@@ -259,13 +289,17 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let group = format!("__kasumi_control/{incarnation}");
     let mut nodes = Vec::new();
     for id in 1..=3 {
-        let stores = TenantStorageSet::initialize_catalogs(
-            NodeStore::create_new_fixture(
-                directory.path().join(format!("node-{id}.redb")),
+        let node = physical
+            .create_new(
+                directory
+                    .path()
+                    .join(format!("control/persistent/node-{id}.redb")),
                 kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
             )
-            .unwrap(),
+            .unwrap();
+        physical_nodes.push(node.clone());
+        let stores = TenantStorageSet::initialize_catalogs(
+            node,
             "__kasumi_control".into(),
             Arc::new(LocalKeyProvider::new([id as u8; 32])),
             Arc::new(LocalKeyProvider::new([id as u8 + 10; 32])),
@@ -278,12 +312,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
             stores,
             &bootstrap,
             router.clone(),
-            kasumi_raft::Config {
-                heartbeat_interval: 30,
-                election_timeout_min: 100,
-                election_timeout_max: 180,
-                ..Default::default()
-            },
+            kasumi_raft::server_config(),
             audit.clone(),
         )
         .await
@@ -294,12 +323,19 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     kasumi_engine::initialize_replicated(&nodes[0], &bootstrap)
         .await
         .unwrap();
-    let leader = tokio::time::timeout(Duration::from_secs(10), async {
+    let leader = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             for node in &nodes {
                 let metric = node.raft_group().raft().metrics().borrow().clone();
                 if metric.current_leader == Some(metric.id)
-                    && node.raft_group().linearizable_barrier().await.is_ok()
+                    && matches!(
+                        tokio::time::timeout(
+                            Duration::from_secs(2),
+                            node.raft_group().linearizable_barrier()
+                        )
+                        .await,
+                        Ok(Ok(_))
+                    )
                 {
                     return node.clone();
                 }
@@ -308,7 +344,15 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         }
     })
     .await
-    .unwrap();
+    .unwrap_or_else(|_| {
+        panic!(
+            "Control quorum readiness timed out: {:?}",
+            nodes
+                .iter()
+                .map(|node| node.raft_group().raft().metrics().borrow().clone())
+                .collect::<Vec<_>>()
+        )
+    });
     let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("https://localhost:{}", socket.local_addr().unwrap().port());
     let pin = server_identity.certificate_pin();
@@ -319,20 +363,63 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         },
     )
     .unwrap();
+    let first_lifecycle_response = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let primary_handler_body_consumed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let lifecycle_pool_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let primary_lifecycle_effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let routes = tonic::service::Routes::new(
         NativeLifecycleControl::new(leader.clone(), signer.clone(), auth.clone())
             .unwrap()
             .service(),
     )
     .add_service(NativeAuthority::new(issuer.clone(), auth.clone()).service())
-    .into_axum_router();
+    .into_axum_router()
+    .layer(axum::middleware::from_fn({
+        let first = first_lifecycle_response.clone();
+        let completed = primary_handler_body_consumed.clone();
+        let active = lifecycle_pool_active.clone();
+        let effects = primary_lifecycle_effects.clone();
+        move |request: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
+            let first = first.clone();
+            let completed = completed.clone();
+            let active = active.clone();
+            let effects = effects.clone();
+            async move {
+                let execute = request.uri().path() == "/kasumi.v1.KasumiAuthority/ExecuteLifecycle";
+                if execute && active.load(std::sync::atomic::Ordering::SeqCst) {
+                    effects.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                let reply = next.run(request).await;
+                if execute && first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    // Consume the real unary response body before publishing
+                    // completion. A returned service response alone can still
+                    // contain a pending effect or response release in its body.
+                    assert_eq!(reply.status(), axum::http::StatusCode::OK);
+                    let body = axum::body::to_bytes(reply.into_body(), 1 << 20)
+                        .await
+                        .expect("real lifecycle handler body must complete");
+                    assert!(body.len() > 5, "real lifecycle receipt frame missing");
+                    completed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    // Lose only this response after the real handler and body
+                    // completed. The caller must read its exact receipt.
+                    return axum::http::Response::builder()
+                        .status(200)
+                        .header("content-type", "application/grpc")
+                        .header("grpc-status", "14")
+                        .body(axum::body::Body::empty())
+                        .unwrap();
+                }
+                reply
+            }
+        }
+    }));
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(crate::tls::serve_tls(
         socket,
         tls,
         routes,
         crate::tls::ListenerLimits::default(),
-        audit.clone(),
+        Arc::new(FixtureListenerAudit),
         stopped,
     ));
     let config = KasumiClientConfig {
@@ -540,11 +627,148 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
             .await
             .is_err()
     );
+    // A second installed route deliberately returns one stale but well-formed
+    // absent receipt. It counts any lifecycle effect that reaches the route.
+    let shadow_socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut shadow_config = config.clone();
+    shadow_config.endpoint = format!(
+        "https://localhost:{}",
+        shadow_socket.local_addr().unwrap().port()
+    );
+    let shadow_tls = kasumi_transport::server_config(
+        &server_identity,
+        ClientAuthentication::Required {
+            trusted_ca_pem: ca.as_bytes(),
+        },
+    )
+    .unwrap();
+    let shadow_probe_response = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let shadow_absence = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let shadow_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let shadow_effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let shadow_routes =
+        tonic::service::Routes::new(NativeAuthority::new(issuer.clone(), auth.clone()).service())
+            .into_axum_router()
+            .layer(axum::middleware::from_fn({
+                let probe = shadow_probe_response.clone();
+                let stale = shadow_absence.clone();
+                let completed = primary_handler_body_consumed.clone();
+                let reads = shadow_reads.clone();
+                let effects = shadow_effects.clone();
+                move |request: axum::http::Request<axum::body::Body>,
+                      next: axum::middleware::Next| {
+                    let probe = probe.clone();
+                    let stale = stale.clone();
+                    let completed = completed.clone();
+                    let reads = reads.clone();
+                    let effects = effects.clone();
+                    async move {
+                        let path = request.uri().path();
+                        let is_receipt = path == "/kasumi.v1.KasumiAuthority/ReadLifecycleReceipt";
+                        let probe_read =
+                            is_receipt && probe.swap(false, std::sync::atomic::Ordering::SeqCst);
+                        let stale_read = is_receipt
+                            && !probe_read
+                            && stale.swap(false, std::sync::atomic::Ordering::SeqCst);
+                        if probe_read || stale_read {
+                            if stale_read {
+                                assert!(
+                                    completed.load(std::sync::atomic::Ordering::SeqCst),
+                                    "shadow absence must follow consumed primary handler body"
+                                );
+                            }
+                            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let payload = kasumi_client::proto::AuthorityJsonResponse {
+                                response_json: b"null".to_vec(),
+                            };
+                            let encoded = prost::Message::encode_to_vec(&payload);
+                            let mut framed = vec![0u8];
+                            framed.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+                            framed.extend_from_slice(&encoded);
+                            return axum::http::Response::builder()
+                                .status(200)
+                                .header("content-type", "application/grpc")
+                                .header("grpc-status", "0")
+                                .body(axum::body::Body::from(framed))
+                                .unwrap();
+                        }
+                        if path == "/kasumi.v1.KasumiAuthority/ExecuteLifecycle" {
+                            effects.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        next.run(request).await
+                    }
+                }
+            }));
+    let (shadow_stop, shadow_stopped) = tokio::sync::watch::channel(false);
+    let shadow_task = tokio::spawn(crate::tls::serve_tls(
+        shadow_socket,
+        shadow_tls,
+        shadow_routes,
+        crate::tls::ListenerLimits::default(),
+        Arc::new(FixtureListenerAudit),
+        shadow_stopped,
+    ));
+    // Prove the injected frame decodes as an absent exact receipt.
+    let mut shadow_probe =
+        kasumi_client::KasumiAuthorityClient::connect(&shadow_config, issuer_trust.clone())
+            .await
+            .unwrap();
+    assert!(
+        shadow_probe
+            .read_lifecycle_receipt(&authority_admin, &accept.reference())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    shadow_reads.store(0, std::sync::atomic::Ordering::SeqCst);
+    shadow_absence.store(true, std::sync::atomic::Ordering::SeqCst);
+    drop(shadow_probe);
+    let credential = authority_admin.clone();
+    let mut effect_pool = kasumi_client::KasumiAuthorityPool::new(
+        BTreeMap::from([(1, config.clone()), (2, shadow_config)]),
+        issuer_trust.clone(),
+        Arc::new(move || Ok(zeroize::Zeroizing::new(credential.clone()))),
+    )
+    .unwrap();
+    primary_handler_body_consumed.store(false, std::sync::atomic::Ordering::SeqCst);
+    lifecycle_pool_active.store(true, std::sync::atomic::Ordering::SeqCst);
+    first_lifecycle_response.store(true, std::sync::atomic::Ordering::SeqCst);
+    let outcome = effect_pool
+        .execute_lifecycle(&accept, Duration::from_secs(30))
+        .await;
+    lifecycle_pool_active.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        primary_handler_body_consumed.load(std::sync::atomic::Ordering::SeqCst),
+        "the original issuer effect must finish before reconciliation"
+    );
+    match outcome {
+        Ok(receipt) => assert_eq!(receipt.receipt.request_sha256, accept.digest().unwrap()),
+        Err(kasumi_client::ClientError::Transport(status)) => {
+            assert_eq!(status.code(), tonic::Code::Unavailable);
+            let detail: kasumi_types::Error = serde_json::from_slice(status.details()).unwrap();
+            assert_eq!(detail.code, kasumi_types::ErrorCode::UnknownOutcome);
+        }
+        Err(other) => panic!("ambiguous lifecycle effect returned a definite error: {other}"),
+    }
     let accepted = authority_client
-        .execute_lifecycle(&authority_admin, &accept)
+        .read_lifecycle_receipt(&authority_admin, &accept.reference())
         .await
+        .unwrap()
         .unwrap();
     assert_eq!(accepted.receipt.request_sha256, accept.digest().unwrap());
+    assert_eq!(
+        primary_lifecycle_effects.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(shadow_reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        shadow_effects.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "an absent lifecycle receipt after ambiguity cannot authorize another ExecuteLifecycle"
+    );
+    drop(effect_pool);
+    shadow_stop.send_replace(true);
+    shadow_task.await.unwrap().unwrap();
     let boot = kasumi_serving::LifecycleBoot::new(
         issuer_trust.clone(),
         target
@@ -733,4 +957,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     nodes.clear();
     audit.shutdown().await.unwrap();
     audit_store.shutdown().await.unwrap();
+    for node in physical_nodes {
+        node.shutdown().await.unwrap();
+    }
 }

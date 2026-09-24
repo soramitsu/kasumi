@@ -1,0 +1,139 @@
+00000001000ff454 t <core::result::Result<alloc::sync::Arc<kasumi_engine::service::Database>, tokio::time::error::Elapsed>>::unwrap_or_else::<<lifecycle::Fixture>::leader::{closure#0}::{closure#1}>
+00000001000ec498 t <alloc::vec::Vec<(u64, alloc::string::String)>>::extend_trusted::<core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>
+0000000100098c8c t core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_phase::{closure#0}>>>
+0000000100098cb0 t core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>>>
+0000000100098cd4 t core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>>>
+0000000100098cf8 t core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>>>
+0000000100098d1c t core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>>>
+000000010009a3dc t core::ptr::drop_glue::<alloc::boxed::Box<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+000000010009a43c t core::ptr::drop_glue::<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>>
+000000010009a49c t core::ptr::drop_glue::<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>>
+000000010009a4fc t core::ptr::drop_glue::<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>>
+000000010009a55c t core::ptr::drop_glue::<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>>
+000000010009a9b4 t core::ptr::drop_glue::<tokio::time::timeout::Timeout<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}>>
+000000010009aa10 t core::ptr::drop_glue::<tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#0}>>
+000000010009aa6c t core::ptr::drop_glue::<tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#1}>>
+000000010009ab80 t core::ptr::drop_glue::<tokio::time::timeout::Timeout<lifecycle::recovery_control::resolve_phase::{closure#0}::{closure#0}>>
+000000010009cd6c t core::ptr::drop_glue::<<alloc::vec::Vec<(u64, alloc::string::String)>>::extend_trusted<core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>::{closure#0}>
+000000010009cf88 t core::ptr::drop_glue::<core::iter::adapters::map::map_fold<(&u64, &alloc::sync::Arc<kasumi_engine::service::Database>), (u64, alloc::string::String), (), <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}, core::iter::traits::iterator::Iterator::for_each::call<(u64, alloc::string::String), <alloc::vec::Vec<(u64, alloc::string::String)>>::extend_trusted<core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>::{closure#0}>::{closure#0}>::{closure#0}>
+000000010009d234 t core::ptr::drop_glue::<core::iter::traits::iterator::Iterator::for_each::call<(u64, alloc::string::String), <alloc::vec::Vec<(u64, alloc::string::String)>>::extend_trusted<core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>::{closure#0}>::{closure#0}>
+000000010009da0c t core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}>
+000000010009dc48 t core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#0}>
+000000010009ddc8 t core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#1}>
+000000010009e110 t core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}::{closure#0}>
+00000001000a0e48 t core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>
+00000001000a5094 t core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>
+00000001000a5334 t core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>
+00000001000a5440 t core::ptr::drop_glue::<lifecycle::recovery_control::complete_recovery::{closure#0}>
+00000001000a82d8 t core::ptr::drop_glue::<lifecycle::recovery_control::prepare_completion::{closure#0}>
+00000001000aa448 t core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_control::{closure#0}>
+00000001000aa4d0 t core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_control_for::{closure#0}>
+00000001000aaaac t core::ptr::drop_glue::<lifecycle::recovery_control::exercise_route_publication::{closure#0}>
+00000001000aba7c t core::ptr::drop_glue::<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>
+00000001000ad264 t core::ptr::drop_glue::<lifecycle::recovery_control::exercise_completed_recovery::{closure#0}>
+00000001000ada30 t core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>
+00000001000adb60 t core::ptr::drop_glue::<lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}>
+00000001000fc200 t tokio::time::timeout::timeout::<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}>
+00000001000fc404 t tokio::time::timeout::timeout::<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#0}>
+00000001000fc614 t tokio::time::timeout::timeout::<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#1}>
+00000001000fcc4c t tokio::time::timeout::timeout::<lifecycle::recovery_control::resolve_phase::{closure#0}::{closure#0}>
+0000000100021290 t <core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}> as core::iter::traits::iterator::Iterator>::fold::<(), core::iter::traits::iterator::Iterator::for_each::call<(u64, alloc::string::String), <alloc::vec::Vec<(u64, alloc::string::String)>>::extend_trusted<core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>::{closure#0}>::{closure#0}>
+00000001000ed1e8 t <alloc::vec::Vec<(u64, alloc::string::String)> as core::iter::traits::collect::FromIterator<(u64, alloc::string::String)>>::from_iter::<core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>
+0000000100021650 t <core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}> as core::iter::traits::iterator::Iterator>::collect::<alloc::vec::Vec<(u64, alloc::string::String)>>
+0000000100021664 t <core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}> as core::iter::traits::iterator::Iterator>::for_each::<<alloc::vec::Vec<(u64, alloc::string::String)>>::extend_trusted<core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>::{closure#0}>
+00000001000f33c8 t <alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>> as core::iter::traits::iterator::Iterator>::map::<(u64, alloc::string::String), <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>
+00000001000f34dc t <alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>> as core::iter::traits::iterator::Iterator>::fold::<(), core::iter::adapters::map::map_fold<(&u64, &alloc::sync::Arc<kasumi_engine::service::Database>), (u64, alloc::string::String), (), <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}, core::iter::traits::iterator::Iterator::for_each::call<(u64, alloc::string::String), <alloc::vec::Vec<(u64, alloc::string::String)>>::extend_trusted<core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>::{closure#0}>::{closure#0}>::{closure#0}>
+00000001000f40d0 t <alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::all::<lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#4}>
+00000001000f410c t <alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::all::<lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#5}>
+00000001000f4148 t <alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::all::<lifecycle::recovery_control::prepare_completion::{closure#0}::{closure#0}>
+00000001000f4184 t <alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::try_fold::<(), core::iter::traits::iterator::Iterator::all::check<&kasumi_types::recovery::RecoveryVoterProgress, lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#4}>::{closure#0}, core::ops::control_flow::ControlFlow<()>>
+00000001000f428c t <alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::try_fold::<(), core::iter::traits::iterator::Iterator::all::check<&kasumi_types::recovery::RecoveryVoterProgress, lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#5}>::{closure#0}, core::ops::control_flow::ControlFlow<()>>
+00000001000f4394 t <alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::try_fold::<(), core::iter::traits::iterator::Iterator::all::check<&kasumi_types::recovery::RecoveryVoterProgress, lifecycle::recovery_control::prepare_completion::{closure#0}::{closure#0}>::{closure#0}, core::ops::control_flow::ControlFlow<()>>
+00000001000ed454 t <alloc::vec::Vec<(u64, alloc::string::String)>>::extend_trusted::<core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>::{closure#0}
+0000000100021874 t core::iter::adapters::map::map_fold::<(&u64, &alloc::sync::Arc<kasumi_engine::service::Database>), (u64, alloc::string::String), (), <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}, core::iter::traits::iterator::Iterator::for_each::call<(u64, alloc::string::String), <alloc::vec::Vec<(u64, alloc::string::String)>>::extend_trusted<core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>::{closure#0}>::{closure#0}>::{closure#0}
+00000001000daaf8 t core::iter::traits::iterator::Iterator::all::check::<&kasumi_types::recovery::RecoveryVoterProgress, lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#4}>::{closure#0}
+00000001000dab48 t core::iter::traits::iterator::Iterator::all::check::<&kasumi_types::recovery::RecoveryVoterProgress, lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#5}>::{closure#0}
+00000001000dab98 t core::iter::traits::iterator::Iterator::all::check::<&kasumi_types::recovery::RecoveryVoterProgress, lifecycle::recovery_control::prepare_completion::{closure#0}::{closure#0}>::{closure#0}
+00000001000db19c t core::iter::traits::iterator::Iterator::for_each::call::<(u64, alloc::string::String), <alloc::vec::Vec<(u64, alloc::string::String)>>::extend_trusted<core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>::{closure#0}>::{closure#0}
+00000001000229f8 t <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}
+0000000100024cc0 t <lifecycle::Fixture>::leader::{closure#0}::{closure#0}
+0000000100025238 t <lifecycle::Fixture>::leader::{closure#0}::{closure#1}
+000000010011977c t lifecycle::recovery_control::prepare_next::{closure#0}::{closure#0}
+000000010011a150 t lifecycle::recovery_control::prepare_next::{closure#0}::{closure#1}
+000000010011b9c4 t lifecycle::recovery_control::resolve_phase::{closure#0}::{closure#0}
+000000010011c5f8 t lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#0}
+000000010011c7bc t lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#2}
+000000010011c918 t lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#3}
+000000010011d168 t lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#4}
+000000010011d190 t lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#5}
+000000010011d1b8 t lifecycle::recovery_control::complete_recovery::{closure#0}::{closure#1}
+000000010011d4b0 t lifecycle::recovery_control::prepare_completion::{closure#0}::{closure#0}
+000000010011d4e0 t lifecycle::recovery_control::resolve_expired_completion::{closure#0}::{closure#0}
+000000010011d70c t lifecycle::recovery_control::resolve_expired_completion::{closure#0}::{closure#1}
+000000010003dff8 t <lifecycle::Fixture>::leader::{closure#0}
+000000010011dfa8 t lifecycle::recovery_control::prepare_next::{closure#0}
+000000010011ebdc t lifecycle::recovery_control::resolve_phase::{closure#0}
+000000010011ef80 t lifecycle::recovery_control::complete_recovery::{closure#0}
+00000001001308dc t lifecycle::recovery_control::prepare_completion::{closure#0}
+000000010013e6dc t lifecycle::recovery_control::commit_next_control::{closure#0}
+000000010013e958 t lifecycle::recovery_control::commit_next_control_for::{closure#0}
+000000010013fe00 t lifecycle::recovery_control::exercise_route_publication::{closure#0}
+0000000100146cf4 t lifecycle::recovery_control::resolve_expired_completion::{closure#0}
+000000010014da4c t lifecycle::recovery_control::exercise_completed_recovery::{closure#0}
+000000010014fdf4 t lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}
+000000010014fffc t lifecycle::recovery_control::snapshot::{closure#0}
+0000000100150800 t lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}
+00000001000fd728 t <tokio::time::timeout::Timeout<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}>>::new_with_delay
+00000001000fd778 t <tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#0}>>::new_with_delay
+00000001000fd7c8 t <tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#1}>>::new_with_delay
+00000001000fd8b8 t <tokio::time::timeout::Timeout<lifecycle::recovery_control::resolve_phase::{closure#0}::{closure#0}>>::new_with_delay
+00000001000fdaf0 t <tokio::time::timeout::Timeout<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}>>::project
+00000001000fdb28 t <tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#0}>>::project
+00000001000fdb60 t <tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#1}>>::project
+00000001000fdc08 t <tokio::time::timeout::Timeout<lifecycle::recovery_control::resolve_phase::{closure#0}::{closure#0}>>::project
+00000001000cb664 t lifecycle::recovery_control::exercise_completed_recovery
+00000001000d291c t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_phase::{closure#0}>> as core::future::into_future::IntoFuture>::into_future
+00000001000d2930 t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>> as core::future::into_future::IntoFuture>::into_future
+00000001000d2944 t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>> as core::future::into_future::IntoFuture>::into_future
+00000001000d2958 t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>> as core::future::into_future::IntoFuture>::into_future
+00000001000d296c t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>> as core::future::into_future::IntoFuture>::into_future
+00000001000fddb0 t <tokio::time::timeout::Timeout<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}> as core::future::into_future::IntoFuture>::into_future
+00000001000fdde0 t <tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#0}> as core::future::into_future::IntoFuture>::into_future
+00000001000fde10 t <tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#1}> as core::future::into_future::IntoFuture>::into_future
+00000001000fdea0 t <tokio::time::timeout::Timeout<lifecycle::recovery_control::resolve_phase::{closure#0}::{closure#0}> as core::future::into_future::IntoFuture>::into_future
+000000010003e578 t <<lifecycle::Fixture>::leader::{closure#0}::{closure#0} as core::future::into_future::IntoFuture>::into_future
+0000000100158cfc t <lifecycle::recovery_control::prepare_next::{closure#0}::{closure#0} as core::future::into_future::IntoFuture>::into_future
+0000000100158d2c t <lifecycle::recovery_control::prepare_next::{closure#0}::{closure#1} as core::future::into_future::IntoFuture>::into_future
+0000000100158dbc t <lifecycle::recovery_control::resolve_phase::{closure#0}::{closure#0} as core::future::into_future::IntoFuture>::into_future
+000000010003e6c8 t <<lifecycle::Fixture>::leader::{closure#0} as core::future::into_future::IntoFuture>::into_future
+0000000100158e1c t <lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future
+0000000100158eac t <lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future
+0000000100158f0c t <lifecycle::recovery_control::commit_next_control::{closure#0} as core::future::into_future::IntoFuture>::into_future
+0000000100158f3c t <lifecycle::recovery_control::commit_next_control_for::{closure#0} as core::future::into_future::IntoFuture>::into_future
+0000000100158f6c t <lifecycle::recovery_control::exercise_completed_recovery::{closure#0} as core::future::into_future::IntoFuture>::into_future
+0000000100158fcc t <lifecycle::recovery_control::snapshot::{closure#0} as core::future::into_future::IntoFuture>::into_future
+00000001000edfa4 t <alloc::vec::Vec<(u64, alloc::string::String)> as alloc::vec::spec_from_iter::SpecFromIter<(u64, alloc::string::String), core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>>::from_iter
+0000000100021ea0 t <core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}> as core::iter::traits::collect::IntoIterator>::into_iter
+0000000100022398 t <core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}> as core::iter::traits::iterator::Iterator>::size_hint
+00000001000b4068 t <alloc::boxed::Box<lifecycle::recovery_control::resolve_phase::{closure#0}> as core::ops::drop::Drop>::drop
+00000001000b4138 t <alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}> as core::ops::drop::Drop>::drop
+00000001000b4208 t <alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}> as core::ops::drop::Drop>::drop
+00000001000b42d8 t <alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}> as core::ops::drop::Drop>::drop
+00000001000b43a8 t <alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}> as core::ops::drop::Drop>::drop
+00000001000fe230 t <tokio::time::timeout::Timeout<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}> as core::future::future::Future>::poll
+00000001000fe2ec t <tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#0}> as core::future::future::Future>::poll
+00000001000fe3d8 t <tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#1}> as core::future::future::Future>::poll
+00000001000fe63c t <tokio::time::timeout::Timeout<lifecycle::recovery_control::resolve_phase::{closure#0}::{closure#0}> as core::future::future::Future>::poll
+00000001000d2b0c t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_phase::{closure#0}>> as core::future::future::Future>::poll
+00000001000d2b58 t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>> as core::future::future::Future>::poll
+00000001000d2ba4 t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>> as core::future::future::Future>::poll
+00000001000d2bf0 t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>> as core::future::future::Future>::poll
+00000001000d2c34 t <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>> as core::future::future::Future>::poll
+00000001000eecf4 t <alloc::vec::Vec<(u64, alloc::string::String)> as alloc::vec::spec_extend::SpecExtend<(u64, alloc::string::String), core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>>::spec_extend
+00000001000ef0c0 t <alloc::vec::Vec<(u64, alloc::string::String)> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<(u64, alloc::string::String), core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>>::from_iter
+00000001001054bc t <alloc::boxed::Box<lifecycle::recovery_control::resolve_phase::{closure#0}> as core::ops::deref::DerefMut>::deref_mut
+00000001001054d4 t <alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}> as core::ops::deref::DerefMut>::deref_mut
+00000001001054ec t <alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}> as core::ops::deref::DerefMut>::deref_mut
+0000000100105504 t <alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}> as core::ops::deref::DerefMut>::deref_mut
+000000010010551c t <alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}> as core::ops::deref::DerefMut>::deref_mut
+00000001000b621c t <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0} as core::ops::function::FnOnce<()>>::call_once

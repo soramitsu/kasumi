@@ -1,0 +1,18 @@
+{
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "paths": {
+    "crates/kasumi-store/src/lib.rs": "a9df53a55aed72c65f5c21359c83b01992df97252296496bf56637ab5ec474b0",
+    "crates/kasumi-store/src/node_disk.rs": "f230ff417b9abcfe5f15815aba38ab6fe8131d4920db9187894ec184cdf803f7",
+    "crates/kasumi-store/src/node_disk/census.rs": "66f063352501c5f4c29da812ffad306fb2204d2b7a5ae4c63d0f1d8f5fe616d7",
+    "crates/kasumi-store/src/node_disk/directory.rs": null,
+    "crates/kasumi-store/src/node_disk/directory/tests.rs": null,
+    "crates/kasumi-store/src/node_disk/memory.rs": "a818170d52397a3ac5987ab4e93f55897de82c61e14c2708dbfb799383176d12",
+    "crates/kasumi-store/src/node_disk/tests.rs": "9825a52cea3a3392bf16a5dd5f7f737370c64b833bc8a50026a073071c8cf1f4",
+    "crates/kasumi-store/src/node_disk/file.rs": "24934b329c935269f578118d70a4e2e9e108f6cf62c3e68455d232aee51843e5",
+    "crates/kasumi-server/src/persistent_disk.rs": "30a4495687fe1979c8bab8051a42be49e6152bf9513db802d8bcb3d8dfa911bf",
+    "crates/kasumi-server/src/runtime_memory.rs": "85f8761bd4cf34dd3210392b3948a75cee1e05cdee4704bd41231a0e307e3ec0",
+    "docs/standalone.md": "1c2017817dc7f1a11c62ce35f61233660d555062fd78aa814c034eeac76378fa"
+  },
+  "directory_foundation_patch_sha256": "db647439927fd9317ecf884230d1fd4e8858c13e2ce7b3f17585439e625ccf9f"
+}

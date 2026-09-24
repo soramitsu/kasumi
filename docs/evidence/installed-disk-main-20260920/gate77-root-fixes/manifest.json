@@ -1,0 +1,12 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED",
+  "patch_sha256": "367048005b60cfcadbb2dc3da791b5afcc898a111bcb14827b40e39cab07a5c9",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/tests/common/retirement_snapshot.rs",
+      "before_sha256": "f3ddb480c668942bb84330fa83770afb951b9c14dc61950fa8fd47038e7d36d5",
+      "proposed_sha256": "8c80b9d436a8d8f89dc1660a16531003b35fe01aa135acdc24444232575131cc"
+    }
+  ],
+  "reason": "Missed included retirement snapshot fixture uses explicit actual core/scratch and admitted Raft snapshot owners, retains exact disk across positive NodeStore shutdown and reopen. Workload, deadlines and original assertions unchanged."
+}

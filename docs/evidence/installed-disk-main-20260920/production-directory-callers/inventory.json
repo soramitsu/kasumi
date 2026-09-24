@@ -1,0 +1,454 @@
+[
+  {
+    "id": "store-private-root",
+    "path": "crates/kasumi-store/src/private_files.rs",
+    "lines": [
+      15
+    ],
+    "source": [
+      "std::fs::DirBuilder::new().mode(0o700).create(path)?;"
+    ],
+    "caller": "create_directory",
+    "classification": "explicit bootstrap/private-material primitive",
+    "physical_parent_or_root": "caller-provided path.parent()",
+    "required_capability": "Explicit root installation boundary before enrollment; no use as post-enrollment child mutation",
+    "constraints": "Unix0700; reject existing creation; verify private permissions/uid; sync captured parent. Current helper uses paths and does not own enrolled namespace or retain uncertain physical creation."
+  },
+  {
+    "id": "scratch-root",
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "lines": [
+      172
+    ],
+    "source": [
+      "match crate::private_files::create_directory(&config.directory) {"
+    ],
+    "caller": "ScratchDisk::open_inner",
+    "classification": "separate ScratchDisk initial installation",
+    "physical_parent_or_root": "config.directory.parent()",
+    "required_capability": "Explicit scratch-root bootstrap, not a persistent NodeDisk child",
+    "constraints": "Memory owner/registry charges precede creation; installed scratch registry owns exact root; persistent/scratch roots must not overlap; creation/parent sync uncertainty before publication still needs retained bootstrap custody. No runtime scratch subdirectory creation is present."
+  },
+  {
+    "id": "backup-root",
+    "path": "crates/kasumi-store/src/backup.rs",
+    "lines": [
+      374
+    ],
+    "source": [
+      "crate::private_files::create_directory(root.as_ref())?;"
+    ],
+    "caller": "FilesystemBackupDestination::new",
+    "classification": "post-enrollment persistent namespace",
+    "physical_parent_or_root": "configured backup destination parent under the explicitly installed NodeDisk root",
+    "required_capability": "Open enrolled root if identical; otherwise counted parent.create_child for one configured final component",
+    "constraints": "disk Arc and binding already exist before this call. Absent installed roots cannot be silently created; current one-level helper requires existing parent. Preserve max_bytes, private uid/mode and no-symlink checks."
+  },
+  {
+    "id": "backup-session-child",
+    "path": "crates/kasumi-store/src/backup_sessions_fs.rs",
+    "lines": [
+      50
+    ],
+    "source": [
+      "if create && unsafe { libc::mkdirat(self.0.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {"
+    ],
+    "caller": "Directory::child, session, put",
+    "classification": "post-enrollment persistent namespace",
+    "physical_parent_or_root": "backup-root -> sessions -> canonical session UUID -> objects",
+    "required_capability": "Counted enrolled parent; managed create_child or exact enrolled open_existing",
+    "constraints": "Only sessions, objects and lowercase canonical nonnil UUID components arise here. Existing directory is not implicit adoption. Verify exact enrolled inode/ancestry,0700/euid, child and parent fsync; original effects/uncertainty retained. Root/sessions descriptors can coexist with per-session/object owners."
+  },
+  {
+    "id": "backup-session-list",
+    "path": "crates/kasumi-store/src/backup_sessions_fs.rs",
+    "lines": [
+      246,
+      277
+    ],
+    "source": [
+      "let pointer = unsafe { libc::fdopendir(fd) };",
+      "let entry = unsafe { libc::readdir(entries.0) };"
+    ],
+    "caller": "Directory::list",
+    "classification": "post-enrollment persistent namespace listing",
+    "physical_parent_or_root": "backup-root/sessions/<UUID>/objects",
+    "required_capability": "Owned managed directory cursor; explicit terminal close after bounded page",
+    "constraints": "Authenticated abort proof checked per entry; exactly canonical nonnil<UUID>.kasumi names; original limit1..256 and limit+1 selector preserved. Keep primary error plus independent close failure. GC deletes objects only: intent/outcome and session tombstones remain permanent."
+  },
+  {
+    "id": "audit-root",
+    "path": "crates/kasumi-store/src/audit_archive.rs",
+    "lines": [
+      637
+    ],
+    "source": [
+      "if let Err(error) = crate::private_files::create_directory(root) {"
+    ],
+    "caller": "FilesystemAuditArchive::open",
+    "classification": "post-enrollment persistent namespace",
+    "physical_parent_or_root": "durable-directory/audit-archives or tenant-audit-archives; configured external archive directory parent",
+    "required_capability": "Enrolled root/open or counted parent.create_child with maintenance work",
+    "constraints": "Caller already owns NodeDisk; defaults and custom filesystem destinations route through this method. Current race handler accepts any failed mkdir if later private-directory check succeeds; managed outcome must not erase original uncertain sync error. Preserve directory+parent sync and exact inode checks."
+  },
+  {
+    "id": "census-native",
+    "path": "crates/kasumi-store/src/node_disk/census.rs",
+    "lines": [
+      253,
+      269
+    ],
+    "source": [
+      "let entries = unsafe { libc::fdopendir(fd) };",
+      "let item = unsafe { libc::readdir(self.entries) };"
+    ],
+    "caller": "Cursor::open/next within census",
+    "classification": "initial/reconciliation enrollment scanner",
+    "physical_parent_or_root": "each explicitly configured root and each captured child directory",
+    "required_capability": "Internal bounded enrolled census job with retained cursor/bank ownership",
+    "constraints": "Not an operational raw bypass to replace with a nested operational cursor. Current work increments before dots; configured total limit can contradict accepted namespace. EOF, error and closedir ownership require explicit completion; current Drop ignores closedir error."
+  },
+  {
+    "id": "standalone-bootstrap",
+    "path": "crates/kasumi-server/src/standalone.rs",
+    "lines": [
+      977,
+      980
+    ],
+    "source": [
+      "private_files::create_directory(directory)?;",
+      "private_files::create_directory(&directory.join(name))?;"
+    ],
+    "caller": "initialize_owned",
+    "classification": "explicit first installation before NodeDisk open",
+    "physical_parent_or_root": "new installation directory; fixed data/operator/tls/profiles/backups children",
+    "required_capability": "Explicit installer root boundary, then mandatory enrollment before later descendants",
+    "constraints": "Line992 first opens NodeDisk with data/backups roots. No adopting interrupted nonempty installation. Private operator/tls/profiles are separate from data backup roots. Creating root children does not establish funded physical-growth proof for an already installed parent."
+  },
+  {
+    "id": "verifier-bootstrap",
+    "path": "crates/kasumi-server/src/signer_runtime.rs",
+    "lines": [
+      476
+    ],
+    "source": [
+      "private_files::create_directory(parent)?;"
+    ],
+    "caller": "SignerVerifierInstallation::initialize_owned",
+    "classification": "installer before local open call; shared owner may already exist",
+    "physical_parent_or_root": "verifier.database_path.parent() under configured persistent root",
+    "required_capability": "Require roots already installed; managed child creation if parent is descendant of an existing enrolled root",
+    "constraints": "Local persistent_disk::open occurs at486, after raw creation; that ordering alone cannot prove no shared RuntimeStorage owner exists. No inferred root from database path; preserving initialization owner/admission and no implicit adoption requires explicit enrollment ordering."
+  },
+  {
+    "id": "target-generation-root",
+    "path": "crates/kasumi-server/src/target_runtime.rs",
+    "lines": [
+      422
+    ],
+    "source": [
+      "std::fs::create_dir_all(&installed.generation_root)?;"
+    ],
+    "caller": "TargetRecoveryRuntime::open",
+    "classification": "post-enrollment persistent startup mutation",
+    "physical_parent_or_root": "installed.generation_root; parent chain below configured persistent root",
+    "required_capability": "Component-by-component counted managed directory creation/open with original bounds",
+    "constraints": "Security audit store already supplies live persistent disk; current create_dir_all is after enrollment and checks only final symlink then syncs final root. No unbounded recursive path creation, intermediate symlink traversal, detached setup owner or partial success after error; exact parent sync required for every created component."
+  },
+  {
+    "id": "local-generation-create",
+    "path": "crates/kasumi-server/src/local_recovery.rs",
+    "lines": [
+      987,
+      1008
+    ],
+    "source": [
+      "private_files::create_directory(parent)?;",
+      "private_files::create_directory(&journal.target_directory)?;"
+    ],
+    "caller": "Operator::prepare_directory",
+    "classification": "post-enrollment stopped-instance operation",
+    "physical_parent_or_root": "config.database_path.parent()/generations/<target incarnation UUID>",
+    "required_capability": "Managed open/create of generations then canonical UUID child",
+    "constraints": "Journal exact operation/target reservation already exists; binding.json establishes semantic owner. Directory steps precede database CreationDispatched atprepare_database_file940\u2013952; they need their own physical custody. Existing empty unbound directories are not authority for generic adoption; reconcile exact enrolled namespace and journal before any resume."
+  },
+  {
+    "id": "local-generation-list",
+    "path": "crates/kasumi-server/src/local_recovery.rs",
+    "lines": [
+      994,
+      1294
+    ],
+    "source": [
+      "std::fs::read_dir(&journal.target_directory)?",
+      "for entry in std::fs::read_dir(&journal.target_directory)? {"
+    ],
+    "caller": "prepare_directory emptiness; cleanup whitelist",
+    "classification": "post-enrollment listing for creation/cleanup",
+    "physical_parent_or_root": "generations/<target UUID>",
+    "required_capability": "Managed cursor, close explicitly before any mutation",
+    "constraints": "Empty unbound case must propagate original iteration/close error. Cleanup allows at most3 entries: binding.json,node.redb,tenant-audit-archives; reject links, unknown/nested names; retain original marker/file claims. Bounded page completely validates before deleting."
+  },
+  {
+    "id": "local-generation-remove",
+    "path": "crates/kasumi-server/src/local_recovery.rs",
+    "lines": [
+      1354
+    ],
+    "source": [
+      "std::fs::remove_dir(&journal.target_directory)?;"
+    ],
+    "caller": "Operator::cleanup",
+    "classification": "post-enrollment permanently stopped reclamation",
+    "physical_parent_or_root": "generations parent and exact target UUID child",
+    "required_capability": "Consume exact child.remove_if_empty; retain parent sync state across uncertainty",
+    "constraints": "Permanent stopped-generation row and correct operation identity precede cleanup. Close children/cursor/handles before rmdir; never recursive arbitrary deletion. Absent target after prior uncertain unlink does not prove durability: original parent sync then stopped completion; when generations absent resolve at installed data parent."
+  },
+  {
+    "id": "local-archive-create",
+    "path": "crates/kasumi-server/src/local_recovery_archives.rs",
+    "lines": [
+      128,
+      132
+    ],
+    "source": [
+      "std::fs::read_dir(&directory)?.next().is_none(),",
+      "private_files::create_directory(&directory)?;"
+    ],
+    "caller": "Operator::prepare_archives",
+    "classification": "post-enrollment recovery archive namespace",
+    "physical_parent_or_root": "target generation/tenant-audit-archives",
+    "required_capability": "Managed child open/create plus explicit emptiness cursor close",
+    "constraints": "Persist exact DirectoryIdentity in journal.archive_directory and phase row; preserve reserved/active operation binding. Empty pre-binding crash case cannot permit arbitrary adoption. Same NodeDisk must account root before FilesystemAuditArchive::open."
+  },
+  {
+    "id": "local-archive-cleanup",
+    "path": "crates/kasumi-server/src/local_recovery_archives.rs",
+    "lines": [
+      195,
+      199,
+      299,
+      308
+    ],
+    "source": [
+      "std::fs::read_dir(&directory)?.next().is_none(),",
+      "for (index, entry) in std::fs::read_dir(&directory)?.enumerate() {",
+      "if std::fs::read_dir(&directory)?.next().is_some() {",
+      "std::fs::remove_dir(&directory)?;"
+    ],
+    "caller": "Operator::cleanup_archives",
+    "classification": "post-enrollment bounded stopped reclamation",
+    "physical_parent_or_root": "target generation/tenant-audit-archives",
+    "required_capability": "Bounded managed listing page, close, managed file deletions, exact empty child removal",
+    "constraints": "PAGE256; canonical<UUID>.audit and<UUID>.audit.pending only, per-object durable ownership+inode/digest/size checks preserved. Current loop deletes while traversing; managed cursor would see own generation invalidation. Collect bounded page and close before delete; repeat progress with same stopped journal. Rmdir only after no entries and exact directory identity; retain parent fsync failure."
+  },
+  {
+    "id": "operator-tenant-stage",
+    "path": "crates/kasumi-server/src/standalone_tenant_staging.rs",
+    "lines": [
+      198,
+      400
+    ],
+    "source": [
+      "let entries = std::fs::read_dir(&record.directory)?",
+      "private_files::create_directory(&record.directory)?;"
+    ],
+    "caller": "verify_files and stage_owned",
+    "classification": "post-install private operator namespace, not an enrolled data root by default",
+    "physical_parent_or_root": "installation/operator/tenant-stage-<operation UUID>",
+    "required_capability": "Explicit admitted private-root namespace capability; do not infer or place keys in data roots",
+    "constraints": "Original operation Dispatched is durable before one creation; failures retain namespace and cannot reconstruct creation permission. Exactly application.json/custody.json; take3 proves no extra entry. Preserve private ownership, sync and original key/config receipt identity; no recursive cleanup of failed stage."
+  },
+  {
+    "id": "operator-profile-list",
+    "path": "crates/kasumi-server/src/standalone.rs",
+    "lines": [
+      825
+    ],
+    "source": [
+      "for entry in std::fs::read_dir(root.join(\"profiles\"))? {"
+    ],
+    "caller": "rotate_certificates_owned",
+    "classification": "post-install private profile namespace",
+    "physical_parent_or_root": "installation/profiles",
+    "required_capability": "Explicit private-root cursor; bounded ownership and terminal close",
+    "constraints": "Profiles deliberately outside data/backups enrollment. Current full read_dir is unbounded and mutates profile files during traversal; preserve selected valid JSON policy, keys/certificate-pin update semantics, explicit loop budget and error custody; do not silently expand data backup enrollment."
+  },
+  {
+    "id": "operator-recovery-export",
+    "path": "crates/kasumi-server/src/standalone.rs",
+    "lines": [
+      399
+    ],
+    "source": [
+      "private_files::create_directory(output)?;"
+    ],
+    "caller": "recover_administrator_owned",
+    "classification": "explicit operator output creation",
+    "physical_parent_or_root": "caller output.parent(), output directory",
+    "required_capability": "Explicit output installation capability; if within installed roots use that managed parent",
+    "constraints": "Current code does not generally exclude output overlap with enrolled roots. Preserve exclusive0700 creation and original registered operator scope; cannot assume external path means outside physical admission. Exported credentials must remain separate from ordinary data backups."
+  },
+  {
+    "id": "operator-key-export",
+    "path": "crates/kasumi-server/src/standalone_key_backup.rs",
+    "lines": [
+      82
+    ],
+    "source": [
+      "private_files::create_directory(output)?;"
+    ],
+    "caller": "create",
+    "classification": "explicit operator output creation",
+    "physical_parent_or_root": "caller output.parent(), output directory",
+    "required_capability": "Explicit private output installation capability; managed parent if inside installed roots",
+    "constraints": "Preserve file-key-provider-only validation, fixed canonical role/hash filenames and exclusive private root; no transparent inclusion of secrets in data-root backup scope. Current create has no generic overlap exclusion."
+  },
+  {
+    "id": "bench-bootstrap",
+    "path": "crates/kasumi-bench/src/main.rs",
+    "lines": [
+      281,
+      600,
+      602
+    ],
+    "source": [
+      "kasumi_store::private_files::create_directory(&data)?;",
+      ".tempdir_in(parent)?",
+      "tempfile::Builder::new().prefix(\"kasumi-bench-\").tempdir()?"
+    ],
+    "caller": "BenchmarkStorage::open and database_case",
+    "classification": "benchmark fixture initial installation",
+    "physical_parent_or_root": "temporary work root then persistent child; sibling scratch root",
+    "required_capability": "Explicit fixture root creation before isolated enrollment",
+    "constraints": "Not daemon runtime. TempDir recursive Drop cleanup must run only after all actual owner/work drains; no production installed-owner cleanup may borrow TempDir destructor semantics."
+  },
+  {
+    "id": "bench-size-list",
+    "path": "crates/kasumi-bench/src/main.rs",
+    "lines": [
+      1011
+    ],
+    "source": [
+      "for entry in std::fs::read_dir(path)? {"
+    ],
+    "caller": "directory_size called at772",
+    "classification": "benchmark observes live storage plus scratch namespaces",
+    "physical_parent_or_root": "temporary benchmark root recursively",
+    "required_capability": "Use managed cursors for persistent subtrees or explicit fully drained diagnostic scanner",
+    "constraints": "Current recursive traversal is unbounded and follows metadata directories; runs before final database shutdown. Preserve logical-byte metric meaning; do not silently replace with charged physical-byte total or use fixture traversal as production census evidence."
+  },
+  {
+    "id": "bench-source-list",
+    "path": "crates/kasumi-bench/src/main.rs",
+    "lines": [
+      1024
+    ],
+    "source": [
+      "for entry in std::fs::read_dir(path)? {"
+    ],
+    "caller": "source_hash::files",
+    "classification": "development source evidence",
+    "physical_parent_or_root": "repository/crates tree",
+    "required_capability": "Not an installed persistent-storage capability; explicit bounded source-evidence traversal if required",
+    "constraints": "Not a database namespace. Recursive Vec collects source inventory; no production storage admission claim."
+  },
+  {
+    "id": "bench-main-output",
+    "path": "crates/kasumi-bench/src/main.rs",
+    "lines": [
+      1061
+    ],
+    "source": [
+      "std::fs::create_dir_all(parent)?;"
+    ],
+    "caller": "save",
+    "classification": "benchmark output namespace",
+    "physical_parent_or_root": "report.options.output.parent()",
+    "required_capability": "Explicit report-output directory scope; managed parent if it overlaps an enrolled root",
+    "constraints": "Current create_dir_all can recurse; preserve report/checkpoint failure bytes and original output identity. No evidence-output path may become a persistent-data admission fallback."
+  },
+  {
+    "id": "bench-bao",
+    "path": "crates/kasumi-bench/src/fixture_bao.rs",
+    "lines": [
+      23,
+      25,
+      52
+    ],
+    "source": [
+      "let root = tempfile::tempdir()?;",
+      "std::fs::create_dir(&cert_dir)?;",
+      "for entry in std::fs::read_dir(&cert_dir)? {"
+    ],
+    "caller": "BaoFixture::start",
+    "classification": "external developer fixture startup/listing",
+    "physical_parent_or_root": "temporary root/bao-certificates populated by owned OpenBao process",
+    "required_capability": "Explicit external-fixture namespace owner, not NodeDisk data enrollment",
+    "constraints": "Keep external process lifetime through certificate scan and real shutdown before TempDir cleanup. This fixture writes dev credentials and is not a production key-directory creation path."
+  },
+  {
+    "id": "bench-network-output",
+    "path": "crates/kasumi-bench/src/bin/network.rs",
+    "lines": [
+      511
+    ],
+    "source": [
+      "std::fs::create_dir_all(parent)?;"
+    ],
+    "caller": "save",
+    "classification": "benchmark output namespace",
+    "physical_parent_or_root": "report path.parent()",
+    "required_capability": "Explicit report-output scope; managed if overlapping installed root",
+    "constraints": "Recursive create_dir_all currently not tracked. Preserve atomic report temp/rename semantics without reading it as data-store enrollment."
+  },
+  {
+    "id": "bench-capacity-output",
+    "path": "crates/kasumi-bench/src/bin/capacity.rs",
+    "lines": [
+      331
+    ],
+    "source": [
+      "std::fs::DirBuilder::new().mode(0o700).create(directory)?;"
+    ],
+    "caller": "Journal::create",
+    "classification": "explicit capacity evidence root",
+    "physical_parent_or_root": "absolute evidence directory.parent()",
+    "required_capability": "Explicit private evidence namespace owner",
+    "constraints": "Exclusive0700 directory, parent sync and fixed event journal; not a database root. Original failed evidence and file durability must remain retained."
+  },
+  {
+    "id": "bench-loopback",
+    "path": "crates/kasumi-bench/src/bin/loopback.rs",
+    "lines": [
+      218,
+      281,
+      692
+    ],
+    "source": [
+      ".tempdir()?;",
+      "std::fs::DirBuilder::new().mode(0o700).create(&persistent)?;",
+      "std::fs::create_dir_all(parent)?;"
+    ],
+    "caller": "benchmark and error-report output",
+    "classification": "fixture bootstrap plus output creation",
+    "physical_parent_or_root": "temporary loopback root/persistent; report parent",
+    "required_capability": "Explicit fixture root enrollment before daemon startup; distinct report namespace",
+    "constraints": "This benchmark requires server/test-utils and uses external Bao. Preserve process drain before TempDir cleanup; report creation cannot bypass data admission."
+  },
+  {
+    "id": "example-output",
+    "path": "crates/kasumi-engine/examples/map_sharing.rs",
+    "lines": [
+      141
+    ],
+    "source": [
+      "std::fs::create_dir_all(parent)?;"
+    ],
+    "caller": "main",
+    "classification": "development microbenchmark output",
+    "physical_parent_or_root": "output path.parent()",
+    "required_capability": "Explicit output directory scope, not a NodeDisk data-root operation",
+    "constraints": "No installed storage is exercised; recursive directory creation is for standalone evidence only."
+  }
+]

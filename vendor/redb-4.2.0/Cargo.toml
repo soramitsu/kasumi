@@ -57,6 +57,10 @@ name = "special_values"
 path = "examples/special_values.rs"
 
 [[test]]
+name = "retained_opening_admission"
+path = "tests/retained_opening_admission.rs"
+
+[[test]]
 name = "canonical_format"
 path = "tests/canonical_format.rs"
 

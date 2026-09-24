@@ -1,0 +1,112 @@
+{
+  "base_head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "branch": "master",
+  "files": [
+    {
+      "after_sha256": "2e7e0c9ec34c311421d24412ca9c33c525b43cf902435c5a25755eb91dfe03f8",
+      "before_sha256": "52d0875638877eed573d8727f9b729ea3ac6286312a14941f05e7de10e05c5d0",
+      "path": ".github/workflows/release-candidate.yml"
+    },
+    {
+      "after_sha256": "a78d3af25c69e44d8b7add06471b2e68b5161776c543cfeedb532cdeb15f6930",
+      "before_sha256": "3b2f3b97334fd8e056af3c4b04efca461313b5faf22051a09fe7fc901f4fb39c",
+      "path": "docs/release-artifacts.md"
+    },
+    {
+      "after_sha256": "3f0d122d097eba83dae91c204b40c91f9859cd66e5f5634c27b17bc074216716",
+      "before_sha256": null,
+      "path": "docs/repeatable-assembly.md"
+    },
+    {
+      "after_sha256": "e7103c476237b6b6b3fb239eeaec68e20c178031abe757ac4a25426a522b286e",
+      "before_sha256": null,
+      "path": "scripts/assembly_inputs.py"
+    },
+    {
+      "after_sha256": "602f915819c2f0a1be4a611578a9edc3b594864dbe64e58f621164d5ee869e67",
+      "before_sha256": "ce19cea0753531fe2cd5887c0134cb21571cd107755cfcc7b589d25dcff9c968",
+      "path": "scripts/package_release.py"
+    },
+    {
+      "after_sha256": "602a19770b73e47a79075967c186c062b1d0e5a4eccaddb9bbeee24e5626e0c2",
+      "before_sha256": null,
+      "path": "scripts/repeatable_assembly.py"
+    },
+    {
+      "after_sha256": "7b3a5051b1bb7e78555407d381fe72176c655060f452207348df15a5e3d473e3",
+      "before_sha256": "a3d9b5f1ff763153497d005ca4a2bb64b0eb27ce584eaa16f1c49de54009f2d0",
+      "path": "scripts/test_package_metadata.py"
+    },
+    {
+      "after_sha256": "1d20922605b01c25c8a34f934ea464218ec3b9e6c11c8674d5ce4098e3ed49af",
+      "before_sha256": null,
+      "path": "scripts/test_repeatable_assembly.py"
+    },
+    {
+      "after_sha256": "f4abc62b5da217d1314333583eefdae3f78765797319f7b556bdb057f6ea540b",
+      "before_sha256": "377878450940cf1048144dc67d0ed601213e324230336129ee3792606e23ca67",
+      "path": "scripts/verify_release_acceptance.py"
+    }
+  ],
+  "not_run": [
+    "Native Cargo/rustc probes",
+    "Full frozen-candidate assembly pair",
+    "Full native semantic-adapter acceptance-positive run",
+    "CI workflow execution",
+    "Cross-platform runtime/host library declarations"
+  ],
+  "patch_sha256": "703c32a516942f010c2ccfef2f4e00eb060c3208899e3da0e80f86a0b983d77d",
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "review_limits": [
+    "Host dependency completeness relies on retained operator inventory evidence, not universal read tracing.",
+    "Native Cargo home operational-state behavior and native library/loader inventory representation still require actual native validation.",
+    "No final acceptance registration, independent compilation, OCI/image SBOM, native release qualification or release completion."
+  ],
+  "schema": "kasumi-target-proposal-v1",
+  "scope": "Two actual owned assembly invocations, direct native Cargo metadata, declared native dependency custody and read-only semantic adapter. DOMAIN_ADAPTERS remains empty.",
+  "status": "PROPOSED_REVIEW_REQUIRED_NOT_NATIVE_QUALIFIED",
+  "validation": [
+    {
+      "imported_files": 149,
+      "name": "python-tests-01",
+      "new_imports": {},
+      "process": {
+        "cleanup": {
+          "after": [],
+          "before": [],
+          "drained": true,
+          "errors": [],
+          "group": 273,
+          "process_returncode": 0,
+          "signals": []
+        },
+        "command": [
+          "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+          "-B",
+          "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/repeatable-assembly-v3/python-tests-01/test-owned.py"
+        ],
+        "duration_seconds": 9.153,
+        "error": null,
+        "executable": {
+          "path": "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+          "sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e"
+        },
+        "exit_code": 0,
+        "process_exit_code": 0,
+        "process_group": 273,
+        "received_signals": [],
+        "status": "passed",
+        "timed_out": false,
+        "timeout_seconds": 300,
+        "working_directory": "/Users/mtakemiya/dev/kasumi"
+      },
+      "result": {
+        "errors": 0,
+        "failures": 0,
+        "run": 45,
+        "skipped": 0,
+        "unchanged_imports": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "time": 1789919482.914173,
+  "patch_sha256": "6667ce384366678180175e9a85e6ae9655e36805d518c486e89aa0b206246dc8",
+  "review_sha256": "cf480a1e74db79f9390bae6ff67c007cf1093189615cfd9c47f95c7a6c51ed85",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/tests/common/recovery_control.rs",
+      "base_sha256": "78a61799150f2db94644fd0b55916ff2994ebd276c9d87cf567c58ba279d8f03",
+      "proposed_sha256": "6e6e9477afd35a346b3b686afe5bc40b4c33bf066743ab17b5a4e3d306004aa0"
+    }
+  ],
+  "scope": "Applied uncompiled structuralfixturehandoff; alloriginalchecks/deadlines; no testpassclaimed"
+}

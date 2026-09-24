@@ -1,0 +1,42 @@
+{
+  "status": "failed_qualification_preserved",
+  "package_manifest_sha256": "93ce8996fc13e0c84d77ddf22f9b71875124286c7de12367c216eea3c0026d24",
+  "patch_sha256": "df6b8f8b8e5e9d34a03d3a38d16aa59fb3281ecf5c072248ed52a9c0d8972405",
+  "result": {
+    "source_unchanged": true,
+    "changed_inputs": [],
+    "source_count": 3373,
+    "dispatch_denied": null,
+    "completed_stages": 2,
+    "expected_stages": 5,
+    "all_passed": false,
+    "cohort_elapsed_seconds": 181.400428917,
+    "cohort_bound_seconds": 1200,
+    "results_sha256": "3deefd637cfa2689bc3e1f0567309ee9534a54756bc213441fc37c2255a73b3e"
+  },
+  "result_sha256": "d27b945afd05b5fd1e3daee1e6f1ab49b4c7ea7abb39984c461e4f689f625819",
+  "results_sha256": "3deefd637cfa2689bc3e1f0567309ee9534a54756bc213441fc37c2255a73b3e",
+  "checks": [
+    {
+      "name": "workspace-check",
+      "exit_code": 0,
+      "pgid": 52544,
+      "drained": true,
+      "timeout": false,
+      "signals": [],
+      "log_sha256": "fd9c457436f27db084e9a2cedfcf583880fb81de753b8011579a0cf386ae49b5"
+    },
+    {
+      "name": "workspace-clippy",
+      "exit_code": 101,
+      "pgid": 55835,
+      "drained": true,
+      "timeout": false,
+      "signals": [],
+      "log_sha256": "73027dd4ba6cf33b6df9a23504cb53f76bb2653fd99137b2b4651fc516695406"
+    }
+  ],
+  "original_diagnostics_sha256": "a5c202115c0fa6745b0d1b793cf09a3aa8806f90be6f5a7d0c9b78d38cc8b464",
+  "store_compile_or_tests_dispatched": false,
+  "correction": "Separate storage-namespace-custody-integration-revision3 only; this package and native artifacts remain unchanged."
+}

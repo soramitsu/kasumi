@@ -1,0 +1,417 @@
+[
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-nm",
+      "--numeric-sort",
+      "--demangle",
+      "--defined-only",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.99148125,
+    "stdout": "text-symbols.txt",
+    "stderr": "nm.stderr",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4296235952",
+      "--stop-address=4296293360",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.5873115,
+    "stdout": "prepare_completion_poll-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295839076",
+      "--stop-address=4295839152",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.20283141699999996,
+    "stdout": "prepare_completion_box_poll-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4296163812",
+      "--stop-address=4296230676",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.23688750000000014,
+    "stdout": "complete_recovery_poll-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295839000",
+      "--stop-address=4295839076",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.20119091600000005,
+    "stdout": "complete_recovery_box_poll-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4296355668",
+      "--stop-address=4296359380",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.20294308300000008,
+    "stdout": "exercise_completed_recovery_poll-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4296327676",
+      "--stop-address=4296355668",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.21946479200000013,
+    "stdout": "resolve_expired_completion_poll-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295839220",
+      "--stop-address=4295839288",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.20511479199999982,
+    "stdout": "resolve_expired_completion_box_poll-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4296299284",
+      "--stop-address=4296327676",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.21496449999999978,
+    "stdout": "exercise_route_publication_poll-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295839152",
+      "--stop-address=4295839220",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.1986239580000002,
+    "stdout": "exercise_route_publication_box_poll-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295213020",
+      "--stop-address=4295213604",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.19846612499999994,
+    "stdout": "fixture_new_poll-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295213604",
+      "--stop-address=4295221476",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.20340416699999997,
+    "stdout": "fixture_open_poll-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295224372",
+      "--stop-address=4295225016",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.19881325000000016,
+    "stdout": "fixture_limits_poll-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295199560",
+      "--stop-address=4295210048",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.20386870899999998,
+    "stdout": "fixture_configured_poll-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295916128",
+      "--stop-address=4295916492",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.1972153750000003,
+    "stdout": "probe_new-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295916492",
+      "--stop-address=4295917652",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.20023454099999993,
+    "stdout": "probe_begin-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295918312",
+      "--stop-address=4295919088",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.19772495800000023,
+    "stdout": "probe_candidate-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295917652",
+      "--stop-address=4295917716",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.1971666660000002,
+    "stdout": "probe_history-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295919088",
+      "--stop-address=4295919752",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.20032783400000032,
+    "stdout": "probe_finish-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295704624",
+      "--stop-address=4295704716",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.19736783300000038,
+    "stdout": "probe_guard_drop-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295921996",
+      "--stop-address=4295922248",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.19596308299999965,
+    "stdout": "probe_send_constructor-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4296055720",
+      "--stop-address=4296057192",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.20069487499999994,
+    "stdout": "probe_send_poll-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295432608",
+      "--stop-address=4295432848",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.20245650000000026,
+    "stdout": "probe_arc_new-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295820424",
+      "--stop-address=4295820580",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.1977808750000003,
+    "stdout": "probe_slots_try_from_fn-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295821032",
+      "--stop-address=4295821564",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.19951433299999977,
+    "stdout": "probe_slots_try_from_fn_erased-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  },
+  {
+    "argv": [
+      "/opt/homebrew/opt/llvm/bin/llvm-objdump",
+      "--disassemble",
+      "--demangle",
+      "--start-address=4295821624",
+      "--stop-address=4295821716",
+      "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "exit_code": 0,
+    "elapsed_seconds": 0.19799958299999965,
+    "stdout": "probe_slots_from_fn-full.txt",
+    "stderr_text": "",
+    "static_only": true
+  }
+]

@@ -1,0 +1,13 @@
+{
+  "name": "store-full",
+  "pid": 87254,
+  "pgid": 87254,
+  "command": [
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-full-store/store-test-binary",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/assembly",
+  "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-full-store-resume/store-full.log",
+  "cohort_bound_seconds": 1200
+}

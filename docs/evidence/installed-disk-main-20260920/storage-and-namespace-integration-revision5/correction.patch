@@ -1,0 +1,13 @@
+diff --git a/crates/kasumi-store/src/node_file/tests.rs b/crates/kasumi-store/src/node_file/tests.rs
+--- a/crates/kasumi-store/src/node_file/tests.rs
++++ b/crates/kasumi-store/src/node_file/tests.rs
+@@ -444,7 +444,8 @@
+         opening.close().settlement(),
+         redb::DatabaseOpenSettlement::Closed
+     );
+-    let redb::TerminalObservation::Returned(Err(error)) = opening.report().opening() else {
++    let closed_report = opening.report();
++    let redb::TerminalObservation::Returned(Err(error)) = closed_report.opening() else {
+         panic!("positive close must preserve the original opening error");
+     };
+     assert_eq!(std::ptr::from_ref(error), original_failure);

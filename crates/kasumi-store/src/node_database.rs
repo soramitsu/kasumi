@@ -97,8 +97,10 @@ impl NodeDatabase {
             Ok(database) => match std::panic::catch_unwind(AssertUnwindSafe(|| database.close())) {
                 Ok(Ok(())) => return state.terminal.complete(),
                 Ok(Err(redb::CloseError::Storage(error))) => {
-                    state.terminal.record(self.component, 0, error.into());
-                    return state.terminal.complete();
+                    let issue = state.terminal.record(self.component, 0, error.into());
+                    let failure = DrainFailure::retained(issue);
+                    state.interrupted = Some(failure.clone());
+                    return Err(failure);
                 }
                 Ok(Err(redb::CloseError::Busy(database))) => Arc::new(database),
                 Err(payload) => {
@@ -210,7 +212,7 @@ mod tests {
         fn write(&self, at: u64, bytes: &[u8]) -> std::io::Result<()> {
             self.0.write(at, bytes)
         }
-        fn close(&self) -> std::io::Result<()> {
+        fn close(&self) -> redb::BackendCloseOutcome {
             std::panic::panic_any(OriginalClosePanic(41))
         }
     }
@@ -240,5 +242,52 @@ mod tests {
         );
         assert!(database.begin_read().is_err());
         assert!(database.begin_write().is_err());
+    }
+    #[derive(Debug)]
+    struct UnprovedCloseBackend(redb::backends::InMemoryBackend);
+    impl StorageBackend for UnprovedCloseBackend {
+        fn len(&self) -> std::io::Result<u64> {
+            self.0.len()
+        }
+        fn read(&self, at: u64, bytes: &mut [u8]) -> std::io::Result<()> {
+            self.0.read(at, bytes)
+        }
+        fn set_len(&self, len: u64) -> std::io::Result<()> {
+            self.0.set_len(len)
+        }
+        fn sync_data(&self) -> std::io::Result<()> {
+            self.0.sync_data()
+        }
+        fn write(&self, at: u64, bytes: &[u8]) -> std::io::Result<()> {
+            self.0.write(at, bytes)
+        }
+        fn close(&self) -> redb::BackendCloseOutcome {
+            redb::BackendCloseOutcome::retained_result(Ok(()))
+        }
+    }
+    #[test]
+    fn logical_close_success_without_native_evidence_never_becomes_complete_on_retry() {
+        let database = NodeDatabase::new(
+            Database::builder(crate::test_utils::storage_admission())
+                .create_with_backend(UnprovedCloseBackend(redb::backends::InMemoryBackend::new()))
+                .unwrap(),
+            "unproved native drain",
+        );
+        let first = database.close().unwrap_err();
+        assert_eq!(
+            first.completion(),
+            kasumi_types::drain::DrainCompletion::Retained
+        );
+        let second = database.close().unwrap_err();
+        assert_eq!(
+            second.completion(),
+            kasumi_types::drain::DrainCompletion::Retained
+        );
+        assert!(Arc::ptr_eq(&first.issues()[0], &second.issues()[0]));
+        assert!(database.begin_read().is_err());
+        assert!(database.begin_write().is_err());
+        // This legacy consuming facade retains only its report on error. Actual
+        // owner custody requires the RegisteredNodeOpening consumer migration.
+        assert!(database.state.lock().database.is_none());
     }
 }

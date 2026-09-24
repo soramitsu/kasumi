@@ -1,0 +1,45 @@
+[
+  {
+    "command": [
+      "git",
+      "apply",
+      "--check",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/102-redb-terminal-corrections/corrections.patch"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "git",
+      "apply",
+      "--numstat",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/102-redb-terminal-corrections/corrections.patch"
+    ],
+    "exit_code": 0,
+    "stdout": "15\t6\tvendor/redb-4.2.0/src/admission/tests.rs\n1\t1\tvendor/redb-4.2.0/src/db.rs\n21\t4\tvendor/redb-4.2.0/src/retained_transaction_tests.rs\n8\t2\tvendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs\n206\t0\tvendor/redb-4.2.0/src/tree_store/page_store/checked_backend_tests.rs\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt",
+      "--edition",
+      "2024",
+      "--config",
+      "skip_children=true",
+      "--check",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/102-redb-terminal-corrections/proposed/vendor/redb-4.2.0/src/admission/tests.rs",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/102-redb-terminal-corrections/proposed/vendor/redb-4.2.0/src/db.rs",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/102-redb-terminal-corrections/proposed/vendor/redb-4.2.0/src/retained_transaction_tests.rs",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/102-redb-terminal-corrections/proposed/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/102-redb-terminal-corrections/proposed/vendor/redb-4.2.0/src/tree_store/page_store/checked_backend_tests.rs"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "actual_source_matches_base": true
+  }
+]

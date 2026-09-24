@@ -1,0 +1,9 @@
+{
+  "pid": 75839,
+  "pgid": 75839,
+  "argv": [
+    "target/installed-disk-validation/directory-census-session/native-02/run.py"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp"
+}

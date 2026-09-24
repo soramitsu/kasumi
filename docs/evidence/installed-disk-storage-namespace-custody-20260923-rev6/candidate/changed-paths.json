@@ -1,0 +1,17 @@
+[
+  {
+    "path": "crates/kasumi-store/src/audit_archive_owned.rs",
+    "before": "c568a57b556b00ac29eee7c9d4ac2c74298d177518c557f73acb44ae9f207ff7",
+    "after": "98509ccdb45806cda58596bc5bf54fe69f0f05dfc24f29edc2b3b71f3d4b5e7a"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_file.rs",
+    "before": "47f330f5ba8b407fa110e0e375ef8327d8324e802ba2c328f658f9459149324a",
+    "after": "1dc4b7a73dd928b94ac44fe636bc5d2be07809bdd91dae52a9ff76a54c3c95c4"
+  },
+  {
+    "path": "crates/kasumi-store/src/storage_opening_tests.rs",
+    "before": "e20e38d74fa3339dd6df3a2de21817627b6668950cde19094f78b40fa802d666",
+    "after": "eb27ef8112d26c0771cdd76ad8c4e016d61557c6bb01b1fb2155776e523118c0"
+  }
+]

@@ -1,0 +1,21 @@
+{
+  "scope": "development isolated replay of observed authority84 failure using its already-built exact binary; overlaps still-stalled84 and engine89, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/dev/kasumi/target/debug/deps/kasumi_authority-8a653d8f0b295bfb",
+    "--exact",
+    "service::tests::coverage_dispatch_precedes_permission_and_survives_exact_encrypted_restart",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 62277,
+  "exit_code": 0,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 32.57651472091675,
+  "inventoried_source_unchanged": true,
+  "binary_sha256": "695ee72e9c2efec45a555edb6d2252c832a7c9d56fe60debc2eb2bd816dac7cd",
+  "binary_unchanged": true
+}

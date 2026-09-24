@@ -1,0 +1,151 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 49s
+     Running tests/contracts.rs (target/debug/deps/contracts-6c33c0cd8070f5b7)
+
+running 23 tests
+test actual_raft_writes_queries_and_snapshot_pagination ... ok
+test append_only_mode_rejects_overwrite_delete_and_schema_weakening_atomically ... ok
+test audit_budget_blocks_effects_and_can_be_increased_without_losing_records ... ok
+test authorization_is_rechecked_before_idempotency_response ... ok
+test batch_failure_leaves_no_partial_document_or_index_effects ... ok
+test coherent_snapshot_reads_span_collections_under_concurrent_commits_and_strict_audit ... ok
+test concurrent_cas_has_exactly_one_winner ... ok
+test conditional_batches_fence_dependencies_and_phantoms_but_not_audits_or_replays ... ok
+test durable_engine_worker ... ok
+test key_revocation_evicts_retained_coherent_leases_and_rejects_every_page ... ok
+test key_revocation_fences_and_evicts_resident_state ... ok
+test killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_policy ... ok
+test logical_backup_restores_suspended_with_new_incarnation_and_increasing_revisions ... ok
+test permanent_receipts_ignore_former_expiry_boundaries_and_survive_snapshot_recovery ... ok
+test read_assertions_block_write_skew_and_require_read_authority ... ok
+test receipts_survive_snapshot_and_precede_changed_schema_and_cas ... ok
+test retirement_is_terminal_and_survives_snapshot_recovery ... ok
+test shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_values ... ok
+test snapshot_reads_reject_partial_queries_cursors_and_foreign_authority ... ok
+test strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_results ... forced audit persistence failure retained after complete drain: DrainFailure { completion: Complete, issues: [DrainIssue { component: "background work result", instance: 0, error: when Write Store: std::io::error::Error: durable domain transaction failed; outcome may be unknown
+
+Caused by:
+    std::io::error::Error: durable domain transaction failed; outcome may be unknown }, DrainIssue { component: "OpenRaft runtime", instance: 0, error: raft shutdown failed (core: Some(StorageError(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: durable domain transaction failed; outcome may be unknown, backtrace: None } })), core join: None, ticker join: None, state machine: None, snapshot builder: None, replications: [], auxiliary: [], incoming snapshot: None) }] }
+ok
+test strict_read_audit_is_committed_before_return_and_tied_to_data_revision ... ok
+test tampered_snapshot_never_changes_current_generation ... ok
+test unique_index_swap_is_atomic_and_old_generation_remains_coherent ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 100.84s
+
+     Running tests/guarded_staging.rs (target/debug/deps/guarded_staging-4d4a6364a312d27c)
+
+running 11 tests
+test committed_original_survives_receipt_absence_admission_failure_and_fresh_resolution ... ok
+test concurrent_original_and_stop_keep_exactly_one_permanent_outcome ... ok
+test encrypted_restore_preserves_original_stage_scope_without_reviving_historical_uploads ... ok
+test final_response_fence_rechecks_authority_and_preserves_accepted_stop ... ok
+test guarded_stop_orders_more_than_one_small_batch_of_authority_dependencies ... ok
+test malformed_fresh_admission_and_changed_manifest_cannot_accept_or_rebind_identity ... ok
+test missing_stop_has_no_upload_lease_and_defeats_delayed_begin_after_encrypted_restart ... ok
+test retained_snapshot_quota_rejects_missing_stop_without_leaving_partial_identity ... ok
+test stale_authority_cannot_create_stop_and_retained_terminal_release_checks_exact_read_scope ... ok
+test stopped_resolution_preserves_original_failed_finalize ... ok
+test upload_stop_clears_payload_and_permanent_capacity_is_checked_without_active_reservation ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 98.10s
+
+     Running tests/schema_activation.rs (target/debug/deps/schema_activation-c8bc16999c443e31)
+
+running 13 tests
+test atomic_bundle_publishes_all_indexes_once_and_preserves_read_generations ... ok
+test cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_authority ... ok
+test encrypted_restart_and_full_restore_preserve_permanent_activation_receipts ... 
+thread 'encrypted_restart_and_full_restore_preserve_permanent_activation_receipts' (4168718) panicked at crates/kasumi-engine/tests/schema_activation.rs:814:6:
+called `Result::unwrap()` on an `Err` value: backup verification deadline expired
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test encrypted_schema_lookup_checks_current_fences_without_rewriting_original_effect ... 
+thread 'encrypted_schema_lookup_checks_current_fences_without_rewriting_original_effect' (4176647) panicked at crates/kasumi-engine/tests/schema_activation.rs:637:6:
+called `Result::unwrap()` on an `Err` value: operation would block
+FAILED
+test first_release_schema_wire_requires_explicit_effect_and_lookup_dependencies ... ok
+test incarnation_schema_data_and_current_authority_are_independent_fences ... ok
+test ordered_schema_dependencies_reject_changed_document_phantom_snapshot_and_expired_deadline ... ok
+test record_metadata_and_serialized_budgets_fail_before_partial_activation ... ok
+test rejection_is_permanent_and_never_publishes_an_earlier_valid_change ... ok
+test restored_permanent_schema_history_exceeds_the_former_lifetime_ceiling ... ok
+test schema_effect_digest_binds_dependencies_and_current_read_permission_is_required_on_replay ... ok
+test schema_shape_immutable_mode_snapshot_validation_and_retained_quota ... ok
+test text_and_structured_indexes_publish_together_after_existing_documents_validate ... ok
+
+failures:
+
+failures:
+    encrypted_restart_and_full_restore_preserve_permanent_activation_receipts
+    encrypted_schema_lookup_checks_current_fences_without_rewriting_original_effect
+
+test result: FAILED. 11 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 156.37s
+
+error: test failed, to rerun pass `-p kasumi-engine --test schema_activation`
+     Running tests/staged_transactions.rs (target/debug/deps/staged_transactions-076de9a7cc734dd0)
+
+running 11 tests
+test changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverable ... 
+thread 'changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverable' (4179543) panicked at crates/kasumi-engine/tests/staged_transactions.rs:115:5:
+assertion `left == right` failed: canonical resident stage accounting after revision 9
+  left: 203872
+ right: 202606
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test coherent_lease_pages_cover_large_dependencies_and_scans_with_live_writes ... ok
+test complete_large_read_set_and_append_only_rules_reject_all_effects_atomically ... 
+thread 'complete_large_read_set_and_append_only_rules_reject_all_effects_atomically' (4180023) panicked at crates/kasumi-engine/tests/staged_transactions.rs:115:5:
+assertion `left == right` failed: canonical resident stage accounting after revision 9
+  left: 7156
+ right: 5853
+FAILED
+test killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_once ... ok
+test large_transaction_stays_invisible_then_publishes_one_generation_and_permanent_receipt ... 
+thread 'large_transaction_stays_invisible_then_publishes_one_generation_and_permanent_receipt' (4180250) panicked at crates/kasumi-engine/tests/staged_transactions.rs:115:5:
+assertion `left == right` failed: canonical resident stage accounting after revision 12
+  left: 205757
+ right: 204490
+FAILED
+test ordered_foreign_scope_rejection_cannot_expire_or_rebind_an_original_upload ... ok
+test permanent_staged_byte_exhaustion_preserves_success_failure_and_restored_exact_replays ... 
+thread 'permanent_staged_byte_exhaustion_preserves_success_failure_and_restored_exact_replays' (4180340) panicked at crates/kasumi-engine/tests/staged_transactions.rs:115:5:
+assertion `left == right` failed: canonical resident stage accounting after revision 7
+  left: 6414
+ right: 5381
+FAILED
+test permanent_staged_snapshot_rejection_spends_original_terminal_reservation_atomically ... 
+thread 'permanent_staged_snapshot_rejection_spends_original_terminal_reservation_atomically' (4180396) panicked at crates/kasumi-engine/tests/staged_transactions.rs:115:5:
+assertion `left == right` failed: canonical resident stage accounting after revision 6
+  left: 5845
+ right: 4749
+FAILED
+test small_lease_budget_shares_large_roots_and_expires_on_retained_version_pressure ... ok
+test staged_crash_worker ... ok
+test staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_identity ... 
+thread 'staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_identity' (4180665) panicked at crates/kasumi-engine/tests/staged_transactions.rs:115:5:
+assertion `left == right` failed: canonical resident stage accounting after revision 8
+  left: 7484
+ right: 6234
+FAILED
+
+failures:
+
+failures:
+    changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverable
+    complete_large_read_set_and_append_only_rules_reject_all_effects_atomically
+    large_transaction_stays_invisible_then_publishes_one_generation_and_permanent_receipt
+    permanent_staged_byte_exhaustion_preserves_success_failure_and_restored_exact_replays
+    permanent_staged_snapshot_rejection_spends_original_terminal_reservation_atomically
+    staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_identity
+
+test result: FAILED. 5 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 23.68s
+
+error: test failed, to rerun pass `-p kasumi-engine --test staged_transactions`
+error: 2 targets failed:
+    `-p kasumi-engine --test schema_activation`
+    `-p kasumi-engine --test staged_transactions`

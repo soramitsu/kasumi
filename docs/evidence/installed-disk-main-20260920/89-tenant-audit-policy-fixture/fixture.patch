@@ -1,0 +1,34 @@
+--- a/crates/kasumi-engine/src/tenant_audit_memory_tests.rs
++++ b/crates/kasumi-engine/src/tenant_audit_memory_tests.rs
+@@ -11,7 +11,14 @@
+     let engine = TenantEngine::new(
+         "maintenance".into(),
+         "initial".into(),
+-        Policy::default(),
++        Policy {
++            grants: vec![Grant {
++                principal: "owner".into(),
++                collection: None,
++                actions: [Action::Admin].into_iter().collect(),
++            }],
++            strict_read_audit: false,
++        },
+         Limits::default(),
+     )?;
+     let before = admission.snapshot();
+@@ -63,7 +70,14 @@
+     let engine = TenantEngine::new(
+         "maintenance".into(),
+         "initial".into(),
+-        Policy::default(),
++        Policy {
++            grants: vec![Grant {
++                principal: "owner".into(),
++                collection: None,
++                actions: [Action::Admin].into_iter().collect(),
++            }],
++            strict_read_audit: false,
++        },
+         Limits::default(),
+     )?;
+     engine.install_storage_access(&store)?;

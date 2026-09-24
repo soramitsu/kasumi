@@ -1,0 +1,8 @@
+{
+  "stage": "first-target-rustfmt",
+  "exit_code": 1,
+  "cause": "Narrow proposed snapshot omits existing retained_transaction.rs, retained_database.rs and tree_store/btree.rs module children; default rustfmt tried to resolve them.",
+  "correction": "Run rustfmt on the exact six proposed files with --config skip_children=true.",
+  "cargo_or_native_tests_run": false,
+  "actual_source_modified": false
+}

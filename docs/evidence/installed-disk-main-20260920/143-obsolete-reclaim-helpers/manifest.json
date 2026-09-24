@@ -1,0 +1,28 @@
+{
+  "status": "FROZEN TARGET-ONLY; no Cargo/native; actual source unchanged",
+  "base": "actual canonical f210 + compile correction6eb30fe4, gate143 142PASS",
+  "commutes_with_purge_sha256": "78a204853988603b83b3e18ef04f2c433a0c42687701fe7c4040963ac717150a",
+  "patch_sha256": "a2fccf34eeaad4e0b4e3343d9edb62f4ed030daeb46b993ac8c07e7405589a60",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "before_sha256": "9b74190495ba1c8d2b2efdacbdbb3e67310e96d99881117ac812c0016047cd4e",
+      "proposed_sha256": "7cdfaedb6cbd25b97870913d0640c85d0b14feda7e4f8c1e0f548ba076be2d01"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/table_tree.rs",
+      "before_sha256": "6c34bc2c6ea096f12bd0c087e2c90b341963fb397b164cd0dea6ec90091de152",
+      "proposed_sha256": "e0890dbbfbe8dabeca263a7a9055fbe6a6286cdfbeca82f913736c206909db90"
+    }
+  ],
+  "checks": {
+    "target_rustfmt_check": {
+      "exit_code": 0,
+      "output": ""
+    },
+    "git_apply_check": {
+      "exit_code": 0,
+      "output": ""
+    }
+  }
+}

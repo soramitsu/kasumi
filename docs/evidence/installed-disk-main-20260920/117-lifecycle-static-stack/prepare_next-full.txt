@@ -1,0 +1,378 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010011d778 <lifecycle::recovery_control::prepare_next::{closure#0}>:
+10011d778: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+10011d77c: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10011d780: 910043fd    	add	x29, sp, #0x10
+10011d784: d14023e9    	sub	x9, sp, #0x8, lsl #12   ; =0x8000
+10011d788: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+10011d78c: f90003ff    	str	xzr, [sp]
+10011d790: eb2963ff    	cmp	sp, x9
+10011d794: 54ffffa1    	b.ne	0x10011d788 <lifecycle::recovery_control::prepare_next::{closure#0}+0x10>
+10011d798: d10c03ff    	sub	sp, sp, #0x300
+10011d79c: 914023e9    	add	x9, sp, #0x8, lsl #12   ; =0x8000
+10011d7a0: 9106a129    	add	x9, x9, #0x1a8
+10011d7a4: f9002fe9    	str	x9, [sp, #0x58]
+10011d7a8: 91401fea    	add	x10, sp, #0x7, lsl #12  ; =0x7000
+10011d7ac: 913e3d4a    	add	x10, x10, #0xf8f
+10011d7b0: f90033ea    	str	x10, [sp, #0x60]
+10011d7b4: f90037e8    	str	x8, [sp, #0x68]
+10011d7b8: f9003be0    	str	x0, [sp, #0x70]
+10011d7bc: f90043e1    	str	x1, [sp, #0x80]
+10011d7c0: aa0003e8    	mov	x8, x0
+10011d7c4: f9000128    	str	x8, [x9]
+10011d7c8: aa0003e8    	mov	x8, x0
+10011d7cc: f9000528    	str	x8, [x9, #0x8]
+10011d7d0: 39434008    	ldrb	w8, [x0, #0xd0]
+10011d7d4: b9007fe8    	str	w8, [sp, #0x7c]
+10011d7d8: 340001e8    	cbz	w8, 0x10011d814 <lifecycle::recovery_control::prepare_next::{closure#0}+0x9c>
+10011d7dc: 14000001    	b	0x10011d7e0 <lifecycle::recovery_control::prepare_next::{closure#0}+0x68>
+10011d7e0: b9407fe8    	ldr	w8, [sp, #0x7c]
+10011d7e4: 71000508    	subs	w8, w8, #0x1
+10011d7e8: 54000360    	b.eq	0x10011d854 <lifecycle::recovery_control::prepare_next::{closure#0}+0xdc>
+10011d7ec: 14000001    	b	0x10011d7f0 <lifecycle::recovery_control::prepare_next::{closure#0}+0x78>
+10011d7f0: b9407fe8    	ldr	w8, [sp, #0x7c]
+10011d7f4: 71000908    	subs	w8, w8, #0x2
+10011d7f8: 54000340    	b.eq	0x10011d860 <lifecycle::recovery_control::prepare_next::{closure#0}+0xe8>
+10011d7fc: 14000001    	b	0x10011d800 <lifecycle::recovery_control::prepare_next::{closure#0}+0x88>
+10011d800: b9407fe8    	ldr	w8, [sp, #0x7c]
+10011d804: 71000d08    	subs	w8, w8, #0x3
+10011d808: 54000320    	b.eq	0x10011d86c <lifecycle::recovery_control::prepare_next::{closure#0}+0xf4>
+10011d80c: 14000001    	b	0x10011d810 <lifecycle::recovery_control::prepare_next::{closure#0}+0x98>
+10011d810: 1400001a    	b	0x10011d878 <lifecycle::recovery_control::prepare_next::{closure#0}+0x100>
+10011d814: f9403be8    	ldr	x8, [sp, #0x70]
+10011d818: f9402fea    	ldr	x10, [sp, #0x58]
+10011d81c: f9400109    	ldr	x9, [x8]
+10011d820: f9001109    	str	x9, [x8, #0x20]
+10011d824: f9400509    	ldr	x9, [x8, #0x8]
+10011d828: f9000949    	str	x9, [x10, #0x10]
+10011d82c: 3dc00500    	ldr	q0, [x8, #0x10]
+10011d830: 3c828100    	stur	q0, [x8, #0x28]
+10011d834: f9401100    	ldr	x0, [x8, #0x20]
+10011d838: 9100e108    	add	x8, x8, #0x38
+10011d83c: b0011381    	adrp	x1, 0x10238e000 <dyld_stub_binder+0x10238e000>
+10011d840: 9117ec21    	add	x1, x1, #0x5fb
+10011d844: 528000a9    	mov	w9, #0x5                ; =5
+10011d848: aa0903e2    	mov	x2, x9
+10011d84c: 97fee5a5    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10011d850: 14000018    	b	0x10011d8b0 <lifecycle::recovery_control::prepare_next::{closure#0}+0x138>
+10011d854: 52800008    	mov	w8, #0x0                ; =0
+10011d858: 3707ffe8    	tbnz	w8, #0x0, 0x10011d854 <lifecycle::recovery_control::prepare_next::{closure#0}+0xdc>
+10011d85c: 14000050    	b	0x10011d99c <lifecycle::recovery_control::prepare_next::{closure#0}+0x224>
+10011d860: 52800008    	mov	w8, #0x0                ; =0
+10011d864: 3707ffe8    	tbnz	w8, #0x0, 0x10011d860 <lifecycle::recovery_control::prepare_next::{closure#0}+0xe8>
+10011d868: 14000050    	b	0x10011d9a8 <lifecycle::recovery_control::prepare_next::{closure#0}+0x230>
+10011d86c: f94043e8    	ldr	x8, [sp, #0x80]
+10011d870: f90043e8    	str	x8, [sp, #0x80]
+10011d874: 14000044    	b	0x10011d984 <lifecycle::recovery_control::prepare_next::{closure#0}+0x20c>
+10011d878: f94043e8    	ldr	x8, [sp, #0x80]
+10011d87c: f90043e8    	str	x8, [sp, #0x80]
+10011d880: 140000d0    	b	0x10011dbc0 <lifecycle::recovery_control::prepare_next::{closure#0}+0x448>
+10011d884: f9402fe8    	ldr	x8, [sp, #0x58]
+10011d888: f9403bea    	ldr	x10, [sp, #0x70]
+10011d88c: 52800049    	mov	w9, #0x2                ; =2
+10011d890: 39034149    	strb	w9, [x10, #0xd0]
+10011d894: f9400d00    	ldr	x0, [x8, #0x18]
+10011d898: 9489a22c    	bl	0x102386148 <dyld_stub_binder+0x102386148>
+10011d89c: f9402fe9    	ldr	x9, [sp, #0x58]
+10011d8a0: f9000d20    	str	x0, [x9, #0x18]
+10011d8a4: aa0103e8    	mov	x8, x1
+10011d8a8: b9002128    	str	w8, [x9, #0x20]
+10011d8ac: 17fffff6    	b	0x10011d884 <lifecycle::recovery_control::prepare_next::{closure#0}+0x10c>
+10011d8b0: f9403be8    	ldr	x8, [sp, #0x70]
+10011d8b4: 91030108    	add	x8, x8, #0xc0
+10011d8b8: 94862a9a    	bl	0x1022a8320 <<uuid::Uuid>::new_v4>
+10011d8bc: 1400000a    	b	0x10011d8e4 <lifecycle::recovery_control::prepare_next::{closure#0}+0x16c>
+10011d8c0: f9403be8    	ldr	x8, [sp, #0x70]
+10011d8c4: 9100e100    	add	x0, x8, #0x38
+10011d8c8: 94782906    	bl	0x101f27ce0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10011d8cc: 17ffffee    	b	0x10011d884 <lifecycle::recovery_control::prepare_next::{closure#0}+0x10c>
+10011d8d0: f9402fe9    	ldr	x9, [sp, #0x58]
+10011d8d4: f9000d20    	str	x0, [x9, #0x18]
+10011d8d8: aa0103e8    	mov	x8, x1
+10011d8dc: b9002128    	str	w8, [x9, #0x20]
+10011d8e0: 17fffff8    	b	0x10011d8c0 <lifecycle::recovery_control::prepare_next::{closure#0}+0x148>
+10011d8e4: 52800148    	mov	w8, #0xa                ; =10
+10011d8e8: aa0803e0    	mov	x0, x8
+10011d8ec: 97fddcf4    	bl	0x100094cbc <<core::time::Duration>::from_secs>
+10011d8f0: f90027e0    	str	x0, [sp, #0x48]
+10011d8f4: b90057e1    	str	w1, [sp, #0x54]
+10011d8f8: 14000001    	b	0x10011d8fc <lifecycle::recovery_control::prepare_next::{closure#0}+0x184>
+10011d8fc: b94057e1    	ldr	w1, [sp, #0x54]
+10011d900: f94027e0    	ldr	x0, [sp, #0x48]
+10011d904: f9403be8    	ldr	x8, [sp, #0x70]
+10011d908: f940110b    	ldr	x11, [x8, #0x20]
+10011d90c: 9100e10a    	add	x10, x8, #0x38
+10011d910: 9100a109    	add	x9, x8, #0x28
+10011d914: 91030108    	add	x8, x8, #0xc0
+10011d918: 91400be2    	add	x2, sp, #0x2, lsl #12   ; =0x2000
+10011d91c: 91314042    	add	x2, x2, #0xc50
+10011d920: f9162beb    	str	x11, [sp, #0x2c50]
+10011d924: f9162fea    	str	x10, [sp, #0x2c58]
+10011d928: f91633e9    	str	x9, [sp, #0x2c60]
+10011d92c: f91637e8    	str	x8, [sp, #0x2c68]
+10011d930: 914007e8    	add	x8, sp, #0x1, lsl #12   ; =0x1000
+10011d934: 9131e508    	add	x8, x8, #0xc79
+10011d938: 393ffd1f    	strb	wzr, [x8, #0xfff]
+10011d93c: 914007e8    	add	x8, sp, #0x1, lsl #12   ; =0x1000
+10011d940: 911be108    	add	x8, x8, #0x6f8
+10011d944: b002e2e3    	adrp	x3, 0x105d7a000 <dyld_stub_binder+0x105d7a000>
+10011d948: 912d6063    	add	x3, x3, #0xb58
+10011d94c: 97ff78b4    	bl	0x1000fbc1c <tokio::time::timeout::timeout::<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#0}>>
+10011d950: 14000001    	b	0x10011d954 <lifecycle::recovery_control::prepare_next::{closure#0}+0x1dc>
+10011d954: 910683e8    	add	x8, sp, #0x1a0
+10011d958: 914007e0    	add	x0, sp, #0x1, lsl #12   ; =0x1000
+10011d95c: 911be000    	add	x0, x0, #0x6f8
+10011d960: 97ff7f26    	bl	0x1000fd5f8 <<tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#0}> as core::future::into_future::IntoFuture>::into_future>
+10011d964: 14000001    	b	0x10011d968 <lifecycle::recovery_control::prepare_next::{closure#0}+0x1f0>
+10011d968: f9403be8    	ldr	x8, [sp, #0x70]
+10011d96c: 91036100    	add	x0, x8, #0xd8
+10011d970: 910683e1    	add	x1, sp, #0x1a0
+10011d974: 5282ab08    	mov	w8, #0x1558             ; =5464
+10011d978: aa0803e2    	mov	x2, x8
+10011d97c: 9489a2b0    	bl	0x10238643c <dyld_stub_binder+0x10238643c>
+10011d980: 14000001    	b	0x10011d984 <lifecycle::recovery_control::prepare_next::{closure#0}+0x20c>
+10011d984: f9402fe9    	ldr	x9, [sp, #0x58]
+10011d988: f9403be8    	ldr	x8, [sp, #0x70]
+10011d98c: 91036108    	add	x8, x8, #0xd8
+10011d990: f90023e8    	str	x8, [sp, #0x40]
+10011d994: f900a528    	str	x8, [x9, #0x148]
+10011d998: 14000010    	b	0x10011d9d8 <lifecycle::recovery_control::prepare_next::{closure#0}+0x260>
+10011d99c: b002e2e0    	adrp	x0, 0x105d7a000 <dyld_stub_binder+0x105d7a000>
+10011d9a0: 912dc000    	add	x0, x0, #0xb70
+10011d9a4: 9489a17f    	bl	0x102385fa0 <core::panicking::panic_const::panic_const_async_fn_resumed>
+10011d9a8: b002e2e0    	adrp	x0, 0x105d7a000 <dyld_stub_binder+0x105d7a000>
+10011d9ac: 912dc000    	add	x0, x0, #0xb70
+10011d9b0: 9489a183    	bl	0x102385fbc <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+10011d9b4: f9403be8    	ldr	x8, [sp, #0x70]
+10011d9b8: 91036100    	add	x0, x8, #0xd8
+10011d9bc: 97fdf3b2    	bl	0x10009a884 <core::ptr::drop_glue::<tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#0}>>>
+10011d9c0: 17ffffc0    	b	0x10011d8c0 <lifecycle::recovery_control::prepare_next::{closure#0}+0x148>
+10011d9c4: f9402fe9    	ldr	x9, [sp, #0x58]
+10011d9c8: f9000d20    	str	x0, [x9, #0x18]
+10011d9cc: aa0103e8    	mov	x8, x1
+10011d9d0: b9002128    	str	w8, [x9, #0x20]
+10011d9d4: 17fffff8    	b	0x10011d9b4 <lifecycle::recovery_control::prepare_next::{closure#0}+0x23c>
+10011d9d8: f94023e0    	ldr	x0, [sp, #0x40]
+10011d9dc: f94043e1    	ldr	x1, [sp, #0x80]
+10011d9e0: 914013e8    	add	x8, sp, #0x4, lsl #12   ; =0x4000
+10011d9e4: 9104e108    	add	x8, x8, #0x138
+10011d9e8: 97ff8047    	bl	0x1000fdb04 <<tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#0}> as core::future::future::Future>::poll>
+10011d9ec: 14000001    	b	0x10011d9f0 <lifecycle::recovery_control::prepare_next::{closure#0}+0x278>
+10011d9f0: f960afe9    	ldr	x9, [sp, #0x4158]
+10011d9f4: d2800008    	mov	x8, #0x0                ; =0
+10011d9f8: b1000929    	adds	x9, x9, #0x2
+10011d9fc: 9a9f1508    	csinc	x8, x8, xzr, ne
+10011da00: 360001a8    	tbz	w8, #0x0, 0x10011da34 <lifecycle::recovery_control::prepare_next::{closure#0}+0x2bc>
+10011da04: 14000001    	b	0x10011da08 <lifecycle::recovery_control::prepare_next::{closure#0}+0x290>
+10011da08: f9403be9    	ldr	x9, [sp, #0x70]
+10011da0c: f94037ea    	ldr	x10, [sp, #0x68]
+10011da10: 92800008    	mov	x8, #-0x1               ; =-1
+10011da14: f9000948    	str	x8, [x10, #0x10]
+10011da18: 52800068    	mov	w8, #0x3                ; =3
+10011da1c: 39034128    	strb	w8, [x9, #0xd0]
+10011da20: 914023ff    	add	sp, sp, #0x8, lsl #12   ; =0x8000
+10011da24: 910c03ff    	add	sp, sp, #0x300
+10011da28: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10011da2c: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10011da30: d65f03c0    	ret
+10011da34: 914013e1    	add	x1, sp, #0x4, lsl #12   ; =0x4000
+10011da38: 9104e021    	add	x1, x1, #0x138
+10011da3c: 914013e0    	add	x0, sp, #0x4, lsl #12   ; =0x4000
+10011da40: 91094000    	add	x0, x0, #0x250
+10011da44: 52802308    	mov	w8, #0x118              ; =280
+10011da48: aa0803e2    	mov	x2, x8
+10011da4c: 9489a27c    	bl	0x10238643c <dyld_stub_binder+0x10238643c>
+10011da50: f9403be8    	ldr	x8, [sp, #0x70]
+10011da54: 91036100    	add	x0, x8, #0xd8
+10011da58: 97fdf38b    	bl	0x10009a884 <core::ptr::drop_glue::<tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#0}>>>
+10011da5c: 14000001    	b	0x10011da60 <lifecycle::recovery_control::prepare_next::{closure#0}+0x2e8>
+10011da60: 914013e1    	add	x1, sp, #0x4, lsl #12   ; =0x4000
+10011da64: 91094021    	add	x1, x1, #0x250
+10011da68: 914023e0    	add	x0, sp, #0x8, lsl #12   ; =0x8000
+10011da6c: 91074000    	add	x0, x0, #0x1d0
+10011da70: f9001fe0    	str	x0, [sp, #0x38]
+10011da74: 52802308    	mov	w8, #0x118              ; =280
+10011da78: aa0803e2    	mov	x2, x8
+10011da7c: 9489a270    	bl	0x10238643c <dyld_stub_binder+0x10238643c>
+10011da80: f9401fe0    	ldr	x0, [sp, #0x38]
+10011da84: 910223e8    	add	x8, sp, #0x88
+10011da88: b0011381    	adrp	x1, 0x10238e000 <dyld_stub_binder+0x10238e000>
+10011da8c: 91180021    	add	x1, x1, #0x600
+10011da90: 528006a9    	mov	w9, #0x35               ; =53
+10011da94: aa0903e2    	mov	x2, x9
+10011da98: b002e2e3    	adrp	x3, 0x105d7a000 <dyld_stub_binder+0x105d7a000>
+10011da9c: 912e2063    	add	x3, x3, #0xb88
+10011daa0: 97ff8d18    	bl	0x100100f00 <<core::result::Result<(u64, core::option::Option<uuid::Uuid>, kasumi_types::recovery::RecoveryDispatch), tokio::time::error::Elapsed>>::expect>
+10011daa4: 14000001    	b	0x10011daa8 <lifecycle::recovery_control::prepare_next::{closure#0}+0x330>
+10011daa8: f9403be9    	ldr	x9, [sp, #0x70]
+10011daac: 910223e8    	add	x8, sp, #0x88
+10011dab0: f94047ea    	ldr	x10, [sp, #0x88]
+10011dab4: f900792a    	str	x10, [x9, #0xf0]
+10011dab8: 3cc08100    	ldur	q0, [x8, #0x8]
+10011dabc: 3c8d8120    	stur	q0, [x9, #0xd8]
+10011dac0: 394283ea    	ldrb	w10, [sp, #0xa0]
+10011dac4: 3903a12a    	strb	w10, [x9, #0xe8]
+10011dac8: 9103e120    	add	x0, x9, #0xf8
+10011dacc: 91008101    	add	x1, x8, #0x20
+10011dad0: 52801f08    	mov	w8, #0xf8               ; =248
+10011dad4: aa0803e2    	mov	x2, x8
+10011dad8: 9489a259    	bl	0x10238643c <dyld_stub_binder+0x10238643c>
+10011dadc: 52800148    	mov	w8, #0xa                ; =10
+10011dae0: aa0803e0    	mov	x0, x8
+10011dae4: 97fddc76    	bl	0x100094cbc <<core::time::Duration>::from_secs>
+10011dae8: f90017e0    	str	x0, [sp, #0x28]
+10011daec: b90037e1    	str	w1, [sp, #0x34]
+10011daf0: 1400000a    	b	0x10011db18 <lifecycle::recovery_control::prepare_next::{closure#0}+0x3a0>
+10011daf4: f9403be8    	ldr	x8, [sp, #0x70]
+10011daf8: 9103e100    	add	x0, x8, #0xf8
+10011dafc: 940be2d0    	bl	0x10041663c <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+10011db00: 17ffff70    	b	0x10011d8c0 <lifecycle::recovery_control::prepare_next::{closure#0}+0x148>
+10011db04: f9402fe9    	ldr	x9, [sp, #0x58]
+10011db08: f9000d20    	str	x0, [x9, #0x18]
+10011db0c: aa0103e8    	mov	x8, x1
+10011db10: b9002128    	str	w8, [x9, #0x20]
+10011db14: 17fffff8    	b	0x10011daf4 <lifecycle::recovery_control::prepare_next::{closure#0}+0x37c>
+10011db18: b94037e1    	ldr	w1, [sp, #0x34]
+10011db1c: f94017e0    	ldr	x0, [sp, #0x28]
+10011db20: f9403be8    	ldr	x8, [sp, #0x70]
+10011db24: f940110e    	ldr	x14, [x8, #0x20]
+10011db28: 9100e10d    	add	x13, x8, #0x38
+10011db2c: 9100a10c    	add	x12, x8, #0x28
+10011db30: 9103010b    	add	x11, x8, #0xc0
+10011db34: 9103e10a    	add	x10, x8, #0xf8
+10011db38: 9103c109    	add	x9, x8, #0xf0
+10011db3c: 91036108    	add	x8, x8, #0xd8
+10011db40: 91401be2    	add	x2, sp, #0x6, lsl #12   ; =0x6000
+10011db44: 912f2042    	add	x2, x2, #0xbc8
+10011db48: f935e7ee    	str	x14, [sp, #0x6bc8]
+10011db4c: f935ebed    	str	x13, [sp, #0x6bd0]
+10011db50: f935efec    	str	x12, [sp, #0x6bd8]
+10011db54: f935f3eb    	str	x11, [sp, #0x6be0]
+10011db58: f935f7ea    	str	x10, [sp, #0x6be8]
+10011db5c: f935fbe9    	str	x9, [sp, #0x6bf0]
+10011db60: f935ffe8    	str	x8, [sp, #0x6bf8]
+10011db64: 914017e8    	add	x8, sp, #0x5, lsl #12   ; =0x5000
+10011db68: 91302508    	add	x8, x8, #0xc09
+10011db6c: 393ffd1f    	strb	wzr, [x8, #0xfff]
+10011db70: 914017e8    	add	x8, sp, #0x5, lsl #12   ; =0x5000
+10011db74: 911e6108    	add	x8, x8, #0x798
+10011db78: b002e2e3    	adrp	x3, 0x105d7a000 <dyld_stub_binder+0x105d7a000>
+10011db7c: 912e8063    	add	x3, x3, #0xba0
+10011db80: 97ff78ab    	bl	0x1000fbe2c <tokio::time::timeout::timeout::<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#1}>>
+10011db84: 14000001    	b	0x10011db88 <lifecycle::recovery_control::prepare_next::{closure#0}+0x410>
+10011db88: 914013e8    	add	x8, sp, #0x4, lsl #12   ; =0x4000
+10011db8c: 910da108    	add	x8, x8, #0x368
+10011db90: 914017e0    	add	x0, sp, #0x5, lsl #12   ; =0x5000
+10011db94: 911e6000    	add	x0, x0, #0x798
+10011db98: 97ff7ea4    	bl	0x1000fd628 <<tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#1}> as core::future::into_future::IntoFuture>::into_future>
+10011db9c: 14000001    	b	0x10011dba0 <lifecycle::recovery_control::prepare_next::{closure#0}+0x428>
+10011dba0: f9403be8    	ldr	x8, [sp, #0x70]
+10011dba4: 9107c100    	add	x0, x8, #0x1f0
+10011dba8: 914013e1    	add	x1, sp, #0x4, lsl #12   ; =0x4000
+10011dbac: 910da021    	add	x1, x1, #0x368
+10011dbb0: 52828608    	mov	w8, #0x1430             ; =5168
+10011dbb4: aa0803e2    	mov	x2, x8
+10011dbb8: 9489a221    	bl	0x10238643c <dyld_stub_binder+0x10238643c>
+10011dbbc: 14000001    	b	0x10011dbc0 <lifecycle::recovery_control::prepare_next::{closure#0}+0x448>
+10011dbc0: f9402fe9    	ldr	x9, [sp, #0x58]
+10011dbc4: f9403be8    	ldr	x8, [sp, #0x70]
+10011dbc8: 9107c108    	add	x8, x8, #0x1f0
+10011dbcc: f90013e8    	str	x8, [sp, #0x20]
+10011dbd0: f900a928    	str	x8, [x9, #0x150]
+10011dbd4: 1400000b    	b	0x10011dc00 <lifecycle::recovery_control::prepare_next::{closure#0}+0x488>
+10011dbd8: 94899ff0    	bl	0x102385b98 <core::panicking::panic_in_cleanup>
+10011dbdc: f9403be8    	ldr	x8, [sp, #0x70]
+10011dbe0: 9107c100    	add	x0, x8, #0x1f0
+10011dbe4: 97fdf33f    	bl	0x10009a8e0 <core::ptr::drop_glue::<tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#1}>>>
+10011dbe8: 17ffffc3    	b	0x10011daf4 <lifecycle::recovery_control::prepare_next::{closure#0}+0x37c>
+10011dbec: f9402fe9    	ldr	x9, [sp, #0x58]
+10011dbf0: f9000d20    	str	x0, [x9, #0x18]
+10011dbf4: aa0103e8    	mov	x8, x1
+10011dbf8: b9002128    	str	w8, [x9, #0x20]
+10011dbfc: 17fffff8    	b	0x10011dbdc <lifecycle::recovery_control::prepare_next::{closure#0}+0x464>
+10011dc00: f94013e0    	ldr	x0, [sp, #0x20]
+10011dc04: f94043e1    	ldr	x1, [sp, #0x80]
+10011dc08: 97ff7ffa    	bl	0x1000fdbf0 <<tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#1}> as core::future::future::Future>::poll>
+10011dc0c: b9001fe0    	str	w0, [sp, #0x1c]
+10011dc10: 14000001    	b	0x10011dc14 <lifecycle::recovery_control::prepare_next::{closure#0}+0x49c>
+10011dc14: f94033e8    	ldr	x8, [sp, #0x60]
+10011dc18: b9401fe9    	ldr	w9, [sp, #0x1c]
+10011dc1c: 39000109    	strb	w9, [x8]
+10011dc20: 39400109    	ldrb	w9, [x8]
+10011dc24: d2800008    	mov	x8, #0x0                ; =0
+10011dc28: 71000929    	subs	w9, w9, #0x2
+10011dc2c: 9a9f1508    	csinc	x8, x8, xzr, ne
+10011dc30: 360001a8    	tbz	w8, #0x0, 0x10011dc64 <lifecycle::recovery_control::prepare_next::{closure#0}+0x4ec>
+10011dc34: 14000001    	b	0x10011dc38 <lifecycle::recovery_control::prepare_next::{closure#0}+0x4c0>
+10011dc38: f9403be9    	ldr	x9, [sp, #0x70]
+10011dc3c: f94037ea    	ldr	x10, [sp, #0x68]
+10011dc40: 92800008    	mov	x8, #-0x1               ; =-1
+10011dc44: f9000948    	str	x8, [x10, #0x10]
+10011dc48: 52800088    	mov	w8, #0x4                ; =4
+10011dc4c: 39034128    	strb	w8, [x9, #0xd0]
+10011dc50: 914023ff    	add	sp, sp, #0x8, lsl #12   ; =0x8000
+10011dc54: 910c03ff    	add	sp, sp, #0x300
+10011dc58: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10011dc5c: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10011dc60: d65f03c0    	ret
+10011dc64: f9403be8    	ldr	x8, [sp, #0x70]
+10011dc68: f9402fea    	ldr	x10, [sp, #0x58]
+10011dc6c: f94033e9    	ldr	x9, [sp, #0x60]
+10011dc70: 39400129    	ldrb	w9, [x9]
+10011dc74: b9001be9    	str	w9, [sp, #0x18]
+10011dc78: 12000129    	and	w9, w9, #0x1
+10011dc7c: 39051d49    	strb	w9, [x10, #0x147]
+10011dc80: 9107c100    	add	x0, x8, #0x1f0
+10011dc84: 97fdf317    	bl	0x10009a8e0 <core::ptr::drop_glue::<tokio::time::timeout::Timeout<lifecycle::recovery_control::prepare_next::{closure#0}::{closure#1}>>>
+10011dc88: 14000001    	b	0x10011dc8c <lifecycle::recovery_control::prepare_next::{closure#0}+0x514>
+10011dc8c: b9401be8    	ldr	w8, [sp, #0x18]
+10011dc90: 12000100    	and	w0, w8, #0x1
+10011dc94: b0011381    	adrp	x1, 0x10238e000 <dyld_stub_binder+0x10238e000>
+10011dc98: 9118d421    	add	x1, x1, #0x635
+10011dc9c: 52800548    	mov	w8, #0x2a               ; =42
+10011dca0: aa0803e2    	mov	x2, x8
+10011dca4: b002e2e3    	adrp	x3, 0x105d7a000 <dyld_stub_binder+0x105d7a000>
+10011dca8: 912ee063    	add	x3, x3, #0xbb8
+10011dcac: 97ff8cbc    	bl	0x100100f9c <<core::result::Result<(), tokio::time::error::Elapsed>>::expect>
+10011dcb0: 14000001    	b	0x10011dcb4 <lifecycle::recovery_control::prepare_next::{closure#0}+0x53c>
+10011dcb4: f9403be8    	ldr	x8, [sp, #0x70]
+10011dcb8: 3dc03100    	ldr	q0, [x8, #0xc0]
+10011dcbc: 3d9fe7e0    	str	q0, [sp, #0x7f90]
+10011dcc0: 9103e101    	add	x1, x8, #0xf8
+10011dcc4: 91401fe0    	add	x0, sp, #0x7, lsl #12   ; =0x7000
+10011dcc8: 913ea000    	add	x0, x0, #0xfa8
+10011dccc: f90007e0    	str	x0, [sp, #0x8]
+10011dcd0: 52801f08    	mov	w8, #0xf8               ; =248
+10011dcd4: aa0803e2    	mov	x2, x8
+10011dcd8: f9000be2    	str	x2, [sp, #0x10]
+10011dcdc: 9489a1d8    	bl	0x10238643c <dyld_stub_binder+0x10238643c>
+10011dce0: f94007e1    	ldr	x1, [sp, #0x8]
+10011dce4: f9400be2    	ldr	x2, [sp, #0x10]
+10011dce8: 3ddfe7e0    	ldr	q0, [sp, #0x7f90]
+10011dcec: 914023e8    	add	x8, sp, #0x8, lsl #12   ; =0x8000
+10011dcf0: 91028108    	add	x8, x8, #0xa0
+10011dcf4: 3da02be0    	str	q0, [sp, #0x80a0]
+10011dcf8: 91004100    	add	x0, x8, #0x10
+10011dcfc: 9489a1d0    	bl	0x10238643c <dyld_stub_binder+0x10238643c>
+10011dd00: f9403be8    	ldr	x8, [sp, #0x70]
+10011dd04: 9100e100    	add	x0, x8, #0x38
+10011dd08: 947827f6    	bl	0x101f27ce0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10011dd0c: 14000001    	b	0x10011dd10 <lifecycle::recovery_control::prepare_next::{closure#0}+0x598>
+10011dd10: f94037e0    	ldr	x0, [sp, #0x68]
+10011dd14: 914023e1    	add	x1, sp, #0x8, lsl #12   ; =0x8000
+10011dd18: 91028021    	add	x1, x1, #0xa0
+10011dd1c: 52802108    	mov	w8, #0x108              ; =264
+10011dd20: aa0803e2    	mov	x2, x8
+10011dd24: 9489a1c6    	bl	0x10238643c <dyld_stub_binder+0x10238643c>
+10011dd28: f9403be9    	ldr	x9, [sp, #0x70]
+10011dd2c: 52800028    	mov	w8, #0x1                ; =1
+10011dd30: 39034128    	strb	w8, [x9, #0xd0]
+10011dd34: 914023ff    	add	sp, sp, #0x8, lsl #12   ; =0x8000
+10011dd38: 910c03ff    	add	sp, sp, #0x300
+10011dd3c: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10011dd40: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10011dd44: d65f03c0    	ret

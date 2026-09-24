@@ -2,20 +2,41 @@ use super::*;
 use kasumi_store::{NodeStore, StorageAccess, test_utils::LocalKeyProvider};
 
 struct Installation {
-    directory: tempfile::TempDir,
+    storage: crate::test_utils::FixtureStorage,
     node: Arc<NodeStore>,
     stores: Arc<TenantStorageSet>,
     audit: Arc<SecurityAudit>,
     access: StorageAccess,
     incarnation: uuid::Uuid,
+    directory: tempfile::TempDir,
 }
 impl Installation {
     async fn new() -> anyhow::Result<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
-        let node = NodeStore::create_new_fixture(
-            directory.path().join("node.redb"),
+        let (persistent_config, scratch_config) =
+            crate::test_utils::fixture_disk_configs(directory.path())?;
+        // The original fixed 2 GiB source resolves Default to a 256 MiB total.
+        // Add only the new physical metadata; do not resolve against host RAM.
+        let config = crate::admission::AdmissionConfig {
+            max_inflight_bytes: Some(
+                (256_u64 << 20)
+                    .checked_add(crate::test_utils::isolated_disk_metadata_bytes(
+                        &persistent_config,
+                        &scratch_config,
+                    )?)
+                    .ok_or_else(|| anyhow::anyhow!("fixture metadata budget overflow"))?,
+            ),
+            ..Default::default()
+        };
+        let admission = crate::admission::NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
+        let storage = crate::test_utils::FixtureStorage::with_admission(
+            &persistent_config,
+            &scratch_config,
+            admission.clone(),
+        )?;
+        let node = storage.create_new(
+            directory.path().join("persistent/node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
         )?;
         let incarnation = uuid::Uuid::new_v4();
         let access = StorageAccess::standalone(uuid::Uuid::new_v4(), "tenant", incarnation)?;
@@ -34,11 +55,10 @@ impl Installation {
             StorageAccess::security_audit(),
         )
         .await?;
-        let admission =
-            crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?;
         let audit = SecurityAudit::initialize(audit_store, Default::default(), admission)?;
         Ok(Self {
             directory,
+            storage,
             node,
             stores,
             audit,
@@ -261,6 +281,7 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
     fixture.shutdown().await;
     let Installation {
         directory,
+        storage,
         node,
         stores,
         audit,
@@ -270,10 +291,9 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
     drop(stores);
     drop(audit);
     drop(node);
-    let node = NodeStore::open_existing_fixture(
-        directory.path().join("node.redb"),
+    let node = storage.open_existing(
+        directory.path().join("persistent/node.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
     )?;
     let stores = TenantStorageSet::open_existing(
         node.clone(),
@@ -290,11 +310,7 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
         StorageAccess::security_audit(),
     )
     .await?;
-    let audit = SecurityAudit::open(
-        audit_store,
-        Default::default(),
-        crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?,
-    )?;
+    let audit = SecurityAudit::open(audit_store, Default::default(), storage.admission.clone())?;
     let reopened = open_existing_local(stores.clone(), audit.clone(), incarnation).await?;
     let generation = reopened.engine().generation()?;
     assert_eq!(generation.state.incarnation, incarnation.to_string());

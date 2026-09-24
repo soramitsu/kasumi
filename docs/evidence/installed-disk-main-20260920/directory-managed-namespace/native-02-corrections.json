@@ -1,0 +1,15 @@
+{
+  "reason": "Replace disproven zero-nlink requirement with exact parent-relative absence plus retained inode identity, before actual close and credit. Correct fixture depth to include its actual absolute ancestor locks, and test a managed chain at that configured bound. No production caps/deadlines changed.",
+  "files": [
+    {
+      "path": "crates/kasumi-store/src/node_disk/directory/managed.rs",
+      "before": "031926752ec530429665d7e0038b7b3b27911df2ea081050abd45bafda1b7d4f",
+      "after": "8be4569fb05796bc57b795d2b08329e5304e2951dc0050a84d1a9179cce3e82e"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/directory/managed/tests.rs",
+      "before": "440482c9132681b497ebd032d60939a972f406bf7927bd40cb2e9d725f5bef4a",
+      "after": "f906db63f47387ea24730454f8b09b3459fa9f3df60dd3181b9a89e8d02d15f9"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "status": "SCOPED_PRIMITIVE_APPROVAL_CALLER_ADOPTION_OPEN",
+  "manifest_sha256": "db42b5c363ec219f60bf4d67af7b599adec3da532231777a18ec1191fd1d1f82",
+  "successor_patch_sha256": "290e19a452a45100824ec47bab1f78a70656ced41a556d931cdc3349f022f0c9",
+  "cumulative_patch_sha256": "cdcb438de9a5ce88eb5e2cc4afd16d0b9a80712185ac8c01d1ced5ee7179b73a",
+  "review_sha256": "cd9c0d77b2e39c80b4ff6251804059415853874df04ace52dfba60b74f73e8b2",
+  "previous_review_receipt_sha256": "54edd036e6b0452d9030b15eb2c651b7d951764281efdc37f8f7f25a4ad56fd8",
+  "source_inventory_count": 1731,
+  "native_result_sha256": "62f101ddd9e9bd37ed11d8b7bdc48f3d8717b3b1e69d681b83e0f674fcce0af5",
+  "cumulative_files_verified": 51,
+  "actual_source_changes": false,
+  "outside_repository_inventory_bytes_reread": false
+}

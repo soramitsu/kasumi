@@ -1,0 +1,12 @@
+{
+  "cumulative_files_verified": 49,
+  "cumulative_patch_sha256": "a3ab99fa45947e5c44e031c849c61892f32aa27e746e9067b8baad6a88ee29f9",
+  "independent_review_receipt_sha256": "13abd5a833f08887c7aae9b8b6c537420e64641619b837b3158c3670aff98487",
+  "native_or_cargo_executed": false,
+  "non_delta_cumulative_files_equal_frozen_dependency": true,
+  "outside_repository_bytes_opened": false,
+  "raw_local_entries_verified": 476,
+  "raw_manifest_sha256": "5563b1756eae6a07899b1016bd434f7e8ef962bba2fdc74e213a1f41394a07f8",
+  "reviewed_successor_files_equal": true,
+  "subject_manifest_sha256": "afc7f858b97f4ad1e30cd2c1438e9c25c9614d22e5972d4475665923ee15a665"
+}

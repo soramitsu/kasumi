@@ -1,0 +1,6 @@
+{
+  "actual_test_exit_code": 101,
+  "detected_early_credit": true,
+  "original_failed_receipt_preserved": true,
+  "scope": "Intentionally incorrect named-Box retirement, no production source changes"
+}

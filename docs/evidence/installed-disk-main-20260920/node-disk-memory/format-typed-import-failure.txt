@@ -1,0 +1,100 @@
+error[E0753]: expected outer doc comment
+ --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/node-disk-memory/proposed/crates/kasumi-store/src/device_disk.rs:2:1
+  |
+2 | //! One charged reservation boundary for every managed writer on a filesystem.
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+3 | use crate::disk_memory::{self, Lease, List, NodeDiskMemoryAdmission};
+  | --------------------------------------------------------------------- the inner doc comment doesn't annotate this `use` import
+  |
+help: to annotate the `use` import, change the doc comment from inner to outer style
+  |
+2 - //! One charged reservation boundary for every managed writer on a filesystem.
+2 + /// One charged reservation boundary for every managed writer on a filesystem.
+  |
+
+error[E0753]: expected outer doc comment
+ --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/node-disk-memory/proposed/crates/kasumi-store/src/node_disk.rs:2:1
+  |
+2 | //! Installed persistent extent accounting with retained per-inode enrollment.
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+2 - //! Installed persistent extent accounting with retained per-inode enrollment.
+2 + // Installed persistent extent accounting with retained per-inode enrollment.
+  |
+
+error[E0753]: expected outer doc comment
+ --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/node-disk-memory/proposed/crates/kasumi-store/src/node_disk.rs:3:1
+  |
+3 |   //! Raw path writes never enroll files or replace an admitted owner's extent.
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+4 | / use crate::{
+5 | |     device_disk::{DeviceDisk, DeviceSelection},
+6 | |     disk_memory::{self, DiskMemoryRequirements, Lease, List, NodeDiskMemoryAdmission},
+7 | | };
+  | |__- the inner doc comment doesn't annotate this `use` import
+  |
+help: to annotate the `use` import, change the doc comment from inner to outer style
+  |
+3 - //! Raw path writes never enroll files or replace an admitted owner's extent.
+3 + /// Raw path writes never enroll files or replace an admitted owner's extent.
+  |
+
+error[E0753]: expected outer doc comment
+ --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/node-disk-memory/proposed/crates/kasumi-store/src/scratch_disk.rs:2:1
+  |
+2 | //! Shared admission for encrypted temporary storage, independent of deterministic
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+2 - //! Shared admission for encrypted temporary storage, independent of deterministic
+2 + // Shared admission for encrypted temporary storage, independent of deterministic
+  |
+
+error[E0753]: expected outer doc comment
+ --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/node-disk-memory/proposed/crates/kasumi-store/src/scratch_disk.rs:3:1
+  |
+3 | //! tenant quotas. Charges follow the actual file owner, including detached workers
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+3 - //! tenant quotas. Charges follow the actual file owner, including detached workers
+3 + // tenant quotas. Charges follow the actual file owner, including detached workers
+  |
+
+error[E0753]: expected outer doc comment
+ --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/node-disk-memory/proposed/crates/kasumi-store/src/scratch_disk.rs:4:1
+  |
+4 | //! and immutable snapshot readers. This does not reserve persistent database space
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+4 - //! and immutable snapshot readers. This does not reserve persistent database space
+4 + // and immutable snapshot readers. This does not reserve persistent database space
+  |
+
+error[E0753]: expected outer doc comment
+ --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/node-disk-memory/proposed/crates/kasumi-store/src/scratch_disk.rs:5:1
+  |
+5 |   //! or make filesystem allocation immune to other processes or device failures.
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+6 | / use crate::{
+7 | |     device_disk::{DeviceDisk, DeviceSelection},
+8 | |     disk_memory::{self, DiskMemoryRequirements, Lease, List, NodeDiskMemoryAdmission},
+9 | | };
+  | |__- the inner doc comment doesn't annotate this `use` import
+  |
+help: to annotate the `use` import, change the doc comment from inner to outer style
+  |
+5 - //! or make filesystem allocation immune to other processes or device failures.
+5 + /// or make filesystem allocation immune to other processes or device failures.
+  |
+

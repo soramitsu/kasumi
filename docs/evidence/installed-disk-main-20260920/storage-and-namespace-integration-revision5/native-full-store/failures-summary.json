@@ -1,0 +1,33 @@
+{
+  "original_log_sha256": "28505d6bcc6e509f697458c93bc403ef3010fc2901dd793e2b2d1ef5aecf502d",
+  "cases": [
+    {
+      "test": "audit_archive::owned::tests::owned_publication_resolves_partial_writes_and_uncertain_rename_without_adopting_files",
+      "first_lines": [
+        "test audit_archive::owned::tests::owned_publication_resolves_partial_writes_and_uncertain_rename_without_adopting_files ... ",
+        "thread 'audit_archive::owned::tests::owned_publication_resolves_partial_writes_and_uncertain_rename_without_adopting_files' (6323090) panicked at crates/kasumi-store/src/audit_archive_owned.rs:219:14:",
+        "called `Result::unwrap()` on an `Err` value: persistent file or directory owners are still live",
+        "",
+        "Stack backtrace:",
+        "   0: std::backtrace_rs::backtrace::libunwind::trace",
+        "             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9",
+        "   1: std::backtrace_rs::backtrace::trace_unsynchronized::<<std::backtrace::Backtrace>::create::{closure#0}>"
+      ],
+      "failure_in_original_summary": true
+    },
+    {
+      "test": "backup_sessions::tests::visible_session_outcomes_require_durable_readback_before_resolution_or_cleanup",
+      "first_lines": [
+        "test backup_sessions::tests::visible_session_outcomes_require_durable_readback_before_resolution_or_cleanup ... ",
+        "thread 'backup_sessions::tests::visible_session_outcomes_require_durable_readback_before_resolution_or_cleanup' (6333041) panicked at crates/kasumi-store/src/backup_sessions.rs:738:17:",
+        "assertion `left == right` failed",
+        "  left: [75, 83, 77, 83, 69, 83, 48, 49, 2, 0, 0, 0, 0, 0, 0, 0, 144, 229, 87, 1, 82, 100, 65, 81, 136, 243, 7, 212, 96, 76, 111, 31, 137, 4, 0, 0, 0, 0, 0, 0, 26, 156, 15, 68, 249, 218, 80, 157, 241, 148, 144, 23, 182, 105, 143, 153, 82, 188, 90, 186, 60, 48, 156, 39, 160, 132, 204, 214, 165, 203, 195, 215, 75, 65, 83, 85, 77, 73, 66, 49, 0, 0, 3, 89, 123, 34, 102, 111, 114, 109, 97, 116, 34, 58, 49, 44, 34, 98, 97, 99, 107, 117, 112, 95, 105, 100, 34, 58, 34, 55, 98, 98, 52, 51, 51, 54, 97, 45",
+        " right: [75, 65, 83, 85, 77, 73, 66, 49, 0, 0, 3, 89, 123, 34, 102, 111, 114, 109, 97, 116, 34, 58, 49, 44, 34, 98, 97, 99, 107, 117, 112, 95, 105, 100, 34, 58, 34, 55, 98, 98, 52, 51, 51, 54, 97, 45, 50, 97, 54, 48, 45, 52, 49, 50, 101, 45, 98, 52, 53, 50, 45, 53, 57, 49, 50, 56, 50, 56, 52, 52, 48, 50, 100, 34, 44, 34, 116, 101, 110, 97, 110, 116, 34, 58, 34, 116, 101, 110, 97, 110, 116, 34, 44, 34, 114, 101, 118, 105, 115, 105, 111, 110, 34, 58, 55, 44, 34, 112, 108, 97, 105, 110, 116, 101, 1",
+        "stack backtrace:",
+        "   0: __rustc::rust_begin_unwind",
+        "             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5"
+      ],
+      "failure_in_original_summary": true
+    }
+  ]
+}

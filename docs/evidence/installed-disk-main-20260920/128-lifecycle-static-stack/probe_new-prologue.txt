@@ -1,0 +1,35 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000e7a60 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new>:
+1000e7a60: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1000e7a64: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1000e7a68: 910043fd    	add	x29, sp, #0x10
+1000e7a6c: d14023e9    	sub	x9, sp, #0x8, lsl #12   ; =0x8000
+1000e7a70: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+1000e7a74: f90003ff    	str	xzr, [sp]
+1000e7a78: eb2963ff    	cmp	sp, x9
+1000e7a7c: 54ffffa1    	b.ne	0x1000e7a70 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x10>
+1000e7a80: d12cc3ff    	sub	sp, sp, #0xb30
+1000e7a84: f90003ff    	str	xzr, [sp]
+1000e7a88: d100a3a9    	sub	x9, x29, #0x28
+1000e7a8c: f9000be9    	str	x9, [sp, #0x10]
+1000e7a90: f9000fe8    	str	x8, [sp, #0x18]
+1000e7a94: aa0003e8    	mov	x8, x0
+1000e7a98: f9000128    	str	x8, [x9]
+1000e7a9c: f9001be0    	str	x0, [sp, #0x30]
+1000e7aa0: 94887b17    	bl	0x1023066fc <<std::time::Instant>::now>
+1000e7aa4: f90013e0    	str	x0, [sp, #0x20]
+1000e7aa8: b9002fe1    	str	w1, [sp, #0x2c]
+1000e7aac: 14000009    	b	0x1000e7ad0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x70>
+1000e7ab0: 9100c3e0    	add	x0, sp, #0x30
+1000e7ab4: 940bf2b8    	bl	0x1003e4594 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_raft::network::InProcessRouter>>>
+1000e7ab8: 14000042    	b	0x1000e7bc0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x160>
+1000e7abc: f9400be9    	ldr	x9, [sp, #0x10]
+1000e7ac0: f9000520    	str	x0, [x9, #0x8]
+1000e7ac4: aa0103e8    	mov	x8, x1
+1000e7ac8: b9001128    	str	w8, [x9, #0x10]
+1000e7acc: 17fffff9    	b	0x1000e7ab0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x50>
+1000e7ad0: 9101e3e8    	add	x8, sp, #0x78

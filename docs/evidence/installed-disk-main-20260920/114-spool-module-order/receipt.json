@@ -1,0 +1,5 @@
+{
+  "scope": "Place production module declarations before existing test module; no behavior change",
+  "before_sha256": "8db677b6cfd7beb306baa6c5949e8b6b45cf87bc887f56551d65b14222b09a51",
+  "after_sha256": "330d0c0a6251d1143348e20228170a6cf7fce3b9f319883098f2663e252a4630"
+}

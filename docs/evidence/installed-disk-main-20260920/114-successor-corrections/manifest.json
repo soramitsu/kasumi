@@ -1,0 +1,29 @@
+{
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "status": "APPLIED_UNCOMPILED",
+  "patch_sha256": "84f1143d5877e3975f43340f699bd657be9355fba289d7d10408a1baf40aaa8e",
+  "files": [
+    {
+      "path": "crates/kasumi-authority/src/service.rs",
+      "before_sha256": "e2d329b4497d30ca40bf92796abc8f96f7ab77e08e4ae83b99fc8e070c65948c",
+      "proposed_sha256": "3393925cf30ea32923d72a4201f168d436853963f42dad923f72c2d140b0b853"
+    },
+    {
+      "path": "crates/kasumi-authority/src/signer_directive_tests.rs",
+      "before_sha256": "6d49fe85736e7070114c6ec135acab13c3a8c3d02940b3ba5a18de0c3cfe8c21",
+      "proposed_sha256": "2d8923a2d2d150a2347ef692002eeb922846256c2432007fc017b27002a3e035"
+    },
+    {
+      "path": "crates/kasumi-engine/src/service_serving_tests.rs",
+      "before_sha256": "5c44fea1d9c20c37ea7a90361bd187a7deb34c2cafc9a4c8960484cea938f5b6",
+      "proposed_sha256": "e68a91b7158bc62cf692a8977ffc707f879a93465bda4bc6db25112866c694ce"
+    },
+    {
+      "path": "crates/kasumi-engine/tests/lifecycle.rs",
+      "before_sha256": "3b6e06580a1835154bce5fefe3a16358788ea336dab82d96e789584f735f16fb",
+      "proposed_sha256": "ecd9058d5d6dcc8026364ce2414897c3b09b380a4171d1ab59331cdd4ed0dbc4"
+    }
+  ],
+  "scope": "test-only original metrics diagnostics, exact current leader historical read and strict typed expired-serving cleanup; no production timeout/outcome changes"
+}

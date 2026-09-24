@@ -135,6 +135,9 @@ async fn cancelled_unclaimed_group_cleanup_keeps_same_actual_child() -> Result<(
 
 #[tokio::test]
 async fn delivered_startup_is_not_closed_by_node_startup_census() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
     let started = owner
         .start(async {
@@ -146,7 +149,7 @@ async fn delivered_startup_is_not_closed_by_node_startup_census() -> Result<()> 
         .await?;
     owner.drain_startup().await?;
     owner.check()?;
-    let disk = kasumi_store::ScratchDisk::fixture();
+    let disk = fixture_scratch.clone();
     let buffer = crate::SnapshotBuffer::new(&disk, 64, &owner)?;
     drop(buffer);
     match started {
@@ -209,12 +212,16 @@ impl crate::StateMachineBackend for Backend {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_local_initialization_drains_real_group_and_breaks_router_cycle() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let store = kasumi_store::TenantStorageSet::initialize_catalogs_fixture(
         kasumi_store::NodeStore::create_new_fixture(
             directory.path().join("startup.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+            fixture_scratch.memory().clone(),
+            fixture_scratch.clone(),
         )?,
         "tenant-a".into(),
         Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([19; 32])),

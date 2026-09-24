@@ -1,0 +1,4414 @@
+[
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/vendor/rmcp-3.2.0#rmcp@3.2.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/vendor/rmcp-3.2.0/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "rmcp",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/vendor/rmcp-3.2.0/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "warning: method `matches_response_id` is never used\n   --> vendor/rmcp-3.2.0/src/model.rs:251:19\n    |\n236 | impl NumberOrString {\n    | ------------------- method in this implementation\n...\n251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {\n    |                   ^^^^^^^^^^^^^^^^^^^\n    |\n    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default",
+          "rendered": null,
+          "spans": []
+        }
+      ],
+      "level": "warning",
+      "message": "method `matches_response_id` is never used",
+      "spans": [
+        {
+          "byte_end": 7413,
+          "byte_start": 7394,
+          "column_end": 20,
+          "column_start": 1,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/model.rs",
+          "is_primary": false,
+          "label": "method in this implementation",
+          "line_end": 236,
+          "line_start": 236,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 20,
+              "highlight_start": 1,
+              "text": "impl NumberOrString {"
+            }
+          ]
+        },
+        {
+          "byte_end": 7878,
+          "byte_start": 7859,
+          "column_end": 38,
+          "column_start": 19,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/model.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 251,
+          "line_start": 251,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 38,
+              "highlight_start": 19,
+              "text": "    pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "dead_code",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/vendor/rmcp-3.2.0#rmcp@3.2.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/vendor/rmcp-3.2.0/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "rmcp",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/vendor/rmcp-3.2.0/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "warning: method `set_client_request_metadata` is never used\n    --> vendor/rmcp-3.2.0/src/service.rs:1032:19\n     |\n 806 | impl<R: ServiceRole> Peer<R> {\n     | ---------------------------- method in this implementation\n...\n1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {\n     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n",
+      "$message_type": "diagnostic",
+      "children": [],
+      "level": "warning",
+      "message": "method `set_client_request_metadata` is never used",
+      "spans": [
+        {
+          "byte_end": 28935,
+          "byte_start": 28907,
+          "column_end": 29,
+          "column_start": 1,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/service.rs",
+          "is_primary": false,
+          "label": "method in this implementation",
+          "line_end": 806,
+          "line_start": 806,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 29,
+              "highlight_start": 1,
+              "text": "impl<R: ServiceRole> Peer<R> {"
+            }
+          ]
+        },
+        {
+          "byte_end": 37085,
+          "byte_start": 37058,
+          "column_end": 46,
+          "column_start": 19,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/service.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 1032,
+          "line_start": 1032,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 46,
+              "highlight_start": 19,
+              "text": "    pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "dead_code",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/vendor/rmcp-3.2.0#rmcp@3.2.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/vendor/rmcp-3.2.0/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "rmcp",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/vendor/rmcp-3.2.0/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "warning: method `is_authorization_required` is never used\n   --> vendor/rmcp-3.2.0/src/transport.rs:275:19\n    |\n249 | impl DynamicTransportError {\n    | -------------------------- method in this implementation\n...\n275 |     pub(crate) fn is_authorization_required(&self) -> bool {\n    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^\n\n",
+      "$message_type": "diagnostic",
+      "children": [],
+      "level": "warning",
+      "message": "method `is_authorization_required` is never used",
+      "spans": [
+        {
+          "byte_end": 8958,
+          "byte_start": 8932,
+          "column_end": 27,
+          "column_start": 1,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/transport.rs",
+          "is_primary": false,
+          "label": "method in this implementation",
+          "line_end": 249,
+          "line_start": 249,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 27,
+              "highlight_start": 1,
+              "text": "impl DynamicTransportError {"
+            }
+          ]
+        },
+        {
+          "byte_end": 9854,
+          "byte_start": 9829,
+          "column_end": 44,
+          "column_start": 19,
+          "expansion": null,
+          "file_name": "vendor/rmcp-3.2.0/src/transport.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 275,
+          "line_start": 275,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 44,
+              "highlight_start": 19,
+              "text": "    pub(crate) fn is_authorization_required(&self) -> bool {"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "dead_code",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: unneeded unit expression\n   --> crates/kasumi-store/src/node_disk/batch.rs:487:21\n    |\n487 |                     ()\n    |                     ^^ help: remove the final `()`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unused_unit\n    = note: `-D clippy::unused-unit` implied by `-D warnings`\n    = help: to override `-D warnings` add `#[allow(clippy::unused_unit)]`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unused_unit",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`-D clippy::unused-unit` implied by `-D warnings`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "to override `-D warnings` add `#[allow(clippy::unused_unit)]`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "remove the final `()`",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 17113,
+              "byte_start": 17111,
+              "column_end": 23,
+              "column_start": 21,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/batch.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 487,
+              "line_start": 487,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 23,
+                  "highlight_start": 21,
+                  "text": "                    ()"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "unneeded unit expression",
+      "spans": [
+        {
+          "byte_end": 17113,
+          "byte_start": 17111,
+          "column_end": 23,
+          "column_start": 21,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/batch.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 487,
+          "line_start": 487,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 23,
+              "highlight_start": 21,
+              "text": "                    ()"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::unused_unit",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: field `names` is never read\n  --> crates/kasumi-store/src/node_disk/batch.rs:36:5\n   |\n33 | struct Part {\n   |        ---- field in this struct\n...\n36 |     names: Box<[CString]>,\n   |     ^^^^^\n   |\n   = note: `-D dead-code` implied by `-D warnings`\n   = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`-D dead-code` implied by `-D warnings`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`",
+          "rendered": null,
+          "spans": []
+        }
+      ],
+      "level": "error",
+      "message": "field `names` is never read",
+      "spans": [
+        {
+          "byte_end": 1012,
+          "byte_start": 1008,
+          "column_end": 12,
+          "column_start": 8,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/batch.rs",
+          "is_primary": false,
+          "label": "field in this struct",
+          "line_end": 33,
+          "line_start": 33,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 12,
+              "highlight_start": 8,
+              "text": "struct Part {"
+            }
+          ]
+        },
+        {
+          "byte_end": 1125,
+          "byte_start": 1120,
+          "column_end": 10,
+          "column_start": 5,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/batch.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 36,
+          "line_start": 36,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 10,
+              "highlight_start": 5,
+              "text": "    names: Box<[CString]>,"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "dead_code",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: method `cancel` is never used\n   --> crates/kasumi-store/src/node_disk/batch.rs:209:19\n    |\n 97 | impl NamespaceAdmission {\n    | ----------------------- method in this implementation\n...\n209 |     pub(crate) fn cancel(mut self) -> io::Result<()> {\n    |                   ^^^^^^\n\n",
+      "$message_type": "diagnostic",
+      "children": [],
+      "level": "error",
+      "message": "method `cancel` is never used",
+      "spans": [
+        {
+          "byte_end": 2900,
+          "byte_start": 2877,
+          "column_end": 24,
+          "column_start": 1,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/batch.rs",
+          "is_primary": false,
+          "label": "method in this implementation",
+          "line_end": 97,
+          "line_start": 97,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 24,
+              "highlight_start": 1,
+              "text": "impl NamespaceAdmission {"
+            }
+          ]
+        },
+        {
+          "byte_end": 7233,
+          "byte_start": 7227,
+          "column_end": 25,
+          "column_start": 19,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/batch.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 209,
+          "line_start": 209,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 25,
+              "highlight_start": 19,
+              "text": "    pub(crate) fn cancel(mut self) -> io::Result<()> {"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "dead_code",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes\n   --> crates/kasumi-store/src/node_disk/batch.rs:326:13\n    |\n326 |             drop(state.namespace_claim.take());\n    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\nnote: argument has type `std::option::Option<node_disk::batch::ClaimRecord>`\n   --> crates/kasumi-store/src/node_disk/batch.rs:326:18\n    |\n326 |             drop(state.namespace_claim.take());\n    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#drop_non_drop\n    = note: `-D clippy::drop-non-drop` implied by `-D warnings`\n    = help: to override `-D warnings` add `#[allow(clippy::drop_non_drop)]`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "argument has type `std::option::Option<node_disk::batch::ClaimRecord>`",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 11223,
+              "byte_start": 11195,
+              "column_end": 46,
+              "column_start": 18,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/batch.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 326,
+              "line_start": 326,
+              "suggested_replacement": null,
+              "suggestion_applicability": null,
+              "text": [
+                {
+                  "highlight_end": 46,
+                  "highlight_start": 18,
+                  "text": "            drop(state.namespace_claim.take());"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#drop_non_drop",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`-D clippy::drop-non-drop` implied by `-D warnings`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "to override `-D warnings` add `#[allow(clippy::drop_non_drop)]`",
+          "rendered": null,
+          "spans": []
+        }
+      ],
+      "level": "error",
+      "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
+      "spans": [
+        {
+          "byte_end": 11224,
+          "byte_start": 11190,
+          "column_end": 47,
+          "column_start": 13,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/batch.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 326,
+          "line_start": 326,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 47,
+              "highlight_start": 13,
+              "text": "            drop(state.namespace_claim.take());"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::drop_non_drop",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this `if` statement can be collapsed\n   --> crates/kasumi-store/src/node_disk/directory/managed.rs:899:5\n    |\n899 | /     if let Some(work) = work {\n900 | |         if !precharged {\n901 | |             disk.reserve(state, disk.config.directory_policy.extent_bytes, work)?;\n902 | |         }\n903 | |     }\n    | |_____^\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if\n    = note: `-D clippy::collapsible-if` implied by `-D warnings`\n    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`\nhelp: collapse nested if block\n    |\n899 ~     if let Some(work) = work\n900 ~         && !precharged {\n901 |             disk.reserve(state, disk.config.directory_policy.extent_bytes, work)?;\n902 ~         }\n    |\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`-D clippy::collapsible-if` implied by `-D warnings`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "to override `-D warnings` add `#[allow(clippy::collapsible_if)]`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "collapse nested if block",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 32193,
+              "byte_start": 32191,
+              "column_end": 31,
+              "column_start": 29,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/directory/managed.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 899,
+              "line_start": 899,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 31,
+                  "highlight_start": 29,
+                  "text": "    if let Some(work) = work {"
+                }
+              ]
+            },
+            {
+              "byte_end": 32317,
+              "byte_start": 32311,
+              "column_end": 6,
+              "column_start": 10,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/directory/managed.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 903,
+              "line_start": 902,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 10,
+                  "highlight_start": 10,
+                  "text": "        }"
+                },
+                {
+                  "highlight_end": 6,
+                  "highlight_start": 1,
+                  "text": "    }"
+                }
+              ]
+            },
+            {
+              "byte_end": 32204,
+              "byte_start": 32202,
+              "column_end": 11,
+              "column_start": 9,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/directory/managed.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 900,
+              "line_start": 900,
+              "suggested_replacement": "&&",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 11,
+                  "highlight_start": 9,
+                  "text": "        if !precharged {"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this `if` statement can be collapsed",
+      "spans": [
+        {
+          "byte_end": 32317,
+          "byte_start": 32167,
+          "column_end": 6,
+          "column_start": 5,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/directory/managed.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 903,
+          "line_start": 899,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 31,
+              "highlight_start": 5,
+              "text": "    if let Some(work) = work {"
+            },
+            {
+              "highlight_end": 25,
+              "highlight_start": 1,
+              "text": "        if !precharged {"
+            },
+            {
+              "highlight_end": 83,
+              "highlight_start": 1,
+              "text": "            disk.reserve(state, disk.config.directory_policy.extent_bytes, work)?;"
+            },
+            {
+              "highlight_end": 10,
+              "highlight_start": 1,
+              "text": "        }"
+            },
+            {
+              "highlight_end": 6,
+              "highlight_start": 1,
+              "text": "    }"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::collapsible_if",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this `if` statement can be collapsed\n   --> crates/kasumi-store/src/node_disk/file.rs:205:17\n    |\n205 | /                 if self.create && error.kind() == io::ErrorKind::AlreadyExists {\n206 | |                     if let Err(rollback) = transition\n207 | |                         .take()\n208 | |                         .expect(\"prepared creation parent\")\n...   |\n214 | |                 }\n    | |_________________^\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if\nhelp: collapse nested if block\n    |\n205 ~                 if self.create && error.kind() == io::ErrorKind::AlreadyExists\n206 ~                     && let Err(rollback) = transition\n207 |                         .take()\n...\n212 |                         return Err(rollback);\n213 ~                     }\n    |\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "collapse nested if block",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 6190,
+              "byte_start": 6188,
+              "column_end": 81,
+              "column_start": 79,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 205,
+              "line_start": 205,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 81,
+                  "highlight_start": 79,
+                  "text": "                if self.create && error.kind() == io::ErrorKind::AlreadyExists {"
+                }
+              ]
+            },
+            {
+              "byte_end": 6588,
+              "byte_start": 6570,
+              "column_end": 18,
+              "column_start": 22,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 214,
+              "line_start": 213,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 22,
+                  "highlight_start": 22,
+                  "text": "                    }"
+                },
+                {
+                  "highlight_end": 18,
+                  "highlight_start": 1,
+                  "text": "                }"
+                }
+              ]
+            },
+            {
+              "byte_end": 6213,
+              "byte_start": 6211,
+              "column_end": 23,
+              "column_start": 21,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 206,
+              "line_start": 206,
+              "suggested_replacement": "&&",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 23,
+                  "highlight_start": 21,
+                  "text": "                    if let Err(rollback) = transition"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this `if` statement can be collapsed",
+      "spans": [
+        {
+          "byte_end": 6588,
+          "byte_start": 6126,
+          "column_end": 18,
+          "column_start": 17,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 214,
+          "line_start": 205,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 81,
+              "highlight_start": 17,
+              "text": "                if self.create && error.kind() == io::ErrorKind::AlreadyExists {"
+            },
+            {
+              "highlight_end": 54,
+              "highlight_start": 1,
+              "text": "                    if let Err(rollback) = transition"
+            },
+            {
+              "highlight_end": 32,
+              "highlight_start": 1,
+              "text": "                        .take()"
+            },
+            {
+              "highlight_end": 60,
+              "highlight_start": 1,
+              "text": "                        .expect(\"prepared creation parent\")"
+            },
+            {
+              "highlight_end": 80,
+              "highlight_start": 1,
+              "text": "                        .unchanged(self.disk, &mut self.state, &[&self.parent])"
+            },
+            {
+              "highlight_end": 22,
+              "highlight_start": 1,
+              "text": "                    {"
+            },
+            {
+              "highlight_end": 64,
+              "highlight_start": 1,
+              "text": "                        self.disk.fail_locked(&mut self.state);"
+            },
+            {
+              "highlight_end": 46,
+              "highlight_start": 1,
+              "text": "                        return Err(rollback);"
+            },
+            {
+              "highlight_end": 22,
+              "highlight_start": 1,
+              "text": "                    }"
+            },
+            {
+              "highlight_end": 18,
+              "highlight_start": 1,
+              "text": "                }"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::collapsible_if",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this expression creates a reference which is immediately dereferenced by the compiler\n   --> crates/kasumi-store/src/node_disk/namespace.rs:363:45\n    |\n363 |             census::directory_nonallocating(&metadata)?;\n    |                                             ^^^^^^^^^ help: change this to: `metadata`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow\n    = note: `-D clippy::needless-borrow` implied by `-D warnings`\n    = help: to override `-D warnings` add `#[allow(clippy::needless_borrow)]`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`-D clippy::needless-borrow` implied by `-D warnings`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "to override `-D warnings` add `#[allow(clippy::needless_borrow)]`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "change this to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 13763,
+              "byte_start": 13754,
+              "column_end": 54,
+              "column_start": 45,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/namespace.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 363,
+              "line_start": 363,
+              "suggested_replacement": "metadata",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 54,
+                  "highlight_start": 45,
+                  "text": "            census::directory_nonallocating(&metadata)?;"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+      "spans": [
+        {
+          "byte_end": 13763,
+          "byte_start": 13754,
+          "column_end": 54,
+          "column_start": 45,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/namespace.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 363,
+          "line_start": 363,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 54,
+              "highlight_start": 45,
+              "text": "            census::directory_nonallocating(&metadata)?;"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::needless_borrow",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this expression creates a reference which is immediately dereferenced by the compiler\n   --> crates/kasumi-store/src/node_disk/namespace.rs:364:29\n    |\n364 |             if Identity::of(&metadata) != change.identity {\n    |                             ^^^^^^^^^ help: change this to: `metadata`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "change this to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 13804,
+              "byte_start": 13795,
+              "column_end": 38,
+              "column_start": 29,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/namespace.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 364,
+              "line_start": 364,
+              "suggested_replacement": "metadata",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 38,
+                  "highlight_start": 29,
+                  "text": "            if Identity::of(&metadata) != change.identity {"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+      "spans": [
+        {
+          "byte_end": 13804,
+          "byte_start": 13795,
+          "column_end": 38,
+          "column_start": 29,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/namespace.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 364,
+          "line_start": 364,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 38,
+              "highlight_start": 29,
+              "text": "            if Identity::of(&metadata) != change.identity {"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::needless_borrow",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this expression creates a reference which is immediately dereferenced by the compiler\n   --> crates/kasumi-store/src/node_disk/namespace.rs:367:53\n    |\n367 |             let observed = census::directory_extent(&metadata)?;\n    |                                                     ^^^^^^^^^ help: change this to: `metadata`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "change this to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 13965,
+              "byte_start": 13956,
+              "column_end": 62,
+              "column_start": 53,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/namespace.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 367,
+              "line_start": 367,
+              "suggested_replacement": "metadata",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 62,
+                  "highlight_start": 53,
+                  "text": "            let observed = census::directory_extent(&metadata)?;"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+      "spans": [
+        {
+          "byte_end": 13965,
+          "byte_start": 13956,
+          "column_end": 62,
+          "column_start": 53,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/namespace.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 367,
+          "line_start": 367,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 62,
+              "highlight_start": 53,
+              "text": "            let observed = census::directory_extent(&metadata)?;"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::needless_borrow",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this `if` statement can be collapsed\n   --> crates/kasumi-store/src/node_disk.rs:506:9\n    |\n506 | /         if let Registration::Preparing(prepared) = &self.entry().registration {\n507 | |             if prepared.streams.outstanding() != 0 {\n...   |\n514 | |         }\n    | |_________^\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if\nhelp: collapse nested if block\n    |\n506 ~         if let Registration::Preparing(prepared) = &self.entry().registration\n507 ~             && prepared.streams.outstanding() != 0 {\n508 |                 // The pre-effect registry node remains the actual owner of all\n...\n512 |                 return;\n513 ~             }\n    |\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "collapse nested if block",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 17813,
+              "byte_start": 17811,
+              "column_end": 80,
+              "column_start": 78,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 506,
+              "line_start": 506,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 80,
+                  "highlight_start": 78,
+                  "text": "        if let Registration::Preparing(prepared) = &self.entry().registration {"
+                }
+              ]
+            },
+            {
+              "byte_end": 18239,
+              "byte_start": 18229,
+              "column_end": 10,
+              "column_start": 14,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 514,
+              "line_start": 513,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 14,
+                  "highlight_start": 14,
+                  "text": "            }"
+                },
+                {
+                  "highlight_end": 10,
+                  "highlight_start": 1,
+                  "text": "        }"
+                }
+              ]
+            },
+            {
+              "byte_end": 17828,
+              "byte_start": 17826,
+              "column_end": 15,
+              "column_start": 13,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 507,
+              "line_start": 507,
+              "suggested_replacement": "&&",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 15,
+                  "highlight_start": 13,
+                  "text": "            if prepared.streams.outstanding() != 0 {"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this `if` statement can be collapsed",
+      "spans": [
+        {
+          "byte_end": 18239,
+          "byte_start": 17742,
+          "column_end": 10,
+          "column_start": 9,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 514,
+          "line_start": 506,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 80,
+              "highlight_start": 9,
+              "text": "        if let Registration::Preparing(prepared) = &self.entry().registration {"
+            },
+            {
+              "highlight_end": 53,
+              "highlight_start": 1,
+              "text": "            if prepared.streams.outstanding() != 0 {"
+            },
+            {
+              "highlight_end": 80,
+              "highlight_start": 1,
+              "text": "                // The pre-effect registry node remains the actual owner of all"
+            },
+            {
+              "highlight_end": 81,
+              "highlight_start": 1,
+              "text": "                // resource backing, locks, leases AND native close diagnostics."
+            },
+            {
+              "highlight_end": 82,
+              "highlight_start": 1,
+              "text": "                // A later constructor reports this retained failure. Never retry"
+            },
+            {
+              "highlight_end": 82,
+              "highlight_start": 1,
+              "text": "                // a possibly consumed DIR or allocate a detached retention task."
+            },
+            {
+              "highlight_end": 24,
+              "highlight_start": 1,
+              "text": "                return;"
+            },
+            {
+              "highlight_end": 14,
+              "highlight_start": 1,
+              "text": "            }"
+            },
+            {
+              "highlight_end": 10,
+              "highlight_start": 1,
+              "text": "        }"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::collapsible_if",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this `if` statement can be collapsed\n   --> crates/kasumi-store/src/node_disk.rs:885:9\n    |\n885 | /         if let Some(operation) = &mut state.pending_directory {\n886 | |             if let Err(error) = operation.close_resources() {\n887 | |                 self.fail_locked(&mut state);\n888 | |                 return Err(error.into());\n889 | |             }\n890 | |         }\n    | |_________^\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if\nhelp: collapse nested if block\n    |\n885 ~         if let Some(operation) = &mut state.pending_directory\n886 ~             && let Err(error) = operation.close_resources() {\n887 |                 self.fail_locked(&mut state);\n888 |                 return Err(error.into());\n889 ~             }\n    |\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "collapse nested if block",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 33325,
+              "byte_start": 33323,
+              "column_end": 64,
+              "column_start": 62,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 885,
+              "line_start": 885,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 64,
+                  "highlight_start": 62,
+                  "text": "        if let Some(operation) = &mut state.pending_directory {"
+                }
+              ]
+            },
+            {
+              "byte_end": 33499,
+              "byte_start": 33489,
+              "column_end": 10,
+              "column_start": 14,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 890,
+              "line_start": 889,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 14,
+                  "highlight_start": 14,
+                  "text": "            }"
+                },
+                {
+                  "highlight_end": 10,
+                  "highlight_start": 1,
+                  "text": "        }"
+                }
+              ]
+            },
+            {
+              "byte_end": 33340,
+              "byte_start": 33338,
+              "column_end": 15,
+              "column_start": 13,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 886,
+              "line_start": 886,
+              "suggested_replacement": "&&",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 15,
+                  "highlight_start": 13,
+                  "text": "            if let Err(error) = operation.close_resources() {"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this `if` statement can be collapsed",
+      "spans": [
+        {
+          "byte_end": 33499,
+          "byte_start": 33270,
+          "column_end": 10,
+          "column_start": 9,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 890,
+          "line_start": 885,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 64,
+              "highlight_start": 9,
+              "text": "        if let Some(operation) = &mut state.pending_directory {"
+            },
+            {
+              "highlight_end": 62,
+              "highlight_start": 1,
+              "text": "            if let Err(error) = operation.close_resources() {"
+            },
+            {
+              "highlight_end": 46,
+              "highlight_start": 1,
+              "text": "                self.fail_locked(&mut state);"
+            },
+            {
+              "highlight_end": 42,
+              "highlight_start": 1,
+              "text": "                return Err(error.into());"
+            },
+            {
+              "highlight_end": 14,
+              "highlight_start": 1,
+              "text": "            }"
+            },
+            {
+              "highlight_end": 10,
+              "highlight_start": 1,
+              "text": "        }"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::collapsible_if",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes\n   --> crates/kasumi-store/src/node_disk.rs:953:9\n    |\n953 |         drop(state.namespace_claim.take());\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\nnote: argument has type `std::option::Option<node_disk::batch::ClaimRecord>`\n   --> crates/kasumi-store/src/node_disk.rs:953:14\n    |\n953 |         drop(state.namespace_claim.take());\n    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#drop_non_drop\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "argument has type `std::option::Option<node_disk::batch::ClaimRecord>`",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 36043,
+              "byte_start": 36015,
+              "column_end": 42,
+              "column_start": 14,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 953,
+              "line_start": 953,
+              "suggested_replacement": null,
+              "suggestion_applicability": null,
+              "text": [
+                {
+                  "highlight_end": 42,
+                  "highlight_start": 14,
+                  "text": "        drop(state.namespace_claim.take());"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#drop_non_drop",
+          "rendered": null,
+          "spans": []
+        }
+      ],
+      "level": "error",
+      "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
+      "spans": [
+        {
+          "byte_end": 36044,
+          "byte_start": 36010,
+          "column_end": 43,
+          "column_start": 9,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 953,
+          "line_start": 953,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 43,
+              "highlight_start": 9,
+              "text": "        drop(state.namespace_claim.take());"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::drop_non_drop",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: unneeded unit expression\n   --> crates/kasumi-store/src/node_disk/batch.rs:487:21\n    |\n487 |                     ()\n    |                     ^^ help: remove the final `()`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unused_unit\n    = note: `-D clippy::unused-unit` implied by `-D warnings`\n    = help: to override `-D warnings` add `#[allow(clippy::unused_unit)]`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unused_unit",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`-D clippy::unused-unit` implied by `-D warnings`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "to override `-D warnings` add `#[allow(clippy::unused_unit)]`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "remove the final `()`",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 17113,
+              "byte_start": 17111,
+              "column_end": 23,
+              "column_start": 21,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/batch.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 487,
+              "line_start": 487,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 23,
+                  "highlight_start": 21,
+                  "text": "                    ()"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "unneeded unit expression",
+      "spans": [
+        {
+          "byte_end": 17113,
+          "byte_start": 17111,
+          "column_end": 23,
+          "column_start": 21,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/batch.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 487,
+          "line_start": 487,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 23,
+              "highlight_start": 21,
+              "text": "                    ()"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::unused_unit",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes\n   --> crates/kasumi-store/src/node_disk/batch.rs:326:13\n    |\n326 |             drop(state.namespace_claim.take());\n    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\nnote: argument has type `std::option::Option<node_disk::batch::ClaimRecord>`\n   --> crates/kasumi-store/src/node_disk/batch.rs:326:18\n    |\n326 |             drop(state.namespace_claim.take());\n    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#drop_non_drop\n    = note: `-D clippy::drop-non-drop` implied by `-D warnings`\n    = help: to override `-D warnings` add `#[allow(clippy::drop_non_drop)]`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "argument has type `std::option::Option<node_disk::batch::ClaimRecord>`",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 11223,
+              "byte_start": 11195,
+              "column_end": 46,
+              "column_start": 18,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/batch.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 326,
+              "line_start": 326,
+              "suggested_replacement": null,
+              "suggestion_applicability": null,
+              "text": [
+                {
+                  "highlight_end": 46,
+                  "highlight_start": 18,
+                  "text": "            drop(state.namespace_claim.take());"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#drop_non_drop",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`-D clippy::drop-non-drop` implied by `-D warnings`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "to override `-D warnings` add `#[allow(clippy::drop_non_drop)]`",
+          "rendered": null,
+          "spans": []
+        }
+      ],
+      "level": "error",
+      "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
+      "spans": [
+        {
+          "byte_end": 11224,
+          "byte_start": 11190,
+          "column_end": 47,
+          "column_start": 13,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/batch.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 326,
+          "line_start": 326,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 47,
+              "highlight_start": 13,
+              "text": "            drop(state.namespace_claim.take());"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::drop_non_drop",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: casting to the same type is unnecessary (`u64` -> `u64`)\n   --> crates/kasumi-store/src/node_disk/directory/cursor/tests.rs:226:28\n    |\n226 |     (result.st_dev as u64, result.st_ino as u64) == (identity.0, identity.1)\n    |                            ^^^^^^^^^^^^^^^^^^^^ help: try: `{ result.st_ino }`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_cast\n    = note: `-D clippy::unnecessary-cast` implied by `-D warnings`\n    = help: to override `-D warnings` add `#[allow(clippy::unnecessary_cast)]`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_cast",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`-D clippy::unnecessary-cast` implied by `-D warnings`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "to override `-D warnings` add `#[allow(clippy::unnecessary_cast)]`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "try",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 8167,
+              "byte_start": 8147,
+              "column_end": 48,
+              "column_start": 28,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/directory/cursor/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 226,
+              "line_start": 226,
+              "suggested_replacement": "{ result.st_ino }",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 48,
+                  "highlight_start": 28,
+                  "text": "    (result.st_dev as u64, result.st_ino as u64) == (identity.0, identity.1)"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "casting to the same type is unnecessary (`u64` -> `u64`)",
+      "spans": [
+        {
+          "byte_end": 8167,
+          "byte_start": 8147,
+          "column_end": 48,
+          "column_start": 28,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/directory/cursor/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 226,
+          "line_start": 226,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 48,
+              "highlight_start": 28,
+              "text": "    (result.st_dev as u64, result.st_ino as u64) == (identity.0, identity.1)"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::unnecessary_cast",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this `if` statement can be collapsed\n   --> crates/kasumi-store/src/node_disk/directory/managed.rs:899:5\n    |\n899 | /     if let Some(work) = work {\n900 | |         if !precharged {\n901 | |             disk.reserve(state, disk.config.directory_policy.extent_bytes, work)?;\n902 | |         }\n903 | |     }\n    | |_____^\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if\n    = note: `-D clippy::collapsible-if` implied by `-D warnings`\n    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`\nhelp: collapse nested if block\n    |\n899 ~     if let Some(work) = work\n900 ~         && !precharged {\n901 |             disk.reserve(state, disk.config.directory_policy.extent_bytes, work)?;\n902 ~         }\n    |\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`-D clippy::collapsible-if` implied by `-D warnings`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "to override `-D warnings` add `#[allow(clippy::collapsible_if)]`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "collapse nested if block",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 32193,
+              "byte_start": 32191,
+              "column_end": 31,
+              "column_start": 29,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/directory/managed.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 899,
+              "line_start": 899,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 31,
+                  "highlight_start": 29,
+                  "text": "    if let Some(work) = work {"
+                }
+              ]
+            },
+            {
+              "byte_end": 32317,
+              "byte_start": 32311,
+              "column_end": 6,
+              "column_start": 10,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/directory/managed.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 903,
+              "line_start": 902,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 10,
+                  "highlight_start": 10,
+                  "text": "        }"
+                },
+                {
+                  "highlight_end": 6,
+                  "highlight_start": 1,
+                  "text": "    }"
+                }
+              ]
+            },
+            {
+              "byte_end": 32204,
+              "byte_start": 32202,
+              "column_end": 11,
+              "column_start": 9,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/directory/managed.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 900,
+              "line_start": 900,
+              "suggested_replacement": "&&",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 11,
+                  "highlight_start": 9,
+                  "text": "        if !precharged {"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this `if` statement can be collapsed",
+      "spans": [
+        {
+          "byte_end": 32317,
+          "byte_start": 32167,
+          "column_end": 6,
+          "column_start": 5,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/directory/managed.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 903,
+          "line_start": 899,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 31,
+              "highlight_start": 5,
+              "text": "    if let Some(work) = work {"
+            },
+            {
+              "highlight_end": 25,
+              "highlight_start": 1,
+              "text": "        if !precharged {"
+            },
+            {
+              "highlight_end": 83,
+              "highlight_start": 1,
+              "text": "            disk.reserve(state, disk.config.directory_policy.extent_bytes, work)?;"
+            },
+            {
+              "highlight_end": 10,
+              "highlight_start": 1,
+              "text": "        }"
+            },
+            {
+              "highlight_end": 6,
+              "highlight_start": 1,
+              "text": "    }"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::collapsible_if",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this `if` statement can be collapsed\n   --> crates/kasumi-store/src/node_disk/file.rs:205:17\n    |\n205 | /                 if self.create && error.kind() == io::ErrorKind::AlreadyExists {\n206 | |                     if let Err(rollback) = transition\n207 | |                         .take()\n208 | |                         .expect(\"prepared creation parent\")\n...   |\n214 | |                 }\n    | |_________________^\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if\nhelp: collapse nested if block\n    |\n205 ~                 if self.create && error.kind() == io::ErrorKind::AlreadyExists\n206 ~                     && let Err(rollback) = transition\n207 |                         .take()\n...\n212 |                         return Err(rollback);\n213 ~                     }\n    |\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "collapse nested if block",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 6190,
+              "byte_start": 6188,
+              "column_end": 81,
+              "column_start": 79,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 205,
+              "line_start": 205,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 81,
+                  "highlight_start": 79,
+                  "text": "                if self.create && error.kind() == io::ErrorKind::AlreadyExists {"
+                }
+              ]
+            },
+            {
+              "byte_end": 6588,
+              "byte_start": 6570,
+              "column_end": 18,
+              "column_start": 22,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 214,
+              "line_start": 213,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 22,
+                  "highlight_start": 22,
+                  "text": "                    }"
+                },
+                {
+                  "highlight_end": 18,
+                  "highlight_start": 1,
+                  "text": "                }"
+                }
+              ]
+            },
+            {
+              "byte_end": 6213,
+              "byte_start": 6211,
+              "column_end": 23,
+              "column_start": 21,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 206,
+              "line_start": 206,
+              "suggested_replacement": "&&",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 23,
+                  "highlight_start": 21,
+                  "text": "                    if let Err(rollback) = transition"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this `if` statement can be collapsed",
+      "spans": [
+        {
+          "byte_end": 6588,
+          "byte_start": 6126,
+          "column_end": 18,
+          "column_start": 17,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/file.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 214,
+          "line_start": 205,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 81,
+              "highlight_start": 17,
+              "text": "                if self.create && error.kind() == io::ErrorKind::AlreadyExists {"
+            },
+            {
+              "highlight_end": 54,
+              "highlight_start": 1,
+              "text": "                    if let Err(rollback) = transition"
+            },
+            {
+              "highlight_end": 32,
+              "highlight_start": 1,
+              "text": "                        .take()"
+            },
+            {
+              "highlight_end": 60,
+              "highlight_start": 1,
+              "text": "                        .expect(\"prepared creation parent\")"
+            },
+            {
+              "highlight_end": 80,
+              "highlight_start": 1,
+              "text": "                        .unchanged(self.disk, &mut self.state, &[&self.parent])"
+            },
+            {
+              "highlight_end": 22,
+              "highlight_start": 1,
+              "text": "                    {"
+            },
+            {
+              "highlight_end": 64,
+              "highlight_start": 1,
+              "text": "                        self.disk.fail_locked(&mut self.state);"
+            },
+            {
+              "highlight_end": 46,
+              "highlight_start": 1,
+              "text": "                        return Err(rollback);"
+            },
+            {
+              "highlight_end": 22,
+              "highlight_start": 1,
+              "text": "                    }"
+            },
+            {
+              "highlight_end": 18,
+              "highlight_start": 1,
+              "text": "                }"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::collapsible_if",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this expression creates a reference which is immediately dereferenced by the compiler\n   --> crates/kasumi-store/src/node_disk/namespace.rs:363:45\n    |\n363 |             census::directory_nonallocating(&metadata)?;\n    |                                             ^^^^^^^^^ help: change this to: `metadata`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow\n    = note: `-D clippy::needless-borrow` implied by `-D warnings`\n    = help: to override `-D warnings` add `#[allow(clippy::needless_borrow)]`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`-D clippy::needless-borrow` implied by `-D warnings`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "to override `-D warnings` add `#[allow(clippy::needless_borrow)]`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "change this to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 13763,
+              "byte_start": 13754,
+              "column_end": 54,
+              "column_start": 45,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/namespace.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 363,
+              "line_start": 363,
+              "suggested_replacement": "metadata",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 54,
+                  "highlight_start": 45,
+                  "text": "            census::directory_nonallocating(&metadata)?;"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+      "spans": [
+        {
+          "byte_end": 13763,
+          "byte_start": 13754,
+          "column_end": 54,
+          "column_start": 45,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/namespace.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 363,
+          "line_start": 363,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 54,
+              "highlight_start": 45,
+              "text": "            census::directory_nonallocating(&metadata)?;"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::needless_borrow",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this expression creates a reference which is immediately dereferenced by the compiler\n   --> crates/kasumi-store/src/node_disk/namespace.rs:364:29\n    |\n364 |             if Identity::of(&metadata) != change.identity {\n    |                             ^^^^^^^^^ help: change this to: `metadata`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "change this to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 13804,
+              "byte_start": 13795,
+              "column_end": 38,
+              "column_start": 29,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/namespace.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 364,
+              "line_start": 364,
+              "suggested_replacement": "metadata",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 38,
+                  "highlight_start": 29,
+                  "text": "            if Identity::of(&metadata) != change.identity {"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+      "spans": [
+        {
+          "byte_end": 13804,
+          "byte_start": 13795,
+          "column_end": 38,
+          "column_start": 29,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/namespace.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 364,
+          "line_start": 364,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 38,
+              "highlight_start": 29,
+              "text": "            if Identity::of(&metadata) != change.identity {"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::needless_borrow",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this expression creates a reference which is immediately dereferenced by the compiler\n   --> crates/kasumi-store/src/node_disk/namespace.rs:367:53\n    |\n367 |             let observed = census::directory_extent(&metadata)?;\n    |                                                     ^^^^^^^^^ help: change this to: `metadata`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "change this to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 13965,
+              "byte_start": 13956,
+              "column_end": 62,
+              "column_start": 53,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/namespace.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 367,
+              "line_start": 367,
+              "suggested_replacement": "metadata",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 62,
+                  "highlight_start": 53,
+                  "text": "            let observed = census::directory_extent(&metadata)?;"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+      "spans": [
+        {
+          "byte_end": 13965,
+          "byte_start": 13956,
+          "column_end": 62,
+          "column_start": 53,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/namespace.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 367,
+          "line_start": 367,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 62,
+              "highlight_start": 53,
+              "text": "            let observed = census::directory_extent(&metadata)?;"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::needless_borrow",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this operation has no effect\n   --> crates/kasumi-store/src/node_disk/tests.rs:182:47\n    |\n182 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));\n    |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op\n    = note: `-D clippy::identity-op` implied by `-D warnings`\n    = help: to override `-D warnings` add `#[allow(clippy::identity_op)]`\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`-D clippy::identity-op` implied by `-D warnings`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "to override `-D warnings` add `#[allow(clippy::identity_op)]`",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "consider reducing it to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 6418,
+              "byte_start": 6389,
+              "column_end": 76,
+              "column_start": 47,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 182,
+              "line_start": 182,
+              "suggested_replacement": "namespace_charge(&disk)",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 76,
+                  "highlight_start": 47,
+                  "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this operation has no effect",
+      "spans": [
+        {
+          "byte_end": 6418,
+          "byte_start": 6389,
+          "column_end": 76,
+          "column_start": 47,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 182,
+          "line_start": 182,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 76,
+              "highlight_start": 47,
+              "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::identity_op",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this expression creates a reference which is immediately dereferenced by the compiler\n   --> crates/kasumi-store/src/node_disk/tests.rs:182:64\n    |\n182 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));\n    |                                                                ^^^^^ help: change this to: `disk`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "change this to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 6411,
+              "byte_start": 6406,
+              "column_end": 69,
+              "column_start": 64,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 182,
+              "line_start": 182,
+              "suggested_replacement": "disk",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 69,
+                  "highlight_start": 64,
+                  "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+      "spans": [
+        {
+          "byte_end": 6411,
+          "byte_start": 6406,
+          "column_end": 69,
+          "column_start": 64,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 182,
+          "line_start": 182,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 69,
+              "highlight_start": 64,
+              "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::needless_borrow",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this expression creates a reference which is immediately dereferenced by the compiler\n   --> crates/kasumi-store/src/node_disk/tests.rs:183:65\n    |\n183 |     assert_eq!(disk.snapshot().pending_bytes, namespace_pending(&disk));\n    |                                                                 ^^^^^ help: change this to: `disk`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "change this to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 6490,
+              "byte_start": 6485,
+              "column_end": 70,
+              "column_start": 65,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 183,
+              "line_start": 183,
+              "suggested_replacement": "disk",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 70,
+                  "highlight_start": 65,
+                  "text": "    assert_eq!(disk.snapshot().pending_bytes, namespace_pending(&disk));"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+      "spans": [
+        {
+          "byte_end": 6490,
+          "byte_start": 6485,
+          "column_end": 70,
+          "column_start": 65,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 183,
+          "line_start": 183,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 70,
+              "highlight_start": 65,
+              "text": "    assert_eq!(disk.snapshot().pending_bytes, namespace_pending(&disk));"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::needless_borrow",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this operation has no effect\n   --> crates/kasumi-store/src/node_disk/tests.rs:258:47\n    |\n258 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));\n    |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "consider reducing it to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 9261,
+              "byte_start": 9232,
+              "column_end": 76,
+              "column_start": 47,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 258,
+              "line_start": 258,
+              "suggested_replacement": "namespace_charge(&disk)",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 76,
+                  "highlight_start": 47,
+                  "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this operation has no effect",
+      "spans": [
+        {
+          "byte_end": 9261,
+          "byte_start": 9232,
+          "column_end": 76,
+          "column_start": 47,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 258,
+          "line_start": 258,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 76,
+              "highlight_start": 47,
+              "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::identity_op",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this operation has no effect\n   --> crates/kasumi-store/src/node_disk/tests.rs:358:47\n    |\n358 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));\n    |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "consider reducing it to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 13069,
+              "byte_start": 13040,
+              "column_end": 76,
+              "column_start": 47,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 358,
+              "line_start": 358,
+              "suggested_replacement": "namespace_charge(&disk)",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 76,
+                  "highlight_start": 47,
+                  "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this operation has no effect",
+      "spans": [
+        {
+          "byte_end": 13069,
+          "byte_start": 13040,
+          "column_end": 76,
+          "column_start": 47,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 358,
+          "line_start": 358,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 76,
+              "highlight_start": 47,
+              "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::identity_op",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this operation has no effect\n   --> crates/kasumi-store/src/node_disk/tests.rs:663:47\n    |\n663 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));\n    |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "consider reducing it to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 24691,
+              "byte_start": 24662,
+              "column_end": 76,
+              "column_start": 47,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 663,
+              "line_start": 663,
+              "suggested_replacement": "namespace_charge(&disk)",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 76,
+                  "highlight_start": 47,
+                  "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this operation has no effect",
+      "spans": [
+        {
+          "byte_end": 24691,
+          "byte_start": 24662,
+          "column_end": 76,
+          "column_start": 47,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 663,
+          "line_start": 663,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 76,
+              "highlight_start": 47,
+              "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::identity_op",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this operation has no effect\n    --> crates/kasumi-store/src/node_disk/tests.rs:1090:47\n     |\n1090 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));\n     |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`\n     |\n     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "consider reducing it to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 43394,
+              "byte_start": 43365,
+              "column_end": 76,
+              "column_start": 47,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 1090,
+              "line_start": 1090,
+              "suggested_replacement": "namespace_charge(&disk)",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 76,
+                  "highlight_start": 47,
+                  "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this operation has no effect",
+      "spans": [
+        {
+          "byte_end": 43394,
+          "byte_start": 43365,
+          "column_end": 76,
+          "column_start": 47,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 1090,
+          "line_start": 1090,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 76,
+              "highlight_start": 47,
+              "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::identity_op",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this operation has no effect\n    --> crates/kasumi-store/src/node_disk/tests.rs:1167:47\n     |\n1167 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));\n     |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`\n     |\n     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "consider reducing it to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 46575,
+              "byte_start": 46546,
+              "column_end": 76,
+              "column_start": 47,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 1167,
+              "line_start": 1167,
+              "suggested_replacement": "namespace_charge(&disk)",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 76,
+                  "highlight_start": 47,
+                  "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this operation has no effect",
+      "spans": [
+        {
+          "byte_end": 46575,
+          "byte_start": 46546,
+          "column_end": 76,
+          "column_start": 47,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 1167,
+          "line_start": 1167,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 76,
+              "highlight_start": 47,
+              "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::identity_op",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this operation has no effect\n    --> crates/kasumi-store/src/node_disk/tests.rs:1201:47\n     |\n1201 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));\n     |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`\n     |\n     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "consider reducing it to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 47932,
+              "byte_start": 47903,
+              "column_end": 76,
+              "column_start": 47,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 1201,
+              "line_start": 1201,
+              "suggested_replacement": "namespace_charge(&disk)",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 76,
+                  "highlight_start": 47,
+                  "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this operation has no effect",
+      "spans": [
+        {
+          "byte_end": 47932,
+          "byte_start": 47903,
+          "column_end": 76,
+          "column_start": 47,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 1201,
+          "line_start": 1201,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 76,
+              "highlight_start": 47,
+              "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::identity_op",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this operation has no effect\n    --> crates/kasumi-store/src/node_disk/tests.rs:1254:47\n     |\n1254 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));\n     |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`\n     |\n     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "consider reducing it to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 50120,
+              "byte_start": 50091,
+              "column_end": 76,
+              "column_start": 47,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 1254,
+              "line_start": 1254,
+              "suggested_replacement": "namespace_charge(&disk)",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 76,
+                  "highlight_start": 47,
+                  "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this operation has no effect",
+      "spans": [
+        {
+          "byte_end": 50120,
+          "byte_start": 50091,
+          "column_end": 76,
+          "column_start": 47,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 1254,
+          "line_start": 1254,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 76,
+              "highlight_start": 47,
+              "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::identity_op",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this operation has no effect\n    --> crates/kasumi-store/src/node_disk/tests.rs:1516:47\n     |\n1516 |     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));\n     |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`\n     |\n     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "consider reducing it to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 60665,
+              "byte_start": 60636,
+              "column_end": 76,
+              "column_start": 47,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 1516,
+              "line_start": 1516,
+              "suggested_replacement": "namespace_charge(&disk)",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 76,
+                  "highlight_start": 47,
+                  "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this operation has no effect",
+      "spans": [
+        {
+          "byte_end": 60665,
+          "byte_start": 60636,
+          "column_end": 76,
+          "column_start": 47,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 1516,
+          "line_start": 1516,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 76,
+              "highlight_start": 47,
+              "text": "    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::identity_op",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this operation has no effect\n    --> crates/kasumi-store/src/node_disk/tests.rs:1626:51\n     |\n1626 |         assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));\n     |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`\n     |\n     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "consider reducing it to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 65584,
+              "byte_start": 65555,
+              "column_end": 80,
+              "column_start": 51,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 1626,
+              "line_start": 1626,
+              "suggested_replacement": "namespace_charge(&disk)",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 80,
+                  "highlight_start": 51,
+                  "text": "        assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this operation has no effect",
+      "spans": [
+        {
+          "byte_end": 65584,
+          "byte_start": 65555,
+          "column_end": 80,
+          "column_start": 51,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 1626,
+          "line_start": 1626,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 80,
+              "highlight_start": 51,
+              "text": "        assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::identity_op",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this operation has no effect\n    --> crates/kasumi-store/src/node_disk/tests.rs:1722:51\n     |\n1722 |         assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));\n     |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`\n     |\n     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "consider reducing it to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 70027,
+              "byte_start": 69998,
+              "column_end": 80,
+              "column_start": 51,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 1722,
+              "line_start": 1722,
+              "suggested_replacement": "namespace_charge(&disk)",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 80,
+                  "highlight_start": 51,
+                  "text": "        assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this operation has no effect",
+      "spans": [
+        {
+          "byte_end": 70027,
+          "byte_start": 69998,
+          "column_end": 80,
+          "column_start": 51,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 1722,
+          "line_start": 1722,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 80,
+              "highlight_start": 51,
+              "text": "        assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::identity_op",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this operation has no effect\n    --> crates/kasumi-store/src/node_disk/tests.rs:2518:45\n     |\n2518 |             assert_eq!(after.charged_bytes, namespace_charge(&disk) + (0));\n     |                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider reducing it to: `namespace_charge(&disk)`\n     |\n     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#identity_op",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "consider reducing it to",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 102917,
+              "byte_start": 102888,
+              "column_end": 74,
+              "column_start": 45,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 2518,
+              "line_start": 2518,
+              "suggested_replacement": "namespace_charge(&disk)",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 74,
+                  "highlight_start": 45,
+                  "text": "            assert_eq!(after.charged_bytes, namespace_charge(&disk) + (0));"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this operation has no effect",
+      "spans": [
+        {
+          "byte_end": 102917,
+          "byte_start": 102888,
+          "column_end": 74,
+          "column_start": 45,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk/tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 2518,
+          "line_start": 2518,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 74,
+              "highlight_start": 45,
+              "text": "            assert_eq!(after.charged_bytes, namespace_charge(&disk) + (0));"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::identity_op",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this `if` statement can be collapsed\n   --> crates/kasumi-store/src/node_disk.rs:506:9\n    |\n506 | /         if let Registration::Preparing(prepared) = &self.entry().registration {\n507 | |             if prepared.streams.outstanding() != 0 {\n...   |\n514 | |         }\n    | |_________^\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if\nhelp: collapse nested if block\n    |\n506 ~         if let Registration::Preparing(prepared) = &self.entry().registration\n507 ~             && prepared.streams.outstanding() != 0 {\n508 |                 // The pre-effect registry node remains the actual owner of all\n...\n512 |                 return;\n513 ~             }\n    |\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "collapse nested if block",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 17813,
+              "byte_start": 17811,
+              "column_end": 80,
+              "column_start": 78,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 506,
+              "line_start": 506,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 80,
+                  "highlight_start": 78,
+                  "text": "        if let Registration::Preparing(prepared) = &self.entry().registration {"
+                }
+              ]
+            },
+            {
+              "byte_end": 18239,
+              "byte_start": 18229,
+              "column_end": 10,
+              "column_start": 14,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 514,
+              "line_start": 513,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 14,
+                  "highlight_start": 14,
+                  "text": "            }"
+                },
+                {
+                  "highlight_end": 10,
+                  "highlight_start": 1,
+                  "text": "        }"
+                }
+              ]
+            },
+            {
+              "byte_end": 17828,
+              "byte_start": 17826,
+              "column_end": 15,
+              "column_start": 13,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 507,
+              "line_start": 507,
+              "suggested_replacement": "&&",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 15,
+                  "highlight_start": 13,
+                  "text": "            if prepared.streams.outstanding() != 0 {"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this `if` statement can be collapsed",
+      "spans": [
+        {
+          "byte_end": 18239,
+          "byte_start": 17742,
+          "column_end": 10,
+          "column_start": 9,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 514,
+          "line_start": 506,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 80,
+              "highlight_start": 9,
+              "text": "        if let Registration::Preparing(prepared) = &self.entry().registration {"
+            },
+            {
+              "highlight_end": 53,
+              "highlight_start": 1,
+              "text": "            if prepared.streams.outstanding() != 0 {"
+            },
+            {
+              "highlight_end": 80,
+              "highlight_start": 1,
+              "text": "                // The pre-effect registry node remains the actual owner of all"
+            },
+            {
+              "highlight_end": 81,
+              "highlight_start": 1,
+              "text": "                // resource backing, locks, leases AND native close diagnostics."
+            },
+            {
+              "highlight_end": 82,
+              "highlight_start": 1,
+              "text": "                // A later constructor reports this retained failure. Never retry"
+            },
+            {
+              "highlight_end": 82,
+              "highlight_start": 1,
+              "text": "                // a possibly consumed DIR or allocate a detached retention task."
+            },
+            {
+              "highlight_end": 24,
+              "highlight_start": 1,
+              "text": "                return;"
+            },
+            {
+              "highlight_end": 14,
+              "highlight_start": 1,
+              "text": "            }"
+            },
+            {
+              "highlight_end": 10,
+              "highlight_start": 1,
+              "text": "        }"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::collapsible_if",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: this `if` statement can be collapsed\n   --> crates/kasumi-store/src/node_disk.rs:885:9\n    |\n885 | /         if let Some(operation) = &mut state.pending_directory {\n886 | |             if let Err(error) = operation.close_resources() {\n887 | |                 self.fail_locked(&mut state);\n888 | |                 return Err(error.into());\n889 | |             }\n890 | |         }\n    | |_________^\n    |\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if\nhelp: collapse nested if block\n    |\n885 ~         if let Some(operation) = &mut state.pending_directory\n886 ~             && let Err(error) = operation.close_resources() {\n887 |                 self.fail_locked(&mut state);\n888 |                 return Err(error.into());\n889 ~             }\n    |\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "collapse nested if block",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 33325,
+              "byte_start": 33323,
+              "column_end": 64,
+              "column_start": 62,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 885,
+              "line_start": 885,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 64,
+                  "highlight_start": 62,
+                  "text": "        if let Some(operation) = &mut state.pending_directory {"
+                }
+              ]
+            },
+            {
+              "byte_end": 33499,
+              "byte_start": 33489,
+              "column_end": 10,
+              "column_start": 14,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 890,
+              "line_start": 889,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 14,
+                  "highlight_start": 14,
+                  "text": "            }"
+                },
+                {
+                  "highlight_end": 10,
+                  "highlight_start": 1,
+                  "text": "        }"
+                }
+              ]
+            },
+            {
+              "byte_end": 33340,
+              "byte_start": 33338,
+              "column_end": 15,
+              "column_start": 13,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 886,
+              "line_start": 886,
+              "suggested_replacement": "&&",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 15,
+                  "highlight_start": 13,
+                  "text": "            if let Err(error) = operation.close_resources() {"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "this `if` statement can be collapsed",
+      "spans": [
+        {
+          "byte_end": 33499,
+          "byte_start": 33270,
+          "column_end": 10,
+          "column_start": 9,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 890,
+          "line_start": 885,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 64,
+              "highlight_start": 9,
+              "text": "        if let Some(operation) = &mut state.pending_directory {"
+            },
+            {
+              "highlight_end": 62,
+              "highlight_start": 1,
+              "text": "            if let Err(error) = operation.close_resources() {"
+            },
+            {
+              "highlight_end": 46,
+              "highlight_start": 1,
+              "text": "                self.fail_locked(&mut state);"
+            },
+            {
+              "highlight_end": 42,
+              "highlight_start": 1,
+              "text": "                return Err(error.into());"
+            },
+            {
+              "highlight_end": 14,
+              "highlight_start": 1,
+              "text": "            }"
+            },
+            {
+              "highlight_end": 10,
+              "highlight_start": 1,
+              "text": "        }"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::collapsible_if",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store#0.1.0",
+    "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "kasumi_store",
+      "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision2/assembly/crates/kasumi-store/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error: call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes\n   --> crates/kasumi-store/src/node_disk.rs:953:9\n    |\n953 |         drop(state.namespace_claim.take());\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\nnote: argument has type `std::option::Option<node_disk::batch::ClaimRecord>`\n   --> crates/kasumi-store/src/node_disk.rs:953:14\n    |\n953 |         drop(state.namespace_claim.take());\n    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#drop_non_drop\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "argument has type `std::option::Option<node_disk::batch::ClaimRecord>`",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 36043,
+              "byte_start": 36015,
+              "column_end": 42,
+              "column_start": 14,
+              "expansion": null,
+              "file_name": "crates/kasumi-store/src/node_disk.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 953,
+              "line_start": 953,
+              "suggested_replacement": null,
+              "suggestion_applicability": null,
+              "text": [
+                {
+                  "highlight_end": 42,
+                  "highlight_start": 14,
+                  "text": "        drop(state.namespace_claim.take());"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#drop_non_drop",
+          "rendered": null,
+          "spans": []
+        }
+      ],
+      "level": "error",
+      "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
+      "spans": [
+        {
+          "byte_end": 36044,
+          "byte_start": 36010,
+          "column_end": 43,
+          "column_start": 9,
+          "expansion": null,
+          "file_name": "crates/kasumi-store/src/node_disk.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 953,
+          "line_start": 953,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 43,
+              "highlight_start": 9,
+              "text": "        drop(state.namespace_claim.take());"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "clippy::drop_non_drop",
+        "explanation": null
+      }
+    }
+  }
+]

@@ -1,0 +1,107 @@
+--- a/crates/kasumi-engine/src/recovery_service.rs
++++ b/crates/kasumi-engine/src/recovery_service.rs
+@@ -233,7 +233,7 @@
+         self.recovery_write(context.clone(), mutation).await?;
+         self.recovery_status(context, operation_id)
+             .await
+-            .map_err(unknown)
++            .map_err(|cause| unknown("status after recovery control write", cause))
+     }
+     /// Internal coordinator boundary. No native RPC accepts a caller-supplied
+     /// phase input or outcome; the reducer checks the installed workflow again.
+@@ -259,7 +259,7 @@
+         .await?;
+         self.recovery_phase(context, operation_id, phase_id)
+             .await
+-            .map_err(unknown)
++            .map_err(|cause| unknown("phase after recovery prepare write", cause))
+     }
+     pub async fn resolve_recovery_dispatch(
+         self: &Arc<Self>,
+@@ -279,7 +279,7 @@
+         .await?;
+         self.recovery_status(context, operation_id)
+             .await
+-            .map_err(unknown)
++            .map_err(|cause| unknown("status after recovery resolve write", cause))
+     }
+     /// Closed local publication: topology CAS and permanent phase outcome commit
+     /// together. Replaying a completed phase does not touch current topology.
+@@ -299,7 +299,7 @@
+         .await?;
+         self.recovery_phase(context, operation_id, phase_id)
+             .await
+-            .map_err(unknown)
++            .map_err(|cause| unknown("phase after recovery route write", cause))
+     }
+     async fn recovery_write(
+         self: &Arc<Self>,
+@@ -361,12 +361,12 @@
+         };
+         let result = tokio::time::timeout(Duration::from_secs(10), tokio::spawn(worker.run()))
+             .await
+-            .map_err(unknown)?
+-            .map_err(unknown)?
+-            .map_err(unknown)??;
++            .map_err(|cause| unknown("recovery proposal deadline", cause))?
++            .map_err(|cause| unknown("recovery proposal task join", cause))?
++            .map_err(|cause| unknown("recovery proposal worker", cause))??;
+         self.recovery_release(&context, policy_epoch, term)
+             .await
+-            .map_err(unknown)?;
++            .map_err(|cause| unknown("release after recovery proposal", cause))?;
+         Ok(result)
+     }
+     /// Build the next bounded semantic input using the same current Control
+@@ -862,7 +862,11 @@
+ fn error(code: ErrorCode, message: &str) -> Error {
+     Error::new(code, message)
+ }
+-fn unknown(_: impl std::fmt::Display) -> Error {
++fn unknown(_stage: &'static str, _cause: impl std::fmt::Display) -> Error {
++    // Integration tests compile the library without cfg(test). Keep this
++    // temporary cause trace behind their explicit test-utils feature as well.
++    #[cfg(any(test, feature = "test-utils"))]
++    eprintln!("kasumi-engine recovery unknown: stage={_stage}; cause={_cause:#}");
+     error(
+         ErrorCode::UnknownOutcome,
+         "recovery effect may be committed; resolve its exact permanent operation and phase",
+--- a/crates/kasumi-engine/src/service.rs
++++ b/crates/kasumi-engine/src/service.rs
+@@ -1018,7 +1018,17 @@
+         tokio::time::timeout(Duration::from_secs(5), self.group.linearizable_barrier())
+             .await
+             .map_err(|_| Error::new(ErrorCode::Unavailable, "read quorum deadline exceeded"))?
+-            .map_err(|_| Error::new(ErrorCode::Unavailable, "read quorum unavailable"))?;
++            .map_err(|_cause| {
++                // Retain the erased Raft cause only in explicit fixture builds.
++                // Metrics distinguish a cached follower from a current leader
++                // whose quorum/storage failed. Error behavior stays unchanged.
++                #[cfg(any(test, feature = "test-utils"))]
++                eprintln!(
++                    "kasumi-engine read quorum unavailable: cause={_cause:#}; metrics={:?}",
++                    self.group.raft().metrics().borrow(),
++                );
++                Error::new(ErrorCode::Unavailable, "read quorum unavailable")
++            })?;
+         self.access()
+     }
+ 
+--- a/crates/kasumi-engine/tests/common/recovery_control.rs
++++ b/crates/kasumi-engine/tests/common/recovery_control.rs
+@@ -998,8 +998,14 @@
+             };
+             assert_eq!((first_node, node_id), (1, 2));
+             assert_eq!(local, first);
++            // Both preparations follow actual leadership independently. Read
++            // the original unresolved phase through that current leader too;
++            // the database retained before them may now be a follower.
++            let phase_context = f.context("owner");
++            let current = f.leader().await;
+             assert!(
+-                db.recovery_phase(f.context("owner"), id, ambiguous)
++                current
++                    .recovery_phase(phase_context, id, ambiguous)
+                     .await
+                     .unwrap()
+                     .record()

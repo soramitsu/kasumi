@@ -2,7 +2,7 @@ mod common;
 
 use kasumi_engine::control::*;
 use kasumi_engine::test_utils::open_fixture;
-use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
+use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -66,13 +66,16 @@ fn placement_rejects_shared_domains_unknown_nodes_duplicate_identities_and_clear
 #[tokio::test]
 async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
-    let node = NodeStore::create_new_fixture(
-        root.path().join("control.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    let audit = common::security_audit(node.clone()).await;
+    let physical =
+        common::PhysicalFixture::new(&root.path().join("control.redb"), Default::default());
+    let node = physical
+        .storage
+        .create_new(
+            root.path().join("control.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let audit = common::security_audit(node.clone(), physical.storage.admission.clone()).await;
     let store = TenantStore::initialize_catalog_fixture(
         node,
         CONTROL_TENANT.into(),

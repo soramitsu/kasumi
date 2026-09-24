@@ -1,0 +1,11 @@
+--- a/crates/kasumi-store/src/node_disk/directory/managed.rs
++++ b/crates/kasumi-store/src/node_disk/directory/managed.rs
+@@ -321,7 +321,7 @@
+             disk,
+             state: &mut state,
+         };
+-        let result = (|| {
++        let result: io::Result<Self> = (|| {
+             acquire_parent(owner, &mut effect)?;
+             step(&mut effect, NodeDiskDirectoryOperationStep::OpenChild)?;
+             let operation = effect

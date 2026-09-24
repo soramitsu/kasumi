@@ -1,0 +1,7 @@
+{
+  "status": "FROZEN_UNRUN",
+  "manifest_sha256": "b2d6f9f980a55d0e1a688093cf2deb64269878005ff78e15f394af8341b336e5",
+  "runner_sha256": "1326b0aa402670b2db85bf168388694f1e064442688326458a4cedfc040b5c35",
+  "requires_native_all_passed": true,
+  "diagnostic_only": false
+}

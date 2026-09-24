@@ -1,0 +1,25 @@
+{
+  "status": "APPLIED UNCOMMITTED; native qualification pending143",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "patch_sha256": "6eb30fe4ce22d0ced8e896413ddeacf0fb7567a970b7426e58ff37da0cba3c40",
+  "manifest_sha256": "579565a2f5ad39206eee70d545c8de6a2ff97ee4e7f5a265425b3e99ad86950b",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "before_sha256": "1209c02021691458e421e34c1baa8f00896a924bf3508f47ec8ea75b73d0ce58",
+      "proposed_sha256": "26aac3a2915250a146f0b8066edfe3a035482d692a706c96e920c6cf4fa4ddd0"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/page_list_tests.rs",
+      "before_sha256": "b68adbe9a837904d1fb6dabc10d89eb6695a857877402704eaa1125d4e00507c",
+      "proposed_sha256": "ab8a173509aaf654412890f7179819ce8b45a7a00334e806535854d9b1af3515"
+    }
+  ],
+  "independent_checks": {
+    "TableNamespace_byte_exact_from_pre_format4": true,
+    "stats_and_print_debug_byte_exact_from_pre_format4": true,
+    "142_process_group_drained": true
+  },
+  "limitations": "Restores accidentally altered current APIs; no compatibility decoder or alias added. Scope needs full vendor compilation/testing."
+}

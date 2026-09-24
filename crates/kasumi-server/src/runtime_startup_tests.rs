@@ -1,9 +1,33 @@
-#[tokio::test]
-async fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtime() -> Result<()> {
+#[test]
+fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtime() -> Result<()> {
+    // The repeated real cold-open and panic-cleanup futures exceed libtest's
+    // default thread stack. Preserve the same async assertions on a larger one.
+    std::thread::Builder::new()
+        .name("runtime cold-preparation cleanup fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtime_impl(),
+                ))
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+async fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtime_impl()
+-> Result<()> {
     let _gate = LIFECYCLE_GATE.lock().await;
     let directory = kasumi_store::test_utils::private_tempdir()?;
-    let installed =
-        crate::standalone::initialize(&directory.path().join("installed"), "acme").await?;
+    let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &directory.path().join("installed"),
+        "acme",
+    )
+    .await?;
     let mut config = RuntimeConfig::load(&installed.configuration)?;
     let [mcp, native, admin] = listening_addresses();
     config.mcp.listen = mcp;
@@ -12,11 +36,17 @@ async fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtim
     config.mcp.protocol = McpConfig::new(format!("https://localhost:{}/mcp", mcp.port()))?;
     for phase in ["data-security", "data-database", "data-runtime"] {
         let fault = crate::startup_preparation::install(config.database_id, phase);
-        let error =
-            tokio::time::timeout(Duration::from_secs(10), NodeRuntime::open(config.clone()))
-                .await?
-                .err()
-                .context("injected preparation panic unexpectedly succeeded")?;
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            NodeRuntime::open_using_storage(
+                config.clone(),
+                crate::runtime::file_secret,
+                storage.clone(),
+            ),
+        )
+        .await?
+        .err()
+        .context("injected preparation panic unexpectedly succeeded")?;
         assert!(
             error
                 .downcast_ref::<crate::startup_preparation::PreparationPanic>()
@@ -28,12 +58,13 @@ async fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtim
         // immediately, including after a complete Control database was retained.
         let lock = crate::standalone::claim(
             &config,
-            &crate::persistent_disk::open(&config.persistent_disk)?,
+            &crate::persistent_disk::open(&config.persistent_disk, &storage)?,
         )?;
-        let node = NodeStore::open_existing_fixture(
+        let node = NodeStore::open_existing(
             &config.database_path,
             config.database_id,
-            kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
+            storage.open_persistent(&config.persistent_disk)?,
+            storage.open_scratch(&config.scratch_disk)?,
         )?;
         let store = TenantStore::open_existing(
             node.clone(),
@@ -44,24 +75,52 @@ async fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtim
         .await?;
         assert!(store.get("security.audit.meta", b"head")?.is_some());
         store.shutdown().await.unwrap();
-        node.drain_initializers().await?;
         drop(store);
+        node.shutdown().await?;
         drop(node);
         drop(lock);
-        let mut runtime = NodeRuntime::open(config.clone()).await?;
+        let mut runtime = NodeRuntime::open_using_storage(
+            config.clone(),
+            crate::runtime::file_secret,
+            storage.clone(),
+        )
+        .await?;
         runtime.shutdown().await?;
         drop(runtime);
     }
     Ok(())
 }
 
-#[tokio::test]
-async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_installation()
+#[test]
+fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_installation() -> Result<()>
+{
+    // Repeated real failed opens retain large cleanup futures in this fixture.
+    std::thread::Builder::new()
+        .name("runtime cold-audit cleanup fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    rejected_cold_audit_open_drains_storage_and_releases_the_standalone_installation_impl(),
+                ))
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_installation_impl()
 -> Result<()> {
     let _gate = LIFECYCLE_GATE.lock().await;
     let directory = kasumi_store::test_utils::private_tempdir()?;
-    let installed =
-        crate::standalone::initialize(&directory.path().join("installed"), "acme").await?;
+    let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &directory.path().join("installed"),
+        "acme",
+    )
+    .await?;
     let mut config = RuntimeConfig::load(&installed.configuration)?;
     // This case never serves or publishes topology. Reserve distinct test socket
     // endpoints so an unrelated operator listener cannot hide the audit failure.
@@ -70,10 +129,11 @@ async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_ins
     config.native.listen = native;
     config.admin.listen = admin;
     config.mcp.protocol = McpConfig::new(format!("https://localhost:{}/mcp", mcp.port()))?;
-    let scratch = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
-    let node = NodeStore::open_existing_fixture(
+    let scratch = storage.open_scratch(&config.scratch_disk)?;
+    let node = NodeStore::open_existing(
         &config.database_path,
         config.database_id,
+        storage.open_persistent(&config.persistent_disk)?,
         scratch.clone(),
     )?;
     let store = TenantStore::open_existing(
@@ -89,21 +149,27 @@ async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_ins
     )])?;
     store.shutdown().await.unwrap();
     drop(store);
+    node.shutdown().await?;
     drop(node);
     for _ in 0..2 {
-        let error = NodeRuntime::open(config.clone())
-            .await
-            .err()
-            .context("missing audit head was accepted")?;
+        let error = NodeRuntime::open_using_storage(
+            config.clone(),
+            crate::runtime::file_secret,
+            storage.clone(),
+        )
+        .await
+        .err()
+        .context("missing audit head was accepted")?;
         assert!(format!("{error:#}").contains("audit"));
         NodeRuntime::drain_startups().await?;
         let owner = crate::standalone::claim(
             &config,
-            &crate::persistent_disk::open(&config.persistent_disk)?,
+            &crate::persistent_disk::open(&config.persistent_disk, &storage)?,
         )?;
-        let node = NodeStore::open_existing_fixture(
+        let node = NodeStore::open_existing(
             &config.database_path,
             config.database_id,
+            storage.open_persistent(&config.persistent_disk)?,
             scratch.clone(),
         )?;
         let store = TenantStore::open_existing(
@@ -116,26 +182,55 @@ async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_ins
         assert!(store.get("security.audit.meta", b"head")?.is_none());
         store.shutdown().await.unwrap();
         drop(store);
+        node.shutdown().await?;
         drop(node);
         drop(owner);
     }
     Ok(())
 }
 
-#[tokio::test]
-async fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_lock() -> Result<()>
-{
+#[test]
+fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_lock() -> Result<()> {
+    // The aggregate runtime, shutdown report, and retained installation make
+    // this fixture's future larger than libtest's ordinary thread stack.
+    std::thread::Builder::new()
+        .name("runtime completed-shutdown aggregate fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    completed_runtime_shutdown_failure_retains_diagnostic_and_installation_lock_impl(),
+                ))
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+async fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_lock_impl()
+-> Result<()> {
     let _gate = LIFECYCLE_GATE.lock().await;
     let directory = kasumi_store::test_utils::private_tempdir()?;
-    let installed =
-        crate::standalone::initialize(&directory.path().join("installed"), "acme").await?;
+    let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &directory.path().join("installed"),
+        "acme",
+    )
+    .await?;
     let mut config = RuntimeConfig::load(&installed.configuration)?;
     let [mcp, native, admin] = listening_addresses();
     config.mcp.listen = mcp;
     config.native.listen = native;
     config.admin.listen = admin;
     config.mcp.protocol = McpConfig::new(format!("https://localhost:{}/mcp", mcp.port()))?;
-    let mut runtime = NodeRuntime::open(config.clone()).await?;
+    let mut runtime = NodeRuntime::open_using_storage(
+        config.clone(),
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await?;
     runtime.audit.seal();
     let first = runtime.shutdown().await.unwrap_err();
     assert_eq!(
@@ -149,7 +244,7 @@ async fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_
     assert!(
         crate::standalone::claim(
             &config,
-            &crate::persistent_disk::open(&config.persistent_disk)?
+            &crate::persistent_disk::open(&config.persistent_disk, &storage)?
         )
         .is_err()
     );
@@ -172,7 +267,7 @@ async fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_
     assert!(
         crate::standalone::claim(
             &config,
-            &crate::persistent_disk::open(&config.persistent_disk)?
+            &crate::persistent_disk::open(&config.persistent_disk, &storage)?
         )
         .is_err()
     );
@@ -180,19 +275,43 @@ async fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_
     NodeRuntime::drain_startups().await?;
     let owner = crate::standalone::claim(
         &config,
-        &crate::persistent_disk::open(&config.persistent_disk)?,
+        &crate::persistent_disk::open(&config.persistent_disk, &storage)?,
     )?;
     drop(owner);
     Ok(())
 }
 
-#[tokio::test]
-async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_until_join()
+#[test]
+fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_until_join() -> Result<()>
+{
+    // This aggregate fixture retains the serving owner, installed runtime,
+    // and failure-injection futures. Keep its frame off libtest's small stack.
+    std::thread::Builder::new()
+        .name("runtime serving owner aggregate fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    actual_standalone_unpolled_serve_and_serving_panic_retain_installation_until_join_impl(),
+                ))
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_until_join_impl()
 -> Result<()> {
     let _gate = LIFECYCLE_GATE.lock().await;
     let directory = kasumi_store::test_utils::private_tempdir()?;
-    let installed =
-        crate::standalone::initialize(&directory.path().join("installed"), "acme").await?;
+    let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &directory.path().join("installed"),
+        "acme",
+    )
+    .await?;
     let mut config = RuntimeConfig::load(&installed.configuration)?;
     let [mcp, native, admin] = listening_addresses();
     config.mcp.listen = mcp;
@@ -200,7 +319,12 @@ async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_
     config.admin.listen = admin;
     config.mcp.protocol = McpConfig::new(format!("https://localhost:{}/mcp", mcp.port()))?;
     for panicking in [false, true] {
-        let runtime = NodeRuntime::open(config.clone()).await?;
+        let runtime = NodeRuntime::open_using_storage(
+            config.clone(),
+            crate::runtime::file_secret,
+            storage.clone(),
+        )
+        .await?;
         let pause = crate::startup_preparation::pause_failure(config.database_id);
         let fault = panicking
             .then(|| crate::startup_preparation::install(config.database_id, "data-serving"));
@@ -213,15 +337,16 @@ async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_
         assert!(
             crate::standalone::claim(
                 &config,
-                &crate::persistent_disk::open(&config.persistent_disk)?
+                &crate::persistent_disk::open(&config.persistent_disk, &storage)?
             )
             .is_err()
         );
         assert!(
-            NodeStore::open_existing_fixture(
+            NodeStore::open_existing(
                 &config.database_path,
                 config.database_id,
-                kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?
+                storage.open_persistent(&config.persistent_disk)?,
+                storage.open_scratch(&config.scratch_disk)?
             )
             .is_err()
         );
@@ -238,7 +363,7 @@ async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_
         assert!(
             crate::standalone::claim(
                 &config,
-                &crate::persistent_disk::open(&config.persistent_disk)?
+                &crate::persistent_disk::open(&config.persistent_disk, &storage)?
             )
             .is_err()
         );
@@ -273,12 +398,13 @@ async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_
         drop(pause);
         let lock = crate::standalone::claim(
             &config,
-            &crate::persistent_disk::open(&config.persistent_disk)?,
+            &crate::persistent_disk::open(&config.persistent_disk, &storage)?,
         )?;
-        let node = NodeStore::open_existing_fixture(
+        let node = NodeStore::open_existing(
             &config.database_path,
             config.database_id,
-            kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
+            storage.open_persistent(&config.persistent_disk)?,
+            storage.open_scratch(&config.scratch_disk)?,
         )?;
         let store = TenantStore::open_existing(
             node.clone(),
@@ -289,11 +415,16 @@ async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_
         .await?;
         assert!(store.get("security.audit.meta", b"head")?.is_some());
         store.shutdown().await?;
-        node.drain_initializers().await?;
         drop(store);
+        node.shutdown().await?;
         drop(node);
         drop(lock);
-        let mut reopened = NodeRuntime::open(config.clone()).await?;
+        let mut reopened = NodeRuntime::open_using_storage(
+            config.clone(),
+            crate::runtime::file_secret,
+            storage.clone(),
+        )
+        .await?;
         reopened.shutdown().await?;
         drop(reopened);
     }

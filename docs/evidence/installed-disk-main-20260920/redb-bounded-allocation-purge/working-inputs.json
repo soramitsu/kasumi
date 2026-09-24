@@ -1,0 +1,10 @@
+{
+  "status": "WORKING TARGET-ONLY, UNCOMPILED",
+  "depends_on_patch_sha256": "f2103f19fa5223101a83c8c6cdf230a658f1d26fcfb54be56ab2ea5660cb85f8",
+  "files": {
+    "vendor/redb-4.2.0/src/transactions.rs": "26aac3a2915250a146f0b8066edfe3a035482d692a706c96e920c6cf4fa4ddd0",
+    "vendor/redb-4.2.0/src/db.rs": "76f3c101c143a8314cad64fee3bb6ea6ef5563f5fcc7ebc911f1b7c19bbe8bf7",
+    "vendor/redb-4.2.0/src/page_list_tests.rs": "ab8a173509aaf654412890f7179819ce8b45a7a00334e806535854d9b1af3515"
+  },
+  "depends_on_compile_correction_sha256": "6eb30fe4ce22d0ced8e896413ddeacf0fb7567a970b7426e58ff37da0cba3c40"
+}

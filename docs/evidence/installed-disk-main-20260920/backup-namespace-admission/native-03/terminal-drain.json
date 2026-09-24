@@ -1,0 +1,15 @@
+{
+  "results_sha256": "5aa980589cd17941c66a19089046e296b87d465eb3d83f35fd88340b41666523",
+  "groups_drained": {
+    "52464": true,
+    "52465": true,
+    "52477": true,
+    "52496": true,
+    "52502": true,
+    "52452": true
+  },
+  "phases_passed": true,
+  "before_sha256": "c089a8b28d91118defa0cb7f8f84bdbce93661a104b5a9607ec325f3127ce835",
+  "after_sha256": "c089a8b28d91118defa0cb7f8f84bdbce93661a104b5a9607ec325f3127ce835",
+  "input_inventories_equal": true
+}

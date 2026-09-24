@@ -1,0 +1,17 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010014fdf4 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}>:
+10014fdf4: d10083ff    	sub	sp, sp, #0x20
+10014fdf8: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10014fdfc: 910043fd    	add	x29, sp, #0x10
+10014fe00: f90003e8    	str	x8, [sp]
+10014fe04: f90007e0    	str	x0, [sp, #0x8]
+10014fe08: 97fdf0c2    	bl	0x1000cc110 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation>
+10014fe0c: f94003e8    	ldr	x8, [sp]
+10014fe10: 97fe544e    	bl	0x1000e4f48 <test::assert_test_result::<()>>
+10014fe14: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10014fe18: 910083ff    	add	sp, sp, #0x20
+10014fe1c: d65f03c0    	ret

@@ -1,0 +1,11 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED_GATE77_CORRECTION",
+  "patch_sha256": "9a2cec5b114ff5426f50315820f2915b0eec43c9b56da74a10ba42118cf1dc5e",
+  "files": [
+    {
+      "path": "crates/kasumi-server/src/standalone.rs",
+      "before_sha256": "9a66e50c1a04e1335b9b944263bd11864b261a836238d3a3b4b03507cd219895",
+      "proposed_sha256": "f4a1711ad3d7c0f1214a40c89dd2d365cc2178812439956829e81b44efa31624"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000d0938 <core::array::from_fn::<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>, 32, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>>:
+1000d0938: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1000d093c: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1000d0940: 910043fd    	add	x29, sp, #0x10
+1000d0944: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+1000d0948: f90003ff    	str	xzr, [sp]
+1000d094c: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+1000d0950: f90003ff    	str	xzr, [sp]
+1000d0954: d13883ff    	sub	sp, sp, #0xe20
+1000d0958: f90003ff    	str	xzr, [sp]
+1000d095c: f90007e8    	str	x8, [sp, #0x8]
+1000d0960: 910063e8    	add	x8, sp, #0x18
+1000d0964: f9000be8    	str	x8, [sp, #0x10]
+1000d0968: 97fffec8    	bl	0x1000d0488 <core::array::try_from_fn::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, 32, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>>
+1000d096c: f94007e0    	ldr	x0, [sp, #0x8]
+1000d0970: f9400be1    	ldr	x1, [sp, #0x10]
+1000d0974: 5285c008    	mov	w8, #0x2e00             ; =11776
+1000d0978: aa0803e2    	mov	x2, x8
+1000d097c: 948afb67    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000d0980: 91400bff    	add	sp, sp, #0x2, lsl #12   ; =0x2000
+1000d0984: 913883ff    	add	sp, sp, #0xe20
+1000d0988: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+1000d098c: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+1000d0990: d65f03c0    	ret

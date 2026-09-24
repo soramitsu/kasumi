@@ -1,0 +1,16 @@
+{
+  "actual_source_matches_exact_base": true,
+  "all_bytes_before_late_intent_unchanged": true,
+  "all_bytes_after_late_region_unchanged": true,
+  "six_original_exact_drain_observations_unchanged": true,
+  "one_original_intent_construction": true,
+  "one_original_context_construction": true,
+  "one_outer_five_second_timeout": true,
+  "retry_copies_exact_context_and_signed_request": true,
+  "all_new_leader_waits_inside_outer_timeout": true,
+  "eligible_errors_require_before_after_term_leader_or_role_change": true,
+  "all_actual_raft_owners_checked_before_and_after_request": true,
+  "final_conflict_requires_exact_stopped_epoch_message": true,
+  "new_test_or_program_execution": false,
+  "actual_source_edited": false
+}

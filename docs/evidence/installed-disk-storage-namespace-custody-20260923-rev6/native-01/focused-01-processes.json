@@ -1,0 +1,8 @@
+[
+  {
+    "pid": 93237,
+    "ppid": 92304,
+    "pgid": 93237,
+    "command": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/store-test-binary --exact audit_archive::owned::tests::owned_publication_resolves_partial_writes_and_uncertain_rename_without_adopting_files --test-threads=1 --nocapture"
+  }
+]

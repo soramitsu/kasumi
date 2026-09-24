@@ -1,0 +1,69 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+0000000100025238 <<lifecycle::Fixture>::leader::{closure#0}::{closure#1}>:
+100025238: d105c3ff    	sub	sp, sp, #0x170
+10002523c: a9156ffc    	stp	x28, x27, [sp, #0x150]
+100025240: a9167bfd    	stp	x29, x30, [sp, #0x160]
+100025244: 910583fd    	add	x29, sp, #0x160
+100025248: d10203a8    	sub	x8, x29, #0x80
+10002524c: f90017e8    	str	x8, [sp, #0x28]
+100025250: f9002100    	str	x0, [x8, #0x40]
+100025254: 910263e8    	add	x8, sp, #0x98
+100025258: f9000be8    	str	x8, [sp, #0x10]
+10002525c: 910c6000    	add	x0, x0, #0x318
+100025260: 94033dca    	bl	0x1000f4988 <<alloc::collections::btree::map::BTreeMap<u64, alloc::sync::Arc<kasumi_engine::service::Database>>>::iter>
+100025264: f9400be0    	ldr	x0, [sp, #0x10]
+100025268: 910143e8    	add	x8, sp, #0x50
+10002526c: f9000fe8    	str	x8, [sp, #0x18]
+100025270: 94033856    	bl	0x1000f33c8 <<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>> as core::iter::traits::iterator::Iterator>::map::<(u64, alloc::string::String), <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}>>
+100025274: f9400fe0    	ldr	x0, [sp, #0x18]
+100025278: 9100e3e8    	add	x8, sp, #0x38
+10002527c: f90013e8    	str	x8, [sp, #0x20]
+100025280: 97fff0f4    	bl	0x100021650 <<core::iter::adapters::map::Map<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>>, <lifecycle::Fixture>::leader::{closure#0}::{closure#1}::{closure#0}> as core::iter::traits::iterator::Iterator>::collect::<alloc::vec::Vec<(u64, alloc::string::String)>>>
+100025284: f94013e8    	ldr	x8, [sp, #0x20]
+100025288: f94017e9    	ldr	x9, [sp, #0x28]
+10002528c: f9002928    	str	x8, [x9, #0x50]
+100025290: 9100dfe0    	add	x0, sp, #0x37
+100025294: aa0003e8    	mov	x8, x0
+100025298: f9002d28    	str	x8, [x9, #0x58]
+10002529c: d10183a8    	sub	x8, x29, #0x60
+1000252a0: 94226eb6    	bl	0x1008c0d78 <<core::fmt::rt::Argument>::new_display::<tokio::time::error::Elapsed>>
+1000252a4: 14000009    	b	0x1000252c8 <<lifecycle::Fixture>::leader::{closure#0}::{closure#1}+0x90>
+1000252a8: 9100e3e0    	add	x0, sp, #0x38
+1000252ac: 94782e21    	bl	0x101e30b30 <core::ptr::drop_glue::<alloc::vec::Vec<(u64, alloc::string::String)>>>
+1000252b0: 1400001e    	b	0x100025328 <<lifecycle::Fixture>::leader::{closure#0}::{closure#1}+0xf0>
+1000252b4: f94017e9    	ldr	x9, [sp, #0x28]
+1000252b8: f9003120    	str	x0, [x9, #0x60]
+1000252bc: aa0103e8    	mov	x8, x1
+1000252c0: b9006928    	str	w8, [x9, #0x68]
+1000252c4: 17fffff9    	b	0x1000252a8 <<lifecycle::Fixture>::leader::{closure#0}::{closure#1}+0x70>
+1000252c8: d10143a8    	sub	x8, x29, #0x50
+1000252cc: 9100e3e0    	add	x0, sp, #0x38
+1000252d0: 94028c38    	bl	0x1000c83b0 <<core::fmt::rt::Argument>::new_debug::<alloc::vec::Vec<(u64, alloc::string::String)>>>
+1000252d4: 14000001    	b	0x1000252d8 <<lifecycle::Fixture>::leader::{closure#0}::{closure#1}+0xa0>
+1000252d8: f94017e8    	ldr	x8, [sp, #0x28]
+1000252dc: 3dc00900    	ldr	q0, [x8, #0x20]
+1000252e0: d10203a1    	sub	x1, x29, #0x80
+1000252e4: 3d800100    	str	q0, [x8]
+1000252e8: 3dc00d00    	ldr	q0, [x8, #0x30]
+1000252ec: 3d800500    	str	q0, [x8, #0x10]
+1000252f0: f0029d40    	adrp	x0, 0x1053d0000 <GCC_except_table741+0x10>
+1000252f4: 91377400    	add	x0, x0, #0xddd
+1000252f8: 94825c80    	bl	0x1020bc4f8 <<core::fmt::Arguments>::new::<43, 2>>
+1000252fc: f90003e0    	str	x0, [sp]
+100025300: f90007e1    	str	x1, [sp, #0x8]
+100025304: 14000001    	b	0x100025308 <<lifecycle::Fixture>::leader::{closure#0}::{closure#1}+0xd0>
+100025308: f94007e1    	ldr	x1, [sp, #0x8]
+10002530c: f94003e0    	ldr	x0, [sp]
+100025310: f002ea62    	adrp	x2, 0x105d74000 <dyld_stub_binder+0x105d74000>
+100025314: 91370042    	add	x2, x2, #0xdc0
+100025318: 948d8a15    	bl	0x102387b6c <core::panicking::panic_fmt>
+10002531c: 14000001    	b	0x100025320 <<lifecycle::Fixture>::leader::{closure#0}::{closure#1}+0xe8>
+100025320: d4200020    	brk	#0x1
+100025324: 948d898d    	bl	0x102387958 <core::panicking::panic_in_cleanup>
+100025328: f94017e8    	ldr	x8, [sp, #0x28]
+10002532c: f9403100    	ldr	x0, [x8, #0x60]
+100025330: 948d8af6    	bl	0x102387f08 <dyld_stub_binder+0x102387f08>

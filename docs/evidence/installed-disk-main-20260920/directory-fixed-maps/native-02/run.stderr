@@ -1,0 +1,6 @@
+
+thread 'node_disk::fixed_map::tests::panic_during_spare_copy_preserves_complete_published_active_map' (4454881) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-fixed-maps/native-02/node_disk/fixed_map/tests.rs:102:13:
+assertion `left != right` failed: injected third-copy failure
+  left: 2
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

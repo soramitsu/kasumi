@@ -1,0 +1,577 @@
+{
+  "page_number_decode": [
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "line": 184,
+      "text": "PageNumber::from_le_bytes("
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/allocator_state.rs",
+      "line": 123,
+      "text": "let child = PageNumber::from_le_bytes(raw.try_into().map_err(|_| malformed())?);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+      "line": 113,
+      "text": "PageNumber::from_le_bytes(bytes[..PageNumber::serialized_size()].try_into().unwrap());"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+      "line": 1909,
+      "text": "Some(PageNumber::from_le_bytes("
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+      "line": 456,
+      "text": "let page_number2 = PageNumber::from_le_bytes(bytes);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "line": 1556,
+      "text": "PageNumber::from_le_bytes((31u64 << 59).to_le_bytes()),"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "line": 1603,
+      "text": "let bad_order = PageNumber::from_le_bytes((31u64 << 59).to_le_bytes());"
+    }
+  ],
+  "btree_header_decode": [
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/multimap_btree.rs",
+      "line": 546,
+      "text": "BtreeHeader::from_le_bytes("
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/multimap_btree.rs",
+      "line": 625,
+      "text": "BtreeHeader::from_le_bytes("
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/header.rs",
+      "line": 461,
+      "text": "Some(BtreeHeader::from_le_bytes("
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/header.rs",
+      "line": 470,
+      "text": "Some(BtreeHeader::from_le_bytes("
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/savepoint.rs",
+      "line": 164,
+      "text": "Some(BtreeHeader::from_le_bytes("
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/table_tree_base.rs",
+      "line": 384,
+      "text": "Some(BtreeHeader::from_le_bytes("
+    }
+  ],
+  "branch_child_access": [
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 135,
+      "text": "let child_page = accessor.child_page(i).unwrap();"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 212,
+      "text": "let child_page = accessor.child_page(i).unwrap();"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 275,
+      "text": "let child_page = accessor.child_page(i).unwrap();"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 324,
+      "text": "let child = accessor.child_page(i).unwrap();"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 971,
+      "text": "accessor.child_page(i).unwrap(),"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 1135,
+      "text": "let child_page = accessor.child_page(0).unwrap();"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 1175,
+      "text": "let child_page = accessor.child_page(accessor.count_children() - 1).unwrap();"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 1241,
+      "text": "let child = accessor.child_page(i).unwrap();"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 1321,
+      "text": "if let Some(child) = accessor.child_page(i) {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+      "line": 1804,
+      "text": "self.child_page(0).unwrap()"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+      "line": 1807,
+      "text": "if let Some(child) = self.child_page(i + 1) {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+      "line": 1831,
+      "text": "return (mid, self.child_page(mid).unwrap());"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+      "line": 1840,
+      "text": "(min_child, self.child_page(min_child).unwrap())"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+      "line": 1962,
+      "text": "let child = accessor.child_page(i).unwrap();"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_cursor.rs",
+      "line": 56,
+      "text": "Some((child_index, accessor.child_page(child_index).unwrap()))"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_cursor.rs",
+      "line": 166,
+      "text": "(child_index, accessor.child_page(child_index).unwrap())"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_iters.rs",
+      "line": 93,
+      "text": "self.pending.push(accessor.child_page(child).unwrap());"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 300,
+      "text": ".get_page(accessor.child_page(neighbor_index).unwrap(), PageHint::None)?;"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 318,
+      "text": ".map(|i| accessor.child_page(i).unwrap())"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 335,
+      "text": "accessor.child_page(i).unwrap(),"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 575,
+      "text": "accessor.child_page(i).unwrap(),"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1107,
+      "text": "accessor.child_page(0).unwrap(),"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1124,
+      "text": "accessor.child_page(i).unwrap(),"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1461,
+      "text": "let child_page_number = accessor.child_page(child_index).unwrap();"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1527,
+      "text": "accessor.child_page(i).unwrap(),"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1558,
+      "text": ".get_page(accessor.child_page(merge_with).unwrap(), PageHint::None)?;"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1597,
+      "text": "let page_number = accessor.child_page(i).unwrap();"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1658,
+      "text": ".get_page(accessor.child_page(merge_with).unwrap(), PageHint::None)?;"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1665,
+      "text": "let page_number = accessor.child_page(i).unwrap();"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1721,
+      "text": ".get_page(accessor.child_page(merge_with).unwrap(), PageHint::None)?;"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1728,
+      "text": "let page_number = accessor.child_page(i).unwrap();"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1887,
+      "text": "assert_eq!(accessor.child_page(0).unwrap(), children[first].0);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1888,
+      "text": "assert_eq!(accessor.child_page(1).unwrap(), children[first + 1].0);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/multimap_btree.rs",
+      "line": 129,
+      "text": "if let Some(child) = accessor.child_page(i) {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/multimap_btree.rs",
+      "line": 254,
+      "text": "if let Some(child) = accessor.child_page(i) {"
+    }
+  ],
+  "allocator_effect": [
+    {
+      "path": "vendor/redb-4.2.0/src/multimap_table.rs",
+      "line": 324,
+      "text": ".free_if_uncommitted(*page, &self.allocated_pages)"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/multimap_table.rs",
+      "line": 829,
+      "text": "self.page_allocator.conditional_free("
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "line": 1434,
+      "text": "page_allocator.free(page, &PageTracker::ignore());"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "line": 1926,
+      "text": "page_allocator.free(page, &PageTracker::ignore());"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "line": 1935,
+      "text": "page_allocator.free(page, &PageTracker::ignore());"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "line": 2013,
+      "text": "page_allocator.free(new_page_number, &PageTracker::ignore());"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 341,
+      "text": ".free_if_uncommitted(page_number, &ignore)"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+      "line": 387,
+      "text": ".free_if_uncommitted(old_page_number, &self.allocated)"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_cursor.rs",
+      "line": 1659,
+      "text": ".free_if_uncommitted(page, &self.allocated)"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 126,
+      "text": ".conditional_free(page_number, self.allocated, self.freed);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 377,
+      "text": "self.conditional_free(parent_page_number);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 379,
+      "text": "self.conditional_free(page_number);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 542,
+      "text": "self.conditional_free(page_number);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 937,
+      "text": "self.page_allocator.free(page_number, self.allocated);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 945,
+      "text": "self.conditional_free(page_number);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 971,
+      "text": "self.page_allocator.free(page_number, self.allocated);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 979,
+      "text": "self.conditional_free(page_number);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1080,
+      "text": "self.conditional_free(page_number);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1159,
+      "text": "self.conditional_free(page_number);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1275,
+      "text": "self.page_allocator.free(page_number, self.allocated);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1347,
+      "text": "self.conditional_free(page_number);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1502,
+      "text": "self.conditional_free(original_page_number);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1587,
+      "text": "self.conditional_free(original_page_number);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1649,
+      "text": "self.conditional_free(page_number);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1710,
+      "text": "self.conditional_free(page_number);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1783,
+      "text": "self.conditional_free(page_number);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "line": 1790,
+      "text": "self.conditional_free(original_page_number);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/multimap_btree.rs",
+      "line": 276,
+      "text": "if !page_allocator.free_if_uncommitted(old_page_number, &ignore) {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/allocator_snapshot.rs",
+      "line": 371,
+      "text": "allocator.free(page, order);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/allocator_snapshot.rs",
+      "line": 447,
+      "text": "assert!(allocators.region_allocators[1].record_alloc(64, 0));"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs",
+      "line": 616,
+      "text": "allocator.free(page, 0);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs",
+      "line": 651,
+      "text": "assert!(allocator.record_alloc(page, 0));"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs",
+      "line": 658,
+      "text": "allocator.free(page, 0);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs",
+      "line": 673,
+      "text": "allocator.free(page, 0);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs",
+      "line": 701,
+      "text": "allocator.free(page, order);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "line": 196,
+      "text": "self.mem.free(page, &PageTracker::ignore());"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "line": 227,
+      "text": "self.mem.free(page, allocated);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "line": 232,
+      "text": "self.mem.free(page, allocated);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "line": 247,
+      "text": "if !self.free_if_uncommitted(page, allocated) {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "line": 756,
+      "text": "if !allocator.record_alloc(page_number.page_index, page_number.page_order) {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "line": 868,
+      "text": ".free(page.page_index, page.page_order);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "line": 1137,
+      "text": ".free(page.page_index, page.page_order);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "line": 1215,
+      "text": ".free(page_number.page_index, page_number.page_order);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "line": 1615,
+      "text": "mem.free(valid_page, &PageTracker::ignore());"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "line": 1655,
+      "text": "mem.free(number, &ignore);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "line": 1668,
+      "text": "mem.free(page, &ignore);"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/table_tree.rs",
+      "line": 572,
+      "text": ".free_if_uncommitted(page, &self.allocated_pages)"
+    }
+  ],
+  "page_number_literal": [
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "line": 122,
+      "text": "pages: [PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "line": 181,
+      "text": "pub(crate) fn get(&self, index: usize) -> PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 74,
+      "text": "pub(crate) fn page_number(&self) -> PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 1351,
+      "text": "let p1 = PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 1356,
+      "text": "let p2 = PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 1361,
+      "text": "let p3 = PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 1383,
+      "text": "let p1 = PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 1388,
+      "text": "let p2 = PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "line": 1401,
+      "text": "let p3 = PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_cursor.rs",
+      "line": 600,
+      "text": "fn page_number(&self) -> PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+      "line": 34,
+      "text": "pub(crate) struct PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+      "line": 40,
+      "text": "impl Hash for PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+      "line": 50,
+      "text": "impl Ord for PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+      "line": 68,
+      "text": "impl PartialOrd for PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+      "line": 74,
+      "text": "impl PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+      "line": 164,
+      "text": "impl Debug for PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+      "line": 217,
+      "text": "fn get_page_number(&self) -> PageNumber {"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+      "line": 263,
+      "text": "fn get_page_number(&self) -> PageNumber {"
+    }
+  ]
+}

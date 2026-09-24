@@ -1,0 +1,8 @@
+[
+  {
+    "pid": 86579,
+    "ppid": 84181,
+    "pgid": 86579,
+    "command": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary --exact node_disk::tests::live_shrink_failure_retains_charges_through_drop_and_fences_shared_device --test-threads=1 --nocapture"
+  }
+]

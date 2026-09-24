@@ -2,7 +2,7 @@
 //! transport has TLS configuration, but this fixture sends consensus in-process.
 use super::*;
 use kasumi_engine::admission::NodeAdmission;
-use kasumi_store::{CustodyStore, ScratchDisk, test_utils::LocalKeyProvider};
+use kasumi_store::{CustodyStore, test_utils::LocalKeyProvider};
 use std::{
     future::Future,
     sync::{Mutex, OnceLock, Weak},
@@ -82,13 +82,14 @@ struct Fixture {
     resident: Arc<kasumi_engine::Database>,
     context: RequestContext,
     group: String,
+    expected_fingerprint: String,
 }
 impl Fixture {
     async fn new() -> Result<Self> {
         let root = kasumi_store::test_utils::private_tempdir()?;
-        let mut config = example_config();
+        let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
         config.database_id = Uuid::new_v4();
-        config.database_path = root.path().join("source-1.redb");
+        config.database_path = root.path().join("replica-1/persistent/source.redb");
         let tenant = config.tenants[0].tenant.clone();
         let policy = config.tenants[0].initial_policy.clone();
         let incarnation = Uuid::new_v4().to_string();
@@ -114,14 +115,17 @@ impl Fixture {
         let transport = Arc::new(kasumi_raft::InProcessRouter::default());
         let mut replicas = Vec::new();
         for id in 1..=3 {
-            let node = NodeStore::create_new_fixture(
-                root.path().join(format!("source-{id}.redb")),
+            let replica_root = root.path().join(format!("replica-{id}"));
+            kasumi_store::private_files::create_directory(&replica_root)?;
+            let physical =
+                crate::runtime_storage_fixtures::physical(&replica_root, Default::default())?;
+            let node = physical.create_new(
+                replica_root.join("persistent/source.redb"),
                 if id == 1 {
                     config.database_id
                 } else {
                     Uuid::new_v4()
                 },
-                ScratchDisk::fixture(),
             )?;
             let stores = TenantStorageSet::initialize_catalogs_fixture(
                 node.clone(),
@@ -136,7 +140,7 @@ impl Fixture {
                 Arc::new(LocalKeyProvider::new([33; 32])),
             )
             .await?;
-            let admission = NodeAdmission::new(Default::default())?;
+            let admission = physical.admission.clone();
             let audit =
                 SecurityAudit::initialize(audit_store, Default::default(), admission.clone())?;
             let database = kasumi_engine::test_utils::open_fixture_replicated(
@@ -169,6 +173,17 @@ impl Fixture {
             .wait(Some(Duration::from_secs(10)))
             .current_leader(1, "retirement fixture source leader")
             .await?;
+        let expected_fingerprint = persisted_bootstrap_fingerprint(replicas[0].1.application())?;
+        let binding = replicas[0]
+            .1
+            .custody()
+            .store()
+            .get("engine.deployment", b"mode")?
+            .context("fixture deployment binding missing")?;
+        assert_eq!(
+            retired_custody_bootstrap_fingerprint(replicas[0].1.custody(), &binding)?,
+            expected_fingerprint
+        );
         let context = RequestContext {
             authorization: kasumi_types::RequestAuthorization::service_identity(),
             principal: "acme-admin".into(),
@@ -176,9 +191,10 @@ impl Fixture {
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
             request_id: "retired-source-startup".into(),
         };
-        let destination = Arc::new(kasumi_store::FilesystemBackupDestination::new_fixture(
-            root.path().join("backup"),
+        let destination = Arc::new(kasumi_store::FilesystemBackupDestination::new(
+            root.path().join("replica-1/persistent/backup"),
             32 << 20,
+            replicas[0].0.persistent_disk().clone(),
         )?);
         replicas[0]
             .4
@@ -205,7 +221,7 @@ impl Fixture {
             replica.4.shutdown().await?;
             if index > 0 {
                 replica.2.shutdown().await?;
-                replica.0.drain_initializers().await?;
+                replica.0.shutdown().await?;
             }
         }
         let (node, _stores, audit, admission, old) = replicas.remove(0);
@@ -273,6 +289,7 @@ impl Fixture {
             resident,
             context,
             group,
+            expected_fingerprint,
         })
     }
     async fn close(self) -> Result<()> {
@@ -291,6 +308,39 @@ impl crate::startup_owner::Runtime for Opened {
     ) -> std::pin::Pin<Box<dyn Future<Output = kasumi_types::drain::DrainResult> + Send + '_>> {
         Box::pin(self.0.shutdown())
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retired_custody_route_uses_original_bootstrap_without_application_provider() -> Result<()>
+{
+    let fixture = Fixture::new().await?;
+    fixture.network.unregister_group(&fixture.group)?;
+    let custody = open_retired_source(
+        &fixture.config,
+        fixture.custody.clone(),
+        Some(&fixture.network),
+        fixture.audit.clone(),
+        fixture.admission.clone(),
+    )
+    .await?;
+    assert_eq!(
+        fixture
+            .network
+            .bootstrap_fingerprint(1, &fixture.group)
+            .await?,
+        fixture.expected_fingerprint
+    );
+    custody.shutdown().await?;
+    assert!(
+        fixture
+            .network
+            .bootstrap_fingerprint(1, &fixture.group)
+            .await
+            .is_err(),
+        "retired Raft route must close with custody before unregister"
+    );
+    drop(custody);
+    fixture.close().await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -1,0 +1,31 @@
+{
+  "scope": "Full original lifecycle target with bounded vote diagnostic and current-leader exact phase read; unchanged workloads/deadlines, no final acceptance",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-engine",
+    "--all-features",
+    "--test",
+    "lifecycle",
+    "--",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 55304,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 402.97422218322754,
+  "inventoried_source_unchanged": true,
+  "binary_path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0",
+  "expected_binary_sha256": "631110f244e868c72e9966ec5af1df0d484b63bb8c26ffcde3d8c00a730ec098",
+  "binary_sha256_before": "631110f244e868c72e9966ec5af1df0d484b63bb8c26ffcde3d8c00a730ec098",
+  "binary_sha256_after": "631110f244e868c72e9966ec5af1df0d484b63bb8c26ffcde3d8c00a730ec098",
+  "binary_unchanged": true
+}

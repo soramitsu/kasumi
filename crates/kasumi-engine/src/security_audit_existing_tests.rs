@@ -1,17 +1,18 @@
 //! Existing-only audit admission using actual private file keyrings and node files.
 use super::*;
 use crate::admission::NodeAdmission;
-use kasumi_store::{FileKeyProvider, NodeStore, ScratchDisk, StorageAccess, private_files};
+use kasumi_store::{FileKeyProvider, StorageAccess, private_files};
 use std::path::PathBuf;
 use uuid::Uuid;
 
 struct Installation {
-    _directory: tempfile::TempDir,
     path: PathBuf,
     keys: PathBuf,
     id: Uuid,
-    disk: Arc<ScratchDisk>,
+    storage: crate::test_utils::FixtureStorage,
+    metadata_bytes: u64,
     admission: Arc<NodeAdmission>,
+    _directory: tempfile::TempDir,
 }
 impl Installation {
     fn new() -> Result<Self> {
@@ -20,20 +21,44 @@ impl Installation {
         private_files::create_directory(&private)?;
         let keys = private.join("audit-keys.json");
         FileKeyProvider::initialize(&keys, "service-audit")?;
+        let (persistent_config, scratch_config) =
+            crate::test_utils::fixture_disk_configs(directory.path())?;
+        // The original fixed 2 GiB source resolves Default to a 256 MiB total.
+        // Add only the new physical metadata; do not resolve against host RAM.
+        let config = crate::admission::AdmissionConfig {
+            max_inflight_bytes: Some(
+                (256_u64 << 20)
+                    .checked_add(crate::test_utils::isolated_disk_metadata_bytes(
+                        &persistent_config,
+                        &scratch_config,
+                    )?)
+                    .ok_or_else(|| anyhow::anyhow!("fixture metadata budget overflow"))?,
+            ),
+            ..Default::default()
+        };
+        let admission = crate::admission::NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
+        let storage = crate::test_utils::FixtureStorage::with_admission(
+            &persistent_config,
+            &scratch_config,
+            admission.clone(),
+        )?;
+        let metadata_bytes =
+            crate::test_utils::isolated_disk_metadata_bytes(&persistent_config, &scratch_config)?;
         Ok(Self {
+            path: directory.path().join("persistent/node.redb"),
             _directory: directory,
-            path: private.join("node.redb"),
             keys,
             id: Uuid::new_v4(),
-            disk: ScratchDisk::fixture(),
-            admission: NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?,
+            storage,
+            metadata_bytes,
+            admission,
         })
     }
     async fn store(&self, create: bool) -> Result<Arc<TenantStore>> {
         let node = if create {
-            NodeStore::create_new_fixture(&self.path, self.id, self.disk.clone())?
+            self.storage.create_new(&self.path, self.id)?
         } else {
-            NodeStore::open_existing_fixture(&self.path, self.id, self.disk.clone())?
+            self.storage.open_existing(&self.path, self.id)?
         };
         let provider = Arc::new(FileKeyProvider::open(&self.keys)?);
         if create {
@@ -99,7 +124,7 @@ async fn explicit_audit_creation_drains_and_strict_reopen_preserves_stream_and_s
     assert_eq!(retained(&store)?, before);
     assert_eq!(
         crate::test_utils::reserved_payload_bytes(&installation.admission),
-        0
+        installation.metadata_bytes
     );
     let audit = installation.initialize(store.clone())?;
     let stream = audit.status()?.position.stream_id;
@@ -111,7 +136,7 @@ async fn explicit_audit_creation_drains_and_strict_reopen_preserves_stream_and_s
     close(audit, store).await;
     assert_eq!(
         crate::test_utils::reserved_payload_bytes(&installation.admission),
-        0
+        installation.metadata_bytes
     );
 
     // No sleeps or retries hide retained locks, key monitors or audit workers.
@@ -146,7 +171,7 @@ async fn missing_empty_or_nonempty_audit_head_never_recreates_a_stream() -> Resu
             assert_eq!(retained(&store)?, before);
             assert_eq!(
                 crate::test_utils::reserved_payload_bytes(&installation.admission),
-                0
+                installation.metadata_bytes
             );
         }
         store.shutdown().await.unwrap();
@@ -207,7 +232,7 @@ async fn corrupt_audit_head_hot_gap_and_pending_pair_fail_without_logical_mutati
         assert_eq!(retained(&store)?, before);
         assert_eq!(
             crate::test_utils::reserved_payload_bytes(&installation.admission),
-            0
+            installation.metadata_bytes
         );
         store.shutdown().await.unwrap();
     }

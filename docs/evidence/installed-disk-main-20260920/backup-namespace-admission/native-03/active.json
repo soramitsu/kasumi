@@ -1,0 +1,12 @@
+{
+  "name": "run",
+  "pid": 52502,
+  "pgid": 52502,
+  "argv": [
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/backup-namespace-admission/native-03/tests",
+    "node_disk::",
+    "backup_sessions::",
+    "--nocapture",
+    "--test-threads=1"
+  ]
+}

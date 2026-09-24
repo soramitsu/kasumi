@@ -1,0 +1,52 @@
+{
+  "prepare_completion_poll": {
+    "start": "0x10013743c",
+    "end": "0x1001455cc",
+    "symbol": "lifecycle::recovery_control::prepare_completion::{closure#0}"
+  },
+  "complete_recovery_poll": {
+    "start": "0x100125848",
+    "end": "0x100135d78",
+    "symbol": "lifecycle::recovery_control::complete_recovery::{closure#0}"
+  },
+  "exercise_completed_recovery_poll": {
+    "start": "0x100154930",
+    "end": "0x1001557b0",
+    "symbol": "lifecycle::recovery_control::exercise_completed_recovery::{closure#0}"
+  },
+  "prepare_completion_box_poll": {
+    "start": "0x1000d5100",
+    "end": "0x1000d514c",
+    "symbol": "<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>> as core::future::future::Future>::poll"
+  },
+  "complete_recovery_box_poll": {
+    "start": "0x1000d50b4",
+    "end": "0x1000d5100",
+    "symbol": "<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>> as core::future::future::Future>::poll"
+  },
+  "commit_next_intent_0": {
+    "start": "0x10011f814",
+    "end": "0x10011f84c",
+    "symbol": "lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}::{closure#0}"
+  },
+  "commit_next_intent_1": {
+    "start": "0x10011f84c",
+    "end": "0x10011f894",
+    "symbol": "lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}::{closure#1}"
+  },
+  "commit_next_intent_2": {
+    "start": "0x10011f894",
+    "end": "0x10011f97c",
+    "symbol": "lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}"
+  },
+  "commit_next_intent_3": {
+    "start": "0x1001236b0",
+    "end": "0x100123d78",
+    "symbol": "lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}"
+  },
+  "commit_next_intent_4": {
+    "start": "0x100135d78",
+    "end": "0x10013743c",
+    "symbol": "lifecycle::recovery_control::commit_next_intent::{closure#0}"
+  }
+}

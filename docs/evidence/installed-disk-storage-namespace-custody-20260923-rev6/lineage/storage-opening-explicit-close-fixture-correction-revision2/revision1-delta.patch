@@ -1,0 +1,60 @@
+--- a/crates/kasumi-store/src/storage_opening_tests.rs
++++ b/crates/kasumi-store/src/storage_opening_tests.rs
+@@ -379,15 +379,11 @@
+     assert_eq!(opening.open(), NodeOpeningPhase::Open);
+     let id = opening.id();
+     let actual = std::ptr::from_ref(opening.registration.owner());
+-    let file_owner = opening
+-        .registration
+-        .owner()
+-        .state
+-        .lock()
+-        .file
+-        .retained_file_custody()
+-        .unwrap()
+-        .0;
++    let file_owner = {
++        let state = opening.registration.owner().state.lock();
++        assert!(!state.outcomes_released);
++        state.file.retained_file_custody().unwrap().0
++    };
+     let physical = std::fs::read(&path).unwrap();
+     let admitted = disk.snapshot();
+     // Starting close may produce both a shutdown error and a failed backend
+@@ -398,6 +394,10 @@
+     assert_eq!(std::ptr::from_ref(retained.registration.owner()), actual);
+     let (original, backend, native) = {
+         let report = retained.report();
++        assert!(
++            !report.state.outcomes_released,
++            "first close must invalidate relinquishment before producing either error"
++        );
+         let redb = report.redb();
+         assert_eq!(redb.settlement(), DatabaseOpenSettlement::Retained);
+         let close = redb.database_close().unwrap();
+@@ -440,6 +440,7 @@
+         assert!(observed.queue_node_tables().is_err());
+         {
+             let report = observed.report();
++            assert!(!report.state.outcomes_released);
+             let redb = report.redb();
+             assert_eq!(redb.settlement(), DatabaseOpenSettlement::Retained);
+             let close = redb.database_close().unwrap();
+@@ -460,6 +461,17 @@
+         // Inspecting/relinquishing reports is not proof that the retained
+         // physical owner and its error custody have retired.
+         assert_eq!(observed.retire(), StorageCensusDisposition::Retained);
++        let still_retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
++        assert!(
++            !still_retained
++                .registration
++                .owner()
++                .state
++                .lock()
++                .outcomes_released,
++            "an unresolved close cannot preserve a blanket future acknowledgement"
++        );
++        drop(still_retained);
+         assert_eq!(memory.snapshot(), charged);
+         assert_eq!(disk.snapshot().open_files, 1);
+         assert_eq!(disk.snapshot().charged_bytes, admitted.charged_bytes);

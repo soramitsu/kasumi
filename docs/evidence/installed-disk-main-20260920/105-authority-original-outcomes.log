@@ -1,0 +1,42 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+   Compiling kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 47s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_authority-c9f40d981df0df58)
+
+running 5 tests
+test service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain ... AUTHORITY_UNAVAILABLE at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5: control intent differs or epoch stopped
+AUTHORITY_UNKNOWN at crates/kasumi-authority/src/service.rs:441:32: authority proposal leader changed
+
+thread 'service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain' (4207585) panicked at crates/kasumi-authority/src/issuer_tests.rs:296:5:
+assertion `left == right` failed
+  left: UnknownOutcome
+ right: Conflict
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test service::tests::issuer_tests::target_materialization_tests::activated_target_keeps_operational_suspension_and_membership_across_restart ... target owners drained with their original access-fenced outcome: DrainFailure { completion: Complete, issues: [DrainIssue { component: "OpenRaft runtime", instance: 0, error: raft shutdown failed (core: None, core join: None, ticker join: None, state machine: Some(Storage(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: domain transaction committed; access expired before acknowledgment; outcome unknown, backtrace: None } })), snapshot builder: None, replications: [], auxiliary: [], incoming snapshot: None) }] }
+TARGET_ACTIVATION_DENIED at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5: installed target attestation signature invalid
+TARGET_ACTIVATION_DENIED at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5: installed target attestation signature invalid
+target owners drained with their original access-fenced outcome: DrainFailure { completion: Complete, issues: [DrainIssue { component: "OpenRaft runtime", instance: 0, error: raft shutdown failed (core: None, core join: None, ticker join: None, state machine: None, snapshot builder: None, replications: [ReplicationShutdownError { owner_id: 1, target: 3, stream: Some(Storage(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: tenant is sealed: key-access lease unavailable or expired, backtrace: None } })), snapshot: None }], auxiliary: [], incoming snapshot: None) }] }
+ok
+test service::tests::issuer_tests::target_materialization_tests::exact_actual_completion_is_required_for_issuer_and_target_activation ... TARGET_ACTIVATION_DENIED at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5: installed target attestation signature invalid
+TARGET_ACTIVATION_DENIED at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5: installed target attestation signature invalid
+target owners drained with their original access-fenced outcome: DrainFailure { completion: Complete, issues: [DrainIssue { component: "OpenRaft runtime", instance: 0, error: raft shutdown failed (core: None, core join: None, ticker join: None, state machine: None, snapshot builder: None, replications: [ReplicationShutdownError { owner_id: 1, target: 3, stream: Some(Storage(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: tenant is sealed: key-access lease unavailable or expired, backtrace: None } })), snapshot: None }], auxiliary: [], incoming snapshot: None) }] }
+ok
+test service::tests::issuer_tests::target_materialization_tests::target_close_diagnostic_rejects_unrelated_storage_failures ... ok
+test service::tests::issuer_tests::target_materialization_tests::target_close_replication_diagnostic_preserves_child_failure_boundaries ... ok
+
+failures:
+
+failures:
+    service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 58 filtered out; finished in 107.78s
+
+error: test failed, to rerun pass `-p kasumi-authority --lib`

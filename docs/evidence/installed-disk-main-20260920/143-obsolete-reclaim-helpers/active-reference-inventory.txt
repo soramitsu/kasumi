@@ -1,0 +1,3 @@
+./vendor/redb-4.2.0/src/tree_store/table_tree.rs:422:    pub(crate) fn open_table_and_flush_table_root<K: Key + 'static, V: Value + 'static>(
+./vendor/redb-4.2.0/src/tree_store/table_tree.rs:432:        let bytes = self.tree.force_uncommitted(
+./vendor/redb-4.2.0/src/tree_store/btree.rs:503:    pub(crate) fn force_uncommitted(

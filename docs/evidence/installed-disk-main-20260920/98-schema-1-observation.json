@@ -1,0 +1,21 @@
+{
+  "scope": "read-only native progress observation during original run98 schema restore case, not terminal or acceptance evidence",
+  "command": [
+    "sample",
+    "8606",
+    "1",
+    "1",
+    "-file",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/98-schema-1-sample.txt"
+  ],
+  "actual_process_inventory_row": [
+    "8606",
+    "1099",
+    "/Users/mtakemiya/dev/kasumi/target/debug/deps/schema_activation-c8bc16999c443e31 --test-threads=1 --nocapture"
+  ],
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": "Sampling process 8606 for 1 second with 1 millisecond of run time between samples\nSampling completed, processing symbols...\nSample analysis of process 8606 written to file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/98-schema-1-sample.txt\n",
+  "sample_sha256": "0ec89bedce09082a6112df4a466d08f11eb2379ce402f441424b5e6488c56428",
+  "seconds_since_marker_observed": 12.330993042000001
+}

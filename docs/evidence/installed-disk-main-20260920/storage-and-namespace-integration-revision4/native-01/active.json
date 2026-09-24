@@ -1,0 +1,23 @@
+{
+  "name": "workspace-clippy",
+  "pid": 93534,
+  "pgid": 93534,
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "clippy",
+    "--offline",
+    "--locked",
+    "--workspace",
+    "--all-targets",
+    "--all-features",
+    "--message-format=json",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/assembly",
+  "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/native-01/workspace-clippy.log",
+  "cargo_target_dir": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision4/native-01/cargo-target",
+  "cohort_bound_seconds": 1200,
+  "remaining_bound_seconds": 1199.998024208
+}

@@ -1,0 +1,9 @@
+# Root review of frozen managed namespace primitive
+
+Review status: correction required before coherent adoption. The 47-case native pass is a scoped observation, not approval of all new acquisition paths.
+
+Reviewed the full managed operation implementation and the nine-file successor over the previously reviewed census foundation. The new child operations install PendingDirectory before descriptor acquisition, retain walk and child descriptors across fallible effects, observe close once, preserve independent original/native-close diagnostics, and retire pending backing before slot/extent release. The Darwin correction uses exact bound-name absence plus retained inode identity and explicit close; it does not infer unlink from nlink. Native03 inputs, copied proposal sources, binary identity and terminal group-drain reports match the frozen package.
+
+One actionable gap remains in ordinary nonroot open_directory_names: the successor adds RetainedParent::prepare, and ordinary verify adds parent.verify. These are new descriptor acquisitions outside the retained PendingDirectory protocol. Their temporary File drops do not observe close uncertainty. Calling this inherited behavior does not cover the newly added effects. Route these acquisitions through the retained preparation path and avoid an additional generic traversal; preserve this frozen package and test a distinct correction. The author acknowledged the gap and is preparing that correction.
+
+Existing ordinary last-owner Drop and RetainedParent::retire still do not establish complete close-outcome custody. Whole-session aggregate admission, all 44 caller sites, permanent terminal-outcome capacity, pre-effect filesystem bounds, native descriptor/allocator memory and whole-server RSS remain open. Requested type geometry is not a measured process ceiling. No source was applied by this review and no compiler/native run was dispatched.

@@ -1,0 +1,27 @@
+{
+  "prepare_completion_poll": {
+    "before": 629232,
+    "after": 634752,
+    "delta": 5520
+  },
+  "complete_recovery_poll": {
+    "before": 681216,
+    "after": 681504,
+    "delta": 288
+  },
+  "exercise_completed_recovery_poll": {
+    "before": 110144,
+    "after": 110368,
+    "delta": 224
+  },
+  "prepare_completion_box_poll": {
+    "before": 64,
+    "after": 64,
+    "delta": 0
+  },
+  "complete_recovery_box_poll": {
+    "before": 64,
+    "after": 64,
+    "delta": 0
+  }
+}

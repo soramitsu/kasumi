@@ -1,0 +1,9 @@
+{
+  "pid": 6411,
+  "pgid": 6411,
+  "argv": [
+    "target/installed-disk-validation/directory-managed-namespace/native-01/run.py"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp"
+}

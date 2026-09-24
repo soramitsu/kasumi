@@ -1,0 +1,11 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED",
+  "patch_sha256": "c9c6d4ffd79170509130bb8a284db6888e0b2ed262b0dc6acf69a8618934ee8d",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/admission.rs",
+      "before_sha256": "6327994976bec667151519dce58980ed9f955478487f809c51d32a0c82a2d3ff",
+      "proposed_sha256": "521c90cf40c29899f95aaa02509b65e62af3827928236dff817deb309d8449da"
+    }
+  ]
+}

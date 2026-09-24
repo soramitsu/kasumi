@@ -1,0 +1,29 @@
+{
+  "status": "PREPARED_NOT_APPLIED_NOT_BUILT",
+  "workspace": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "patch_sha256": "22b8f65c8f0a9a81fd9b32954547e6dee71c56b9f8cc2c49c4baac57fd9933b0",
+  "files": [
+    {
+      "path": "Cargo.lock",
+      "base_sha256": "4701078fccfb11472c7db87c58af5fc5770d8bfe0e48c31f372f175a3f841d9f",
+      "proposed_sha256": "95a252fe5b59fa1734c73d1e9c7446fe9904e3711538d53c3c2052a6650f507f"
+    },
+    {
+      "path": "crates/kasumi-authority/Cargo.toml",
+      "base_sha256": "d7d72d0bba5b4d04360c5a8f9d042e0b7d812ae052ad54f2fe9f6fc4ffc8ded1",
+      "proposed_sha256": "7ca8178c7513f7e3711864905f8bea34eb3dd85cb4a4f4931e072534f5967d22"
+    },
+    {
+      "path": "crates/kasumi-authority/src/target_materialization_tests.rs",
+      "base_sha256": "f8054f7c3d2a7269c2829a330c2599895f6568c53c97fbbd546c01c1ad01e8ef",
+      "proposed_sha256": "237e6769f01dcbd2dc75cd89d4c0e64d7120df12634931f186ddeff7061351a5"
+    },
+    {
+      "path": "crates/kasumi-authority/src/target_serving_tests.rs",
+      "base_sha256": "780d531e4a14b9f43ed311ff3d0fc7800fd84c327393b2f607423c794f86a53c",
+      "proposed_sha256": "93ced200154c2d7840cdfa35147d7a34d643593c952ca8c90cf4c0de63212626"
+    }
+  ]
+}

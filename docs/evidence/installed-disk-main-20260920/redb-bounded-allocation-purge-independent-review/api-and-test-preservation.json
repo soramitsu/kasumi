@@ -1,0 +1,33 @@
+{
+  "new_test_names": [
+    "bounded_allocation_debt_blocks_data_free_and_cold_reopens_after_every_batch",
+    "both_selected_prefixes_are_validated_before_either_namespace_is_removed",
+    "allocation_preview_retains_debt_across_savepoint_release_before_commit",
+    "purging_allocation_history_does_not_advance_the_original_user_reader_horizon",
+    "persistent_savepoint_restores_original_payload_with_retained_allocation_debt",
+    "allocation_prefix_close_failure_retains_actual_transaction_and_original_error"
+  ],
+  "old_test_names": [
+    "canonical_data_page_list_rejects_obsolete_system_shape_without_allocating",
+    "malformed_selected_data_record_is_rejected_before_any_pending_removal",
+    "fixed_deferred_storage_preserves_exact_capacity_and_never_allocates",
+    "early_extraction_close_failure_keeps_original_error_and_fences_publication",
+    "bounded_data_prefix_leaves_unselected_records_and_reopens_between_batches",
+    "maintenance_preview_cannot_hide_debt_when_the_reader_horizon_advances",
+    "selected_data_pages_remain_allocated_until_winning_commit_and_abort_restores_records",
+    "pinned_user_reader_survives_system_retirement_and_data_reclaim_waits_for_its_horizon",
+    "consuming_compaction_reports_retained_data_backlog_without_chasing_a_system_tail",
+    "obsolete_system_namespace_is_rejected_before_writable_readonly_or_repair_mutation"
+  ],
+  "old_tests_byte_preserved_except_direct_private_API_migration": true,
+  "overlay_files_scanned": 553,
+  "public_TableNamespace_entire_block_byte_unchanged": true,
+  "public_or_crate_public_methods_added": {
+    "reclaim_backlog_after_batch": 1
+  },
+  "public_or_crate_public_methods_removed": {
+    "data_reclaim_backlog_after_batch": 1
+  },
+  "source_overlay_old_API_occurrences": [],
+  "stats_print_debug_and_transaction_tail_byte_unchanged": true
+}

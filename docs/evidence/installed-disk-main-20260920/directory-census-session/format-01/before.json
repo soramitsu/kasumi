@@ -1,0 +1,17 @@
+{
+  "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt": "ab19d01d0a7a3a901c62b6b013a98452d38084b5d7f446ccb20c5e83c10db99f",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-server/src/persistent_disk.rs": "489ebfc7112c0e07443fe50e47aa4fc64188354aa4fe2f12f3c32fc531a4cafa",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-server/src/runtime_memory.rs": "d0ceb8730f19e20db0a8da74dea3045513d7422c40547f8a2511734e7dff2a04",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/census/tests.rs": "0f950a9eb716511f2411753ac1bc0e38cb4a080fe7a93883d5108d45a4e8ea1f",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/census.rs": "c521123fdee41c7e664bfa5b644cc5b445fc3cabfe032cd09820fc255471f9ec",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/directory/cursor.rs": "b4fbbb99d5c1baae19c763ef6867c6c2e7f3176f1e927881a31ae6525bdbea76",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/directory/tests.rs": "20d80947daf5579a3c98627aa5c1e53aed48765ff95a9032b3562172b1dd1742",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/file.rs": "36d81b1c62c015cc78d8ff7dd142b9faa55f4570b145f884b0ed0cf743292226",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/fixed_map/tests.rs": "d902893f035cf5107bf06d25f0d5e792614abf1e7c9a2e3507a143a3cb0196b5",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/fixed_map.rs": "7e868a041104cab8e6fe03da28f86514ae9f9a21bda8147bfdf08e54dc71214e",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/ledger/tests.rs": "d680f89ce411e0538a6b63212dc0f1d0628d570fe9bf97605449834d62abd3f1",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/ledger.rs": "3b06c0d159e91c239deb39ec9b7a654a0126d1f0387d37c16623732b057e1964",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/memory.rs": "7d3d25d8a521b7ee81e11def46abb13c9c2b64516e285d090e6e6e17a76debeb",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/tests.rs": "fb16dae6a29c87d8b2ba5fb200740e9e7fcd6cfd2aa15236c494af3803f447ad",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk.rs": "b779d3392986e407c2690c915e8c56a0d8d4332d79e0be9ba74663254c08f35c"
+}

@@ -1,0 +1,16 @@
+{
+  "status": "TARGET_ONLY_UNAPPLIED_UNCOMPILED_UNEXECUTED",
+  "patch_sha256": "2faf23b1d542d5eb79ba4f26acdce410edc4bc09121c9479d1907d463b9e05c2",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/tests/common/recovery_control.rs",
+      "before_sha256": "6e6e9477afd35a346b3b686afe5bc40b4c33bf066743ab17b5a4e3d306004aa0",
+      "proposed_sha256": "df389a1f5903728287ed45d01281119b797a3778b50d1d60adc17c62f2548eb3"
+    }
+  ],
+  "evidence": {
+    "124-result.json": "74d4be69352a36bef2e3406dabc3c2c9da966a4d348ef003fac98edad592a7f8",
+    "124-lifecycle-handoff.log": "06cb10cecc469d6b34f48831436e1ba5cd290f598c23f5441f1e21f2bc16df64"
+  },
+  "git_apply_check_exit": 0
+}

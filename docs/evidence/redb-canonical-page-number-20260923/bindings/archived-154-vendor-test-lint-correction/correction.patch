@@ -1,0 +1,425 @@
+--- a/vendor/redb-4.2.0/src/cache_admission_tests.rs
++++ b/vendor/redb-4.2.0/src/cache_admission_tests.rs
+@@ -112,7 +112,7 @@
+         error,
+         WriteTerminalError::Commit(CommitError::Storage(StorageError::CacheCapacityDenied))
+     ));
+-    error as *const _
++    std::ptr::from_ref(error)
+ }
+ 
+ #[test]
+@@ -196,9 +196,8 @@
+             ));
+         }
+         assert_eq!(assert_cache_error(&tx.abort()), original);
+-        let database = match f.db.close() {
+-            Err(CloseError::Busy(db)) => db,
+-            _ => panic!("actual retained tx must keep DB busy"),
++        let Err(CloseError::Busy(database)) = f.db.close() else {
++            panic!("actual retained tx must keep DB busy")
+         };
+         let mut custody = RETAINED.lock().unwrap();
+         assert!(custody[usize::from(mode - 1)].is_none());
+--- a/vendor/redb-4.2.0/src/retained_database_tests.rs
++++ b/vendor/redb-4.2.0/src/retained_database_tests.rs
+@@ -290,7 +290,7 @@
+ fn backend_unwind_retains_database_payload_and_actual_locked_file_without_retry() {
+     let mut fixture = Fixture::new();
+     fixture.control.close_mode.store(2, Ordering::SeqCst);
+-    let address = &fixture.owner.database as *const Database;
++    let address = &raw const fixture.owner.database;
+     let report = fixture.owner.close();
+     assert_eq!(report.settlement(), DatabaseCloseSettlement::Retained);
+     assert!(matches!(
+@@ -298,7 +298,7 @@
+         TerminalObservation::Returned(Ok(()))
+     ));
+     let original = original_panic(report.backend(), &fixture.control.close_marker);
+-    assert_eq!(&fixture.owner.database as *const Database, address);
++    assert_eq!(&raw const fixture.owner.database, address);
+     let counts = fixture.counts();
+     let repeated = fixture.owner.close();
+     assert!(std::ptr::eq(
+--- a/vendor/redb-4.2.0/src/retained_transaction_tests.rs
++++ b/vendor/redb-4.2.0/src/retained_transaction_tests.rs
+@@ -238,14 +238,14 @@
+         write.report().settlement(),
+         WriteTerminalSettlement::Retained
+     );
+-    let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
++    let transaction = std::ptr::from_ref(write.transaction.as_ref().unwrap());
+     let counts = fixture.counts();
+     assert!(matches!(
+         write.dispose_settled(&fixture.database).disposal(),
+         TerminalObservation::NotEntered
+     ));
+     assert_eq!(
+-        write.transaction.as_ref().unwrap() as *const WriteTransaction,
++        std::ptr::from_ref(write.transaction.as_ref().unwrap()),
+         transaction
+     );
+     assert_eq!(fixture.counts(), counts);
+@@ -263,7 +263,7 @@
+         TerminalObservation::NotEntered
+     ));
+     assert_eq!(
+-        write.transaction.as_ref().unwrap() as *const WriteTransaction,
++        std::ptr::from_ref(write.transaction.as_ref().unwrap()),
+         transaction
+     );
+     assert_eq!(fixture.counts(), counts);
+@@ -308,7 +308,7 @@
+         write.report().terminal(),
+         TerminalObservation::NotEntered
+     ));
+-    let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
++    let transaction = std::ptr::from_ref(write.transaction.as_ref().unwrap());
+     let report = write.commit();
+     assert_eq!(report.operation(), Some(WriteTerminalOperation::Commit));
+     assert_eq!(report.settlement(), WriteTerminalSettlement::Settled);
+@@ -317,7 +317,7 @@
+         TerminalObservation::Returned(Ok(()))
+     ));
+     assert_eq!(
+-        write.transaction.as_ref().unwrap() as *const WriteTransaction,
++        std::ptr::from_ref(write.transaction.as_ref().unwrap()),
+         transaction
+     );
+     assert!(write.transaction().is_none());
+@@ -496,7 +496,7 @@
+     let fixture = Fixture::new();
+     let mut write = fixture.write();
+     fixture.control.mode.store(1, Ordering::SeqCst);
+-    let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
++    let transaction = std::ptr::from_ref(write.transaction.as_ref().unwrap());
+     let report = write.commit();
+     let original = terminal_error(&report);
+     let TerminalObservation::Returned(Err(WriteTerminalError::Commit(CommitError::Storage(
+@@ -514,7 +514,7 @@
+     assert!(Arc::ptr_eq(marker, &fixture.control.marker));
+     assert!(matches!(report.rollback(), TerminalObservation::NotEntered));
+     assert_eq!(
+-        write.transaction.as_ref().unwrap() as *const WriteTransaction,
++        std::ptr::from_ref(write.transaction.as_ref().unwrap()),
+         transaction
+     );
+     assert!(write.transaction().is_none());
+@@ -564,14 +564,14 @@
+         panic!("actual rollback failure missing");
+     };
+     assert!(matches!(error, StorageError::OwnerFailed));
+-    let rollback = error as *const StorageError;
++    let rollback = std::ptr::from_ref(error);
+     let counts = fixture.counts();
+     let repeated = write.abort();
+     assert_eq!(terminal_error(&repeated), primary);
+     let TerminalObservation::Returned(Err(error)) = repeated.rollback() else {
+         panic!("original rollback failure was lost");
+     };
+-    assert_eq!(error as *const StorageError, rollback);
++    assert_eq!(std::ptr::from_ref(error), rollback);
+     assert_eq!(fixture.counts(), counts);
+     retain_failure(2, fixture, write);
+ }
+@@ -581,7 +581,7 @@
+     let fixture = Fixture::new();
+     let mut write = fixture.write();
+     fixture.control.mode.store(2, Ordering::SeqCst);
+-    let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
++    let transaction = std::ptr::from_ref(write.transaction.as_ref().unwrap());
+     let report = write.commit();
+     assert_eq!(report.settlement(), WriteTerminalSettlement::Retained);
+     let TerminalObservation::Panicked(payload) = report.terminal() else {
+@@ -591,10 +591,10 @@
+         payload.downcast_ref::<Arc<Marker>>().unwrap(),
+         &fixture.control.marker
+     ));
+-    let original = payload as *const (dyn Any + Send);
++    let original = std::ptr::from_ref(payload);
+     assert_eq!(fixture.control.header_writes.load(Ordering::SeqCst), 2);
+     assert_eq!(
+-        write.transaction.as_ref().unwrap() as *const WriteTransaction,
++        std::ptr::from_ref(write.transaction.as_ref().unwrap()),
+         transaction
+     );
+     let counts = fixture.counts();
+@@ -602,7 +602,7 @@
+     let TerminalObservation::Panicked(payload) = repeated.terminal() else {
+         panic!("original panic was replaced");
+     };
+-    assert!(std::ptr::eq(payload as *const (dyn Any + Send), original));
++    assert!(std::ptr::eq(std::ptr::from_ref(payload), original));
+     assert_eq!(fixture.counts(), counts);
+     assert!(write.transaction().is_none());
+     // Verify the already-synced bytes through an independent crash-image copy.
+@@ -645,14 +645,14 @@
+         payload.downcast_ref::<Arc<Marker>>().unwrap(),
+         &fixture.owner.marker
+     ));
+-    let original = payload as *const (dyn Any + Send);
++    let original = std::ptr::from_ref(payload);
+     let counts = fixture.counts();
+     let repeated = write.commit();
+     assert_eq!(terminal_error(&repeated), primary);
+     let TerminalObservation::Panicked(payload) = repeated.rollback() else {
+         panic!("original rollback panic was replaced");
+     };
+-    assert!(std::ptr::eq(payload as *const (dyn Any + Send), original));
++    assert!(std::ptr::eq(std::ptr::from_ref(payload), original));
+     assert_eq!(fixture.counts(), counts);
+     retain_failure(4, fixture, write);
+ }
+@@ -661,16 +661,13 @@
+ fn unstarted_disposal_keeps_actual_transaction_usable_until_positive_abort() {
+     let mut fixture = Fixture::new();
+     let mut write = fixture.write();
+-    let identity = write.transaction().unwrap() as *const WriteTransaction;
++    let identity = std::ptr::from_ref(write.transaction().unwrap());
+     let counts = fixture.counts();
+     assert!(matches!(
+         write.dispose_settled(&fixture.database).disposal(),
+         TerminalObservation::NotEntered
+     ));
+-    assert_eq!(
+-        write.transaction().unwrap() as *const WriteTransaction,
+-        identity
+-    );
++    assert_eq!(std::ptr::from_ref(write.transaction().unwrap()), identity);
+     assert_eq!(fixture.counts(), counts);
+     write
+         .transaction()
+@@ -702,7 +699,7 @@
+         write.commit().settlement(),
+         WriteTerminalSettlement::Settled
+     );
+-    let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
++    let transaction = std::ptr::from_ref(write.transaction.as_ref().unwrap());
+     let counts = fixture.counts();
+     let other_counts = other.counts();
+     // The backing would panic if disposal incorrectly invoked backend close.
+@@ -712,7 +709,7 @@
+         TerminalObservation::NotEntered
+     ));
+     assert_eq!(
+-        write.transaction.as_ref().unwrap() as *const WriteTransaction,
++        std::ptr::from_ref(write.transaction.as_ref().unwrap()),
+         transaction
+     );
+     assert_eq!(fixture.counts(), counts);
+--- a/vendor/redb-4.2.0/src/page_list_tests.rs
++++ b/vendor/redb-4.2.0/src/page_list_tests.rs
+@@ -14,7 +14,7 @@
+     for index in 0..count.min(DATA_PAGE_LIST_CAPACITY) {
+         let offset = 2 + index * PageNumber::serialized_size();
+         bytes[offset..offset + 8]
+-            .copy_from_slice(&PageNumber::new(0, index as u32, 0).to_le_bytes());
++            .copy_from_slice(&PageNumber::new(0, u32::try_from(index).unwrap(), 0).to_le_bytes());
+     }
+     bytes
+ }
+@@ -30,7 +30,7 @@
+         assert_eq!(checked.len(), count);
+         assert_eq!(
+             checked.get(count - 1),
+-            PageNumber::new(0, (count - 1) as u32, 0)
++            PageNumber::new(0, u32::try_from(count - 1).unwrap(), 0)
+         );
+     }
+     let valid = record(1);
+@@ -132,7 +132,9 @@
+     let (mut pending, allocations) = crate::admission::observe_test_allocations(|| {
+         let mut pending = DeferredReclaim::new();
+         for i in 0..DATA_PAGE_LIST_CAPACITY {
+-            pending.push(PageNumber::new(0, i as u32, 0)).unwrap();
++            pending
++                .push(PageNumber::new(0, u32::try_from(i).unwrap(), 0))
++                .unwrap();
+         }
+         assert!(matches!(
+             pending.push(PageNumber::new(0, 401, 0)),
+@@ -143,7 +145,7 @@
+     assert_eq!(allocations, 0);
+     assert_eq!(pending.as_slice().len(), DATA_PAGE_LIST_CAPACITY);
+     for (i, page) in pending.as_slice().iter().enumerate() {
+-        assert_eq!(*page, PageNumber::new(0, i as u32, 0));
++        assert_eq!(*page, PageNumber::new(0, u32::try_from(i).unwrap(), 0));
+     }
+     pending.clear();
+     assert!(pending.is_empty());
+@@ -514,8 +516,10 @@
+         let remaining = table
+             .range::<TransactionIdWithPagination>(..)
+             .unwrap()
+-            .map(|entry| entry.unwrap())
+-            .count();
++            .fold(0, |count, entry| {
++                entry.unwrap();
++                count + 1
++            });
+         assert_eq!(remaining, 1);
+     }
+     abort_clean(tx, &database);
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
+@@ -289,8 +289,8 @@
+         if page_size_usize == 0 {
+             return Err(StorageError::CacheCapacityDenied.into());
+         }
+-        let lock_stripes = usize::try_from(Self::lock_stripes())
+-            .map_err(|_| StorageError::CacheCapacityDenied)?;
++        let lock_stripes =
++            usize::try_from(Self::lock_stripes()).map_err(|_| StorageError::CacheCapacityDenied)?;
+         let read_entry_capacity = max_cache_size
+             .div_ceil(page_size_usize)
+             .div_ceil(lock_stripes)
+@@ -411,10 +411,9 @@
+     fn write_entry_capacity(&self) -> usize {
+         #[cfg(test)]
+         {
+-            return self
+-                .write_entry_capacity_override
++            self.write_entry_capacity_override
+                 .load(Ordering::Acquire)
+-                .min(self.write_entry_capacity);
++                .min(self.write_entry_capacity)
+         }
+         #[cfg(not(test))]
+         {
+@@ -1293,16 +1292,22 @@
+             PagedCachedFile::new(Box::new(backend), crate::test_admission(), page_size, 4096)
+                 .unwrap();
+         cache.set_write_entry_capacity_for_test(2);
+-        let mut borrowed = cache.write(0, page_size as usize, true).unwrap();
++        let mut borrowed = cache
++            .write(0, usize::try_from(page_size).unwrap(), true)
++            .unwrap();
+         borrowed.mem_mut().fill(11);
+         // With only A borrowed, an attempted flush cannot select a page. The
+         // former remove/reinsert selector left A's flag false in this state.
+         assert_eq!(cache.flush_buffered_pages(1).unwrap(), 0);
+-        let mut available = cache.write(stride, page_size as usize, true).unwrap();
++        let mut available = cache
++            .write(stride, usize::try_from(page_size).unwrap(), true)
++            .unwrap();
+         available.mem_mut().fill(22);
+         drop(available); // Returning B gives it a second chance.
+         let before = cache.write_buffer_bytes.load(Ordering::Acquire);
+-        let mut new_page = cache.write(stride * 2, page_size as usize, true).unwrap();
++        let mut new_page = cache
++            .write(stride * 2, usize::try_from(page_size).unwrap(), true)
++            .unwrap();
+         new_page.mem_mut().fill(33);
+         assert_eq!(writes.load(Ordering::Acquire), 1);
+         assert_eq!(cache.write_buffer_stripe(0).lock().unwrap().cache.len(), 2);
+@@ -1314,7 +1319,7 @@
+         cache.flush().unwrap();
+         for (offset, byte) in [(0, 11), (stride, 22), (stride * 2, 33)] {
+             let value = cache
+-                .read(offset, page_size as usize, PageHint::Clean)
++                .read(offset, usize::try_from(page_size).unwrap(), PageHint::Clean)
+                 .unwrap();
+             assert!(value.iter().all(|actual| *actual == byte));
+         }
+@@ -1332,18 +1337,26 @@
+         cache.set_write_entry_capacity_for_test(1);
+         for index in 0..128u64 {
+             let mut page = cache
+-                .write(index * stride, page_size as usize, true)
++                .write(index * stride, usize::try_from(page_size).unwrap(), true)
+                 .unwrap();
+-            page.mem_mut().fill(index as u8);
++            page.mem_mut().fill(u8::try_from(index).unwrap());
+             drop(page);
+             assert!(cache.write_buffer_stripe(0).lock().unwrap().cache.len() <= 1);
+         }
+         cache.flush().unwrap();
+         for index in 0..128u64 {
+             let value = cache
+-                .read(index * stride, page_size as usize, PageHint::Clean)
++                .read(
++                    index * stride,
++                    usize::try_from(page_size).unwrap(),
++                    PageHint::Clean,
++                )
+                 .unwrap();
+-            assert!(value.iter().all(|byte| *byte == index as u8));
++            assert!(
++                value
++                    .iter()
++                    .all(|byte| *byte == u8::try_from(index).unwrap())
++            );
+             assert!(cache.read_cache[0].read().unwrap().len() <= cache.read_entry_capacity);
+         }
+         assert_eq!(cache.write_buffer_bytes.load(Ordering::Acquire), 0);
+@@ -1406,9 +1419,8 @@
+         drop(cache.write(0, 128, true).unwrap());
+         let bytes = cache.write_buffer_bytes.load(Ordering::Acquire);
+         fail.store(true, Ordering::Release);
+-        let error = match cache.write(128 * 131, 128, true) {
+-            Err(error) => error,
+-            Ok(_) => panic!("eviction should fail"),
++        let Err(error) = cache.write(128 * 131, 128, true) else {
++            panic!("eviction should fail")
+         };
+         let crate::StorageError::Io(error) = error else {
+             panic!("original I/O became capacity")
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/checked_backend_tests.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/checked_backend_tests.rs
+@@ -134,11 +134,13 @@
+             io::ErrorKind::BrokenPipe,
+             OriginalIoFailure(method as u64 + 1),
+         );
+-        let identity = original
+-            .get_ref()
+-            .unwrap()
+-            .downcast_ref::<OriginalIoFailure>()
+-            .unwrap() as *const OriginalIoFailure;
++        let identity = std::ptr::from_ref(
++            original
++                .get_ref()
++                .unwrap()
++                .downcast_ref::<OriginalIoFailure>()
++                .unwrap(),
++        );
+         let fault = Arc::new(Fault {
+             method,
+             original: Mutex::new(Some(original)),
+@@ -159,11 +161,13 @@
+         };
+         assert_eq!(original.kind(), io::ErrorKind::BrokenPipe);
+         assert_eq!(
+-            original
+-                .get_ref()
+-                .unwrap()
+-                .downcast_ref::<OriginalIoFailure>()
+-                .unwrap() as *const OriginalIoFailure,
++            std::ptr::from_ref(
++                original
++                    .get_ref()
++                    .unwrap()
++                    .downcast_ref::<OriginalIoFailure>()
++                    .unwrap()
++            ),
+             identity,
+         );
+         assert!(owner.failed.load(Ordering::Acquire));
+@@ -194,11 +198,13 @@
+         );
+         assert_eq!(owner.failures.load(Ordering::SeqCst), 1);
+         assert_eq!(
+-            original
+-                .get_ref()
+-                .unwrap()
+-                .downcast_ref::<OriginalIoFailure>()
+-                .unwrap() as *const OriginalIoFailure,
++            std::ptr::from_ref(
++                original
++                    .get_ref()
++                    .unwrap()
++                    .downcast_ref::<OriginalIoFailure>()
++                    .unwrap()
++            ),
+             identity,
+             "later fencing/close replaced the original error object",
+         );

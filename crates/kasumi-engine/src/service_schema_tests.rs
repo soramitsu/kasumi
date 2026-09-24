@@ -1,12 +1,20 @@
 #[tokio::test]
 async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_release_authority() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
-    let node = NodeStore::create_new_fixture(
-        root.path().join("node.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
+    let (persistent_config, scratch_config) =
+        crate::test_utils::fixture_disk_configs(root.path()).unwrap();
+    let storage = crate::test_utils::FixtureStorage::open(
+        &persistent_config,
+        &scratch_config,
+        Default::default(),
     )
     .unwrap();
+    let node = storage
+        .create_new(
+            root.path().join("persistent/node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
     let audit_store = TenantStore::initialize_catalog_fixture(
         node.clone(),
         crate::SECURITY_TENANT.into(),
@@ -14,7 +22,7 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
     )
     .await
     .unwrap();
-    let node_admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
+    let node_admission = storage.admission.clone();
     let audit = SecurityAudit::initialize(
         audit_store,
         kasumi_types::AuditRetentionBudget::default(),

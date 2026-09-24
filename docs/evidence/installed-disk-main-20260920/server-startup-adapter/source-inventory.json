@@ -1,0 +1,28 @@
+{
+  "status": "proposed_unimplemented_read_only_review",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "source_bytes": {
+    "crates/kasumi-engine/src/admission/startup.rs": "3336bcebe2258fcf221304a177fda6f43790ec395e9e415011863910e3b53d2d",
+    "crates/kasumi-engine/src/admission/startup_tests.rs": "2d827f162e5c66c0805f02e8841d31a2b380c12bfc0b9f5793c1768406c147f7",
+    "crates/kasumi-types/src/drain.rs": "8e27fd014980265cdc0097e1b74421403f6d2d6a8d2d9c07463222fd8efa81aa",
+    "crates/kasumi-server/src/runtime_memory.rs": "85f8761bd4cf34dd3210392b3948a75cee1e05cdee4704bd41231a0e307e3ec0",
+    "crates/kasumi-server/src/startup_owner.rs": "3d9e20a7fa4fde237de61d0cd74f1249d0fe8e8ec66d538d064a0a95aec0ebc8",
+    "crates/kasumi-server/src/startup_resources.rs": "3d76d2547fd5e58afa6efc816fdcabaa17c7ddacfafb5b66b5ec18d0e3eaa1d8",
+    "crates/kasumi-server/src/startup_preparation.rs": "09134d4b4e6474202c5376b13d50809af0761f15389b0b11b44209a445e10181",
+    "crates/kasumi-server/src/serving_owner.rs": "f67b2970a5d0cb7882c29a3f15f1026c58c27db5c322570e01f34824237a980d",
+    "crates/kasumi-server/src/target_journal_installation.rs": "e2e850198e17f185f44c53abe055ad7f499094db4104a05b063cc910f0f87778",
+    "crates/kasumi-server/src/runtime.rs": "c5a7b05e3b31412844301e4db0adbdcf1e02e0ccb209b82099ea8389558f4d35",
+    "crates/kasumi-server/src/authority_runtime.rs": "1ea839d84158a97dfb4590cd334eb16c27a83366a808a8813335141597a10747",
+    "crates/kasumi-server/src/data_node_enrollment.rs": "47f788aa807aa7c7e5ee6119cec6042fbbcfc86edc568d3d255529d337b9b430",
+    "crates/kasumi-server/src/authority_node_enrollment.rs": "dbcd846e785ff8a6fcb01811e5d21071a586c3637b018160e1a12010ed291394",
+    "crates/kasumi-server/src/signer_runtime.rs": "2f565ee08839327aea7c341eb0fe4e086033e142ebd678085b2eeff06e50d56b",
+    "crates/kasumi-server/src/standalone.rs": "f4a1711ad3d7c0f1214a40c89dd2d365cc2178812439956829e81b44efa31624",
+    "crates/kasumi-server/src/standalone_operator.rs": "c8f35194ba51e2e41b5ddd06214cc259b551cacba5857ba4731ad7473a72eaea",
+    "crates/kasumi-server/src/standalone_tenant_staging.rs": "c7387600278d6f87bebef26149e129ba0df0b50d56a0b5aa606ab9edb6ad58a7",
+    "crates/kasumi-server/src/local_recovery.rs": "fed2760c1361d4b37b17eafb3b3e24e063d2a063e9654040d6a6d01a2872bcca",
+    "crates/kasumi-server/src/configured_tenant_enrollment.rs": "ad215f20eeca82be73f193dbf59d9d095a248b610c1bf3f6bb0dcebd755316f5",
+    "crates/kasumi-server/src/administration.rs": "b3a881ea9f649d79ea57619bb959d53e4a94cae6a6095408867af89505143093"
+  },
+  "design_sha256": "e474956ebc6720468ce5c3abbcdfab010342b073f1573caac7c4875ecd6b2394",
+  "validation": "No Rust source edits, no Rust builds, no qualification claim."
+}

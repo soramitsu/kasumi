@@ -1,0 +1,10 @@
+{
+  "branch": "master",
+  "input_hashes_unchanged_after_static_review": true,
+  "actual_source_unchanged": true,
+  "proposed_rustfmt": "PASS, Rust 1.97.1, edition 2024, skip_children=true",
+  "git_apply_check": "PASS",
+  "cargo_or_rustc": "NOT RUN",
+  "test_or_binary_execution": "NOT RUN",
+  "runtime_correctness": "UNVERIFIED"
+}

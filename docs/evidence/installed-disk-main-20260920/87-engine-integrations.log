@@ -1,0 +1,60 @@
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.57s
+     Running tests/admission.rs (target/debug/deps/admission-b48208283c872cd0)
+
+running 2 tests
+test explicit_local_bootstrap_reads_the_complete_committed_generation ... ok
+test reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work_still_applies ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.69s
+
+     Running tests/backup_checkpoint.rs (target/debug/deps/backup_checkpoint-ea818e52aefee501)
+
+running 12 tests
+test abort_resolves_published_root_before_considering_cleanup ... ok
+test aborted_session_cleanup_is_bounded_and_catches_late_uploads ... ok
+test archived_audit_backup_is_self_contained_and_source_unavailable_restore_preserves_exact_chain ... ok
+test cancelled_restore_publication_keeps_storage_and_workspace_until_write_drains ... ok
+test captured_and_historical_backup_verification_fit_fixed_production_workspace ... ok
+test checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_restart ... ok
+test durable_session_resolves_lost_ack_and_never_reclaims_completed_graph ... ok
+test local_restore_binds_exact_source_purpose_even_without_cold_archives ... ok
+test missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yield_proof ... ok
+test restore_hands_off_verified_workspace_with_production_and_destination_reserves ... ok
+test shutdown_cancels_pending_checkpoint_read_and_releases_database_work ... ok
+test verification_requires_current_global_admin_and_rechecks_policy_during_readback ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 498.31s
+
+     Running tests/fixture_epoch_clock.rs (target/debug/deps/fixture_epoch_clock-33ece40ab1eecda6)
+
+running 3 tests
+test fixture_epoch_rejects_a_different_audit_facade_before_bootstrap ... ok
+test fixture_epoch_rejects_production_storage_before_bootstrap ... ok
+test one_epoch_expires_leases_and_credentials_but_preserves_permanent_command_identity ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.37s
+
+     Running tests/response_release.rs (target/debug/deps/response_release-c25b51f8241324f4)
+
+running 1 test
+test encoded_response_is_fenced_by_policy_changes_and_actual_key_denial ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.60s
+
+     Running tests/retirement.rs (target/debug/deps/retirement-07b984c9ccd739bf)
+
+running 10 tests
+test actual_retirement_seed_reopens_through_control_domain_without_loading_source_payload ... ok
+test caller_checkpoint_observation_is_not_backup_authority ... ok
+test durable_retirement_stop_defeats_inflight_backup_verification_and_survives_restart ... ok
+test exact_retirement_seals_source_once_and_retains_proof_after_encrypted_restart ... ok
+test invisible_staged_identity_after_checkpoint_is_not_lost_by_retirement ... ok
+test permanent_retirement_quota_fails_before_backup_io_and_exact_failure_replays ... ok
+test post_checkpoint_payload_or_rejected_mutation_identity_blocks_retirement ... ok
+test retired_source_rotates_custody_without_reopening_data_or_rewriting_original_actor ... ok
+test retirement_snapshot::actual_retired_snapshot_only_replica_preserves_rotated_custody_after_encrypted_restart ... ok
+test retirement_snapshot::actual_stopped_retirement_snapshot_has_no_retired_custody_marker ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 224.00s
+

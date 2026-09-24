@@ -1,14 +1,17 @@
 #[tokio::test]
 async fn native_history_archive_and_durable_feed_preserve_exact_rows_and_scope() {
     let fixture = Fixture::new().await;
-    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     fixture
         .db
         .install_archive_destination(
             "cold".into(),
             Arc::new(
-                kasumi_store::FilesystemBackupDestination::new_fixture(directory.path(), 16 << 20)
-                    .unwrap(),
+                kasumi_store::FilesystemBackupDestination::new(
+                    fixture._dir.path().join("persistent/history-backup"),
+                    16 << 20,
+                    fixture.physical.persistent.clone(),
+                )
+                .unwrap(),
             ),
         )
         .unwrap();

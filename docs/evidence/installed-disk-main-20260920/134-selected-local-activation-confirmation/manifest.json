@@ -1,0 +1,21 @@
+{
+  "status": "FROZEN_TARGET_ONLY_UNCOMPILED",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "source": "crates/kasumi-authority/src/target_materialization_tests.rs",
+  "base_sha256": "953a03768ae5b239b65107b4b263efdbf5a24312d85695d9fb1da97bf43e17be",
+  "proposed_sha256": "9928fb65994688b0b38da4214dc3ed75c537c43f0a5774d507331799e8bf43d9",
+  "source_unchanged": true,
+  "evidence": {
+    "target/installed-disk-validation/134-result.json": "befde5a202e3419482cd32f0c80796c6f57e4f1aca3a18b17b5778e0ddfb0ed1",
+    "target/installed-disk-validation/134-authority-library.log": "caba102749349c5e2d2b5838afbe3e3e8886c74ba7ebea27f2b6bb229d593fe0",
+    "target/installed-disk-validation/134-source-before.json": "e10f99c9f28baad5300d16d38a39c26399c7587daf09390b7be4c324bf91b6d8",
+    "target/installed-disk-validation/134-source-after.json": "e10f99c9f28baad5300d16d38a39c26399c7587daf09390b7be4c324bf91b6d8"
+  },
+  "files": {
+    "README.md": "3fa73f9b7c26d1a3e86213405af316a91c4fc048b2fcace6423acefa69001b12",
+    "base/crates/kasumi-authority/src/target_materialization_tests.rs": "953a03768ae5b239b65107b4b263efdbf5a24312d85695d9fb1da97bf43e17be",
+    "fixture.patch": "1c70fe3cf15453a7286b2a0407441fb672b5aff5c7bb58b1ea8505b14c9801ff",
+    "proposed/crates/kasumi-authority/src/target_materialization_tests.rs": "9928fb65994688b0b38da4214dc3ed75c537c43f0a5774d507331799e8bf43d9"
+  }
+}

@@ -21,10 +21,9 @@ pub async fn open_fixture(
 ) -> anyhow::Result<Arc<Database>> {
     check(&stores)?;
     open_local_inner(
-        stores,
+        DatabaseConstruction::new(stores, audit)?,
         policy,
         limits,
-        audit,
         None,
         LocalRuntime::FixtureDefault,
     )
@@ -41,10 +40,9 @@ pub async fn open_fixture_with_incarnation(
     check(&stores)?;
     anyhow::ensure!(!incarnation.is_nil(), "nil fixture incarnation");
     open_local_inner(
-        stores,
+        DatabaseConstruction::new(stores, audit)?,
         policy,
         limits,
-        audit,
         Some(incarnation),
         LocalRuntime::FixtureDefault,
     )
@@ -76,18 +74,33 @@ pub async fn open_fixture_replicated(
 mod tests {
     use super::*;
     use crate::admission::NodeAdmission;
-    use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
+    use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn production_bootstrap_installs_shared_pool_for_application_and_control() {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-        let node = NodeStore::create_new_fixture(
-            directory.path().join("node.redb"),
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+        let (persistent_config, scratch_config) =
+            crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
+        let metadata =
+            crate::test_utils::isolated_disk_metadata_bytes(&persistent_config, &scratch_config)
+                .unwrap();
+        let storage = crate::test_utils::FixtureStorage::open(
+            &persistent_config,
+            &scratch_config,
+            Default::default(),
         )
         .unwrap();
-        let admission = NodeAdmission::new(Default::default()).unwrap();
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&storage.admission),
+            metadata
+        );
+        let node = storage
+            .create_new(
+                directory.path().join("persistent/node.redb"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
+        let admission = storage.admission.clone();
         let audit_store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             crate::SECURITY_TENANT.into(),
@@ -160,6 +173,11 @@ mod tests {
         }
         audit.shutdown().await.unwrap();
         let drained = admission.snapshot();
-        assert_eq!(drained.reserved_bytes, drained.bookkeeping_bytes);
+        // Shared installed disk metadata remains charged after all three
+        // databases and their shared audit/maintenance workers have drained.
+        assert_eq!(
+            drained.reserved_bytes,
+            drained.bookkeeping_bytes.checked_add(metadata).unwrap()
+        );
     }
 }

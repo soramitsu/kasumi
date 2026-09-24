@@ -1,0 +1,67 @@
+{
+  "status": "SCOPED_ACCEPTANCE_AUDIT_PASS",
+  "checked_at_utc": "2026-09-23T00:22:14.184083+00:00",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "bindings": {
+    "manifest.json": "b2d6f9f980a55d0e1a688093cf2deb64269878005ff78e15f394af8341b336e5",
+    "native-01/result.json": "f65746a8e2c766571b61e6625d103d8e7838ea79637e569c2ff6caad190d6685",
+    "native-01/results.json": "9c5bddb773db5ba29bbf140b541af7b63a7584778ea4af86446296d567ebddf0",
+    "native-01/store-inventory-proof.json": "378aabdc5e0ca2698bd68eaa69e655dcef9f4bbdf9b61e25e401dab857b4651c",
+    "native-01/store-binary-provenance.json": "82feb25b87c4b95620ff41b111ebfec9358ed4707f2d6a9ef56d1cd971406b3b",
+    "format-01/result.json": "ab94d2962b92f55540db4bb382381eb693bb4484d2758d4327b1aa97b7741324",
+    "terminal-drain.json": "91737ff1b5519fb82c1a7ef46f902439ee28a226ab1d218451981ac0b1703e9b",
+    "qualification-receipt.json": "cb6d9df3b4c6d61c9427553a28eda3273e36a16be76a7d49270b5c2b0f7986f5"
+  },
+  "source_checks": {
+    "native-01": {
+      "exact_before_after_count": 3697,
+      "current_under_root_rehashed": 3693,
+      "outside_root_executable_bindings_not_reopened": 4
+    },
+    "format-01": {
+      "exact_before_after_count": 3700,
+      "current_under_root_rehashed": 3694,
+      "outside_root_executable_bindings_not_reopened": 6
+    }
+  },
+  "stages": 19,
+  "store": {
+    "inventory": 338,
+    "focused": 14,
+    "passed": 336,
+    "ignored": 2,
+    "failed": 0,
+    "filtered": 0
+  },
+  "groups_rechecked_absent": [
+    92304,
+    92312,
+    93232,
+    93237,
+    93241,
+    93244,
+    93247,
+    93250,
+    93253,
+    93256,
+    93259,
+    93263,
+    93267,
+    93270,
+    93273,
+    93276,
+    93281,
+    93286,
+    96538,
+    96983,
+    98317
+  ],
+  "findings": [],
+  "scope": [
+    "Read-only independent evidence audit; no new source/native run.",
+    "Rechecked every stage log/executable binding, exact inventory, native/fmt before-after maps, all under-root current file hashes, original and retained compiled binary, and all recorded process groups.",
+    "External toolchain files were not reopened; only captured stage equality and source inventory bindings checked.",
+    "No full workspace runtime, fuzz, platform, total allocation/RSS, caller migration or G02 completion claim. Existing failed-opening availability gap remains."
+  ]
+}

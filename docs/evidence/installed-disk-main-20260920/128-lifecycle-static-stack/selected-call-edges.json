@@ -1,0 +1,191 @@
+[
+  {
+    "caller": "prepare_completion_poll",
+    "site": "0x1001365f0",
+    "instruction": "bl",
+    "callee": "fixture_new_poll",
+    "target": "0x10003bfdc"
+  },
+  {
+    "caller": "prepare_completion_poll",
+    "site": "0x10013a7c8",
+    "instruction": "bl",
+    "callee": "fixture_open_poll",
+    "target": "0x10003c224"
+  },
+  {
+    "caller": "prepare_completion_box_poll",
+    "site": "0x1000d4da0",
+    "instruction": "bl",
+    "callee": "prepare_completion_poll",
+    "target": "0x100135bb0"
+  },
+  {
+    "caller": "complete_recovery_poll",
+    "site": "0x100133574",
+    "instruction": "bl",
+    "callee": "fixture_open_poll",
+    "target": "0x10003c224"
+  },
+  {
+    "caller": "complete_recovery_box_poll",
+    "site": "0x1000d4d54",
+    "instruction": "bl",
+    "callee": "complete_recovery_poll",
+    "target": "0x1001241e4"
+  },
+  {
+    "caller": "exercise_completed_recovery_poll",
+    "site": "0x100153244",
+    "instruction": "bl",
+    "callee": "prepare_completion_box_poll",
+    "target": "0x1000d4d64"
+  },
+  {
+    "caller": "exercise_completed_recovery_poll",
+    "site": "0x100153648",
+    "instruction": "bl",
+    "callee": "resolve_expired_completion_box_poll",
+    "target": "0x1000d4df4"
+  },
+  {
+    "caller": "exercise_completed_recovery_poll",
+    "site": "0x10015394c",
+    "instruction": "bl",
+    "callee": "complete_recovery_box_poll",
+    "target": "0x1000d4d18"
+  },
+  {
+    "caller": "exercise_completed_recovery_poll",
+    "site": "0x100153bb8",
+    "instruction": "bl",
+    "callee": "exercise_route_publication_box_poll",
+    "target": "0x1000d4db0"
+  },
+  {
+    "caller": "resolve_expired_completion_box_poll",
+    "site": "0x1000d4e28",
+    "instruction": "bl",
+    "callee": "resolve_expired_completion_poll",
+    "target": "0x10014c1fc"
+  },
+  {
+    "caller": "exercise_route_publication_poll",
+    "site": "0x10014b224",
+    "instruction": "bl",
+    "callee": "fixture_open_poll",
+    "target": "0x10003c224"
+  },
+  {
+    "caller": "exercise_route_publication_box_poll",
+    "site": "0x1000d4de4",
+    "instruction": "bl",
+    "callee": "exercise_route_publication_poll",
+    "target": "0x100145314"
+  },
+  {
+    "caller": "fixture_new_poll",
+    "site": "0x10003c164",
+    "instruction": "bl",
+    "callee": "fixture_limits_poll",
+    "target": "0x10003ec34"
+  },
+  {
+    "caller": "fixture_limits_poll",
+    "site": "0x10003edf4",
+    "instruction": "bl",
+    "callee": "fixture_configured_poll",
+    "target": "0x100038b48"
+  },
+  {
+    "caller": "fixture_configured_poll",
+    "site": "0x100039858",
+    "instruction": "bl",
+    "callee": "probe_new",
+    "target": "0x1000e7a60"
+  },
+  {
+    "caller": "fixture_configured_poll",
+    "site": "0x100039868",
+    "instruction": "bl",
+    "callee": "probe_arc_new",
+    "target": "0x1000719a0"
+  },
+  {
+    "caller": "fixture_configured_poll",
+    "site": "0x10003a490",
+    "instruction": "bl",
+    "callee": "fixture_open_poll",
+    "target": "0x10003c224"
+  },
+  {
+    "caller": "probe_new",
+    "site": "0x1000e7af4",
+    "instruction": "bl",
+    "callee": "probe_slots_from_fn",
+    "target": "0x1000d0938"
+  },
+  {
+    "caller": "probe_begin",
+    "site": "0x1000e7c24",
+    "instruction": "bl",
+    "callee": "probe_candidate",
+    "target": "0x1000e82e8"
+  },
+  {
+    "caller": "probe_begin",
+    "site": "0x1000e7c2c",
+    "instruction": "bl",
+    "callee": "probe_history",
+    "target": "0x1000e8054"
+  },
+  {
+    "caller": "probe_finish",
+    "site": "0x1000e8640",
+    "instruction": "bl",
+    "callee": "probe_candidate",
+    "target": "0x1000e82e8"
+  },
+  {
+    "caller": "probe_finish",
+    "site": "0x1000e864c",
+    "instruction": "bl",
+    "callee": "probe_history",
+    "target": "0x1000e8054"
+  },
+  {
+    "caller": "probe_guard_drop",
+    "site": "0x1000b4078",
+    "instruction": "bl",
+    "callee": "probe_finish",
+    "target": "0x1000e85f0"
+  },
+  {
+    "caller": "probe_send_poll",
+    "site": "0x100109d74",
+    "instruction": "bl",
+    "callee": "probe_begin",
+    "target": "0x1000e7bcc"
+  },
+  {
+    "caller": "probe_send_poll",
+    "site": "0x10010a0c0",
+    "instruction": "bl",
+    "callee": "probe_finish",
+    "target": "0x1000e85f0"
+  },
+  {
+    "caller": "probe_slots_try_from_fn",
+    "site": "0x1000d04c0",
+    "instruction": "bl",
+    "callee": "probe_slots_try_from_fn_erased",
+    "target": "0x1000d06e8"
+  },
+  {
+    "caller": "probe_slots_from_fn",
+    "site": "0x1000d0968",
+    "instruction": "bl",
+    "callee": "probe_slots_try_from_fn",
+    "target": "0x1000d0488"
+  }
+]

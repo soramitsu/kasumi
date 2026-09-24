@@ -1,0 +1,20 @@
+{
+  "name": "workspace-check",
+  "pid": 80994,
+  "pgid": 80994,
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "check",
+    "--offline",
+    "--locked",
+    "--workspace",
+    "--all-targets",
+    "--all-features",
+    "--message-format=json"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/assembly",
+  "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-01/workspace-check.log",
+  "cargo_target_dir": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-01/cargo-target",
+  "cohort_bound_seconds": 1200,
+  "remaining_bound_seconds": 990.205915583
+}

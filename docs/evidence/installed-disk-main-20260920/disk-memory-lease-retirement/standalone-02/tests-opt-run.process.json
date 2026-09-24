@@ -1,0 +1,30 @@
+{
+  "cleanup": {
+    "after": [],
+    "before": [],
+    "drained": true,
+    "errors": [],
+    "group": 12689,
+    "process_returncode": 0,
+    "signals": []
+  },
+  "command": [
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-02/tests-opt",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "duration_seconds": 0.307,
+  "error": null,
+  "executable": {
+    "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-02/tests-opt",
+    "sha256": "218457318a75c376fffea3e7d0d10bfa84f313b561a667ee72faf8b0428a424c"
+  },
+  "exit_code": 0,
+  "process_exit_code": 0,
+  "process_group": 12689,
+  "received_signals": [],
+  "status": "passed",
+  "timed_out": false,
+  "timeout_seconds": 120,
+  "working_directory": "/Users/mtakemiya/dev/kasumi"
+}

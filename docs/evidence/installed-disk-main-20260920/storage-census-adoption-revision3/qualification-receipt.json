@@ -1,0 +1,23 @@
+{
+  "schema": "kasumi-storage-census-qualified-prerequisite-v1",
+  "candidate_manifest_sha256": "05aad00c6893993b943c5a08b83410c5d6539fed7a0c153e8626f198c9ef3eff",
+  "candidate_patch_sha256": "4efe4bacf506fada0c688bba64b1f649b376efb9e7cc3840d5fad691ff9d0120",
+  "tested_parent_manifest_sha256": "785269f80c8030962721109554629a1032bf7193db361b6775fb22bcec2926cf",
+  "native_receipt_sha256": "db3d138aa60c0ed988899946982c16d3369ac82c4f03d71db241b551dd28fa8a",
+  "native_results_sha256": "fc3b5044f40d78d1cfc77932a7235f76111ae675a41c0c34147d44b0bc2e3265",
+  "store_binary_sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+  "engine_binary_sha256": "d0ec54a744677a5d4f80f98c675694de537378fd87dd76f2979b70fd0292165e",
+  "new_tests": 18,
+  "executed_tests": 33,
+  "all_native_groups_drained": true,
+  "all_executables_unchanged": true,
+  "source_inventory_unchanged": true,
+  "exact_test_inventories_match": true,
+  "only_successor_change": "Move ReadableDatabase import into test module; all function bodies, branches and assertions identical",
+  "import_only_proof_sha256": "f74bdc44a3ec6998ec1255b5db6101578eda45fb67cbb2613073d06e835753ae",
+  "independent_review_sha256": "e617b935cc8f26484bb5ff284791229169bfe0f6e1ecda564ce1be1f92e633c0",
+  "strict_lint": "pending",
+  "production_callers_migrated": false,
+  "complete_storage_memory_bound": false,
+  "actual_source_edits": false
+}

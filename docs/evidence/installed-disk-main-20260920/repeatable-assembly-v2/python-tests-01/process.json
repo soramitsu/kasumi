@@ -1,0 +1,30 @@
+{
+  "cleanup": {
+    "after": [],
+    "before": [],
+    "drained": true,
+    "errors": [],
+    "group": 83077,
+    "process_returncode": 0,
+    "signals": []
+  },
+  "command": [
+    "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+    "-B",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/repeatable-assembly-v2/python-tests-01/test-owned.py"
+  ],
+  "duration_seconds": 8.452,
+  "error": null,
+  "executable": {
+    "path": "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+    "sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e"
+  },
+  "exit_code": 0,
+  "process_exit_code": 0,
+  "process_group": 83077,
+  "received_signals": [],
+  "status": "passed",
+  "timed_out": false,
+  "timeout_seconds": 300,
+  "working_directory": "/Users/mtakemiya/dev/kasumi"
+}

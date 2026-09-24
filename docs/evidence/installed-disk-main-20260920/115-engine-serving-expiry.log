@@ -1,0 +1,13 @@
+   Compiling kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 15s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_engine-d4dda2ec4274de51)
+
+running 3 tests
+test service::tests::serving_expiry_drain_rejects_unrelated_storage_causes ... ok
+test service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly ... ok
+test service::tests::serving_expiry_suppresses_long_backup_verification_and_post_publication_proof ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 18.55s
+

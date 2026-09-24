@@ -1,0 +1,23 @@
+[
+  {
+    "command": [
+      "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "scripts",
+      "-p",
+      "test_check_dependency_patches.py",
+      "-v"
+    ],
+    "exit_code": 0
+  },
+  {
+    "command": [
+      "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "scripts/check_dependency_patches.py"
+    ],
+    "exit_code": 0
+  }
+]

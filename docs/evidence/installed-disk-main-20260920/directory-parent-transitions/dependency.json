@@ -1,0 +1,6 @@
+{
+  "package": "target/installed-disk-validation/unified-inode-census",
+  "patch_sha256": "dbc8eb840ccbbcc90c10138118b6bd693aea4096a1fa81aeeaeb7eee257f6dc8",
+  "status": "frozen target-only successor; not merge-ready; no application authorized by this package",
+  "additional_upstream_context": "Preserve already-applied RetainedSpool and SpoolClosePhase exports in lib.rs; see manifest cumulative base."
+}

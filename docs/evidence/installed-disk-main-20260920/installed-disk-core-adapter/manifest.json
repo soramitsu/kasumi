@@ -1,0 +1,17 @@
+{
+  "status": "PREPARED_UNAPPLIED_UNCOMPILED; requires mandatory store NodeDiskMemoryAdmission trait",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/admission.rs",
+      "before_sha256": "77e0297d0751519c675576fcb4dbe950a3b1c7c4a075e256ee3214bfc1b82eea",
+      "proposed_sha256": "6327994976bec667151519dce58980ed9f955478487f809c51d32a0c82a2d3ff"
+    },
+    {
+      "path": "crates/kasumi-engine/src/admission/disk_memory.rs",
+      "before_sha256": null,
+      "proposed_sha256": "f9b1a40b7f93d6b77bdf727fc9e3267da453fbc56f81cd5a8aebd1e82368df2e"
+    }
+  ],
+  "patch_sha256": "9001501726d33c8041c837ffdcda2550131a02993da5bb8d86e6add772382c5d",
+  "rebased_after_startup_scope": "143f14850359c7662adb17d595c47654cd9ad43a1ab1f21ba56b086f79631a42"
+}

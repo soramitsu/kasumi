@@ -164,13 +164,9 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
             .is_err()
     );
     fixture.clock.0.store(3000, Ordering::SeqCst);
-    let denied = service
-        .execute(fixture.context("operator"), activate)
-        .await
-        .unwrap()
-        .0;
+    let denied = fixture.exact_administrative(activate).await;
     assert!(matches!(
-        denied.receipt.outcome,
+        denied.outcome,
         AuthorityOutcome::Rejected { .. }
     ));
     drop(fence);

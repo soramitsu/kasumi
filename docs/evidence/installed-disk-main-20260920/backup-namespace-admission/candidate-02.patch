@@ -1,0 +1,2463 @@
+diff --git a/crates/kasumi-store/src/audit_archive.rs b/crates/kasumi-store/src/audit_archive.rs
+--- a/crates/kasumi-store/src/audit_archive.rs
++++ b/crates/kasumi-store/src/audit_archive.rs
+@@ -621,6 +621,7 @@
+ 
+ pub struct FilesystemAuditArchive {
+     root: PathBuf,
++    _directory: crate::backup_sessions::filesystem::Directory,
+     disk: Arc<NodeDisk>,
+     observer: Option<Arc<dyn AuditArchivePublicationObserver>>,
+     publication: Arc<std::sync::Mutex<()>>,
+@@ -628,22 +629,12 @@
+ impl FilesystemAuditArchive {
+     pub fn open(root: impl AsRef<Path>, disk: Arc<NodeDisk>) -> Result<Self> {
+         let root = root.as_ref();
+-        disk.binding(&root.join("archive-accounting-anchor"))?;
+-        match std::fs::symlink_metadata(root) {
+-            Ok(_) => crate::private_files::check_directory(root)?,
+-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+-                // Exclusive creation never changes an existing directory's
+-                // owner or permissions, including when another opener races.
+-                if let Err(error) = crate::private_files::create_directory(root) {
+-                    crate::private_files::check_directory(root).map_err(|_| error)?;
+-                }
+-            }
+-            Err(error) => return Err(error.into()),
+-        }
+-        std::fs::File::open(root)?.sync_all()?;
+-        crate::private_files::sync_parent(root)?;
++        let directory =
++            crate::backup_sessions::filesystem::Directory::open_or_create(root, disk.clone())?;
++        directory.sync_all()?;
+         Ok(Self {
+-            root: std::fs::canonicalize(root)?,
++            root: root.to_owned(),
++            _directory: directory,
+             disk,
+             observer: None,
+             publication: Arc::new(std::sync::Mutex::new(())),
+diff --git a/crates/kasumi-store/src/backup.rs b/crates/kasumi-store/src/backup.rs
+--- a/crates/kasumi-store/src/backup.rs
++++ b/crates/kasumi-store/src/backup.rs
+@@ -369,16 +369,10 @@
+         disk: Arc<crate::NodeDisk>,
+     ) -> Result<Self> {
+         ensure!(max_bytes > 0, "backup byte limit must be positive");
+-        disk.binding(&root.as_ref().join("backup-accounting-anchor"))?;
+-        if !root.as_ref().exists() {
+-            crate::private_files::create_directory(root.as_ref())?;
+-        }
+-        crate::private_files::check_directory(root.as_ref())?;
+-        let root = std::fs::canonicalize(root)?;
+-        let sessions = Arc::new(crate::backup_sessions::filesystem::Directory::open(
+-            &root,
+-            disk.clone(),
+-        )?);
++        let root = root.as_ref().to_owned();
++        let sessions = Arc::new(
++            crate::backup_sessions::filesystem::Directory::open_or_create(&root, disk.clone())?,
++        );
+         Ok(Self {
+             root,
+             disk,
+diff --git a/crates/kasumi-store/src/backup_session_admission_tests.rs b/crates/kasumi-store/src/backup_session_admission_tests.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/backup_session_admission_tests.rs
+@@ -0,0 +1,245 @@
++use super::*;
++use crate::test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry};
++
++fn open(path: &Path, files: u64) -> Arc<crate::NodeDisk> {
++    let mut config = crate::NodeDisk::fixture_config(path.join("unused")).unwrap();
++    config.max_persistent_files = files;
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    retry_disk_registry(|| {
++        crate::NodeDisk::open_fixture(
++            &config,
++            memory.clone(),
++            &crate::CensusCancellation::default(),
++        )
++    })
++    .unwrap()
++}
++
++#[test]
++fn new_session_denies_before_mkdir_when_both_terminal_inodes_cannot_fit() {
++    let temporary = private_tempdir().unwrap();
++    let disk = open(temporary.path(), 1);
++    let directory = Directory::open(temporary.path(), disk.clone()).unwrap();
++    let before = disk.snapshot();
++    assert!(
++        directory
++            .put(Uuid::new_v4(), BackupSessionSlot::Intent, b"intent")
++            .is_err()
++    );
++    assert!(!temporary.path().join("sessions").exists());
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
++    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
++}
++
++#[test]
++fn terminal_publication_keeps_original_inode_full_extent_and_exact_ciphertext() {
++    use std::os::unix::fs::MetadataExt;
++    let temporary = private_tempdir().unwrap();
++    let disk = open(temporary.path(), 2);
++    let directory = Directory::open(temporary.path(), disk.clone()).unwrap();
++    let session = Uuid::new_v4();
++    directory
++        .put(
++            session,
++            BackupSessionSlot::Intent,
++            b"original encrypted intent",
++        )
++        .unwrap();
++    let path = temporary.path().join("sessions").join(session.to_string());
++    assert!(!path.join("intent.reserve").exists());
++    assert_eq!(
++        path.join("intent.kasumi").metadata().unwrap().len(),
++        terminal::FILE_BYTES as u64
++    );
++    let reserve = path.join("outcome.reserve").metadata().unwrap();
++    assert_eq!(reserve.len(), terminal::FILE_BYTES as u64);
++    assert_eq!(disk.snapshot().persistent_files, 2);
++    assert_eq!(
++        directory
++            .get(session, BackupSessionSlot::Intent, 64)
++            .unwrap()
++            .unwrap(),
++        b"original encrypted intent"
++    );
++    let charged = disk.snapshot().charged_bytes;
++    directory
++        .put(
++            session,
++            BackupSessionSlot::Outcome,
++            b"original encrypted outcome",
++        )
++        .unwrap();
++    assert!(!path.join("outcome.reserve").exists());
++    let published = path.join("outcome.kasumi").metadata().unwrap();
++    assert_eq!(
++        (published.dev(), published.ino()),
++        (reserve.dev(), reserve.ino())
++    );
++    assert_eq!(published.len(), terminal::FILE_BYTES as u64);
++    assert_eq!(disk.snapshot().charged_bytes, charged);
++    assert_eq!(disk.snapshot().persistent_files, 2);
++    assert_eq!(
++        directory
++            .get(session, BackupSessionSlot::Outcome, 64)
++            .unwrap()
++            .unwrap(),
++        b"original encrypted outcome"
++    );
++}
++
++#[test]
++fn two_wrappers_cannot_recreate_reserve_across_terminal_classification_and_rename() {
++    let temporary = private_tempdir().unwrap();
++    let disk = open(temporary.path(), 4);
++    let first = Arc::new(Directory::open(temporary.path(), disk.clone()).unwrap());
++    let second = Directory::open(temporary.path(), disk.clone()).unwrap();
++    let session = Uuid::new_v4();
++    first
++        .put(session, BackupSessionSlot::Intent, b"intent")
++        .unwrap();
++    let path = temporary.path().join("sessions").join(session.to_string());
++    let (entered, release) = test_sync::pause(
++        &path,
++        "outcome.kasumi",
++        test_sync::Point::TerminalClassified,
++    )
++    .unwrap();
++    let worker =
++        std::thread::spawn(move || first.put(session, BackupSessionSlot::Outcome, b"winner"));
++    entered
++        .recv_timeout(std::time::Duration::from_secs(10))
++        .unwrap();
++    // The first wrapper has observed published absence but has not opened the
++    // reserve. The competing wrapper must stop before doing either observation.
++    let competing = second
++        .put(session, BackupSessionSlot::Outcome, b"loser")
++        .unwrap_err();
++    assert_eq!(
++        competing.downcast_ref::<std::io::Error>().unwrap().kind(),
++        std::io::ErrorKind::WouldBlock
++    );
++    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
++    assert!(path.join("outcome.reserve").exists());
++    assert!(!path.join("outcome.kasumi").exists());
++    release.send(()).unwrap();
++    worker.join().unwrap().unwrap();
++    assert!(!path.join("outcome.reserve").exists());
++    assert_eq!(
++        second
++            .get(session, BackupSessionSlot::Outcome, 32)
++            .unwrap()
++            .unwrap(),
++        b"winner"
++    );
++    assert_eq!(disk.snapshot().persistent_files, 2);
++    assert!(
++        second
++            .put(session, BackupSessionSlot::Outcome, b"late")
++            .is_err()
++    );
++    assert!(!path.join("outcome.reserve").exists());
++    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
++}
++
++#[test]
++fn permanent_terminal_capacity_survives_real_process_restart_at_full_file_and_byte_limits() {
++    let temporary = private_tempdir().unwrap();
++    let session = Uuid::new_v4();
++    for stage in ["prepare", "finish"] {
++        let output = std::process::Command::new(std::env::current_exe().unwrap())
++            .args([
++                "--exact",
++                "backup_sessions::filesystem::session_admission_tests::terminal_restart_worker",
++                "--nocapture",
++                "--test-threads=1",
++            ])
++            .env("KASUMI_TERMINAL_RESTART_STAGE", stage)
++            .env("KASUMI_TERMINAL_RESTART_ROOT", temporary.path())
++            .env("KASUMI_TERMINAL_RESTART_SESSION", session.to_string())
++            .output()
++            .unwrap();
++        assert!(
++            output.status.success(),
++            "{stage}: {}\n{}",
++            String::from_utf8_lossy(&output.stdout),
++            String::from_utf8_lossy(&output.stderr)
++        );
++    }
++}
++
++#[test]
++fn terminal_restart_worker() {
++    let Ok(stage) = std::env::var("KASUMI_TERMINAL_RESTART_STAGE") else {
++        return;
++    };
++    let path = PathBuf::from(std::env::var_os("KASUMI_TERMINAL_RESTART_ROOT").unwrap());
++    let session =
++        Uuid::parse_str(&std::env::var("KASUMI_TERMINAL_RESTART_SESSION").unwrap()).unwrap();
++    let mut config = crate::NodeDisk::fixture_config(path.join("unused")).unwrap();
++    config.max_persistent_files = 3;
++    config.max_persistent_subdirectories = 3;
++    config.max_bytes = 16 << 20;
++    config.maintenance_reserve_bytes = 0;
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = retry_disk_registry(|| {
++        crate::NodeDisk::open_fixture(
++            &config,
++            memory.clone(),
++            &crate::CensusCancellation::default(),
++        )
++    })
++    .unwrap();
++    let directory = Directory::open(&path, disk.clone()).unwrap();
++    if stage == "prepare" {
++        directory
++            .put(session, BackupSessionSlot::Intent, b"intent before restart")
++            .unwrap();
++        let file = disk
++            .create_file(
++                "fixture",
++                Path::new("unrelated.kasumi"),
++                crate::DiskWork::Foreground,
++            )
++            .unwrap();
++        let remaining = config.max_bytes - disk.snapshot().charged_bytes;
++        file.reserve_growth(0, remaining, crate::DiskWork::Foreground)
++            .unwrap();
++        file.grow_reserved(remaining).unwrap();
++        file.sync_all_and_parent().unwrap();
++        drop(file);
++        assert_eq!(
++            disk.snapshot().persistent_files,
++            config.max_persistent_files
++        );
++        assert_eq!(disk.snapshot().charged_bytes, config.max_bytes);
++    } else {
++        assert_eq!(stage, "finish");
++        // This is a fresh process and a fresh cold census, with no RAM permit or
++        // prior registry owner. Both promises come only from actual fixed files.
++        assert_eq!(
++            disk.snapshot().persistent_files,
++            config.max_persistent_files
++        );
++        assert_eq!(disk.snapshot().charged_bytes, config.max_bytes);
++        directory
++            .put(
++                session,
++                BackupSessionSlot::Outcome,
++                b"outcome after restart",
++            )
++            .unwrap();
++        assert_eq!(
++            directory
++                .get(session, BackupSessionSlot::Outcome, 64)
++                .unwrap()
++                .unwrap(),
++            b"outcome after restart"
++        );
++        assert_eq!(
++            disk.snapshot().persistent_files,
++            config.max_persistent_files
++        );
++        assert_eq!(disk.snapshot().charged_bytes, config.max_bytes);
++    }
++}
+diff --git a/crates/kasumi-store/src/backup_session_terminal.rs b/crates/kasumi-store/src/backup_session_terminal.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/backup_session_terminal.rs
+@@ -0,0 +1,200 @@
++//! Canonical fixed-extent filesystem terminal records. Reserve paths never
++//! decode as published records; publication moves the original reserved inode.
++use sha2::{Digest, Sha256};
++use std::io;
++use uuid::Uuid;
++
++const MAGIC: &[u8; 8] = b"KSMSES01";
++pub(super) const HEADER_BYTES: usize = 72;
++pub(super) const PAYLOAD_BYTES: usize =
++    super::MAX_SESSION_RECORD_BYTES + crate::backup::HEADER_LIMIT + 84;
++pub(super) const FILE_BYTES: usize = HEADER_BYTES + PAYLOAD_BYTES;
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(super) enum Terminal {
++    Intent,
++    Outcome,
++}
++impl Terminal {
++    const fn tag(self) -> u8 {
++        match self {
++            Self::Intent => 1,
++            Self::Outcome => 2,
++        }
++    }
++    pub(super) const fn published(self) -> &'static str {
++        match self {
++            Self::Intent => "intent.kasumi",
++            Self::Outcome => "outcome.kasumi",
++        }
++    }
++    pub(super) const fn reserve(self) -> &'static str {
++        match self {
++            Self::Intent => "intent.reserve",
++            Self::Outcome => "outcome.reserve",
++        }
++    }
++}
++
++pub(super) fn header(
++    session: Uuid,
++    slot: Terminal,
++    payload: &[u8],
++) -> io::Result<[u8; HEADER_BYTES]> {
++    if session.is_nil() || payload.is_empty() || payload.len() > PAYLOAD_BYTES {
++        return Err(io::ErrorKind::InvalidInput.into());
++    }
++    let mut result = [0; HEADER_BYTES];
++    result[..8].copy_from_slice(MAGIC);
++    result[8] = slot.tag();
++    result[16..32].copy_from_slice(session.as_bytes());
++    result[32..40].copy_from_slice(&(payload.len() as u64).to_le_bytes());
++    result[40..72].copy_from_slice(&Sha256::digest(payload));
++    Ok(result)
++}
++
++pub(super) fn decode(
++    bytes: &[u8],
++    session: Uuid,
++    slot: Terminal,
++    limit: usize,
++) -> io::Result<&[u8]> {
++    if bytes.len() != FILE_BYTES
++        || session.is_nil()
++        || &bytes[..8] != MAGIC
++        || bytes[8] != slot.tag()
++        || bytes[9..16] != [0; 7]
++        || bytes[16..32] != *session.as_bytes()
++    {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    let length = usize::try_from(u64::from_le_bytes(
++        bytes[32..40].try_into().expect("fixed header"),
++    ))
++    .map_err(|_| io::ErrorKind::InvalidData)?;
++    if length == 0 || length > PAYLOAD_BYTES || length > limit {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    let end = HEADER_BYTES
++        .checked_add(length)
++        .ok_or(io::ErrorKind::InvalidData)?;
++    let payload = &bytes[HEADER_BYTES..end];
++    if bytes[40..72] != Sha256::digest(payload)[..] || bytes[end..].iter().any(|&byte| byte != 0) {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    Ok(payload)
++}
++
++/// The sole physical owner stays claimed for the whole write/sync/publish phase.
++/// Keep the full durable length and canonical zero tail on every retry.
++pub(super) fn write(
++    file: &crate::NodeDiskFile,
++    session: Uuid,
++    slot: Terminal,
++    payload: &[u8],
++) -> io::Result<()> {
++    let header = header(session, slot, payload)?;
++    if file.observed_len()? != FILE_BYTES as u64 {
++        file.owner_failed();
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    // Write the header last. A reserve remains a reserve even if a write fails;
++    // only a later successful immutable rename can expose a terminal record.
++    file.write_all_at(payload, HEADER_BYTES as u64)?;
++    let zero = [0; 8192];
++    let mut offset = HEADER_BYTES + payload.len();
++    while offset < FILE_BYTES {
++        let length = zero.len().min(FILE_BYTES - offset);
++        file.write_all_at(&zero[..length], offset as u64)?;
++        offset += length;
++    }
++    file.write_all_at(&header, 0)?;
++    file.sync_all_and_parent()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn encoded(session: Uuid, slot: Terminal, payload: &[u8]) -> Vec<u8> {
++        let mut bytes = vec![0; FILE_BYTES];
++        bytes[..HEADER_BYTES].copy_from_slice(&header(session, slot, payload).unwrap());
++        bytes[HEADER_BYTES..HEADER_BYTES + payload.len()].copy_from_slice(payload);
++        bytes
++    }
++
++    #[test]
++    fn fixed_terminal_roundtrip_preserves_exact_ciphertext_and_full_extent() {
++        let session = Uuid::new_v4();
++        for slot in [Terminal::Intent, Terminal::Outcome] {
++            let payload = vec![0xa5; PAYLOAD_BYTES];
++            let bytes = encoded(session, slot, &payload);
++            assert_eq!(bytes.len(), FILE_BYTES);
++            assert_eq!(
++                decode(&bytes, session, slot, PAYLOAD_BYTES).unwrap(),
++                payload
++            );
++            let short = encoded(session, slot, b"ciphertext");
++            assert_eq!(short.len(), FILE_BYTES);
++            assert_eq!(decode(&short, session, slot, 10).unwrap(), b"ciphertext");
++        }
++    }
++
++    #[test]
++    fn unknown_formats_legacy_bytes_and_every_noncanonical_field_reject() {
++        let session = Uuid::new_v4();
++        let bytes = encoded(session, Terminal::Intent, b"ciphertext");
++        for offset in [
++            0,
++            7,
++            8,
++            9,
++            15,
++            16,
++            31,
++            32,
++            39,
++            40,
++            71,
++            HEADER_BYTES,
++            FILE_BYTES - 1,
++        ] {
++            let mut corrupt = bytes.clone();
++            corrupt[offset] ^= 0x80;
++            assert!(decode(&corrupt, session, Terminal::Intent, PAYLOAD_BYTES).is_err());
++        }
++        assert!(decode(&bytes, Uuid::new_v4(), Terminal::Intent, PAYLOAD_BYTES).is_err());
++        assert!(decode(&bytes, session, Terminal::Outcome, PAYLOAD_BYTES).is_err());
++        assert!(decode(&bytes, session, Terminal::Intent, 9).is_err());
++        assert!(
++            decode(
++                &bytes[..FILE_BYTES - 1],
++                session,
++                Terminal::Intent,
++                PAYLOAD_BYTES
++            )
++            .is_err()
++        );
++        assert!(
++            decode(
++                b"old unframed ciphertext",
++                session,
++                Terminal::Intent,
++                PAYLOAD_BYTES
++            )
++            .is_err()
++        );
++        assert!(
++            decode(
++                &vec![0; FILE_BYTES],
++                session,
++                Terminal::Intent,
++                PAYLOAD_BYTES
++            )
++            .is_err()
++        );
++        assert!(header(Uuid::nil(), Terminal::Intent, b"ciphertext").is_err());
++        assert!(header(session, Terminal::Intent, b"").is_err());
++        assert!(header(session, Terminal::Intent, &vec![0; PAYLOAD_BYTES + 1]).is_err());
++    }
++}
+diff --git a/crates/kasumi-store/src/backup_sessions_fs.rs b/crates/kasumi-store/src/backup_sessions_fs.rs
+--- a/crates/kasumi-store/src/backup_sessions_fs.rs
++++ b/crates/kasumi-store/src/backup_sessions_fs.rs
+@@ -4,91 +4,90 @@
+ use std::{
+     collections::BTreeSet,
+     ffi::CString,
+-    fs::File,
+-    os::fd::{AsRawFd, FromRawFd},
+     path::{Path, PathBuf},
+ };
+ 
+-pub(crate) struct Directory(File, Arc<crate::NodeDisk>, PathBuf);
++#[path = "backup_session_terminal.rs"]
++mod terminal;
++use crate::node_disk::{NamespaceAdmission, NamespacePart, NamespacePartKind};
++use terminal::Terminal;
++
++pub(crate) struct Directory(crate::NodeDiskDirectory, Arc<crate::NodeDisk>, PathBuf);
+ impl Directory {
+     pub fn open(path: &Path, disk: Arc<crate::NodeDisk>) -> Result<Self> {
+-        use std::os::unix::fs::OpenOptionsExt;
+-        let file = std::fs::OpenOptions::new()
+-            .read(true)
+-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+-            .open(path)?;
+-        disk.binding(&path.join("session-accounting-anchor"))?;
+-        Ok(Self(file, disk, path.to_owned()))
++        let anchor = path.join("session-accounting-anchor");
++        let (root, relative) = disk.binding(&anchor)?;
++        let directory =
++            disk.open_directory(root, relative.parent().context("directory binding")?)?;
++        Ok(Self(directory, disk, path.to_owned()))
++    }
++    pub(crate) fn open_or_create(path: &Path, disk: Arc<crate::NodeDisk>) -> Result<Self> {
++        use std::os::unix::ffi::OsStrExt;
++        let anchor = path.join("directory-accounting-anchor");
++        let (root, relative) = disk.binding(&anchor)?;
++        let relative = relative.parent().context("directory binding")?;
++        if relative.as_os_str().is_empty() {
++            return Self::open(path, disk);
++        }
++        let parent_relative = relative.parent().context("directory parent")?;
++        let parent = disk.open_directory(root, parent_relative)?;
++        let name = CString::new(relative.file_name().context("directory name")?.as_bytes())?;
++        let directory = match parent.open_child(&name) {
++            Ok(directory) => directory,
++            Err(error)
++                if error.kind() == std::io::ErrorKind::NotFound
++                    && disk.snapshot().phase == crate::NodeDiskPhase::Open =>
++            {
++                let mut admission = disk.admit_namespace(
++                    &[NamespacePart {
++                        root,
++                        relative,
++                        kind: NamespacePartKind::Directory,
++                    }],
++                    crate::DiskWork::Foreground,
++                )?;
++                let directory = parent.create_admitted_child(&name, &mut admission)?;
++                admission.finish()?;
++                directory
++            }
++            Err(error) => return Err(error.into()),
++        };
++        Ok(Self(directory, disk, path.to_owned()))
++    }
++    pub(crate) fn sync_all(&self) -> Result<()> {
++        self.0.sync_all().map_err(Into::into)
+     }
+     fn check(&self) -> Result<()> {
+-        use std::os::unix::fs::MetadataExt;
+-        let result = (|| -> Result<()> {
+-            ensure!(
+-                self.1.snapshot().phase == crate::NodeDiskPhase::Open,
+-                "backup physical owner is unavailable"
+-            );
+-            let current = std::fs::symlink_metadata(&self.2)?;
+-            let retained = self.0.metadata()?;
+-            ensure!(
+-                current.is_dir()
+-                    && current.dev() == retained.dev()
+-                    && current.ino() == retained.ino(),
+-                "backup directory binding changed"
+-            );
+-            crate::private_files::check_directory(&self.2)?;
+-            Ok(())
+-        })();
+-        if result.is_err() {
+-            self.1.fail();
+-        }
+-        result
+-    }
+-    fn child(&self, name: &str, create: bool) -> Result<Option<Self>> {
+-        self.check()?;
+-        use std::os::unix::fs::MetadataExt;
++        self.0.sync_all().map_err(Into::into)
++    }
++    fn child(&self, name: &str) -> Result<Option<Self>> {
+         let name = CString::new(name)?;
+-        if create && unsafe { libc::mkdirat(self.0.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+-            let error = std::io::Error::last_os_error();
+-            if error.kind() != std::io::ErrorKind::AlreadyExists {
+-                return Err(error.into());
+-            }
+-        }
+-        let fd = unsafe {
+-            libc::openat(
+-                self.0.as_raw_fd(),
+-                name.as_ptr(),
+-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+-            )
+-        };
+-        if fd == -1 {
+-            let error = std::io::Error::last_os_error();
+-            if !create && error.kind() == std::io::ErrorKind::NotFound {
+-                return Ok(None);
+-            }
+-            return Err(error.into());
+-        }
+-        let directory = Self(
+-            unsafe { File::from_raw_fd(fd) },
+-            self.1.clone(),
+-            self.2.join(name.to_str()?),
+-        );
+-        let metadata = directory.0.metadata()?;
+-        ensure!(
+-            metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o077 == 0,
+-            "backup session directory must be owner-only"
+-        );
+-        if create {
+-            directory.0.sync_all()?;
+-            self.0.sync_all()?;
+-        }
+-        Ok(Some(directory))
+-    }
+-    fn session(&self, id: Uuid, create: bool) -> Result<Option<Self>> {
++        match self.0.open_child(&name) {
++            Ok(directory) => Ok(Some(Self(
++                directory,
++                self.1.clone(),
++                self.2.join(name.to_str()?),
++            ))),
++            Err(error)
++                if error.kind() == std::io::ErrorKind::NotFound
++                    && self.1.snapshot().phase == crate::NodeDiskPhase::Open =>
++            {
++                Ok(None)
++            }
++            Err(error) => Err(error.into()),
++        }
++    }
++    fn create_child(&self, name: &str, admission: &mut NamespaceAdmission) -> Result<Self> {
++        let name = CString::new(name)?;
++        let directory = self.0.create_admitted_child(&name, admission)?;
++        Ok(Self(directory, self.1.clone(), self.2.join(name.to_str()?)))
++    }
++    fn session(&self, id: Uuid) -> Result<Option<Self>> {
+         ensure!(!id.is_nil(), "nil backup session");
+-        let Some(sessions) = self.child("sessions", create)? else {
++        let Some(sessions) = self.child("sessions")? else {
+             return Ok(None);
+         };
+-        sessions.child(&id.to_string(), create)
++        sessions.child(&id.to_string())
+     }
+     fn open_leaf(&self, name: &str) -> Result<Option<crate::NodeDiskFile>> {
+         self.check()?;
+@@ -136,31 +135,216 @@
+         self.1.delete_file(file)?;
+         self.check()
+     }
+-    pub fn put(&self, session: Uuid, slot: BackupSessionSlot, bytes: &[u8]) -> Result<()> {
+-        slot.relative(session)?;
+-        let session = self
+-            .session(session, true)?
+-            .context("backup session absent")?;
+-        let objects = session
+-            .child("objects", true)?
+-            .context("backup object directory absent")?;
+-        // Interrupted uploads remain exact UUID objects in the authenticated
+-        // aborted namespace. Publication moves the original accounted inode;
+-        // it never creates a transient second hard link.
++    fn read_terminal(
++        &self,
++        session: Uuid,
++        slot: Terminal,
++        limit: usize,
++    ) -> Result<Option<Vec<u8>>> {
++        let Some(mut bytes) = self.read(slot.published(), terminal::FILE_BYTES)? else {
++            return Ok(None);
++        };
++        let length = match terminal::decode(&bytes, session, slot, limit) {
++            Ok(payload) => payload.len(),
++            Err(error) => {
++                self.1.fail();
++                return Err(error.into());
++            }
++        };
++        bytes.copy_within(terminal::HEADER_BYTES..terminal::HEADER_BYTES + length, 0);
++        bytes.truncate(length);
++        Ok(Some(bytes))
++    }
++    // A published terminal is canonical; a reserve must be the exact admitted
++    // fixed length. Neither arbitrary names nor short reserve files are adopted.
++    fn terminal_state(&self, session: Uuid, slot: Terminal) -> Result<(bool, bool)> {
++        let published = self
++            .read_terminal(session, slot, terminal::PAYLOAD_BYTES)?
++            .is_some();
++        #[cfg(test)]
++        test_sync::check(self, slot.published(), test_sync::Point::TerminalClassified)?;
++        let reserve = self.open_leaf(slot.reserve())?;
++        if let Some(file) = &reserve {
++            if published || file.observed_len()? != terminal::FILE_BYTES as u64 {
++                self.1.fail();
++                anyhow::bail!("invalid backup terminal reservation");
++            }
++            file.sync_all_and_parent()?;
++        }
++        Ok((published, reserve.is_some()))
++    }
++    pub fn put(&self, session_id: Uuid, slot: BackupSessionSlot, bytes: &[u8]) -> Result<()> {
++        slot.relative(session_id)?;
++        // Claim before classification; another wrapper cannot publish between a
++        // published-name absence and reserve-name observation and cause a new
++        // reserve to be recreated next to an already published terminal.
++        let claim_path = self.2.join("sessions").join(session_id.to_string());
++        let (claim_root, claim_relative) = self.1.binding(&claim_path)?;
++        let _claim = self.1.claim_namespace(claim_root, claim_relative)?;
++        let terminal_slot = match slot {
++            BackupSessionSlot::Intent => Some(Terminal::Intent),
++            BackupSessionSlot::Outcome => Some(Terminal::Outcome),
++            BackupSessionSlot::Object(_) => None,
++        };
++        if let Some(terminal) = terminal_slot {
++            terminal::header(session_id, terminal, bytes)?;
++        }
++        let sessions = self.child("sessions")?;
++        let session = match &sessions {
++            Some(dir) => dir.child(&session_id.to_string())?,
++            None => None,
++        };
++        let objects = match &session {
++            Some(dir) => dir.child("objects")?,
++            None => None,
++        };
++        let mut terminals = [(false, false); 2];
++        if let Some(session) = &session {
++            for (index, terminal) in [Terminal::Intent, Terminal::Outcome]
++                .into_iter()
++                .enumerate()
++            {
++                terminals[index] = session.terminal_state(session_id, terminal)?;
++            }
++            if terminals.iter().any(|(published, _)| *published)
++                && terminals
++                    .iter()
++                    .any(|(published, reserve)| !published && !reserve)
++            {
++                self.1.fail();
++                anyhow::bail!("published backup session lost terminal capacity");
++            }
++        }
++        if let Some(terminal) = terminal_slot {
++            let index = usize::from(terminal == Terminal::Outcome);
++            if terminals[index].0 {
++                return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into());
++            }
++        }
++        let sessions_path = self.2.join("sessions");
++        let session_path = sessions_path.join(session_id.to_string());
++        let objects_path = session_path.join("objects");
+         let temporary = format!("{}.kasumi", Uuid::new_v4());
+-        let path = objects.2.join(&temporary);
+-        let (root, relative) = self.1.binding(&path)?;
+-        let file = self
+-            .1
+-            .create_file(root, relative, crate::DiskWork::Foreground)?;
+-        file.reserve_growth(0, bytes.len() as u64, crate::DiskWork::Foreground)?;
+-        file.grow_reserved(bytes.len() as u64)?;
+-        file.write_all_at(bytes, 0)?;
+-        file.sync_all_and_parent()?;
+-        let (destination, name) = match slot {
+-            BackupSessionSlot::Intent => (&session, "intent.kasumi".to_owned()),
+-            BackupSessionSlot::Outcome => (&session, "outcome.kasumi".to_owned()),
+-            BackupSessionSlot::Object(id) => (&objects, format!("{id}.kasumi")),
++        let temporary_path = objects_path.join(&temporary);
++        let mut missing = Vec::with_capacity(crate::node_disk::MAX_NAMESPACE_PARTS);
++        if sessions.is_none() {
++            missing.push((sessions_path, NamespacePartKind::Directory));
++        }
++        if session.is_none() {
++            missing.push((session_path.clone(), NamespacePartKind::Directory));
++        }
++        if objects.is_none() {
++            missing.push((objects_path, NamespacePartKind::Directory));
++        }
++        for (index, terminal) in [Terminal::Intent, Terminal::Outcome]
++            .into_iter()
++            .enumerate()
++        {
++            if terminals[index] == (false, false) {
++                missing.push((
++                    session_path.join(terminal.reserve()),
++                    NamespacePartKind::File {
++                        length: terminal::FILE_BYTES as u64,
++                    },
++                ));
++            }
++        }
++        if terminal_slot.is_none() {
++            missing.push((
++                temporary_path.clone(),
++                NamespacePartKind::File {
++                    length: bytes.len() as u64,
++                },
++            ));
++        }
++        let mut requests = Vec::with_capacity(missing.len());
++        for (path, kind) in &missing {
++            let (root, relative) = self.1.binding(path)?;
++            requests.push(NamespacePart {
++                root,
++                relative,
++                kind: *kind,
++            });
++        }
++        let mut admission = if requests.is_empty() {
++            None
++        } else {
++            Some(
++                self.1
++                    .admit_claimed_namespace(&_claim, &requests, crate::DiskWork::Foreground)?,
++            )
++        };
++        let sessions = match sessions {
++            Some(dir) => dir,
++            None => self.create_child(
++                "sessions",
++                admission.as_mut().expect("admitted sessions directory"),
++            )?,
++        };
++        let session = match session {
++            Some(dir) => dir,
++            None => sessions.create_child(
++                &session_id.to_string(),
++                admission.as_mut().expect("admitted session directory"),
++            )?,
++        };
++        let objects = match objects {
++            Some(dir) => dir,
++            None => session.create_child(
++                "objects",
++                admission.as_mut().expect("admitted objects directory"),
++            )?,
++        };
++        // Persist both terminal reservations before any session object/intent/
++        // outcome is published. Cold census sees their complete extent and F.
++        for (index, terminal) in [Terminal::Intent, Terminal::Outcome]
++            .into_iter()
++            .enumerate()
++        {
++            if terminals[index] == (false, false) {
++                let path = session.2.join(terminal.reserve());
++                let (root, relative) = self.1.binding(&path)?;
++                let file = self.1.create_admitted_file(
++                    admission.as_mut().expect("admitted terminal"),
++                    root,
++                    relative,
++                )?;
++                file.grow_reserved(terminal::FILE_BYTES as u64)?;
++                file.sync_all_and_parent()?;
++            }
++        }
++        let object = if terminal_slot.is_none() {
++            let (root, relative) = self.1.binding(&temporary_path)?;
++            let file = self.1.create_admitted_file(
++                admission.as_mut().expect("admitted object"),
++                root,
++                relative,
++            )?;
++            file.grow_reserved(bytes.len() as u64)?;
++            file.sync_all_and_parent()?;
++            Some(file)
++        } else {
++            None
++        };
++        if let Some(admission) = admission {
++            admission.finish()?;
++        }
++        let (file, destination, name) = if let Some(terminal) = terminal_slot {
++            // open_file is exclusive across every wrapper for this physical
++            // NodeDisk, through actual descriptor/registration retirement.
++            let file = session
++                .open_leaf(terminal.reserve())?
++                .context("backup terminal reserve absent")?;
++            terminal::write(&file, session_id, terminal, bytes)?;
++            (file, &session, terminal.published().to_owned())
++        } else {
++            let BackupSessionSlot::Object(id) = slot else {
++                unreachable!()
++            };
++            let file = object.expect("admitted object owner");
++            file.write_all_at(bytes, 0)?;
++            file.sync_all_and_parent()?;
++            (file, &objects, format!("{id}.kasumi"))
+         };
+         destination.check()?;
+         let destination_path = destination.2.join(&name);
+@@ -173,9 +357,9 @@
+                 Ok(())
+             }
+             Err(error) => {
+-                // A definite create-only conflict did not publish this upload;
+-                // remove only its exact temporary UUID through the same owner.
+-                if error.kind() == std::io::ErrorKind::AlreadyExists {
++                // Only an object upload temporary is authenticated GC content.
++                // A terminal reserve remains permanently charged for resolution.
++                if error.kind() == std::io::ErrorKind::AlreadyExists && terminal_slot.is_none() {
+                     objects.unlink(&temporary)?;
+                 }
+                 Err(error.into())
+@@ -189,13 +373,16 @@
+         limit: usize,
+     ) -> Result<Option<Vec<u8>>> {
+         slot.relative(session)?;
+-        let Some(session) = self.session(session, false)? else {
++        let session_id = session;
++        let Some(session) = self.session(session)? else {
+             return Ok(None);
+         };
+         match slot {
+-            BackupSessionSlot::Intent => session.read("intent.kasumi", limit),
+-            BackupSessionSlot::Outcome => session.read("outcome.kasumi", limit),
+-            BackupSessionSlot::Object(id) => match session.child("objects", false)? {
++            BackupSessionSlot::Intent => session.read_terminal(session_id, Terminal::Intent, limit),
++            BackupSessionSlot::Outcome => {
++                session.read_terminal(session_id, Terminal::Outcome, limit)
++            }
++            BackupSessionSlot::Object(id) => match session.child("objects")? {
+                 Some(objects) => objects.read(&format!("{id}.kasumi"), limit),
+                 None => Ok(None),
+             },
+@@ -203,17 +390,18 @@
+     }
+     fn aborted_objects(&self, proof: &VerifiedBackupAbort) -> Result<Option<Self>> {
+         let session = self
+-            .session(proof.session_id(), false)?
++            .session(proof.session_id())?
+             .context("aborted backup session disappeared")?;
+         proof.matches_outcome(
+             &session
+-                .read(
+-                    "outcome.kasumi",
++                .read_terminal(
++                    proof.session_id(),
++                    Terminal::Outcome,
+                     MAX_SESSION_RECORD_BYTES + crate::backup::HEADER_LIMIT + 84,
+                 )?
+                 .context("abort outcome disappeared")?,
+         )?;
+-        session.child("objects", false)
++        session.child("objects")
+     }
+     pub fn list(
+         &self,
+@@ -230,8 +418,7 @@
+                 more: false,
+             });
+         };
+-        // This read path must use an already-enrolled directory. Raw mkdir in
+-        // child() remains a separate, unqualified mutation adoption blocker.
++        // Cleanup traverses only the exact enrolled, authenticated objects subtree.
+         let anchor = objects.2.join("session-accounting-anchor");
+         let (root, relative) = objects.1.binding(&anchor)?;
+         let relative = relative
+@@ -339,11 +526,46 @@
+         PublishDirectory,
+         ReadFile,
+         ReadDirectory,
++        TerminalClassified,
+     }
+     type Key = (u64, u64, String, Point);
+     fn faults() -> &'static Mutex<BTreeSet<Key>> {
+         static FAULTS: OnceLock<Mutex<BTreeSet<Key>>> = OnceLock::new();
+         FAULTS.get_or_init(Default::default)
++    }
++    struct Pause {
++        entered: std::sync::mpsc::SyncSender<()>,
++        release: std::sync::mpsc::Receiver<()>,
++    }
++    fn pauses() -> &'static Mutex<std::collections::BTreeMap<Key, Pause>> {
++        static PAUSES: OnceLock<Mutex<std::collections::BTreeMap<Key, Pause>>> = OnceLock::new();
++        PAUSES.get_or_init(Default::default)
++    }
++    pub(crate) fn pause(
++        directory: &Path,
++        name: &str,
++        point: Point,
++    ) -> Result<(
++        std::sync::mpsc::Receiver<()>,
++        std::sync::mpsc::SyncSender<()>,
++    )> {
++        let metadata = std::fs::metadata(directory)?;
++        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
++        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
++        assert!(
++            pauses()
++                .lock()
++                .unwrap()
++                .insert(
++                    (metadata.dev(), metadata.ino(), name.to_owned(), point),
++                    Pause {
++                        entered: entered_tx,
++                        release: release_rx
++                    },
++                )
++                .is_none()
++        );
++        Ok((entered_rx, release_tx))
+     }
+     pub(crate) struct Guard(Vec<Key>);
+     impl Drop for Guard {
+@@ -367,7 +589,16 @@
+         Ok(Guard(keys))
+     }
+     pub(super) fn check(directory: &Directory, name: &str, point: Point) -> Result<()> {
+-        let directory = directory.0.metadata()?;
++        directory.check()?;
++        let directory = std::fs::metadata(&directory.2)?;
++        let key = (directory.dev(), directory.ino(), name.to_owned(), point);
++        let pause = pauses().lock().unwrap().remove(&key);
++        if let Some(pause) = pause {
++            pause.entered.send(())?;
++            pause
++                .release
++                .recv_timeout(std::time::Duration::from_secs(10))?;
++        }
+         ensure!(
+             !faults().lock().unwrap().contains(&(
+                 directory.dev(),
+@@ -447,10 +678,9 @@
+             } else {
+                 directory.read("object.kasumi", 32).unwrap_err()
+             };
+-            assert_eq!(
+-                error.downcast_ref::<std::io::Error>().unwrap().kind(),
+-                std::io::ErrorKind::NotFound
+-            );
++            // The managed directory may detect the changed parent before the
++            // missing leaf is opened; both preserve the first physical failure.
++            assert!(error.downcast_ref::<std::io::Error>().is_some());
+             assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+             assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+             assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+@@ -458,10 +688,18 @@
+             assert_eq!(disk.snapshot().open_files, 0);
+             assert!(directory.read("another-unknown.kasumi", 32).is_err());
+             assert!(directory.unlink("another-unknown.kasumi").is_err());
++            drop(directory);
+             disk.reconcile(&crate::CensusCancellation::default())
+                 .unwrap();
+-            assert_eq!(disk.snapshot().charged_bytes, 0);
++            assert_eq!(
++                disk.snapshot().charged_bytes,
++                crate::DirectoryPolicy::fixture().extent_bytes
++            );
+             assert_eq!(disk.snapshot().persistent_files, 0);
+         }
+     }
+ }
++
++#[cfg(test)]
++#[path = "backup_session_admission_tests.rs"]
++mod session_admission_tests;
+diff --git a/crates/kasumi-store/src/node_disk/batch/tests.rs b/crates/kasumi-store/src/node_disk/batch/tests.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/batch/tests.rs
+@@ -0,0 +1,320 @@
++use super::*;
++use crate::{
++    CensusCancellation, NodeDiskConfig,
++    test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry},
++};
++
++fn fixture() -> (tempfile::TempDir, NodeDiskConfig, Arc<TestDiskMemory>) {
++    let directory = private_tempdir().unwrap();
++    let config = NodeDisk::fixture_config(directory.path().join("unused")).unwrap();
++    (directory, config, TestDiskMemory::new(256 << 20, 4096))
++}
++fn open(config: &NodeDiskConfig, memory: &Arc<TestDiskMemory>) -> Arc<NodeDisk> {
++    retry_disk_registry(|| {
++        NodeDisk::open_fixture(config, memory.clone(), &CensusCancellation::default())
++    })
++    .unwrap()
++}
++fn requests() -> [NamespacePart<'static>; 5] {
++    [
++        NamespacePart {
++            root: "fixture",
++            relative: Path::new("sessions"),
++            kind: NamespacePartKind::Directory,
++        },
++        NamespacePart {
++            root: "fixture",
++            relative: Path::new("sessions/session"),
++            kind: NamespacePartKind::Directory,
++        },
++        NamespacePart {
++            root: "fixture",
++            relative: Path::new("sessions/session/objects"),
++            kind: NamespacePartKind::Directory,
++        },
++        NamespacePart {
++            root: "fixture",
++            relative: Path::new("sessions/session/intent.reserve"),
++            kind: NamespacePartKind::File { length: 4096 },
++        },
++        NamespacePart {
++            root: "fixture",
++            relative: Path::new("sessions/session/outcome.reserve"),
++            kind: NamespacePartKind::File { length: 4096 },
++        },
++    ]
++}
++
++#[test]
++fn complete_plan_shortages_precede_every_namespace_effect() {
++    for shortage in 0..6 {
++        let (directory, mut config, memory) = fixture();
++        match shortage {
++            0 => config.max_persistent_files = 1,
++            1 => config.max_persistent_subdirectories = 2,
++            2 => config.max_open_files = 1,
++            3 => config.max_open_directories = 3,
++            4 => config.directory_policy.max_entries = 2,
++            5 => {
++                config.maintenance_reserve_bytes = 0;
++                config.max_bytes = 2 * config.directory_policy.extent_bytes;
++            }
++            _ => unreachable!(),
++        }
++        let disk = open(&config, &memory);
++        let root = disk.open_directory("fixture", Path::new("")).unwrap();
++        let before = disk.snapshot();
++        assert!(
++            disk.admit_namespace(&requests(), DiskWork::Foreground)
++                .is_err(),
++            "shortage {shortage}"
++        );
++        assert!(!directory.path().join("sessions").exists());
++        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++        assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
++        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++        assert!(disk.lock_state().namespace_batch.is_none());
++        drop(root);
++    }
++}
++
++#[test]
++fn permits_transfer_exactly_once_without_charging_extent_twice() {
++    let (directory, mut config, memory) = fixture();
++    config.max_persistent_files = 2;
++    config.max_persistent_subdirectories = 3;
++    config.max_open_files = 2;
++    config.max_open_directories = 4;
++    let disk = open(&config, &memory);
++    let root = disk.open_directory("fixture", Path::new("")).unwrap();
++    let before = disk.snapshot();
++    let mut admission = disk
++        .admit_namespace(&requests(), DiskWork::Foreground)
++        .unwrap();
++    let promised = 3 * config.directory_policy.extent_bytes
++        + 2 * super::super::rounded(4096, disk.unit).unwrap();
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        before.charged_bytes + promised
++    );
++    assert_eq!(
++        disk.snapshot().pending_bytes,
++        before.pending_bytes + promised
++    );
++    assert_eq!(
++        disk.create_file("fixture", Path::new("unrelated"), DiskWork::Foreground)
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::StorageFull
++    );
++    let sessions = root
++        .create_admitted_child(c"sessions", &mut admission)
++        .unwrap();
++    let session = sessions
++        .create_admitted_child(c"session", &mut admission)
++        .unwrap();
++    let objects = session
++        .create_admitted_child(c"objects", &mut admission)
++        .unwrap();
++    for name in ["intent.reserve", "outcome.reserve"] {
++        let relative = format!("sessions/session/{name}");
++        let file = disk
++            .create_admitted_file(&mut admission, "fixture", Path::new(&relative))
++            .unwrap();
++        assert_eq!(
++            disk.snapshot().charged_bytes,
++            before.charged_bytes + promised
++        );
++        file.reserve_growth(0, 4096, DiskWork::Foreground).unwrap();
++        assert_eq!(
++            disk.snapshot().charged_bytes,
++            before.charged_bytes + promised
++        );
++        file.grow_reserved(4096).unwrap();
++        file.sync_all_and_parent().unwrap();
++        assert_eq!(
++            directory.path().join(relative).metadata().unwrap().len(),
++            4096
++        );
++    }
++    admission.finish().unwrap();
++    assert!(disk.lock_state().namespace_batch.is_none());
++    assert_eq!(disk.snapshot().persistent_files, 2);
++    assert_eq!(
++        disk.snapshot().persistent_directories,
++        before.persistent_directories + 3
++    );
++    drop((objects, session, sessions, root));
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        before.charged_bytes + promised
++    );
++}
++
++#[test]
++fn pristine_cancel_retires_all_future_backing_and_returns_exact_credit() {
++    let (_directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let before = disk.snapshot();
++    let admission = disk
++        .admit_namespace(&requests(), DiskWork::Foreground)
++        .unwrap();
++    assert!(disk.snapshot().charged_bytes > before.charged_bytes);
++    admission.cancel().unwrap();
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    assert!(disk.lock_state().namespace_batch.is_none());
++}
++
++#[test]
++fn abandoned_or_partially_consumed_plan_stays_retained_until_complete_census() {
++    for effect in [false, true] {
++        let (_directory, config, memory) = fixture();
++        let disk = open(&config, &memory);
++        let root = disk.open_directory("fixture", Path::new("")).unwrap();
++        let before = disk.snapshot();
++        let mut admission = disk
++            .admit_namespace(&requests(), DiskWork::Foreground)
++            .unwrap();
++        if effect {
++            drop(
++                root.create_admitted_child(c"sessions", &mut admission)
++                    .unwrap(),
++            );
++        }
++        let retained = disk.snapshot().charged_bytes;
++        drop(admission);
++        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++        assert_eq!(disk.snapshot().charged_bytes, retained);
++        assert!(disk.lock_state().namespace_batch.is_some());
++        drop(root);
++        let cancel = CensusCancellation::default();
++        cancel.cancel();
++        assert!(disk.reconcile(&cancel).is_err());
++        assert!(disk.lock_state().namespace_batch.is_some());
++        assert_eq!(disk.snapshot().charged_bytes, retained);
++        disk.reconcile(&CensusCancellation::default()).unwrap();
++        assert!(disk.lock_state().namespace_batch.is_none());
++        assert_eq!(
++            disk.snapshot().charged_bytes,
++            before.charged_bytes + u64::from(effect) * config.directory_policy.extent_bytes
++        );
++    }
++}
++
++#[test]
++fn wrong_binding_duplicate_transfer_and_premature_finish_cannot_spend_permits() {
++    let (_directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let mut admission = disk
++        .admit_namespace(&requests(), DiskWork::Foreground)
++        .unwrap();
++    {
++        let mut state = disk.lock_state();
++        let binding = state.namespace_batch.as_ref().unwrap().parts[3]
++            .as_ref()
++            .unwrap()
++            .binding;
++        assert!(
++            admission
++                .take_directory(&mut state, "fixture", binding)
++                .is_err()
++        );
++        assert!(
++            admission
++                .take_file(&mut state, "wrong-root", binding)
++                .is_err()
++        );
++        assert_eq!(reserved_files(&state), 2);
++    }
++    assert!(admission.finish().is_err());
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert!(disk.lock_state().namespace_batch.is_some());
++}
++
++#[test]
++fn reserved_binding_and_parent_allowance_remain_unavailable_to_unrelated_creates() {
++    let (_directory, mut config, memory) = fixture();
++    config.directory_policy.max_entries = 1;
++    let disk = open(&config, &memory);
++    let root = disk.open_directory("fixture", Path::new("")).unwrap();
++    let admission = disk
++        .admit_namespace(
++            &[NamespacePart {
++                root: "fixture",
++                relative: Path::new("held"),
++                kind: NamespacePartKind::Directory,
++            }],
++            DiskWork::Foreground,
++        )
++        .unwrap();
++    assert_eq!(
++        root.create_child(c"held", DiskWork::Foreground)
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::WouldBlock
++    );
++    assert_eq!(
++        root.create_child(c"other", DiskWork::Foreground)
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::StorageFull
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    admission.cancel().unwrap();
++    drop(root.create_child(c"other", DiskWork::Foreground).unwrap());
++}
++
++#[test]
++fn physical_owner_excludes_a_second_reservation_writer_until_actual_retirement() {
++    let (_directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let mut admission = disk
++        .admit_namespace(
++            &[NamespacePart {
++                root: "fixture",
++                relative: Path::new("outcome.reserve"),
++                kind: NamespacePartKind::File { length: 4096 },
++            }],
++            DiskWork::Foreground,
++        )
++        .unwrap();
++    let file = disk
++        .create_admitted_file(&mut admission, "fixture", Path::new("outcome.reserve"))
++        .unwrap();
++    file.grow_reserved(4096).unwrap();
++    file.sync_all_and_parent().unwrap();
++    admission.finish().unwrap();
++    let wrapper = disk.clone();
++    assert_eq!(
++        wrapper
++            .open_file("fixture", Path::new("outcome.reserve"))
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::WouldBlock
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    drop(file);
++    let writer = wrapper
++        .open_file("fixture", Path::new("outcome.reserve"))
++        .unwrap();
++    writer.write_all_at(b"outcome", 0).unwrap();
++    writer.sync_all_and_parent().unwrap();
++    let published = wrapper
++        .publish_file(writer, "fixture", Path::new("outcome.kasumi"))
++        .unwrap();
++    assert_eq!(
++        disk.open_file("fixture", Path::new("outcome.kasumi"))
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::WouldBlock
++    );
++    drop(published);
++    assert!(
++        disk.open_file("fixture", Path::new("outcome.kasumi"))
++            .is_ok()
++    );
++    assert_eq!(disk.snapshot().persistent_files, 1);
++}
+diff --git a/crates/kasumi-store/src/node_disk/batch.rs b/crates/kasumi-store/src/node_disk/batch.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/batch.rs
+@@ -0,0 +1,562 @@
++//! One bounded, retained admission for a complete namespace operation.
++//! The witness never owns the reservation; State retains it through abandonment.
++use super::{AccountedInode, DiskWork, NamespaceBinding, NodeDisk, NodeDiskPhase, State};
++use std::{ffi::CString, io, mem::MaybeUninit, path::Path, sync::Arc};
++
++/// Three missing session directories, two permanent terminal reserves, and the
++/// current object. This is an operation shape, not a replacement resource quota.
++pub(crate) const MAX_NAMESPACE_PARTS: usize = 6;
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum NamespacePartKind {
++    Directory,
++    File { length: u64 },
++}
++
++pub(crate) struct NamespacePart<'a> {
++    pub root: &'a str,
++    pub relative: &'a Path,
++    pub kind: NamespacePartKind,
++}
++
++enum Backing {
++    Directory(Arc<MaybeUninit<super::directory::DirectoryOwner>>),
++    File(Arc<MaybeUninit<super::file::FileOwner>>),
++}
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum Progress {
++    Reserved,
++    Transferred,
++}
++
++struct Part {
++    // Exact names remain retained even after allocation/extent custody transfers.
++    root: String,
++    names: Box<[CString]>,
++    binding: NamespaceBinding,
++    parent: NamespaceBinding,
++    kind: NamespacePartKind,
++    bytes: u64,
++    backing: Option<Backing>,
++    progress: Progress,
++}
++
++pub(super) struct BatchRecord {
++    id: u64,
++    work: DiskWork,
++    pub(super) witness_live: bool,
++    parts: [Option<Part>; MAX_NAMESPACE_PARTS],
++}
++
++impl BatchRecord {
++    fn reserved(&self) -> impl Iterator<Item = &Part> {
++        self.parts
++            .iter()
++            .flatten()
++            .filter(|p| p.progress == Progress::Reserved)
++    }
++    pub(super) fn reserved_files(&self) -> u32 {
++        self.reserved()
++            .filter(|p| matches!(p.kind, NamespacePartKind::File { .. }))
++            .count() as u32
++    }
++    pub(super) fn reserved_directories(&self) -> u32 {
++        self.reserved()
++            .filter(|p| p.kind == NamespacePartKind::Directory)
++            .count() as u32
++    }
++    pub(super) fn reserved_entries(&self) -> usize {
++        self.reserved().count()
++    }
++    pub(super) fn reserved_children(&self, parent: NamespaceBinding) -> u64 {
++        self.reserved().filter(|p| p.parent == parent).count() as u64
++    }
++}
++
++/// Sole witness. No Clone; every effect needs mutable access to the witness.
++pub(crate) struct NamespaceAdmission {
++    disk: Arc<NodeDisk>,
++    id: u64,
++    active: bool,
++}
++
++impl Drop for NamespaceAdmission {
++    fn drop(&mut self) {
++        if self.active {
++            let mut state = self.disk.lock_state();
++            // A completed census may already have retired this exact record.
++            if let Some(batch) = state.namespace_batch.as_mut().filter(|b| b.id == self.id) {
++                batch.witness_live = false;
++                self.disk.fail_locked(&mut state);
++            }
++        }
++    }
++}
++
++impl NamespaceAdmission {
++    pub(super) fn same_disk(&self, disk: &Arc<NodeDisk>) -> bool {
++        self.active && Arc::ptr_eq(&self.disk, disk)
++    }
++
++    fn part_mut<'a>(
++        &self,
++        state: &'a mut State,
++        root: &str,
++        binding: NamespaceBinding,
++    ) -> io::Result<&'a mut Part> {
++        if !self.active || state.phase != NodeDiskPhase::Open {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        state
++            .namespace_batch
++            .as_mut()
++            .filter(|b| b.id == self.id)
++            .and_then(|b| {
++                b.parts
++                    .iter_mut()
++                    .flatten()
++                    .find(|p| p.root == root && p.binding == binding)
++            })
++            .filter(|p| p.progress == Progress::Reserved)
++            .ok_or_else(|| io::ErrorKind::InvalidInput.into())
++    }
++
++    pub(super) fn work(&self, state: &State) -> io::Result<DiskWork> {
++        state
++            .namespace_batch
++            .as_ref()
++            .filter(|b| b.id == self.id)
++            .map(|b| b.work)
++            .ok_or_else(|| io::ErrorKind::InvalidInput.into())
++    }
++
++    /// Called under the same State guard retained through preparation/effect.
++    /// Transfer removes a future slot only when its actual operation takes over.
++    pub(super) fn take_file(
++        &mut self,
++        state: &mut State,
++        root: &str,
++        binding: NamespaceBinding,
++    ) -> io::Result<(Arc<MaybeUninit<super::file::FileOwner>>, u64, u64)> {
++        let part = self.part_mut(state, root, binding)?;
++        let NamespacePartKind::File { length } = part.kind else {
++            return Err(io::ErrorKind::InvalidInput.into());
++        };
++        let Some(Backing::File(allocation)) = part.backing.take() else {
++            return Err(io::ErrorKind::InvalidData.into());
++        };
++        part.progress = Progress::Transferred;
++        Ok((allocation, part.bytes, length))
++    }
++
++    pub(super) fn take_directory(
++        &mut self,
++        state: &mut State,
++        root: &str,
++        binding: NamespaceBinding,
++    ) -> io::Result<Arc<MaybeUninit<super::directory::DirectoryOwner>>> {
++        let part = self.part_mut(state, root, binding)?;
++        if part.kind != NamespacePartKind::Directory {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        let Some(Backing::Directory(allocation)) = part.backing.take() else {
++            return Err(io::ErrorKind::InvalidData.into());
++        };
++        part.progress = Progress::Transferred;
++        Ok(allocation)
++    }
++
++    /// Every promised inode must be present and durably settled at its complete
++    /// admitted length before the operation can shed its retained plan backing.
++    pub(crate) fn finish(mut self) -> io::Result<()> {
++        let mut state = self.disk.lock_state();
++        if state.phase != NodeDiskPhase::Open || !self.disk.device.lock().admission_ready() {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        let batch = state
++            .namespace_batch
++            .as_ref()
++            .filter(|b| b.id == self.id)
++            .ok_or(io::ErrorKind::InvalidInput)?;
++        for part in batch.parts.iter().flatten() {
++            if part.progress != Progress::Transferred || part.backing.is_some() {
++                return Err(io::ErrorKind::InvalidData.into());
++            }
++            let entry = state
++                .accounted
++                .values()
++                .find(|e| e.binding() == part.binding)
++                .ok_or(io::ErrorKind::InvalidData)?;
++            let valid = match (part.kind, entry) {
++                (NamespacePartKind::Directory, AccountedInode::Directory(entry)) => entry.settled,
++                (NamespacePartKind::File { length }, AccountedInode::File(entry)) => {
++                    entry.settled && entry.actual_len == length && entry.reserved_len == length
++                }
++                _ => false,
++            };
++            if !valid {
++                return Err(io::ErrorKind::InvalidData.into());
++            }
++        }
++        drop(state.namespace_batch.take());
++        self.active = false;
++        Ok(())
++    }
++
++    /// A pristine plan has made no descriptor or namespace effect. Retire actual
++    /// names and all preallocated owner control blocks before returning credit.
++    pub(crate) fn cancel(mut self) -> io::Result<()> {
++        let mut state = self.disk.lock_state();
++        let batch = state
++            .namespace_batch
++            .as_ref()
++            .filter(|b| b.id == self.id)
++            .ok_or(io::ErrorKind::InvalidInput)?;
++        let mut credit = 0_u64;
++        for part in batch.parts.iter().flatten() {
++            if part.progress != Progress::Reserved {
++                return Err(io::ErrorKind::InvalidData.into());
++            }
++            credit = credit
++                .checked_add(part.bytes)
++                .ok_or(io::ErrorKind::InvalidData)?;
++        }
++        let bytes = state
++            .bytes
++            .checked_sub(credit)
++            .ok_or(io::ErrorKind::InvalidData)?;
++        let pending = state
++            .pending
++            .checked_sub(credit)
++            .ok_or(io::ErrorKind::InvalidData)?;
++        let mut device = self.disk.device.lock();
++        let shared = device
++            .checked_sub(credit)
++            .ok_or(io::ErrorKind::InvalidData)?;
++        // No physical effect exists. Destroy actual allocations before any
++        // shared or local credit. Keep the scalar record if accounting rejects.
++        for part in state
++            .namespace_batch
++            .as_mut()
++            .expect("validated batch")
++            .parts
++            .iter_mut()
++            .flatten()
++        {
++            drop(part.backing.take());
++            drop(std::mem::take(&mut part.root));
++            drop(std::mem::take(&mut part.names));
++        }
++        if let Err(error) = device.set_pending(shared) {
++            state.phase = NodeDiskPhase::Failed;
++            device.fail_owner();
++            return Err(error);
++        }
++        drop(state.namespace_batch.take());
++        state.bytes = bytes;
++        state.pending = pending;
++        self.active = false;
++        Ok(())
++    }
++}
++
++pub(super) fn reserved_files(state: &State) -> u32 {
++    state
++        .namespace_batch
++        .as_ref()
++        .map_or(0, BatchRecord::reserved_files)
++}
++pub(super) fn reserved_directories(state: &State) -> u32 {
++    state
++        .namespace_batch
++        .as_ref()
++        .map_or(0, BatchRecord::reserved_directories)
++}
++pub(super) fn reserved_entries(state: &State) -> usize {
++    state
++        .namespace_batch
++        .as_ref()
++        .map_or(0, BatchRecord::reserved_entries)
++}
++pub(super) fn reserved_binding(state: &State, binding: NamespaceBinding) -> bool {
++    state
++        .namespace_batch
++        .as_ref()
++        .is_some_and(|b| b.reserved().any(|p| p.binding == binding))
++}
++pub(super) fn reserved_children(state: &State, parent: NamespaceBinding) -> u64 {
++    state
++        .namespace_batch
++        .as_ref()
++        .map_or(0, |b| b.reserved_children(parent))
++}
++
++/// A single physical namespace mutation lane. Admission is nonblocking: no
++/// native writer waits while retaining an unregistered thread or descriptor.
++/// The witness lives from classification through final immutable publication.
++pub(super) struct ClaimRecord {
++    id: u64,
++    binding: NamespaceBinding,
++    pub(super) witness_live: bool,
++}
++pub(crate) struct NamespaceClaim {
++    disk: Arc<NodeDisk>,
++    id: u64,
++    binding: NamespaceBinding,
++}
++impl Drop for NamespaceClaim {
++    fn drop(&mut self) {
++        let mut state = self.disk.lock_state();
++        if state
++            .namespace_claim
++            .as_ref()
++            .is_none_or(|claim| claim.id != self.id || claim.binding != self.binding)
++        {
++            return;
++        }
++        if state.phase == NodeDiskPhase::Open
++            && state.namespace_batch.is_none()
++            && state.pending_directory.is_none()
++        {
++            // The caller declares this witness before every operation resource,
++            // so those resources actually retire before this lane is credited.
++            drop(state.namespace_claim.take());
++        } else {
++            state
++                .namespace_claim
++                .as_mut()
++                .expect("matching claim")
++                .witness_live = false;
++            self.disk.fail_locked(&mut state);
++        }
++    }
++}
++
++impl NodeDisk {
++    pub(crate) fn claim_namespace(
++        self: &Arc<Self>,
++        root: &str,
++        relative: &Path,
++    ) -> io::Result<NamespaceClaim> {
++        let mut state = self.lock_state();
++        if state.phase != NodeDiskPhase::Open || !self.device.lock().admission_ready() {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        if state.namespace_claim.is_some()
++            || state.namespace_batch.is_some()
++            || state.pending_directory.is_some()
++        {
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
++        let root = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
++        let names =
++            super::directory::names(relative, self.config.max_depth, self.config.max_name_bytes)?;
++        if names.is_empty() {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        let binding = names
++            .iter()
++            .fold(NamespaceBinding::root(root.identity), |binding, name| {
++                binding.child(name)
++            });
++        let id = state
++            .namespace_batch_generation
++            .checked_add(1)
++            .ok_or(io::ErrorKind::StorageFull)?;
++        state.namespace_batch_generation = id;
++        state.namespace_claim = Some(ClaimRecord {
++            id,
++            binding,
++            witness_live: true,
++        });
++        Ok(NamespaceClaim {
++            disk: self.clone(),
++            id,
++            binding,
++        })
++    }
++
++    /// Admit the complete finite missing set. Callers resolve existing enrolled
++    /// prefixes first; a missing parent must appear earlier as a directory part.
++    pub(crate) fn admit_namespace(
++        self: &Arc<Self>,
++        requests: &[NamespacePart<'_>],
++        work: DiskWork,
++    ) -> io::Result<NamespaceAdmission> {
++        self.admit_namespace_inner(requests, work, None)
++    }
++
++    pub(crate) fn admit_claimed_namespace(
++        self: &Arc<Self>,
++        claim: &NamespaceClaim,
++        requests: &[NamespacePart<'_>],
++        work: DiskWork,
++    ) -> io::Result<NamespaceAdmission> {
++        if !Arc::ptr_eq(self, &claim.disk) {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        self.admit_namespace_inner(requests, work, Some(claim.id))
++    }
++
++    fn admit_namespace_inner(
++        self: &Arc<Self>,
++        requests: &[NamespacePart<'_>],
++        work: DiskWork,
++        claim: Option<u64>,
++    ) -> io::Result<NamespaceAdmission> {
++        let mut state = self.lock_state();
++        if state.namespace_claim.as_ref().map(|claim| claim.id) != claim {
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
++        if state.namespace_batch.is_some() {
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
++        if state.phase != NodeDiskPhase::Open
++            || state.pending_directory.is_some()
++            || requests.is_empty()
++            || requests.len() > MAX_NAMESPACE_PARTS
++        {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        // Reject logical owner/cardinality shortages before allocating any
++        // future Arc. The installed owner envelopes fund only available H/D slots.
++        let files = requests
++            .iter()
++            .filter(|part| matches!(part.kind, NamespacePartKind::File { .. }))
++            .count() as u32;
++        let directories = requests
++            .iter()
++            .filter(|part| part.kind == NamespacePartKind::Directory)
++            .count() as u32;
++        let roots = u64::try_from(self.roots.len()).map_err(|_| io::ErrorKind::InvalidData)?;
++        if state
++            .files
++            .checked_add(u64::from(files))
++            .is_none_or(|n| n > self.config.max_persistent_files)
++            || state
++                .directories
++                .checked_sub(roots)
++                .and_then(|n| n.checked_add(u64::from(directories)))
++                .is_none_or(|n| n > self.config.max_persistent_subdirectories)
++            || state
++                .open_files
++                .checked_add(files)
++                .is_none_or(|n| n > self.config.max_open_files)
++            || state
++                .open_directories
++                .checked_add(directories)
++                .is_none_or(|n| n > self.config.max_open_directories)
++        {
++            return Err(io::ErrorKind::StorageFull.into());
++        }
++        let id = state
++            .namespace_batch_generation
++            .checked_add(1)
++            .ok_or(io::ErrorKind::StorageFull)?;
++        let mut record = BatchRecord {
++            id,
++            work,
++            witness_live: true,
++            parts: std::array::from_fn(|_| None),
++        };
++        let mut bytes = 0_u64;
++        for (index, request) in requests.iter().enumerate() {
++            let root = self
++                .roots
++                .get(request.root)
++                .ok_or(io::ErrorKind::InvalidInput)?;
++            let names = super::directory::names(
++                request.relative,
++                self.config.max_depth,
++                self.config.max_name_bytes,
++            )?;
++            if names.is_empty() {
++                return Err(io::ErrorKind::InvalidInput.into());
++            }
++            let mut binding = NamespaceBinding::root(root.identity);
++            let mut parent = binding;
++            for name in &names {
++                parent = binding;
++                binding = binding.child(name);
++            }
++            if state.accounted.values().any(|e| e.binding() == binding)
++                || record.parts.iter().flatten().any(|p| p.binding == binding)
++            {
++                return Err(io::ErrorKind::AlreadyExists.into());
++            }
++            let parent_enrolled = state.accounted.values().find(|e| e.binding() == parent);
++            match parent_enrolled {
++                Some(AccountedInode::Directory(entry)) if entry.settled => (),
++                None if record
++                    .parts
++                    .iter()
++                    .flatten()
++                    .any(|p| p.binding == parent && p.kind == NamespacePartKind::Directory) =>
++                {
++                    ()
++                }
++                _ => return Err(io::ErrorKind::InvalidData.into()),
++            }
++            let count = parent_enrolled
++                .and_then(AccountedInode::directory)
++                .map_or(0, |e| e.children)
++                .checked_add(
++                    record
++                        .parts
++                        .iter()
++                        .flatten()
++                        .filter(|p| p.parent == parent)
++                        .count() as u64,
++                )
++                .and_then(|n| n.checked_add(1))
++                .ok_or(io::ErrorKind::StorageFull)?;
++            if count > self.config.directory_policy.max_entries {
++                return Err(io::ErrorKind::StorageFull.into());
++            }
++            let (part_bytes, backing) = match request.kind {
++                NamespacePartKind::Directory => (
++                    self.config.directory_policy.extent_bytes,
++                    Backing::Directory(Arc::new_uninit()),
++                ),
++                NamespacePartKind::File { length } => {
++                    if length > i64::MAX as u64 {
++                        return Err(io::ErrorKind::InvalidInput.into());
++                    }
++                    (
++                        super::rounded(length, self.unit)?,
++                        Backing::File(Arc::new_uninit()),
++                    )
++                }
++            };
++            bytes = bytes
++                .checked_add(part_bytes)
++                .ok_or(io::ErrorKind::StorageFull)?;
++            record.parts[index] = Some(Part {
++                root: request.root.to_owned(),
++                names,
++                binding,
++                parent,
++                kind: request.kind,
++                bytes: part_bytes,
++                backing: Some(backing),
++                progress: Progress::Reserved,
++            });
++        }
++        state.accounted.try_reserve(requests.len())?;
++        state.live.try_reserve(files as usize)?;
++        // All bounded names and actual owner Arc backing exist before aggregate
++        // byte admission and before the first future native descriptor effect.
++        self.reserve(&mut state, bytes, work)?;
++        state.namespace_batch_generation = id;
++        state.namespace_batch = Some(record);
++        Ok(NamespaceAdmission {
++            disk: self.clone(),
++            id,
++            active: true,
++        })
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/kasumi-store/src/node_disk/directory/managed.rs b/crates/kasumi-store/src/node_disk/directory/managed.rs
+--- a/crates/kasumi-store/src/node_disk/directory/managed.rs
++++ b/crates/kasumi-store/src/node_disk/directory/managed.rs
+@@ -316,7 +316,7 @@
+         let owner = self.owner();
+         let disk = &owner.disk;
+         let mut state = disk.lock_state();
+-        prepare_child(owner, name, &mut state, None)?;
++        prepare_child(owner, name, &mut state, None, None)?;
+         let mut effect = Effect {
+             disk,
+             state: &mut state,
+@@ -395,10 +395,46 @@
+     /// before the first descriptor acquisition. This does not admit a multipart
+     /// caller operation.
+     pub fn create_child(&self, name: &CStr, work: DiskWork) -> io::Result<Self> {
++        self.create_child_with_admission(name, work, None)
++    }
++
++    pub(crate) fn create_admitted_child(
++        &self,
++        name: &CStr,
++        admission: &mut super::super::batch::NamespaceAdmission,
++    ) -> io::Result<Self> {
++        if !admission.same_disk(&self.owner().disk) {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        let work = admission.work(&self.owner().disk.lock_state())?;
++        let result = self.create_child_with_admission(name, work, Some(admission));
++        if result.is_err() {
++            self.owner().disk.fail();
++        }
++        result
++    }
++
++    fn create_child_with_admission(
++        &self,
++        name: &CStr,
++        work: DiskWork,
++        admission: Option<&mut super::super::batch::NamespaceAdmission>,
++    ) -> io::Result<Self> {
+         let owner = self.owner();
+         let disk = &owner.disk;
+         let mut state = disk.lock_state();
+-        prepare_child(owner, name, &mut state, Some(work))?;
++        let allocation = if let Some(admission) = admission {
++            let parent_binding = state
++                .accounted
++                .get(&owner.identity)
++                .and_then(AccountedInode::directory)
++                .ok_or(io::ErrorKind::InvalidData)?
++                .binding;
++            Some(admission.take_directory(&mut state, &owner.root, parent_binding.child(name))?)
++        } else {
++            None
++        };
++        prepare_child(owner, name, &mut state, Some(work), allocation)?;
+         let mut effect = Effect {
+             disk,
+             state: &mut state,
+@@ -527,7 +563,12 @@
+     names: Box<[CString]>,
+ ) -> io::Result<NodeDiskDirectory> {
+     ready(disk, state)?;
+-    if names.is_empty() || state.open_directories >= disk.config.max_open_directories {
++    if names.is_empty()
++        || state
++            .open_directories
++            .checked_add(super::super::batch::reserved_directories(state))
++            .is_none_or(|n| n >= disk.config.max_open_directories)
++    {
+         return Err(io::ErrorKind::InvalidInput.into());
+     }
+     let root_identity = disk.roots[&root].identity;
+@@ -722,10 +763,15 @@
+     name: &CStr,
+     state: &mut State,
+     work: Option<DiskWork>,
++    admitted: Option<Arc<std::mem::MaybeUninit<DirectoryOwner>>>,
+ ) -> io::Result<()> {
+     let disk = &owner.disk;
+     ready(disk, state)?;
+-    if state.open_directories >= disk.config.max_open_directories {
++    if state
++        .open_directories
++        .checked_add(super::super::batch::reserved_directories(state))
++        .is_none_or(|n| n >= disk.config.max_open_directories)
++    {
+         return Err(io::ErrorKind::StorageFull.into());
+     }
+     let roots = u64::try_from(disk.roots.len()).map_err(|_| io::ErrorKind::InvalidData)?;
+@@ -733,12 +779,17 @@
+         && state
+             .directories
+             .checked_sub(roots)
++            .and_then(|n| {
++                n.checked_add(u64::from(super::super::batch::reserved_directories(state)))
++            })
+             .is_none_or(|n| n >= disk.config.max_persistent_subdirectories)
+     {
+         return Err(io::ErrorKind::StorageFull.into());
+     }
+     if work.is_some() {
+-        state.accounted.try_reserve(1)?;
++        state
++            .accounted
++            .try_reserve(1 + super::super::batch::reserved_entries(state))?;
+     }
+     let names = child_names(owner, name)?;
+     let parent_entry = *state
+@@ -747,6 +798,9 @@
+         .and_then(AccountedInode::directory)
+         .ok_or(io::ErrorKind::InvalidData)?;
+     let binding = parent_entry.binding.child(name);
++    if work.is_some() && super::super::batch::reserved_binding(state, binding) {
++        return Err(io::ErrorKind::WouldBlock.into());
++    }
+     if work.is_some()
+         && state
+             .accounted
+@@ -790,10 +844,13 @@
+         return Err(io::ErrorKind::InvalidData.into());
+     }
+     let mut parent = RetainedParent::prepared(owner.identity, ancestors.into_boxed_slice());
+-    let allocation = Arc::<DirectoryOwner>::new_uninit();
++    let precharged = admitted.is_some();
++    let allocation = admitted.unwrap_or_else(Arc::<DirectoryOwner>::new_uninit);
+     let root = owner.root.clone();
+     if let Some(work) = work {
+-        disk.reserve(state, disk.config.directory_policy.extent_bytes, work)?;
++        if !precharged {
++            disk.reserve(state, disk.config.directory_policy.extent_bytes, work)?;
++        }
+     }
+     parent
+         .register(disk, state)
+diff --git a/crates/kasumi-store/src/node_disk/directory.rs b/crates/kasumi-store/src/node_disk/directory.rs
+--- a/crates/kasumi-store/src/node_disk/directory.rs
++++ b/crates/kasumi-store/src/node_disk/directory.rs
+@@ -162,7 +162,7 @@
+     Ok((file, ancestors.into_boxed_slice()))
+ }
+ 
+-fn names(relative: &Path, depth: u32, maximum: u32) -> io::Result<Box<[CString]>> {
++pub(super) fn names(relative: &Path, depth: u32, maximum: u32) -> io::Result<Box<[CString]>> {
+     use std::os::unix::ffi::OsStrExt;
+     let mut names = Vec::new();
+     for component in relative.components() {
+@@ -192,7 +192,11 @@
+         if state.phase != NodeDiskPhase::Open || !self.device.lock().admission_ready() {
+             return Err(io::ErrorKind::Other.into());
+         }
+-        if state.open_directories >= self.config.max_open_directories {
++        if state
++            .open_directories
++            .checked_add(super::batch::reserved_directories(&state))
++            .is_none_or(|n| n >= self.config.max_open_directories)
++        {
+             return Err(io::ErrorKind::StorageFull.into());
+         }
+         if !self.roots.contains_key(root) {
+diff --git a/crates/kasumi-store/src/node_disk/file.rs b/crates/kasumi-store/src/node_disk/file.rs
+--- a/crates/kasumi-store/src/node_disk/file.rs
++++ b/crates/kasumi-store/src/node_disk/file.rs
+@@ -142,6 +142,7 @@
+     create: bool,
+     work: Option<DiskWork>,
+     budget: Mutex<Budget>,
++    admitted_growth: Option<(u64, u64)>,
+     state: std::sync::MutexGuard<'a, State>,
+ }
+ 
+@@ -272,7 +273,7 @@
+                 AccountedFile::durable(self.binding, bytes, pending, metadata.len()),
+             ))
+         })();
+-        let (identity, enrolled) = match inspected {
++        let (identity, mut enrolled) = match inspected {
+             Ok(value) => value,
+             Err(error) => {
+                 // A still-live registered owner makes an attempted second open
+@@ -342,6 +343,20 @@
+             self.disk.fail_locked(&mut self.state);
+             return Err(io::ErrorKind::InvalidData.into());
+         }
++        if let Some((bytes, length)) = self.admitted_growth {
++            // The batch already charged this exact future file. Transfer its
++            // full promise into the inode ledger/budget without a second reserve.
++            enrolled.bytes = bytes;
++            enrolled.pending = bytes;
++            enrolled.reserved_len = length;
++            enrolled.settled = length == 0;
++            *self
++                .state
++                .accounted
++                .get_mut(&identity)
++                .and_then(AccountedInode::file_mut)
++                .expect("admitted new inode") = enrolled;
++        }
+         self.parent
+             .register(self.disk, &mut self.state)
+             .inspect_err(|_| self.disk.fail_locked(&mut self.state))?;
+@@ -351,7 +366,7 @@
+             pending: enrolled.pending,
+             reserved_len: enrolled.reserved_len,
+             actual_len: enrolled.actual_len,
+-            settled: true,
++            settled: enrolled.settled,
+         };
+         Arc::get_mut(&mut self.allocation)
+             .expect("unpublished owner allocation")
+@@ -649,28 +664,88 @@
+         relative: &Path,
+         create: Option<DiskWork>,
+     ) -> io::Result<PreparedFile<'a>> {
++        self.prepare_file_with_admission(root, relative, create, None)
++    }
++
++    pub(crate) fn create_admitted_file(
++        self: &Arc<Self>,
++        admission: &mut super::batch::NamespaceAdmission,
++        root: &str,
++        relative: &Path,
++    ) -> io::Result<NodeDiskFile> {
++        if !admission.same_disk(self) {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        let work = admission.work(&self.lock_state())?;
++        let result = self
++            .prepare_file_with_admission(root, relative, Some(work), Some(admission))
++            .and_then(PreparedFile::execute);
++        if result.is_err() {
++            self.fail();
++        }
++        result
++    }
++
++    fn prepare_file_with_admission<'a>(
++        self: &'a Arc<Self>,
++        root: &str,
++        relative: &Path,
++        create: Option<DiskWork>,
++        mut admission: Option<&mut super::batch::NamespaceAdmission>,
++    ) -> io::Result<PreparedFile<'a>> {
+         let mut state = self.lock_state();
+         if state.phase != NodeDiskPhase::Open {
+             return Err(io::ErrorKind::Other.into());
+         }
++        let admitted = if let Some(admission) = admission.as_mut() {
++            // Compute the exact bound name without opening a descriptor, then
++            // transfer under the State guard held through the create operation.
++            let selected = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
++            let names = super::directory::names(
++                relative,
++                self.config.max_depth,
++                self.config.max_name_bytes,
++            )?;
++            if names.is_empty() {
++                return Err(io::ErrorKind::InvalidInput.into());
++            }
++            let binding = names
++                .iter()
++                .fold(NamespaceBinding::root(selected.identity), |b, name| {
++                    b.child(name)
++                });
++            Some(admission.take_file(&mut state, root, binding)?)
++        } else {
++            None
++        };
+         // Retiring registrations remain exclusive until BOTH descriptors and
+         // their metadata backing are gone; strong_count == 0 is not drain.
+-        if state.open_files >= self.config.max_open_files {
++        if state
++            .open_files
++            .checked_add(super::batch::reserved_files(&state))
++            .is_none_or(|n| n >= self.config.max_open_files)
++        {
+             return Err(io::ErrorKind::StorageFull.into());
+         }
+         if let Some(work) = create {
+-            if state.files >= self.config.max_persistent_files {
++            if state
++                .files
++                .checked_add(u64::from(super::batch::reserved_files(&state)))
++                .is_none_or(|n| n >= self.config.max_persistent_files)
++            {
+                 return Err(io::ErrorKind::StorageFull.into());
+             }
+             self.reserve(&mut state, 0, work)?;
++            let required = 1 + super::batch::reserved_entries(&state);
+             state
+                 .accounted
+-                .try_reserve(1)
++                .try_reserve(required)
+                 .map_err(|_| io::ErrorKind::OutOfMemory)?;
+         }
++        let required = 1 + super::batch::reserved_files(&state) as usize;
+         state
+             .live
+-            .try_reserve(1)
++            .try_reserve(required)
+             .map_err(|_| io::ErrorKind::OutOfMemory)?;
+         let selected = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
+         let parent_names = prepare_parent_names(relative, &self.config)?;
+@@ -680,6 +755,9 @@
+                 // Path preparation precedes every physical create/publication.
+                 io::Error::other(error)
+             })?;
++        if create.is_some() && super::batch::reserved_binding(&state, binding) {
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
+         let raw_parent = parent;
+         let parent = RetainedParent::prepare(self, &state, root, &parent_names)
+             .inspect_err(|_| self.fail_locked(&mut state))?;
+@@ -699,10 +777,15 @@
+         // Darwin's native mutex may allocate on first lock. Preparation includes
+         // this initialization even when the first real operation is measured.
+         drop(budget.lock().expect("unpublished budget"));
++        let (allocation, admitted_growth) = match admitted {
++            Some((allocation, bytes, length)) => (allocation, Some((bytes, length))),
++            None => (Arc::<FileOwner>::new_uninit(), None),
++        };
+         Ok(PreparedFile {
+             disk: self,
+             state,
+-            allocation: Arc::<FileOwner>::new_uninit(),
++            allocation,
++            admitted_growth,
+             root: root.to_owned(),
+             relative: relative.to_owned(),
+             parent_names,
+@@ -761,6 +844,9 @@
+                 self.fail_locked(&mut state);
+                 io::Error::other(error)
+             })?;
++        if super::batch::reserved_binding(&state, binding) {
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
+         let raw_parent = parent;
+         let parent = RetainedParent::prepare(self, &state, root, &parent_names)
+             .inspect_err(|_| self.fail_locked(&mut state))?;
+@@ -970,6 +1056,10 @@
+     device: u64,
+     unit: u64,
+ ) -> io::Result<()> {
++    if super::batch::reserved_binding(state, binding) {
++        return Err(io::ErrorKind::WouldBlock.into());
++    }
++
+     let Some((identity, enrolled)) = state
+         .accounted
+         .iter()
+diff --git a/crates/kasumi-store/src/node_disk/memory.rs b/crates/kasumi-store/src/node_disk/memory.rs
+--- a/crates/kasumi-store/src/node_disk/memory.rs
++++ b/crates/kasumi-store/src/node_disk/memory.rs
+@@ -84,7 +84,33 @@
+             )?;
+             roots = add(roots, root)?;
+         }
+-        let base = add(FIXED_OWNER_WORKSPACE, disk_memory::arc::<Self>()?)?;
++        // A single six-part plan retains exact names until settlement. Its actual
++        // Arc allocations transfer into the already counted future owner slots;
++        // only plan paths/components remain additional to those owner envelopes.
++        let root_path = config
++            .roots
++            .values()
++            .map(|path| path.as_os_str().as_bytes().len())
++            .max()
++            .unwrap_or(0);
++        let root_path = u64::try_from(root_path).map_err(|_| disk_memory::overflow())?;
++        // Per part: retained exact plan components plus caller absolute PathBuf,
++        // request view and a bounded collection slot. These remain live while
++        // actual owner backing transfers. All six slots are funded, even for a
++        // smaller plan. Native allocator/RSS qualification remains separate.
++        let caller_path = add(add(root_path, mul(depth, name)?)?, 1)?;
++        let caller_slot = add(
++            add(caller_path, 256)?,
++            size::<super::batch::NamespacePart<'static>>()?,
++        )?;
++        let admission_paths = mul(
++            super::batch::MAX_NAMESPACE_PARTS as u64,
++            add(add(paths, components)?, caller_slot)?,
++        )?;
++        let base = add(
++            add(FIXED_OWNER_WORKSPACE, admission_paths)?,
++            disk_memory::arc::<Self>()?,
++        )?;
+         Ok(add(
+             base,
+             add(
+diff --git a/crates/kasumi-store/src/node_disk/namespace.rs b/crates/kasumi-store/src/node_disk/namespace.rs
+--- a/crates/kasumi-store/src/node_disk/namespace.rs
++++ b/crates/kasumi-store/src/node_disk/namespace.rs
+@@ -237,12 +237,17 @@
+             if !before.settled {
+                 return Err(io::ErrorKind::InvalidData.into());
+             }
++            if delta < 0 && super::batch::reserved_children(state, before.binding) != 0 {
++                return Err(io::ErrorKind::WouldBlock.into());
++            }
+             let children = before
+                 .children
+                 .checked_add_signed(i64::from(delta))
+                 .ok_or(io::ErrorKind::InvalidData)?;
+             if delta > 0
+-                && (children > disk.config.directory_policy.max_entries
++                && (children
++                    .checked_add(super::batch::reserved_children(state, before.binding))
++                    .is_none_or(|n| n > disk.config.directory_policy.max_entries)
+                     || before.bytes > disk.config.directory_policy.extent_bytes)
+             {
+                 return Err(io::ErrorKind::StorageFull.into());
+diff --git a/crates/kasumi-store/src/node_disk.rs b/crates/kasumi-store/src/node_disk.rs
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -19,6 +19,7 @@
+     },
+ };
+ 
++mod batch;
+ mod census;
+ mod directory;
+ mod file;
+@@ -28,6 +29,7 @@
+ mod namespace;
+ #[cfg(test)]
+ mod tests;
++pub(crate) use batch::{MAX_NAMESPACE_PARTS, NamespaceAdmission, NamespacePart, NamespacePartKind};
+ use census::{Root, census, open_roots};
+ pub use directory::{
+     NodeDiskDirectory, NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor,
+@@ -342,6 +344,9 @@
+     census_streams: census::Streams,
+     namespace_generation: u64,
+     pending_directory: Option<directory::PendingDirectory>,
++    namespace_batch: Option<batch::BatchRecord>,
++    namespace_claim: Option<batch::ClaimRecord>,
++    namespace_batch_generation: u64,
+     directory_bytes: u64,
+     directories: u64,
+     live: fixed_map::Banks<Weak<file::FileOwner>>,
+@@ -697,6 +702,9 @@
+                 census_streams: census::Streams::default(),
+                 namespace_generation: 0,
+                 pending_directory: None,
++                namespace_batch: None,
++                namespace_claim: None,
++                namespace_batch_generation: 0,
+                 directory_bytes: totals.directory_bytes,
+                 directories: totals.directories,
+                 live,
+@@ -853,6 +861,17 @@
+         if state.phase != NodeDiskPhase::Failed {
+             state.phase = NodeDiskPhase::Paused;
+         }
++        ensure!(
++            state
++                .namespace_batch
++                .as_ref()
++                .is_none_or(|batch| !batch.witness_live)
++                && state
++                    .namespace_claim
++                    .as_ref()
++                    .is_none_or(|claim| !claim.witness_live),
++            "persistent namespace admission witness is still live"
++        );
+         let internal_directories = u32::from(state.pending_directory.is_some());
+         ensure!(
+             state.open_files == 0
+@@ -928,6 +947,8 @@
+         // internal FD closed. Retire retained names, ancestry and Arc backing
+         // before publishing the operational slot as available again.
+         drop(state.pending_directory.take());
++        drop(state.namespace_batch.take());
++        drop(state.namespace_claim.take());
+         state.open_directories = 0;
+         state.phase = NodeDiskPhase::Open;
+         promises.reconcile_owner();

@@ -1,0 +1,13 @@
+{
+  "name": "smoke-script-tests",
+  "pid": 27058,
+  "pgid": 27058,
+  "command": [
+    "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    "scripts/test_small_native_smoke.py",
+    "-v"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/assembly",
+  "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/smoke-script-tests.log",
+  "remaining_bound_seconds": 856.581142042
+}

@@ -1,0 +1,64 @@
+{
+  "status": "DERIVED_COMPONENT_FROM_FROZEN_NATIVE_LAYOUTS_NOT_A_NEW_NATIVE_OR_RSS_MEASUREMENT",
+  "target": "aarch64-apple-darwin",
+  "rustc": "1.97.1 8bab26f4f68e0e26f0bb7960be334d5b520ea452",
+  "group_width": 8,
+  "hash_entry_size": 32,
+  "hash_entry_alignment": 8,
+  "queue_entry_size": 8,
+  "maximum_bits": 64,
+  "per_table": {
+    "input_cache_bytes": 8388608,
+    "input_page_bytes": 4096,
+    "input_depth": 128,
+    "input_stripes": 131,
+    "read_entries_per_stripe": 16,
+    "write_entries_per_stripe": 148,
+    "read_hash_per_stripe": {
+      "bytes": 2120,
+      "allocations": 1
+    },
+    "read_queue_per_stripe": {
+      "bytes": 256,
+      "allocations": 1
+    },
+    "write_hash_per_stripe": {
+      "bytes": 16904,
+      "allocations": 1
+    },
+    "write_queue_per_stripe": {
+      "bytes": 2368,
+      "allocations": 1
+    },
+    "retained_collection_layouts": {
+      "bytes": 2835888,
+      "allocations": 524
+    },
+    "all_old_new_reallocation_overlap": {
+      "bytes": 5671776,
+      "allocations": 1048
+    },
+    "retained_with_existing_4096_policy_allowance": 4982192,
+    "overlap_with_existing_4096_policy_allowance": 9964384
+  },
+  "two_custody_tables": {
+    "retained_collection_layouts": {
+      "bytes": 5671776,
+      "allocations": 1048
+    },
+    "all_old_new_reallocation_overlap": {
+      "bytes": 11343552,
+      "allocations": 2096
+    },
+    "retained_with_existing_4096_policy_allowance": 9964384,
+    "overlap_with_existing_4096_policy_allowance": 19928768
+  },
+  "not_included": [
+    "fixed cache/stripe Vec and Arc owners and native synchronization allocations",
+    "page payloads and guard-retained or concurrently missed payloads",
+    "allocator copies, transaction/debug/free-page collections",
+    "store/backend/spool/worker/census ownership",
+    "actual allocator metadata or RSS qualification"
+  ],
+  "python_arithmetic_assertions": "PASS"
+}

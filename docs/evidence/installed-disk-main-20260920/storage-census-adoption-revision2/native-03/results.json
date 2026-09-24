@@ -1,0 +1,428 @@
+[
+  {
+    "name": "compile-store",
+    "pid": 46771,
+    "pgid": 46771,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kasumi-store",
+      "--lib",
+      "--no-run",
+      "--message-format=json"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/compile-store.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 60.952019082999996,
+    "log_sha256": "a5d3804b94bf37f346d9c55192bf4c116474d2371363e92f6917a7f7c177a07b"
+  },
+  {
+    "name": "store-test-inventory",
+    "pid": 47460,
+    "pgid": 47460,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "--list"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-inventory.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 0.6814677090000032,
+    "log_sha256": "b48f0e5db9e0e165602e370ff8fb7d64af7a6bdcdc4893ec281f5db38011e283"
+  },
+  {
+    "name": "census",
+    "pid": 47461,
+    "pgid": 47461,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "storage_census::",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/census.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 0.14639687500000065,
+    "log_sha256": "5bc1e247e33fa20c4548ae5228da9856d7245d41c63382677b65ef66adcf0ee1"
+  },
+  {
+    "name": "opening",
+    "pid": 47462,
+    "pgid": 47462,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "storage_opening::",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/opening.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 1.3083469589999979,
+    "log_sha256": "13758cece54c33d2abd3e527321f6623771005d47ba54237253b51c5de680592"
+  },
+  {
+    "name": "store-lease",
+    "pid": 47474,
+    "pgid": 47474,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "disk_memory::",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-lease.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 0.10842350000000067,
+    "log_sha256": "d10a033d7dec8ca46bf7f262be5d2199648118ea905ed249d6cbc6aa415241a0"
+  },
+  {
+    "name": "device-memory",
+    "pid": 47475,
+    "pgid": 47475,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "device_disk::memory_tests::",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/device-memory.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 0.06904562500000111,
+    "log_sha256": "f86b742ac138a60d11e98e5385804720241f7fa2838bd6ff0fd461319f860607"
+  },
+  {
+    "name": "scratch-memory",
+    "pid": 47476,
+    "pgid": 47476,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "scratch_disk::memory_tests::",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/scratch-memory.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 0.10834583300000133,
+    "log_sha256": "0d16a5e2afb4e92d67ccf426a6bf8bb773b66fd3390fbd2410a9ac290f10a542"
+  },
+  {
+    "name": "node-metadata-denial",
+    "pid": 47477,
+    "pgid": 47477,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "node_disk::tests::metadata_denial",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/node-metadata-denial.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 0.08637145800000212,
+    "log_sha256": "2061266eb592888c3fa534af510bfa27b704af693d634ec602b68fe54402257c"
+  },
+  {
+    "name": "node-partial-admission",
+    "pid": 47478,
+    "pgid": 47478,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "node_disk::tests::partial_metadata_admission",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/node-partial-admission.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 0.10826408299999457,
+    "log_sha256": "614705d4ccbd241f6ad62b19898ec9ad63cf3d5d38f377d406421bc6cc727cb6"
+  },
+  {
+    "name": "node-reuse",
+    "pid": 47479,
+    "pgid": 47479,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "node_disk::tests::installed_metadata_reuse",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/node-reuse.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 0.08632679200000837,
+    "log_sha256": "8e7c70d32b9752bd9028ed1e5ea47bfdc2d0c0a6fef66ee2d6b991ce51fe408f"
+  },
+  {
+    "name": "node-failed-census",
+    "pid": 47480,
+    "pgid": 47480,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "node_disk::tests::census_failure_closes",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/node-failed-census.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/store-test-binary",
+      "sha256": "f407ddaea51e49a5a98d324eb75bf62d6fc76ef82b681349c3526ad0ba2612db",
+      "bytes": 51307888
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 0.10798225000000627,
+    "log_sha256": "7a04e15178836f654a7d06bc55114985261cabda7d7456aeb5d78cb830131307"
+  },
+  {
+    "name": "compile-engine",
+    "pid": 47481,
+    "pgid": 47481,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kasumi-engine",
+      "--lib",
+      "--no-run",
+      "--message-format=json"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/compile-engine.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 165.474766041,
+    "log_sha256": "aff4d2b29c4c9e7bad7c7c562fac492cf5a42b3592b662c6d68068e122ac02e3"
+  },
+  {
+    "name": "engine-test-inventory",
+    "pid": 48964,
+    "pgid": 48964,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/engine-test-binary",
+      "--list"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/engine-test-inventory.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/engine-test-binary",
+      "sha256": "d0ec54a744677a5d4f80f98c675694de537378fd87dd76f2979b70fd0292165e",
+      "bytes": 191128176
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/engine-test-binary",
+      "sha256": "d0ec54a744677a5d4f80f98c675694de537378fd87dd76f2979b70fd0292165e",
+      "bytes": 191128176
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 1.8573430419999966,
+    "log_sha256": "73f10bcd474dbc6aff87f7b4caeab08779253d46ef6b15d8fa7bb16c9315e1be"
+  },
+  {
+    "name": "engine-provider",
+    "pid": 48966,
+    "pgid": 48966,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/engine-test-binary",
+      "admission::disk_memory::",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/engine-provider.log",
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/engine-test-binary",
+      "sha256": "d0ec54a744677a5d4f80f98c675694de537378fd87dd76f2979b70fd0292165e",
+      "bytes": 191128176
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-03/engine-test-binary",
+      "sha256": "d0ec54a744677a5d4f80f98c675694de537378fd87dd76f2979b70fd0292165e",
+      "bytes": 191128176
+    },
+    "executable_unchanged": true,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 0.2472921250000013,
+    "log_sha256": "cc84830ddb6d9f59b67675ab1765d1f5af66b9b1e83f75b8f5b9faa45edc8456"
+  }
+]

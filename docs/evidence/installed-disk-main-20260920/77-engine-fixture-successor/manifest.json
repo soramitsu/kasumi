@@ -1,0 +1,21 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED",
+  "patch_sha256": "a2f049f64a7edfcfcc2bec76b9b2d51c967cc72638559d26e79850ded09d4a60",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/service_retirement_tests.rs",
+      "before_sha256": "9b54a69751620e44276ec1855d135380bc2971b335929f1c02eac22ff3ccf8c4",
+      "proposed_sha256": "a2f8489f7390e07c175d0b9deb023ea0d34a2dbf27c341ef34ff8bb70e3bbe36"
+    },
+    {
+      "path": "crates/kasumi-engine/src/snapshot_codec.rs",
+      "before_sha256": "746e30002b40a14b69f2b1f6eb797e07325bf91090e94a74ad420dae27237886",
+      "proposed_sha256": "007325e0c5d38856804590091cf415bbd9bade8ce774c5249571a351c65ceafa"
+    }
+  ],
+  "validation": {
+    "rustfmt_stdin": true,
+    "apply_check": true,
+    "no_build": true
+  }
+}

@@ -1,0 +1,51 @@
+--- a/crates/kasumi-engine/tests/contracts.rs
++++ b/crates/kasumi-engine/tests/contracts.rs
+@@ -1543,11 +1543,12 @@
+         return;
+     };
+     let root = std::path::PathBuf::from(root);
+-    let physical = common::PhysicalFixture::new(&root.join("node.redb"), Default::default());
++    let physical =
++        common::PhysicalFixture::new(&root.join("persistent/node.redb"), Default::default());
+     let node = physical
+         .storage
+         .create_new(
+-            root.join("node.redb"),
++            root.join("persistent/node.redb"),
+             kasumi_store::test_utils::NODE_STORE_ID,
+         )
+         .unwrap();
+@@ -1598,8 +1599,17 @@
+ 
+ #[tokio::test]
+ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_policy() {
+-    use std::process::{Command, Stdio};
++    use std::{
++        os::unix::fs::DirBuilderExt,
++        process::{Command, Stdio},
++    };
+     let dir = kasumi_store::test_utils::private_tempdir().unwrap();
++    // The crash harness acknowledgement is outside the installed storage root.
++    // Every actual installation directory is private from its creation.
++    std::fs::DirBuilder::new()
++        .mode(0o700)
++        .create(dir.path().join("persistent"))
++        .unwrap();
+     let mut child = Command::new(std::env::current_exe().unwrap())
+         .args(["--exact", "durable_engine_worker", "--nocapture"])
+         .env("KASUMI_ENGINE_TEST_CRASH_PATH", dir.path())
+@@ -1623,11 +1633,12 @@
+     child.wait().unwrap();
+     let expected: WriteReceipt =
+         serde_json::from_slice(&std::fs::read(dir.path().join("ack.json")).unwrap()).unwrap();
+-    let physical = common::PhysicalFixture::new(&dir.path().join("node.redb"), Default::default());
++    let physical =
++        common::PhysicalFixture::new(&dir.path().join("persistent/node.redb"), Default::default());
+     let node = physical
+         .storage
+         .open_existing(
+-            dir.path().join("node.redb"),
++            dir.path().join("persistent/node.redb"),
+             kasumi_store::test_utils::NODE_STORE_ID,
+         )
+         .unwrap();

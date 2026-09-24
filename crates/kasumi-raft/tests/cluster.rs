@@ -18,14 +18,22 @@ struct Node {
     backend: Arc<common::Backend>,
 }
 struct Cluster {
+    fixture_scratch: Arc<kasumi_store::ScratchDisk>,
     dir: TempDir,
     router: Arc<InProcessRouter>,
     nodes: BTreeMap<u64, Node>,
+    _scratch_directory: TempDir,
 }
 
 impl Cluster {
     async fn new() -> Result<Self> {
+        let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+        let fixture_scratch =
+            kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
         let mut cluster = Self {
+            fixture_scratch,
+            _scratch_directory: scratch_directory,
             dir: kasumi_store::test_utils::private_tempdir()?,
             router: Arc::new(InProcessRouter::default()),
             nodes: BTreeMap::new(),
@@ -46,7 +54,12 @@ impl Cluster {
     }
 
     async fn open(&mut self, id: u64, create: bool) -> Result<()> {
-        let store = common::store(&self.dir.path().join(format!("node-{id}.redb")), create).await?;
+        let store = common::store(
+            &self.dir.path().join(format!("node-{id}.redb")),
+            create,
+            self.fixture_scratch.clone(),
+        )
+        .await?;
         let backend = Arc::new(common::Backend::default());
         let group = RaftGroup::open(
             id,
@@ -307,6 +320,9 @@ async fn snapshot_catches_up_partitioned_follower_and_replaces_a_voter() -> Resu
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let dir = kasumi_store::test_utils::private_tempdir()?;
     let path = dir.path().join("local.redb");
     {
@@ -314,7 +330,7 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
         let group = RaftGroup::local(
             1,
             GROUP.into(),
-            common::store(&path, true).await?,
+            common::store(&path, true, fixture_scratch.clone()).await?,
             backend.clone(),
             common::snapshot_owner(),
         )
@@ -330,7 +346,7 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
     let group = RaftGroup::local(
         1,
         GROUP.into(),
-        common::store(&path, false).await?,
+        common::store(&path, false, fixture_scratch.clone()).await?,
         backend.clone(),
         common::snapshot_owner(),
     )
@@ -342,9 +358,12 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
 
 #[tokio::test]
 async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let dir = kasumi_store::test_utils::private_tempdir()?;
     let path = dir.path().join("fatal-snapshot.redb");
-    let store = common::store(&path, true).await?;
+    let store = common::store(&path, true, fixture_scratch.clone()).await?;
     let backend = Arc::new(common::Backend::default());
     let group = RaftGroup::local(
         1,
@@ -425,7 +444,7 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<
     let reopened = RaftGroup::local(
         1,
         GROUP.into(),
-        common::store(&path, false).await?,
+        common::store(&path, false, fixture_scratch.clone()).await?,
         recovered.clone(),
         common::snapshot_owner(),
     )
@@ -437,6 +456,9 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<
 
 #[tokio::test]
 async fn raft_crash_worker() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let Some(path) = std::env::var_os("KASUMI_RAFT_CRASH_TEST_PATH") else {
         return Ok(());
     };
@@ -444,7 +466,7 @@ async fn raft_crash_worker() -> Result<()> {
     let group = RaftGroup::local(
         1,
         GROUP.into(),
-        common::store(&path, true).await?,
+        common::store(&path, true, fixture_scratch.clone()).await?,
         Arc::new(common::Backend::default()),
         common::snapshot_owner(),
     )
@@ -459,6 +481,9 @@ async fn raft_crash_worker() -> Result<()> {
 
 #[tokio::test]
 async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
     let dir = kasumi_store::test_utils::private_tempdir()?;
@@ -485,7 +510,7 @@ async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown
     let recovered = RaftGroup::local(
         1,
         GROUP.into(),
-        common::store(&path, false).await?,
+        common::store(&path, false, fixture_scratch.clone()).await?,
         backend.clone(),
         common::snapshot_owner(),
     )
@@ -501,6 +526,9 @@ async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_membership()
 -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     use kasumi_raft::{RaftTransport, RpcPayloadTooLarge, RpcRequest, RpcResponse};
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Limited {
@@ -547,7 +575,12 @@ async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_m
         let group = RaftGroup::open(
             id,
             GROUP.into(),
-            common::store(&dir.path().join(format!("node-{id}.redb")), true).await?,
+            common::store(
+                &dir.path().join(format!("node-{id}.redb")),
+                true,
+                fixture_scratch.clone(),
+            )
+            .await?,
             backend.clone(),
             transport.clone(),
             kasumi_raft::RaftGroupConfig {

@@ -1,0 +1,188 @@
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/admission_startup_tests.rs:51:    let admission = NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/admission_startup_tests.rs:60:        kasumi_store::NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/admission_startup_tests.rs:63:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/admission_startup_tests.rs:167:    let replacement = NodeAdmission::from_memory(core.clone())?;
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_custody_tests.rs:4:        kasumi_store::FilesystemBackupDestination::new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_existing_tests.rs:28:            disk: ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_existing_tests.rs:29:            admission: NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?,
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_existing_tests.rs:34:            NodeStore::create_new_fixture(&self.path, self.id, self.disk.clone())?
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_existing_tests.rs:36:            NodeStore::open_existing_fixture(&self.path, self.id, self.disk.clone())?
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_schema_tests.rs:4:    let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_schema_tests.rs:7:        kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_schema_tests.rs:17:    let node_admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_schema_tests.rs:46:    let db = crate::test_utils::open_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:141:        let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:144:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:155:            crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:182:            NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:185:                kasumi_store::ScratchDisk::fixture()
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:212:        let reopened = TenantStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:213:            NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:216:                kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:254:        let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:257:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:266:            inner: kasumi_store::FilesystemAuditArchive::open_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:280:            crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:333:        let reopened = TenantStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:334:            NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_jobs.rs:337:                kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_existing_replicated_tests.rs:17:        let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_existing_replicated_tests.rs:20:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_existing_replicated_tests.rs:38:        let node = NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_existing_replicated_tests.rs:41:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_existing_replicated_tests.rs:43:        let stores = TenantStorageSet::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_existing_replicated_tests.rs:61:            TenantStore::open_existing_fixture(node, crate::SECURITY_TENANT.into(), provider)
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_existing_replicated_tests.rs:68:            crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?;
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/database_worker_outcome_tests.rs:55:        let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/database_worker_outcome_tests.rs:58:            ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/database_worker_outcome_tests.rs:119:            NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/database_worker_outcome_tests.rs:122:                ScratchDisk::fixture()
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/database_worker_outcome_tests.rs:136:        let node = NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/database_worker_outcome_tests.rs:139:            ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/database_worker_outcome_tests.rs:141:        let store = TenantStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/database_worker_outcome_tests.rs:185:    let fixture = Fixture::new(NodeAdmission::new(Default::default())?, "tenant").await?;
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/database_worker_outcome_tests.rs:240:    let fixture = Fixture::new(NodeAdmission::new(Default::default())?, "tenant").await?;
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/database_worker_outcome_tests.rs:301:    let fixture = Fixture::new(NodeAdmission::new(Default::default())?, "tenant").await?;
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/database_worker_outcome_tests.rs:331:    let admission = NodeAdmission::new(Default::default())?;
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/mutation_receipt_tests.rs:70:    let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/mutation_receipt_tests.rs:73:        ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/mutation_receipt_tests.rs:140:    let reopened_node = NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/mutation_receipt_tests.rs:146:    let reopened_store = TenantStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_staged_stop_tests.rs:194:    let node = NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_staged_stop_tests.rs:197:        kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_staged_stop_tests.rs:202:        TenantStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_staged_stop_tests.rs:210:        crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_staged_stop_tests.rs:213:    let application = TenantStore::open_existing_fixture(node, context.tenant.clone(), provider)
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_staged_stop_tests.rs:222:    let db = crate::test_utils::open_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_validation.rs:1257:        SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), 128 << 20, |writer| {
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_validation.rs:1303:            let disk = kasumi_store::ScratchDisk::fixture();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_validation.rs:1472:            SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), 128 << 20, |writer| {
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_validation.rs:1688:            SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), 128 << 20, |writer| {
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/state.rs:2634:            crate::test_utils::encode_snapshot_candidate(&state, 64 << 20)
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/state.rs:2646:        let bytes = crate::test_utils::encode_snapshot_candidate(&source, 64 << 20).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_serving_tests.rs:144:                NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_serving_tests.rs:147:                    kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_serving_tests.rs:150:                NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_serving_tests.rs:153:                    kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_serving_tests.rs:177:            let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_serving_tests.rs:179:                kasumi_store::FilesystemAuditArchive::open_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_serving_tests.rs:375:        kasumi_store::FilesystemBackupDestination::new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/staged_terminal.rs:780:            &ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_existing_tests.rs:15:        let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_existing_tests.rs:18:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_existing_tests.rs:38:            crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?;
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_existing_tests.rs:273:    let node = NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_existing_tests.rs:276:        kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_existing_tests.rs:296:        crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?,
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_literal_tests.rs:44:    let disk = kasumi_store::ScratchDisk::fixture();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_fixtures.rs:16:pub async fn open_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_fixtures.rs:82:        let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_fixtures.rs:85:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_fixtures.rs:88:        let admission = NodeAdmission::new(Default::default()).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_fixtures.rs:103:                NodeAdmission::new(Default::default()).unwrap()
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_fixtures.rs:132:                open_fixture(stores, policy, Limits::default(), audit.clone())
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_control_genesis_tests.rs:82:    let disk = kasumi_store::ScratchDisk::fixture();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_control_genesis_tests.rs:187:        crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?,
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_control_genesis_tests.rs:210:    let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_control_genesis_tests.rs:213:        kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_control_genesis_tests.rs:245:    let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_control_genesis_tests.rs:248:        kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_control_genesis_tests.rs:282:    let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/bootstrap_control_genesis_tests.rs:285:        kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/tenant_audit.rs:433:        let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/tenant_audit.rs:436:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/tenant_audit.rs:447:            FilesystemAuditArchive::open_fixture(directory.path().join("tenant-audit-archives"))
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/tenant_audit.rs:451:            archive: FilesystemAuditArchive::open_fixture(directory.path().join("external"))
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/tenant_audit.rs:626:        let node = NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/tenant_audit.rs:629:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/tenant_audit.rs:632:        let store = TenantStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/tenant_audit.rs:642:                    FilesystemAuditArchive::open_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_recovery_tests.rs:188:        kasumi_store::EncryptedSpool::new(&kasumi_store::ScratchDisk::fixture(), 16 << 20).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_recovery_tests.rs:263:    assert!(read(&kasumi_store::ScratchDisk::fixture(), &mut bytes.as_slice()).is_err());
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_bundle.rs:531:        let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_bundle.rs:534:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_bundle.rs:664:            .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_bundle.rs:752:            .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_bundle.rs:931:        let admission = crate::admission::NodeAdmission::new(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_bundle.rs:946:        let denied = crate::admission::NodeAdmission::new(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_bundle.rs:986:        let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_bundle.rs:1006:                        .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_bundle.rs:1015:        let denied = crate::admission::NodeAdmission::new(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/mutation_receipt.rs:674:            &ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/snapshot_codec.rs:1120:        Ok(super::read(&kasumi_store::ScratchDisk::fixture(), reader)?.state)
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/audit_maintenance_service.rs:215:            let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/audit_maintenance_service.rs:218:                kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/audit_maintenance_service.rs:222:            let admission = NodeAdmission::new(Default::default()).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/audit_maintenance_service.rs:328:            let reopened = NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/audit_maintenance_service.rs:331:                kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/audit_maintenance_service.rs:334:            let store = TenantStore::open_existing_fixture(reopened, "tenant".into(), provider)
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/audit_maintenance_service.rs:359:        let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/audit_maintenance_service.rs:362:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/audit_maintenance_service.rs:365:        let admission = NodeAdmission::new(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/audit_maintenance_service.rs:383:            inner: FilesystemAuditArchive::open_fixture(directory.path().join("external")).unwrap(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/audit_maintenance_service.rs:389:                    FilesystemAuditArchive::open_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/recovery_receiver_tests.rs:1446:            &kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:540:        kasumi_store::FilesystemAuditArchive::open_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:561:        let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:564:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:576:        let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:619:        let reopened = TenantStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:620:            NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:623:                kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:658:            let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:661:                kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:673:            let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:733:            let reopened = TenantStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:734:                NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:737:                    kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:769:        let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:772:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:784:        let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:836:        let reopened = TenantStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:837:            NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:840:                kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:883:            kasumi_store::FilesystemAuditArchive::open_fixture(directory.path().join("archive"))
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:886:        let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:894:                kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:934:        let recovered = TenantStore::open_existing_fixture_with_clock(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit.rs:938:                kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_credential_tests.rs:10:        let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_credential_tests.rs:13:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_credential_tests.rs:24:        let node_admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_credential_tests.rs:49:        let db = crate::test_utils::open_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_credential_tests.rs:256:            .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_credential_tests.rs:259:            .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_credential_tests.rs:473:        kasumi_store::FilesystemBackupDestination::new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_staging_tests.rs:4:    let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_staging_tests.rs:7:        kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_staging_tests.rs:17:    let node_admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_staging_tests.rs:38:    let db = crate::test_utils::open_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/target_journal_open_tests.rs:34:        let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/target_journal_open_tests.rs:37:            ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/target_journal_open_tests.rs:52:            admission: crate::admission::NodeAdmission::with_fixed_memory(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/target_journal_open_tests.rs:146:        NodeStore::open_existing_fixture(&path, Uuid::new_v4(), ScratchDisk::fixture()).is_err()
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/target_journal_open_tests.rs:149:    let node = NodeStore::open_existing_fixture(&path, id, ScratchDisk::fixture())?;
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/target_resolution_tests.rs:74:    let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/target_resolution_tests.rs:77:        ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/target_resolution_tests.rs:296:        &ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/staged_terminal_tests.rs:91:    let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/staged_terminal_tests.rs:94:        ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/staged_terminal_tests.rs:160:    let reopened_node = NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/staged_terminal_tests.rs:166:    let reopened_store = TenantStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/staged_terminal_tests.rs:321:    let table = Arc::new(EncryptedTable::new(&ScratchDisk::fixture(), 64 << 20).unwrap());
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/staged_terminal_tests.rs:402:        &ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/staged_terminal_tests.rs:429:        &ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/mutation_apply_tests.rs:128:        .fixture_restore(&engine.fixture_snapshot().unwrap())
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/mutation_apply_tests.rs:332:    let disk = kasumi_store::ScratchDisk::fixture();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service_retirement_tests.rs:7:        kasumi_store::FilesystemBackupDestination::new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service.rs:2310:        let node = NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service.rs:2313:            kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service.rs:2326:            crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service.rs:2343:        let db = crate::test_utils::open_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/service.rs:2469:        let admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_retention.rs:708:        let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_retention.rs:710:            NodeStore::create_new_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_retention.rs:713:                kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_retention.rs:745:        let store = TenantStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_retention.rs:746:            NodeStore::open_existing_fixture(
+target/installed-disk-validation/engine-fixture-callers/proposed/crates/kasumi-engine/src/security_audit_retention.rs:749:                kasumi_store::ScratchDisk::fixture(),

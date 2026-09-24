@@ -5,7 +5,7 @@ use crate::custody_state::CustodyAudit;
 use crate::custody_state::CustodyState;
 use crate::custody_tables::{AUDIT, COMMANDS, CustodyHead, HEAD, HEAD_BYTES, RECORD_BYTES};
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{EncryptedTable, TenantStore};
+use kasumi_store::{EncryptedTable, EncryptedTableBatch, TenantStore};
 use kasumi_types::{CustodyReceipt, validate_name};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -18,6 +18,9 @@ pub(crate) struct Records {
 }
 
 pub(crate) struct Builder {
+    // Drop unpublished writers before their scratch database owners on error.
+    commands_batch: Option<EncryptedTableBatch>,
+    audit_batch: Option<EncryptedTableBatch>,
     records: Records,
     commands: u64,
     audit: u64,
@@ -46,6 +49,8 @@ impl Builder {
             commands: 0,
             audit: 0,
             history_bytes: 0,
+            commands_batch: None,
+            audit_batch: None,
         })
     }
     pub(crate) fn command(&mut self, bytes: &[u8]) -> Result<()> {
@@ -79,13 +84,29 @@ impl Builder {
             self.history_bytes <= self.records.head.history_bytes,
             "custody history exceeds head"
         );
-        self.records
-            .commands
+        // Scratch records are unpublished until the enclosing snapshot is
+        // verified and installed. Group fixed, admitted point writes to avoid
+        // one encrypted redb sync for every permanent history item.
+        if self.commands_batch.is_none() {
+            self.commands_batch = Some(self.records.commands.begin_batch()?);
+        }
+        self.commands_batch
+            .as_mut()
+            .expect("command batch installed")
             .insert(receipt.command_id.as_bytes(), bytes)?;
         self.commands = self
             .commands
             .checked_add(1)
             .context("custody command count overflow")?;
+        if self
+            .commands
+            .is_multiple_of(EncryptedTableBatch::MAX_ENTRIES as u64)
+        {
+            self.commands_batch
+                .take()
+                .expect("full command batch installed")
+                .commit()?;
+        }
         Ok(())
     }
     pub(crate) fn audit(&mut self, key: &[u8], bytes: &[u8]) -> Result<()> {
@@ -116,11 +137,26 @@ impl Builder {
             self.history_bytes <= self.records.head.history_bytes,
             "custody history exceeds head"
         );
-        self.records.audit.insert(key, bytes)?;
+        if self.audit_batch.is_none() {
+            self.audit_batch = Some(self.records.audit.begin_batch()?);
+        }
+        self.audit_batch
+            .as_mut()
+            .expect("audit batch installed")
+            .insert(key, bytes)?;
         self.audit = self
             .audit
             .checked_add(1)
             .context("custody audit count overflow")?;
+        if self
+            .audit
+            .is_multiple_of(EncryptedTableBatch::MAX_ENTRIES as u64)
+        {
+            self.audit_batch
+                .take()
+                .expect("full audit batch installed")
+                .commit()?;
+        }
         Ok(())
     }
     pub(crate) fn finish(mut self) -> Result<Arc<Records>> {
@@ -131,6 +167,15 @@ impl Builder {
                 && self.history_bytes == head.history_bytes,
             "custody terminal accounting differs"
         );
+        // Finish the final short batches before verified point reads and digest.
+        // Each record is at most 64 KiB, so 16 records remain below the batch
+        // byte ceiling as well as its entry ceiling.
+        if let Some(batch) = self.commands_batch.take() {
+            batch.commit()?;
+        }
+        if let Some(batch) = self.audit_batch.take() {
+            batch.commit()?;
+        }
         let mut previous = head.policy.origin.revision;
         let mut originals = 0u64;
         for index in 0..head.audit {
@@ -139,7 +184,7 @@ impl Builder {
                 .audit
                 .get(&index.to_be_bytes())?
                 .context("custody audit sequence missing")?;
-            let event: CustodyAudit = serde_json::from_slice(&bytes)?;
+            let event: CustodyAudit = crate::custody_tables::decode_canonical(&bytes)?;
             validate_name(&event.principal)?;
             validate_name(&event.request_id)?;
             let bytes = self
@@ -147,7 +192,7 @@ impl Builder {
                 .commands
                 .get(event.command_id.as_bytes())?
                 .context("custody audit command absent")?;
-            let receipt: CustodyReceipt = serde_json::from_slice(&bytes)?;
+            let receipt: CustodyReceipt = crate::custody_tables::decode_canonical(&bytes)?;
             ensure!(
                 event.revision > previous
                     && event.revision <= head.policy.revision
@@ -199,14 +244,14 @@ impl Builder {
 impl Records {
     pub(crate) fn capture(store: &Arc<TenantStore>) -> Result<Arc<Self>> {
         let view = store.read_view()?;
-        let head = serde_json::from_slice(
+        let head = crate::custody_tables::decode_canonical(
             &view
                 .get(crate::control::META, HEAD, HEAD_BYTES)?
                 .context("custody point table head absent")?,
         )?;
         let mut builder = Builder::new(store.scratch_disk(), head)?;
         view.visit(COMMANDS, RECORD_BYTES, |key, bytes| {
-            let receipt: CustodyReceipt = serde_json::from_slice(bytes)?;
+            let receipt: CustodyReceipt = crate::custody_tables::decode_canonical(bytes)?;
             ensure!(
                 key == receipt.command_id.as_bytes(),
                 "custody receipt key differs"
@@ -227,11 +272,11 @@ impl Records {
         self.audit.visit(|_, bytes| visitor(2, bytes))
     }
     #[cfg(test)]
-    pub(crate) fn from_state(state: &CustodyState) -> Result<Arc<Self>> {
-        let mut builder = Builder::new(
-            &kasumi_store::ScratchDisk::fixture(),
-            CustodyHead::from_state(state)?,
-        )?;
+    pub(crate) fn from_state(
+        state: &CustodyState,
+        disk: &Arc<kasumi_store::ScratchDisk>,
+    ) -> Result<Arc<Self>> {
+        let mut builder = Builder::new(disk, CustodyHead::from_state(state)?)?;
         for receipt in state.commands.values() {
             builder.command(&serde_json::to_vec(receipt)?)?;
         }

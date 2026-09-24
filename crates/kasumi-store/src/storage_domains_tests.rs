@@ -53,12 +53,79 @@ async fn existing_pair_fixture(node: Arc<NodeStore>) -> Result<Arc<TenantStorage
 }
 
 #[tokio::test]
+async fn catalog_presence_classification_requires_both_domains() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir()?;
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let directory = crate::test_utils::private_tempdir()?;
+    let absent = NodeStore::create_new_fixture(
+        directory.path().join("absent.redb"),
+        crate::test_utils::NODE_STORE_ID,
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
+    )?;
+    assert!(!TenantStorageSet::catalogs_installed(&absent, "tenant")?);
+    absent.shutdown().await.unwrap();
+
+    for (index, name) in ["tenant".to_owned(), CustodyStore::catalog_name("tenant")]
+        .into_iter()
+        .enumerate()
+    {
+        let node = NodeStore::create_new_fixture(
+            directory.path().join(format!("partial-{index}.redb")),
+            crate::test_utils::NODE_STORE_ID,
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )?;
+        let store = TenantStore::initialize_catalog_fixture(
+            node.clone(),
+            name,
+            Arc::new(LocalKeyProvider::new([11 + index as u8; 32])),
+        )
+        .await?;
+        assert!(
+            format!(
+                "{:#}",
+                TenantStorageSet::catalogs_installed(&node, "tenant").unwrap_err()
+            )
+            .contains("partially installed")
+        );
+        store.shutdown().await.unwrap();
+        node.shutdown().await.unwrap();
+    }
+
+    let node = NodeStore::create_new_fixture(
+        directory.path().join("complete.redb"),
+        crate::test_utils::NODE_STORE_ID,
+        fixture_memory,
+        fixture_scratch,
+    )?;
+    let stores = TenantStorageSet::initialize_catalogs_fixture(
+        node.clone(),
+        "tenant".into(),
+        Arc::new(LocalKeyProvider::new([21; 32])),
+        Arc::new(LocalKeyProvider::new([22; 32])),
+    )
+    .await?;
+    assert!(TenantStorageSet::catalogs_installed(&node, "tenant")?);
+    stores.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+    Ok(())
+}
+
+#[tokio::test]
 async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let dir = crate::test_utils::private_tempdir()?;
     let node = NodeStore::create_new_fixture(
         dir.path().join("same.redb"),
         crate::test_utils::NODE_STORE_ID,
-        crate::ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )?;
     let provider = Arc::new(LocalKeyProvider::new([1; 32]));
     let app =
@@ -76,7 +143,8 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
         NodeStore::create_new_fixture(
             dir.path().join("other.redb"),
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )?,
         CustodyStore::catalog_name("tenant"),
         Arc::new(LocalKeyProvider::new([2; 32])),
@@ -86,7 +154,8 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
     let reserved = NodeStore::create_new_fixture(
         dir.path().join("reserved.redb"),
         crate::test_utils::NODE_STORE_ID,
-        crate::ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )?;
     assert!(
         TenantStorageSet::initialize_catalogs_fixture(
@@ -107,6 +176,10 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
 
 #[tokio::test]
 async fn control_reopens_without_any_application_key_probe_after_revocation() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let dir = crate::test_utils::private_tempdir()?;
     let path = dir.path().join("revoked.redb");
     let app_provider = Arc::new(LocalKeyProvider::new([11; 32]));
@@ -114,7 +187,8 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
     let node = NodeStore::create_new_fixture(
         &path,
         crate::test_utils::NODE_STORE_ID,
-        crate::ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )?;
     let stores = TenantStorageSet::initialize_catalogs_fixture(
         node.clone(),
@@ -151,7 +225,8 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
         NodeStore::open_existing_fixture(
             &path,
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )?,
         "tenant".into(),
         control_provider,
@@ -169,11 +244,15 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
 
 #[tokio::test]
 async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let original = FaultBackend::new();
     let stores = initialize_pair_fixture(NodeStore::open_with_backend(
         original.clone(),
         crate::test_utils::storage_admission(),
-        crate::ScratchDisk::fixture(),
+        fixture_scratch.clone(),
     )?)
     .await?;
     stores.write_batch(
@@ -189,7 +268,7 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
         let stores = existing_pair_fixture(NodeStore::open_with_backend(
             disk.clone(),
             crate::test_utils::storage_admission(),
-            crate::ScratchDisk::fixture(),
+            fixture_scratch.clone(),
         )?)
         .await?;
         disk.fail_after(failure);
@@ -203,7 +282,7 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
         let reopened = existing_pair_fixture(NodeStore::open_with_backend(
             crashed,
             crate::test_utils::storage_admission(),
-            crate::ScratchDisk::fixture(),
+            fixture_scratch.clone(),
         )?)
         .await?;
         let data = reopened.application().get("data", b"entry")?.unwrap();
@@ -227,11 +306,15 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
 
 #[tokio::test]
 async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_write() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let disk = FaultBackend::new();
     let node = NodeStore::open_with_backend(
         disk.clone(),
         crate::test_utils::storage_admission(),
-        crate::ScratchDisk::fixture(),
+        fixture_scratch.clone(),
     )?;
     let clock = Arc::new(ManualClock::new());
     let app = TenantStore::initialize_catalog_fixture_with_clock(
@@ -263,7 +346,7 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
     let reopened = existing_pair_fixture(NodeStore::open_with_backend(
         recovered,
         crate::test_utils::storage_admission(),
-        crate::ScratchDisk::fixture(),
+        fixture_scratch.clone(),
     )?)
     .await?;
     assert_eq!(
@@ -283,11 +366,16 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
 
 #[tokio::test]
 async fn combined_quota_and_substituted_catalog_binding_fail_before_publication() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let dir = crate::test_utils::private_tempdir()?;
     let node = NodeStore::create_new_fixture(
         dir.path().join("binding.redb"),
         crate::test_utils::NODE_STORE_ID,
-        crate::ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )?;
     let stores = initialize_pair_fixture(node.clone()).await?;
     let ops = vec![WriteOp::put("data", b"entry", b"a"); 32769];
@@ -311,12 +399,17 @@ async fn combined_quota_and_substituted_catalog_binding_fail_before_publication(
 
 #[tokio::test]
 async fn initial_state_rejects_unknown_records_in_either_complete_domain() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
     for custody in [false, true] {
         let node = NodeStore::create_new_fixture(
             directory.path().join(format!("unknown-{custody}.redb")),
             crate::test_utils::NODE_STORE_ID,
-            ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )?;
         let stores = initialize_pair_fixture(node).await?;
         let domain = if custody {
@@ -352,11 +445,16 @@ async fn initial_state_rejects_unknown_records_in_either_complete_domain() -> Re
 
 #[tokio::test]
 async fn initial_state_checks_and_joint_publication_have_one_concurrent_winner() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
     let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
         directory.path().join("first-publication.redb"),
         crate::test_utils::NODE_STORE_ID,
-        ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )?)
     .await?;
     let barrier = std::sync::Barrier::new(2);
@@ -406,12 +504,17 @@ async fn initial_state_checks_and_joint_publication_have_one_concurrent_winner()
 
 #[tokio::test]
 async fn initial_state_requires_the_exact_retained_custody_binding() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
     for missing in [false, true] {
         let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
             directory.path().join(format!("binding-{missing}.redb")),
             crate::test_utils::NODE_STORE_ID,
-            ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )?)
         .await?;
         let damage = if missing {
@@ -442,11 +545,16 @@ async fn initial_state_requires_the_exact_retained_custody_binding() -> Result<(
 #[tokio::test]
 async fn initial_state_rejects_delete_only_publications_without_consuming_initialization()
 -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
     let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
         directory.path().join("empty-initialization.redb"),
         crate::test_utils::NODE_STORE_ID,
-        ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )?)
     .await?;
     let put = [WriteOp::put("genesis", b"head", b"initial")];

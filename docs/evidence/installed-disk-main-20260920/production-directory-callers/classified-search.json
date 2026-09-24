@@ -1,0 +1,1465 @@
+[
+  {
+    "path": "crates/kasumi-server/src/rpc_recovery_tests.rs",
+    "line": 64,
+    "text": "private_files::create_directory(&dir).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/runtime_retired_source_tests.rs",
+    "line": 75,
+    "text": "_root: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/runtime_retired_source_tests.rs",
+    "line": 118,
+    "text": "kasumi_store::private_files::create_directory(&replica_root)?;",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/signer_runtime_tests.rs",
+    "line": 84,
+    "text": "_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/target_runtime.rs",
+    "line": 422,
+    "text": "std::fs::create_dir_all(&installed.generation_root)?;",
+    "classification": "production_site",
+    "reason": "target-generation-root"
+  },
+  {
+    "path": "crates/kasumi-server/src/standalone_tenant_enrollment_tests.rs",
+    "line": 45,
+    "text": "tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/runtime_cluster_storage.rs",
+    "line": 129,
+    "text": "kasumi_store::private_files::create_directory(&recovery)?;",
+    "classification": "test_module",
+    "reason": "lib.rs32cfg(test)"
+  },
+  {
+    "path": "crates/kasumi-server/src/runtime_cluster_storage.rs",
+    "line": 131,
+    "text": "kasumi_store::private_files::create_directory(&root)?;",
+    "classification": "test_module",
+    "reason": "lib.rs32cfg(test)"
+  },
+  {
+    "path": "crates/kasumi-bench/src/main.rs",
+    "line": 281,
+    "text": "kasumi_store::private_files::create_directory(&data)?;",
+    "classification": "production_site",
+    "reason": "bench-bootstrap"
+  },
+  {
+    "path": "crates/kasumi-bench/src/main.rs",
+    "line": 600,
+    "text": ".tempdir_in(parent)?",
+    "classification": "production_site",
+    "reason": "bench-bootstrap"
+  },
+  {
+    "path": "crates/kasumi-bench/src/main.rs",
+    "line": 602,
+    "text": "tempfile::Builder::new().prefix(\"kasumi-bench-\").tempdir()?",
+    "classification": "production_site",
+    "reason": "bench-bootstrap"
+  },
+  {
+    "path": "crates/kasumi-bench/src/main.rs",
+    "line": 1011,
+    "text": "for entry in std::fs::read_dir(path)? {",
+    "classification": "production_site",
+    "reason": "bench-size-list"
+  },
+  {
+    "path": "crates/kasumi-bench/src/main.rs",
+    "line": 1024,
+    "text": "for entry in std::fs::read_dir(path)? {",
+    "classification": "production_site",
+    "reason": "bench-source-list"
+  },
+  {
+    "path": "crates/kasumi-bench/src/main.rs",
+    "line": 1061,
+    "text": "std::fs::create_dir_all(parent)?;",
+    "classification": "production_site",
+    "reason": "bench-main-output"
+  },
+  {
+    "path": "crates/kasumi-bench/src/main.rs",
+    "line": 1125,
+    "text": "let dir = tempfile::tempdir().unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 1120"
+  },
+  {
+    "path": "crates/kasumi-server/src/local_recovery_tests.rs",
+    "line": 520,
+    "text": "private_files::create_directory(&cache_directory).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/local_recovery_tests.rs",
+    "line": 530,
+    "text": "std::fs::remove_dir(&cache_directory).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/signer_runtime.rs",
+    "line": 476,
+    "text": "private_files::create_directory(parent)?;",
+    "classification": "production_site",
+    "reason": "verifier-bootstrap"
+  },
+  {
+    "path": "crates/kasumi-server/src/runtime_recovery_tests.rs",
+    "line": 711,
+    "text": "private_files::create_directory(verifier_root).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/authority_maintenance_tls_tests.rs",
+    "line": 215,
+    "text": "kasumi_store::private_files::create_directory(&replica_root).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/local_recovery_archives.rs",
+    "line": 128,
+    "text": "std::fs::read_dir(&directory)?.next().is_none(),",
+    "classification": "production_site",
+    "reason": "local-archive-create"
+  },
+  {
+    "path": "crates/kasumi-server/src/local_recovery_archives.rs",
+    "line": 132,
+    "text": "private_files::create_directory(&directory)?;",
+    "classification": "production_site",
+    "reason": "local-archive-create"
+  },
+  {
+    "path": "crates/kasumi-server/src/local_recovery_archives.rs",
+    "line": 195,
+    "text": "std::fs::read_dir(&directory)?.next().is_none(),",
+    "classification": "production_site",
+    "reason": "local-archive-cleanup"
+  },
+  {
+    "path": "crates/kasumi-server/src/local_recovery_archives.rs",
+    "line": 199,
+    "text": "for (index, entry) in std::fs::read_dir(&directory)?.enumerate() {",
+    "classification": "production_site",
+    "reason": "local-archive-cleanup"
+  },
+  {
+    "path": "crates/kasumi-server/src/local_recovery_archives.rs",
+    "line": 299,
+    "text": "if std::fs::read_dir(&directory)?.next().is_some() {",
+    "classification": "production_site",
+    "reason": "local-archive-cleanup"
+  },
+  {
+    "path": "crates/kasumi-server/src/local_recovery_archives.rs",
+    "line": 308,
+    "text": "std::fs::remove_dir(&directory)?;",
+    "classification": "production_site",
+    "reason": "local-archive-cleanup"
+  },
+  {
+    "path": "crates/kasumi-bench/src/fixture_bao.rs",
+    "line": 13,
+    "text": "root: tempfile::TempDir,",
+    "classification": "production_owner_field",
+    "reason": "TempDir owns external fixture cleanup, covered bybench-bao"
+  },
+  {
+    "path": "crates/kasumi-bench/src/fixture_bao.rs",
+    "line": 23,
+    "text": "let root = tempfile::tempdir()?;",
+    "classification": "production_site",
+    "reason": "bench-bao"
+  },
+  {
+    "path": "crates/kasumi-bench/src/fixture_bao.rs",
+    "line": 25,
+    "text": "std::fs::create_dir(&cert_dir)?;",
+    "classification": "production_site",
+    "reason": "bench-bao"
+  },
+  {
+    "path": "crates/kasumi-bench/src/fixture_bao.rs",
+    "line": 52,
+    "text": "for entry in std::fs::read_dir(&cert_dir)? {",
+    "classification": "production_site",
+    "reason": "bench-bao"
+  },
+  {
+    "path": "crates/kasumi-server/src/rpc_lifecycle_tests.rs",
+    "line": 37,
+    "text": "kasumi_store::private_files::create_directory(&directory.path().join(\"control\")).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/rpc_lifecycle_tests.rs",
+    "line": 103,
+    "text": "kasumi_store::private_files::create_directory(&issuer_root).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/rpc_control_signer_tests.rs",
+    "line": 94,
+    "text": "private_files::create_directory(&directory).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/local_auth.rs",
+    "line": 452,
+    "text": "private_files::create_directory(&private).unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 433"
+  },
+  {
+    "path": "crates/kasumi-server/src/persistent_disk.rs",
+    "line": 136,
+    "text": "kasumi_store::private_files::create_directory(root).unwrap();",
+    "classification": "test_function",
+    "reason": "fixture_config cfg(test) at132"
+  },
+  {
+    "path": "crates/kasumi-server/src/configured_tenant_enrollment_tests.rs",
+    "line": 21,
+    "text": "tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/api.rs",
+    "line": 421,
+    "text": "_dir: tempfile::TempDir,",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 380"
+  },
+  {
+    "path": "crates/kasumi-bench/src/bin/network.rs",
+    "line": 511,
+    "text": "std::fs::create_dir_all(parent)?;",
+    "classification": "production_site",
+    "reason": "bench-network-output"
+  },
+  {
+    "path": "crates/kasumi-bench/src/bin/network.rs",
+    "line": 598,
+    "text": "let directory = tempfile::tempdir().unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 581"
+  },
+  {
+    "path": "crates/kasumi-bench/src/bin/capacity.rs",
+    "line": 331,
+    "text": "std::fs::DirBuilder::new().mode(0o700).create(directory)?;",
+    "classification": "production_site",
+    "reason": "bench-capacity-output"
+  },
+  {
+    "path": "crates/kasumi-bench/src/bin/capacity.rs",
+    "line": 701,
+    "text": "let directory = tempfile::tempdir().unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 625"
+  },
+  {
+    "path": "crates/kasumi-server/src/serving_owner_tests.rs",
+    "line": 60,
+    "text": "_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/mcp_credential_tests.rs",
+    "line": 88,
+    "text": "_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/mcp_credential_tests.rs",
+    "line": 94,
+    "text": "private_files::create_directory(&private).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/node_enrollment_tests.rs",
+    "line": 4,
+    "text": "async fn fixture() -> Result<(tempfile::TempDir, Arc<NodeStore>, Arc<TenantStore>, Input)> {",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-bench/src/bin/loopback.rs",
+    "line": 218,
+    "text": ".tempdir()?;",
+    "classification": "production_site",
+    "reason": "bench-loopback"
+  },
+  {
+    "path": "crates/kasumi-bench/src/bin/loopback.rs",
+    "line": 281,
+    "text": "std::fs::DirBuilder::new().mode(0o700).create(&persistent)?;",
+    "classification": "production_site",
+    "reason": "bench-loopback"
+  },
+  {
+    "path": "crates/kasumi-bench/src/bin/loopback.rs",
+    "line": 692,
+    "text": "std::fs::create_dir_all(parent)?;",
+    "classification": "production_site",
+    "reason": "bench-loopback"
+  },
+  {
+    "path": "crates/kasumi-server/tests/cluster_transport.rs",
+    "line": 146,
+    "text": "kasumi_store::private_files::create_directory(&replica_root)?;",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/standalone_tenant_staging.rs",
+    "line": 198,
+    "text": "let entries = std::fs::read_dir(&record.directory)?",
+    "classification": "production_site",
+    "reason": "operator-tenant-stage"
+  },
+  {
+    "path": "crates/kasumi-server/src/standalone_tenant_staging.rs",
+    "line": 400,
+    "text": "private_files::create_directory(&record.directory)?;",
+    "classification": "production_site",
+    "reason": "operator-tenant-stage"
+  },
+  {
+    "path": "crates/kasumi-server/src/runtime.rs",
+    "line": 2905,
+    "text": "kasumi_store::private_files::create_directory(&directory).unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 2633"
+  },
+  {
+    "path": "crates/kasumi-server/src/standalone_key_backup.rs",
+    "line": 82,
+    "text": "private_files::create_directory(output)?;",
+    "classification": "production_site",
+    "reason": "operator-key-export"
+  },
+  {
+    "path": "crates/kasumi-server/src/standalone_key_backup.rs",
+    "line": 243,
+    "text": "private_files::create_directory(&moved).unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 226"
+  },
+  {
+    "path": "crates/kasumi-server/src/rpc_authority_tests.rs",
+    "line": 104,
+    "text": "kasumi_store::private_files::create_directory(&dir.path().join(\"audit\")).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/rpc_authority_tests.rs",
+    "line": 155,
+    "text": "kasumi_store::private_files::create_directory(&signer_directory).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/rpc_authority_tests.rs",
+    "line": 193,
+    "text": "kasumi_store::private_files::create_directory(&directory).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/rpc_authority_tests.rs",
+    "line": 241,
+    "text": "kasumi_store::private_files::create_directory(&verifier_root).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/rpc_authority_tests.rs",
+    "line": 332,
+    "text": "kasumi_store::private_files::create_directory(&authority_root).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-transport/src/credentials.rs",
+    "line": 120,
+    "text": "let dir = tempfile::tempdir().unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 102"
+  },
+  {
+    "path": "crates/kasumi-transport/src/credentials.rs",
+    "line": 139,
+    "text": "let dir = tempfile::tempdir().unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 102"
+  },
+  {
+    "path": "crates/kasumi-server/src/runtime_cluster_storage_tests.rs",
+    "line": 134,
+    "text": "kasumi_store::private_files::create_directory(&a_root).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/runtime_cluster_storage_tests.rs",
+    "line": 135,
+    "text": "kasumi_store::private_files::create_directory(&b_root).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/standalone.rs",
+    "line": 399,
+    "text": "private_files::create_directory(output)?;",
+    "classification": "production_site",
+    "reason": "operator-recovery-export"
+  },
+  {
+    "path": "crates/kasumi-server/src/standalone.rs",
+    "line": 825,
+    "text": "for entry in std::fs::read_dir(root.join(\"profiles\"))? {",
+    "classification": "production_site",
+    "reason": "operator-profile-list"
+  },
+  {
+    "path": "crates/kasumi-server/src/standalone.rs",
+    "line": 977,
+    "text": "private_files::create_directory(directory)?;",
+    "classification": "production_site",
+    "reason": "standalone-bootstrap"
+  },
+  {
+    "path": "crates/kasumi-server/src/standalone.rs",
+    "line": 980,
+    "text": "private_files::create_directory(&directory.join(name))?;",
+    "classification": "production_site",
+    "reason": "standalone-bootstrap"
+  },
+  {
+    "path": "crates/kasumi-server/src/local_recovery.rs",
+    "line": 987,
+    "text": "private_files::create_directory(parent)?;",
+    "classification": "production_site",
+    "reason": "local-generation-create"
+  },
+  {
+    "path": "crates/kasumi-server/src/local_recovery.rs",
+    "line": 994,
+    "text": "std::fs::read_dir(&journal.target_directory)?",
+    "classification": "production_site",
+    "reason": "local-generation-list"
+  },
+  {
+    "path": "crates/kasumi-server/src/local_recovery.rs",
+    "line": 1008,
+    "text": "private_files::create_directory(&journal.target_directory)?;",
+    "classification": "production_site",
+    "reason": "local-generation-create"
+  },
+  {
+    "path": "crates/kasumi-server/src/local_recovery.rs",
+    "line": 1294,
+    "text": "for entry in std::fs::read_dir(&journal.target_directory)? {",
+    "classification": "production_site",
+    "reason": "local-generation-list"
+  },
+  {
+    "path": "crates/kasumi-server/src/local_recovery.rs",
+    "line": 1354,
+    "text": "std::fs::remove_dir(&journal.target_directory)?;",
+    "classification": "production_site",
+    "reason": "local-generation-remove"
+  },
+  {
+    "path": "crates/kasumi-engine/src/target_journal_open_tests.rs",
+    "line": 12,
+    "text": "directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/runtime_storage_fixtures.rs",
+    "line": 63,
+    "text": "/// A low-level fixture owns its TempDir in the calling scope. Physical and",
+    "classification": "test_module",
+    "reason": "lib.rs36cfg(test)"
+  },
+  {
+    "path": "crates/kasumi-engine/src/security_audit_existing_tests.rs",
+    "line": 15,
+    "text": "_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/security_audit_existing_tests.rs",
+    "line": 21,
+    "text": "private_files::create_directory(&private)?;",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/runtime_serving_tests.rs",
+    "line": 94,
+    "text": "kasumi_store::private_files::create_directory(&trust_directory).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/runtime_serving_tests.rs",
+    "line": 187,
+    "text": "std::fs::create_dir(&public_dir).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/runtime_custody_tests.rs",
+    "line": 63,
+    "text": "kasumi_store::private_files::create_directory(&backup_directory).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-server/src/authority_node_enrollment_tests.rs",
+    "line": 26,
+    "text": "_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/mutation_receipt_tests.rs",
+    "line": 68,
+    "text": "async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/mutation_receipt_tests.rs",
+    "line": 71,
+    "text": "kasumi_store::private_files::create_directory(&directory.path().join(\"persistent\")).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-raft/tests/cluster.rs",
+    "line": 11,
+    "text": "use tempfile::TempDir;",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-raft/tests/cluster.rs",
+    "line": 22,
+    "text": "dir: TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-raft/tests/cluster.rs",
+    "line": 25,
+    "text": "_scratch_directory: TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-raft/tests/read_barrier.rs",
+    "line": 43,
+    "text": "_dir: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-raft/tests/read_barrier.rs",
+    "line": 47,
+    "text": "_scratch_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/database_construction_tests.rs",
+    "line": 83,
+    "text": "kasumi_store::private_files::create_directory(&left_directory.path().join(\"persistent\"))?;",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/database_construction_tests.rs",
+    "line": 84,
+    "text": "kasumi_store::private_files::create_directory(&right_directory.path().join(\"persistent\"))?;",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-authority/src/tests.rs",
+    "line": 20,
+    "text": "directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-authority/src/tests.rs",
+    "line": 21,
+    "text": "_scratch_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-raft/tests/storage_conformance.rs",
+    "line": 12,
+    "text": "use tempfile::TempDir;",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-raft/tests/storage_conformance.rs",
+    "line": 16,
+    "text": "_directory: TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-raft/tests/storage_conformance.rs",
+    "line": 17,
+    "text": "_scratch_directory: TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/target_resolution_tests.rs",
+    "line": 72,
+    "text": "async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/target_resolution_tests.rs",
+    "line": 75,
+    "text": "kasumi_store::private_files::create_directory(&directory.path().join(\"persistent\")).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/snapshot_bundle.rs",
+    "line": 523,
+    "text": ") -> (tempfile::TempDir, Arc<TenantEngine>, Arc<TenantStore>) {",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 513"
+  },
+  {
+    "path": "crates/kasumi-engine/src/snapshot_bundle.rs",
+    "line": 529,
+    "text": ") -> (tempfile::TempDir, Arc<TenantEngine>, Arc<TenantStore>) {",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 513"
+  },
+  {
+    "path": "crates/kasumi-engine/src/snapshot_bundle.rs",
+    "line": 532,
+    "text": "kasumi_store::private_files::create_directory(&directory.path().join(\"persistent\"))",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 513"
+  },
+  {
+    "path": "crates/kasumi-engine/src/snapshot_bundle.rs",
+    "line": 545,
+    "text": "type Fixture = (tempfile::TempDir, Arc<TenantEngine>, Arc<TenantStore>);",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 513"
+  },
+  {
+    "path": "crates/kasumi-engine/src/snapshot_bundle.rs",
+    "line": 614,
+    "text": "directory: tempfile::TempDir,",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 513"
+  },
+  {
+    "path": "crates/kasumi-engine/examples/map_sharing.rs",
+    "line": 141,
+    "text": "std::fs::create_dir_all(parent)?;",
+    "classification": "production_site",
+    "reason": "example-output"
+  },
+  {
+    "path": "crates/kasumi-engine/src/mutation_apply_tests.rs",
+    "line": 23,
+    "text": "_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/service_credential_tests.rs",
+    "line": 6,
+    "text": "_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/codec_fixture.rs",
+    "line": 5,
+    "text": "_directory: tempfile::TempDir,",
+    "classification": "test_module",
+    "reason": "lib.rs108cfg(test)"
+  },
+  {
+    "path": "crates/kasumi-engine/src/staged_terminal_tests.rs",
+    "line": 89,
+    "text": "async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/staged_terminal_tests.rs",
+    "line": 92,
+    "text": "kasumi_store::private_files::create_directory(&directory.path().join(\"persistent\")).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/storage_domains/catalog_initialization/tests.rs",
+    "line": 9,
+    "text": ") -> Result<(tempfile::TempDir, Arc<NodeStore>)> {",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/replicated.rs",
+    "line": 52,
+    "text": "kasumi_store::private_files::create_directory(&directory).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/replicated.rs",
+    "line": 591,
+    "text": "std::fs::remove_dir_all(cold_path).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/storage_domains/existing_catalogs/tests.rs",
+    "line": 7,
+    "text": "directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/storage_domains/existing_catalogs/tests.rs",
+    "line": 9,
+    "text": "scratch_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/service_serving_tests.rs",
+    "line": 15,
+    "text": "directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/service_serving_tests.rs",
+    "line": 74,
+    "text": "kasumi_store::private_files::create_directory(&root).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/contracts.rs",
+    "line": 840,
+    "text": "tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/contracts.rs",
+    "line": 1667,
+    "text": "std::fs::DirBuilder::new()",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/database_worker_outcome_tests.rs",
+    "line": 50,
+    "text": "directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/database_worker_outcome_tests.rs",
+    "line": 61,
+    "text": "directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/bootstrap_existing_replicated_tests.rs",
+    "line": 13,
+    "text": "directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/bootstrap_existing_replicated_tests.rs",
+    "line": 58,
+    "text": "(directory, storage): (tempfile::TempDir, crate::test_utils::FixtureStorage),",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/bootstrap_existing_replicated_tests.rs",
+    "line": 97,
+    "text": "async fn close(self) -> (tempfile::TempDir, crate::test_utils::FixtureStorage) {",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/tenant_audit.rs",
+    "line": 442,
+    "text": "tempfile::TempDir,",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 412"
+  },
+  {
+    "path": "crates/kasumi-engine/src/tenant_audit.rs",
+    "line": 449,
+    "text": "kasumi_store::private_files::create_directory(&directory.path().join(\"persistent\"))",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 412"
+  },
+  {
+    "path": "crates/kasumi-engine/src/tenant_audit.rs",
+    "line": 698,
+    "text": "std::fs::read_dir(store.durable_directory().unwrap().join(\"external\"))",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 412"
+  },
+  {
+    "path": "crates/kasumi-engine/src/tenant_audit.rs",
+    "line": 727,
+    "text": "std::fs::read_dir(store.durable_directory().unwrap().join(\"external\"))",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 412"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/lifecycle.rs",
+    "line": 23,
+    "text": "root: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/lifecycle.rs",
+    "line": 153,
+    "text": "kasumi_store::private_files::create_directory(&directory).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/bootstrap_existing_tests.rs",
+    "line": 11,
+    "text": "directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/src/lease_retention_tests.rs",
+    "line": 42,
+    "text": "_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/embedded_audit.rs",
+    "line": 265,
+    "text": "kasumi_store::private_files::create_directory(&source_root).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/embedded_audit.rs",
+    "line": 297,
+    "text": "kasumi_store::private_files::create_directory(&target_root).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/backup.rs",
+    "line": 374,
+    "text": "crate::private_files::create_directory(root.as_ref())?;",
+    "classification": "production_site",
+    "reason": "backup-root"
+  },
+  {
+    "path": "crates/kasumi-store/src/audit_archive_owned.rs",
+    "line": 169,
+    "text": "assert!(std::fs::read_dir(&root).unwrap().next().is_none());",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 80"
+  },
+  {
+    "path": "crates/kasumi-store/src/audit_archive_owned.rs",
+    "line": 223,
+    "text": "assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 80"
+  },
+  {
+    "path": "crates/kasumi-store/src/audit_archive_owned.rs",
+    "line": 231,
+    "text": "private_files::create_directory(&owned).unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 80"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/backup_checkpoint.rs",
+    "line": 369,
+    "text": "directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/audit_archive.rs",
+    "line": 637,
+    "text": "if let Err(error) = crate::private_files::create_directory(root) {",
+    "classification": "production_site",
+    "reason": "audit-root"
+  },
+  {
+    "path": "crates/kasumi-store/src/audit_archive.rs",
+    "line": 1410,
+    "text": "std::fs::create_dir(&root).unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 824"
+  },
+  {
+    "path": "crates/kasumi-store/src/file_keys.rs",
+    "line": 202,
+    "text": "private_files::create_directory(&dir_path).unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 195"
+  },
+  {
+    "path": "crates/kasumi-store/src/file_keys.rs",
+    "line": 251,
+    "text": "private_files::create_directory(&private).unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 195"
+  },
+  {
+    "path": "crates/kasumi-store/src/file_keys.rs",
+    "line": 318,
+    "text": "private_files::create_directory(&dir_path).unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 195"
+  },
+  {
+    "path": "crates/kasumi-store/src/backup_sessions.rs",
+    "line": 322,
+    "text": "tempfile::TempDir,",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 314"
+  },
+  {
+    "path": "crates/kasumi-store/src/backup_sessions.rs",
+    "line": 856,
+    "text": "std::fs::create_dir(&external).unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 314"
+  },
+  {
+    "path": "crates/kasumi-store/src/backup_sessions.rs",
+    "line": 862,
+    "text": "std::fs::remove_dir(&objects).unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 314"
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "line": 172,
+    "text": "match crate::private_files::create_directory(&config.directory) {",
+    "classification": "production_site",
+    "reason": "scratch-root"
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "line": 242,
+    "text": "/// the full fixture scope. The installed owner never owns a TempDir cleanup.",
+    "classification": "comment",
+    "reason": "No executable call"
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "line": 342,
+    "text": "if unsafe { libc::unlinkat(self.directory.as_raw_fd(), name.as_ptr(), 0) } != 0 {",
+    "classification": "regular_file_unlink",
+    "reason": "unlinkat flags0, not AT_REMOVEDIR"
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "line": 644,
+    "text": "crate::private_files::create_directory(&disk.config.directory).unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 544"
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "line": 648,
+    "text": "std::fs::read_dir(&disk.config.directory).unwrap().count(),",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 544"
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "line": 651,
+    "text": "assert_eq!(std::fs::read_dir(&original).unwrap().count(), 0);",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 544"
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "line": 654,
+    "text": "std::fs::remove_dir(original).unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 544"
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "line": 658,
+    "text": "let root = tempfile::tempdir().unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 544"
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "line": 660,
+    "text": "crate::private_files::create_directory(&actual).unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 544"
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "line": 791,
+    "text": "fn config(directory: &tempfile::TempDir, name: &str) -> ScratchDiskConfig {",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 544"
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "line": 801,
+    "text": "let directory = tempfile::tempdir().unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 544"
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "line": 822,
+    "text": "let directory = tempfile::tempdir().unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 544"
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "line": 897,
+    "text": "let directory = tempfile::tempdir().unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 544"
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_disk.rs",
+    "line": 925,
+    "text": "let temporary = tempfile::tempdir().unwrap();",
+    "classification": "inline_test",
+    "reason": "cfg(test) region beginning at 544"
+  },
+  {
+    "path": "crates/kasumi-engine/src/test_utils.rs",
+    "line": 116,
+    "text": "kasumi_store::private_files::create_directory(&persistent)?;",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/history.rs",
+    "line": 805,
+    "text": "std::fs::remove_dir_all(&cold_path).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_file/tests.rs",
+    "line": 16,
+    "text": "fn directory() -> tempfile::TempDir {",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/single_catalog/tests.rs",
+    "line": 9,
+    "text": ") -> Result<(tempfile::TempDir, Arc<NodeStore>)> {",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/private_files.rs",
+    "line": 11,
+    "text": "pub fn create_directory(path: &Path) -> Result<()> {",
+    "classification": "helper_declaration",
+    "reason": "Implementation recorded atline15"
+  },
+  {
+    "path": "crates/kasumi-store/src/private_files.rs",
+    "line": 15,
+    "text": "std::fs::DirBuilder::new().mode(0o700).create(path)?;",
+    "classification": "production_site",
+    "reason": "store-private-root"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/file.rs",
+    "line": 726,
+    "text": "if unsafe { libc::unlinkat(owner.parent().as_raw_fd(), owner.name().as_ptr(), 0) }",
+    "classification": "regular_file_unlink",
+    "reason": "unlinkat flags0, not AT_REMOVEDIR"
+  },
+  {
+    "path": "crates/kasumi-store/src/test_utils.rs",
+    "line": 23,
+    "text": "pub fn private_tempdir() -> std::io::Result<tempfile::TempDir> {",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/test_utils.rs",
+    "line": 27,
+    "text": ".tempdir()",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/test_utils.rs",
+    "line": 531,
+    "text": "crate::private_files::create_directory(root)?;",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/test_utils.rs",
+    "line": 551,
+    "text": "crate::private_files::create_directory(root)?;",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/backup_sessions_fs.rs",
+    "line": 50,
+    "text": "if create && unsafe { libc::mkdirat(self.0.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {",
+    "classification": "production_site",
+    "reason": "backup-session-child"
+  },
+  {
+    "path": "crates/kasumi-store/src/backup_sessions_fs.rs",
+    "line": 246,
+    "text": "let pointer = unsafe { libc::fdopendir(fd) };",
+    "classification": "production_site",
+    "reason": "backup-session-list"
+  },
+  {
+    "path": "crates/kasumi-store/src/backup_sessions_fs.rs",
+    "line": 268,
+    "text": "// readdir can return null on either EOF or failure.",
+    "classification": "comment",
+    "reason": "No executable call"
+  },
+  {
+    "path": "crates/kasumi-store/src/backup_sessions_fs.rs",
+    "line": 277,
+    "text": "let entry = unsafe { libc::readdir(entries.0) };",
+    "classification": "production_site",
+    "reason": "backup-session-list"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 7,
+    "text": "fn installation() -> (tempfile::TempDir, NodeDiskConfig) {",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 10,
+    "text": "crate::private_files::create_directory(&root).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 38,
+    "text": "crate::private_files::create_directory(&config.roots[\"data\"].join(&relative)).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 400,
+    "text": "crate::private_files::create_directory(&nested).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 897,
+    "text": "crate::private_files::create_directory(&root.join(\"parent\")).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 905,
+    "text": "crate::private_files::create_directory(&root.join(\"parent\")).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 938,
+    "text": "std::fs::remove_dir(root.join(\"parent\")).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1366,
+    "text": "crate::private_files::create_directory(&config.roots[\"data\"].join(name)).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1539,
+    "text": "crate::private_files::create_directory(&config.roots[\"data\"].join(\"nested\")).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1567,
+    "text": "crate::private_files::create_directory(&config.roots[\"data\"].join(\"nested\")).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1631,
+    "text": "crate::private_files::create_directory(&config.roots[\"data\"].join(\"nested\")).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1745,
+    "text": "crate::private_files::create_directory(&parent).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1751,
+    "text": "crate::private_files::create_directory(&parent).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1766,
+    "text": "crate::private_files::create_directory(&parent).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1770,
+    "text": "crate::private_files::create_directory(&parent).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1789,
+    "text": "crate::private_files::create_directory(&parent).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1823,
+    "text": "crate::private_files::create_directory(root).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1833,
+    "text": "std::fs::remove_dir(root).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1843,
+    "text": "crate::private_files::create_directory(&parent).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1848,
+    "text": "crate::private_files::create_directory(&parent).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/retained_spool_tests.rs",
+    "line": 124,
+    "text": "_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/tests/openbao_live.rs",
+    "line": 31,
+    "text": "for entry in std::fs::read_dir(path)? {",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/tests/openbao_live.rs",
+    "line": 51,
+    "text": "std::fs::create_dir(&certificate_dir)?;",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/backup/minio_live.rs",
+    "line": 59,
+    "text": "let root = tempfile::tempdir_in(&workdir)?;",
+    "classification": "test_module",
+    "reason": "backup.rs1714cfg(test)"
+  },
+  {
+    "path": "crates/kasumi-store/src/backup/minio_live.rs",
+    "line": 61,
+    "text": "std::fs::create_dir(&certs)?;",
+    "classification": "test_module",
+    "reason": "backup.rs1714cfg(test)"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/census.rs",
+    "line": 252,
+    "text": "// SAFETY: fdopendir takes ownership only on success.",
+    "classification": "comment",
+    "reason": "No executable call"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/census.rs",
+    "line": 253,
+    "text": "let entries = unsafe { libc::fdopendir(fd) };",
+    "classification": "production_site",
+    "reason": "census-native"
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/census.rs",
+    "line": 269,
+    "text": "let item = unsafe { libc::readdir(self.entries) };",
+    "classification": "production_site",
+    "reason": "census-native"
+  },
+  {
+    "path": "crates/kasumi-store/src/live_trust_tests.rs",
+    "line": 34,
+    "text": "directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/live_trust_tests.rs",
+    "line": 44,
+    "text": "scratch_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/tests.rs",
+    "line": 10,
+    "text": "tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-store/src/tests.rs",
+    "line": 1324,
+    "text": "crate::private_files::create_directory(&directory).unwrap();",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/common/mod.rs",
+    "line": 12,
+    "text": "_scratch_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/common/mod.rs",
+    "line": 113,
+    "text": "_directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/retirement.rs",
+    "line": 68,
+    "text": "directory: tempfile::TempDir,",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/staged_transactions.rs",
+    "line": 688,
+    "text": "std::fs::DirBuilder::new()",
+    "classification": "test_or_test_utils",
+    "reason": "Explicit test module or fixture API source path"
+  }
+]

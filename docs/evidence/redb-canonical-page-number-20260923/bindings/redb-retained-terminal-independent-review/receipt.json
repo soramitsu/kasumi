@@ -1,0 +1,22 @@
+{
+  "result": "NO_ADDITIONAL_CONFIRMED_BLOCKER_IN_VENDOR_PREREQUISITE",
+  "review_sha256": "dfd8e283178c4b8164e0ffdbad625657ae355fe428374a6e01916cb181f82a7a",
+  "files": {
+    "target/installed-disk-validation/redb-retained-terminal/terminal.patch": "0e24a98eb895f58ad55521f1b37a2f23268f79f6a11c6c29ad964a38e248782f",
+    "target/installed-disk-validation/redb-retained-terminal/README.md": "c3181bac39b9403123cc0860d257b5a5a8ae1e20ca5b005de8db0d7b93ca84ec",
+    "target/installed-disk-validation/redb-retained-terminal/manifest.json": "4889220dcac5912b9f444863348aec726fbedee5201f5b1c86d2198db65355f7",
+    "target/installed-disk-validation/redb-retained-terminal/proposed/vendor/redb-4.2.0/src/lib.rs": "5f587febd53cccaf8b10be5bed3d0f60fdd46d5b3c3fbd536460d90f1d208d06",
+    "target/installed-disk-validation/redb-retained-terminal/proposed/vendor/redb-4.2.0/src/retained_transaction.rs": "98efcb4039728e7cc18178e1b9c000f411555dc836dfafec29b9645732880315",
+    "target/installed-disk-validation/redb-retained-terminal/proposed/vendor/redb-4.2.0/src/retained_transaction_tests.rs": "47d8917f9b36919ae4c6d4046bda6621ba28485bfe1adcffd1ffa939da23dbc3",
+    "target/installed-disk-validation/redb-retained-terminal/proposed/vendor/redb-4.2.0/src/transactions.rs": "d8b20ab61cd6864d7704312c868d66e729a4bab6f54a55993cd9257850a8b8ff"
+  },
+  "actual_sources": {
+    "vendor/redb-4.2.0/src/db.rs": "3e19185c6f93a25fe5f28a76e05c34dfff4210df54b88c279adbaccbdc6e5b14",
+    "vendor/redb-4.2.0/src/transactions.rs": "72d369c48d5947972f1d721e88eaa64bd87e81247d8bcd0ea7050b2156d3c869",
+    "vendor/redb-4.2.0/src/transaction_tracker.rs": "5d673a923d5c6995251ec6ec1a519be4e3b1e7db385f99f16410b375315ee8ab",
+    "vendor/redb-4.2.0/src/tree_store/table_tree.rs": "e4e53fcc516bf69c4f4918335be169d26b0abfc6d6976dbfbfd68c15904f12db",
+    "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs": "5266543540be85283f87fbed76d38e57a85334c728349c7e7002740b3336815d"
+  },
+  "source_modified": false,
+  "build_or_tests_run": false
+}

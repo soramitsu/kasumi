@@ -1,0 +1,265 @@
+{
+  "controls": {
+    "redb-allocator-encoded-lengths-root-review/receipt.json": "2585087f7bb2c003efc2dc000a9aa86b9eb7526591606f8835e31d82e8943df6",
+    "redb-allocator-encoded-lengths/manifest.json": "4c29b812846a4e39b09f58eba58b27d7b52c1c3b31c7d67cf37f98a2f58a37e7",
+    "redb-allocator-in-place-encoding/manifest.json": "0642b5d880ade44d2e5a6df435694d8aa48be881013838c8a3e2b3dbeee61a3b",
+    "redb-allocator-in-place-independent-review/receipt.json": "357342c9d30ea6783278646e6f5b3f64c11f90ede699026301c9d27b3dc1b54c",
+    "redb-protected-maintenance-design/manifest.json": "92c0323ad6836f48bbda62d60ee52144473092118e4076ef7fd08bd83977c74d"
+  },
+  "files": {
+    "148-result.json": {
+      "bytes": 1148,
+      "sha256": "1e58bf7437860d56e27a591fb30861485c5ab1527a5f23d03de7fb82201d5941"
+    },
+    "148-source-after.json": {
+      "bytes": 158062,
+      "sha256": "f3a2da31974cb230a49f7496a36a264235fbfefb6c2a9cdbbcfce9cde1633c96"
+    },
+    "148-source-before.json": {
+      "bytes": 158062,
+      "sha256": "f3a2da31974cb230a49f7496a36a264235fbfefb6c2a9cdbbcfce9cde1633c96"
+    },
+    "148-vendor-feature-public-integration.log": {
+      "bytes": 27439,
+      "sha256": "5e8649826c9f1a903053a1c0517c0bc2989aeb8127e5fbaca9c663cef9ec5783"
+    },
+    "149-allocator-length-planning-applied.json": {
+      "bytes": 1710,
+      "sha256": "89e5627cc2e97abc87c47e17f42ced0bba093f01b309c7465d9751fd1b687d73"
+    },
+    "149-result.json": {
+      "bytes": 689,
+      "sha256": "abf6647940688b7318753403e88ccb18e1d67227c6471aa3db2caf779c1c375d"
+    },
+    "149-source-after.json": {
+      "bytes": 158062,
+      "sha256": "ccf46415a0b57e8985db71955bfa94c2cf9f336b3894c7b21d9149face24663c"
+    },
+    "149-source-before.json": {
+      "bytes": 158062,
+      "sha256": "ccf46415a0b57e8985db71955bfa94c2cf9f336b3894c7b21d9149face24663c"
+    },
+    "149-vendor-allocator-length-planning.log": {
+      "bytes": 42718,
+      "sha256": "177b66aa3ece4fdab451fb7a6af855382119f0a84a222a69d1ce7add2216c060"
+    },
+    "150-result.json": {
+      "bytes": 691,
+      "sha256": "3a839f817bd45745ff3a0ddcf779bdd21abe633c17b014115c4d75af93442abb"
+    },
+    "150-source-after.json": {
+      "bytes": 158062,
+      "sha256": "ccf46415a0b57e8985db71955bfa94c2cf9f336b3894c7b21d9149face24663c"
+    },
+    "150-source-before.json": {
+      "bytes": 158062,
+      "sha256": "ccf46415a0b57e8985db71955bfa94c2cf9f336b3894c7b21d9149face24663c"
+    },
+    "150-workspace-strict-clippy.log": {
+      "bytes": 1801,
+      "sha256": "8f513c1ab22a50413110c404dfc253b76276ac9e4baedb116712c1e61338d58a"
+    },
+    "151-allocator-in-place-encoding-applied.json": {
+      "bytes": 1675,
+      "sha256": "9226757617213683c4c8daabc52f3f91f878d43423da778895c1277f8379082b"
+    },
+    "151-result.json": {
+      "bytes": 654,
+      "sha256": "819d66d98d3891011cd62ea7afef5f37c6ce3733d344e688d80a0f7829b0484a"
+    },
+    "151-source-after.json": {
+      "bytes": 158062,
+      "sha256": "9c7c35fdb46ce404610fbb3a72fb63978a59c20c2381481bfc4eaada5f1f8aa0"
+    },
+    "151-source-before.json": {
+      "bytes": 158062,
+      "sha256": "9c7c35fdb46ce404610fbb3a72fb63978a59c20c2381481bfc4eaada5f1f8aa0"
+    },
+    "151-vendor-in-place-allocator-encoding.log": {
+      "bytes": 43553,
+      "sha256": "a8ca040f39e275fdb36cd65e6398662408e848c628cc6c4ac9f776e94a513a4f"
+    },
+    "redb-allocator-encoded-lengths-root-review/receipt.json": {
+      "bytes": 487,
+      "sha256": "2585087f7bb2c003efc2dc000a9aa86b9eb7526591606f8835e31d82e8943df6"
+    },
+    "redb-allocator-encoded-lengths-root-review/review.md": {
+      "bytes": 1503,
+      "sha256": "a8ee981f7c9f4c3ae2a439fa3b7220abb02733622117577e14bd8c9c1b1af64e"
+    },
+    "redb-allocator-encoded-lengths/README.md": {
+      "bytes": 4021,
+      "sha256": "0831946dbb79f9464f71ac05ca9391f98ba941ece7f19038bd53a757cacc58a5"
+    },
+    "redb-allocator-encoded-lengths/base/vendor/redb-4.2.0/src/tree_store/page_store/bitmap.rs": {
+      "bytes": 17248,
+      "sha256": "d57724dcbc9701e8fb7a2e268febba1fbe2ff2a00e14e000c27a703afe3af9ff"
+    },
+    "redb-allocator-encoded-lengths/base/vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs": {
+      "bytes": 20554,
+      "sha256": "090fa18f76e9bc375c7e4d17cefc22e6e37501a0f1534a0fdd6d1803d684687a"
+    },
+    "redb-allocator-encoded-lengths/base/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs": {
+      "bytes": 59565,
+      "sha256": "09912e97be739f0766bfe9d806904b984ab1cfdcaa9e7bac1fd5ec6d8c9fdf3f"
+    },
+    "redb-allocator-encoded-lengths/base/vendor/redb-4.2.0/src/tree_store/page_store/region.rs": {
+      "bytes": 7613,
+      "sha256": "ae6fb0a6f050de1739afe80fb5706b1634e6629cba3b5baeeff74935fbf367e0"
+    },
+    "redb-allocator-encoded-lengths/encoded-lengths.patch": {
+      "bytes": 16177,
+      "sha256": "055fc2a64f3477a0dc6d6e5a1a086afbf2f5df521ebd863936b60c82bf46a7d3"
+    },
+    "redb-allocator-encoded-lengths/freeze.py": {
+      "bytes": 4611,
+      "sha256": "c76548e4e3b96584684f3ce28eb91395c9db67937696a3f3942a7b857ef3ea0c"
+    },
+    "redb-allocator-encoded-lengths/git-apply-check.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "redb-allocator-encoded-lengths/manifest.json": {
+      "bytes": 8134,
+      "sha256": "4c29b812846a4e39b09f58eba58b27d7b52c1c3b31c7d67cf37f98a2f58a37e7"
+    },
+    "redb-allocator-encoded-lengths/proposed/vendor/redb-4.2.0/src/tree_store/page_store/bitmap.rs": {
+      "bytes": 22415,
+      "sha256": "aee25ff80290c56cee083839f7ae138e33fd9076d496790ecc2d5fec6bc11d93"
+    },
+    "redb-allocator-encoded-lengths/proposed/vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs": {
+      "bytes": 23180,
+      "sha256": "50221599223409a8d7549a45df62ce3a9a2ea8c2d5dfbd592a9d80f457da9c17"
+    },
+    "redb-allocator-encoded-lengths/proposed/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs": {
+      "bytes": 60243,
+      "sha256": "a0f083e6a15453538227999d93a77e44723e24cc7a87a608f0a47f6353e1e853"
+    },
+    "redb-allocator-encoded-lengths/proposed/vendor/redb-4.2.0/src/tree_store/page_store/region.rs": {
+      "bytes": 11525,
+      "sha256": "4c01519d1f840857155efcd45ebee22b1bb2b9672c1eaed3465e795017ee18fe"
+    },
+    "redb-allocator-encoded-lengths/target-rustfmt-check.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "redb-allocator-in-place-encoding/README.md": {
+      "bytes": 4110,
+      "sha256": "b5cd83249e86255cfe8a88c1225a73a6fb07d64a4ec287f88254c4d018c4874d"
+    },
+    "redb-allocator-in-place-encoding/add-tests.py": {
+      "bytes": 8900,
+      "sha256": "05ca8c312a683ab05bf0ed4c9665ba9252a6f1256db121ff57412e47c88bbbd6"
+    },
+    "redb-allocator-in-place-encoding/base/vendor/redb-4.2.0/src/tree_store/page_store/bitmap.rs": {
+      "bytes": 22415,
+      "sha256": "aee25ff80290c56cee083839f7ae138e33fd9076d496790ecc2d5fec6bc11d93"
+    },
+    "redb-allocator-in-place-encoding/base/vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs": {
+      "bytes": 23180,
+      "sha256": "50221599223409a8d7549a45df62ce3a9a2ea8c2d5dfbd592a9d80f457da9c17"
+    },
+    "redb-allocator-in-place-encoding/base/vendor/redb-4.2.0/src/tree_store/page_store/region.rs": {
+      "bytes": 11525,
+      "sha256": "4c01519d1f840857155efcd45ebee22b1bb2b9672c1eaed3465e795017ee18fe"
+    },
+    "redb-allocator-in-place-encoding/encoding.patch": {
+      "bytes": 20900,
+      "sha256": "a41926e0b6fda54e12eff688da8c88c43d0a0f21c1514395a7f2af79f3fc12f2"
+    },
+    "redb-allocator-in-place-encoding/freeze.py": {
+      "bytes": 5704,
+      "sha256": "306aa031ded0af3590b7c119849f998a773fb08189e94300c61bc14d5ce54f79"
+    },
+    "redb-allocator-in-place-encoding/git-apply-check.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "redb-allocator-in-place-encoding/implement.py": {
+      "bytes": 7687,
+      "sha256": "e9ff523db21793d11d81e8038303e3da7a9555d49ebd85bdfa6bf84740fd22a4"
+    },
+    "redb-allocator-in-place-encoding/manifest.json": {
+      "bytes": 10911,
+      "sha256": "0642b5d880ade44d2e5a6df435694d8aa48be881013838c8a3e2b3dbeee61a3b"
+    },
+    "redb-allocator-in-place-encoding/proposed/vendor/redb-4.2.0/src/tree_store/page_store/bitmap.rs": {
+      "bytes": 30149,
+      "sha256": "1c66d0a834c11d20babad113ea5b6f79645d4ebfa58421e11923a65bb483be1a"
+    },
+    "redb-allocator-in-place-encoding/proposed/vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs": {
+      "bytes": 27614,
+      "sha256": "289f6b3f52d77f2ac40bdaaaca9c693c16ed62b8c2819d5539df9f7b80f12d92"
+    },
+    "redb-allocator-in-place-encoding/proposed/vendor/redb-4.2.0/src/tree_store/page_store/region.rs": {
+      "bytes": 15480,
+      "sha256": "2f1b8a7ddb86f8000df47f9f68d24752f93df5489b377c9f3312d0a6203ff086"
+    },
+    "redb-allocator-in-place-encoding/target-rustfmt-check.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "redb-allocator-in-place-independent-review/evidence.json": {
+      "bytes": 4724,
+      "sha256": "2ea55d4c2e2d860f6d158587cb36e044ac90aa689bc79532da63055a6b81c86f"
+    },
+    "redb-allocator-in-place-independent-review/receipt.json": {
+      "bytes": 433,
+      "sha256": "357342c9d30ea6783278646e6f5b3f64c11f90ede699026301c9d27b3dc1b54c"
+    },
+    "redb-allocator-in-place-independent-review/review.md": {
+      "bytes": 3755,
+      "sha256": "0c480fdd992b2af80a1896af5b04fd6679945b8c097d04f273832305821d81e5"
+    },
+    "redb-protected-maintenance-design/design.md": {
+      "bytes": 11086,
+      "sha256": "0b48fd23136c2200371a373435c0cc7aea24399e70f8ffba19ae6171bc27656a"
+    },
+    "redb-protected-maintenance-design/geometry.json": {
+      "bytes": 757,
+      "sha256": "473b76bb4e73c593de4358c799f5cfd92eb58bae6381a66f0cafe8140922bcd6"
+    },
+    "redb-protected-maintenance-design/manifest.json": {
+      "bytes": 3015,
+      "sha256": "92c0323ad6836f48bbda62d60ee52144473092118e4076ef7fd08bd83977c74d"
+    },
+    "run148.py": {
+      "bytes": 4093,
+      "sha256": "a4da47f320233e9605453598c1439db94025178cd1a5912914cf8c9a69086a3b"
+    },
+    "run149.py": {
+      "bytes": 3720,
+      "sha256": "ec228f56ed318847552562186efe54a2aab5f146db10c5619aff91825057f7f5"
+    },
+    "run150.py": {
+      "bytes": 3694,
+      "sha256": "cbd123d7ec70aa73d49ead381121d680aa10913e9400c66a04ba74138d81329f"
+    },
+    "run151.py": {
+      "bytes": 3691,
+      "sha256": "4ab99e559923d53e266f7182ba3f8d608915423bb111ba31ca9054bc0458d097"
+    }
+  },
+  "package_roots": [
+    "redb-allocator-encoded-lengths",
+    "redb-allocator-encoded-lengths-root-review",
+    "redb-allocator-in-place-encoding",
+    "redb-allocator-in-place-independent-review",
+    "redb-protected-maintenance-design"
+  ],
+  "terminal_runs": {
+    "148": {
+      "result_sha256": "1e58bf7437860d56e27a591fb30861485c5ab1527a5f23d03de7fb82201d5941"
+    },
+    "149": {
+      "result_sha256": "abf6647940688b7318753403e88ccb18e1d67227c6471aa3db2caf779c1c375d"
+    },
+    "150": {
+      "result_sha256": "3a839f817bd45745ff3a0ddcf779bdd21abe633c17b014115c4d75af93442abb"
+    },
+    "151": {
+      "result_sha256": "819d66d98d3891011cd62ea7afef5f37c6ce3733d344e688d80a0f7829b0484a"
+    }
+  },
+  "unfinished_namespace_and_opening_candidates_excluded": true
+}

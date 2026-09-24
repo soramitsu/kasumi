@@ -46,19 +46,27 @@ checkout. An extracted source directory alone is rejected; there is no fallback
 that accepts an unverified `--source` label. Read-only mounts of the source
 repository and build output are supported.
 
-For the existing failed `3a8d512` Linux ARM64 checkpoint, use the following
-command inside its recorded validation environment. Set the runner path to the
-reviewed checked-in script and choose a new output directory. This is a
-diagnostic of that failed checkpoint, not acceptance of a release candidate.
+Provide `--directory-policy` pointing at the explicitly qualified directory policy
+for the filesystem used by this diagnostic. Its two positive integer fields are
+`extent_bytes` and `max_entries`; this runner supplies no production defaults and
+does not establish filesystem qualification. It retains the exact input bytes and
+hash and requires the generated installation to contain the same policy. Use
+only binaries built from the current required-policy API; historical checkpoints
+remain historical evidence and are not accepted through a compatibility path.
+The runner reserves three loopback ports before `kasumid init`, supplies them in
+the required strict `--network` file, retains that file in provenance, and
+checks the generated configuration and profiles. It does not rewrite endpoints
+after immutable Control genesis.
 
 ```sh
 python3 /opt/kasumi-tools/small_native_smoke.py \
-  --binaries /opt/kasumi-acceptance/3a8d512-functional-arm64/run/target/release \
-  --build-evidence /opt/kasumi-acceptance/3a8d512-functional-arm64/run/evidence.json \
-  --source 3a8d5121e1ddee14ae8a6d938d12152eaa04e417 \
-  --repository /opt/kasumi-acceptance/3a8d512-git \
-  --output /opt/kasumi-acceptance/3a8d512-small-standalone-001 \
-  --execution-description 'Native Linux ARM64 in the recorded isolated validation environment; outbound networking disabled'
+  --binaries "$RELEASE_BINARIES" \
+  --build-evidence "$BUILD_EVIDENCE" \
+  --directory-policy /etc/kasumi/directory-policy.json \
+  --source "$RELEASE_COMMIT" \
+  --repository "$SOURCE_REPOSITORY" \
+  --output "$NEW_EVIDENCE_DIRECTORY" \
+  --execution-description 'Native Linux in the recorded isolated validation environment; outbound networking disabled'
 ```
 
 The description must match the actual environment. The parent directory must

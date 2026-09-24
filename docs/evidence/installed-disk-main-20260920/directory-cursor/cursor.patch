@@ -1,0 +1,1135 @@
+diff --git a/crates/kasumi-store/src/backup_sessions_fs.rs b/crates/kasumi-store/src/backup_sessions_fs.rs
+--- a/crates/kasumi-store/src/backup_sessions_fs.rs
++++ b/crates/kasumi-store/src/backup_sessions_fs.rs
+@@ -3,7 +3,7 @@
+ use super::*;
+ use std::{
+     collections::BTreeSet,
+-    ffi::{CStr, CString},
++    ffi::CString,
+     fs::File,
+     os::fd::{AsRawFd, FromRawFd},
+     path::{Path, PathBuf},
+@@ -230,75 +230,58 @@
+                 more: false,
+             });
+         };
+-        // openat(".") creates an independent directory cursor; dup would share it.
+-        let fd = unsafe {
+-            libc::openat(
+-                objects.0.as_raw_fd(),
+-                c".".as_ptr(),
+-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+-            )
+-        };
+-        ensure!(
+-            fd != -1,
+-            "opening backup enumeration: {}",
+-            std::io::Error::last_os_error()
+-        );
+-        let pointer = unsafe { libc::fdopendir(fd) };
+-        if pointer.is_null() {
+-            unsafe {
+-                libc::close(fd);
+-            }
+-            anyhow::bail!(
+-                "opening backup enumeration: {}",
+-                std::io::Error::last_os_error()
+-            );
+-        }
+-        struct Entries(*mut libc::DIR);
+-        impl Drop for Entries {
+-            fn drop(&mut self) {
+-                unsafe {
+-                    libc::closedir(self.0);
++        // This read path must use an already-enrolled directory. Raw mkdir in
++        // child() remains a separate, unqualified mutation adoption blocker.
++        let anchor = objects.2.join("session-accounting-anchor");
++        let (root, relative) = objects.1.binding(&anchor)?;
++        let relative = relative
++            .parent()
++            .context("backup object directory has no parent")?;
++        let cancellation = crate::CensusCancellation::default();
++        let directory = objects.1.open_directory(root, relative)?;
++        let mut entries = directory.cursor(&cancellation)?;
++        let mut found = BTreeSet::new();
++        let listing = (|| -> Result<()> {
++            loop {
++                proof.check()?;
++                let Some(entry) = entries.next(&cancellation)? else {
++                    break;
++                };
++                ensure!(
++                    entry.kind() == crate::NodeDiskEntryKind::File,
++                    "unexpected directory in aborted object namespace"
++                );
++                let name = entry
++                    .name()
++                    .to_str()
++                    .context("backup object name is not UTF-8")?;
++                let value = name
++                    .strip_suffix(".kasumi")
++                    .and_then(|s| Uuid::parse_str(s).ok())
++                    .context("unexpected file in aborted object namespace")?;
++                ensure!(
++                    name == format!("{value}.kasumi") && !value.is_nil(),
++                    "noncanonical file in aborted object namespace"
++                );
++                found.insert(value);
++                if found.len() > limit {
++                    break;
+                 }
+             }
+-        }
+-        let entries = Entries(pointer);
+-        let mut found = BTreeSet::new();
+-        loop {
+-            proof.check()?;
+-            // readdir can return null on either EOF or failure.
+-            #[cfg(target_os = "macos")]
+-            unsafe {
+-                *libc::__error() = 0;
+-            }
+-            #[cfg(target_os = "linux")]
+-            unsafe {
+-                *libc::__errno_location() = 0;
+-            }
+-            let entry = unsafe { libc::readdir(entries.0) };
+-            if entry.is_null() {
+-                ensure!(
+-                    std::io::Error::last_os_error().raw_os_error() == Some(0),
+-                    "reading backup enumeration failed"
+-                );
+-                break;
+-            }
+-            let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_string_lossy();
+-            if name == "." || name == ".." {
+-                continue;
+-            }
+-            let value = name
+-                .strip_suffix(".kasumi")
+-                .and_then(|s| Uuid::parse_str(s).ok())
+-                .context("unexpected file in aborted object namespace")?;
+-            ensure!(
+-                name == format!("{value}.kasumi") && !value.is_nil(),
+-                "noncanonical file in aborted object namespace"
+-            );
+-            found.insert(value);
+-            if found.len() > limit {
+-                break;
+-            }
+-        }
++            Ok(())
++        })();
++        // Retire even when proof/name/read validation failed. Preserve the
++        // original error and any independent native close error together.
++        let closed = entries.close();
++        drop(entries);
++        if let Err(error) = listing {
++            return Err(match closed {
++                Ok(()) => error,
++                Err(close) => error.context(close),
++            });
++        }
++        closed?;
++        proof.check()?;
+         let more = found.len() > limit;
+         if more {
+             found.pop_last();
+diff --git a/crates/kasumi-store/src/lib.rs b/crates/kasumi-store/src/lib.rs
+--- a/crates/kasumi-store/src/lib.rs
++++ b/crates/kasumi-store/src/lib.rs
+@@ -36,7 +36,8 @@
+ mod read_view;
+ pub use node_disk::{
+     CensusCancellation, DirectoryPolicy, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskDirectory,
+-    NodeDiskFile, NodeDiskPhase, NodeDiskSnapshot,
++    NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor, NodeDiskDirectoryEntry,
++    NodeDiskEntryKind, NodeDiskFile, NodeDiskPhase, NodeDiskSnapshot,
+ };
+ mod scratch_disk;
+ mod scratch_table;
+diff --git a/crates/kasumi-store/src/node_disk/directory/cursor/tests.rs b/crates/kasumi-store/src/node_disk/directory/cursor/tests.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/directory/cursor/tests.rs
+@@ -0,0 +1,399 @@
++use super::super::super::{DiskWork, NodeDiskConfig};
++use super::*;
++use crate::test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry};
++use std::{os::fd::AsRawFd, path::Path};
++fn fixture() -> (tempfile::TempDir, NodeDiskConfig, Arc<TestDiskMemory>) {
++    let root = private_tempdir().unwrap();
++    let config = NodeDisk::fixture_config(root.path().join("anchor")).unwrap();
++    (root, config, TestDiskMemory::new(256 << 20, 4096))
++}
++fn open(config: &NodeDiskConfig, memory: &Arc<TestDiskMemory>) -> Arc<NodeDisk> {
++    retry_disk_registry(|| {
++        NodeDisk::open_fixture(config, memory.clone(), &CensusCancellation::default())
++    })
++    .unwrap()
++}
++fn cursor(disk: &Arc<NodeDisk>) -> NodeDiskDirectoryCursor {
++    disk.open_directory("fixture", Path::new(""))
++        .unwrap()
++        .cursor(&CensusCancellation::default())
++        .unwrap()
++}
++#[test]
++fn repeated_independent_streams_borrow_bounded_names_and_retire_without_allocating() {
++    let (root, config, memory) = fixture();
++    crate::private_files::create_directory(&root.path().join("nested")).unwrap();
++    let disk = open(&config, &memory);
++    for name in ["one", "two"] {
++        drop(
++            disk.create_file("fixture", Path::new(name), DiskWork::Foreground)
++                .unwrap(),
++        );
++    }
++    let cancel = CensusCancellation::default();
++    for _ in 0..3 {
++        let mut cursor = cursor(&disk);
++        assert_eq!(disk.snapshot().open_directory_cursors, 1);
++        let (result, allocations) = crate::allocation_tests::measure(|| -> io::Result<u8> {
++            let mut seen = 0u8;
++            while let Some(entry) = cursor.next(&cancel)? {
++                let (bit, kind) = match entry.name().to_bytes() {
++                    b"one" => (1, NodeDiskEntryKind::File),
++                    b"two" => (2, NodeDiskEntryKind::File),
++                    b"nested" => (4, NodeDiskEntryKind::Directory),
++                    _ => panic!("unexpected enrolled entry"),
++                };
++                assert_eq!(seen & bit, 0, "duplicate native entry");
++                assert_eq!(entry.kind(), kind);
++                seen |= bit;
++            }
++            Ok(seen)
++        });
++        assert_eq!(result.unwrap(), 7);
++        assert_eq!(allocations, 0);
++        assert_eq!(disk.snapshot().open_directory_cursors, 0);
++        assert_eq!(disk.snapshot().open_directories, 1);
++        let ((), allocations) = crate::allocation_tests::measure(|| drop(cursor));
++        assert_eq!(allocations, 0);
++        assert_eq!(disk.snapshot().open_directories, 0);
++    }
++}
++#[test]
++fn alias_denial_and_cancellation_preserve_exact_cursor_and_directory_lifetimes() {
++    let (_root, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let directory = disk.open_directory("fixture", Path::new("")).unwrap();
++    let alias = directory.clone();
++    assert_eq!(
++        directory
++            .cursor(&CensusCancellation::default())
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::WouldBlock
++    );
++    assert_eq!(disk.snapshot().open_directory_cursors, 0);
++    assert_eq!(disk.snapshot().open_directories, 1);
++    drop(alias);
++    let cancel = CensusCancellation::default();
++    cancel.cancel();
++    assert_eq!(
++        disk.open_directory("fixture", Path::new(""))
++            .unwrap()
++            .cursor(&cancel)
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::Interrupted
++    );
++    assert_eq!(disk.snapshot().open_directories, 0);
++    let mut reading = cursor(&disk);
++    assert_eq!(
++        reading.next(&cancel).unwrap_err().kind(),
++        io::ErrorKind::Interrupted
++    );
++    assert_eq!(
++        reading
++            .next(&CensusCancellation::default())
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::Interrupted
++    );
++    assert_eq!(disk.snapshot().open_directory_cursors, 0);
++    assert_eq!(disk.snapshot().open_directories, 1);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    drop(reading);
++    assert_eq!(disk.snapshot().open_directories, 0);
++}
++#[test]
++fn managed_same_extent_rename_invalidates_scan_without_fencing_healthy_storage() {
++    let (root, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let file = disk
++        .create_file("fixture", Path::new("one"), DiskWork::Foreground)
++        .unwrap();
++    let before = root.path().metadata().unwrap();
++    let mut reading = cursor(&disk);
++    let file = disk
++        .publish_file(file, "fixture", Path::new("two"))
++        .unwrap();
++    let after = root.path().metadata().unwrap();
++    use std::os::unix::fs::MetadataExt;
++    assert_eq!(
++        (before.len(), before.blocks()),
++        (after.len(), after.blocks()),
++        "fixture must preserve the old extent observation"
++    );
++    assert_eq!(
++        reading
++            .next(&CensusCancellation::default())
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::WouldBlock
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    assert_eq!(
++        reading
++            .next(&CensusCancellation::default())
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::WouldBlock
++    );
++    drop(reading);
++    disk.delete_file(file).unwrap();
++}
++#[test]
++fn configured_name_boundary_is_read_without_truncation_or_native_name_copy() {
++    let (_root, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let name = "n".repeat(config.max_name_bytes as usize);
++    let file = disk
++        .create_file("fixture", Path::new(&name), DiskWork::Foreground)
++        .unwrap();
++    let mut reading = cursor(&disk);
++    assert_eq!(
++        reading
++            .next(&CensusCancellation::default())
++            .unwrap()
++            .unwrap()
++            .name()
++            .to_bytes(),
++        name.as_bytes()
++    );
++    assert!(
++        reading
++            .next(&CensusCancellation::default())
++            .unwrap()
++            .is_none()
++    );
++    drop(reading);
++    disk.delete_file(file).unwrap();
++}
++#[test]
++fn census_workspace_cursor_limit_does_not_reduce_independent_directory_handle_limit() {
++    let (_root, mut config, memory) = fixture();
++    config.max_open_directories = config.max_depth + 1;
++    let disk = open(&config, &memory);
++    let mut readers = Vec::new();
++    for _ in 0..config.max_depth {
++        readers.push(cursor(&disk));
++    }
++    let independent = disk.open_directory("fixture", Path::new("")).unwrap();
++    independent.sync_all().unwrap();
++    assert_eq!(
++        independent
++            .cursor(&CensusCancellation::default())
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::StorageFull
++    );
++    assert_eq!(disk.snapshot().open_directory_cursors, config.max_depth);
++    assert_eq!(disk.snapshot().open_directories, config.max_depth);
++    assert!(disk.pause().is_err());
++    drop(readers);
++    assert_eq!(disk.snapshot().open_directory_cursors, 0);
++    assert_eq!(disk.snapshot().open_directories, 0);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++}
++#[test]
++fn an_unenrolled_actual_entry_fences_and_failed_cursor_cannot_report_later_eof() {
++    let (root, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let mut reading = cursor(&disk);
++    crate::private_files::create(&root.path().join("foreign"), b"").unwrap();
++    let error = reading
++        .next(&CensusCancellation::default())
++        .unwrap_err()
++        .kind();
++    assert_eq!(error, io::ErrorKind::InvalidData);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert_eq!(
++        reading
++            .next(&CensusCancellation::default())
++            .unwrap_err()
++            .kind(),
++        error
++    );
++    drop(reading);
++    assert_eq!(disk.snapshot().open_directory_cursors, 0);
++    assert_eq!(disk.snapshot().open_directories, 0);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++}
++fn fd_names_inode(fd: i32, identity: Identity) -> bool {
++    let mut result = std::mem::MaybeUninit::<libc::stat>::uninit();
++    if unsafe { libc::fstat(fd, result.as_mut_ptr()) } != 0 {
++        return false;
++    }
++    let result = unsafe { result.assume_init() };
++    (result.st_dev as u64, result.st_ino as u64) == (identity.0, identity.1)
++}
++#[test]
++fn stream_fd_and_buffer_close_before_cursor_credit_and_before_directory_owner_drain() {
++    let (_root, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let (facts_tx, facts) = std::sync::mpsc::sync_channel(0);
++    let (entered_tx, entered) = std::sync::mpsc::sync_channel(0);
++    let (release, release_rx) = std::sync::mpsc::channel();
++    let worker_disk = disk.clone();
++    let worker = std::thread::spawn(move || {
++        let mut reading = cursor(&worker_disk);
++        let parent = reading.directory.as_ref().unwrap().owner();
++        let parent_fd = parent.file.as_ref().unwrap().as_raw_fd();
++        let identity = parent.identity;
++        let stream = reading.stream.as_mut().unwrap();
++        let stream_fd = unsafe { libc::dirfd(stream.pointer.unwrap().as_ptr()) };
++        stream.after_close = Some(ClosePause {
++            entered: entered_tx,
++            release: release_rx,
++        });
++        facts_tx.send((stream_fd, parent_fd, identity)).unwrap();
++        drop(reading);
++    });
++    let (stream_fd, parent_fd, identity) = facts
++        .recv_timeout(std::time::Duration::from_secs(5))
++        .unwrap();
++    entered
++        .recv_timeout(std::time::Duration::from_secs(5))
++        .unwrap();
++    assert_ne!(stream_fd, parent_fd);
++    assert!(
++        !fd_names_inode(stream_fd, identity),
++        "actual stream fd still retains its directory"
++    );
++    assert!(
++        fd_names_inode(parent_fd, identity),
++        "directory custody ended before stream retirement"
++    );
++    assert_eq!(disk.snapshot().open_directory_cursors, 1);
++    assert_eq!(disk.snapshot().open_directories, 1);
++    assert!(disk.pause().is_err());
++    release.send(()).unwrap();
++    worker.join().unwrap();
++    assert_eq!(disk.snapshot().open_directory_cursors, 0);
++    assert_eq!(disk.snapshot().open_directories, 0);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++}
++
++#[test]
++fn uncertain_stream_close_retains_the_actual_installed_owner_after_all_external_arcs_drop() {
++    let (_root, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let retained = Arc::downgrade(&disk);
++    let mut reading = cursor(&disk);
++    // Actual closedir still runs. The injected uncertain return exercises the
++    // custody path without invoking closedir on an invalid pointer.
++    reading.stream.as_mut().unwrap().force_close_error = true;
++    assert_eq!(
++        reading
++            .next(&CensusCancellation::default())
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::Other
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert_eq!(disk.snapshot().open_directory_cursors, 1);
++    drop(reading);
++    assert_eq!(disk.snapshot().open_directories, 0);
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    let charged = memory.snapshot();
++    drop(disk);
++    let retained = retained
++        .upgrade()
++        .expect("uncertain stream must retain installed owner");
++    assert_eq!(retained.snapshot().open_directory_cursors, 1);
++    assert_eq!(memory.snapshot(), charged);
++    assert!(charged.used_bytes > 0 && charged.live_reservations > 0);
++}
++
++#[test]
++fn same_length_raw_sparse_materialization_rejects_changed_settled_extent() {
++    use std::os::unix::fs::{FileExt, MetadataExt};
++    let (root, config, memory) = fixture();
++    let path = root.path().join("sparse");
++    crate::private_files::create(&path, b"").unwrap();
++    let raw = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
++    raw.set_len(8 << 20).unwrap();
++    raw.sync_all().unwrap();
++    let disk = open(&config, &memory);
++    let mut reading = cursor(&disk);
++    let before = raw.metadata().unwrap();
++    raw.write_at(b"materialized", 4 << 20).unwrap();
++    raw.sync_all().unwrap();
++    let after = raw.metadata().unwrap();
++    assert_eq!(before.len(), after.len());
++    assert_ne!(
++        before.blocks(),
++        after.blocks(),
++        "fixture must actually change allocated extent at stable EOF"
++    );
++    assert_eq!(
++        reading
++            .next(&CensusCancellation::default())
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::InvalidData
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    drop(reading);
++    drop(raw);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++}
++#[test]
++fn cancellation_preserves_independent_close_error_and_explicit_close_cannot_report_success() {
++    let (_root, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let mut reading = cursor(&disk);
++    reading.stream.as_mut().unwrap().force_close_error = true;
++    let cancel = CensusCancellation::default();
++    cancel.cancel();
++    assert_eq!(
++        reading.next(&cancel).unwrap_err().kind(),
++        io::ErrorKind::Interrupted
++    );
++    assert_eq!(
++        reading.close_error(),
++        Some(NodeDiskDirectoryCloseError {
++            kind: io::ErrorKind::Other,
++            raw_os_error: None
++        })
++    );
++    assert_eq!(reading.close().unwrap_err().kind(), io::ErrorKind::Other);
++    assert_eq!(
++        reading
++            .next(&CensusCancellation::default())
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::Interrupted
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert_eq!(disk.snapshot().open_directory_cursors, 1);
++}
++
++#[test]
++fn explicit_failed_partial_page_close_cannot_advertise_later_eof() {
++    let (_root, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    drop(
++        disk.create_file("fixture", Path::new("one"), DiskWork::Foreground)
++            .unwrap(),
++    );
++    let mut reading = cursor(&disk);
++    assert_eq!(
++        reading
++            .next(&CensusCancellation::default())
++            .unwrap()
++            .unwrap()
++            .name()
++            .to_bytes(),
++        b"one"
++    );
++    reading.stream.as_mut().unwrap().force_close_error = true;
++    assert_eq!(reading.close().unwrap_err().kind(), io::ErrorKind::Other);
++    assert_eq!(
++        reading
++            .next(&CensusCancellation::default())
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::Other
++    );
++    assert_eq!(reading.close().unwrap_err().kind(), io::ErrorKind::Other);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++}
+diff --git a/crates/kasumi-store/src/node_disk/directory/cursor.rs b/crates/kasumi-store/src/node_disk/directory/cursor.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/directory/cursor.rs
+@@ -0,0 +1,411 @@
++//! Bounded, enrolled directory reads. No mutation or implicit adoption.
++use super::super::{AccountedFile, CensusCancellation, extent};
++use super::*;
++use std::{
++    ffi::CStr,
++    os::fd::{FromRawFd, IntoRawFd},
++    ptr::NonNull,
++    sync::atomic::Ordering,
++};
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NodeDiskEntryKind {
++    File,
++    Directory,
++}
++/// Exact inline close outcome retained independently of a preceding read error.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct NodeDiskDirectoryCloseError {
++    pub kind: io::ErrorKind,
++    pub raw_os_error: Option<i32>,
++}
++impl NodeDiskDirectoryCloseError {
++    fn error(self) -> io::Error {
++        self.raw_os_error
++            .map_or_else(|| self.kind.into(), io::Error::from_raw_os_error)
++    }
++}
++/// A name borrows the native stream and cannot survive its next read or Drop.
++/// Entry metadata grants no raw descriptor or mutation permission.
++#[derive(Debug)]
++pub struct NodeDiskDirectoryEntry<'cursor> {
++    name: &'cursor CStr,
++    kind: NodeDiskEntryKind,
++}
++impl NodeDiskDirectoryEntry<'_> {
++    pub fn name(&self) -> &CStr {
++        self.name
++    }
++    pub fn kind(&self) -> NodeDiskEntryKind {
++        self.kind
++    }
++}
++
++struct Stream {
++    disk: Arc<NodeDisk>,
++    pointer: Option<NonNull<libc::DIR>>,
++    #[cfg(test)]
++    after_close: Option<ClosePause>,
++    #[cfg(test)]
++    force_close_error: bool,
++}
++impl Stream {
++    fn retire(&mut self) -> io::Result<()> {
++        let Some(pointer) = self.pointer.take() else {
++            return Ok(());
++        };
++        // SAFETY: this sole owner consumes the live DIR exactly once. The
++        // independent stream FD and libc buffer retire before slot credit.
++        let result = unsafe { libc::closedir(pointer.as_ptr()) };
++        let error = (result != 0).then(io::Error::last_os_error);
++        #[cfg(test)]
++        let error = if self.force_close_error {
++            Some(io::ErrorKind::Other.into())
++        } else {
++            error
++        };
++        #[cfg(test)]
++        if let Some(pause) = self.after_close.take() {
++            pause.entered.send(()).unwrap();
++            pause
++                .release
++                .recv_timeout(std::time::Duration::from_secs(5))
++                .expect("release cursor retirement");
++        }
++        let mut state = self.disk.lock_state();
++        if let Some(error) = error {
++            // An uncertain close retains the stream count and installed memory
++            // owner. Reconciliation cannot manufacture a completed drain.
++            self.disk.fail_locked(&mut state);
++            // A count alone cannot keep the installed owner alive once all
++            // external Arcs drop. Retain one existing strong reference for
++            // this uncertain native resource until process exit. Never retry
++            // closedir on a possibly consumed pointer. No allocation/callback.
++            let _ = Arc::into_raw(self.disk.clone());
++            return Err(error);
++        }
++        let Some(next) = state.open_directory_cursors.checked_sub(1) else {
++            self.disk.fail_locked(&mut state);
++            return Err(io::ErrorKind::InvalidData.into());
++        };
++        state.open_directory_cursors = next;
++        Ok(())
++    }
++    fn close(mut self) -> io::Result<()> {
++        self.retire()
++    }
++}
++impl Drop for Stream {
++    fn drop(&mut self) {
++        let _ = self.retire();
++    }
++}
++
++/// An exclusive stream, intentionally not Send/Sync. It borrows no naked fd and
++/// retains its counted directory until stream/buffer destruction has completed.
++/// At most max_depth streams share the census workspace reservation;
++/// every one prevents reconciliation through its actual directory registration.
++pub struct NodeDiskDirectoryCursor {
++    stream: Option<Stream>,
++    directory: Option<NodeDiskDirectory>,
++    generation: u64,
++    expected_children: u64,
++    work: u64,
++    children: u64,
++    finished: bool,
++    failure: Option<io::ErrorKind>,
++    close_error: Option<NodeDiskDirectoryCloseError>,
++}
++impl std::fmt::Debug for NodeDiskDirectoryCursor {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("NodeDiskDirectoryCursor")
++            .field("work", &self.work)
++            .field("children", &self.children)
++            .field("finished", &self.finished)
++            .field("failure", &self.failure)
++            .finish_non_exhaustive()
++    }
++}
++impl NodeDiskDirectory {
++    pub fn cursor(mut self, cancel: &CensusCancellation) -> io::Result<NodeDiskDirectoryCursor> {
++        if cancel.cancelled.load(Ordering::Acquire) {
++            return Err(io::ErrorKind::Interrupted.into());
++        }
++        if Arc::get_mut(self.0.as_mut().expect("live directory custody")).is_none() {
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
++        let disk = self.owner().disk.clone();
++        // If construction unwinds after stream publication, State unlocks
++        // before the registered stream and the input directory retire.
++        let stream;
++        let mut state = disk.lock_state();
++        if state.phase != NodeDiskPhase::Open || !disk.device.lock().admission_ready() {
++            return Err(io::ErrorKind::Other.into());
++        }
++        if state.open_directory_cursors >= disk.config.max_depth {
++            return Err(io::ErrorKind::StorageFull.into());
++        }
++        self.verify(&state)
++            .inspect_err(|_| disk.fail_locked(&mut state))?;
++        let entry = *state.accounted[&self.owner().identity]
++            .directory()
++            .expect("verified directory");
++        let generation = state.namespace_generation;
++        let next = state
++            .open_directory_cursors
++            .checked_add(1)
++            .ok_or(io::ErrorKind::StorageFull)?;
++        // dup shares a directory offset. openat(".") owns an independent file
++        // description, exactly as the existing census stream does.
++        let file = census::open_at(
++            self.owner().file.as_ref().expect("live directory"),
++            c".",
++            libc::O_RDONLY | libc::O_DIRECTORY,
++        )
++        .inspect_err(|_| disk.fail_locked(&mut state))?;
++        checked_entry(&state, &file, entry.binding, entry.parent)
++            .map(|_| ())
++            .inspect_err(|_| disk.fail_locked(&mut state))?;
++        let fd = file.into_raw_fd();
++        // SAFETY: fdopendir takes sole fd ownership only on success.
++        let pointer = unsafe { libc::fdopendir(fd) };
++        let Some(pointer) = NonNull::new(pointer) else {
++            let error = io::Error::last_os_error();
++            drop(unsafe { File::from_raw_fd(fd) });
++            return Err(error);
++        };
++        state.open_directory_cursors = next;
++        stream = Stream {
++            disk: disk.clone(),
++            pointer: Some(pointer),
++            #[cfg(test)]
++            after_close: None,
++            #[cfg(test)]
++            force_close_error: false,
++        };
++        drop(state);
++        Ok(NodeDiskDirectoryCursor {
++            stream: Some(stream),
++            directory: Some(self),
++            generation,
++            expected_children: entry.children,
++            work: 0,
++            children: 0,
++            finished: false,
++            failure: None,
++            close_error: None,
++        })
++    }
++}
++impl NodeDiskDirectoryCursor {
++    fn finish(&mut self) -> io::Result<()> {
++        self.finished = true;
++        if let Some(error) = self.close_error {
++            return Err(error.error());
++        }
++        let result = self.stream.take().map_or(Ok(()), Stream::close);
++        if let Err(error) = &result {
++            self.close_error = Some(NodeDiskDirectoryCloseError {
++                kind: error.kind(),
++                raw_os_error: error.raw_os_error(),
++            });
++        }
++        result
++    }
++    /// Explicit retirement is required before publishing a partial page.
++    /// The retained directory remains counted until this cursor drops.
++    pub fn close(&mut self) -> io::Result<()> {
++        self.finish()
++    }
++    /// A primary read/cancellation error never overwrites an independent close
++    /// failure. This inline observation survives repeated next/close calls.
++    pub fn close_error(&self) -> Option<NodeDiskDirectoryCloseError> {
++        self.close_error
++    }
++    fn stop(&mut self, kind: io::ErrorKind) {
++        self.failure = Some(kind);
++        let _ = self.finish();
++    }
++    pub fn next(
++        &mut self,
++        cancel: &CensusCancellation,
++    ) -> io::Result<Option<NodeDiskDirectoryEntry<'_>>> {
++        if let Some(kind) = self.failure {
++            return Err(kind.into());
++        }
++        if let Some(error) = self.close_error {
++            return Err(error.error());
++        }
++        if self.finished {
++            return Ok(None);
++        }
++        let disk = self
++            .directory
++            .as_ref()
++            .expect("retained directory")
++            .owner()
++            .disk
++            .clone();
++        loop {
++            if cancel.cancelled.load(Ordering::Acquire) {
++                self.stop(io::ErrorKind::Interrupted);
++                return Err(io::ErrorKind::Interrupted.into());
++            }
++            let mut state = disk.lock_state();
++            if state.phase == NodeDiskPhase::Failed || !disk.device.lock().admission_ready() {
++                drop(state);
++                self.stop(io::ErrorKind::Other);
++                return Err(io::ErrorKind::Other.into());
++            }
++            if state.namespace_generation != self.generation {
++                // A managed mutation makes this scan incomplete, even a rename
++                // that preserved length/blocks/count. It does not corrupt disk.
++                drop(state);
++                self.stop(io::ErrorKind::WouldBlock);
++                return Err(io::ErrorKind::WouldBlock.into());
++            }
++            let directory = self.directory.as_ref().expect("retained directory");
++            let result = (|| -> io::Result<Option<(*const libc::c_char, NodeDiskEntryKind)>> {
++                directory.verify(&state)?;
++                #[cfg(target_os = "macos")]
++                unsafe {
++                    *libc::__error() = 0;
++                }
++                #[cfg(target_os = "linux")]
++                unsafe {
++                    *libc::__errno_location() = 0;
++                }
++                // SAFETY: this cursor owns the only reference to its DIR. &mut
++                // self excludes another read and any previous borrowed entry.
++                let item = unsafe {
++                    libc::readdir(
++                        self.stream
++                            .as_ref()
++                            .expect("active stream")
++                            .pointer
++                            .expect("live stream")
++                            .as_ptr(),
++                    )
++                };
++                if item.is_null() {
++                    let error = io::Error::last_os_error();
++                    if error.raw_os_error() != Some(0) {
++                        return Err(error);
++                    }
++                    directory.verify(&state)?;
++                    if self.children != self.expected_children {
++                        return Err(io::ErrorKind::InvalidData.into());
++                    }
++                    return Ok(None);
++                }
++                self.work = self.work.checked_add(1).ok_or(io::ErrorKind::StorageFull)?;
++                if self.work > disk.config.max_census_entries {
++                    return Err(io::ErrorKind::StorageFull.into());
++                }
++                let name = unsafe { CStr::from_ptr((*item).d_name.as_ptr()) };
++                if name.to_bytes().len() > disk.config.max_name_bytes as usize {
++                    return Err(io::ErrorKind::InvalidData.into());
++                }
++                if name.to_bytes() == b"." || name.to_bytes() == b".." {
++                    return Ok(Some((std::ptr::null(), NodeDiskEntryKind::Directory)));
++                }
++                self.children = self
++                    .children
++                    .checked_add(1)
++                    .ok_or(io::ErrorKind::InvalidData)?;
++                if self.children > self.expected_children {
++                    return Err(io::ErrorKind::InvalidData.into());
++                }
++                let parent = directory.owner();
++                let parent_entry = state.accounted[&parent.identity]
++                    .directory()
++                    .expect("verified parent");
++                let binding = parent_entry.binding.child(name);
++                let file = census::open_at(
++                    parent.file.as_ref().expect("retained parent"),
++                    name,
++                    libc::O_RDONLY | libc::O_NONBLOCK,
++                )?;
++                let metadata = file.metadata()?;
++                let identity = Identity::of(&metadata);
++                let kind = match state.accounted.get(&identity) {
++                    Some(AccountedInode::File(entry)) if entry.binding == binding => {
++                        census::regular_nonallocating(&metadata, parent.identity.0)?;
++                        // Same enrollment predicate as exclusive file open:
++                        // stable EOF alone cannot detect sparse materialization.
++                        let (bytes, pending) = extent(&metadata, disk.unit)?;
++                        if metadata.len() != entry.actual_len
++                            || entry.actual_len > entry.reserved_len
++                            || bytes > entry.bytes
++                            || (entry.settled
++                                && *entry
++                                    != AccountedFile::durable(
++                                        binding,
++                                        bytes,
++                                        pending,
++                                        metadata.len(),
++                                    ))
++                        {
++                            return Err(io::ErrorKind::InvalidData.into());
++                        }
++                        NodeDiskEntryKind::File
++                    }
++                    Some(AccountedInode::Directory(_)) => {
++                        checked_entry(&state, &file, binding, Some(parent.identity))?;
++                        NodeDiskEntryKind::Directory
++                    }
++                    _ => return Err(io::ErrorKind::InvalidData.into()),
++                };
++                directory.verify(&state)?;
++                Ok(Some((name.as_ptr(), kind)))
++            })();
++            match result {
++                Err(error) => {
++                    if error.kind() != io::ErrorKind::StorageFull {
++                        disk.fail_locked(&mut state);
++                    }
++                    drop(state);
++                    self.stop(error.kind());
++                    return Err(error);
++                }
++                Ok(None) => {
++                    drop(state);
++                    if let Err(error) = self.finish() {
++                        self.failure = Some(error.kind());
++                        return Err(error);
++                    }
++                    if cancel.cancelled.load(Ordering::Acquire) {
++                        self.stop(io::ErrorKind::Interrupted);
++                        return Err(io::ErrorKind::Interrupted.into());
++                    }
++                    return Ok(None);
++                }
++                Ok(Some((name, kind))) => {
++                    drop(state);
++                    if name.is_null() {
++                        continue;
++                    }
++                    if cancel.cancelled.load(Ordering::Acquire) {
++                        self.stop(io::ErrorKind::Interrupted);
++                        return Err(io::ErrorKind::Interrupted.into());
++                    }
++                    // SAFETY: validation above has not advanced or closed DIR.
++                    // The returned borrow is tied to &mut self, preventing both.
++                    return Ok(Some(NodeDiskDirectoryEntry {
++                        name: unsafe { CStr::from_ptr(name) },
++                        kind,
++                    }));
++                }
++            }
++        }
++    }
++}
++impl Drop for NodeDiskDirectoryCursor {
++    fn drop(&mut self) {
++        let _ = self.finish();
++        drop(self.directory.take());
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/kasumi-store/src/node_disk/directory.rs b/crates/kasumi-store/src/node_disk/directory.rs
+--- a/crates/kasumi-store/src/node_disk/directory.rs
++++ b/crates/kasumi-store/src/node_disk/directory.rs
+@@ -376,3 +376,8 @@
+ 
+ #[cfg(test)]
+ mod tests;
++
++mod cursor;
++pub use cursor::{
++    NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor, NodeDiskDirectoryEntry, NodeDiskEntryKind,
++};
+diff --git a/crates/kasumi-store/src/node_disk/memory.rs b/crates/kasumi-store/src/node_disk/memory.rs
+--- a/crates/kasumi-store/src/node_disk/memory.rs
++++ b/crates/kasumi-store/src/node_disk/memory.rs
+@@ -56,6 +56,13 @@
+             add(u64::from(config.max_open_directories), 1)?,
+             directory_owner,
+         )?;
++        // Operational cursors retain counted DirectoryOwners, so a census may
++        // not overlap them. At most max_depth operational streams reuse these
++        // existing census slots. This does not qualify the underlying native
++        // stream allowance or the separate table-growth estimate.
++        if size::<directory::NodeDiskDirectoryCursor>()? > mul(4, size::<census::Cursor>()?)? {
++            return Err(io::Error::from(io::ErrorKind::InvalidData).into());
++        }
+         let cursors = mul(
+             depth,
+             add(
+diff --git a/crates/kasumi-store/src/node_disk/namespace.rs b/crates/kasumi-store/src/node_disk/namespace.rs
+--- a/crates/kasumi-store/src/node_disk/namespace.rs
++++ b/crates/kasumi-store/src/node_disk/namespace.rs
+@@ -100,6 +100,7 @@
+ /// Inline plan: preparation and all fallible arithmetic precede the effect.
+ /// The caller owns State serialization and actual descriptors until settlement.
+ pub(super) struct ParentTransition {
++    generation: u64,
+     changes: [Option<Change>; 2],
+ }
+ impl ParentTransition {
+@@ -113,6 +114,10 @@
+         if state.phase == NodeDiskPhase::Failed || !disk.device.lock().admission_ready() {
+             return Err(io::ErrorKind::Other.into());
+         }
++        let generation = state
++            .namespace_generation
++            .checked_add(1)
++            .ok_or(io::ErrorKind::StorageFull)?;
+         if let Some(work) = growth_work {
+             // Full parent allowances were promised by census. This checks the
+             // unchanged node/work/floor policy before consuming those promises.
+@@ -182,7 +187,10 @@
+                 .expect("prepared parent")
+                 .settled = false;
+         }
+-        Ok(Self { changes })
++        Ok(Self {
++            generation,
++            changes,
++        })
+     }
+ 
+     /// Only a definite no-effect result may restore the original snapshots.
+@@ -289,6 +297,7 @@
+             ));
+         }
+         promises.set_pending(shared)?;
++        state.namespace_generation = self.generation;
+         state.bytes = bytes;
+         state.pending = pending;
+         state.directory_bytes = directory_bytes;
+diff --git a/crates/kasumi-store/src/node_disk.rs b/crates/kasumi-store/src/node_disk.rs
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -28,7 +28,10 @@
+ #[cfg(test)]
+ mod tests;
+ use census::{Root, census, open_roots};
+-pub use directory::NodeDiskDirectory;
++pub use directory::{
++    NodeDiskDirectory, NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor,
++    NodeDiskDirectoryEntry, NodeDiskEntryKind,
++};
+ pub use file::NodeDiskFile;
+ use ledger::AccountedInode;
+ 
+@@ -163,7 +166,8 @@
+     }
+ }
+ 
+-/// Cancellation affects only unpublished census work; it grants no storage access.
++/// Cancellation affects bounded directory reads and unpublished census work;
++/// it grants no storage access.
+ #[derive(Default)]
+ pub struct CensusCancellation {
+     cancelled: AtomicBool,
+@@ -215,6 +219,7 @@
+     pub open_files: u32,
+     pub persistent_directories: u64,
+     pub open_directories: u32,
++    pub open_directory_cursors: u32,
+     pub observed_directory_bytes: u64,
+     pub max_bytes: u64,
+     pub maintenance_reserve_bytes: u64,
+@@ -306,6 +311,8 @@
+     files: u64,
+     open_files: u32,
+     open_directories: u32,
++    open_directory_cursors: u32,
++    namespace_generation: u64,
+     directory_bytes: u64,
+     directories: u64,
+     live: HashMap<Identity, Weak<file::FileOwner>>,
+@@ -456,6 +463,8 @@
+                 files: totals.files,
+                 open_files: 0,
+                 open_directories: 0,
++                open_directory_cursors: 0,
++                namespace_generation: 0,
+                 directory_bytes: totals.directory_bytes,
+                 directories: totals.directories,
+                 live: HashMap::new(),
+@@ -524,7 +533,10 @@
+                 root.verify_nonallocating()?;
+             }
+             let snapshot = owner.snapshot();
+-            if snapshot.open_files == 0 && snapshot.open_directories == 0 {
++            if snapshot.open_files == 0
++                && snapshot.open_directories == 0
++                && snapshot.open_directory_cursors == 0
++            {
+                 owner.reconcile(&CensusCancellation::default())?;
+             }
+             return Ok(owner);
+@@ -565,6 +577,7 @@
+             open_files: state.open_files,
+             persistent_directories: state.directories,
+             open_directories: state.open_directories,
++            open_directory_cursors: state.open_directory_cursors,
+             observed_directory_bytes: state.directory_bytes,
+             max_bytes: self.config.max_bytes,
+             maintenance_reserve_bytes: self.config.maintenance_reserve_bytes,
+@@ -583,7 +596,9 @@
+             state.phase = NodeDiskPhase::Paused;
+         }
+         ensure!(
+-            state.open_files == 0 && state.open_directories == 0,
++            state.open_files == 0
++                && state.open_directories == 0
++                && state.open_directory_cursors == 0,
+             "persistent file or directory owners are still live"
+         );
+         Ok(())
+@@ -599,7 +614,9 @@
+         let mut state = self.lock_state();
+         state.phase = NodeDiskPhase::Paused;
+         ensure!(
+-            state.open_files == 0 && state.open_directories == 0,
++            state.open_files == 0
++                && state.open_directories == 0
++                && state.open_directory_cursors == 0,
+             "persistent file or directory owners are still live"
+         );
+         let result = census(&self.roots, &self.config, self.unit, cancel);

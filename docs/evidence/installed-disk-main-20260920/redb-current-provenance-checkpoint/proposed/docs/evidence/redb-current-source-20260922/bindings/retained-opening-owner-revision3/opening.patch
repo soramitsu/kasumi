@@ -1,0 +1,1542 @@
+--- a/vendor/redb-4.2.0/src/db.rs
++++ b/vendor/redb-4.2.0/src/db.rs
+@@ -1,3 +1,12 @@
++#[cfg(all(not(redb_no_std), panic = "unwind"))]
++#[path = "retained_opening.rs"]
++mod retained_opening;
++#[cfg(all(not(redb_no_std), panic = "unwind"))]
++pub use retained_opening::{
++    DatabaseOpenMode, DatabaseOpenPhase, DatabaseOpenReport, DatabaseOpenSettlement,
++    OpeningFenceReport, RetainedDatabaseOpening,
++};
++
+ #[cfg(all(not(redb_no_std), panic = "unwind"))]
+ #[path = "retained_database.rs"]
+ mod retained_database;
+@@ -1314,7 +1323,7 @@
+     page_size: usize,
+     region_size: Option<u64>,
+     cache_size: usize,
+-    repair_callback: Box<dyn Fn(&mut RepairSession)>,
++    repair_callback: Box<dyn Fn(&mut RepairSession) + Send + Sync>,
+ }
+ 
+ impl Builder {
+@@ -1346,7 +1355,7 @@
+     /// There is no upper limit on the number of times it may be called.
+     pub fn set_repair_callback(
+         &mut self,
+-        callback: impl Fn(&mut RepairSession) + 'static,
++        callback: impl Fn(&mut RepairSession) + Send + Sync + 'static,
+     ) -> &mut Self {
+         self.repair_callback = Box::new(callback);
+         self
+--- a/vendor/redb-4.2.0/src/lib.rs
++++ b/vendor/redb-4.2.0/src/lib.rs
+@@ -78,7 +78,11 @@
+     UntypedTableHandle,
+ };
+ #[cfg(all(not(redb_no_std), panic = "unwind"))]
+-pub use db::{DatabaseCloseReport, DatabaseCloseSettlement, RetainedDatabase};
++pub use db::{
++    DatabaseCloseReport, DatabaseCloseSettlement, DatabaseOpenMode, DatabaseOpenPhase,
++    DatabaseOpenReport, DatabaseOpenSettlement, OpeningFenceReport, RetainedDatabase,
++    RetainedDatabaseOpening,
++};
+ pub use error::{
+     CloseError, CommitError, CompactionError, DatabaseError, Error, SavepointError, StorageError,
+     TableError, TransactionError,
+--- /dev/null
++++ b/vendor/redb-4.2.0/src/retained_opening.rs
+@@ -0,0 +1,504 @@
++//! Borrowed custody from the raw backend through bootstrap and physical close.
++//! The embedding caller must install this exact value in charged, durable
++//! ownership before `open`. It is a primitive, not a census or workspace bound.
++use super::{Builder, Database, RepairSession, RetainedDatabase};
++use crate::transaction_tracker::TransactionTracker;
++use crate::tree_store::{BtreeHeader, TransactionalMemory, TransactionalMemoryOpening};
++use crate::{
++    DatabaseCloseReport, DatabaseCloseSettlement, DatabaseError, RetainedWriteTransaction,
++    SavepointError, StorageBackend, StorageError, TerminalObservation, WriteTerminalReport,
++    WriteTerminalSettlement,
++};
++use std::{
++    any::Any,
++    convert::Infallible,
++    panic::{AssertUnwindSafe, catch_unwind},
++    sync::{
++        Arc, Mutex, MutexGuard, OnceLock,
++        atomic::{AtomicBool, Ordering},
++    },
++};
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum DatabaseOpenMode {
++    /// Initialize only an empty backend; existing contents must be canonical.
++    Create,
++    /// Require an existing, nonempty canonical database.
++    Existing,
++}
++
++/// The last entered phase, recorded before its effects.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum DatabaseOpenPhase {
++    Prepared,
++    MemoryInitialization,
++    WinningRootVerification,
++    AllocatorRestoration,
++    BeginWritable,
++    DatabaseConstruction,
++    BootstrapBegin,
++    BootstrapBody,
++    BootstrapTerminal,
++    BootstrapDisposal,
++    Ready,
++    Closing,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum DatabaseOpenSettlement {
++    Prepared,
++    /// The original opening attempt failed or unwound. No retry is permitted.
++    Retained,
++    /// Bootstrap completed and was actually disposed; database access is allowed.
++    Ready,
++    /// Admission is sealed, but existing read/write owners must still drain.
++    WaitingForTransactions,
++    /// Physical release returned successfully. Diagnostics and allocations remain.
++    Closed,
++}
++
++enum Observation<E> {
++    NotEntered,
++    Entered,
++    Returned(Result<(), E>),
++    Panicked(Box<dyn Any + Send>),
++}
++impl<E> Observation<E> {
++    fn observe(&mut self, operation: impl FnOnce() -> Result<(), E>) {
++        debug_assert!(matches!(self, Self::NotEntered));
++        *self = Self::Entered;
++        *self = match catch_unwind(AssertUnwindSafe(operation)) {
++            Ok(result) => Self::Returned(result),
++            Err(payload) => Self::Panicked(payload),
++        };
++    }
++    fn borrow(&self) -> TerminalObservation<'_, E> {
++        match self {
++            Self::NotEntered => TerminalObservation::NotEntered,
++            Self::Entered => TerminalObservation::Entered,
++            Self::Returned(result) => TerminalObservation::Returned(result.as_ref().copied()),
++            Self::Panicked(payload) => TerminalObservation::Panicked(payload.as_ref()),
++        }
++    }
++    fn succeeded(&self) -> bool {
++        matches!(self, Self::Returned(Ok(())))
++    }
++}
++
++enum FenceOutcome {
++    Returned,
++    Panicked(Mutex<Box<dyn Any + Send>>),
++}
++
++// Every path forwards to the same retained physical admission object. The
++// distinct proxy's inline fence is latched before invoking that object's hook.
++// Catching here is essential: CheckedBackend::io still owns its original I/O
++// error on the stack while owner_failed runs. This hook must return normally so
++// that actual error reaches the separately registered opening/transaction owner.
++struct OpeningAdmission {
++    inner: Arc<dyn crate::StorageAdmission>,
++    failed: AtomicBool,
++    outcome: OnceLock<FenceOutcome>,
++}
++impl std::fmt::Debug for OpeningAdmission {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("OpeningAdmission")
++            .field("failed", &self.failed.load(Ordering::Acquire))
++            .finish_non_exhaustive()
++    }
++}
++impl crate::StorageAdmission for OpeningAdmission {
++    fn check_owner(&self) -> Result<(), crate::OwnerFailed> {
++        if self.failed.load(Ordering::Acquire) {
++            return Err(crate::OwnerFailed);
++        }
++        self.inner.check_owner()
++    }
++    fn reserve_growth(&self, current: u64, requested: u64) -> Result<(), crate::AdmissionError> {
++        if self.failed.load(Ordering::Acquire) {
++            return Err(crate::AdmissionError::OwnerFailed);
++        }
++        self.inner.reserve_growth(current, requested)
++    }
++    fn settle_growth(&self, actual: u64) -> Result<(), crate::OwnerFailed> {
++        if self.failed.load(Ordering::Acquire) {
++            return Err(crate::OwnerFailed);
++        }
++        self.inner.settle_growth(actual)
++    }
++    fn owner_failed(&self) {
++        if self.failed.swap(true, Ordering::AcqRel) {
++            return;
++        }
++        let outcome = match catch_unwind(AssertUnwindSafe(|| self.inner.owner_failed())) {
++            Ok(()) => FenceOutcome::Returned,
++            Err(payload) => FenceOutcome::Panicked(Mutex::new(payload)),
++        };
++        // Only the winner above writes the slot. No observer waits for it: a
++        // reentrant or concurrent observation sees Entered while it is running.
++        assert!(self.outcome.set(outcome).is_ok());
++    }
++}
++
++/// An original admission-hook panic is borrowed under its own mutex so even
++/// a Send-only payload remains safe. Acquiring this report never waits for the
++/// callback to return; `Entered` reports an actual in-flight callback.
++pub struct OpeningFenceReport<'a> {
++    view: FenceView<'a>,
++}
++enum FenceView<'a> {
++    NotEntered,
++    Entered,
++    Returned,
++    Panicked(MutexGuard<'a, Box<dyn Any + Send>>),
++    /// Another diagnostic borrower currently holds the exact payload.
++    Borrowed,
++}
++impl OpeningFenceReport<'_> {
++    pub fn observation(&self) -> Option<TerminalObservation<'_, Infallible>> {
++        match &self.view {
++            FenceView::NotEntered => Some(TerminalObservation::NotEntered),
++            FenceView::Entered => Some(TerminalObservation::Entered),
++            FenceView::Returned => Some(TerminalObservation::Returned(Ok(()))),
++            FenceView::Panicked(payload) => Some(TerminalObservation::Panicked(payload.as_ref())),
++            FenceView::Borrowed => None,
++        }
++    }
++}
++impl OpeningAdmission {
++    fn report(&self) -> OpeningFenceReport<'_> {
++        let view = match self.outcome.get() {
++            Some(FenceOutcome::Returned) => FenceView::Returned,
++            Some(FenceOutcome::Panicked(payload)) => match payload.try_lock() {
++                Ok(guard) => FenceView::Panicked(guard),
++                Err(std::sync::TryLockError::Poisoned(error)) => {
++                    FenceView::Panicked(error.into_inner())
++                }
++                Err(std::sync::TryLockError::WouldBlock) => FenceView::Borrowed,
++            },
++            None if self.failed.load(Ordering::Acquire) => FenceView::Entered,
++            None => FenceView::NotEntered,
++        };
++        OpeningFenceReport { view }
++    }
++}
++
++/// Owns the original backend, cache/memory, Database and bootstrap transaction
++/// at each construction phase. Errors and panic payloads are never cloned or
++/// replaced with a synthetic summary. `open` and every terminal phase enter once.
++///
++/// Construct and register this owner before the first redb storage effect. The
++/// provided backend's own creation/locking must already have caller-owned custody.
++/// No storage call occurs in `Builder::retain_backend`; its callback and backend
++/// are moved into retained fields. The once-only admission proxy allocates one
++/// Arc; it and all pre-existing callback/backend allocations require admission.
++///
++/// An uncertain owner must remain in the embedding census. Dropping it is not a
++/// cleanup operation or proof that opaque panic/error backing was bounded. The
++/// caller must also retain accepted users/readers/writers through their outcomes.
++#[must_use = "register and retain the actual opening owner before storage effects"]
++pub struct RetainedDatabaseOpening {
++    builder: Builder,
++    admission: Arc<OpeningAdmission>,
++    mode: DatabaseOpenMode,
++    partial: TransactionalMemoryOpening,
++    memory: Option<Arc<TransactionalMemory>>,
++    database: Option<RetainedDatabase>,
++    bootstrap: Option<RetainedWriteTransaction>,
++    repaired_roots: Option<[Option<BtreeHeader>; 2]>,
++    phase: DatabaseOpenPhase,
++    opening_phase: DatabaseOpenPhase,
++    settlement: DatabaseOpenSettlement,
++    opening: Observation<DatabaseError>,
++    partial_close: Observation<StorageError>,
++}
++
++#[must_use = "inspect the opening, bootstrap, disposal and close observations"]
++pub struct DatabaseOpenReport<'a> {
++    owner: &'a RetainedDatabaseOpening,
++}
++impl DatabaseOpenReport<'_> {
++    pub fn phase(&self) -> DatabaseOpenPhase {
++        self.owner.phase
++    }
++    /// The opening failure/success phase survives later close attempts.
++    pub fn opening_phase(&self) -> DatabaseOpenPhase {
++        self.owner.opening_phase
++    }
++    pub fn settlement(&self) -> DatabaseOpenSettlement {
++        self.owner.settlement
++    }
++    /// Construction and bootstrap body, excluding the separately observed terminal.
++    pub fn opening(&self) -> TerminalObservation<'_, DatabaseError> {
++        self.owner.opening.borrow()
++    }
++    pub fn bootstrap(&self) -> Option<WriteTerminalReport<'_>> {
++        self.owner
++            .bootstrap
++            .as_ref()
++            .map(RetainedWriteTransaction::report)
++    }
++    pub fn database_close(&self) -> Option<DatabaseCloseReport<'_>> {
++        self.owner.database.as_ref().map(RetainedDatabase::report)
++    }
++    /// Used only before a Database exists; it never checkpoints partial state.
++    pub fn partial_close(&self) -> TerminalObservation<'_, StorageError> {
++        self.owner.partial_close.borrow()
++    }
++    /// The separate non-allocating admission-fence callback, including its unwind.
++    pub fn fence(&self) -> OpeningFenceReport<'_> {
++        self.owner.admission.report()
++    }
++}
++
++impl Builder {
++    /// Move existing resources into pre-effect opening custody. Register this
++    /// owner before calling `open`; no backend operation runs here. The proxy's
++    /// Arc allocation/control block must be admitted before this constructor.
++    pub fn retain_backend(
++        mut self,
++        backend: Box<dyn StorageBackend>,
++        mode: DatabaseOpenMode,
++    ) -> RetainedDatabaseOpening {
++        let admission = Arc::new(OpeningAdmission {
++            inner: self.admission.clone(),
++            failed: AtomicBool::new(false),
++            outcome: OnceLock::new(),
++        });
++        self.admission = admission.clone();
++        RetainedDatabaseOpening {
++            builder: self,
++            admission,
++            mode,
++            partial: TransactionalMemoryOpening::new(backend),
++            memory: None,
++            database: None,
++            bootstrap: None,
++            repaired_roots: None,
++            phase: DatabaseOpenPhase::Prepared,
++            opening_phase: DatabaseOpenPhase::Prepared,
++            settlement: DatabaseOpenSettlement::Prepared,
++            opening: Observation::NotEntered,
++            partial_close: Observation::NotEntered,
++        }
++    }
++}
++
++impl RetainedDatabaseOpening {
++    pub fn report(&self) -> DatabaseOpenReport<'_> {
++        DatabaseOpenReport { owner: self }
++    }
++    /// Only the complete successful attempt exposes database access. This borrow
++    /// does not erase the opening/terminal diagnostics or transfer close custody.
++    pub fn database(&self) -> Option<&Database> {
++        if self.settlement != DatabaseOpenSettlement::Ready {
++            return None;
++        }
++        self.database.as_ref().and_then(RetainedDatabase::database)
++    }
++    /// Matching owner witness for actual disposal of user transactions. New
++    /// borrows remain governed by `database`; waiting close can still dispose
++    /// transactions that were accepted earlier.
++    pub fn retained_database(&self) -> Option<&RetainedDatabase> {
++        if matches!(
++            self.settlement,
++            DatabaseOpenSettlement::Ready | DatabaseOpenSettlement::WaitingForTransactions
++        ) {
++            self.database.as_ref()
++        } else {
++            None
++        }
++    }
++    /// Enter exactly one opening attempt while all successive resources remain
++    /// installed in this owner. Later calls return the same borrowed observations.
++    pub fn open(&mut self) -> DatabaseOpenReport<'_> {
++        if self.begin_open() {
++            self.finish_bootstrap();
++        }
++        self.report()
++    }
++
++    // Split at the real ownership boundary. No callback or terminal work runs
++    // before the bootstrap is installed; native fault tests arm failures here.
++    fn begin_open(&mut self) -> bool {
++        if self.settlement != DatabaseOpenSettlement::Prepared {
++            return false;
++        }
++        self.settlement = DatabaseOpenSettlement::Retained;
++        self.opening = Observation::Entered;
++        self.opening = match catch_unwind(AssertUnwindSafe(|| self.open_body())) {
++            Ok(result) => Observation::Returned(result),
++            Err(payload) => Observation::Panicked(payload),
++        };
++        self.opening_phase = self.phase;
++        if matches!(self.opening, Observation::Panicked(_)) {
++            // A backend/callback unwind can precede CheckedBackend's Result.
++            // Keep that original payload before recording fence-hook effects.
++            self.builder.admission.owner_failed();
++        }
++        self.opening.succeeded()
++    }
++
++    fn finish_bootstrap(&mut self) {
++        self.phase = DatabaseOpenPhase::BootstrapTerminal;
++        let bootstrap = self
++            .bootstrap
++            .as_mut()
++            .expect("bootstrap installed before body");
++        let report = if self.repaired_roots.is_some() {
++            bootstrap.commit()
++        } else {
++            bootstrap.abort()
++        };
++        let terminal_succeeded = matches!(report.terminal(), TerminalObservation::Returned(Ok(())));
++        self.opening_phase = DatabaseOpenPhase::BootstrapTerminal;
++        self.phase = DatabaseOpenPhase::BootstrapDisposal;
++        let database = self
++            .database
++            .as_ref()
++            .expect("database installed before bootstrap");
++        let report = bootstrap.dispose_settled(database);
++        // A refused commit with successful rollback/disposal remains an opening
++        // failure at its original terminal phase. A later close cannot erase it.
++        if terminal_succeeded {
++            self.opening_phase = DatabaseOpenPhase::BootstrapDisposal;
++            if report.disposal_complete() {
++                self.phase = DatabaseOpenPhase::Ready;
++                self.opening_phase = DatabaseOpenPhase::Ready;
++                self.settlement = DatabaseOpenSettlement::Ready;
++            }
++        }
++    }
++
++    fn open_body(&mut self) -> Result<(), DatabaseError> {
++        self.phase = DatabaseOpenPhase::MemoryInitialization;
++        self.memory = Some(Arc::new(self.partial.initialize(
++            self.builder.admission.clone(),
++            self.mode == DatabaseOpenMode::Create,
++            self.builder.page_size,
++            match self.mode {
++                DatabaseOpenMode::Create => self.builder.region_size,
++                DatabaseOpenMode::Existing => None,
++            },
++            self.builder.cache_size,
++        )?));
++        self.phase = DatabaseOpenPhase::WinningRootVerification;
++        let memory = self
++            .memory
++            .as_mut()
++            .expect("memory installed before verification");
++        if memory.opened_unclean() && !Database::primary_verifies(memory)? {
++            return Err(StorageError::Corrupted(
++                "Unclean database has a corrupted winning root".to_string(),
++            )
++            .into());
++        }
++        self.phase = DatabaseOpenPhase::AllocatorRestoration;
++        self.repaired_roots = if let Some(tree) = Database::get_allocator_state_table(memory)? {
++            memory.load_allocator_state(&tree)?;
++            #[cfg(debug_assertions)]
++            Database::mark_allocated_page_for_debug(memory)?;
++            None
++        } else {
++            let mut handle = RepairSession::new(0.0);
++            (self.builder.repair_callback)(&mut handle);
++            if handle.aborted() {
++                return Err(DatabaseError::RepairAborted);
++            }
++            Some(Database::do_repair(memory, &self.builder.repair_callback)?)
++        };
++        self.phase = DatabaseOpenPhase::BeginWritable;
++        memory.begin_writable()?;
++        let next_transaction_id = memory.get_last_committed_transaction_id()?.next();
++        self.phase = DatabaseOpenPhase::DatabaseConstruction;
++        let tracker = Arc::new(TransactionTracker::new(next_transaction_id));
++        self.database = Some(
++            Database {
++                mem: self.memory.take().expect("memory transferred once"),
++                transaction_tracker: tracker,
++            }
++            .retain(),
++        );
++        self.phase = DatabaseOpenPhase::BootstrapBegin;
++        let database = self.database.as_ref().unwrap().database().unwrap();
++        self.bootstrap = Some(
++            database
++                .begin_write()
++                .map_err(|error| error.into_storage_error())?
++                .retain(),
++        );
++        self.phase = DatabaseOpenPhase::BootstrapBody;
++        let transaction = self.bootstrap.as_mut().unwrap().transaction_mut().unwrap();
++        if let Some(roots) = self.repaired_roots {
++            transaction.set_repaired_roots(roots);
++        }
++        if let Some(next_id) = transaction.next_persistent_savepoint_id()? {
++            database
++                .transaction_tracker
++                .restore_savepoint_counter_state(next_id);
++        }
++        for id in transaction.list_persistent_savepoints()? {
++            let savepoint = match transaction.get_persistent_savepoint(id) {
++                Ok(savepoint) => savepoint,
++                Err(SavepointError::InvalidSavepoint) => unreachable!(),
++                Err(SavepointError::Storage(error)) => return Err(error.into()),
++            };
++            database
++                .transaction_tracker
++                .register_persistent_savepoint(&savepoint);
++        }
++        Ok(())
++    }
++
++    /// Seal access, observe bootstrap abort/disposal if necessary, then release
++    /// the actual database or partial backend. No terminal operation is replayed.
++    /// Busy database close may be re-observed after actual external handles drain.
++    pub fn close(&mut self) -> DatabaseOpenReport<'_> {
++        self.phase = DatabaseOpenPhase::Closing;
++        if self.settlement == DatabaseOpenSettlement::Closed {
++            return self.report();
++        }
++        self.settlement = DatabaseOpenSettlement::Retained;
++        if let Some(bootstrap) = self.bootstrap.as_mut() {
++            if bootstrap.report().settlement() == WriteTerminalSettlement::Unstarted {
++                let _ = bootstrap.abort();
++            }
++            let report = bootstrap.dispose_settled(self.database.as_ref().unwrap());
++            if !report.disposal_complete() {
++                // Its writer guard and exact transaction remain live. Attempting
++                // a checkpoint or releasing the backend would violate custody.
++                return self.report();
++            }
++        }
++        if let Some(database) = self.database.as_mut() {
++            self.settlement = match database.close().settlement() {
++                DatabaseCloseSettlement::Settled => DatabaseOpenSettlement::Closed,
++                DatabaseCloseSettlement::WaitingForTransactions => {
++                    DatabaseOpenSettlement::WaitingForTransactions
++                }
++                DatabaseCloseSettlement::Open | DatabaseCloseSettlement::Retained => {
++                    DatabaseOpenSettlement::Retained
++                }
++            };
++        } else if matches!(self.partial_close, Observation::NotEntered) {
++            let memory = &self.memory;
++            let partial = &self.partial;
++            self.partial_close.observe(|| match memory {
++                Some(memory) => memory.abandon(),
++                None => partial.abandon(),
++            });
++            if self.partial_close.succeeded() {
++                self.settlement = DatabaseOpenSettlement::Closed;
++            } else {
++                // Preserve the close outcome first. A faulty admission callback
++                // cannot overwrite its original I/O error or panic payload.
++                self.builder.admission.owner_failed();
++            }
++        }
++        self.report()
++    }
++}
++
++#[cfg(test)]
++#[path = "retained_opening_tests.rs"]
++mod tests;
+--- /dev/null
++++ b/vendor/redb-4.2.0/src/retained_opening_tests.rs
+@@ -0,0 +1,749 @@
++use super::*;
++#[cfg(feature = "experimental-api-5")]
++use crate::ReadableTable;
++use crate::{
++    ReadableDatabase, StorageBackend, TableDefinition, WriteTerminalOperation,
++    backends::FileBackend,
++};
++use std::sync::{
++    Mutex,
++    atomic::{AtomicU8, AtomicUsize, Ordering},
++};
++
++#[derive(Debug)]
++struct Marker;
++#[derive(Debug)]
++struct OriginalIo(Arc<Marker>);
++impl std::fmt::Display for OriginalIo {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("opening fault")
++    }
++}
++impl std::error::Error for OriginalIo {}
++#[derive(Debug)]
++struct Control {
++    len_mode: AtomicU8,
++    write_mode: AtomicU8,
++    close_mode: AtomicU8,
++    sync_mode: AtomicU8,
++    calls: AtomicUsize,
++    closes: AtomicUsize,
++    drops: AtomicUsize,
++    primary: Arc<Marker>,
++    secondary: Arc<Marker>,
++}
++impl Control {
++    fn new() -> Arc<Self> {
++        Arc::new(Self {
++            len_mode: AtomicU8::new(0),
++            write_mode: AtomicU8::new(0),
++            close_mode: AtomicU8::new(0),
++            sync_mode: AtomicU8::new(0),
++            calls: AtomicUsize::new(0),
++            closes: AtomicUsize::new(0),
++            drops: AtomicUsize::new(0),
++            primary: Arc::new(Marker),
++            secondary: Arc::new(Marker),
++        })
++    }
++    fn fault(&self, mode: u8, marker: &Arc<Marker>) -> std::io::Result<()> {
++        self.calls.fetch_add(1, Ordering::SeqCst);
++        match mode {
++            1 => Err(std::io::Error::other(OriginalIo(marker.clone()))),
++            2 => std::panic::panic_any(marker.clone()),
++            _ => Ok(()),
++        }
++    }
++}
++#[derive(Debug)]
++struct Backend {
++    file: FileBackend,
++    control: Arc<Control>,
++}
++impl Drop for Backend {
++    fn drop(&mut self) {
++        self.control.drops.fetch_add(1, Ordering::SeqCst);
++    }
++}
++impl StorageBackend for Backend {
++    fn len(&self) -> std::io::Result<u64> {
++        self.control.fault(
++            self.control.len_mode.load(Ordering::SeqCst),
++            &self.control.primary,
++        )?;
++        self.file.len()
++    }
++    fn read(&self, offset: u64, out: &mut [u8]) -> std::io::Result<()> {
++        self.control.fault(0, &self.control.primary)?;
++        self.file.read(offset, out)
++    }
++    fn set_len(&self, len: u64) -> std::io::Result<()> {
++        self.control.fault(0, &self.control.primary)?;
++        self.file.set_len(len)
++    }
++    fn write(&self, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
++        self.control.fault(
++            self.control.write_mode.load(Ordering::SeqCst),
++            &self.control.primary,
++        )?;
++        self.file.write(offset, bytes)
++    }
++    fn sync_data(&self) -> std::io::Result<()> {
++        self.control.fault(
++            self.control.sync_mode.load(Ordering::SeqCst),
++            &self.control.primary,
++        )?;
++        self.file.sync_data()
++    }
++    fn close(&self) -> std::io::Result<()> {
++        self.control.closes.fetch_add(1, Ordering::SeqCst);
++        self.control.fault(
++            self.control.close_mode.load(Ordering::SeqCst),
++            &self.control.secondary,
++        )?;
++        self.file.close()
++    }
++}
++struct Fixture {
++    owner: RetainedDatabaseOpening,
++    control: Arc<Control>,
++    file: tempfile::NamedTempFile,
++}
++impl Fixture {
++    fn new() -> Self {
++        Self::with_admission(crate::test_admission())
++    }
++    fn with_admission(admission: Arc<dyn crate::StorageAdmission>) -> Self {
++        let file = crate::create_tempfile();
++        let control = Control::new();
++        let owner = Builder::new(admission).retain_backend(
++            Box::new(Backend {
++                file: FileBackend::new(file.reopen().unwrap()).unwrap(),
++                control: control.clone(),
++            }),
++            DatabaseOpenMode::Create,
++        );
++        Self {
++            owner,
++            control,
++            file,
++        }
++    }
++}
++// Fixed process custody; uncertain file owners outlive the native test thread.
++static RETAINED: Mutex<[Option<Fixture>; 4]> = Mutex::new([const { None }; 4]);
++fn original_io(
++    observation: TerminalObservation<'_, StorageError>,
++    expected: &Arc<Marker>,
++) -> *const StorageError {
++    let TerminalObservation::Returned(Err(error @ StorageError::Io(io))) = observation else {
++        panic!("original I/O missing")
++    };
++    assert!(Arc::ptr_eq(
++        &io.get_ref()
++            .unwrap()
++            .downcast_ref::<OriginalIo>()
++            .unwrap()
++            .0,
++        expected
++    ));
++    error
++}
++fn original_open_io(
++    observation: TerminalObservation<'_, DatabaseError>,
++    expected: &Arc<Marker>,
++) -> *const DatabaseError {
++    let TerminalObservation::Returned(Err(error @ DatabaseError::Storage(StorageError::Io(io)))) =
++        observation
++    else {
++        panic!("original opening I/O missing")
++    };
++    assert!(Arc::ptr_eq(
++        &io.get_ref()
++            .unwrap()
++            .downcast_ref::<OriginalIo>()
++            .unwrap()
++            .0,
++        expected
++    ));
++    error
++}
++
++#[test]
++fn prepare_has_no_backend_effect_and_close_before_open_never_initializes() {
++    let mut fixture = Fixture::new();
++    assert_eq!(fixture.control.calls.load(Ordering::SeqCst), 0);
++    assert_eq!(
++        fixture.owner.report().settlement(),
++        DatabaseOpenSettlement::Prepared
++    );
++    assert!(matches!(
++        fixture.owner.close().opening(),
++        TerminalObservation::NotEntered
++    ));
++    assert_eq!(
++        fixture.owner.report().settlement(),
++        DatabaseOpenSettlement::Closed
++    );
++    let calls = fixture.control.calls.load(Ordering::SeqCst);
++    assert_eq!(
++        fixture.owner.open().settlement(),
++        DatabaseOpenSettlement::Closed
++    );
++    assert_eq!(fixture.control.calls.load(Ordering::SeqCst), calls);
++    assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 1);
++    assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 0);
++    drop(fixture.owner);
++    assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 1);
++}
++
++#[test]
++fn first_io_and_secondary_close_failure_keep_both_originals_and_locked_backend() {
++    let mut fixture = Fixture::new();
++    fixture.control.len_mode.store(1, Ordering::SeqCst);
++    fixture.control.close_mode.store(1, Ordering::SeqCst);
++    let opening = original_open_io(fixture.owner.open().opening(), &fixture.control.primary);
++    assert_eq!(
++        fixture.owner.report().phase(),
++        DatabaseOpenPhase::MemoryInitialization
++    );
++    assert!(fixture.owner.memory.is_none());
++    assert!(fixture.owner.database.is_none());
++    let report = fixture.owner.close();
++    assert_eq!(report.settlement(), DatabaseOpenSettlement::Retained);
++    let close = original_io(report.partial_close(), &fixture.control.secondary);
++    assert_eq!(
++        original_open_io(report.opening(), &fixture.control.primary),
++        opening
++    );
++    let calls = fixture.control.calls.load(Ordering::SeqCst);
++    let report = fixture.owner.close();
++    assert_eq!(
++        original_io(report.partial_close(), &fixture.control.secondary),
++        close
++    );
++    assert_eq!(
++        original_open_io(report.opening(), &fixture.control.primary),
++        opening
++    );
++    assert_eq!(
++        fixture.owner.open().settlement(),
++        DatabaseOpenSettlement::Retained
++    );
++    assert_eq!(fixture.control.calls.load(Ordering::SeqCst), calls);
++    assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 0);
++    assert!(matches!(
++        FileBackend::new(fixture.file.reopen().unwrap()),
++        Err(DatabaseError::DatabaseAlreadyOpen)
++    ));
++    let mut retained = RETAINED.lock().unwrap();
++    assert!(retained[0].is_none());
++    retained[0] = Some(fixture);
++}
++
++#[test]
++fn initialization_write_unwind_keeps_payload_and_partial_cache_until_positive_release() {
++    let mut fixture = Fixture::new();
++    fixture.control.write_mode.store(2, Ordering::SeqCst);
++    let report = fixture.owner.open();
++    let TerminalObservation::Panicked(payload) = report.opening() else {
++        panic!("opening panic missing")
++    };
++    assert!(Arc::ptr_eq(
++        payload.downcast_ref::<Arc<Marker>>().unwrap(),
++        &fixture.control.primary
++    ));
++    let original = std::ptr::from_ref(payload);
++    assert!(fixture.owner.memory.is_none());
++    assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 0);
++    let report = fixture.owner.close();
++    assert_eq!(report.settlement(), DatabaseOpenSettlement::Closed);
++    let TerminalObservation::Panicked(payload) = report.opening() else {
++        panic!("opening panic erased")
++    };
++    assert!(std::ptr::eq(original, payload));
++    assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 1);
++    drop(fixture.owner);
++    assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 1);
++}
++
++#[test]
++fn repair_callback_unwind_keeps_actual_memory_and_original_callback_payload() {
++    let mut fixture = Fixture::new();
++    let marker = fixture.control.primary.clone();
++    fixture
++        .owner
++        .builder
++        .set_repair_callback(move |_| std::panic::panic_any(marker.clone()));
++    let report = fixture.owner.open();
++    assert_eq!(report.phase(), DatabaseOpenPhase::AllocatorRestoration);
++    let TerminalObservation::Panicked(payload) = report.opening() else {
++        panic!("callback panic missing")
++    };
++    assert!(Arc::ptr_eq(
++        payload.downcast_ref::<Arc<Marker>>().unwrap(),
++        &fixture.control.primary
++    ));
++    assert!(fixture.owner.memory.is_some());
++    assert!(fixture.owner.database.is_none());
++    assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 0);
++    assert_eq!(
++        fixture.owner.close().settlement(),
++        DatabaseOpenSettlement::Closed
++    );
++    drop(fixture.owner);
++    assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 1);
++}
++
++#[test]
++fn successful_repair_bootstrap_is_committed_disposed_and_preserved_through_reader_drain() {
++    const TABLE: TableDefinition<u64, u64> = TableDefinition::new("retained-open");
++    let mut fixture = Fixture::new();
++    let report = fixture.owner.open();
++    assert_eq!(report.settlement(), DatabaseOpenSettlement::Ready);
++    assert!(matches!(
++        report.opening(),
++        TerminalObservation::Returned(Ok(()))
++    ));
++    let bootstrap = report.bootstrap().unwrap();
++    assert_eq!(bootstrap.operation(), Some(WriteTerminalOperation::Commit));
++    assert!(bootstrap.disposal_complete());
++    let database = fixture.owner.database().unwrap();
++    let writer = database.begin_write().unwrap();
++    writer.open_table(TABLE).unwrap().insert(1, 42).unwrap();
++    writer.commit().unwrap();
++    let reader = database.begin_read().unwrap();
++    assert_eq!(
++        fixture.owner.close().settlement(),
++        DatabaseOpenSettlement::WaitingForTransactions
++    );
++    assert!(fixture.owner.database().is_none());
++    assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 0);
++    assert_eq!(
++        reader
++            .open_table(TABLE)
++            .unwrap()
++            .get(1)
++            .unwrap()
++            .unwrap()
++            .value(),
++        42
++    );
++    drop(reader);
++    assert_eq!(
++        fixture.owner.close().settlement(),
++        DatabaseOpenSettlement::Closed
++    );
++    assert!(
++        fixture
++            .owner
++            .report()
++            .bootstrap()
++            .unwrap()
++            .disposal_complete()
++    );
++    drop(fixture.owner);
++    assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 1);
++    let backend = Box::new(FileBackend::new(fixture.file.reopen().unwrap()).unwrap());
++    let mut reopened =
++        Builder::new(crate::test_admission()).retain_backend(backend, DatabaseOpenMode::Existing);
++    assert_eq!(reopened.open().settlement(), DatabaseOpenSettlement::Ready);
++    assert_eq!(
++        reopened.report().bootstrap().unwrap().operation(),
++        Some(WriteTerminalOperation::Abort)
++    );
++    assert_eq!(
++        reopened
++            .database()
++            .unwrap()
++            .begin_read()
++            .unwrap()
++            .open_table(TABLE)
++            .unwrap()
++            .get(1)
++            .unwrap()
++            .unwrap()
++            .value(),
++        42
++    );
++    assert_eq!(
++        reopened.close().settlement(),
++        DatabaseOpenSettlement::Closed
++    );
++}
++
++#[derive(Debug)]
++struct PanickingAdmission {
++    marker: Arc<Marker>,
++    calls: AtomicUsize,
++}
++impl crate::StorageAdmission for PanickingAdmission {
++    fn check_owner(&self) -> Result<(), crate::OwnerFailed> {
++        Ok(())
++    }
++    fn reserve_growth(&self, _: u64, _: u64) -> Result<(), crate::AdmissionError> {
++        Ok(())
++    }
++    fn settle_growth(&self, _: u64) -> Result<(), crate::OwnerFailed> {
++        Ok(())
++    }
++    fn owner_failed(&self) {
++        self.calls.fetch_add(1, Ordering::SeqCst);
++        std::panic::panic_any(self.marker.clone());
++    }
++}
++
++#[test]
++fn original_io_survives_admission_fence_panic_and_proxy_fences_before_callback() {
++    let admission = Arc::new(PanickingAdmission {
++        marker: Arc::new(Marker),
++        calls: AtomicUsize::new(0),
++    });
++    let mut fixture = Fixture::with_admission(admission.clone());
++    assert!(Arc::ptr_eq(
++        &fixture.owner.admission.inner,
++        &(admission.clone() as Arc<dyn crate::StorageAdmission>)
++    ));
++    fixture.control.len_mode.store(1, Ordering::SeqCst);
++    fixture.control.close_mode.store(1, Ordering::SeqCst);
++    let report = fixture.owner.open();
++    let opening = original_open_io(report.opening(), &fixture.control.primary);
++    let original = {
++        let fence = report.fence();
++        let Some(TerminalObservation::Panicked(payload)) = fence.observation() else {
++            panic!("fence panic missing")
++        };
++        assert!(Arc::ptr_eq(
++            payload.downcast_ref::<Arc<Marker>>().unwrap(),
++            &admission.marker
++        ));
++        std::ptr::from_ref(payload)
++    };
++    assert_eq!(admission.calls.load(Ordering::SeqCst), 1);
++    assert!(fixture.owner.builder.admission.check_owner().is_err());
++    assert!(matches!(
++        fixture.owner.builder.admission.reserve_growth(0, 4096),
++        Err(crate::AdmissionError::OwnerFailed)
++    ));
++    assert!(fixture.owner.builder.admission.settle_growth(0).is_err());
++    let report = fixture.owner.close();
++    assert_eq!(report.settlement(), DatabaseOpenSettlement::Retained);
++    original_io(report.partial_close(), &fixture.control.secondary);
++    assert_eq!(
++        original_open_io(report.opening(), &fixture.control.primary),
++        opening
++    );
++    assert_eq!(
++        report.opening_phase(),
++        DatabaseOpenPhase::MemoryInitialization
++    );
++    assert_eq!(report.phase(), DatabaseOpenPhase::Closing);
++    let fence = report.fence();
++    let Some(TerminalObservation::Panicked(payload)) = fence.observation() else {
++        panic!("fence panic erased")
++    };
++    assert!(std::ptr::eq(original, payload));
++    assert_eq!(admission.calls.load(Ordering::SeqCst), 1);
++    drop(fence);
++    assert!(matches!(
++        FileBackend::new(fixture.file.reopen().unwrap()),
++        Err(DatabaseError::DatabaseAlreadyOpen)
++    ));
++    let mut retained = RETAINED.lock().unwrap();
++    assert!(retained[1].is_none());
++    retained[1] = Some(fixture);
++}
++
++fn stage_repaired_bootstrap(fixture: &mut Fixture) {
++    assert!(fixture.owner.begin_open());
++    assert!(fixture.owner.repaired_roots.is_some());
++    assert_eq!(
++        fixture.owner.report().phase(),
++        DatabaseOpenPhase::BootstrapBody
++    );
++    let opening = fixture.owner.report();
++    let report = opening.bootstrap().unwrap();
++    assert_eq!(report.settlement(), WriteTerminalSettlement::Unstarted);
++    assert!(fixture.owner.database().is_none());
++    assert!(fixture.owner.retained_database().is_none());
++}
++fn refuse_bootstrap_cache(fixture: &Fixture) {
++    fixture
++        .owner
++        .database
++        .as_ref()
++        .unwrap()
++        .database()
++        .unwrap()
++        .get_memory()
++        .set_write_entry_capacity_for_test(0);
++}
++fn bootstrap_refusal(report: &WriteTerminalReport<'_>) -> *const crate::WriteTerminalError {
++    let TerminalObservation::Returned(Err(
++        error @ crate::WriteTerminalError::Commit(crate::CommitError::Storage(
++            StorageError::CacheCapacityDenied,
++        )),
++    )) = report.terminal()
++    else {
++        panic!("original bootstrap cache refusal missing")
++    };
++    error
++}
++
++#[test]
++fn bootstrap_commit_refusal_keeps_original_phase_after_successful_rollback_and_disposal() {
++    let mut fixture = Fixture::new();
++    stage_repaired_bootstrap(&mut fixture);
++    refuse_bootstrap_cache(&fixture);
++    fixture.owner.finish_bootstrap();
++    let report = fixture.owner.report();
++    assert_eq!(report.settlement(), DatabaseOpenSettlement::Retained);
++    assert_eq!(report.opening_phase(), DatabaseOpenPhase::BootstrapTerminal);
++    let bootstrap = report.bootstrap().unwrap();
++    let original = bootstrap_refusal(&bootstrap);
++    assert_eq!(bootstrap.settlement(), WriteTerminalSettlement::Settled);
++    assert!(matches!(
++        bootstrap.rollback(),
++        TerminalObservation::Returned(Ok(()))
++    ));
++    assert!(bootstrap.disposal_complete());
++    assert!(fixture.owner.database().is_none());
++    assert!(fixture.owner.retained_database().is_none());
++    let calls = fixture.control.calls.load(Ordering::SeqCst);
++    assert_eq!(
++        fixture.owner.open().settlement(),
++        DatabaseOpenSettlement::Retained
++    );
++    assert_eq!(fixture.control.calls.load(Ordering::SeqCst), calls);
++    let report = fixture.owner.close();
++    assert_eq!(report.settlement(), DatabaseOpenSettlement::Closed);
++    assert_eq!(report.opening_phase(), DatabaseOpenPhase::BootstrapTerminal);
++    assert_eq!(bootstrap_refusal(&report.bootstrap().unwrap()), original);
++    assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 1);
++}
++
++#[derive(Debug)]
++struct RollbackAdmission {
++    fail_settlement: AtomicBool,
++    failed: AtomicBool,
++}
++impl crate::StorageAdmission for RollbackAdmission {
++    fn check_owner(&self) -> Result<(), crate::OwnerFailed> {
++        if self.failed.load(Ordering::Acquire) {
++            Err(crate::OwnerFailed)
++        } else {
++            Ok(())
++        }
++    }
++    fn reserve_growth(&self, _: u64, _: u64) -> Result<(), crate::AdmissionError> {
++        Ok(())
++    }
++    fn settle_growth(&self, _: u64) -> Result<(), crate::OwnerFailed> {
++        if self.fail_settlement.load(Ordering::Acquire) {
++            Err(crate::OwnerFailed)
++        } else {
++            Ok(())
++        }
++    }
++    fn owner_failed(&self) {
++        self.failed.store(true, Ordering::Release);
++    }
++}
++
++#[test]
++fn bootstrap_refusal_and_actual_failed_rollback_retain_original_transaction_and_lock() {
++    let admission = Arc::new(RollbackAdmission {
++        fail_settlement: AtomicBool::new(false),
++        failed: AtomicBool::new(false),
++    });
++    let mut fixture = Fixture::with_admission(admission.clone());
++    stage_repaired_bootstrap(&mut fixture);
++    refuse_bootstrap_cache(&fixture);
++    admission.fail_settlement.store(true, Ordering::Release);
++    fixture.owner.finish_bootstrap();
++    let report = fixture.owner.report();
++    assert_eq!(report.opening_phase(), DatabaseOpenPhase::BootstrapTerminal);
++    let bootstrap = report.bootstrap().unwrap();
++    let primary = bootstrap_refusal(&bootstrap);
++    let TerminalObservation::Returned(Err(error)) = bootstrap.rollback() else {
++        panic!("rollback outcome missing")
++    };
++    assert!(matches!(error, StorageError::OwnerFailed));
++    let rollback = std::ptr::from_ref(error);
++    assert_eq!(bootstrap.settlement(), WriteTerminalSettlement::Retained);
++    assert!(!bootstrap.disposal_complete());
++    let calls = fixture.control.calls.load(Ordering::SeqCst);
++    let report = fixture.owner.close();
++    assert_eq!(report.settlement(), DatabaseOpenSettlement::Retained);
++    assert_eq!(report.opening_phase(), DatabaseOpenPhase::BootstrapTerminal);
++    let bootstrap = report.bootstrap().unwrap();
++    assert_eq!(bootstrap_refusal(&bootstrap), primary);
++    let TerminalObservation::Returned(Err(error)) = bootstrap.rollback() else {
++        panic!("rollback original erased")
++    };
++    assert_eq!(std::ptr::from_ref(error), rollback);
++    assert_eq!(fixture.control.calls.load(Ordering::SeqCst), calls);
++    assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 0);
++    assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 0);
++    assert!(fixture.owner.retained_database().is_none());
++    assert!(matches!(
++        FileBackend::new(fixture.file.reopen().unwrap()),
++        Err(DatabaseError::DatabaseAlreadyOpen)
++    ));
++    let mut retained = RETAINED.lock().unwrap();
++    assert!(retained[2].is_none());
++    retained[2] = Some(fixture);
++}
++
++#[test]
++fn bootstrap_commit_io_failure_never_replays_or_closes_its_retained_writer_backend() {
++    let mut fixture = Fixture::new();
++    stage_repaired_bootstrap(&mut fixture);
++    fixture.control.sync_mode.store(1, Ordering::SeqCst);
++    fixture.owner.finish_bootstrap();
++    let report = fixture.owner.report();
++    assert_eq!(report.opening_phase(), DatabaseOpenPhase::BootstrapTerminal);
++    let bootstrap = report.bootstrap().unwrap();
++    let TerminalObservation::Returned(Err(
++        error
++        @ crate::WriteTerminalError::Commit(crate::CommitError::Storage(StorageError::Io(io))),
++    )) = bootstrap.terminal()
++    else {
++        panic!("actual bootstrap I/O original missing")
++    };
++    assert!(Arc::ptr_eq(
++        &io.get_ref()
++            .unwrap()
++            .downcast_ref::<OriginalIo>()
++            .unwrap()
++            .0,
++        &fixture.control.primary
++    ));
++    let original = std::ptr::from_ref(error);
++    assert!(matches!(
++        bootstrap.rollback(),
++        TerminalObservation::NotEntered
++    ));
++    assert_eq!(bootstrap.settlement(), WriteTerminalSettlement::Retained);
++    assert!(!bootstrap.disposal_complete());
++    let calls = fixture.control.calls.load(Ordering::SeqCst);
++    assert_eq!(
++        fixture.owner.open().settlement(),
++        DatabaseOpenSettlement::Retained
++    );
++    let report = fixture.owner.close();
++    assert_eq!(report.settlement(), DatabaseOpenSettlement::Retained);
++    let bootstrap = report.bootstrap().unwrap();
++    let TerminalObservation::Returned(Err(error)) = bootstrap.terminal() else {
++        panic!("terminal original erased")
++    };
++    assert_eq!(std::ptr::from_ref(error), original);
++    assert_eq!(fixture.control.calls.load(Ordering::SeqCst), calls);
++    assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 0);
++    assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 0);
++    assert!(matches!(
++        FileBackend::new(fixture.file.reopen().unwrap()),
++        Err(DatabaseError::DatabaseAlreadyOpen)
++    ));
++    let mut retained = RETAINED.lock().unwrap();
++    assert!(retained[3].is_none());
++    retained[3] = Some(fixture);
++}
++
++#[test]
++fn actual_corrupted_savepoint_body_error_retains_original_then_aborts_and_disposes_bootstrap() {
++    let mut fixture = Fixture::new();
++    assert_eq!(
++        fixture.owner.open().settlement(),
++        DatabaseOpenSettlement::Ready
++    );
++    let db = fixture.owner.database().unwrap();
++    let write = db.begin_write().unwrap();
++    let savepoint = write.persistent_savepoint().unwrap();
++    write.commit().unwrap();
++    let write = db.begin_write().unwrap();
++    write
++        .corrupt_savepoint_record_for_open_test(savepoint)
++        .unwrap();
++    write.commit().unwrap();
++    assert_eq!(
++        fixture.owner.close().settlement(),
++        DatabaseOpenSettlement::Closed
++    );
++    drop(fixture.owner);
++    let control = Control::new();
++    let backend = Box::new(Backend {
++        file: FileBackend::new(fixture.file.reopen().unwrap()).unwrap(),
++        control: control.clone(),
++    });
++    let mut owner =
++        Builder::new(crate::test_admission()).retain_backend(backend, DatabaseOpenMode::Existing);
++    let report = owner.open();
++    assert_eq!(report.settlement(), DatabaseOpenSettlement::Retained);
++    assert_eq!(report.opening_phase(), DatabaseOpenPhase::BootstrapBody);
++    let TerminalObservation::Returned(Err(
++        error @ DatabaseError::Storage(StorageError::Corrupted(message)),
++    )) = report.opening()
++    else {
++        panic!("original body error missing")
++    };
++    assert_eq!(message, "Corrupted savepoint record");
++    let original = std::ptr::from_ref(error);
++    assert_eq!(
++        report.bootstrap().unwrap().settlement(),
++        WriteTerminalSettlement::Unstarted
++    );
++    assert!(owner.database().is_none());
++    assert!(owner.retained_database().is_none());
++    let report = owner.close();
++    assert_eq!(report.settlement(), DatabaseOpenSettlement::Closed);
++    assert_eq!(report.opening_phase(), DatabaseOpenPhase::BootstrapBody);
++    let TerminalObservation::Returned(Err(error)) = report.opening() else {
++        panic!("original body error erased")
++    };
++    assert_eq!(std::ptr::from_ref(error), original);
++    let bootstrap = report.bootstrap().unwrap();
++    assert_eq!(bootstrap.operation(), Some(WriteTerminalOperation::Abort));
++    assert!(matches!(
++        bootstrap.terminal(),
++        TerminalObservation::Returned(Ok(()))
++    ));
++    assert!(bootstrap.disposal_complete());
++    assert_eq!(control.closes.load(Ordering::SeqCst), 1);
++}
++
++#[test]
++fn user_retained_writer_disposes_through_matching_witness_while_close_waits() {
++    let mut fixture = Fixture::new();
++    assert_eq!(
++        fixture.owner.open().settlement(),
++        DatabaseOpenSettlement::Ready
++    );
++    let mut writer = fixture
++        .owner
++        .database()
++        .unwrap()
++        .begin_write()
++        .unwrap()
++        .retain();
++    assert_eq!(
++        writer.abort().settlement(),
++        WriteTerminalSettlement::Settled
++    );
++    assert!(!writer.report().disposal_complete());
++    assert_eq!(
++        fixture.owner.close().settlement(),
++        DatabaseOpenSettlement::WaitingForTransactions
++    );
++    assert!(fixture.owner.database().is_none());
++    let witness = fixture.owner.retained_database().unwrap();
++    assert!(witness.database().is_none());
++    assert!(writer.dispose_settled(witness).disposal_complete());
++    assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 0);
++    assert_eq!(
++        fixture.owner.close().settlement(),
++        DatabaseOpenSettlement::Closed
++    );
++    assert!(fixture.owner.retained_database().is_none());
++    assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 1);
++}
+--- a/vendor/redb-4.2.0/src/retained_transaction.rs
++++ b/vendor/redb-4.2.0/src/retained_transaction.rs
+@@ -145,6 +145,11 @@
+     pub fn transaction(&self) -> Option<&WriteTransaction> {
+         self.transaction
+             .as_ref()
++            .filter(|_| self.operation.is_none())
++    }
++    pub(crate) fn transaction_mut(&mut self) -> Option<&mut WriteTransaction> {
++        self.transaction
++            .as_mut()
+             .filter(|_| self.operation.is_none())
+     }
+     pub fn report(&self) -> WriteTerminalReport<'_> {
+--- a/vendor/redb-4.2.0/src/transactions.rs
++++ b/vendor/redb-4.2.0/src/transactions.rs
+@@ -1226,6 +1226,14 @@
+         Ok(value)
+     }
+ 
++    #[cfg(test)]
++    pub(crate) fn corrupt_savepoint_record_for_open_test(&self, id: u64) -> Result {
++        let mut tables = self.system_tables.lock().unwrap();
++        let mut table = tables.open_system_table(&self.dirty, SAVEPOINT_TABLE)?;
++        table.insert(SavepointId(id), SerializedSavepoint::Ref(&[0]))?;
++        Ok(())
++    }
++
+     /// Get a persistent savepoint given its id
+     pub fn get_persistent_savepoint(&self, id: u64) -> Result<Savepoint, SavepointError> {
+         let Some(value) = self.read_existing_system_table(SAVEPOINT_TABLE, |table| {
+--- a/vendor/redb-4.2.0/src/tree_store/mod.rs
++++ b/vendor/redb-4.2.0/src/tree_store/mod.rs
+@@ -30,6 +30,7 @@
+     AllocationPolicy, FILE_FORMAT_VERSION4, MAX_PAIR_LENGTH, MAX_VALUE_LENGTH, PAGE_SIZE, Page,
+     PageAllocator, PageHint, PageNumber, PageNumberHashMap, PageNumberHashSet, PageResolver,
+     PageTracker, SerializedSavepoint, ShrinkPolicy, TransactionalMemory,
++    TransactionalMemoryOpening,
+ };
+ pub use page_store::{InMemoryBackend, Savepoint};
+ pub(crate) use table_tree::{PageListMut, TableTree, TableTreeMut};
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
+@@ -278,8 +278,20 @@
+ }
+ 
+ impl PagedCachedFile {
++    #[cfg(test)]
+     pub(super) fn new(
+         file: Box<dyn StorageBackend>,
++        admission: Arc<dyn crate::StorageAdmission>,
++        page_size: u64,
++        max_cache_size: usize,
++    ) -> Result<Self, DatabaseError> {
++        Self::new_retained(&mut Some(file), admission, page_size, max_cache_size)
++    }
++
++    // The caller keeps its exact backend through every fallible preparation.
++    // The final take occurs after geometry checks and all cache construction.
++    pub(super) fn new_retained(
++        file: &mut Option<Box<dyn StorageBackend>>,
+         admission: Arc<dyn crate::StorageAdmission>,
+         page_size: u64,
+         max_cache_size: usize,
+@@ -318,7 +330,10 @@
+             .collect();
+ 
+         Ok(Self {
+-            file: CheckedBackend::new(file, admission),
++            file: CheckedBackend::new(
++                file.take().expect("retained backend attached once"),
++                admission,
++            ),
+             page_size,
+             read_cache_bytes: AtomicUsize::new(0),
+             write_buffer_bytes: AtomicUsize::new(0),
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/mod.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/mod.rs
+@@ -23,7 +23,7 @@
+ pub(crate) use header::PAGE_SIZE;
+ pub(crate) use page_manager::{
+     AllocationPolicy, FILE_FORMAT_VERSION4, PageAllocator, PageResolver, ShrinkPolicy,
+-    TransactionalMemory, xxh3_checksum,
++    TransactionalMemory, TransactionalMemoryOpening, xxh3_checksum,
+ };
+ pub use savepoint::Savepoint;
+ pub(crate) use savepoint::SerializedSavepoint;
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
+@@ -332,6 +332,64 @@
+     region_header_with_padding_size: u64,
+ }
+ 
++/// Partial opening resources remain in this slot through every fallible call.
++/// Its caller observes outcomes and must retain the slot on uncertain close.
++pub(crate) struct TransactionalMemoryOpening {
++    file: Option<Box<dyn StorageBackend>>,
++    storage: Option<PagedCachedFile>,
++}
++impl TransactionalMemoryOpening {
++    pub(crate) fn new(file: Box<dyn StorageBackend>) -> Self {
++        Self {
++            file: Some(file),
++            storage: None,
++        }
++    }
++    pub(crate) fn initialize(
++        &mut self,
++        admission: Arc<dyn crate::StorageAdmission>,
++        allow_initialize: bool,
++        page_size: usize,
++        requested_region_size: Option<u64>,
++        cache_size: usize,
++    ) -> Result<TransactionalMemory, DatabaseError> {
++        assert!(self.storage.is_none());
++        assert!(page_size.is_power_of_two() && page_size >= DB_HEADER_SIZE);
++        let region_size = requested_region_size.unwrap_or(MAX_USABLE_REGION_SPACE);
++        assert!(
++            min(
++                region_size,
++                (u64::from(MAX_PAGE_INDEX) + 1) * page_size as u64
++            )
++            .is_power_of_two()
++        );
++        admission.check_owner().map_err(StorageError::from)?;
++        self.storage = Some(PagedCachedFile::new_retained(
++            &mut self.file,
++            admission,
++            page_size as u64,
++            cache_size,
++        )?);
++        TransactionalMemory::initialize_retained_storage(
++            &mut self.storage,
++            allow_initialize,
++            page_size,
++            requested_region_size,
++        )
++    }
++    #[cfg(all(not(redb_no_std), panic = "unwind"))]
++    pub(crate) fn abandon(&self) -> Result {
++        if let Some(storage) = &self.storage {
++            storage.close()
++        } else if let Some(file) = &self.file {
++            file.close().map_err(StorageError::Io)
++        } else {
++            // A fully constructed memory owner has already taken the cache.
++            unreachable!("partial close requires an actual opening resource")
++        }
++    }
++}
++
+ impl TransactionalMemory {
+     pub(crate) fn opened_unclean(&self) -> bool {
+         self.opened_unclean
+@@ -360,23 +418,35 @@
+     pub(crate) fn new(
+         file: Box<dyn StorageBackend>,
+         admission: Arc<dyn crate::StorageAdmission>,
+-        // Allow initializing a new database in an empty file
+         allow_initialize: bool,
+         page_size: usize,
+         requested_region_size: Option<u64>,
+         cache_size: usize,
+     ) -> Result<Self, DatabaseError> {
++        let mut opening = TransactionalMemoryOpening::new(file);
++        opening.initialize(
++            admission,
++            allow_initialize,
++            page_size,
++            requested_region_size,
++            cache_size,
++        )
++    }
++
++    fn initialize_retained_storage(
++        storage_owner: &mut Option<PagedCachedFile>,
++        allow_initialize: bool,
++        page_size: usize,
++        requested_region_size: Option<u64>,
++    ) -> Result<Self, DatabaseError> {
+         assert!(page_size.is_power_of_two() && page_size >= DB_HEADER_SIZE);
+-
+         let region_size = requested_region_size.unwrap_or(MAX_USABLE_REGION_SPACE);
+         let region_size = min(
+             region_size,
+             (u64::from(MAX_PAGE_INDEX) + 1) * page_size as u64,
+         );
+         assert!(region_size.is_power_of_two());
+-
+-        let storage = PagedCachedFile::new(file, admission, page_size as u64, cache_size)?;
+-
++        let storage = storage_owner.as_ref().expect("prepared cache retained");
+         let initial_storage_len = storage.raw_file_len()?;
+ 
+         let magic_number: [u8; MAGICNUMBER.len()] =
+@@ -470,23 +540,32 @@
+         assert_eq!(layout.len(), storage.raw_file_len()?);
+         let region_size = layout.full_region_layout().len();
+         let region_header_size = layout.full_region_layout().data_section().start;
+-        let state = InMemoryState::new(header);
++        let state = Mutex::new(InMemoryState::new(header));
+ 
+         assert!(page_size >= DB_HEADER_SIZE);
++
++        #[cfg(debug_assertions)]
++        let open_dirty_pages = Arc::new(Mutex::new(PageNumberHashSet::default()));
++        #[cfg(debug_assertions)]
++        let read_page_ref_counts = Arc::new(Mutex::new(PageNumberHashMap::default()));
++        #[cfg(debug_assertions)]
++        let allocated_pages = Arc::new(Mutex::new(PageNumberHashSet::default()));
++        let page_size = u32::try_from(page_size).unwrap();
+ 
+         Ok(Self {
+             opened_unclean: needs_recovery,
+-            storage,
+-            state: Mutex::new(state),
++            state,
+             #[cfg(debug_assertions)]
+-            open_dirty_pages: Arc::new(Mutex::new(PageNumberHashSet::default())),
++            open_dirty_pages,
+             #[cfg(debug_assertions)]
+-            read_page_ref_counts: Arc::new(Mutex::new(PageNumberHashMap::default())),
++            read_page_ref_counts,
+             #[cfg(debug_assertions)]
+-            allocated_pages: Arc::new(Mutex::new(PageNumberHashSet::default())),
+-            page_size: page_size.try_into().unwrap(),
++            allocated_pages,
++            page_size,
+             region_size,
+             region_header_with_padding_size: region_header_size,
++            // No fallible operation or external callback follows this transfer.
++            storage: storage_owner.take().expect("prepared cache retained"),
+         })
+     }
+ 

@@ -1,0 +1,29 @@
+
+running 6 tests
+test arcs_use_actual_alignment_and_keep_weak_backing ... ok
+test arithmetic_rejects_overflow ... ok
+test btree_node_bound_covers_split_overlap ... ok
+test hash_churn_stays_within_source_derived_peak ... ok
+test print_exact_layout_and_allocator_components ... layout PageNumber size=12 align=4
+layout BtreeBitmap size=24 align=8
+layout U64GroupedBitmap size=32 align=8
+layout BuddyAllocator size=32 align=8
+layout RegionTracker size=24 align=8
+layout Allocators size=48 align=8
+layout PageImpl size=32 align=8
+layout BtreeHeader size=48 align=16
+layout (u64,(Arc<[u8]>,AtomicBool)) size=32 align=8
+layout (u64,(Option<Arc<[u8]>>,AtomicBool)) size=32 align=8
+layout (PageNumber,u64) size=24 align=8
+layout (usize,PageNumber,u128) size=48 align=16
+layout Option<(usize,PageNumber,u128)> size=64 align=16
+layout Mutex<()> size=16 align=8
+layout RwLock<()> size=16 align=8
+allocator payload=67108864 disk=603979776 AllocatorEnvelope { base_pages: 147456, regions: 1, resident: Heap { bytes: 93920, allocations: 171 }, simultaneous_commit: Heap { bytes: 435464, allocations: 374 }, largest_region_image: 38184, tracker_image: 4036 }
+allocator payload=1610612736 disk=12952010752 AllocatorEnvelope { base_pages: 3162112, regions: 4, resident: Heap { bytes: 1640112, allocations: 369 }, simultaneous_commit: Heap { bytes: 5015104, allocations: 770 }, largest_region_image: 266960, tracker_image: 4036 }
+native_lock_requests mutex=Stats { active: true, live: 0, peak: 64, blocks: 0, peak_blocks: 1, largest: 64 } rwlock=Stats { active: true, live: 0, peak: 0, blocks: 0, peak_blocks: 0, largest: 0 }
+ok
+test vectors_cover_requested_capacity_and_reallocation ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

@@ -1,0 +1,9 @@
+accepted_and_settled=1 persistent_files=1 live_files=0
+accepted_and_settled=2 persistent_files=2 live_files=0
+accepted_and_settled=3 persistent_files=3 live_files=0
+accepted_and_settled=4 persistent_files=4 live_files=0
+accepted_and_settled=5 persistent_files=5 live_files=0
+accepted_and_settled=6 persistent_files=6 live_files=0
+accepted_and_settled=7 persistent_files=7 live_files=0
+baseline N=8 admitted_files=7 before_reconcile_bytes=1048576 pending=1048576
+after_reconcile phase=Failed retained_files=7 retained_bytes=1048576 memory_bytes=28168196

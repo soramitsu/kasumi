@@ -1,0 +1,181 @@
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1730,6 +1730,7 @@
+  "kasumi-serving",
+  "kasumi-store",
+  "kasumi-types",
++ "openraft",
+  "ring",
+  "serde",
+  "serde_json",
+--- a/crates/kasumi-authority/Cargo.toml
++++ b/crates/kasumi-authority/Cargo.toml
+@@ -24,6 +24,7 @@
+ tokio.workspace = true
+ 
+ [dev-dependencies]
++openraft = { version = "=0.9.25", features = ["serde", "storage-v2"] }
+ kasumi-raft = { workspace = true, features = ["test-utils"] }
+ kasumi-engine = { workspace = true, features = ["test-utils"] }
+ ring = "0.17"
+--- a/crates/kasumi-authority/src/target_materialization_tests.rs
++++ b/crates/kasumi-authority/src/target_materialization_tests.rs
+@@ -8,6 +8,101 @@
+     open_target_replica, resume_target_materialization,
+ };
+ use kasumi_store::{FilesystemBackupDestination, StorageAccess, TenantStorageSet, TenantStore};
++
++/// Immediate phase closure can race the final durable application or its
++/// acknowledgement. Completion still requires every actual owner to join;
++/// preserve the exact access-fenced error rather than assuming a clean exit.
++fn is_access_fenced_write(error: &openraft::StorageError<u64>) -> bool {
++    if !matches!(error, openraft::StorageError::IO { .. }) {
++        return false;
++    }
++    [
++        "tenant is sealed: key-access lease unavailable or expired",
++        "domain transaction committed; access expired before acknowledgment; outcome unknown",
++    ]
++    .into_iter()
++    .any(|message| {
++        // The adapter's terminal I/O cause is untyped. Compare the complete
++        // Store/Write diagnostic, never an arbitrary matching substring.
++        let expected = openraft::StorageError::<u64>::from_io_error(
++            openraft::ErrorSubject::Store,
++            openraft::ErrorVerb::Write,
++            std::io::Error::other(message),
++        );
++        error.to_string() == expected.to_string()
++    })
++}
++
++fn assert_target_close_outcomes(
++    original: kasumi_types::drain::DrainResult,
++    repeated: kasumi_types::drain::DrainResult,
++) {
++    use kasumi_types::drain::DrainCompletion;
++    let (failure, repeated) = match (original, repeated) {
++        (Ok(()), Ok(())) => return,
++        (Err(failure), Err(repeated)) => (failure, repeated),
++        outcomes => panic!("target drain changed its original outcome: {outcomes:?}"),
++    };
++    assert_eq!(failure.completion(), DrainCompletion::Complete);
++    assert_eq!(repeated.completion(), DrainCompletion::Complete);
++    assert_eq!(failure.issues().len(), 1, "{failure:?}");
++    assert_eq!(repeated.issues().len(), 1, "{repeated:?}");
++    let issue = &failure.issues()[0];
++    assert!(Arc::ptr_eq(issue, &repeated.issues()[0]));
++    assert_eq!(issue.component(), "OpenRaft runtime");
++    assert_eq!(issue.instance(), 0);
++    let runtime = issue
++        .error()
++        .downcast_ref::<openraft::error::ShutdownError<u64, tokio::task::JoinError>>()
++        .expect("original typed OpenRaft shutdown error missing");
++    assert!(runtime.core().is_none(), "{runtime:?}");
++    assert!(runtime.core_join_error().is_none(), "{runtime:?}");
++    assert!(runtime.ticker().is_none(), "{runtime:?}");
++    assert!(runtime.snapshot_builder().is_none(), "{runtime:?}");
++    assert!(runtime.replications().is_empty(), "{runtime:?}");
++    assert!(runtime.auxiliary().is_empty(), "{runtime:?}");
++    assert!(runtime.incoming_snapshot().is_none(), "{runtime:?}");
++    let storage = runtime
++        .state_machine()
++        .and_then(|worker| worker.storage_error())
++        .expect("actual access-fenced state-machine error missing");
++    assert!(is_access_fenced_write(storage), "{storage:?}");
++    eprintln!("target owners drained with their original access-fenced outcome: {failure:?}");
++}
++
++#[test]
++fn target_close_diagnostic_rejects_unrelated_storage_failures() {
++    use openraft::{ErrorSubject, ErrorVerb, StorageError};
++    let closed = "tenant is sealed: key-access lease unavailable or expired";
++    let failure = |subject, verb, message: &str| {
++        StorageError::<u64>::from_io_error(subject, verb, std::io::Error::other(message))
++    };
++    assert!(is_access_fenced_write(&failure(
++        ErrorSubject::Store,
++        ErrorVerb::Write,
++        closed,
++    )));
++    assert!(!is_access_fenced_write(&failure(
++        ErrorSubject::Store,
++        ErrorVerb::Read,
++        closed,
++    )));
++    assert!(!is_access_fenced_write(&failure(
++        ErrorSubject::Vote,
++        ErrorVerb::Write,
++        closed,
++    )));
++    assert!(!is_access_fenced_write(&failure(
++        ErrorSubject::Store,
++        ErrorVerb::Write,
++        "injected storage failure",
++    )));
++    assert!(!is_access_fenced_write(&failure(
++        ErrorSubject::Store,
++        ErrorVerb::Write,
++        &format!("unrelated failure: {closed}"),
++    )));
++}
+ 
+ async fn audit(
+     node: Arc<NodeStore>,
+@@ -798,11 +893,18 @@
+     async fn close_targets(&self, targets: Vec<RunningTarget>, router: &InProcessRouter) {
+         for mut t in targets {
+             router.unregister(&format!("city/{}", self.target.incarnation), t.id);
+-            t.owner.close().await.unwrap();
++            let original = t.owner.close().await;
++            let repeated = t.owner.close().await;
++            assert_target_close_outcomes(original, repeated);
++            assert!(t.operation.invocation().gate().check().is_err());
++            assert!(t.owner.database().raft_group().check_access().is_err());
++            assert!(t.stores.application().check_access().is_err());
++            assert!(t.stores.custody().store().check_access().is_err());
+             drop(t.owner);
+             drop(t.operation);
+             t.scope.close();
+             t.scope.drain().await;
++            assert!(t.scope.is_idle());
+             t.stores.custody().store().shutdown().await.unwrap();
+             drop(t.stores);
+             t.audit.shutdown().await.unwrap();
+--- a/crates/kasumi-authority/src/target_serving_tests.rs
++++ b/crates/kasumi-authority/src/target_serving_tests.rs
+@@ -195,7 +195,12 @@
+     }
+     async fn close(mut self, f: &MaterialFixture, router: &InProcessRouter) {
+         router.unregister(&format!("city/{}", f.target.incarnation), self.id);
+-        self.owner.close().await.unwrap();
++        let original = self.owner.close().await;
++        let repeated = self.owner.close().await;
++        assert_target_close_outcomes(original, repeated);
++        assert!(self.owner.database().is_err());
++        assert!(self.stores.application().check_access().is_err());
++        assert!(self.stores.custody().store().check_access().is_err());
+         drop(self.owner);
+         self.stores.custody().store().shutdown().await.unwrap();
+         drop(self.stores);
+@@ -343,10 +348,19 @@
+             .add_learner(4, kasumi_raft::BasicNode::new("learner-4"), false)
+             .await
+             .unwrap();
++        // AddNodes deliberately preserves an existing node's address. This
++        // fixture updates the same physical voter's operational metadata; it
++        // neither admits a replacement owner nor changes the voter set.
+         database
+             .raft_group()
+             .raft()
+-            .add_learner(id, kasumi_raft::BasicNode::new("target-maintained"), false)
++            .change_membership(
++                openraft::ChangeMembers::SetNodes(BTreeMap::from([(
++                    id,
++                    kasumi_raft::BasicNode::new("target-maintained"),
++                )])),
++                true,
++            )
+             .await
+             .unwrap();
+         assert_operational(&targets, fact, true, true, id).await;

@@ -41,6 +41,10 @@ async fn ca_file(path: &Path) -> Result<Vec<u8>> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires KASUMI_OPENBAO_BIN pointing to a verified local OpenBao release"]
 async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation() -> Result<()> {
+    let fixture_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        kasumi_store::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let binary = std::env::var_os("KASUMI_OPENBAO_BIN").context("set KASUMI_OPENBAO_BIN")?;
     let root = kasumi_store::test_utils::private_tempdir()?;
     let certificate_dir = root.path().join("certificates");
@@ -174,7 +178,8 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
             NodeStore::create_new_fixture(
                 root.path().join(format!("{key_name}.redb")),
                 kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
+                fixture_memory.clone(),
+                fixture_scratch.clone(),
             )?,
             "tenant-a".into(),
             provider.clone(),

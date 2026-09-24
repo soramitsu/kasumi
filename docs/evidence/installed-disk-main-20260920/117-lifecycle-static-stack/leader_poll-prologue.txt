@@ -1,0 +1,42 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010003dff8 <<lifecycle::Fixture>::leader::{closure#0}>:
+10003dff8: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+10003dffc: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10003e000: 910043fd    	add	x29, sp, #0x10
+10003e004: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+10003e008: f90003ff    	str	xzr, [sp]
+10003e00c: d13fc3ff    	sub	sp, sp, #0xff0
+10003e010: f90003ff    	str	xzr, [sp]
+10003e014: f9001fe0    	str	x0, [sp, #0x38]
+10003e018: f90027e1    	str	x1, [sp, #0x48]
+10003e01c: aa0003e8    	mov	x8, x0
+10003e020: f81c03a8    	stur	x8, [x29, #-0x40]
+10003e024: aa0003e8    	mov	x8, x0
+10003e028: f81c83a8    	stur	x8, [x29, #-0x38]
+10003e02c: 396aa008    	ldrb	w8, [x0, #0xaa8]
+10003e030: b90047e8    	str	w8, [sp, #0x44]
+10003e034: 34000168    	cbz	w8, 0x10003e060 <<lifecycle::Fixture>::leader::{closure#0}+0x68>
+10003e038: 14000001    	b	0x10003e03c <<lifecycle::Fixture>::leader::{closure#0}+0x44>
+10003e03c: b94047e8    	ldr	w8, [sp, #0x44]
+10003e040: 71000508    	subs	w8, w8, #0x1
+10003e044: 54000200    	b.eq	0x10003e084 <<lifecycle::Fixture>::leader::{closure#0}+0x8c>
+10003e048: 14000001    	b	0x10003e04c <<lifecycle::Fixture>::leader::{closure#0}+0x54>
+10003e04c: b94047e8    	ldr	w8, [sp, #0x44]
+10003e050: 71000908    	subs	w8, w8, #0x2
+10003e054: 540001e0    	b.eq	0x10003e090 <<lifecycle::Fixture>::leader::{closure#0}+0x98>
+10003e058: 14000001    	b	0x10003e05c <<lifecycle::Fixture>::leader::{closure#0}+0x64>
+10003e05c: 14000010    	b	0x10003e09c <<lifecycle::Fixture>::leader::{closure#0}+0xa4>
+10003e060: f9401fe9    	ldr	x9, [sp, #0x38]
+10003e064: f9400128    	ldr	x8, [x9]
+10003e068: f9000528    	str	x8, [x9, #0x8]
+10003e06c: 52800148    	mov	w8, #0xa                ; =10
+10003e070: aa0803e0    	mov	x0, x8
+10003e074: 94015b12    	bl	0x100094cbc <<core::time::Duration>::from_secs>
+10003e078: f90017e0    	str	x0, [sp, #0x28]
+10003e07c: b90037e1    	str	w1, [sp, #0x34]
+10003e080: 14000013    	b	0x10003e0cc <<lifecycle::Fixture>::leader::{closure#0}+0xd4>
+10003e084: 52800008    	mov	w8, #0x0                ; =0

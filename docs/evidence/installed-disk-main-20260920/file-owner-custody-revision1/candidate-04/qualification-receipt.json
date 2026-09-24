@@ -1,0 +1,78 @@
+{
+  "status": "SCOPED_TARGET_ONLY_PASS_UNAPPLIED",
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "base": "backup-namespace-admission-revision4/proposed",
+  "changed_paths": 9,
+  "patch_sha256": "48756df32f870731310a1cec7fc665c1311ea6b7aec4ef05a37f5bc42fb516ca",
+  "manifest_sha256": "89bf760a949096fe2c9c21a1907342bf21ecdfcdc5196f5e68785ba40800708d",
+  "raw_manifest_sha256": "4c6021f6fda7add99b849b8d08a03e9a6cef72d3450ceea7c09d072aa3021942",
+  "raw_manifest_files": 1384,
+  "native_terminal_sha256": "7d479a7618aaa1d395d38cc00b79242c9849065da9ab0690c8074db23c2e70b9",
+  "native_results_sha256": "2e10af25e43a538173635103f1d8dce4d6b52a2169c60929fff0e3681fea65e8",
+  "native_phases": 6,
+  "selected_tests": 132,
+  "passed_tests": 132,
+  "failed_tests": 0,
+  "filtered_inherited_device_tests": 5,
+  "actual_source_changed": false,
+  "native_inputs": 1825,
+  "native_inputs_unchanged": true,
+  "all_process_groups_drained": true,
+  "timeouts_or_signals": false,
+  "independent_production_review": {
+    "path": "target/installed-disk-validation/file-owner-custody-independent-review/receipt.json",
+    "sha256": "0c2fab00c7132f60aa950a15d42bfa5af5b1976ba0ab3b32a84d2dcaf4b3eb64"
+  },
+  "preserved_trials": [
+    {
+      "path": "candidate-01/native-01",
+      "result": "source-only preparation parser failure; no native"
+    },
+    {
+      "path": "candidate-01/native-02",
+      "result": "source-only generated-runner AST failure; no native"
+    },
+    {
+      "path": "candidate-01/native-03",
+      "result": "preflight passed; superseded without native"
+    },
+    {
+      "path": "candidate-02/native-01",
+      "result": "production compile passed; test compile missing fixture field; no tests ran"
+    },
+    {
+      "path": "candidate-03/native-01",
+      "result": "production/test compile and binary inventory passed; 131 runtime pass, 1 fixture failure"
+    }
+  ],
+  "remaining": [
+    "Apply/compose with qualified storage-and-namespace-integration-revision6; no actual source changes authorized to this agent.",
+    "Full workspace check, strict Clippy and store/engine/server regression qualification on the composed custody successor.",
+    "Five explicit ScratchDisk/NodeStore integration cases omitted from this module linker, plus prior authenticated GC/directory integration exclusions.",
+    "Configured-root acquisition, inherited DirectoryOwner Drop and directory verification destructor custody remain separately unqualified.",
+    "Whole opaque returned-report/panic/caller allocation envelope, actual native allocator/RSS bounds and supported-filesystem pre-effect physical bounds remain unqualified."
+  ],
+  "independent_fixture_native_review": {
+    "path": "target/installed-disk-validation/file-owner-custody-independent-review/candidate04-fixture-native-review.json",
+    "sha256": "690ea6a5263c97b81cef25bf3ab4bc2e1bad449f2eb9c2fc99c1069e52342ba8"
+  },
+  "composition_preview": {
+    "path": "target/installed-disk-validation/file-owner-custody-revision1/candidate-04/composition-preview.json",
+    "sha256": "891d1ebb1a53a26431d4d80ce3265b5d978abe45c4b9f7b061ef329b4f202633",
+    "mode": "read-only; no merged source written or qualified",
+    "clean_previews": 5,
+    "new_paths": 2,
+    "conflicts": {
+      "crates/kasumi-store/src/node_disk/file.rs": 2,
+      "crates/kasumi-store/src/node_disk/tests.rs": 1
+    }
+  },
+  "raw_manifest_scope": "Frozen source, patch, harness and trial evidence across candidates 01\u201304; final handoff/qualification/composition-preview and external independent-review receipts are separately hash-bound.",
+  "runner_reuse_qualification": {
+    "finding": "Frozen run.py omits timed_out from continuation/final acceptance predicates.",
+    "current_trial_effect": "None: all six independently checked phase timed_out flags are false, all elapsed times are below the preserved caps, and no timeout cleanup signals occurred.",
+    "required_before_future_reuse": "A distinct runner successor must require not timed_out in continuation and final acceptance; preserve this native01 trial."
+  }
+}

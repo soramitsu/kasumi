@@ -31,6 +31,9 @@ impl crate::PreparedStateMachineRestore for PreparedFixtureRestore<'_> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_finishes() -> Result<()>
 {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     use crate::lifetime::StorageDrain;
     use std::{
         future::{Future, poll_fn},
@@ -44,7 +47,8 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
         NodeStore::create_new_fixture(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+            fixture_scratch.memory().clone(),
+            fixture_scratch.clone(),
         )?,
         "cancelled-persistence".into(),
         Arc::new(LocalKeyProvider::new([19; 32])),
@@ -99,7 +103,8 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
     let reopened = NodeStore::open_existing_fixture(
         &path,
         kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
+        fixture_scratch.memory().clone(),
+        fixture_scratch.clone(),
     )?;
     drop(reopened);
     Ok(())
@@ -154,12 +159,15 @@ impl StateMachineBackend for BytesBackend {
     }
 }
 
-async fn new_fault_store(disk: FaultBackend) -> Result<Arc<TenantStore>> {
+async fn new_fault_store(
+    disk: FaultBackend,
+    fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+) -> Result<Arc<TenantStore>> {
     TenantStore::initialize_catalog_fixture_with_clock(
         NodeStore::open_with_backend(
             disk,
             kasumi_store::test_utils::storage_admission(),
-            kasumi_store::ScratchDisk::fixture(),
+            fixture_scratch.clone(),
         )?,
         "snapshot-test".into(),
         Arc::new(LocalKeyProvider::new([7; 32])),
@@ -168,12 +176,15 @@ async fn new_fault_store(disk: FaultBackend) -> Result<Arc<TenantStore>> {
     .await
 }
 
-async fn existing_fault_store(disk: FaultBackend) -> Result<Arc<TenantStore>> {
+async fn existing_fault_store(
+    disk: FaultBackend,
+    fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+) -> Result<Arc<TenantStore>> {
     TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_with_backend(
             disk,
             kasumi_store::test_utils::storage_admission(),
-            kasumi_store::ScratchDisk::fixture(),
+            fixture_scratch.clone(),
         )?,
         "snapshot-test".into(),
         Arc::new(LocalKeyProvider::new([7; 32])),
@@ -185,6 +196,9 @@ async fn existing_fault_store(disk: FaultBackend) -> Result<Arc<TenantStore>> {
 #[tokio::test(flavor = "current_thread")]
 async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_state_lock()
 -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     struct PausedSnapshot {
         entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
         release: Mutex<std::sync::mpsc::Receiver<()>>,
@@ -240,7 +254,7 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
     let (release, wait) = std::sync::mpsc::channel();
     let mut machine = StateMachine::open(
         kasumi_store::test_utils::initialize_custody_fixture(
-            new_fault_store(FaultBackend::new()).await?,
+            new_fault_store(FaultBackend::new(), fixture_scratch.clone()).await?,
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
         .await?,
@@ -277,7 +291,7 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
     Ok(())
 }
 
-fn envelope(bytes: Vec<u8>) -> SnapshotEnvelope {
+fn envelope(bytes: Vec<u8>, fixture_scratch: Arc<kasumi_store::ScratchDisk>) -> SnapshotEnvelope {
     SnapshotEnvelope {
         version: 1,
         kind: SnapshotKind::Application,
@@ -286,19 +300,18 @@ fn envelope(bytes: Vec<u8>) -> SnapshotEnvelope {
             last_membership: StoredMembership::default(),
             snapshot_id: uuid::Uuid::new_v4().to_string(),
         },
-        backend: kasumi_store::SnapshotImage::from_bytes(
-            &kasumi_store::ScratchDisk::fixture(),
-            &bytes,
-        )
-        .unwrap(),
+        backend: kasumi_store::SnapshotImage::from_bytes(&fixture_scratch.clone(), &bytes).unwrap(),
         retirement: None,
     }
 }
 
 #[tokio::test]
 async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = FaultBackend::new();
-    let store = new_fault_store(disk.clone()).await?;
+    let store = new_fault_store(disk.clone(), fixture_scratch.clone()).await?;
     let mut machine = StateMachine::open(
         kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
@@ -309,25 +322,25 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
         crate::SnapshotBufferOwner::fixture(),
     )
     .await?;
-    let valid = envelope(b"valid".to_vec());
+    let valid = envelope(b"valid".to_vec(), fixture_scratch.clone());
     machine
         .install_snapshot(
             &valid.meta,
             Box::new(SnapshotBuffer::from_bytes(
-                &kasumi_store::ScratchDisk::fixture(),
+                &fixture_scratch.clone(),
                 valid.encode(64 << 20)?.read_bounded(64 << 20)?,
                 1024,
                 &crate::SnapshotBufferOwner::fixture(),
             )?),
         )
         .await?;
-    let invalid = envelope(b"invalid".to_vec());
+    let invalid = envelope(b"invalid".to_vec(), fixture_scratch.clone());
     assert!(
         machine
             .install_snapshot(
                 &invalid.meta,
                 Box::new(SnapshotBuffer::from_bytes(
-                    &kasumi_store::ScratchDisk::fixture(),
+                    &fixture_scratch.clone(),
                     invalid.encode(64 << 20)?.read_bounded(64 << 20)?,
                     1024,
                     &crate::SnapshotBufferOwner::fixture()
@@ -346,7 +359,7 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
     let restored = Arc::new(BytesBackend::default());
     StateMachine::open(
         kasumi_store::test_utils::open_existing_custody_fixture(
-            existing_fault_store(disk.crash()).await?,
+            existing_fault_store(disk.crash(), fixture_scratch.clone()).await?,
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
         .await?,
@@ -360,18 +373,22 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let dir = kasumi_store::test_utils::private_tempdir()?;
     let store = TenantStore::initialize_catalog_fixture(
         NodeStore::create_new_fixture(
             dir.path().join("large.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+            fixture_scratch.memory().clone(),
+            fixture_scratch.clone(),
         )?,
         "large".into(),
         Arc::new(LocalKeyProvider::new([8; 32])),
     )
     .await?;
-    let value = envelope(vec![42; 33 * 1024 * 1024]);
+    let value = envelope(vec![42; 33 * 1024 * 1024], fixture_scratch.clone());
     let bytes = value.encode(64 << 20)?.read_bounded(64 << 20)?;
     let domains = kasumi_store::test_utils::initialize_custody_fixture(
         store.clone(),
@@ -400,12 +417,15 @@ async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() ->
 #[tokio::test]
 async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_or_new_snapshot()
 -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let seed = FaultBackend::new();
-    let old = envelope(b"old-complete-snapshot".to_vec());
-    let mut new = envelope(b"new-complete-snapshot".to_vec());
+    let old = envelope(b"old-complete-snapshot".to_vec(), fixture_scratch.clone());
+    let mut new = envelope(b"new-complete-snapshot".to_vec(), fixture_scratch.clone());
     new.meta.last_log_id.as_mut().unwrap().index += 1;
     let initial = kasumi_store::test_utils::initialize_custody_fixture(
-        new_fault_store(seed.clone()).await?,
+        new_fault_store(seed.clone(), fixture_scratch.clone()).await?,
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
     .await?;
@@ -419,7 +439,7 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
     drop(initial);
     let bytes = new.encode(64 << 20)?.read_bounded(64 << 20)?;
     let baseline = seed.crash();
-    let store = existing_fault_store(baseline.clone()).await?;
+    let store = existing_fault_store(baseline.clone(), fixture_scratch.clone()).await?;
     let domains = kasumi_store::test_utils::open_existing_custody_fixture(
         store.clone(),
         Arc::new(LocalKeyProvider::new([241; 32])),
@@ -434,7 +454,7 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
     );
     for failure in 0..=operations {
         let disk = seed.crash();
-        let store = existing_fault_store(disk.clone()).await?;
+        let store = existing_fault_store(disk.clone(), fixture_scratch.clone()).await?;
         let domains = kasumi_store::test_utils::open_existing_custody_fixture(
             store.clone(),
             Arc::new(LocalKeyProvider::new([241; 32])),
@@ -442,7 +462,7 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
         .await?;
         disk.fail_after(failure);
         let written = persist_snapshot(&domains, &bytes, 1024, &new);
-        let recovered = existing_fault_store(disk.crash()).await?;
+        let recovered = existing_fault_store(disk.crash(), fixture_scratch.clone()).await?;
         cleanup_snapshots(&recovered, 1024)?;
         let restored = load_snapshot(&recovered, 1024)?.context("snapshot lost")?;
         let recovered_domains = kasumi_store::test_utils::open_existing_custody_fixture(
@@ -471,22 +491,31 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
 
 #[tokio::test]
 async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     use openraft::storage::{RaftLogStorageExt, StorageHelper};
     let dir = kasumi_store::test_utils::private_tempdir()?;
     let path = dir.path().join("large-command.redb");
     let bytes = vec![171u8; (8 << 20) + (64 << 10)];
-    async fn open(path: &std::path::Path, create: bool) -> Result<Arc<TenantStore>> {
+    async fn open(
+        path: &std::path::Path,
+        create: bool,
+        fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+    ) -> Result<Arc<TenantStore>> {
         let node = (if create {
             NodeStore::create_new_fixture(
                 path,
                 kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
+                fixture_scratch.memory().clone(),
+                fixture_scratch.clone(),
             )
         } else {
             NodeStore::open_existing_fixture(
                 path,
                 kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
+                fixture_scratch.memory().clone(),
+                fixture_scratch.clone(),
             )
         })?;
         if create {
@@ -506,7 +535,7 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
         }
     }
     {
-        let store = open(&path, true).await?;
+        let store = open(&path, true, fixture_scratch.clone()).await?;
         let mut log = LogStore::open(
             kasumi_store::test_utils::initialize_custody_fixture(
                 store.clone(),
@@ -529,7 +558,7 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
             "command must not expand into JSON integer arrays"
         );
     }
-    let store = open(&path, false).await?;
+    let store = open(&path, false, fixture_scratch.clone()).await?;
     let mut log = LogStore::open(
         kasumi_store::test_utils::open_existing_custody_fixture(
             store.clone(),
@@ -562,6 +591,9 @@ mod snapshot_custody_tests;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     struct PausedWriter {
         bytes: Mutex<Vec<u8>>,
         entered: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
@@ -619,7 +651,7 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
     });
     let mut machine = StateMachine::open(
         kasumi_store::test_utils::initialize_custody_fixture(
-            new_fault_store(FaultBackend::new()).await?,
+            new_fault_store(FaultBackend::new(), fixture_scratch.clone()).await?,
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
         .await?,
@@ -644,5 +676,215 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
     };
     assert_eq!(envelope.backend.read_bounded(1024)?, b"captured-root");
     assert_eq!(*backend.bytes.lock().unwrap(), b"new-root");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snapshot_storage_metadata_requires_current_writer_bytes_and_v4_id() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+    let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let store = TenantStore::initialize_catalog_fixture(
+        NodeStore::create_new_fixture(
+            directory.path().join("manifest.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+            scratch.memory().clone(),
+            scratch.clone(),
+        )?,
+        "manifest".into(),
+        Arc::new(LocalKeyProvider::new([8; 32])),
+    )
+    .await?;
+    let manifest = SnapshotManifest {
+        version: 1,
+        sha256: "11".repeat(32),
+        id: uuid::Uuid::new_v4().to_string(),
+        bytes: 1,
+        chunks: 1,
+    };
+    let canonical = serde_json::to_vec(&manifest)?;
+    store.write_batch(&[put(SNAPSHOT, b"current", canonical.clone())])?;
+    assert!(load_manifest(&store, b"current", 1024)?.is_some());
+
+    let mut unknown = canonical.clone();
+    assert_eq!(unknown.pop(), Some(b'}'));
+    unknown.extend_from_slice(b",\"legacy\":true}");
+    let mut noncanonical = vec![b' '];
+    noncanonical.extend_from_slice(&canonical);
+    for bytes in [unknown, noncanonical] {
+        store.write_batch(&[put(SNAPSHOT, b"current", bytes)])?;
+        assert!(load_manifest(&store, b"current", 1024).is_err());
+    }
+
+    // These are canonical JSON, but the ID is not the writer's exact RFC v4 form.
+    for id in [
+        uuid::Uuid::parse_str(&manifest.id)?.simple().to_string(),
+        format!("{{{}}}", manifest.id),
+        uuid::Uuid::nil().to_string(),
+        "123e4567-e89b-42d3-0123-426614174000".to_owned(),
+    ] {
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+        assert!(!current_snapshot_id(&id));
+        let mut alternate = manifest.clone();
+        alternate.id = id;
+        store.write_batch(&[put(SNAPSHOT, b"current", serde_json::to_vec(&alternate)?)])?;
+        assert!(load_manifest(&store, b"current", 1024).is_err());
+    }
+
+    let coverage = SnapshotCoverage {
+        kind: SnapshotKind::Application,
+        manifest_id: manifest.id,
+        snapshot_sha256: manifest.sha256,
+        backend_sha256: "22".repeat(32),
+        meta: SnapshotMeta {
+            last_log_id: None,
+            last_membership: StoredMembership::default(),
+            snapshot_id: uuid::Uuid::new_v4().to_string(),
+        },
+    };
+    let canonical = serde_json::to_vec(&coverage)?;
+    store.write_batch(&[put(META, b"snapshot_coverage", canonical.clone())])?;
+    assert!(load_snapshot_coverage(&store)?.is_some());
+    assert!(crate::control::committed_coverage(&store)?.is_none());
+    let mut unknown = canonical.clone();
+    assert_eq!(unknown.pop(), Some(b'}'));
+    unknown.extend_from_slice(b",\"legacy\":true}");
+    let mut noncanonical = vec![b' '];
+    noncanonical.extend_from_slice(&canonical);
+    for bytes in [unknown, noncanonical] {
+        store.write_batch(&[put(META, b"snapshot_coverage", bytes)])?;
+        assert!(load_snapshot_coverage(&store).is_err());
+        assert!(crate::control::committed_coverage(&store).is_err());
+    }
+    for alias in [
+        uuid::Uuid::parse_str(&coverage.meta.snapshot_id)?
+            .simple()
+            .to_string(),
+        uuid::Uuid::nil().to_string(),
+    ] {
+        let mut alternate = coverage.clone();
+        alternate.meta.snapshot_id = alias;
+        store.write_batch(&[put(
+            META,
+            b"snapshot_coverage",
+            serde_json::to_vec(&alternate)?,
+        )])?;
+        assert!(load_snapshot_coverage(&store).is_err());
+        assert!(crate::control::committed_coverage(&store).is_err());
+    }
+    let mut alternate = coverage.clone();
+    alternate.manifest_id = uuid::Uuid::nil().to_string();
+    store.write_batch(&[put(
+        META,
+        b"snapshot_coverage",
+        serde_json::to_vec(&alternate)?,
+    )])?;
+    assert!(load_snapshot_coverage(&store).is_err());
+    assert!(crate::control::committed_coverage(&store).is_err());
+
+    let mut invalid_digest = coverage.clone();
+    invalid_digest.backend_sha256 = "AA".repeat(32);
+    store.write_batch(&[put(
+        META,
+        b"snapshot_coverage",
+        serde_json::to_vec(&invalid_digest)?,
+    )])?;
+    assert!(load_snapshot_coverage(&store).is_err());
+    assert!(crate::control::committed_coverage(&store).is_err());
+
+    let mut alternate = envelope(vec![], scratch);
+    alternate.meta.snapshot_id = uuid::Uuid::parse_str(&alternate.meta.snapshot_id)?
+        .simple()
+        .to_string();
+    let image = alternate.encode(1 << 20)?;
+    assert!(SnapshotEnvelope::decode(image.disk(), &mut image.reader(), 1 << 20).is_err());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn coverage_writer_refuses_one_byte_past_reader_limit_before_staging() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+    let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let store = TenantStore::initialize_catalog_fixture(
+        NodeStore::create_new_fixture(
+            directory.path().join("coverage-boundary.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+            scratch.memory().clone(),
+            scratch.clone(),
+        )?,
+        "coverage-boundary".into(),
+        Arc::new(LocalKeyProvider::new([8; 32])),
+    )
+    .await?;
+    let domains = kasumi_store::test_utils::initialize_custody_fixture(
+        store.clone(),
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await?;
+    let membership = |address: String| {
+        StoredMembership::new(
+            None,
+            openraft::Membership::from(std::collections::BTreeMap::from([(
+                1u64,
+                BasicNode::new(address),
+            )])),
+        )
+    };
+    let mut snapshot = envelope(vec![], scratch);
+    snapshot.meta.last_membership = membership(String::new());
+    let base = snapshot.encode(4 << 20)?.read_bounded(4 << 20)?;
+    assert_eq!(base[8], 1, "first snapshot frame must be metadata");
+    let base_metadata_len = usize::try_from(u64::from_be_bytes(base[9..17].try_into()?))?;
+    let address_len = MAX_SNAPSHOT_COVERAGE_BYTES
+        .checked_sub(base_metadata_len + 192)
+        .context("base metadata exceeds coverage budget")?;
+    snapshot.meta.last_membership = membership("x".repeat(address_len));
+    let accepted_bytes = snapshot.encode(4 << 20)?.read_bounded(4 << 20)?;
+    assert_eq!(
+        usize::try_from(u64::from_be_bytes(accepted_bytes[9..17].try_into()?))?,
+        MAX_SNAPSHOT_COVERAGE_BYTES - 192
+    );
+    persist_snapshot(&domains, &accepted_bytes, 4 << 20, &snapshot)?;
+    let old_manifest = store.get(SNAPSHOT, b"current")?.context("current absent")?;
+    let old_coverage = domains
+        .custody()
+        .store()
+        .get(META, b"snapshot_coverage")?
+        .context("coverage absent")?;
+    assert_eq!(old_coverage.len(), MAX_SNAPSHOT_COVERAGE_BYTES);
+    assert!(load_snapshot_coverage(domains.custody().store())?.is_some());
+
+    let mut oversized = snapshot.clone();
+    oversized.meta.last_membership = membership("x".repeat(address_len + 1));
+    let oversized_image = oversized.encode(4 << 20)?;
+    let oversized_bytes = oversized_image.read_bounded(4 << 20)?;
+    assert_eq!(
+        usize::try_from(u64::from_be_bytes(oversized_bytes[9..17].try_into()?))?,
+        MAX_SNAPSHOT_COVERAGE_BYTES - 191
+    );
+    let error = stage_snapshot(&domains, &oversized_image, 4 << 20, &oversized)
+        .err()
+        .context("oversized coverage was staged")?;
+    assert!(
+        error
+            .to_string()
+            .contains("snapshot coverage exceeds byte limit")
+    );
+    assert_eq!(store.get(SNAPSHOT, b"current")?, Some(old_manifest));
+    assert!(store.get(SNAPSHOT, b"pending")?.is_none());
+    assert_eq!(
+        domains.custody().store().get(META, b"snapshot_coverage")?,
+        Some(old_coverage)
+    );
+    let mut reopened = StateMachine::open(
+        domains,
+        Arc::new(BytesBackend::default()),
+        crate::SnapshotBufferOwner::fixture(),
+    )
+    .await?;
+    assert_eq!(reopened.applied_state().await?.0, snapshot.meta.last_log_id);
     Ok(())
 }

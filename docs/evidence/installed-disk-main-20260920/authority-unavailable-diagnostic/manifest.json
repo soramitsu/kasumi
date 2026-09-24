@@ -1,0 +1,14 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED_TEMPORARY_DIAGNOSTIC",
+  "patch_sha256": "95e42f839e896f347cca7fb3f636591c75b82b897ad7987b158888d117651bb2",
+  "files": [
+    {
+      "path": "crates/kasumi-authority/src/service.rs",
+      "before_sha256": "80fa8ef6fb75e25465b16204209cc96c1c60c2f687b50d2f51079279feb97555",
+      "proposed_sha256": "0654e41ea12f521a408490d514b5b5671eb0a4f72e8b38aee57254828d2aea26"
+    }
+  ],
+  "source_modified": false,
+  "test_assertions_changed": false,
+  "builds_or_tests_run": false
+}

@@ -1,0 +1,16 @@
+{
+  "scope": "Dependency provenance checker synthetic regressions and current exact vendor source/Cargo selection; not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/dependency165.py"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 38305,
+  "exit_code": 0,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 1.1841621398925781,
+  "inventoried_source_unchanged": true
+}

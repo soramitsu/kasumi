@@ -1,0 +1,175 @@
+[
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/proposed/crates/kasumi-store/src/lib.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/proposal-at-run/crates/kasumi-store/src/lib.rs",
+    "sha256": "f42c9d306744346289aeecff07bd1ca4b94eda66dbef568192148c5507560e4c",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/proposed/crates/kasumi-store/src/backup_sessions_fs.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/proposal-at-run/crates/kasumi-store/src/backup_sessions_fs.rs",
+    "sha256": "95f860c3bd736accaa011ced47da8c8eaec715d6f7a106a16a2500e2e6273906",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/proposed/crates/kasumi-store/src/node_disk.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "sha256": "cceec02f46ca37ca969924fe37f0724e6291f3ec99c440d682e36fd8282a6c9e",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/proposed/crates/kasumi-store/src/node_disk/memory.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/proposal-at-run/crates/kasumi-store/src/node_disk/memory.rs",
+    "sha256": "d32c2a5a23f4674b529de2c5a340fd3db27e158b174fd588ca2ddcfd0d8e6d96",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/proposed/crates/kasumi-store/src/node_disk/directory.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/proposal-at-run/crates/kasumi-store/src/node_disk/directory.rs",
+    "sha256": "7fec9494edc1f398060b4298fdac4cb42723a91c07997a9f564ad4f8e452a17a",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/proposed/crates/kasumi-store/src/node_disk/namespace.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/proposal-at-run/crates/kasumi-store/src/node_disk/namespace.rs",
+    "sha256": "34812529c6401ba4c2e037b0eb25f09d9cc4d43026a35abf6c137d7c11a4d47a",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/proposed/crates/kasumi-store/src/node_disk/directory/cursor.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/proposal-at-run/crates/kasumi-store/src/node_disk/directory/cursor.rs",
+    "sha256": "427ea92d020aa87d20703dad20f16b79a9adbaadc63abd4e4f26bf16e39ba03c",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/proposed/crates/kasumi-store/src/node_disk/directory/cursor/tests.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/proposal-at-run/crates/kasumi-store/src/node_disk/directory/cursor/tests.rs",
+    "sha256": "9d62061c658845b724859b66c3f37bca2bd23a75202c616dcb9627a33a236def",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/proposed/crates/kasumi-store/src/node_disk.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk.rs",
+    "sha256": "cceec02f46ca37ca969924fe37f0724e6291f3ec99c440d682e36fd8282a6c9e",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/ledger.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/ledger.rs",
+    "sha256": "3e5edb1147075d259bea145c459b31aa7d4f1359e0881540e80a999718ac2628",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/census.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/census.rs",
+    "sha256": "d4a5cae239813b9481bbeadeea9ac21e066b0501f1f54d52d96ce0985a4b7aca",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/proposed/crates/kasumi-store/src/node_disk/memory.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/memory.rs",
+    "sha256": "d32c2a5a23f4674b529de2c5a340fd3db27e158b174fd588ca2ddcfd0d8e6d96",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/proposed/crates/kasumi-store/src/node_disk/directory.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/directory.rs",
+    "sha256": "7fec9494edc1f398060b4298fdac4cb42723a91c07997a9f564ad4f8e452a17a",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/tests.rs",
+    "sha256": "3acdea6ec09e30e11fd64487c57f08a3b95e88d6cbb32bff04f54b583f8960c0",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/proposed/crates/kasumi-store/src/node_disk/namespace.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/namespace.rs",
+    "sha256": "34812529c6401ba4c2e037b0eb25f09d9cc4d43026a35abf6c137d7c11a4d47a",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/file.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/file.rs",
+    "sha256": "145205325dcb354e1d711964c90a57404d365f97d92f255aecf997b5f6e379af",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/ledger/tests.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/ledger/tests.rs",
+    "sha256": "a4676e455d1146f0af202eabeee16335f1bfe3ee5f03e5bbd907ccead65716d4",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/namespace/tests.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/namespace/tests.rs",
+    "sha256": "b463c38aae9a9ee80b676f72447bd5007778510eaf4626852f90d54ca452b783",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/directory/tests.rs",
+    "sha256": "add0e868c37dbc2ed0e45da8a1fb2bd9f9ccdfcbcf95b9e4c1291560fe550b24",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/proposed/crates/kasumi-store/src/node_disk/directory/cursor.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/directory/cursor.rs",
+    "sha256": "427ea92d020aa87d20703dad20f16b79a9adbaadc63abd4e4f26bf16e39ba03c",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/proposed/crates/kasumi-store/src/node_disk/directory/cursor/tests.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/directory/cursor/tests.rs",
+    "sha256": "9d62061c658845b724859b66c3f37bca2bd23a75202c616dcb9627a33a236def",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/disk_memory.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/disk_memory.rs",
+    "sha256": "7795b70e22e97faff5d7e7448a6e743606fcb038d465602cb8a616873d642ea3",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/device_disk.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/device_disk.rs",
+    "sha256": "64ad6aa02bff422877c71185f3f84bd3614b001d1fdae9a6427c65b515737da9",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/private_files.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/private_files.rs",
+    "sha256": "8a291e7ffacd64da4a1dcdf1e8524eb4a8df49b21545e40db1b68eb4db9140e9",
+    "exact": true
+  },
+  {
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/tests.rs",
+    "omitted_unrelated_test_source_sha256": "3acdea6ec09e30e11fd64487c57f08a3b95e88d6cbb32bff04f54b583f8960c0"
+  },
+  {
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/disk_memory_tests.rs",
+    "omitted_unrelated_test_source_sha256": null
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/crates/kasumi-store/src/allocation_tests.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/allocation_tests.rs",
+    "sha256": "2c5d9a7df0ad3642dc71143d139578ed26e40cf7a2d5f90c45da4ca06494e036",
+    "exact": true
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/crates/kasumi-store/src/test_utils.rs",
+    "source_sha256": "f926d9cf9b2f467cec941e46bd185ef4c88c85b427c620f500c6717c5522c4e9",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/test_utils.rs",
+    "extraction_start_byte": 717,
+    "extraction_end_byte": 4480,
+    "fragment_sha256": "bc8be9795d6a7e6b166d0be80b184a4890a86043f5b3f0b460ea52149e12e62c",
+    "prefix": "use std::time::Duration;\n"
+  },
+  {
+    "source": "/Users/mtakemiya/dev/kasumi/crates/kasumi-store/src/test_utils.rs",
+    "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/fixture-source-at-run.rs",
+    "sha256": "f926d9cf9b2f467cec941e46bd185ef4c88c85b427c620f500c6717c5522c4e9",
+    "exact": true
+  }
+]

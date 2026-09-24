@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--emit",
+    "stdout"
+  ],
+  "input": "proposed/crates/kasumi-store/src/lib.rs",
+  "exit_code": 0,
+  "stderr": ""
+}

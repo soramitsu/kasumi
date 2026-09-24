@@ -113,7 +113,9 @@ impl AdmissionConfig {
     }
 }
 
+mod disk_memory;
 mod installed;
+pub mod snapshot_work;
 pub mod startup;
 
 trait MemorySource: Send + Sync {
@@ -245,6 +247,11 @@ enum ChargeKind {
     Resident,
     Bookkeeping,
 }
+#[derive(Clone, Copy)]
+enum ReserveKindError {
+    Exhausted,
+    IdentifierExhausted,
+}
 struct Charge {
     bytes: u64,
     kind: ChargeKind,
@@ -314,7 +321,9 @@ fn arc_bytes<T>() -> anyhow::Result<u64> {
 /// facades deliberately reuse this exact core; installed NodeDisk caller wiring
 /// remains separately tracked in the storage-admission workstream.
 pub struct MemoryCore {
+    storage_census: kasumi_store::StorageCensus,
     startups: Mutex<startup::Census>,
+    snapshot_work: Mutex<snapshot_work::Census>,
     sampler: Option<std::thread::JoinHandle<()>>,
     data: Arc<MemoryState>,
 }
@@ -361,10 +370,14 @@ impl MemoryCore {
         let clock = arc_bytes::<SystemLeaseClock>()?;
         let data = arc_bytes::<MemoryState>()?;
         let startups = startup::Census::required_bytes(config.max_startup_scopes)?;
+        let snapshot_work = snapshot_work::Census::required_bytes(config.max_inflight_operations)?;
+        let storage = kasumi_store::StorageCensus::required_bytes(config.max_reservations)?;
         arc_bytes::<Self>()?
             .checked_add(allocation_bytes::<ChargeSlot>(config.max_reservations)?)
             .and_then(|bytes| bytes.checked_add(data))
             .and_then(|bytes| bytes.checked_add(startups))
+            .and_then(|bytes| bytes.checked_add(snapshot_work))
+            .and_then(|bytes| bytes.checked_add(storage))
             .and_then(|bytes| bytes.checked_add(source))
             .and_then(|bytes| bytes.checked_add(clock))
             .and_then(|bytes| bytes.checked_add(SAMPLER_STACK_BYTES as u64))
@@ -410,8 +423,13 @@ impl MemoryCore {
         memory: Arc<dyn MemorySource>,
         clock: Arc<dyn LeaseClock>,
     ) -> anyhow::Result<Arc<Self>> {
+        let storage_census =
+            kasumi_store::StorageCensus::allocate(prepared.config.max_reservations)?;
         let startups = Mutex::new(startup::Census::allocate(
             prepared.config.max_startup_scopes,
+        )?);
+        let snapshot_work = Mutex::new(snapshot_work::Census::allocate(
+            prepared.config.max_inflight_operations,
         )?);
         let mut slots = Vec::new();
         slots.try_reserve_exact(prepared.config.max_reservations)?;
@@ -448,11 +466,19 @@ impl MemoryCore {
         });
         drop(data.state.lock().unwrap());
         drop(data.stop.lock().unwrap());
-        Ok(Arc::new(Self {
+        let core = Arc::new(Self {
+            storage_census,
             startups,
+            snapshot_work,
             sampler: None,
             data,
-        }))
+        });
+        let provider: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> = core.clone();
+        core.storage_census.bind_provider(&provider)?;
+        // Binding stores the exact address, not a Weak. Unpublished sampler
+        // startup still has the unique Arc required by Arc::get_mut.
+        drop(provider);
+        Ok(core)
     }
     pub fn new(config: AdmissionConfig) -> anyhow::Result<Arc<Self>> {
         config.validate()?;
@@ -636,6 +662,26 @@ impl MemoryCore {
         cancellation: Option<QueryCancellation>,
         kind: ChargeKind,
     ) -> Result<Reservation> {
+        self.reserve_kind_raw(bytes, cancellation, kind)
+            .map_err(|error| match error {
+                ReserveKindError::Exhausted => Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "node memory or work admission budget exhausted",
+                ),
+                ReserveKindError::IdentifierExhausted => {
+                    Error::new(ErrorCode::Unavailable, "admission identifier exhausted")
+                }
+            })
+    }
+    // Installed storage needs a typed refusal before its first resident buffer
+    // allocation or physical read. This path avoids constructing a rich Error
+    // for the refusal; the existing sampler may have its own workspace.
+    fn reserve_kind_raw(
+        self: &Arc<Self>,
+        bytes: u64,
+        cancellation: Option<QueryCancellation>,
+        kind: ChargeKind,
+    ) -> std::result::Result<Reservation, ReserveKindError> {
         let mut state = self.data.state.lock().unwrap_or_else(|p| p.into_inner());
         self.data.refresh_stale(&mut state);
         let total = state.bytes.checked_add(bytes);
@@ -652,16 +698,13 @@ impl MemoryCore {
                         .is_none_or(|observed| observed >= self.data.high)
             })
         {
-            return Err(Error::new(
-                ErrorCode::ResourceExhausted,
-                "node memory or work admission budget exhausted",
-            ));
+            return Err(ReserveKindError::Exhausted);
         }
         let id = state.next;
         state.next = state
             .next
             .checked_add(1)
-            .ok_or_else(|| Error::new(ErrorCode::Unavailable, "admission identifier exhausted"))?;
+            .ok_or(ReserveKindError::IdentifierExhausted)?;
         let slot = state.free.expect("checked free charge slot");
         state.free = state.slots[slot].next_free;
         state.slots[slot] = ChargeSlot {
@@ -1026,13 +1069,18 @@ impl Drop for Reservation {
             .charge
             .take()
             .expect("live reservation");
-        state.bytes -= charge.bytes;
-        state.operations -= usize::from(charge.kind == ChargeKind::Operation);
+        let bytes = charge.bytes;
+        let operation = charge.kind == ChargeKind::Operation;
+        // The charge can retain the final cancellation-state Arc. Retire that
+        // backing under serialization before another reservation can reuse its
+        // bytes or ledger slot. QueryCancellation destruction only releases its
+        // atomic-state Arc; it neither calls user code nor takes this lock.
+        drop(charge);
+        state.bytes -= bytes;
+        state.operations -= usize::from(operation);
         state.live -= 1;
         state.slots[self.slot].next_free = state.free;
         state.free = Some(self.slot);
-        drop(state);
-        drop(charge);
     }
 }
 #[derive(Default)]

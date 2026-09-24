@@ -1,0 +1,16 @@
+--- a/crates/kasumi-engine/tests/common/recovery_control.rs
++++ b/crates/kasumi-engine/tests/common/recovery_control.rs
+@@ -247,8 +247,12 @@
+         ErrorCode::Conflict
+     );
+     let phase_id = Uuid::new_v4();
++    // The earlier control calls may outlive this node's leadership. Keep the
++    // original finite observation context while selecting the current route.
++    let context = f.context("owner");
++    let db = f.leader().await;
+     let input = db
+-        .next_recovery_dispatch(&f.context("owner"), id, phase_id)
++        .next_recovery_dispatch(&context, id, phase_id)
+         .await
+         .unwrap()
+         .unwrap();

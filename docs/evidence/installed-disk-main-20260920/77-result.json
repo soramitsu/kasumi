@@ -1,0 +1,22 @@
+{
+  "scope": "development first mandatory installed memory/caller stack compilation diagnostic, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "check",
+    "--keep-going",
+    "--offline",
+    "--locked",
+    "--workspace",
+    "--all-targets",
+    "--all-features"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 32836,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 111.0472800731659,
+  "inventoried_source_unchanged": true
+}

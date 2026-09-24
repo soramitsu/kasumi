@@ -1,0 +1,31 @@
+{
+  "status": "SCOPED_SOURCE_REVIEW_NO_BLOCKER",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "scope": "Only freeze04 to freeze05 table_tree.rs/CHANGELOG.md delta; no native, edits, broad migration or memory qualification",
+  "bindings": {
+    "target/installed-disk-validation/redb-canonical-page-number-migration/freeze-04/manifest.json": "f22a1e406ecd115356b5dad3f9e8f027d0679035189dd21517acf0a1841c3f6b",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/freeze-05/manifest.json": "510321772fff522623703049c4cdb4425b30a127b911e63062fc00d49c4b42af",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/freeze-05/migration.patch": "a8299d4bb9dd0dbbdc253ab23fb24b72c0ccfef1fb488ebe763ace1e1a88b105",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/freeze-04/proposed/vendor/redb-4.2.0/src/tree_store/table_tree.rs": "0509c81685a6de3075042b97b97e16ecf0db81b49fbd1827cc83715c12e3366b",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/freeze-04/proposed/vendor/redb-4.2.0/CHANGELOG.md": "24570dcc6fa5fd702c50ed4906b16441557098d085b732d5862c2b309bef0a9c",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/freeze-05/proposed/vendor/redb-4.2.0/src/tree_store/table_tree.rs": "7fbc653eeed2097f19d3e9512b39df19e987f93c2db1a1facfec830b7a9bd618",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/freeze-05/proposed/vendor/redb-4.2.0/CHANGELOG.md": "d44b41935dcb27e650c159671a5e6239a8122b4a06aedd787fd4ebe297860f38"
+  },
+  "verified_changed_paths": [
+    "vendor/redb-4.2.0/CHANGELOG.md",
+    "vendor/redb-4.2.0/src/tree_store/table_tree.rs"
+  ],
+  "manifest_proposed_hashes_verified": 19,
+  "findings": [
+    "Both TableTreeMut visitor and highest_index_pages validate every raw metadata definition before the first callback or output map write; malformed later metadata cannot leave an earlier visitor/output effect.",
+    "The existing second traversal retains checked decoding and pending root overlay; no unsafe raw decoded root is introduced.",
+    "Regression retains earlier good a entry and malformed z entry, both Normal/Multimap kinds and both reserved-alias classes. It now checks zero mutable visits and unchanged empty highest map while retaining existing page/allocator/raw-definition preservation assertions.",
+    "CHANGELOG wording matches scoped raw-definition preflight. No source blocker found."
+  ],
+  "limits": [
+    "No promise that nested table page corruption leaves callbacks/output untouched; this delta preflights raw metadata definitions only.",
+    "Extra traversal and checked decoding do not establish workspace/cache/original-diagnostic memory bounds.",
+    "No native tests dispatched by reviewer; freeze05 requires its own complete qualification."
+  ]
+}

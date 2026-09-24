@@ -1,0 +1,195 @@
+[
+  {
+    "path": "crates/kasumi-store/src/audit_archive.rs",
+    "functions": [
+      "store",
+      "persisted_external_placement_never_falls_back_to_default_after_restart",
+      "verified_archive_is_private_immutable_contiguous_and_reopenable",
+      "object_symlink_cannot_read_or_overwrite_unrelated_files",
+      "historical_source_is_exact_and_does_not_reopen_a_live_generation",
+      "reverse_archive_dependencies_are_bounded_and_require_exact_link_and_source_verification",
+      "historical_verification_checks_the_original_clock_and_release_fence",
+      "existing_nonprivate_archive_directory_is_rejected_without_chmod"
+    ],
+    "calls": 18
+  },
+  {
+    "path": "crates/kasumi-store/src/audit_archive_owned.rs",
+    "functions": [
+      "owned_publication_resolves_partial_writes_and_uncertain_rename_without_adopting_files"
+    ],
+    "calls": 3
+  },
+  {
+    "path": "crates/kasumi-store/src/backup/minio_live.rs",
+    "functions": [
+      "actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denial"
+    ],
+    "calls": 2
+  },
+  {
+    "path": "crates/kasumi-store/src/backup.rs",
+    "functions": [
+      "encrypted_bundle_round_trip_filesystem_reopen_and_tamper_rejection",
+      "historical_backup_keeps_original_key_dependencies_after_rewrap",
+      "removal_of_an_inactive_backup_key_dependency_breaks_authentication",
+      "destination_byte_limits_and_untrusted_format_are_rejected",
+      "s3_tls_round_trip_signed_session_token_create_only_and_bounded_download"
+    ],
+    "calls": 10
+  },
+  {
+    "path": "crates/kasumi-store/src/backup_sessions.rs",
+    "functions": [
+      "fixture",
+      "session_keeps_historical_source_purpose_separate_from_current_access"
+    ],
+    "calls": 6
+  },
+  {
+    "path": "crates/kasumi-store/src/catalog_budget.rs",
+    "functions": [
+      "catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_persistence",
+      "exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encoding"
+    ],
+    "calls": 4
+  },
+  {
+    "path": "crates/kasumi-store/src/file_keys.rs",
+    "functions": [
+      "standalone_catalog_binds_installation_tenant_and_generation"
+    ],
+    "calls": 2
+  },
+  {
+    "path": "crates/kasumi-store/src/keys.rs",
+    "functions": [
+      "transit_tls_generation_fresh_decrypt_rewrap_context_and_revocation",
+      "transit_timeout_is_bounded_and_seals_existing_plaintext"
+    ],
+    "calls": 4
+  },
+  {
+    "path": "crates/kasumi-store/src/live_trust_tests.rs",
+    "functions": [
+      "new",
+      "complete_file_reopen_retains_exact_trust_and_permanent_key_bindings"
+    ],
+    "calls": 4
+  },
+  {
+    "path": "crates/kasumi-store/src/node_file/tests.rs",
+    "functions": [
+      "unrelated_clean_and_unclean_redb_rejection_is_byte_exact",
+      "recognized_store_recovers_after_actual_process_exit_without_close",
+      "partial_envelopes_are_never_adopted_or_reinitialized",
+      "existing_header_requires_exact_canonical_fields_and_checksum",
+      "initialization_requires_exact_journal_owned_empty_inode",
+      "canonical_header_rejects_nil_identity_without_creating_a_file",
+      "validated_descriptor_handoff_never_reopens_a_substituted_path",
+      "cleanup_custody_accepts_only_exact_recognized_headers_and_holds_the_inode_lock",
+      "crash_child"
+    ],
+    "calls": 46
+  },
+  {
+    "path": "crates/kasumi-store/src/scratch_table_tests.rs",
+    "functions": [
+      "exact_backend_publication_io_settlement_shrink_and_close_do_not_allocate",
+      "rejected_resize_is_wholly_reserved_before_any_logical_or_physical_change",
+      "exact_settlement_mismatch_fences_owner_without_allocating_or_returning_credit",
+      "accepted_transaction_keeps_scratch_close_retained_until_actual_drain",
+      "explicit_scratch_close_retains_original_physical_failure_on_retry"
+    ],
+    "calls": 5
+  },
+  {
+    "path": "crates/kasumi-store/src/single_catalog/tests.rs",
+    "functions": [
+      "node",
+      "cancelling_during_singleton_key_preparation_retains_actual_node_until_provider_drains"
+    ],
+    "calls": 6
+  },
+  {
+    "path": "crates/kasumi-store/src/spool.rs",
+    "functions": [
+      "unused_reservation_and_denied_growth_preserve_authenticated_physical_extent",
+      "interleaved_record_appends_preserve_admission_and_authentication",
+      "encrypted_spool_seek_overwrite_and_bounds",
+      "corrupted_or_reordered_blocks_fail_authentication"
+    ],
+    "calls": 4
+  },
+  {
+    "path": "crates/kasumi-store/src/storage_domains/catalog_initialization/tests.rs",
+    "functions": [
+      "node"
+    ],
+    "calls": 2
+  },
+  {
+    "path": "crates/kasumi-store/src/storage_domains/existing_catalogs/tests.rs",
+    "functions": [
+      "new",
+      "reopened_after_release",
+      "missing_binding_rejects_new_custody_and_leaves_every_existing_byte_unchanged"
+    ],
+    "calls": 6
+  },
+  {
+    "path": "crates/kasumi-store/src/storage_domains_tests.rs",
+    "functions": [
+      "domains_require_distinct_actual_wrapping_policies_and_same_node",
+      "control_reopens_without_any_application_key_probe_after_revocation",
+      "every_interrupted_domain_transaction_recovers_whole_old_or_whole_new",
+      "post_commit_domain_expiry_reports_uncertainty_and_retains_complete_write",
+      "combined_quota_and_substituted_catalog_binding_fail_before_publication",
+      "initial_state_rejects_unknown_records_in_either_complete_domain",
+      "initial_state_checks_and_joint_publication_have_one_concurrent_winner",
+      "initial_state_requires_the_exact_retained_custody_binding",
+      "initial_state_rejects_delete_only_publications_without_consuming_initialization"
+    ],
+    "calls": 25
+  },
+  {
+    "path": "crates/kasumi-store/src/storage_existing_tests.rs",
+    "functions": [
+      "missing_catalogs_and_authenticated_binding_never_provision_during_reopen",
+      "existing_catalog_admission_cannot_provision_after_waiting_for_the_open_gate",
+      "corrupt_or_authenticated_wrong_binding_is_never_repaired_by_reopen",
+      "exact_standalone_binding_reopens_after_both_domains_close_and_drain"
+    ],
+    "calls": 9
+  },
+  {
+    "path": "crates/kasumi-store/src/tests.rs",
+    "functions": [
+      "fixture",
+      "periodic_probes_start_every_twenty_seconds_despite_provider_latency",
+      "canceled_shutdown_drains_blocked_probe_and_releases_the_database_file",
+      "cancelled_store_drain_retains_joined_panic_and_pending_physical_owner",
+      "atomic_batches_and_cross_namespace_isolation_survive_reopen",
+      "delayed_probe_cannot_extend_a_lease_past_sixty_seconds_from_start",
+      "a_late_success_cannot_undo_an_explicit_seal",
+      "rewrap_preserves_documents_after_retiring_old_wrapping_versions",
+      "every_injected_commit_failure_recovers_whole_batch_or_previous_state",
+      "different_tenants_do_not_share_a_slow_key_service_open_gate",
+      "faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery",
+      "wrapping_catalog_is_atomic_across_every_injected_commit_failure",
+      "expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_batch",
+      "expiry_during_key_catalog_fsync_does_not_acknowledge_rotation",
+      "node_files_are_private_nofollow_and_keep_exclusive_database_ownership",
+      "pinned_read_roots_and_streamed_namespace_publication_preserve_isolation",
+      "separate_node_stores_and_pinned_reads_share_one_scratch_budget"
+    ],
+    "calls": 51
+  },
+  {
+    "path": "crates/kasumi-store/tests/openbao_live.rs",
+    "functions": [
+      "actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation"
+    ],
+    "calls": 2
+  }
+]

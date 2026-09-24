@@ -1,0 +1,17 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED",
+  "scope": "Observed needless-borrow lint plus explicit response-fence destruction before authority fixture shutdown; stalled-match causal diagnosis awaits test successor",
+  "patch_sha256": "d91147a6f98403ef6d88ee241a91704375efa74355cd2bc9082b655e4077a151",
+  "files": [
+    {
+      "path": "crates/kasumi-store/src/node_disk.rs",
+      "before_sha256": "5dc73974ebd7daa5e232f148423148a4b5bdfdac8ad404a35a028e51df316e7b",
+      "proposed_sha256": "f230ff417b9abcfe5f15815aba38ab6fe8131d4920db9187894ec184cdf803f7"
+    },
+    {
+      "path": "crates/kasumi-authority/src/activation_gate_tests.rs",
+      "before_sha256": "3f4f88eb705bfa793eef8845b77696975cbfcc9d2d4a219d019cc115ad9c1da3",
+      "proposed_sha256": "4c9f924b9f01b34d300ab508163ecd8edc198dc9efe1028f24c9cb8db1d78b74"
+    }
+  ]
+}

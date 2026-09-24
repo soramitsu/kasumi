@@ -1,8 +1,10 @@
 # Proposed bounded custody staging
 
 Status: **batching proposed and unimplemented**. Terminal staging now permanently
-rejects finish after a failed push; the batching, memory and task-owner design
-below remains unimplemented. This document does not qualify the release or close
+rejects finish after a failed push. Retained transaction/database/spool primitives
+and fixed cache entry admission are applied and have focused passing evidence;
+production adoption, batching and complete memory admission remain unimplemented.
+This document does not qualify the release or close
 the first-release goal. Work is restricted to `/Users/mtakemiya/dev/kasumi` on
 `master`. No backwards-compatibility mode, alternate decoder, relaxed durability,
 or unadmitted production fallback is proposed.
@@ -60,9 +62,11 @@ This does not implement the admitted batch writer or qualify its performance.
 Introduce an owned, unpublished encrypted-table writer in
 `crates/kasumi-store/src/scratch_table.rs`, with dedicated tests in
 `scratch_table_tests.rs`. It owns the original `EncryptedTable` and an optional
-`redb::WriteTransaction`; redb transactions already own their backing Arcs and
-do not require a self-referential borrow. Do not expose a raw redb transaction or
-backend to custody callers.
+`redb::RetainedWriteTransaction` in a registered aggregate, with the matching
+`RetainedDatabase`. Redb transactions own their backing Arcs and do not require a
+self-referential borrow. Do not expose a raw redb transaction or backend to custody
+callers. Register and admit the actual aggregate before database construction or
+the initial table-creation transaction.
 
 The writer inserts borrowed records directly into the current transaction. It
 retains no whole-history vector and no separate batch of cloned payloads. Begin
@@ -121,8 +125,9 @@ The store should define and validate the requested workspace estimate, so the
 installer cannot accidentally charge only the record payload. Its checked
 calculation must include:
 
-- Two 8 MiB redb cache payload budgets and their entry, stripe, lock, and owner
-  metadata. `set_cache_size` bounds cache payload, not all redb memory.
+- Two redb caches with their existing 8 MiB soft byte targets and all actual
+  payload, entry, stripe, lock and owner memory. `set_cache_size` is not a hard
+  bound on payload retained by page guards or the complete cache owner.
 - Two pairs of retained plaintext/ciphertext spool buffers, plus keys and owner
   metadata.
 - Bounded input decoding, parsed receipt/event, canonical re-encoding, linkage
@@ -141,6 +146,22 @@ structures; this document does **not** supply a proved constant. A helper such a
 `required_workspace(max_disk_bytes, max_batch_rows, max_batch_bytes)` should reject
 overflow and unsupported policy before allocation. Preserve the distinction
 between an admitted workspace estimate and an allocator/RSS guarantee.
+
+The reviewed fixed-cache successor passes in development attempt 121. Its
+[checked collection component](evidence/installed-disk-main-20260920/redb-fixed-cache-metadata-components/README.md)
+bounds only the maps and queues from the enforced stripe entry caps and pinned
+native collection geometry. Page payload, retained guards, synchronization,
+allocator/region and transaction structures still require separate accounting.
+In particular, `process_freed_pages` currently flattens all eligible historical
+page lists into a temporary vector and then extends the transaction's deferred
+reclaim vector. Attempt 132 now validates selected page-list shapes before either
+namespace is removed and explicitly observes extraction close; its 134 vendor
+cases pass. These checks do not bound that vector or traversal. A small current
+batch does not bound this history. A future
+bounded-prefix reclaim design must retain unselected pages, preserve the reader
+horizon and post-publication release order, and provide reserved maintenance
+progress; existing two-commit compaction cannot be assumed to drain arbitrary
+backlog under that design.
 
 Separate the lifetime of table-resident memory from transient transaction work.
 The resident lease follows the exact `Records`/table owner until its actual final
@@ -169,11 +190,18 @@ twice. Admission must account for every actual resident owner and active worker.
 ## Finish, error, cancellation, and panic ownership
 
 Give the writer explicit `finish` and `abort/close` paths. Close temporary table
-guards before consuming a transaction. On normal completion, commit the final
+guards before the borrowed terminal attempt. On normal completion, commit the final
 partial transaction before exposing its table. On failure, abort any still-live
 transaction and close the private table; preserve the original error together
 with any abort or close error in the owning drain report. A close that reports
-retained ownership must retain the table and its memory lease for retry.
+retained ownership must retain the table and its memory lease for observation.
+Only a busy phase that has not entered physical cleanup may be retried; an
+entered/uncertain terminal or close phase is never replayed. After positive
+settlement, `dispose_settled` requires the matching borrowed retained database
+and retires the actual transaction while keeping its original outcome cells.
+This permits the next writer without losing the previous diagnostic. Both
+database-close phases must be inspected: physical settlement alone does not mean
+shutdown returned success.
 
 Order fallback field destruction as transaction, table, then memory lease. That
 ordering is necessary but does not establish successful drain: redb's
@@ -213,5 +241,6 @@ foundation is a prerequisite to production batching, not optional follow-up.
 7. Verify transaction/metadata peak estimates at both limits and supported disk
    quota boundaries. The fixed cache setting alone is not adequate evidence.
 
-Implementation is deferred until the memory and task-owner prerequisites are
-concrete and the current frozen-source gates have reached terminal outcomes.
+Production batching still requires complete memory plans and registered actual
+worker/database custody. The passing primitives alone do not satisfy those
+dependencies or authorize relabeling an existing allowance as a complete bound.

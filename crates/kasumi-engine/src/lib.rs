@@ -3,7 +3,9 @@ pub use service::control_administration::ControlAdministrativeFence;
 pub use service::lifecycle_service::{
     LifecycleSigner, VerifiedLifecycleChange, VerifiedLifecycleIntent,
 };
-pub use service::recovery_service::{VerifiedRecoveryPhase, VerifiedRecoveryStatus};
+pub use service::recovery_service::{
+    RecoveryEffectDispatchTicket, VerifiedRecoveryPhase, VerifiedRecoveryStatus,
+};
 mod restore_lineage_proof;
 mod retirement_closure;
 mod retirement_proof;
@@ -15,6 +17,7 @@ pub use retirement_proof::{
 pub use retirement_source::InstalledRetirementSource;
 mod accounting;
 mod audit_source;
+mod current_json;
 pub use audit_source::authorize_audit_source;
 pub mod admission;
 mod audit_maintenance;
@@ -25,6 +28,7 @@ mod backup_verify;
 mod target_completion_machine;
 #[cfg(test)]
 mod target_completion_status_tests;
+mod target_initial_intent;
 mod target_invocation;
 mod target_signer;
 pub use backup_proof::VerifiedBackupCheckpoint;
@@ -36,6 +40,7 @@ pub use target_invocation::{
     TargetLifecycleInvocation, TargetOperation, TargetOperationScope, TargetRequestAdmission,
 };
 pub use target_signer::TargetSigner;
+mod backup_binding;
 mod bootstrap;
 pub mod control;
 mod mutation_receipt;
@@ -104,3 +109,6 @@ pub use bootstrap::target_serving::{TargetServingReplica, open_serving_target};
 
 #[cfg(any(test, feature = "test-utils"))]
 pub use bootstrap::open_fixture_with_epoch_clock;
+
+#[cfg(test)]
+mod codec_fixture;

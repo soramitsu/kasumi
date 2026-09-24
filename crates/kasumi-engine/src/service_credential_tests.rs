@@ -1,18 +1,27 @@
 struct CredentialFixture {
-    _directory: tempfile::TempDir,
+    storage: crate::test_utils::FixtureStorage,
     db: Arc<Database>,
     audit: Arc<SecurityAudit>,
     context: RequestContext,
+    _directory: tempfile::TempDir,
 }
 impl CredentialFixture {
     async fn new() -> Self {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-        let node = NodeStore::create_new_fixture(
-            directory.path().join("node.redb"),
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+        let (persistent_config, scratch_config) =
+            crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
+        let storage = crate::test_utils::FixtureStorage::open(
+            &persistent_config,
+            &scratch_config,
+            Default::default(),
         )
         .unwrap();
+        let node = storage
+            .create_new(
+                directory.path().join("persistent/node.redb"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
         let provider = Arc::new(LocalKeyProvider::new([0x97; 32]));
         let audit_store = TenantStore::initialize_catalog_fixture(
             node.clone(),
@@ -21,7 +30,7 @@ impl CredentialFixture {
         )
         .await
         .unwrap();
-        let node_admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
+        let node_admission = storage.admission.clone();
         let audit = SecurityAudit::initialize(
             audit_store,
             kasumi_types::AuditRetentionBudget::default(),
@@ -74,6 +83,7 @@ impl CredentialFixture {
         .unwrap();
         Self {
             _directory: directory,
+            storage,
             db,
             audit,
             context,
@@ -84,6 +94,13 @@ impl CredentialFixture {
         self.audit.shutdown().await.unwrap();
     }
     fn credential(&self, clock: Arc<dyn LeaseClock>) -> RequestContext {
+        self.credential_with_validity(clock, 1000)
+    }
+    fn credential_with_validity(
+        &self,
+        clock: Arc<dyn LeaseClock>,
+        validity_ms: u64,
+    ) -> RequestContext {
         let epoch =
             kasumi_clock::EpochClock::new(clock, Arc::new(kasumi_clock::SystemWallClock)).unwrap();
         let observation = epoch.observe().unwrap();
@@ -96,7 +113,7 @@ impl CredentialFixture {
         };
         RequestContext {
             authorization: RequestAuthorization::from_verified_credential(
-                observation.utc_ms() + 1000,
+                observation.utc_ms() + validity_ms,
                 &observation,
                 resource,
             )
@@ -162,6 +179,11 @@ async fn owned_response_fence_retains_workspace_and_original_credential_after_ad
 
 #[test]
 fn replicated_credential_admission_uses_only_captured_time_after_local_expiry() {
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+    )
+    .unwrap();
+    let disk = &scratch.disk;
     struct Wall;
     impl kasumi_clock::WallClock for Wall {
         fn now_ms(&self) -> anyhow::Result<u64> {
@@ -224,7 +246,7 @@ fn replicated_credential_admission_uses_only_captured_time_after_local_expiry() 
     for replica in [&first, &second] {
         // Actual log deserialization deliberately removes all local live proof.
         replica
-            .apply_command(1, serde_json::from_slice(&encoded).unwrap())
+            .apply_command(disk, 1, serde_json::from_slice(&encoded).unwrap())
             .unwrap()
             .unwrap();
         let late = Command {
@@ -233,7 +255,11 @@ fn replicated_credential_admission_uses_only_captured_time_after_local_expiry() 
             operation: Operation::Mutate(credential_batch("late")),
         };
         assert_eq!(
-            replica.apply_command(2, late).unwrap().unwrap_err().code,
+            replica
+                .apply_command(disk, 2, late)
+                .unwrap()
+                .unwrap_err()
+                .code,
             ErrorCode::Unauthorized
         );
         assert!(
@@ -252,12 +278,8 @@ fn replicated_credential_admission_uses_only_captured_time_after_local_expiry() 
         );
     }
     assert_eq!(
-        first
-            .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
-            .unwrap(),
-        second
-            .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
-            .unwrap()
+        first.logical_snapshot(disk).unwrap(),
+        second.logical_snapshot(disk).unwrap()
     );
 }
 
@@ -463,6 +485,7 @@ impl BackupDestination for CredentialPausedDestination {
 }
 #[tokio::test]
 async fn long_backup_verification_and_encoded_read_recheck_original_credential() {
+    const LONG_BACKUP_CREDENTIAL_MS: u64 = 600_000;
     let fixture = CredentialFixture::new().await;
     fixture
         .db
@@ -470,9 +493,10 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
         .await
         .unwrap();
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new_fixture(
-            fixture._directory.path().join("backups"),
+        kasumi_store::FilesystemBackupDestination::new(
+            fixture._directory.path().join("persistent/backups"),
             32 << 20,
+            fixture.storage.persistent.clone(),
         )
         .unwrap(),
     );
@@ -491,36 +515,56 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
         release: tokio::sync::Notify::new(),
     };
     let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));
-    let context = fixture.credential(clock.clone());
+    let context = fixture.credential_with_validity(clock.clone(), LONG_BACKUP_CREDENTIAL_MS);
     let fence = fixture.db.response_fence(&context).unwrap();
     let _encoded =
         serde_json::to_vec(&fixture.db.get(&context, "docs", "read").await.unwrap()).unwrap();
-    let verify = fixture
-        .db
-        .verify_backup_checkpoint(context, &paused, proof.backup_id());
-    let advance = async {
-        paused.entered.notified().await;
-        clock.0.store(1000, Ordering::SeqCst);
+    let result = {
+        let mut verify = std::pin::pin!(fixture.db.verify_backup_checkpoint(
+            context,
+            &paused,
+            proof.backup_id(),
+        ));
+        tokio::select! {
+            biased;
+            result = &mut verify => match result {
+                Ok(_) => panic!("backup verification succeeded before reading a paused object"),
+                Err(error) => panic!("backup verification failed before reading a paused object: {error:?}"),
+            },
+            reached = tokio::time::timeout(Duration::from_secs(360), paused.entered.notified()) => {
+                reached.expect("backup verification did not read a paused object within 360 seconds");
+            },
+        }
+        clock.0.store(LONG_BACKUP_CREDENTIAL_MS, Ordering::SeqCst);
         paused.release.notify_one();
+        verify.await
     };
-    let (result, ()) = tokio::join!(verify, advance);
     assert_eq!(result.unwrap_err().code, ErrorCode::Unauthorized);
     assert_eq!(fence.check().unwrap_err().code, ErrorCode::Unauthorized);
     drop(fence);
     // Creation can have already published immutable encrypted objects when its
     // credential expires; suppress the proof and report uncertainty.
     let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));
-    let create = fixture.db.backup_checkpoint(
-        fixture.credential(clock.clone()),
-        &paused,
-        uuid::Uuid::new_v4(),
-    );
-    let advance = async {
-        paused.entered.notified().await;
-        clock.0.store(1000, Ordering::SeqCst);
+    let result = {
+        let mut create = std::pin::pin!(fixture.db.backup_checkpoint(
+            fixture.credential_with_validity(clock.clone(), LONG_BACKUP_CREDENTIAL_MS),
+            &paused,
+            uuid::Uuid::new_v4(),
+        ));
+        tokio::select! {
+            biased;
+            result = &mut create => match result {
+                Ok(_) => panic!("backup creation succeeded before reading a paused object"),
+                Err(error) => panic!("backup creation failed before reading a paused object: {error:?}"),
+            },
+            reached = tokio::time::timeout(Duration::from_secs(360), paused.entered.notified()) => {
+                reached.expect("backup creation did not read a paused object within 360 seconds");
+            },
+        }
+        clock.0.store(LONG_BACKUP_CREDENTIAL_MS, Ordering::SeqCst);
         paused.release.notify_one();
+        create.await
     };
-    let (result, ()) = tokio::join!(create, advance);
     assert_eq!(result.unwrap_err().code, ErrorCode::UnknownOutcome);
     fixture.close().await;
 }

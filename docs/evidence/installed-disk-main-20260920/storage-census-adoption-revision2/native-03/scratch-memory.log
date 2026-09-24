@@ -1,0 +1,9 @@
+
+running 4 tests
+test scratch_disk::memory_tests::fixture_directory_custody_stays_with_caller_while_metadata_stays_installed ... ok
+test scratch_disk::memory_tests::installed_scratch_reuse_keeps_metadata_funded_after_public_strong_handles_drop ... ok
+test scratch_disk::memory_tests::scratch_file_release_does_not_release_installed_owner_or_registry_memory ... ok
+test scratch_disk::memory_tests::scratch_metadata_denial_precedes_directory_creation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 241 filtered out; finished in 0.03s
+

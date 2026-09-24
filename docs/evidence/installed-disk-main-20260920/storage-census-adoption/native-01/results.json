@@ -1,0 +1,54 @@
+[
+  {
+    "name": "census",
+    "pid": 36453,
+    "pgid": 36453,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kasumi-store",
+      "--lib",
+      "storage_census::",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption/native-01/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption/native-01/census.log",
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 38.1995905,
+    "log_sha256": "76df017796117147b7f907175446e4cff9027b57a2f493cad434c0073f5e3bff"
+  },
+  {
+    "name": "opening",
+    "pid": 37043,
+    "pgid": 37043,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kasumi-store",
+      "--lib",
+      "storage_opening::",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption/native-01/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption/native-01/opening.log",
+    "exit_code": 101,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "elapsed_seconds": 2.291476207999999,
+    "log_sha256": "f90eff95eb3f1e0c42a6b30574ad17b97a848e9c48f301155dfcda59ae6768ae"
+  }
+]

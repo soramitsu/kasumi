@@ -1,0 +1,9 @@
+{
+  "status": "TARGET_ONLY_WIP_NO_NATIVE_OR_ACTUAL_SOURCE_ACTIONS",
+  "baseline": "target/installed-disk-validation/directory-census-session/cumulative-proposed",
+  "cumulative_patch_sha256": "a3ab99fa45947e5c44e031c849c61892f32aa27e746e9067b8baad6a88ee29f9",
+  "manifest_sha256": "afc7f858b97f4ad1e30cd2c1438e9c25c9614d22e5972d4475665923ee15a665",
+  "raw_inventory_sha256": "5563b1756eae6a07899b1016bd434f7e8ef962bba2fdc74e213a1f41394a07f8",
+  "caller_inventory": "production-directory-callers/manifest.json",
+  "caller_inventory_sha256": "f71d43e72ac653c02ed892cac7e2732cc95ee552a1e5ba1af4fe7ee59b9bafaf"
+}

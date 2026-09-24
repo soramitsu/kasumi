@@ -1,0 +1,89 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 57s
+     Running tests/history.rs (target/debug/deps/history-47c4b723d0328528)
+
+running 5 tests
+test archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_restart ... ok
+test change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps ... ok
+test chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects ... ok
+test scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_deletions ... ok
+test shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restart ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 226.41s
+
+     Running tests/lifecycle.rs (target/debug/deps/lifecycle-377b80b89ca111b0)
+
+running 14 tests
+test control_administration::current_control_administration_cannot_release_through_a_cached_leader_after_quorum_loss ... ok
+test control_administration::current_control_administration_pins_actual_membership_and_pending_policy_across_restart ... ok
+test control_administration::current_control_administration_retains_exact_resource_revocation_and_original_lifetime ... ok
+test control_completion_audit_reservation_survives_denials_and_current_admin_status_recovery ... ok
+test control_rejects_unfinishable_byte_budget_and_substituted_authenticated_history ... ok
+test fresh_control_materialization_requires_exact_retained_original_after_expiry_and_reopen ... ok
+test recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation ... 
+thread 'recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation' (4213312) panicked at crates/kasumi-engine/tests/common/recovery_control.rs:1004:22:
+called `Result::unwrap()` on an `Err` value: Error { code: Unavailable, message: "read quorum unavailable" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test recovery_control::recovery_expired_target_requires_fresh_control_admission_and_fences_revoked_observations ... ok
+test recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit ... 
+thread 'recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit' (4215735) panicked at crates/kasumi-engine/tests/common/recovery_control.rs:217:10:
+called `Result::unwrap()` on an `Err` value: Error { code: UnknownOutcome, message: "recovery effect may be committed; resolve its exact permanent operation and phase" }
+FAILED
+test recovery_control::recovery_planned_retirement_freezes_its_exact_request_only_after_target_completion ... ok
+test recovery_control::recovery_uncertain_activation_requires_permanent_stop_before_target_cleanup ... ok
+test recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward ... ok
+test replicated_control_change_pins_all_partitions_freezes_issuance_and_recovers_self_revocation ... ok
+test replicated_control_intent_is_exact_original_expiry_bound_current_quorum_and_permanent_after_reopen ... ok
+
+failures:
+
+failures:
+    recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation
+    recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit
+
+test result: FAILED. 12 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 323.86s
+
+error: test failed, to rerun pass `-p kasumi-engine --test lifecycle`
+     Running tests/schema_activation.rs (target/debug/deps/schema_activation-c8bc16999c443e31)
+
+running 12 tests
+test atomic_bundle_publishes_all_indexes_once_and_preserves_read_generations ... ok
+test cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_authority ... ok
+test encrypted_schema_lookup_checks_current_fences_without_rewriting_original_effect ... ok
+test first_release_schema_wire_requires_explicit_effect_and_lookup_dependencies ... ok
+test incarnation_schema_data_and_current_authority_are_independent_fences ... ok
+test ordered_schema_dependencies_reject_changed_document_phantom_snapshot_and_expired_deadline ... ok
+test record_metadata_and_serialized_budgets_fail_before_partial_activation ... ok
+test rejection_is_permanent_and_never_publishes_an_earlier_valid_change ... ok
+test restored_permanent_schema_history_exceeds_the_former_lifetime_ceiling ... ok
+test schema_effect_digest_binds_dependencies_and_current_read_permission_is_required_on_replay ... ok
+test schema_shape_immutable_mode_snapshot_validation_and_retained_quota ... ok
+test text_and_structured_indexes_publish_together_after_existing_documents_validate ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 55.72s
+
+     Running tests/staged_transactions.rs (target/debug/deps/staged_transactions-076de9a7cc734dd0)
+
+running 11 tests
+test changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverable ... ok
+test coherent_lease_pages_cover_large_dependencies_and_scans_with_live_writes ... ok
+test complete_large_read_set_and_append_only_rules_reject_all_effects_atomically ... ok
+test killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_once ... ok
+test large_transaction_stays_invisible_then_publishes_one_generation_and_permanent_receipt ... ok
+test ordered_foreign_scope_rejection_cannot_expire_or_rebind_an_original_upload ... ok
+test permanent_staged_byte_exhaustion_preserves_success_failure_and_restored_exact_replays ... ok
+test permanent_staged_snapshot_rejection_spends_original_terminal_reservation_atomically ... ok
+test small_lease_budget_shares_large_roots_and_expires_on_retained_version_pressure ... ok
+test staged_crash_worker ... ok
+test staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_identity ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 24.73s
+
+error: 1 target failed:
+    `-p kasumi-engine --test lifecycle`

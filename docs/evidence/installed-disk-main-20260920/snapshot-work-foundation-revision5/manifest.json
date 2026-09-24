@@ -1,0 +1,56 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED_FOUNDATION_NO_PRODUCTION_ADAPTER",
+  "revision": 5,
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "patch_sha256": "6cc0b9cc8b81234eb682837eee2ac6a7cb4c88c7f05a104fdd1fbc2258a742a0",
+  "review_delta_sha256": "065bb6114aa2207ed2d6fa00ade8100bf103d08f20b00b1abac808b202891b5f",
+  "dependencies": [
+    {
+      "path": "target/installed-disk-validation/reservation-cancellation-retirement/retirement.patch",
+      "sha256": "c9c6d4ffd79170509130bb8a284db6888e0b2ed262b0dc6acf69a8618934ee8d",
+      "status": "APPLIED_BEFORE_THIS_BASELINE_DO_NOT_REAPPLY"
+    }
+  ],
+  "replaces_reviewed_patch_sha256": "3fe0e296155fd6c2cb15f506ba6fbd0b25fe646bd188f5627accffd99da18022",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/admission/snapshot_work.rs",
+      "before_sha256": null,
+      "proposed_sha256": "08ef0e54c3b68b97c0c9e562c6a0598ca23c16b26b6e8860e767560acb77ad6e",
+      "revision4_proposed_sha256": "c96e9c1674b157dcbd5aafbd5174c80d09f19c654907e3f54daccda73ebe41fb",
+      "lines": 930
+    },
+    {
+      "path": "crates/kasumi-engine/src/admission/snapshot_work_tests.rs",
+      "before_sha256": null,
+      "proposed_sha256": "0728468f27f2d3a1d63f96164922355639cf06984400443e548df7a95e66de18",
+      "revision4_proposed_sha256": "8b129c0946f83afe47cfd49372742ed29763034a0a00bb291ed265c3a06c7f2b",
+      "lines": 1214
+    },
+    {
+      "path": "crates/kasumi-engine/src/admission.rs",
+      "before_sha256": "521c90cf40c29899f95aaa02509b65e62af3827928236dff817deb309d8449da",
+      "proposed_sha256": "6892f831a432b75a92da7457cde6d2094890e9b8e544c37a6c53e7f85264c227",
+      "revision4_proposed_sha256": "6892f831a432b75a92da7457cde6d2094890e9b8e544c37a6c53e7f85264c227",
+      "lines": 1864
+    },
+    {
+      "path": "crates/kasumi-query/src/cancellation.rs",
+      "before_sha256": "2e4ef1e7ea85d0be49494ce51f397e14abed62d2ac3f2de80da9ae60e5a79d08",
+      "proposed_sha256": "c062ea749011fcc5d02c3b999053084f503d820cb4d59e227b349e83f0a03eee",
+      "revision4_proposed_sha256": "c062ea749011fcc5d02c3b999053084f503d820cb4d59e227b349e83f0a03eee",
+      "lines": 138
+    }
+  ],
+  "readme_sha256": "681ee0d24a29c5a2e993feb08e1c232b224bf1277b626854f7410dbe6617c99b",
+  "rustfmt_stdin": "passed for changed snapshot module and tests",
+  "apply_check": {
+    "exit_code": 0,
+    "stderr": ""
+  },
+  "tests_prepared": 17,
+  "tests_or_builds_run": false,
+  "actual_source_modified": false
+}

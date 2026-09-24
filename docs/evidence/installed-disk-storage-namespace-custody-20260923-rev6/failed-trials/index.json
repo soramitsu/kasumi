@@ -1,0 +1,37 @@
+{
+  "trials": [
+    {
+      "revision": 2,
+      "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/manifest.json",
+      "manifest_sha256": "93ce8996fc13e0c84d77ddf22f9b71875124286c7de12367c216eea3c0026d24",
+      "failure_receipt_sha256": "1cf95116c6c468405fcdd7222fdad37246995fcab2a49f61cda81d4378d21895",
+      "native_result_sha256": "d27b945afd05b5fd1e3daee1e6f1ab49b4c7ea7abb39984c461e4f689f625819",
+      "status": "FAILED_PRESERVED_NOT_ACCEPTANCE"
+    },
+    {
+      "revision": 3,
+      "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/manifest.json",
+      "manifest_sha256": "09b411af5662c5e14a7a93b1ab2dd476ef2e4925c3f42cbbd21f95a3019828c7",
+      "failure_receipt_sha256": "631b49c1bfcb97ef8a030e8e4ef8c29663048de8a35fde128ddc63ca60c61ea0",
+      "native_result_sha256": "f633a6e653c60e9dd7a072796241d4f3d80632fb3e65e41cca2d1fd252154c70",
+      "status": "FAILED_PRESERVED_NOT_ACCEPTANCE"
+    },
+    {
+      "revision": 4,
+      "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/manifest.json",
+      "manifest_sha256": "83ab0cf18c5ee3d5b4b00309c4073200faa1d753254b9f871da2837018b4faec",
+      "failure_receipt_sha256": "12ee014010cd8e409302f40f39c22c06346a8850cea12b71cf9d8eecaffea666",
+      "native_result_sha256": "4e3783247f69f43c5082cf9558288e67be405cdf7ddf3955b4ffcc9bb9b11231",
+      "status": "FAILED_PRESERVED_NOT_ACCEPTANCE"
+    },
+    {
+      "revision": 5,
+      "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/manifest.json",
+      "manifest_sha256": "64a8b440408c734c05b442aafbb9fa969862d78662178b8029a287dd66578b2e",
+      "failure_receipt_sha256": "deed480897d30e15b4871af19a09bbab4b80ab0195738a30eea3aa0add3714cd",
+      "native_result_sha256": "bb91421f37b42bcb88b4656a41ea7e8862f663e455fb262e83ad2ac06aa0b122",
+      "status": "FAILED_PRESERVED_NOT_ACCEPTANCE"
+    }
+  ],
+  "revision5_format": "Diagnostic only on failed revision5; final format acceptance is current format-01."
+}

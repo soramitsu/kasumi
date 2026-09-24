@@ -1,0 +1,12 @@
+--- a/crates/kasumi-engine/tests/common/recovery_control.rs
++++ b/crates/kasumi-engine/tests/common/recovery_control.rs
+@@ -1778,7 +1778,8 @@
+     let requested_phase = command.phase;
+     let requested_id = command.command_id;
+     let before = {
+-        let metrics = db.raft_group().raft().metrics().borrow();
++        let receiver = db.raft_group().raft().metrics();
++        let metrics = receiver.borrow();
+         (
+             metrics.id,
+             metrics.current_term,

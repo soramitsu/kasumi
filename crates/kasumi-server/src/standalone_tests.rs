@@ -16,15 +16,76 @@ fn context(tenant: &str) -> RequestContext {
 }
 
 #[tokio::test]
+async fn selected_network_is_in_config_profiles_and_original_control_topology() -> Result<()> {
+    let root = kasumi_store::test_utils::private_tempdir()?;
+    let directory = root.path().join("selected-network");
+    let storage =
+        crate::runtime_storage_fixtures::standalone_storage(&directory, Default::default())?;
+    let network = StandaloneNetwork {
+        mcp_listen: "127.0.0.1:19443".parse()?,
+        mcp_public_url: "https://localhost:19443/mcp".into(),
+        native_listen: "127.0.0.1:19444".parse()?,
+        admin_listen: "127.0.0.1:19445".parse()?,
+    };
+    let installation = initialize_with_storage(
+        &directory,
+        "selected",
+        kasumi_store::DirectoryPolicy::fixture(),
+        network.clone(),
+        storage.clone(),
+    )
+    .await?;
+    let config = RuntimeConfig::load(&installation.configuration)?;
+    assert_eq!(config.mcp.listen, network.mcp_listen);
+    assert_eq!(config.mcp.protocol.public_url, network.mcp_public_url);
+    assert_eq!(config.native.listen, network.native_listen);
+    assert_eq!(config.admin.listen, network.admin_listen);
+    let tenant = ClientProfile::load(&installation.tenant_profile)?;
+    assert_eq!(tenant.mcp_endpoint, network.mcp_public_url);
+    assert_eq!(tenant.native_endpoint, "https://localhost:19444");
+    assert_eq!(
+        tenant.administrative_members[&1].endpoint,
+        "https://localhost:19445"
+    );
+    let mut owner = OperatorState::open(&config, storage).await?;
+    let control = owner.control().await?;
+    let plane = kasumi_engine::control::ControlPlane::new(control.clone())?;
+    let current = plane
+        .topology(&crate::runtime::configured_control_context(
+            &config.control,
+        )?)
+        .await?
+        .expect("initialized Control topology");
+    assert_eq!(
+        current.topology.nodes[&1].endpoint,
+        "https://localhost:19443"
+    );
+    drop(plane);
+    control.shutdown().await?;
+    drop(control);
+    owner.finish(Ok(())).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecycle() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
-    let installation = initialize(&root.path().join("kasumi"), "tenant-a")
-        .await
-        .unwrap();
+    let (installation, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &root.path().join("kasumi"),
+        "tenant-a",
+    )
+    .await
+    .unwrap();
     assert!(
-        initialize(&root.path().join("kasumi"), "tenant-a")
-            .await
-            .is_err()
+        initialize_with_storage(
+            &root.path().join("kasumi"),
+            "tenant-a",
+            kasumi_store::DirectoryPolicy::fixture(),
+            StandaloneNetwork::fixture(),
+            storage.clone()
+        )
+        .await
+        .is_err()
     );
     let mut config = RuntimeConfig::load(&installation.configuration).unwrap();
     let mut control = ClientProfile::load(&installation.control_profile).unwrap();
@@ -58,10 +119,24 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         &serde_json::to_vec_pretty(&tenant).unwrap(),
     )
     .unwrap();
-    crate::standalone::configure_test_topology(&config).await;
+    crate::standalone::configure_test_topology(&config, storage.clone()).await;
     drop(listeners);
-    let runtime = NodeRuntime::open(config.clone()).await.unwrap();
-    assert!(NodeRuntime::open(config.clone()).await.is_err());
+    let runtime = NodeRuntime::open_using_storage(
+        config.clone(),
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        NodeRuntime::open_using_storage(
+            config.clone(),
+            crate::runtime::file_secret,
+            storage.clone()
+        )
+        .await
+        .is_err()
+    );
     let registry = runtime.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(runtime.serve(shutdown));
@@ -318,7 +393,10 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
     drop(data);
     drop(admin);
     drop(registry);
-    let reopened = NodeRuntime::open(config).await.unwrap();
+    let reopened =
+        NodeRuntime::open_using_storage(config, crate::runtime::file_secret, storage.clone())
+            .await
+            .unwrap();
     let reopened_registry = reopened.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(reopened.serve(shutdown));
@@ -348,9 +426,12 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
 #[tokio::test]
 async fn offline_maintenance_and_administrator_recovery_require_exclusive_ownership() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
-    let installation = initialize(&root.path().join("kasumi"), "tenant")
-        .await
-        .unwrap();
+    let (installation, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &root.path().join("kasumi"),
+        "tenant",
+    )
+    .await
+    .unwrap();
     let mut config = RuntimeConfig::load(&installation.configuration).unwrap();
     let listeners = (0..3)
         .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
@@ -376,9 +457,15 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
             format!("https://localhost:{}", config.admin.listen.port());
         private_files::replace(path, &serde_json::to_vec_pretty(&profile).unwrap()).unwrap();
     }
-    crate::standalone::configure_test_topology(&config).await;
+    crate::standalone::configure_test_topology(&config, storage.clone()).await;
     drop(listeners);
-    let runtime = NodeRuntime::open(config.clone()).await.unwrap();
+    let runtime = NodeRuntime::open_using_storage(
+        config.clone(),
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await
+    .unwrap();
     let registry = runtime.registry().clone();
     let control = runtime.control_database().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
@@ -410,16 +497,17 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
         .await
         .unwrap();
     assert!(
-        recover_administrator(
+        recover_administrator_with_storage(
             &installation.configuration,
-            &root.path().join("should-not-exist")
+            &root.path().join("should-not-exist"),
+            storage.clone()
         )
         .await
         .is_err()
     );
     assert!(!root.path().join("should-not-exist").exists());
     assert!(
-        rotate_wrapping_keys(&installation.configuration)
+        rotate_wrapping_keys_with_storage(&installation.configuration, storage.clone())
             .await
             .is_err()
     );
@@ -427,11 +515,11 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
     serving.await.unwrap().unwrap();
     drop(control);
     drop(registry);
-    rotate_wrapping_keys(&installation.configuration)
+    rotate_wrapping_keys_with_storage(&installation.configuration, storage.clone())
         .await
         .unwrap();
     assert_eq!(
-        rotate_signing_key(&installation.configuration)
+        rotate_signing_key_with_storage(&installation.configuration, storage.clone())
             .await
             .unwrap(),
         2
@@ -458,7 +546,7 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
     let wrong_ca = zeroize::Zeroizing::new(rcgen::KeyPair::generate().unwrap().serialize_pem());
     private_files::replace(&ca_path, wrong_ca.as_bytes()).unwrap();
     assert!(
-        rotate_certificates(&installation.configuration)
+        rotate_certificates_with_storage(&installation.configuration, storage.clone())
             .await
             .is_err()
     );
@@ -476,7 +564,7 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
         old_client_certificate
     );
     private_files::replace(&ca_path, &old_ca).unwrap();
-    rotate_certificates(&installation.configuration)
+    rotate_certificates_with_storage(&installation.configuration, storage.clone())
         .await
         .unwrap();
     let updated = ClientProfile::load(&installation.control_profile).unwrap();
@@ -491,9 +579,10 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
             .certificate_pins,
         updated.administrative_member().unwrap().certificate_pins
     );
-    backup_operator_keys(
+    backup_operator_keys_with_storage(
         &installation.configuration,
         &root.path().join("operator-backup"),
+        storage.clone(),
     )
     .await
     .unwrap();
@@ -502,10 +591,13 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
             .join("operator-backup/security-keys.json")
             .exists()
     );
-    let profiles =
-        recover_administrator(&installation.configuration, &root.path().join("recovered"))
-            .await
-            .unwrap();
+    let profiles = recover_administrator_with_storage(
+        &installation.configuration,
+        &root.path().join("recovered"),
+        storage.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(profiles.len(), 2);
     let recovered_control = profiles
         .iter()
@@ -526,7 +618,13 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
         recovered_config.control.startup_principal.as_deref(),
         Some("next-operator")
     );
-    let runtime = NodeRuntime::open(recovered_config).await.unwrap();
+    let runtime = NodeRuntime::open_using_storage(
+        recovered_config,
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await
+    .unwrap();
     let registry = runtime.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(runtime.serve(shutdown));

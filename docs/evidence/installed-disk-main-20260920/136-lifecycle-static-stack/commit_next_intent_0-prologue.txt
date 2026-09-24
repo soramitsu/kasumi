@@ -1,0 +1,20 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010011f814 <lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}::{closure#0}>:
+10011f814: d100c3ff    	sub	sp, sp, #0x30
+10011f818: a9027bfd    	stp	x29, x30, [sp, #0x20]
+10011f81c: 910083fd    	add	x29, sp, #0x20
+10011f820: f90007e0    	str	x0, [sp, #0x8]
+10011f824: aa0103e8    	mov	x8, x1
+10011f828: f94007e1    	ldr	x1, [sp, #0x8]
+10011f82c: aa0103e0    	mov	x0, x1
+10011f830: f9000be0    	str	x0, [sp, #0x10]
+10011f834: f81f83a8    	stur	x8, [x29, #-0x8]
+10011f838: 91028100    	add	x0, x8, #0xa0
+10011f83c: 94206fb5    	bl	0x10093b710 <<alloc::collections::btree::map::BTreeMap<uuid::Uuid, kasumi_types::lifecycle::LifecycleIntent>>::get::<uuid::Uuid>>
+10011f840: a9427bfd    	ldp	x29, x30, [sp, #0x20]
+10011f844: 9100c3ff    	add	sp, sp, #0x30
+10011f848: d65f03c0    	ret

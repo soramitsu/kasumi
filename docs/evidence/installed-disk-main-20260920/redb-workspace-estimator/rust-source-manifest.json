@@ -1,0 +1,53 @@
+{
+  "commit": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
+  "files": [
+    {
+      "path": "library/alloc/src/raw_vec/mod.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/alloc/src/raw_vec/mod.rs",
+      "sha256": "ed847fcc6d237a1ddf95dc54bc8a3823ae89bea125f3e45cb8bb54ae0000fff0",
+      "bytes": 35354
+    },
+    {
+      "path": "library/alloc/src/alloc.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/alloc/src/alloc.rs",
+      "sha256": "afc8eece58d63942328cab563fad1b180b50afdadc9141d40e5d98a6df90cd70",
+      "bytes": 22506
+    },
+    {
+      "path": "library/alloc/src/collections/vec_deque/mod.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/alloc/src/collections/vec_deque/mod.rs",
+      "sha256": "75b696f6b3b675b109626455104129724d4e5d59253f6aefa03eddedfa67c1d4",
+      "bytes": 139588
+    },
+    {
+      "path": "library/alloc/src/collections/btree/node.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/alloc/src/collections/btree/node.rs",
+      "sha256": "2200ca0a4fe38592c314dc7f5f40bbb160e06b6f9e4abd1eb5bc40701540ab25",
+      "bytes": 79123
+    },
+    {
+      "path": "library/alloc/src/sync.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/alloc/src/sync.rs",
+      "sha256": "768776d4a37cfeb28c71a0c6d8b2ad33332d11ceaef7e47cb01463bd71b9048a",
+      "bytes": 177276
+    },
+    {
+      "path": "library/std/src/collections/hash/map.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/collections/hash/map.rs",
+      "sha256": "cbf632aaf647398c7e945c97b378d1a0e1dc82b05e2d56d16ab237f995536a37",
+      "bytes": 92721
+    },
+    {
+      "path": "library/std/Cargo.toml",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/Cargo.toml",
+      "sha256": "ff5272b18cb16a9e67256a1045dc35d9d08ae38916a218f684a2ae2f4360f078",
+      "bytes": 5587
+    },
+    {
+      "path": "library/Cargo.lock",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/Cargo.lock",
+      "sha256": "02120dd57c4c5fd70c81fd92472681c8de5cc2dd78258276da37bb2253666061",
+      "bytes": 9834
+    }
+  ]
+}

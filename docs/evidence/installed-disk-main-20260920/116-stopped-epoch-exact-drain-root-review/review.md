@@ -1,0 +1,7 @@
+# Root exact stop-drain fixture review
+
+Static review accepted fdba3ab745f6262bc8998b8d3adcc50db3ab135af4028dfd84f6402239174b96 as a stricter fixture assertion and diagnostic, not a production route correction. Actual application and execution remain pending until run124 drains.
+
+The original four is_err observations admitted unrelated routing/storage failures as supposed incomplete-drain evidence. The new inspector requires the exact Unavailable drain message and the original witness tuple. The witness key derives from the same stopped request digest stored as receipt.request_sha256. require_drain_witness stores that serving term and original start, advances last to the current fake clock, and starts fresh after reopen. All six checks preserve original API calls, contexts and clock values. Positive outcomes still pass the original signature/historical-identity checks and the late command must still return Conflict. No retry, changed election setting, larger deadline or replacement authorization is introduced.
+
+Failure-only assertions retain the original result and inspect actual member metrics and check_access after releasing the drain mutex and metrics watch borrows. The old comment linking fake lease time to real Raft elections is corrected. Capturing a current term does not guarantee leadership will persist through the operation; if it changes, this fixture must fail with the actual evidence rather than accept a different witness or UnknownOutcome. No static blocker found; compile and original-case execution remain required.

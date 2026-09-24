@@ -1,0 +1,11 @@
+{
+  "verdict": "NO_BLOCKING_FINDING_STATIC_REVIEW_ONLY",
+  "patch_sha256": "12c78bd5fcf406b032e11c8651b68372e455f72e2189687f4bfb875da2d4687d",
+  "manifest_sha256": "e9c98e8ed165bf95b594efb66754bd06a3cb9de0e393c6052ade81d086dcf426",
+  "proposed_sha256": "953a03768ae5b239b65107b4b263efdbf5a24312d85695d9fb1da97bf43e17be",
+  "review_sha256": "80793a214881c9a469f919e546924ab6ee63f67c85a351e1d229a8269be4260e",
+  "source_log_sha256": "eaccda2cb0231b4789a190fb6fe85ed86297e0a9ae10cb6a811210232d174a75",
+  "branch": "master",
+  "actual_source_modified": false,
+  "cargo_or_tests_run": false
+}

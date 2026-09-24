@@ -1,10 +1,13 @@
 //! Admission fixtures belong to integration test executables, never the library.
-use redb::{AdmissionError, OwnerFailed, StorageAdmission};
+use redb::{AdmissionError, OwnerFailed, ResidentLease, StorageAdmission};
 use std::sync::Arc;
 
 #[derive(Debug)]
 struct TestAdmission;
 impl StorageAdmission for TestAdmission {
+    fn reserve_workspace(&self, _: u64) -> Result<Box<dyn ResidentLease>, AdmissionError> {
+        Ok(Box::new(()))
+    }
     fn check_owner(&self) -> Result<(), OwnerFailed> {
         Ok(())
     }

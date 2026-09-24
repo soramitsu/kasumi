@@ -36,6 +36,28 @@ pub(crate) fn drain_serial() -> &'static tokio::sync::Mutex<()> {
     static SERIAL: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     SERIAL.get_or_init(Default::default)
 }
+pub(super) fn run_large_fixture<F, Fut>(name: &'static str, make: F) -> Result<()>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = Result<()>> + 'static,
+{
+    // Keep the two-worker runtime used by these ownership cases, but build
+    // their large encrypted-catalog futures outside libtest's small stack.
+    std::thread::Builder::new()
+        .name(name.into())
+        .stack_size(16 << 20)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(16 << 20)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(make()))
+        })?
+        .join()
+        .expect("standalone ownership fixture thread panicked")
+}
 fn install(path: &Path, phase: &'static str, fail: bool) -> CheckpointControl {
     let checkpoint = Arc::new(Checkpoint {
         fail,
@@ -72,92 +94,140 @@ async fn pending(future: &mut std::pin::Pin<Box<impl Future>>) {
     })
     .await;
 }
-fn physical_reopen(config: &RuntimeConfig) -> Result<()> {
-    let _lock = claim(
-        config,
-        &crate::persistent_disk::open(&config.persistent_disk)?,
-    )?
-    .context("missing standalone lock")?;
-    let node = NodeStore::open_existing_fixture(
+async fn physical_reopen(
+    config: &RuntimeConfig,
+    storage: &crate::runtime_memory::RuntimeStorage,
+) -> Result<()> {
+    let disk = storage.open_persistent(&config.persistent_disk)?;
+    let _lock = claim(config, &disk)?.context("missing standalone lock")?;
+    let node = NodeStore::open_existing(
         &config.database_path,
         config.database_id,
-        kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
+        disk,
+        storage.open_scratch(&config.scratch_disk)?,
     )?;
+    node.shutdown().await?;
     drop(node);
     Ok(())
 }
-fn physical_reopen_rejected(config: &RuntimeConfig) {
+fn physical_reopen_rejected(
+    config: &RuntimeConfig,
+    storage: &crate::runtime_memory::RuntimeStorage,
+) {
+    let disk = storage.open_persistent(&config.persistent_disk).unwrap();
+    assert!(claim(config, &disk).is_err());
     assert!(
-        claim(
-            config,
-            &crate::persistent_disk::open(&config.persistent_disk).unwrap()
-        )
-        .is_err()
-    );
-    assert!(
-        NodeStore::open_existing_fixture(
+        NodeStore::open_existing(
             &config.database_path,
             config.database_id,
-            kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap(),
+            disk,
+            storage.open_scratch(&config.scratch_disk).unwrap(),
         )
         .is_err()
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn every_standalone_operator_retains_real_installation_through_cancelled_reply_and_drain()
+#[test]
+fn every_standalone_operator_retains_real_installation_through_cancelled_reply_and_drain()
 -> Result<()> {
+    run_large_fixture(
+        "standalone operator ownership fixture",
+        every_standalone_operator_impl,
+    )
+}
+
+async fn every_standalone_operator_impl() -> Result<()> {
     let _serial = drain_serial().lock().await;
     let root = kasumi_store::test_utils::private_tempdir()?;
-    let installed = initialize(&root.path().join("database"), "documents").await?;
+    let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &root.path().join("database"),
+        "documents",
+    )
+    .await?;
     for operation in 0..5 {
         let config = RuntimeConfig::load(&installed.configuration)?;
         let paused = install(&config.database_path, "audit", false);
         let configuration = installed.configuration.clone();
         let output = root.path().join(format!("operator-output-{operation}"));
+        let operation_storage = storage.clone();
         let mut request = Box::pin(async move {
             match operation {
-                0 => recover_administrator(&configuration, &output)
+                0 => recover_administrator_with_storage(
+                    &configuration,
+                    &output,
+                    operation_storage.clone(),
+                )
+                .await
+                .map(|_| ()),
+                1 => {
+                    rotate_wrapping_keys_with_storage(&configuration, operation_storage.clone())
+                        .await
+                }
+                2 => rotate_signing_key_with_storage(&configuration, operation_storage.clone())
                     .await
                     .map(|_| ()),
-                1 => rotate_wrapping_keys(&configuration).await,
-                2 => rotate_signing_key(&configuration).await.map(|_| ()),
-                3 => rotate_certificates(&configuration).await.map(|_| ()),
-                4 => backup_operator_keys(&configuration, &output).await,
+                3 => rotate_certificates_with_storage(&configuration, operation_storage.clone())
+                    .await
+                    .map(|_| ()),
+                4 => {
+                    backup_operator_keys_with_storage(
+                        &configuration,
+                        &output,
+                        operation_storage.clone(),
+                    )
+                    .await
+                }
                 _ => unreachable!(),
             }
         });
         pending(&mut request).await;
         tokio::time::timeout(Duration::from_secs(10), paused.entered.notified()).await?;
         drop(request);
-        physical_reopen_rejected(&config);
+        physical_reopen_rejected(&config, &storage);
         let mut first = Box::pin(drain_operations());
         pending(&mut first).await;
         drop(first);
-        physical_reopen_rejected(&config);
+        physical_reopen_rejected(&config, &storage);
         let mut retry = Box::pin(drain_operations());
         pending(&mut retry).await;
         paused.release.notify_one();
         tokio::time::timeout(Duration::from_secs(10), retry).await??;
-        physical_reopen(&config)?;
+        physical_reopen(&config, &storage).await?;
         // Reopen encrypted catalogs and credentials too, then drain their new owners.
-        let mut owner =
-            OperatorState::open(&RuntimeConfig::load(&installed.configuration)?).await?;
+        let mut owner = OperatorState::open(
+            &RuntimeConfig::load(&installed.configuration)?,
+            storage.clone(),
+        )
+        .await?;
         owner.audit.status()?;
         owner.finish(Ok(())).await?;
     }
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancelled_initialization_remains_joinable_before_its_first_catalog_publication()
--> Result<()> {
+#[test]
+fn cancelled_initialization_remains_joinable_before_its_first_catalog_publication() -> Result<()> {
+    run_large_fixture(
+        "standalone cancelled-initialization fixture",
+        cancelled_initialization_impl,
+    )
+}
+
+async fn cancelled_initialization_impl() -> Result<()> {
     let _serial = drain_serial().lock().await;
     let root = kasumi_store::test_utils::private_tempdir()?;
     let directory = std::fs::canonicalize(root.path())?.join("database");
     let path = directory.join("data/node.redb");
     let paused = install(&path, "initialize-node", false);
-    let mut request = Box::pin(initialize(&directory, "documents"));
+    let storage =
+        crate::runtime_storage_fixtures::standalone_storage(&directory, Default::default())?;
+    let mut request = Box::pin(initialize_with_storage(
+        &directory,
+        "documents",
+        kasumi_store::DirectoryPolicy::fixture(),
+        StandaloneNetwork::fixture(),
+        storage.clone(),
+    ));
     pending(&mut request).await;
     tokio::time::timeout(Duration::from_secs(10), paused.entered.notified()).await?;
     drop(request);
@@ -170,14 +240,29 @@ async fn cancelled_initialization_remains_joinable_before_its_first_catalog_publ
     drop(first);
     paused.release.notify_one();
     tokio::time::timeout(Duration::from_secs(10), drain_operations()).await??;
-    physical_reopen(&RuntimeConfig::load(directory.join("kasumi.json"))?)?;
+    physical_reopen(
+        &RuntimeConfig::load(directory.join("kasumi.json"))?,
+        &storage,
+    )
+    .await?;
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn singleton_open_failure_drains_node_before_releasing_operator_lock() -> Result<()> {
+#[test]
+fn singleton_open_failure_drains_node_before_releasing_operator_lock() -> Result<()> {
+    run_large_fixture(
+        "standalone singleton-open fixture",
+        singleton_open_failure_impl,
+    )
+}
+
+async fn singleton_open_failure_impl() -> Result<()> {
     let root = kasumi_store::test_utils::private_tempdir()?;
-    let installed = initialize(&root.path().join("database"), "documents").await?;
+    let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &root.path().join("database"),
+        "documents",
+    )
+    .await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
     let mut rejected = config.clone();
     let wrong_ring = root.path().join("unrelated-security-keyring.json");
@@ -190,48 +275,83 @@ async fn singleton_open_failure_drains_node_before_releasing_operator_lock() -> 
     let incorrect = root.path().join("wrong-keyring.json");
     private_files::create(&incorrect, &serde_json::to_vec_pretty(&rejected)?)?;
     assert!(
-        backup_operator_keys(&incorrect, &root.path().join("unused-output"))
-            .await
-            .is_err()
+        backup_operator_keys_with_storage(
+            &incorrect,
+            &root.path().join("unused-output"),
+            storage.clone()
+        )
+        .await
+        .is_err()
     );
     tokio::time::timeout(Duration::from_secs(10), claimed.entered.notified()).await?;
-    physical_reopen(&config)?;
-    let mut owner = OperatorState::open(&config).await?;
+    physical_reopen(&config, &storage).await?;
+    let mut owner = OperatorState::open(&config, storage.clone()).await?;
     owner.audit.status()?;
     owner.finish(Ok(())).await?;
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn early_control_pair_error_retains_and_drains_both_catalogs() -> Result<()> {
+#[test]
+fn early_control_pair_error_retains_and_drains_both_catalogs() -> Result<()> {
+    run_large_fixture(
+        "standalone control-pair ownership fixture",
+        early_control_pair_error_impl,
+    )
+}
+
+async fn early_control_pair_error_impl() -> Result<()> {
     let root = kasumi_store::test_utils::private_tempdir()?;
-    let installed = initialize(&root.path().join("database"), "documents").await?;
+    let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &root.path().join("database"),
+        "documents",
+    )
+    .await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
     let failed = install(&config.database_path, "control-pair", true);
     failed.release.notify_one();
     let configured = config.clone();
+    let operation_storage = storage.clone();
     let error = operator::run(async move {
-        let mut owner = OperatorState::open(&configured).await?;
+        let mut owner = OperatorState::open(&configured, operation_storage.clone()).await?;
         let result = owner.control().await.map(|_| ());
         owner.finish(result).await
     })
     .await
     .unwrap_err();
     assert!(format!("{error:#}").contains("after control-pair"));
-    physical_reopen(&config)?;
-    let mut owner = OperatorState::open(&config).await?;
+    physical_reopen(&config, &storage).await?;
+    let mut owner = OperatorState::open(&config, storage.clone()).await?;
     owner.control().await?;
     owner.finish(Ok(())).await?;
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn early_initialization_audit_error_drains_without_publishing_completion() -> Result<()> {
+#[test]
+fn early_initialization_audit_error_drains_without_publishing_completion() -> Result<()> {
+    run_large_fixture(
+        "standalone early-initialization fixture",
+        early_initialization_audit_error_impl,
+    )
+}
+
+async fn early_initialization_audit_error_impl() -> Result<()> {
     let root = kasumi_store::test_utils::private_tempdir()?;
     let directory = std::fs::canonicalize(root.path())?.join("database");
     let failed = install(&directory.join("data/node.redb"), "initialize-audit", true);
     failed.release.notify_one();
-    assert!(initialize(&directory, "documents").await.is_err());
+    let storage =
+        crate::runtime_storage_fixtures::standalone_storage(&directory, Default::default())?;
+    assert!(
+        initialize_with_storage(
+            &directory,
+            "documents",
+            kasumi_store::DirectoryPolicy::fixture(),
+            StandaloneNetwork::fixture(),
+            storage.clone()
+        )
+        .await
+        .is_err()
+    );
     assert!(!directory.join("kasumi.json").exists());
     assert!(!directory.join("data/installation.json").exists());
     let _lock = private_files::ExclusiveLock::acquire(&directory.join("data/installation.lock"))?;
@@ -239,11 +359,14 @@ async fn early_initialization_audit_error_drains_without_publishing_completion()
         &directory.join("data/initialization.json"),
         16 << 10,
     )?)?;
-    let node = NodeStore::open_existing_fixture(
+    let (persistent, scratch) = crate::runtime_storage_fixtures::standalone_disks(&directory)?;
+    let node = NodeStore::open_existing(
         &prepared.database_path,
         prepared.database_id,
-        kasumi_store::ScratchDisk::fixture(),
+        storage.open_persistent(&persistent)?,
+        storage.open_scratch(&scratch)?,
     )?;
+    node.shutdown().await?;
     drop(node);
     Ok(())
 }

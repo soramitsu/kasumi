@@ -1,0 +1,46 @@
+diff --git a/crates/kasumi-store/src/node_disk/tests.rs b/crates/kasumi-store/src/node_disk/tests.rs
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -2053,7 +2053,41 @@
+ #[test]
+ fn publication_replaced_private_source_ancestor_fences_before_rename() {
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+-    assert_eq!(disk.snapshot().open_files, u32::from(!before_preparation));
++    for before_preparation in [true, false] {
++        let (_directory, config) = installation();
++        let parent = config.roots["data"].join("nested");
++        let moved = config.roots["data"].join("moved");
++        crate::private_files::create_directory(&parent).unwrap();
++        seed(&config, "nested/source", 32 << 10);
++        let disk = open(config.clone(), fixture_memory.clone());
++        let source = disk.open_file("data", Path::new("nested/source")).unwrap();
++        let before = disk.snapshot();
++        if before_preparation {
++            std::fs::rename(&parent, &moved).unwrap();
++            crate::private_files::create_directory(&parent).unwrap();
++            let error = disk
++                .prepare_publication(source, "data", Path::new("nested/published"))
++                .err()
++                .unwrap();
++            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
++        } else {
++            let prepared = disk
++                .prepare_publication(source, "data", Path::new("nested/published"))
++                .unwrap();
++            std::fs::rename(&parent, &moved).unwrap();
++            crate::private_files::create_directory(&parent).unwrap();
++            let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
++            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
++            assert_eq!(allocations, 0);
++        }
++        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++        assert_eq!(disk.snapshot().open_files, u32::from(!before_preparation));
++        assert!(!parent.join("published").exists());
++        assert!(!moved.join("published").exists());
++        assert_eq!(moved.join("source").metadata().unwrap().len(), 32 << 10);
++        clean(&disk, &["moved/source"]);
++    }
+ }
+ 
+ #[test]

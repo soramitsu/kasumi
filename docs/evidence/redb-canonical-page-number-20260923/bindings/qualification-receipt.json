@@ -1,0 +1,90 @@
+{
+  "status": "FROZEN_TARGET_ONLY_QUALIFIED_SUCCESSOR_READY_FOR_PARENT_REVIEW; not integrated or release accepted",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "at_utc": "2026-09-22T23:08:42.499868+00:00",
+  "candidate": {
+    "freeze": "freeze-05",
+    "manifest_sha256": "510321772fff522623703049c4cdb4425b30a127b911e63062fc00d49c4b42af",
+    "patch_sha256": "a8299d4bb9dd0dbbdc253ab23fb24b72c0ccfef1fb488ebe763ace1e1a88b105",
+    "cumulative_changed_files": 19,
+    "delta_from_freeze04": [
+      "vendor/redb-4.2.0/src/tree_store/table_tree.rs",
+      "vendor/redb-4.2.0/CHANGELOG.md"
+    ]
+  },
+  "implementation": "Full raw-definition preflight precedes TableTreeMut visitor callbacks and highest_index_pages output changes; stored invalid roots reject even if pending updates contain canonical replacements. Sole canonical decoder, accepted geometry and writer bytes unchanged.",
+  "test_extension": "Parent fixture retains real stored malformed later row after valid earlier row, both table kinds and high/order-dependent aliases, zero mutable callbacks and empty output, plus all prior mutation/byte/allocation/credit assertions.",
+  "native": [
+    {
+      "phase": "native-07",
+      "result_sha256": "2eef589c4005d3e49101a36dcfd8aa7a7fc38618db521f91d2d22dd439ef0ded",
+      "pgid": 51769,
+      "elapsed_seconds": 3.676742792,
+      "drained": true
+    },
+    {
+      "phase": "native-08",
+      "result_sha256": "795bfa336ac532c865ef307e65dbdb391f2d06777754fbf58947cf0895c2de45",
+      "pgid": 51943,
+      "elapsed_seconds": 143.812206667,
+      "drained": true
+    }
+  ],
+  "all_features_library": {
+    "passed": 225,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 0,
+    "exact_predecessor_names_preserved": true,
+    "required_executed_cases": {
+      "authoritative_checksum_rejection": "tree_store::page_store::header::test::winning_checksum_corruption_fails_closed_after_io_error",
+      "selected_root_alias_rejection": "tree_store::page_store::header::test::selected_root_alias_rejects_before_page_reads_repair_and_writes",
+      "unused_torn_slot_quarantine_both_primary_orders": "tree_store::page_store::header::test::torn_unused_slot_quarantines_aliases_and_survives_both_primary_orders",
+      "recovery_preserves_invalid_checksum": "tree_store::page_store::header::test::recovery_does_not_launder_torn_slot",
+      "no_legacy_primary_rollback": "tree_store::page_store::header::test::repair_rejects_invalid_primary_root_without_legacy_rollback",
+      "expanded_mutable_table_effects": "tree_store::table_tree::test::every_master_table_entry_point_rejects_raw_root_before_visitation_or_mutation"
+    },
+    "retained_binary": "target/installed-disk-validation/redb-canonical-page-number-migration/native-08/qualified-tests",
+    "retained_binary_sha256": "f94520a20a39c473080cfdc32f589b6c028929e1b4b71ac57707e58f4cdf0cbd",
+    "binary_binding": "Cargo-named executable matches hashes during and after execution and retained copy; no pre-dispatch hash captured."
+  },
+  "source_preservation": {
+    "actual_vendor_files_modes_sizes_hashes_equal_baseline": 109,
+    "actual_source_inputs_unchanged": 61,
+    "qualification_inputs_unchanged": 110,
+    "all19_proposed_frozen_qualified_applied_copies_equal": true,
+    "prior_receipt_evidence_hashes_unchanged": 76,
+    "note": "Prior frozen sources, logs and receipts preserved. Cargo build output is reusable; native08 now has its own retained executable copy."
+  },
+  "independent_review_sha256": "18f153b454794f9769a085d4e29079f6536665729bc4d858976a378488a6261a",
+  "explicit_limits": [
+    "Invalid PageNumber decoding constructs StorageError::Corrupted(String); the rejection message has no precharged/retained report-envelope proof. Zero-allocation assertion applies to valid PageNumber conversion only.",
+    "Raw table-definition checked conversion materializes owned type names during each preflight; total operation workspace/admission is not proved.",
+    "No callback/output effect guarantee here applies to raw table-definition rejection. It does not promise rollback of effects after later nested-page, cache, allocation or I/O failures.",
+    "Checksum-invalid authoritative slot is rejected; opaque unused torn-slot bytes may be preserved until a real new commit. This is not a losing-slot fallback or old-format decoder.",
+    "Full public runtime cohort, AGENTS just test/just fuzz, full reachable-root allocation ownership, generic corruption/transaction rollback, total workspace/RSS, exact maintenance physical reserve and vendor provenance update after adoption remain open."
+  ],
+  "evidence": {
+    "target/installed-disk-validation/redb-canonical-page-number-migration/receipt.json": "2e89bd33efea31dc82fc25f39ba2df0a47fe7ce2ede00a66b1031a97b1d8f69a",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/review-map.md": "1a655e4dd14d5b0df55237d7a759685178fd5259f72d522928fbf562181c0f3e",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/freeze-05/manifest.json": "510321772fff522623703049c4cdb4425b30a127b911e63062fc00d49c4b42af",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/freeze-05/migration.patch": "a8299d4bb9dd0dbbdc253ab23fb24b72c0ccfef1fb488ebe763ace1e1a88b105",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/freeze-05/qualification-inputs.json": "75858ead83e09442cfb931b09ddf02cfb41ace534ee6b73ccae0eed6189c0b17",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/verification-freeze-05/receipt.json": "311085996aadbadbcae86538e6128801cbb53949a311fd0396d454be07e70f14",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/native-07/result.json": "2eef589c4005d3e49101a36dcfd8aa7a7fc38618db521f91d2d22dd439ef0ded",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/native-07/cargo.log": "0120d9a758ba481bb786d2b1d0fd440c9411620a09d511784b18bf1711368a67",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/native-08/result.json": "795bfa336ac532c865ef307e65dbdb391f2d06777754fbf58947cf0895c2de45",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/native-08/cargo.log": "fd3f7baeffb187b382aa6125245bb1cf2889caa10151b68f374d1261db99a0ac",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/native-08/test-inventory.json": "a6b2f0f246981881a7bfcf3719055014d52b01c7346893379006a30ef013efa3",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/native-08/during-binary.json": "e31d2d0388ff29330930156a139758fcc1796f6ed7123abf278aeb6c2f309774",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/native-08/terminal-binary.json": "6cf97745fec00cbb3c9f7f8400648a99575616e605dba9e1309bc2aadc32110d",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/table-tree-preflight-successor/handoff.json": "a6eff260c83b95355ba0f3c22f981588d4bffc7b2c43672474f832987960ca75",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/table-tree-preflight-successor/successor.patch": "d76e63e2cca1449cffedf08c94bb04713ae2cb942001a45463399dd4ac1bf6a2",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/table-tree-preflight-successor/run_native_v2.py": "e28ba8ee818c4cbe5a09592e229852a83d95bd69c197946600fb8a16bfd24e29",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/table-tree-preflight-successor/runner.patch": "7dee27d2828b370f3bb63de407b86dddd745665b85e0c00f48fa5c8ed107eb6d",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/table-tree-preflight-successor/runner-review.json": "e056709f615579a29bf9f5a1408e559dcb63445d320d6bfd18ec4a7401497ea5",
+    "target/installed-disk-validation/redb-canonical-page-number-migration/table-tree-preflight-successor/README.md": "b73ceb7a623539685e3c44252407cba6a86ef229270249cde3bad2c6ef31746d",
+    "target/installed-disk-validation/redb-page-number-freeze05-managed-review/receipt.json": "18f153b454794f9769a085d4e29079f6536665729bc4d858976a378488a6261a"
+  }
+}

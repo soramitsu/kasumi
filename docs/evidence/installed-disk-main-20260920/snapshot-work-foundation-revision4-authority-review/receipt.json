@@ -1,0 +1,28 @@
+{
+  "verdict": "BLOCKED_P1_CLAIM_OUTPUT_UNWIND",
+  "patch_sha256": "3fe0e296155fd6c2cb15f506ba6fbd0b25fe646bd188f5627accffd99da18022",
+  "manifest_sha256": "6e86ff61d75bb4a5df82f0a940d99ecbb560449033e679fa4dac631a7163167f",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/admission/snapshot_work.rs",
+      "sha256": "c96e9c1674b157dcbd5aafbd5174c80d09f19c654907e3f54daccda73ebe41fb"
+    },
+    {
+      "path": "crates/kasumi-engine/src/admission/snapshot_work_tests.rs",
+      "sha256": "8b129c0946f83afe47cfd49372742ed29763034a0a00bb291ed265c3a06c7f2b"
+    },
+    {
+      "path": "crates/kasumi-engine/src/admission.rs",
+      "sha256": "6892f831a432b75a92da7457cde6d2094890e9b8e544c37a6c53e7f85264c227"
+    },
+    {
+      "path": "crates/kasumi-query/src/cancellation.rs",
+      "sha256": "c062ea749011fcc5d02c3b999053084f503d820cb4d59e227b349e83f0a03eee"
+    }
+  ],
+  "review_sha256": "411c68a87c53674dfcea8421b96e87078b7d02d3c9f4d6ef2e81f525184b60ef",
+  "branch": "master",
+  "actual_source_modified": false,
+  "cargo_or_tests_run": false,
+  "author_confirmed_claim_interleaving": true
+}

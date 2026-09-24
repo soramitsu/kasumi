@@ -1,0 +1,127 @@
+{
+  "status": "APPROVED_SCOPED_STATIC_WITH_AUTHOR_RUNTIME_EVIDENCE",
+  "reviewed_at_utc": "2026-09-22T07:57:07.763672+00:00",
+  "reviewer": "/root/allocator_planning_resume",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "scope": "six-file claim-path delta only; no blocker identified",
+  "blocking_findings": [],
+  "bindings": {
+    "target/installed-disk-validation/backup-namespace-admission-revision4/manifest.json": "bdea7417d9a73f86dff25a1d76e3b8bfb7cd2ef783ea12edbc0f347198620fde",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/claim-path.patch": "4b3941ae5383e58ae9c6b5019a53e681dd5cb923b0edbd2cb859a10d0c8d4471",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/namespace-session.patch": "6c918e171f8f6da11c55dc859448cb5a469e9a4b48f2de29965321ba5159c205",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/README.md": "3132a4069e0b5240cd645b2c27117bbb9320cbbd51cb108dcca56ca91f61c762",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/native-01/results.json": "0634ed1de20da6928603475995f3dfa24ff5c6509b97dbfe9691049b53eef60a",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/native-01/terminal-drain.json": "1ea06846a92beb572b1c17fde859e5bc1843f2075528209903e4e1856174017e",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/native-01/before.json": "069b4cf9b9e5bf041b17a17c5a6fa3db6014050b83c980da11331f675c85467e",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/native-01/after.json": "069b4cf9b9e5bf041b17a17c5a6fa3db6014050b83c980da11331f675c85467e",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/native-01/selection.json": "674f375f4626d08c6e43fcc7bd2744078dfc732fc7148aedd501cb6d55963b6c",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/native-01/run.stdout": "66610072f2e9f8901c15dfdf585a1f2251a786383d23a3c6f227c1cb68fee84e",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/native-01/terminal-drain-parser-attempt1.json": "33f3f51c12e4e4227c31bdca98006ea8027c4bb05e8d8c5120bc7e17ff3632ff",
+    "target/installed-disk-validation/backup-namespace-claim-path-design-review/receipt.json": "f3beef8a5b7e05eaec6e2e7f4f93f13ff081834c933371816ab5e6061eb04ad9"
+  },
+  "delta_files": [
+    {
+      "path": "crates/kasumi-store/src/backup_session_admission_tests.rs",
+      "before_sha256": "a9d3d659453e6b7bc568fafe420011e0c4df93303eca04ea2063d8ee7a45ede8",
+      "after_sha256": "10223e8cbca60cf40464a6d181c16dedf7cbceacc3825789d3d941e0bb866716"
+    },
+    {
+      "path": "crates/kasumi-store/src/backup_sessions_fs.rs",
+      "before_sha256": "7a61e83bfdde914fc8281057d81a303a0f080dbe749b027cf6ccf1b60bd9e39b",
+      "after_sha256": "8edf2ee51cf5da3eb851885e33ace0d72354daa79c1508a89ff94cc37470d412"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/batch/tests.rs",
+      "before_sha256": "6e921d50c1e4ab0aee5eafdf9729bb74ea0d614b4c7892f7847f06e1cb28abca",
+      "after_sha256": "17b72df132213639ffc1f15352412a59f9630cdc3c27e699e3ed4e9c3b0e6038"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/batch.rs",
+      "before_sha256": "be6156d78d543fbef347ec325dfd7f14ca526cdec258bd79836a584f72649a62",
+      "after_sha256": "8cf31248f14e656c3a36027523c88c53ce60759a7b440fa668ac6c3d7192def1"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/directory/managed.rs",
+      "before_sha256": "0e48080a2c585500d0941b41811e768a4c3d0d0b23257151d42624b0c98a623b",
+      "after_sha256": "ea272b792e0249b26a6ea60a3fd2363fcbf770a40992aef84bbf4505fd4e039e"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk.rs",
+      "before_sha256": "7749f918e54e2edb36b9a0e3e2ef7c65b76c79199444cb92e2b542f7ebe3c89e",
+      "after_sha256": "4b07e79678a413e44a3245a60a3891805118ef3737144d62eff4ef3386cf8060"
+    }
+  ],
+  "checks": {
+    "frozen_expected_hashes": true,
+    "six_bases_match_predecessor_candidate03": true,
+    "all_base_and_proposed_files": 57,
+    "exact_changed_paths": [
+      "crates/kasumi-store/src/backup_session_admission_tests.rs",
+      "crates/kasumi-store/src/backup_sessions_fs.rs",
+      "crates/kasumi-store/src/node_disk.rs",
+      "crates/kasumi-store/src/node_disk/batch.rs",
+      "crates/kasumi-store/src/node_disk/batch/tests.rs",
+      "crates/kasumi-store/src/node_disk/directory/managed.rs"
+    ],
+    "six_delta_apply_readbacks": true,
+    "thirteen_successor_hashes_and_readbacks": true,
+    "native_input_bindings_verified": 93,
+    "author_runtime_phases": [
+      {
+        "name": "compiler",
+        "exit_code": 0,
+        "timed_out": false,
+        "process_group_drained": true,
+        "executable_unchanged": true
+      },
+      {
+        "name": "compile-production",
+        "exit_code": 0,
+        "timed_out": false,
+        "process_group_drained": true,
+        "executable_unchanged": true
+      },
+      {
+        "name": "compile-tests",
+        "exit_code": 0,
+        "timed_out": false,
+        "process_group_drained": true,
+        "executable_unchanged": true
+      },
+      {
+        "name": "run-production",
+        "exit_code": 0,
+        "timed_out": false,
+        "process_group_drained": true,
+        "executable_unchanged": true
+      },
+      {
+        "name": "run",
+        "exit_code": 0,
+        "timed_out": false,
+        "process_group_drained": true,
+        "executable_unchanged": true
+      }
+    ],
+    "author_runtime_inventory_entries": 1817,
+    "author_runtime_before_after_equal": true,
+    "selected_tests": 67,
+    "filtered_tests": 5
+  },
+  "limitations": [
+    "Static review of six-file delta, not full inherited 13-file candidate acceptance",
+    "No dynamic held-State waiter test or allocator-deallocation observer for all put locals",
+    "Whole-call resource envelope and inherited native close custody remain separate",
+    "Author native evidence examined; no native/Cargo dispatched by reviewer"
+  ],
+  "actual_delta_source_snapshot": {
+    "crates/kasumi-store/src/backup_session_admission_tests.rs": null,
+    "crates/kasumi-store/src/backup_sessions_fs.rs": "2441aacf98327bd4c97e11c841178edd9966e7baf890c29df0b2d6b9bb06910c",
+    "crates/kasumi-store/src/node_disk/batch/tests.rs": null,
+    "crates/kasumi-store/src/node_disk/batch.rs": null,
+    "crates/kasumi-store/src/node_disk/directory/managed.rs": null,
+    "crates/kasumi-store/src/node_disk.rs": "f230ff417b9abcfe5f15815aba38ab6fe8131d4920db9187894ec184cdf803f7"
+  },
+  "readme_sha256": "3a0e2cd664f03e73ef49a9c1d2a1e36d52e712fe4c6f5b798dd214f172a5fb26"
+}

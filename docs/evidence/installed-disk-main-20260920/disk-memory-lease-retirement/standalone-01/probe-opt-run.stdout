@@ -1,0 +1,5 @@
+named-self-local: payload Drop observed actual System.dealloc completion = false
+consuming-helper: payload Drop observed actual System.dealloc completion = true
+explicit-inner-scope: payload Drop observed actual System.dealloc completion = true
+list-remove-temporary: payload Drop observed actual System.dealloc completion = true
+pointer widths: Box<dyn Named>=16 Option<Box<dyn Named>>=16 align=8 option-align=8

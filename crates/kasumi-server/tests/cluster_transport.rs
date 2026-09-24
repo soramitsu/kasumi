@@ -86,17 +86,18 @@ fn vote(source: u64) -> serde_json::Value {
     serde_json::json!({"rpc":"vote","payload":{"vote":{"leader_id":{"term":100,"node_id":source},"committed":false},"last_log_id":null}})
 }
 
-async fn store(path: &std::path::Path) -> Result<Arc<TenantStore>> {
+async fn store(node: Arc<NodeStore>) -> Result<Arc<TenantStore>> {
     TenantStore::initialize_catalog_fixture(
-        NodeStore::create_new_fixture(
-            path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )?,
+        node,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([13; 32])),
     )
     .await
+}
+
+fn physical(root: &std::path::Path) -> Result<kasumi_engine::test_utils::FixtureStorage> {
+    let (persistent, scratch) = kasumi_engine::test_utils::fixture_disk_configs(root)?;
+    kasumi_engine::test_utils::FixtureStorage::open(&persistent, &scratch, Default::default())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -118,9 +119,11 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
         identities.push(identity);
     }
     let mut groups = Vec::new();
+    let mut physical_nodes = Vec::new();
     let mut networks = Vec::new();
     let mut backends = Vec::new();
     let mut servers = Vec::new();
+    let http_versions = Arc::new(Mutex::new(Vec::new()));
     let (stop, stopped) = watch::channel(false);
     for (index, listener) in listeners.into_iter().enumerate() {
         let id = index as u64 + 1;
@@ -140,11 +143,19 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
             snapshot_policy: SnapshotPolicy::Never,
             ..Config::default()
         };
+        let replica_root = dir.path().join(format!("replica-{id}"));
+        kasumi_store::private_files::create_directory(&replica_root)?;
+        let physical = physical(&replica_root)?;
+        let node = physical.create_new(
+            replica_root.join("persistent/node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )?;
+        physical_nodes.push(node.clone());
         let group = RaftGroup::open(
             id,
             "tenant-a".into(),
             kasumi_store::test_utils::initialize_custody_fixture(
-                store(&dir.path().join(format!("node-{id}.redb"))).await?,
+                store(node).await?,
                 Arc::new(LocalKeyProvider::new([241; 32])),
             )
             .await?,
@@ -154,7 +165,7 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
                 raft: config,
                 limits: kasumi_raft::RaftLimits::default(),
             },
-            kasumi_raft::SnapshotBufferOwner::fixture(),
+            physical.admission.snapshot_buffer_owner()?,
         )
         .await?;
         network.register_group(
@@ -162,10 +173,20 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
             group.raft().clone(),
             BTreeSet::from([1, 2, 3]),
         )?;
+        let observed = http_versions.clone();
+        let router = network.router().layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let observed = observed.clone();
+                async move {
+                    observed.lock().unwrap().push(request.version());
+                    next.run(request).await
+                }
+            },
+        ));
         servers.push(tokio::spawn(serve_tls(
             listener,
             network.server_tls(),
-            network.router(),
+            router,
             ListenerLimits::default(),
             tls_support::audit(),
             stopped.clone(),
@@ -229,9 +250,25 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
             vec![b"quorum-durable-over-tls".to_vec()]
         );
     }
+    {
+        let versions = http_versions.lock().unwrap();
+        ensure!(
+            !versions.is_empty(),
+            "no authenticated cluster HTTP requests observed"
+        );
+        ensure!(
+            versions
+                .iter()
+                .all(|version| *version == axum::http::Version::HTTP_2),
+            "pinned cluster RPC did not negotiate HTTP/2: {versions:?}"
+        );
+    }
     for (network, group) in networks.iter().zip(&groups) {
         network.unregister_group("tenant-a")?;
         group.shutdown().await?;
+    }
+    for node in physical_nodes {
+        node.shutdown().await?;
     }
     stop.send(true)?;
     for server in servers {
@@ -277,11 +314,16 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
         enable_elect: false,
         ..Config::default()
     };
+    let physical = physical(dir.path())?;
+    let node = physical.create_new(
+        dir.path().join("persistent/node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
+    )?;
     let group = RaftGroup::open(
         1,
         "tenant-a".into(),
         kasumi_store::test_utils::initialize_custody_fixture(
-            store(&dir.path().join("node.redb")).await?,
+            store(node.clone()).await?,
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
         .await?,
@@ -291,7 +333,7 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
             raft: config,
             limits: kasumi_raft::RaftLimits::default(),
         },
-        kasumi_raft::SnapshotBufferOwner::fixture(),
+        physical.admission.snapshot_buffer_owner()?,
     )
     .await?;
     network.register_group(
@@ -310,7 +352,7 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
     ));
     let endpoint = format!("{endpoint}/internal/raft");
     let authorized = client(&ca, Some(&identities[1]))?;
-    let normal = serde_json::json!({"group":"tenant-a","source":2,"target":1,"request":vote(2)});
+    let normal = serde_json::json!({"group":"tenant-a","source":2,"target":1,"request":vote(2),"bootstrap_sha256":null});
     assert_eq!(
         authorized
             .post(&endpoint)
@@ -332,6 +374,21 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
             .status(),
         reqwest::StatusCode::OK
     );
+    let mut missing_bootstrap = normal.clone();
+    missing_bootstrap
+        .as_object_mut()
+        .unwrap()
+        .remove("bootstrap_sha256");
+    assert_eq!(
+        authorized
+            .post(&endpoint)
+            .json(&missing_bootstrap)
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "omitted bootstrap binding must not decode as null"
+    );
     for (field, value) in [
         ("source", serde_json::json!(3)),
         ("target", serde_json::json!(2)),
@@ -352,8 +409,7 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
         );
     }
     let denied = client(&ca, Some(&identities[2]))?;
-    let unassigned =
-        serde_json::json!({"group":"tenant-a","source":3,"target":1,"request":vote(3)});
+    let unassigned = serde_json::json!({"group":"tenant-a","source":3,"target":1,"request":vote(3),"bootstrap_sha256":null});
     assert_eq!(
         denied
             .post(&endpoint)
@@ -442,6 +498,7 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
     );
     network.unregister_group("tenant-a")?;
     group.shutdown().await?;
+    node.shutdown().await?;
     stop.send(true)?;
     server.await??;
     Ok(())

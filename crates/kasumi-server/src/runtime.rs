@@ -1045,7 +1045,7 @@ pub struct NodeRuntime {
     #[cfg(test)]
     audit_release_gate: Arc<tokio::sync::Mutex<Option<crate::rpc::AuditReleaseGate>>>,
     // The installation lock outlives every retained resource-bearing field.
-    _standalone_lock: Option<kasumi_store::NodeDiskFile>,
+    _standalone_owner: Option<Arc<crate::standalone::InstalledStandaloneOwner>>,
 }
 
 impl NodeRuntime {
@@ -1063,9 +1063,20 @@ impl NodeRuntime {
         config: RuntimeConfig,
         credential: impl Fn(&str) -> Result<Zeroizing<String>> + Send + Sync + 'static,
     ) -> Result<Self> {
+        config.validate()?;
+        let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+        Self::open_using_storage(config, credential, storage).await
+    }
+
+    pub(crate) async fn open_using_storage(
+        config: RuntimeConfig,
+        credential: impl Fn(&str) -> Result<Zeroizing<String>> + Send + Sync + 'static,
+        storage: crate::runtime_memory::RuntimeStorage,
+    ) -> Result<Self> {
+        storage.require_policy(&config.admission)?;
         crate::startup_owner::open(
             crate::startup_owner::Kind::Data,
-            Self::open_owned(config, Arc::new(credential)),
+            Self::open_owned(config, Arc::new(credential), storage),
         )
         .await
     }
@@ -1079,16 +1090,17 @@ impl NodeRuntime {
     async fn open_owned(
         config: RuntimeConfig,
         credential: crate::serving_runtime::CredentialSource,
+        storage: crate::runtime_memory::RuntimeStorage,
     ) -> Result<Self> {
         let mut pending = crate::startup_resources::Resources::default();
         let mut retained_runtime: Option<Self> = None;
         let outcome = crate::startup_preparation::capture("data runtime", async {
         config.validate()?;
-        let persistent_disk = crate::persistent_disk::open(&config.persistent_disk)?;
-        pending.standalone_lock = crate::standalone::claim(&config, &persistent_disk)?;
-        let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
-        let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
+        let admission = storage.facade(&config.admission)?;
         pending.owned_admissions.push(admission.clone());
+        let persistent_disk = crate::persistent_disk::open(&config.persistent_disk, &storage)?;
+        pending.standalone_owner = crate::standalone::claim(&config, &persistent_disk)?;
+        let scratch_disk = storage.open_scratch(&config.scratch_disk)?;
         let signer_verifier = if let Some(verifier) = &config.signer_verifier {
             let mut domains = BTreeMap::new();
             for authority in config.serving_authorities.values() {
@@ -1217,8 +1229,13 @@ impl NodeRuntime {
                 crate::node_enrollment::Kind::Data,
             )?;
         }
+        let enrollment_required = crate::node_enrollment::required(&config);
         let selected_tenants = config.tenants.iter().map(|tenant| {
-            let installed = !crate::node_enrollment::required(&config) || crate::node_enrollment::tenant_record(&security_store, &tenant.tenant)?.is_some_and(|record| record.stage == crate::node_enrollment::Stage::Prepared);
+            let installed = if enrollment_required {
+                crate::node_enrollment::tenant_record(&security_store, &tenant.tenant)?.is_some_and(|record| record.stage == crate::node_enrollment::Stage::Prepared)
+            } else {
+                TenantStorageSet::catalogs_installed(&node, &tenant.tenant)?
+            };
             Ok(installed.then_some(tenant))
         }).collect::<Result<Vec<_>>>()?.into_iter().flatten().collect::<Vec<_>>();
         config.validate_selected_key_domains(&selected_tenants)?;
@@ -1276,7 +1293,7 @@ impl NodeRuntime {
         retained_runtime = Some(Self {
             serving_registration: Some(serving_registration),
             telemetry: crate::observability::Telemetry::new(),
-            _standalone_lock: None,
+            _standalone_owner: None,
             owned_nodes: pending.owned_nodes.clone(),
             startup_stores: pending.stores.iter().filter(|store| store.tenant() != SECURITY_TENANT).cloned().collect(),
             config: config.clone(),
@@ -1314,19 +1331,19 @@ impl NodeRuntime {
                 lease: None,
             }];
             for configured_tenant in &config.tenants {
-                if crate::node_enrollment::required(&config) {
-                    let enrolled = crate::node_enrollment::tenant_record(runtime.audit.store(), &configured_tenant.tenant)?;
-                    if enrolled.as_ref().is_none_or(|record| record.stage != crate::node_enrollment::Stage::Prepared) {
-                        let state = runtime.control.database.engine().generation()?;
-                        if let Some(document) = state.state.collections.get("topology").and_then(|collection| collection.documents.get("current")) {
-                            let topology: kasumi_engine::control::ControlTopology = serde_json::from_value(document.body.clone())?;
-                            ensure!(!topology.tenants.contains_key(&configured_tenant.tenant), "routed tenant has no completed local enrollment");
-                        }
-                        // Configuration is a staging template. This classification
-                        // reads only the required ledger, before provider/grant/catalog work.
-                        continue;
+                if !selected_tenants.iter().any(|tenant| tenant.tenant == configured_tenant.tenant) {
+                    let state = runtime.control.database.engine().generation()?;
+                    if let Some(document) = state.state.collections.get("topology").and_then(|collection| collection.documents.get("current")) {
+                        let topology: kasumi_engine::control::ControlTopology = serde_json::from_value(document.body.clone())?;
+                        ensure!(!topology.tenants.contains_key(&configured_tenant.tenant), "routed tenant has no completed local catalog or enrollment");
                     }
-                    let enrolled = enrolled.expect("checked completed enrollment");
+                    // Configuration may stage a tenant, but cannot make an
+                    // absent installation eligible for provider or grant work.
+                    continue;
+                }
+                if enrollment_required {
+                    let enrolled = crate::node_enrollment::tenant_record(runtime.audit.store(), &configured_tenant.tenant)?.context("completed tenant enrollment disappeared during startup")?;
+                    ensure!(enrolled.stage == crate::node_enrollment::Stage::Prepared, "completed tenant enrollment changed during startup");
                     ensure!(configured_tenant.incarnation.as_deref().map(uuid::Uuid::parse_str).transpose()? == Some(enrolled.incarnation), "configured enrolled tenant incarnation differs");
                 }
                 let active = if config.mode == DeploymentMode::Standalone {
@@ -1508,7 +1525,7 @@ impl NodeRuntime {
                 let mut runtime = retained_runtime
                     .take()
                     .expect("successful preparation retained its runtime");
-                runtime._standalone_lock = pending.standalone_lock.take();
+                runtime._standalone_owner = pending.standalone_owner.take();
                 Ok(runtime)
             }
             Err(mut error) => {
@@ -2109,7 +2126,6 @@ impl NodeRuntime {
 /// this authenticated manifest. Bind the actual initial snapshot as well as its
 /// deployment policy/membership, including restored documents and receipts.
 pub(crate) fn persisted_bootstrap_fingerprint(store: &TenantStore) -> Result<String> {
-    use sha2::{Digest, Sha256};
     let tenant = store.tenant();
     let binding = store
         .get("engine.deployment", b"mode")?
@@ -2123,6 +2139,36 @@ pub(crate) fn persisted_bootstrap_fingerprint(store: &TenantStore) -> Result<Str
         .get("digest")
         .and_then(|value| value.as_str())
         .context("bootstrap digest missing")?;
+    initial_bootstrap_fingerprint(tenant, &binding, digest)
+}
+
+/// A retired source no longer has an application provider. The custody commit
+/// retains the exact initial application digest beside the deployment binding.
+fn decode_retired_custody_bootstrap_digest(bytes: &[u8]) -> Result<String> {
+    let digest: String = serde_json::from_slice(bytes)?;
+    ensure!(
+        serde_json::to_vec(&digest)? == bytes,
+        "noncanonical retired custody bootstrap digest"
+    );
+    Ok(digest)
+}
+
+fn retired_custody_bootstrap_fingerprint(
+    custody: &kasumi_store::CustodyStore,
+    binding: &[u8],
+) -> Result<String> {
+    let store = custody.store();
+    store.check_access()?;
+    let digest = decode_retired_custody_bootstrap_digest(
+        &store
+            .get_bounded("raft.meta", b"application_bootstrap_sha256", 256)?
+            .context("retired custody bootstrap digest missing")?,
+    )?;
+    initial_bootstrap_fingerprint(custody.binding().tenant(), binding, &digest)
+}
+
+fn initial_bootstrap_fingerprint(tenant: &str, binding: &[u8], digest: &str) -> Result<String> {
+    use sha2::{Digest, Sha256};
     ensure!(
         digest.len() == 64
             && digest
@@ -2135,7 +2181,7 @@ pub(crate) fn persisted_bootstrap_fingerprint(store: &TenantStore) -> Result<Str
     hash.update((tenant.len() as u64).to_be_bytes());
     hash.update(tenant.as_bytes());
     hash.update((binding.len() as u64).to_be_bytes());
-    hash.update(&binding);
+    hash.update(binding);
     hash.update(digest.as_bytes());
     Ok(hash
         .finalize()
@@ -2212,7 +2258,8 @@ pub(crate) fn control_context(policy: &Policy) -> Result<RequestContext> {
 }
 
 /// Credential-free operator example, also emitted by `kasumid example-config`.
-pub fn example_config() -> RuntimeConfig {
+pub fn example_config(directory_policy: kasumi_store::DirectoryPolicy) -> Result<RuntimeConfig> {
+    directory_policy.validate()?;
     let tls = || TlsFiles {
         certificate: "/etc/kasumi/server.pem".into(),
         private_key: "/etc/kasumi/server-key.pem".into(),
@@ -2241,14 +2288,17 @@ pub fn example_config() -> RuntimeConfig {
         }],
         strict_read_audit: false,
     };
-    RuntimeConfig {
-        persistent_disk: crate::persistent_disk::initial_config(BTreeMap::from([
-            ("data".into(), "/var/lib/kasumi/data".into()),
-            ("verifier".into(), "/var/lib/kasumi/verifier".into()),
-            ("targets".into(), "/var/lib/kasumi/targets".into()),
-            ("archives".into(), "/var/lib/kasumi/archives".into()),
-            ("backups".into(), "/var/lib/kasumi/backups".into()),
-        ])),
+    Ok(RuntimeConfig {
+        persistent_disk: crate::persistent_disk::initial_config(
+            BTreeMap::from([
+                ("data".into(), "/var/lib/kasumi/data".into()),
+                ("verifier".into(), "/var/lib/kasumi/verifier".into()),
+                ("targets".into(), "/var/lib/kasumi/targets".into()),
+                ("archives".into(), "/var/lib/kasumi/archives".into()),
+                ("backups".into(), "/var/lib/kasumi/backups".into()),
+            ]),
+            directory_policy,
+        )?,
         scratch_disk: kasumi_store::ScratchDiskConfig {
             directory: "/var/lib/kasumi/scratch".into(),
             max_bytes: 64 << 30,
@@ -2304,7 +2354,10 @@ pub fn example_config() -> RuntimeConfig {
             },
         )]),
         format: 1,
-        admission: kasumi_engine::admission::AdmissionConfig::default(),
+        admission: kasumi_engine::admission::AdmissionConfig {
+            max_inflight_bytes: Some(2 << 30),
+            ..Default::default()
+        },
         backup_destinations: BTreeMap::new(),
         mode: DeploymentMode::Replicated,
         database_path: "/var/lib/kasumi/data/node.redb".into(),
@@ -2367,7 +2420,7 @@ pub fn example_config() -> RuntimeConfig {
                 })
                 .collect(),
         }),
-    }
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2432,7 +2485,10 @@ impl AdminClientConfig {
 
 #[cfg(test)]
 fn fixture_config() -> RuntimeConfig {
-    let mut config = example_config();
+    let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+    // Keep the original fixture policy; the new-install generator's explicit
+    // 2 GiB total is not a test workload budget increase.
+    config.admission = kasumi_engine::admission::AdmissionConfig::default();
     config.mode = DeploymentMode::Standalone;
     config.replication = None;
     config.control.incarnation = None;
@@ -2448,12 +2504,16 @@ fn fixture_config() -> RuntimeConfig {
 #[cfg(test)]
 // A fixture must explicitly enroll its node file once. Runtime restarts only
 // open the retained configured identity and never create missing files.
-async fn create_fixture_node(config: &RuntimeConfig) {
+async fn create_fixture_node(
+    config: &RuntimeConfig,
+    storage: &crate::runtime_memory::RuntimeStorage,
+) {
+    let admission = storage.facade(&config.admission).unwrap();
     let node = NodeStore::create_new(
         &config.database_path,
         config.database_id,
-        crate::persistent_disk::open(&config.persistent_disk).unwrap(),
-        kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap(),
+        storage.open_persistent(&config.persistent_disk).unwrap(),
+        storage.open_scratch(&config.scratch_disk).unwrap(),
     )
     .unwrap();
     let credential: crate::serving_runtime::CredentialSource =
@@ -2473,10 +2533,7 @@ async fn create_fixture_node(config: &RuntimeConfig) {
     .unwrap();
     let audit = config
         .security_audit
-        .initialize(
-            store.clone(),
-            kasumi_engine::admission::NodeAdmission::new(config.admission.clone()).unwrap(),
-        )
+        .initialize(store.clone(), admission.clone())
         .unwrap();
     let provisioned = if config.mode == DeploymentMode::Replicated {
         crate::data_node_enrollment::provision(config, node.clone(), audit.clone(), credential)
@@ -2484,10 +2541,12 @@ async fn create_fixture_node(config: &RuntimeConfig) {
     } else {
         provision_local_fixture_domains(config, node.clone(), audit.clone(), credential).await
     };
+    admission.drain_snapshot_startups().await.unwrap();
     audit.shutdown().await.unwrap();
     store.shutdown().await.unwrap();
     drop(audit);
     drop(store);
+    node.shutdown().await.unwrap();
     drop(node);
     provisioned.unwrap();
 }
@@ -2615,8 +2674,26 @@ mod tests {
     use kasumi_store::test_utils::{LocalKeyProvider, ManualClock};
 
     #[test]
+    fn retired_custody_bootstrap_digest_requires_current_writer_bytes() -> Result<()> {
+        let digest = "a".repeat(64);
+        let canonical = serde_json::to_vec(&digest)?;
+        assert_eq!(decode_retired_custody_bootstrap_digest(&canonical)?, digest);
+        let mut alternate = vec![b' '];
+        alternate.extend_from_slice(&canonical);
+        assert_eq!(
+            serde_json::from_slice::<String>(&alternate)?,
+            serde_json::from_slice::<String>(&canonical)?
+        );
+        assert!(decode_retired_custody_bootstrap_digest(&alternate).is_err());
+        assert_eq!(decode_retired_custody_bootstrap_digest(&canonical)?, digest);
+        Ok(())
+    }
+
+    #[test]
     fn runtime_config_requires_explicit_admission() {
-        let mut encoded = serde_json::to_value(example_config()).unwrap();
+        let mut encoded =
+            serde_json::to_value(example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap())
+                .unwrap();
         let decoded: RuntimeConfig = serde_json::from_value(encoded.clone()).unwrap();
         decoded.validate().unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
@@ -2629,7 +2706,7 @@ mod tests {
 
     #[test]
     fn operator_example_is_valid_secret_free_and_rejects_inline_credentials() {
-        let config = example_config();
+        let config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
         config.validate().unwrap();
         let mut value = serde_json::to_value(&config).unwrap();
         assert!(value["tenants"][0]["keys"].get("token").is_none());
@@ -2777,13 +2854,12 @@ mod tests {
     #[tokio::test]
     async fn service_audit_survives_reopen_and_tenant_sealing_and_fails_closed_at_quota() {
         let dir = kasumi_store::test_utils::private_tempdir().unwrap();
-        let path = dir.path().join("node.redb");
-        let node = NodeStore::create_new_fixture(
-            &path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap();
+        let physical =
+            crate::runtime_storage_fixtures::physical(dir.path(), Default::default()).unwrap();
+        let path = dir.path().join("persistent/node.redb");
+        let node = physical
+            .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap();
         let keys = Arc::new(LocalKeyProvider::new([33; 32]));
         let clock = Arc::new(ManualClock::new());
         let service = TenantStore::initialize_catalog_fixture_with_clock(
@@ -2795,7 +2871,7 @@ mod tests {
         .await
         .unwrap();
         let tenant = TenantStore::initialize_catalog_fixture_with_clock(
-            node,
+            node.clone(),
             "acme".into(),
             Arc::new(LocalKeyProvider::new([34; 32])),
             clock.clone(),
@@ -2805,7 +2881,7 @@ mod tests {
         let audit = SecurityAudit::initialize(
             service.clone(),
             kasumi_types::AuditRetentionBudget::default(),
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            physical.admission.clone(),
         )
         .unwrap();
         audit
@@ -2834,13 +2910,12 @@ mod tests {
         drop(audit);
         drop(service);
         drop(tenant);
+        node.shutdown().await.unwrap();
+        let node = physical
+            .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap();
         let service = TenantStore::open_existing_fixture_with_clock(
-            NodeStore::open_existing_fixture(
-                &path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-            .unwrap(),
+            node.clone(),
             SECURITY_TENANT.into(),
             keys,
             clock,
@@ -2850,7 +2925,7 @@ mod tests {
         let audit = SecurityAudit::open(
             service.clone(),
             kasumi_types::AuditRetentionBudget::default(),
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            physical.admission.clone(),
         )
         .unwrap();
         assert!(
@@ -2860,6 +2935,8 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(service.scan("security.audit").unwrap().len(), 4);
+        audit.shutdown().await.unwrap();
+        node.shutdown().await.unwrap();
     }
 
     #[cfg(unix)]
@@ -2933,7 +3010,7 @@ mod tests {
     #[test]
     fn replicated_control_origin_identity_matches_genesis_for_root_url_forms() {
         for trailing_slash in [false, true] {
-            let mut config = example_config();
+            let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
             if trailing_slash {
                 for peer in &mut config.replication.as_mut().unwrap().peers {
                     peer.endpoint.push('/');
@@ -3115,6 +3192,7 @@ mod lifecycle_tests {
             state.release.notified().await;
             // Keep the real node owner across the pending HTTP request.
             assert!(Arc::strong_count(&state.node) > 0);
+            state.node.shutdown().await.unwrap();
             "finished"
         }
 
@@ -3122,13 +3200,13 @@ mod lifecycle_tests {
         // serving shutdown also drains data listeners and joins reconciliation.
         for startup in [true, false] {
             let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-            let path = directory.path().join("listener.redb");
-            let node = NodeStore::create_new_fixture(
-                &path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-            .unwrap();
+            let physical =
+                crate::runtime_storage_fixtures::physical(directory.path(), Default::default())
+                    .unwrap();
+            let path = directory.path().join("persistent/listener.redb");
+            let node = physical
+                .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+                .unwrap();
             let weak = Arc::downgrade(&node);
             let (files, pem) = certificate_files(directory.path());
             let socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3216,14 +3294,12 @@ mod lifecycle_tests {
                 "listener or request retained the node after drain"
             );
             // No delay or lock retry after the same drain used by every serve exit.
-            drop(
-                NodeStore::open_existing_fixture(
-                    &path,
-                    kasumi_store::test_utils::NODE_STORE_ID,
-                    kasumi_store::ScratchDisk::fixture(),
-                )
-                .unwrap(),
-            );
+            physical
+                .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+                .unwrap()
+                .shutdown()
+                .await
+                .unwrap();
         }
     }
 
@@ -3573,6 +3649,7 @@ mod lifecycle_tests {
     include!("runtime_custody_tests.rs");
     include!("runtime_serving_tests.rs");
     include!("runtime_startup_tests.rs");
+    include!("runtime_mcp_tests.rs");
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn local_runtime_opens_real_transit_tls_publishes_control_serves_and_reopens_durable_state()
@@ -3649,12 +3726,15 @@ mod lifecycle_tests {
                 max_bytes: 32 << 20,
             },
         );
-        create_fixture_node(&config).await;
+        let storage = crate::runtime_storage_fixtures::configure(&mut config).unwrap();
+        create_fixture_node(&config, &storage).await;
         let mut incarnation = None;
         for round in 0..3 {
-            let runtime = NodeRuntime::open_using(config.clone(), |_| {
-                Ok(Zeroizing::new("test-runtime-token".into()))
-            })
+            let runtime = NodeRuntime::open_using_storage(
+                config.clone(),
+                |_| Ok(Zeroizing::new("test-runtime-token".into())),
+                storage.clone(),
+            )
             .await
             .unwrap();
             let registry = runtime.registry().clone();
@@ -3676,31 +3756,22 @@ mod lifecycle_tests {
             .unwrap();
             let operator = configured_control_context(&config.control).unwrap();
             let control = manager.authorized_database(&operator).await.unwrap();
-            if round == 1 {
-                exercise_provisioning(
-                    std::slice::from_ref(&manager),
-                    std::slice::from_ref(&control),
-                    std::slice::from_ref(&registry),
-                    operator.clone(),
-                )
-                .await;
-                // The already serving tenant remains usable during onboarding.
-                assert!(database.get(&context, "docs", "first").await.is_ok());
-            } else if round == 2 {
+            if round > 0 {
+                // This low-level LocalFixture has no production enrollment
+                // ledger. A configured template stays staged across restarts;
+                // production standalone onboarding has its own installed test.
                 let beta = RequestContext {
                     tenant: "beta".into(),
                     principal: "beta-admin".into(),
                     ..operator.clone()
                 };
-                let added = registry.database(&beta).unwrap();
+                assert!(registry.database(&beta).is_err());
                 assert!(
-                    added
-                        .engine()
-                        .generation()
+                    !manager
+                        .committed_topology()
                         .unwrap()
-                        .state
-                        .collections
-                        .contains_key("onboarded")
+                        .tenants
+                        .contains_key("beta")
                 );
             }
             let control_limits = control.engine().generation().unwrap().state.limits.clone();
@@ -3873,8 +3944,9 @@ mod lifecycle_tests {
                     .unwrap();
                 assert_eq!(
                     fence.check_release().unwrap_err().code,
-                    kasumi_types::ErrorCode::Forbidden
+                    kasumi_types::ErrorCode::Conflict
                 );
+                assert!(manager.prepare(context.clone(), M::Status {}).is_err());
                 database
                     .administer(
                         RequestContext {
@@ -3925,9 +3997,8 @@ mod lifecycle_tests {
             drop(registry);
             drop(audit);
             if round == 0 {
-                let mut staged =
+                let staged =
                     staged_config(&config.tenants[0], "beta", uuid::Uuid::new_v4().to_string());
-                staged.incarnation = None;
                 config.tenants.push(staged);
             }
             config.tenants[0].initial_policy.grants.push(Grant {
@@ -3943,6 +4014,10 @@ mod lifecycle_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
     async fn three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls() {
         replicated_runtime_fixture(false, None).await;
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+    async fn three_runtime_nodes_report_committed_recovery_prepare_over_protected_tls() {
+        replicated_runtime_fixture_inner(false, None, false, true).await;
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
     async fn runtime_catches_up_spare_and_replaces_three_voters_through_admin_control() {
@@ -3973,14 +4048,17 @@ mod lifecycle_tests {
         Box::pin(replicated_runtime_fixture_inner(
             with_spare,
             bootstrap_fault,
+            false,
+            false,
         ))
     }
 
     fn open_replicated_fixture_node(
         config: RuntimeConfig,
         credential: impl Fn(&str) -> Result<Zeroizing<String>> + Send + Sync + 'static,
+        storage: crate::runtime_memory::RuntimeStorage,
     ) -> impl std::future::Future<Output = Result<NodeRuntime>> {
-        Box::pin(NodeRuntime::open_using(config, credential))
+        Box::pin(NodeRuntime::open_using_storage(config, credential, storage))
     }
 
     // Construct operation futures outside the enclosing fixture poll frame.
@@ -3993,9 +4071,12 @@ mod lifecycle_tests {
     async fn replicated_runtime_fixture_inner(
         with_spare: bool,
         bootstrap_fault: Option<BootstrapFault>,
+        fenced_source: bool,
+        protected_prepare_only: bool,
     ) {
         let _fixture = LIFECYCLE_GATE.lock().await;
         let canonical = !with_spare && bootstrap_fault.is_none();
+        assert!(!protected_prepare_only || (canonical && !fenced_source));
         let recovery_credentials = recovery_fixture::Credentials::new();
         let recovery_jwks = recovery_credentials.jwks.clone();
         let node_count = if with_spare { 4 } else { 3 };
@@ -4005,6 +4086,16 @@ mod lifecycle_tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         }
+        let template = fixture_config();
+        let cluster_storage = crate::runtime_cluster_storage::ClusterStorage::prepare(
+            dir.path(),
+            node_count,
+            canonical,
+            &template.admission,
+            &template.scratch_disk,
+        )
+        .unwrap();
+        let storage = cluster_storage.storage.clone();
         let (mock_files, _) = certificate_files(dir.path());
         let mock_socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let kms_endpoint = format!(
@@ -4102,6 +4193,8 @@ mod lifecycle_tests {
                     Uuid::parse_str(&control_incarnation).unwrap(),
                     &kms_endpoint,
                     &mock_files.certificate,
+                    &cluster_storage,
+                    fenced_source,
                 )
                 .await,
             )
@@ -4112,10 +4205,13 @@ mod lifecycle_tests {
         for node in 0..node_count {
             let mut config = fixture_config();
             config.mode = DeploymentMode::Replicated;
-            config.persistent_disk =
-                crate::persistent_disk::fixture_config(&dir.path().join("persistent"));
+            // All old per-node policies are identical; differing policies need
+            // an explicit shared-budget design, not silent homogenization.
+            assert_eq!(config.admission, template.admission);
+            config.admission = storage.policy().clone();
+            config.persistent_disk = cluster_storage.persistent.clone();
             config.database_path = dir.path().join(format!("persistent/node{node}.redb"));
-            config.scratch_disk.directory = dir.path().join(format!("scratch-{node}"));
+            config.scratch_disk = cluster_storage.data_scratch[node].clone();
             config.mcp.tls = files[node].clone();
             config.native.tls = files[node].clone();
             config.admin.tls = files[node].clone();
@@ -4183,15 +4279,104 @@ mod lifecycle_tests {
             }
             if let Some(recovery) = &recovery {
                 fixture_operation(|| recovery.configure(&mut config, node)).await;
-                fixture_operation(|| crate::data_node_enrollment::initialize(config.clone()))
-                    .await
-                    .unwrap();
+                if fenced_source && node == 0 {
+                    // Keep a distinct application credential path so a failed
+                    // key-provider construction is observable on the reopen.
+                    let application = config.tenants[0].keys.transit_mut().unwrap();
+                    let original = std::fs::read(&application.token_file).unwrap();
+                    let path = dir.path().join("fenced-application.token");
+                    kasumi_store::private_files::publish(&path, &original).unwrap();
+                    application.token_file = path.to_str().unwrap().into();
+                }
+                fixture_operation(|| {
+                    crate::data_node_enrollment::initialize_with_storage(
+                        config.clone(),
+                        storage.clone(),
+                    )
+                })
+                .await
+                .unwrap();
             } else {
-                create_fixture_node(&config).await;
+                create_fixture_node(&config, &storage).await;
             }
             configurations.push(config);
         }
         drop(reserved);
+        if fenced_source {
+            // All three data nodes have completed explicit enrollment while
+            // the real issuer was available. Its original grant was acquired
+            // with Serving purpose and used to initialize the tenant catalogs.
+            let recovery = recovery.as_mut().unwrap();
+            fixture_operation(|| recovery.shutdown_issuer()).await;
+            let mut config = configurations.remove(0);
+            assert!(matches!(
+                &config.tenants[0].serving,
+                crate::serving_runtime::TenantServingConfig::Independent { .. }
+            ));
+            let application_token = config.tenants[0]
+                .keys
+                .transit_mut()
+                .unwrap()
+                .token_file
+                .clone();
+            let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed = probes.clone();
+            let mut runtime = open_replicated_fixture_node(
+                config.clone(),
+                move |name| {
+                    if name == application_token {
+                        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        anyhow::bail!("application key is independently unavailable");
+                    }
+                    Ok(Zeroizing::new("test-runtime-token".into()))
+                },
+                storage.clone(),
+            )
+            .await
+            .unwrap();
+            let grant_bytes = runtime
+                .audit
+                .store()
+                .get_bounded("node.enrollment", b"grant/acme", 64 << 10)
+                .unwrap()
+                .unwrap();
+            let grant: kasumi_serving::SignedLease = serde_json::from_slice(&grant_bytes).unwrap();
+            assert_eq!(
+                grant.claims.request.purpose,
+                kasumi_serving::LeasePurpose::Serving
+            );
+            assert_eq!(
+                grant.claims.authority_id,
+                config.serving_authorities["issuer"].manifest.authority_id
+            );
+            assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert!(runtime.tenants.is_empty());
+            assert!(runtime.administration.is_some());
+            assert_eq!(
+                runtime.unavailable_sources.get("acme"),
+                config.tenants[0].incarnation.as_ref()
+            );
+            let topology = runtime.expected_topology().unwrap();
+            assert_eq!(
+                topology.tenants["acme"].incarnation,
+                config.tenants[0].incarnation.as_ref().unwrap().as_str()
+            );
+            assert_eq!(
+                runtime
+                    .control_database()
+                    .engine()
+                    .generation()
+                    .unwrap()
+                    .state
+                    .tenant,
+                CONTROL_TENANT
+            );
+            assert_eq!(runtime.data_listeners.len(), 3);
+            runtime.shutdown().await.unwrap();
+            mock_stop.send_replace(true);
+            mock.await.unwrap().unwrap();
+            return;
+        }
         let context = RequestContext {
             authorization: kasumi_types::RequestAuthorization::service_identity(),
             principal: "acme-admin".into(),
@@ -4209,9 +4394,11 @@ mod lifecycle_tests {
             let mut servers = Vec::new();
             let (stop, shutdown) = watch::channel(false);
             for config in configurations {
-                let mut runtime = open_replicated_fixture_node(config, |_| {
-                    Ok(Zeroizing::new("test-runtime-token".into()))
-                })
+                let mut runtime = open_replicated_fixture_node(
+                    config,
+                    |_| Ok(Zeroizing::new("test-runtime-token".into())),
+                    storage.clone(),
+                )
                 .await
                 .unwrap();
                 let listener = runtime.cluster_listener.take().unwrap();
@@ -4312,16 +4499,32 @@ mod lifecycle_tests {
         let mut controls = Vec::new();
         let mut cluster_networks = Vec::new();
         let mut recovery_handles = Vec::new();
+        let mut first_facades = Vec::new();
         for config in configurations.iter().cloned() {
-            let runtime = open_replicated_fixture_node(config, move |path| {
-                if canonical {
-                    file_secret(path)
-                } else {
-                    Ok(Zeroizing::new("test-runtime-token".into()))
-                }
-            })
+            let runtime = open_replicated_fixture_node(
+                config,
+                move |path| {
+                    if canonical {
+                        file_secret(path)
+                    } else {
+                        Ok(Zeroizing::new("test-runtime-token".into()))
+                    }
+                },
+                storage.clone(),
+            )
             .await
             .unwrap();
+            assert!(Arc::ptr_eq(
+                runtime.audit.admission().memory(),
+                storage.memory()
+            ));
+            assert!(first_facades.iter().all(
+                |facade: &std::sync::Weak<kasumi_engine::admission::NodeAdmission>| !Arc::ptr_eq(
+                    &facade.upgrade().unwrap(),
+                    runtime.audit.admission()
+                )
+            ));
+            first_facades.push(Arc::downgrade(runtime.audit.admission()));
             recovery_handles.push(recovery_fixture::Handles::capture(&runtime));
             registries.push(runtime.registry.clone());
             managers.push(runtime.administration.clone().unwrap());
@@ -4406,6 +4609,65 @@ mod lifecycle_tests {
                     .iter()
                     .map(|control| control.raft_group().raft().metrics().borrow().clone())
                     .collect::<Vec<_>>();
+                let access = controls
+                    .iter()
+                    .map(|control| {
+                        let group = control.raft_group();
+                        let stores = group.storage_domains();
+                        (
+                            stores
+                                .application()
+                                .check_access()
+                                .map_err(|e| e.to_string()),
+                            stores
+                                .custody()
+                                .store()
+                                .check_access()
+                                .map_err(|e| e.to_string()),
+                            group.check_access().map_err(|e| e.to_string()),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let control_group = format!("{CONTROL_TENANT}/{control_incarnation}");
+                // Every probe has its own bound, so a failed peer cannot hide
+                // the other routes. All probes run only after the original wait
+                // has failed and cannot make this fixture pass.
+                let bootstrap = tokio::join!(
+                    tokio::time::timeout(
+                        Duration::from_secs(2),
+                        cluster_networks[0].bootstrap_fingerprint(1, &control_group)
+                    ),
+                    tokio::time::timeout(
+                        Duration::from_secs(2),
+                        cluster_networks[1].bootstrap_fingerprint(2, &control_group)
+                    ),
+                    tokio::time::timeout(
+                        Duration::from_secs(2),
+                        cluster_networks[2].bootstrap_fingerprint(3, &control_group)
+                    ),
+                    tokio::time::timeout(
+                        Duration::from_secs(2),
+                        cluster_networks[0].bootstrap_fingerprint(2, &control_group)
+                    ),
+                    tokio::time::timeout(
+                        Duration::from_secs(2),
+                        cluster_networks[1].bootstrap_fingerprint(1, &control_group)
+                    ),
+                    tokio::time::timeout(
+                        Duration::from_secs(2),
+                        cluster_networks[2].bootstrap_fingerprint(1, &control_group)
+                    ),
+                );
+                let transport_free = cluster_networks
+                    .iter()
+                    .map(|network| network.fixture_transport_free_slots())
+                    .collect::<Vec<_>>();
+                let disk = controls[0]
+                    .raft_group()
+                    .storage_domains()
+                    .application()
+                    .persistent_disk()
+                    .snapshot();
                 let mut finished_tasks = Vec::new();
                 for (index, task) in tasks.iter_mut().enumerate() {
                     if task.is_finished() {
@@ -4413,7 +4675,7 @@ mod lifecycle_tests {
                     }
                 }
                 panic!(
-                    "tenant registry readiness timed out: {elapsed:?}; registry errors: {errors:?}; control metrics: {metrics:?}; finished server tasks: {finished_tasks:?}"
+                    "tenant registry readiness timed out: {elapsed:?}; registry errors: {errors:?}; control metrics: {metrics:?}; access (application, custody, raft): {access:?}; bootstrap probes (1->1, 2->2, 3->3, 1->2, 2->1, 3->1): {bootstrap:?}; transport free slots (incoming, outgoing): {transport_free:?}; shared disk: {disk:?}; finished server tasks: {finished_tasks:?}"
                 );
             }
         };
@@ -4436,7 +4698,7 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
-        fixture_operation(|| {
+        let creation = fixture_operation(|| {
             databases[leader].administer(
                 context.clone(),
                 Operation::CreateCollection(CollectionDefinition {
@@ -4449,26 +4711,142 @@ mod lifecycle_tests {
                 }),
             )
         })
-        .await
-        .unwrap();
-        fixture_operation(|| {
-            databases[leader].mutate(
-                context.clone(),
-                MutationBatch {
-                    read_set: Vec::new(),
-                    idempotency_key: "replicated-runtime".into(),
-                    operations: vec![Mutation::Put {
-                        collection: "docs".into(),
-                        id: "a".into(),
-                        body: serde_json::json!({"durable":true}),
-                        expected: Precondition::Absent,
-                    }],
-                },
-            )
-        })
-        .await
-        .unwrap();
-        tokio::time::timeout(Duration::from_secs(20), async {
+        .await;
+        if let Err(error) = creation {
+            let data_metrics = databases
+                .iter()
+                .map(|database| database.raft_group().raft().metrics().borrow().clone())
+                .collect::<Vec<_>>();
+            let control_metrics = controls
+                .iter()
+                .map(|control| control.raft_group().raft().metrics().borrow().clone())
+                .collect::<Vec<_>>();
+            let data_access = databases
+                .iter()
+                .map(|database| {
+                    let group = database.raft_group();
+                    let stores = group.storage_domains();
+                    (
+                        stores
+                            .application()
+                            .check_access()
+                            .map_err(|e| e.to_string()),
+                        stores
+                            .custody()
+                            .store()
+                            .check_access()
+                            .map_err(|e| e.to_string()),
+                        group.check_access().map_err(|e| e.to_string()),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let applied_docs = databases
+                .iter()
+                .map(|database| {
+                    database.engine().generation().map(|generation| {
+                        (
+                            generation.state.revision,
+                            generation.state.collections.contains_key("docs"),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            let data_group = format!("{}/{incarnation}", context.tenant);
+            let bootstrap = tokio::join!(
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cluster_networks[0].bootstrap_fingerprint(1, &data_group)
+                ),
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cluster_networks[1].bootstrap_fingerprint(2, &data_group)
+                ),
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cluster_networks[2].bootstrap_fingerprint(3, &data_group)
+                ),
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cluster_networks[0].bootstrap_fingerprint(2, &data_group)
+                ),
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cluster_networks[1].bootstrap_fingerprint(1, &data_group)
+                ),
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cluster_networks[2].bootstrap_fingerprint(1, &data_group)
+                ),
+            );
+            let transport_free = cluster_networks
+                .iter()
+                .map(|network| network.fixture_transport_free_slots())
+                .collect::<Vec<_>>();
+            let disk = databases[0]
+                .raft_group()
+                .storage_domains()
+                .application()
+                .persistent_disk()
+                .snapshot();
+            panic!(
+                "initial tenant CreateCollection failed: {error:?}; selected leader: {leader}; data metrics: {data_metrics:?}; control metrics: {control_metrics:?}; data access (application, custody, raft): {data_access:?}; applied docs (revision, exists): {applied_docs:?}; bootstrap probes (1->1, 2->2, 3->3, 1->2, 2->1, 3->1): {bootstrap:?}; transport free slots (incoming, outgoing): {transport_free:?}; shared disk: {disk:?}"
+            );
+        }
+        let batch = MutationBatch {
+            read_set: Vec::new(),
+            idempotency_key: "replicated-runtime".into(),
+            operations: vec![Mutation::Put {
+                collection: "docs".into(),
+                id: "a".into(),
+                body: serde_json::json!({"durable":true}),
+                expected: Precondition::Absent,
+            }],
+        };
+        let write =
+            fixture_operation(|| databases[leader].mutate(context.clone(), batch.clone())).await;
+        match write {
+            Ok(_) => {}
+            Err(error) if error.code == kasumi_types::ErrorCode::UnknownOutcome => {
+                // A timed-out proposal remains owned. Only a linearizable,
+                // positive receipt for the exact original batch can resolve it.
+                let expected_digest = batch.digest().unwrap();
+                tokio::time::timeout(Duration::from_secs(40), async {
+                    loop {
+                        for database in &databases {
+                            if let Ok(Some(receipt)) = database
+                                .operation_receipt(&context, &batch.idempotency_key)
+                                .await
+                            {
+                                assert_eq!(receipt.request_digest, expected_digest);
+                                assert_eq!(
+                                    receipt.scope,
+                                    kasumi_types::MutationReceiptScope {
+                                        tenant: context.tenant.clone(),
+                                        incarnation: incarnation.clone(),
+                                        principal: context.principal.clone(),
+                                    }
+                                );
+                                receipt.outcome.unwrap();
+                                return;
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| {
+                    let metrics = databases
+                        .iter()
+                        .map(|database| database.raft_group().raft().metrics().borrow().clone())
+                        .collect::<Vec<_>>();
+                    panic!(
+                        "exact initial mutation receipt absent after UnknownOutcome: {error:?}; metrics={metrics:?}"
+                    )
+                });
+            }
+            Err(error) => panic!("initial tenant mutation failed: {error:?}"),
+        }
+        let replication = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 if databases.iter().all(|database| {
                     database
@@ -4485,8 +4863,100 @@ mod lifecycle_tests {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await
-        .unwrap();
+        .await;
+        if let Err(elapsed) = replication {
+            let data_metrics = databases
+                .iter()
+                .map(|database| database.raft_group().raft().metrics().borrow().clone())
+                .collect::<Vec<_>>();
+            let control_metrics = controls
+                .iter()
+                .map(|control| control.raft_group().raft().metrics().borrow().clone())
+                .collect::<Vec<_>>();
+            let registered = registries
+                .iter()
+                .map(|registry| {
+                    registry
+                        .database(&context)
+                        .map(|database| database.raft_group().raft().metrics().borrow().clone())
+                })
+                .collect::<Vec<_>>();
+            let data_access = databases
+                .iter()
+                .map(|database| {
+                    let group = database.raft_group();
+                    let stores = group.storage_domains();
+                    (
+                        stores
+                            .application()
+                            .check_access()
+                            .map_err(|e| e.to_string()),
+                        stores
+                            .custody()
+                            .store()
+                            .check_access()
+                            .map_err(|e| e.to_string()),
+                        group.check_access().map_err(|e| e.to_string()),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let applied_docs =
+                databases
+                    .iter()
+                    .map(|database| {
+                        database.engine().generation().map(|generation| {
+                            (
+                                generation.state.revision,
+                                generation.state.collections.get("docs").is_some_and(
+                                    |collection| collection.documents.contains_key("a"),
+                                ),
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>();
+            let data_group = format!("{}/{incarnation}", context.tenant);
+            // The original 20-second condition has already failed. Each route
+            // probe is independently bounded and cannot satisfy it afterward.
+            let bootstrap = tokio::join!(
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cluster_networks[0].bootstrap_fingerprint(1, &data_group)
+                ),
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cluster_networks[1].bootstrap_fingerprint(2, &data_group)
+                ),
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cluster_networks[2].bootstrap_fingerprint(3, &data_group)
+                ),
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cluster_networks[0].bootstrap_fingerprint(2, &data_group)
+                ),
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cluster_networks[1].bootstrap_fingerprint(1, &data_group)
+                ),
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cluster_networks[2].bootstrap_fingerprint(1, &data_group)
+                ),
+            );
+            let transport_free = cluster_networks
+                .iter()
+                .map(|network| network.fixture_transport_free_slots())
+                .collect::<Vec<_>>();
+            let disk = databases[0]
+                .raft_group()
+                .storage_domains()
+                .application()
+                .persistent_disk()
+                .snapshot();
+            panic!(
+                "replicated document application timed out: {elapsed:?}; original selected leader: {leader}; data metrics: {data_metrics:?}; control metrics: {control_metrics:?}; current registry routes: {registered:?}; data access (application, custody, raft): {data_access:?}; applied docs (revision, exists): {applied_docs:?}; bootstrap probes (1->1, 2->2, 3->3, 1->2, 2->1, 3->1): {bootstrap:?}; transport free slots (incoming, outgoing): {transport_free:?}; shared disk: {disk:?}"
+            );
+        }
         use crate::administration::ManagementCommand as M;
         if with_spare {
             managers[leader]
@@ -4507,7 +4977,8 @@ mod lifecycle_tests {
             );
             // Replacing voter 3 may remove the serving leader. Resolve the
             // applied membership after an uncertain response before retrying.
-            tokio::time::timeout(Duration::from_secs(45), async {
+            let mut last_membership_error = String::from("no membership call attempted");
+            let membership_result = tokio::time::timeout(Duration::from_secs(45), async {
                 loop {
                     for (manager, registry) in managers.iter().zip(&registries) {
                         let Ok(database) = registry.database(&context) else {
@@ -4526,20 +4997,39 @@ mod lifecycle_tests {
                         {
                             return;
                         }
-                        let _ = manager
+                        if let Err(error) = manager
                             .execute_for_test(
                                 context.clone(),
                                 M::ChangeMembership {
                                     voters: final_voters.clone(),
                                 },
                             )
-                            .await;
+                            .await
+                        {
+                            last_membership_error = format!("node {}: {error:#}", metrics.id);
+                        }
                     }
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
             })
-            .await
-            .unwrap();
+            .await;
+            if let Err(elapsed) = membership_result {
+                let data_metrics = registries
+                    .iter()
+                    .map(|registry| {
+                        registry
+                            .database(&context)
+                            .map(|database| database.raft_group().raft().metrics().borrow().clone())
+                    })
+                    .collect::<Vec<_>>();
+                let control_metrics = controls
+                    .iter()
+                    .map(|control| control.raft_group().raft().metrics().borrow().clone())
+                    .collect::<Vec<_>>();
+                panic!(
+                    "membership replacement timed out: {elapsed:?}; last command error: {last_membership_error}; data metrics: {data_metrics:?}; control metrics: {control_metrics:?}"
+                );
+            }
             tokio::time::timeout(Duration::from_secs(20), async {
                 loop {
                     for (manager, control) in managers.iter().zip(&controls) {
@@ -4652,13 +5142,90 @@ mod lifecycle_tests {
         )
         .unwrap();
         let source_context = context.clone();
-        let checkpoint = fixture_operation(|| {
+        let data_metrics_before_verification = databases
+            .iter()
+            .map(|database| database.raft_group().raft().metrics().borrow().clone())
+            .collect::<Vec<_>>();
+        let checkpoint_result = fixture_operation(|| {
             databases[leader].verify_backup_checkpoint_named(context.clone(), "primary", backup_id)
         })
-        .await
-        .unwrap()
-        .checkpoint()
-        .clone();
+        .await;
+        let checkpoint = match checkpoint_result {
+            Ok(proof) => proof.checkpoint().clone(),
+            Err(error) => {
+                // The verification may already have proposed a maintenance
+                // audit. Observe only after the original call failed; never
+                // retry it or infer rollback from a leader redirect.
+                let data_metrics = databases
+                    .iter()
+                    .map(|database| database.raft_group().raft().metrics().borrow().clone())
+                    .collect::<Vec<_>>();
+                let control_metrics = controls
+                    .iter()
+                    .map(|control| control.raft_group().raft().metrics().borrow().clone())
+                    .collect::<Vec<_>>();
+                let data_access = databases
+                    .iter()
+                    .map(|database| {
+                        let group = database.raft_group();
+                        let stores = group.storage_domains();
+                        (
+                            stores
+                                .application()
+                                .check_access()
+                                .map_err(|e| e.to_string()),
+                            stores
+                                .custody()
+                                .store()
+                                .check_access()
+                                .map_err(|e| e.to_string()),
+                            group.check_access().map_err(|e| e.to_string()),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let applied = databases
+                    .iter()
+                    .map(|database| {
+                        database.engine().generation().map(|generation| {
+                            let verification_audit = generation
+                                .state
+                                .audits
+                                .iter()
+                                .filter(|event| {
+                                    event.action == "backup_verification"
+                                        && event.request_id == context.request_id
+                                })
+                                .last()
+                                .map(|event| {
+                                    (
+                                        event.event_id.clone(),
+                                        event.data_revision,
+                                        event.outcome.clone(),
+                                    )
+                                });
+                            (
+                                generation.state.revision,
+                                generation.state.suspended,
+                                verification_audit,
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let transport_free = cluster_networks
+                    .iter()
+                    .map(|network| network.fixture_transport_free_slots())
+                    .collect::<Vec<_>>();
+                let disk = databases[0]
+                    .raft_group()
+                    .storage_domains()
+                    .application()
+                    .persistent_disk()
+                    .snapshot();
+                panic!(
+                    "backup checkpoint verification failed: {error:?}; original selected leader: {leader}; backup ID: {backup_id}; data metrics before verification: {data_metrics_before_verification:?}; data metrics after failure: {data_metrics:?}; control metrics: {control_metrics:?}; data access (application, custody, raft): {data_access:?}; applied (revision, suspended, last matching verification audit): {applied:?}; transport free slots (incoming, outgoing): {transport_free:?}; shared disk: {disk:?}"
+                );
+            }
+        };
         let recovery = recovery.as_mut().unwrap();
         let incarnation = recovery.target;
         recovery
@@ -4670,6 +5237,39 @@ mod lifecycle_tests {
                 checkpoint,
             )
             .await;
+        if protected_prepare_only {
+            // A separate installed three-node point-status acceptance case:
+            // observe a committed Prepare before any target Execute. Keep the
+            // full terminal recovery test independent of G09's current block.
+            fixture_operation(|| recovery.assert_protected_prepare_status(&configurations)).await;
+            fixture_operation(|| recovery.close_targets()).await;
+            for stop in &stops {
+                stop.send_replace(true);
+            }
+            for task in tasks {
+                tokio::time::timeout(Duration::from_secs(15), task)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+            }
+            drop(databases);
+            recovery_handles.clear();
+            cluster_networks.clear();
+            managers.clear();
+            controls.clear();
+            registries.clear();
+            assert!(
+                first_facades
+                    .iter()
+                    .all(|facade| facade.upgrade().is_none())
+            );
+            first_facades.clear();
+            fixture_operation(|| recovery.shutdown_issuer()).await;
+            mock_stop.send_replace(true);
+            mock.await.unwrap().unwrap();
+            return;
+        }
         {
             let source_status = managers[leader]
                 .prepare(source_context.clone(), M::Status {})
@@ -4688,6 +5288,7 @@ mod lifecycle_tests {
             );
             source_release.check_release().unwrap();
             fixture_operation(|| recovery.recover(&cluster_networks)).await;
+            fixture_operation(|| recovery.assert_protected_status(&configurations)).await;
             // Keep the exact pre-activation database selection and request clock.
             // Target activation never upgrades this original source response fence.
             assert!(source_release.check_release().is_err());
@@ -4812,6 +5413,13 @@ mod lifecycle_tests {
         managers.clear();
         controls.clear();
         registries.clear();
+        assert!(
+            first_facades
+                .iter()
+                .all(|facade| facade.upgrade().is_none()),
+            "the first runtime facade generation remains physically retained"
+        );
+        first_facades.clear();
         // Reopening from original operator bootstrap must follow the durable
         // replacement route, never silently resurrect the retired source.
         let mut second_tasks = Vec::new();
@@ -4863,7 +5471,7 @@ mod lifecycle_tests {
                 mismatched.initial_limits.max_documents -= 1;
             }
             config.tenants.push(mismatched);
-            let runtime = open_replicated_fixture_node(config, file_secret)
+            let runtime = open_replicated_fixture_node(config, file_secret, storage.clone())
                 .await
                 .unwrap();
             for tenant in ["beta", "mismatched"] {
@@ -5161,6 +5769,8 @@ pub(crate) async fn open_retired_source(
                 "custody deployment differs from installed replication"
             );
             let network = cluster.context("custody peer transport absent")?;
+            let fingerprint = retired_custody_bootstrap_fingerprint(&store, &binding)?;
+            let access = store.store().clone();
             let custody = kasumi_engine::RetiredCustody::open_replicated(
                 store,
                 id,
@@ -5182,7 +5792,7 @@ pub(crate) async fn open_retired_source(
                 crate::startup_preparation::checkpoint(config.database_id, "retired-custody-owner");
                 retired_source_tests::after_open(config.database_id, &custody).await?;
             }
-            network.register_group(
+            network.register_group_with_bootstrap(
                 group,
                 custody
                     .raft_group()
@@ -5190,6 +5800,8 @@ pub(crate) async fn open_retired_source(
                     .raft()
                     .clone(),
                 replication.peers.iter().map(|peer| peer.node_id).collect(),
+                fingerprint,
+                Arc::new(move || access.check_access()),
             )?;
             Ok(custody)
         } else {

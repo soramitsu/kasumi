@@ -75,7 +75,7 @@ impl TenantEngine {
             bytes.len() <= MAX_COMMAND_BYTES && position.retirement_seed.is_none(),
             "invalid target command size or custody seed"
         );
-        let command: TargetCommand = serde_json::from_slice(&bytes[PREFIX.len()..])?;
+        let command: TargetCommand = super::decode_canonical_json(&bytes[PREFIX.len()..])?;
         let _guard = self
             .apply_lock
             .lock()
@@ -233,6 +233,7 @@ impl TenantEngine {
             state: next,
             indexes: previous.indexes.clone(),
             receipts: previous.receipts.clone(),
+            backup_bindings: previous.backup_bindings.clone(),
             snapshot_accounting: accounting,
             _read_reservations: vec![],
         })));

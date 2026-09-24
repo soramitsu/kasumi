@@ -1,0 +1,32 @@
+{
+  "status": "STATIC_CHECKS_ONLY",
+  "base_unchanged": true,
+  "actual_source_edited": false,
+  "cargo_compiled_or_tested": false,
+  "commands": [
+    {
+      "argv": [
+        "git",
+        "apply",
+        "--check",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-retained-terminal/terminal.patch"
+      ],
+      "returncode": 0
+    },
+    {
+      "argv": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "--check",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-retained-terminal/proposed/vendor/redb-4.2.0/src/transactions.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-retained-terminal/proposed/vendor/redb-4.2.0/src/lib.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-retained-terminal/proposed/vendor/redb-4.2.0/src/retained_transaction.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-retained-terminal/proposed/vendor/redb-4.2.0/src/retained_transaction_tests.rs"
+      ],
+      "returncode": 0
+    }
+  ]
+}

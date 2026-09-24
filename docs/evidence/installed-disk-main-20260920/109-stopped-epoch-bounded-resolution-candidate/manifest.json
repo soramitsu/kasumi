@@ -1,0 +1,15 @@
+{
+  "status": "conditional static candidate; await unchanged run116 exact cause before considering application",
+  "branch": "master",
+  "actual_source_unchanged": true,
+  "rust_build_or_test_run": false,
+  "files": [
+    {
+      "path": "crates/kasumi-authority/src/issuer_tests.rs",
+      "base_sha256": "77fbb82454695d3fec5fb019a6d34963fc80d1875ad7766a89ade264e90f4b7e",
+      "proposed_sha256": "f794cf67dabd21f3364729710a517e1a201d8f69d37ca3689c5b9b673883fd3d"
+    }
+  ],
+  "patch_sha256": "fb751c70066870e6990faa3a78b0a82cc835e102c4139db21cab06a853468272",
+  "readme_sha256": "b1b98df9f528cf330dc5087ab96e1d9ba8e248c3cad8f1c676d1674f7eac8b96"
+}

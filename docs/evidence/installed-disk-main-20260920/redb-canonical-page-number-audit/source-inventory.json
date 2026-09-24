@@ -1,0 +1,97 @@
+{
+  "vendor/redb-4.2.0/src/db.rs": {
+    "sha256": "87491f49056422c24c23848d9b1aec7d4466794963ea863cb46eb812364d3a9c",
+    "bytes": 69082,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/multimap_table.rs": {
+    "sha256": "157361f57dbf1658827bf662f304af0f4973119566718cc935bd157e6f818836",
+    "bytes": 54253,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/page_list_tests.rs": {
+    "sha256": "4c8ab00da96a217fdce9f6824c0b9beebba890dea217bae0aa3e8353766974a3",
+    "bytes": 41653,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/transactions.rs": {
+    "sha256": "88228e7ca070c01954aa91833b702bda50446a554e53e279e22b50675da463a8",
+    "bytes": 96429,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/allocator_state.rs": {
+    "sha256": "6e34c9e08eff6ec3bca28629a0c1d6294dcf4999885006f08301741c416e4147",
+    "bytes": 11265,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/btree.rs": {
+    "sha256": "7cdfaedb6cbd25b97870913d0640c85d0b14feda7e4f8c1e0f548ba076be2d01",
+    "bytes": 50342,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/btree_base.rs": {
+    "sha256": "6bf0407250bcae126a6a04f5dbad1bf23aeb5b0a3098a0bc37b19544a9386a78",
+    "bytes": 86476,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/btree_cursor.rs": {
+    "sha256": "347061bf7feda16f835cedd3eb4246bae22bc25c00bcc1b113c1ba37eff0320d",
+    "bytes": 117049,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/btree_iters.rs": {
+    "sha256": "34ecf2117b570e563a59876e95c9191d0fe9b8bdad89c7e04fb3a97dcb5f2abb",
+    "bytes": 3793,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs": {
+    "sha256": "6e8b4f5aaa8b359832309c3680db70afa6cabaa7d17e03039182e380fe6799a3",
+    "bytes": 84031,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/multimap_btree.rs": {
+    "sha256": "e9e9c86b75b05111dbde3220fc5133a55e98d2681c6d9fdc71737364d3a59702",
+    "bytes": 21333,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/page_store/allocator_snapshot.rs": {
+    "sha256": "81622f3608ac4576520ee8854b2ddaa10ee396cfece7d8a26963e0580a6d363c",
+    "bytes": 22593,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/page_store/base.rs": {
+    "sha256": "773858218823539467cd503b4524cbf97de1a20eb2745e97877921f8acc7a7d1",
+    "bytes": 14418,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs": {
+    "sha256": "289f6b3f52d77f2ac40bdaaaca9c693c16ed62b8c2819d5539df9f7b80f12d92",
+    "bytes": 27614,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/page_store/header.rs": {
+    "sha256": "d2db298c18d107d8c371a6f4025fefe12e499a9b39ee9f74572bb34c6e1043a7",
+    "bytes": 61945,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs": {
+    "sha256": "e33035e264daca748c6d3f90bf95b95763d6e9e14a0ad593187e29a87bc18f80",
+    "bytes": 63461,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/page_store/savepoint.rs": {
+    "sha256": "7babc5a9cff6861da26bbdbc28103f034e12ac319d19e3da2a51b89d1dd77df7",
+    "bytes": 7415,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/table_tree.rs": {
+    "sha256": "e0890dbbfbe8dabeca263a7a9055fbe6a6286cdfbeca82f913736c206909db90",
+    "bytes": 27993,
+    "mode": "0o644"
+  },
+  "vendor/redb-4.2.0/src/tree_store/table_tree_base.rs": {
+    "sha256": "a9522ca49fc6a51f9eeedc342978b089a500f7899b4eef69c6e49757be1e71d2",
+    "bytes": 18177,
+    "mode": "0o644"
+  }
+}

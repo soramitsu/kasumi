@@ -1,0 +1,401 @@
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/bitmap.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/bitmap.rs
+@@ -5,6 +5,24 @@
+ 
+ const HEIGHT_OFFSET: usize = 0;
+ const END_OFFSETS: usize = HEIGHT_OFFSET + size_of::<u32>();
++
++// Checked arithmetic for a serialized header followed by u32 absolute end
++// offsets and their payloads. The iterator borrows existing metadata only.
++// Every end must fit its on-disk u32 field, even on wider usize targets.
++pub(super) fn checked_offset_encoded_len(
++    prefix_bytes: usize,
++    mut children: impl ExactSizeIterator<Item = Option<usize>>,
++) -> Option<usize> {
++    u32::try_from(children.len()).ok()?;
++    let metadata = children.len().checked_mul(size_of::<u32>())?;
++    let start = prefix_bytes.checked_add(metadata)?;
++    u32::try_from(start).ok()?;
++    children.try_fold(start, |end, child| {
++        let end = end.checked_add(child?)?;
++        u32::try_from(end).ok()?;
++        Some(end)
++    })
++}
+ 
+ pub(super) struct BtreeBitmap {
+     heights: Vec<U64GroupedBitmap>,
+@@ -70,6 +88,16 @@
+         result
+     }
+ 
++    /// Exact serialized length, without constructing any serialized level.
++    pub(crate) fn checked_encoded_len(&self) -> Option<usize> {
++        checked_offset_encoded_len(
++            size_of::<u32>(),
++            self.heights
++                .iter()
++                .map(U64GroupedBitmap::checked_encoded_len),
++        )
++    }
++
+     pub(crate) fn to_vec(&self) -> Vec<u8> {
+         let mut result = vec![];
+         let height: u32 = self.heights.len().try_into().unwrap();
+@@ -268,6 +296,16 @@
+     // Format:
+     // 4 bytes: number of elements
+     // n bytes: serialized groups
++    fn checked_encoded_len(&self) -> Option<usize> {
++        let words = Self::required_words(self.len);
++        if words > self.data.len() {
++            return None;
++        }
++        words
++            .checked_mul(size_of::<u64>())?
++            .checked_add(size_of::<u32>())
++    }
++
+     pub fn to_vec(&self) -> Vec<u8> {
+         let words = Self::required_words(self.len);
+         let mut result = Vec::with_capacity(size_of::<u32>() + words * size_of::<u64>());
+@@ -396,6 +434,102 @@
+     use rand::{RngExt, SeedableRng};
+ 
+     #[test]
++    fn checked_encoded_lengths_match_serializers_without_allocating() {
++        use super::U64GroupedBitmap;
++        use crate::admission::observe_test_allocations;
++
++        for len in [0, 1, 2, 63, 64, 65, 4095, 4096, 4097, 65_537] {
++            let mut grouped = U64GroupedBitmap::new_full(len, len + 127);
++            if len > 0 {
++                grouped.clear(len - 1);
++            }
++            let bytes = grouped.to_vec();
++            let (planned, allocations) = observe_test_allocations(|| grouped.checked_encoded_len());
++            assert_eq!(planned, Some(bytes.len()));
++            assert_eq!(allocations, 0);
++            assert_eq!(grouped.to_vec(), bytes);
++
++            let mut bitmap = BtreeBitmap::new_padded(len, len + 127, 1 << 20);
++            if len > 0 {
++                bitmap.clear(len - 1);
++            }
++            let bytes = bitmap.to_vec();
++            let (planned, allocations) = observe_test_allocations(|| bitmap.checked_encoded_len());
++            assert_eq!(planned, Some(bytes.len()));
++            assert_eq!(allocations, 0);
++            assert_eq!(bitmap.to_vec(), bytes);
++            let restored = BtreeBitmap::from_bytes(&bytes);
++            assert_eq!(restored.checked_encoded_len(), planned);
++        }
++
++        // Retained Vec capacity is not encoded: shrinking logical levels must
++        // change the plan even though their backing allocations stay resident.
++        let mut bitmap = BtreeBitmap::new_padded(65_537, 65_537, 1 << 20);
++        for len in [4097, 65, 0, 64, 4096, 65_537] {
++            bitmap.resize(len, true);
++            let bytes = bitmap.to_vec();
++            let (planned, allocations) = observe_test_allocations(|| bitmap.checked_encoded_len());
++            assert_eq!(planned, Some(bytes.len()));
++            assert_eq!(allocations, 0);
++        }
++    }
++
++    #[test]
++    fn checked_encoded_lengths_reject_missing_bitmap_backing() {
++        use super::U64GroupedBitmap;
++        use crate::admission::observe_test_allocations;
++
++        let grouped = U64GroupedBitmap {
++            len: 65,
++            data: vec![u64::MAX],
++        };
++        let (planned, allocations) = observe_test_allocations(|| grouped.checked_encoded_len());
++        assert_eq!(planned, None);
++        assert_eq!(allocations, 0);
++
++        let bitmap = BtreeBitmap {
++            heights: vec![grouped],
++        };
++        let (planned, allocations) = observe_test_allocations(|| bitmap.checked_encoded_len());
++        assert_eq!(planned, None);
++        assert_eq!(allocations, 0);
++    }
++
++    #[test]
++    fn checked_offset_geometry_rejects_overflow_without_allocating() {
++        use super::checked_offset_encoded_len;
++        use crate::admission::observe_test_allocations;
++        use core::iter::{empty, once, repeat_n};
++
++        let (outcomes, allocations) = observe_test_allocations(|| {
++            [
++                checked_offset_encoded_len(4, empty()),
++                checked_offset_encoded_len(4, once(Some(u32::MAX as usize - 8))),
++                checked_offset_encoded_len(4, once(Some(u32::MAX as usize - 7))),
++                checked_offset_encoded_len(usize::MAX, once(Some(0))),
++                checked_offset_encoded_len(4, once(Some(usize::MAX))),
++                checked_offset_encoded_len(4, once(None)),
++                // Header overflow is rejected before walking this huge virtual
++                // iterator, and requires no giant fixture allocation.
++                checked_offset_encoded_len(4, repeat_n(Some(0), usize::MAX)),
++            ]
++        });
++        assert_eq!(allocations, 0);
++        assert_eq!(
++            outcomes,
++            [
++                Some(4),
++                Some(u32::MAX as usize),
++                None,
++                None,
++                None,
++                None,
++                None
++            ]
++        );
++    }
++
++    #[test]
+     fn alloc() {
+         let num_pages = 2;
+         let mut allocator = BtreeBitmap::new(num_pages, num_pages);
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs
+@@ -1,5 +1,5 @@
+ use crate::tree_store::PageNumber;
+-use crate::tree_store::page_store::bitmap::BtreeBitmap;
++use crate::tree_store::page_store::bitmap::{BtreeBitmap, checked_offset_encoded_len};
+ #[cfg(test)]
+ use crate::tree_store::page_store::fast_hash::PageNumberHashSet;
+ use crate::tree_store::page_store::page_manager::MAX_MAX_PAGE_ORDER;
+@@ -90,6 +90,19 @@
+     // num_pages: u32
+     // free_ends: array of u32, with ending offset for BtreeBitmap structure for the given order
+     // ... BtreeBitmap structures
++    /// Exact serialized length of the current region, without copying bitmaps.
++    pub(crate) fn checked_encoded_len(&self) -> Option<usize> {
++        // The writer emits exactly max_order + 1 offset entries. All accepted
++        // constructors/deserializers retain that same number of order bitmaps.
++        if self.free.len() != usize::from(self.max_order) + 1 {
++            return None;
++        }
++        checked_offset_encoded_len(
++            FREE_END_OFFSETS,
++            self.free.iter().map(BtreeBitmap::checked_encoded_len),
++        )
++    }
++
+     pub(crate) fn to_vec(&self) -> Vec<u8> {
+         let serialized: Vec<Vec<u8>> = self.free.iter().map(BtreeBitmap::to_vec).collect();
+ 
+@@ -478,6 +491,55 @@
+     use crate::tree_store::page_store::buddy_allocator::BuddyAllocator;
+ 
+     #[test]
++    fn checked_encoded_lengths_cover_all_supported_orders_and_mutations() {
++        use crate::admission::observe_test_allocations;
++        use crate::tree_store::page_store::page_manager::MAX_MAX_PAGE_ORDER;
++
++        for max_order in 0..=MAX_MAX_PAGE_ORDER {
++            let capacity = 1_u32 << max_order;
++            for pages in [0, 1, capacity / 2, capacity.saturating_sub(1), capacity] {
++                let mut allocator = BuddyAllocator::new(pages, capacity);
++                let original = allocator.to_vec();
++                let (planned, allocations) =
++                    observe_test_allocations(|| allocator.checked_encoded_len());
++                assert_eq!(planned, Some(original.len()));
++                assert_eq!(allocations, 0);
++                assert_eq!(
++                    BuddyAllocator::from_bytes(&original).checked_encoded_len(),
++                    planned
++                );
++                if pages > 0 {
++                    let page = allocator.alloc(0).unwrap();
++                    assert_eq!(allocator.checked_encoded_len(), planned);
++                    allocator.free(page, 0);
++                    assert_eq!(allocator.to_vec(), original);
++                }
++            }
++        }
++
++        let mut allocator = BuddyAllocator::new(64, 4096);
++        for pages in [65, 4096, 127, 1, 64] {
++            allocator.resize(pages);
++            let bytes = allocator.to_vec();
++            let (planned, allocations) =
++                observe_test_allocations(|| allocator.checked_encoded_len());
++            assert_eq!(planned, Some(bytes.len()));
++            assert_eq!(allocations, 0);
++        }
++    }
++
++    #[test]
++    fn checked_encoded_lengths_reject_missing_order_bitmap() {
++        use crate::admission::observe_test_allocations;
++
++        let mut allocator = BuddyAllocator::new(64, 4096);
++        allocator.free.pop();
++        let (planned, allocations) = observe_test_allocations(|| allocator.checked_encoded_len());
++        assert_eq!(planned, None);
++        assert_eq!(allocations, 0);
++    }
++
++    #[test]
+     fn record_alloc_buddy() {
+         let num_pages = 256;
+         let mut allocator = BuddyAllocator::new(num_pages, num_pages);
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
+@@ -702,12 +702,25 @@
+         let layout = state.header.layout();
+         let num_regions = layout.num_regions();
+         let allocators = state.allocators();
+-        let region_tracker_len = allocators.region_tracker.to_vec().len();
++        // Check every encoded length before changing the allocator-state tree.
++        // This retains only the existing per-region scalar inventory, never
++        // serialized bitmap/allocator copies merely to measure their lengths.
++        let invalid_geometry = || {
++            StorageError::Corrupted("Allocator encoded length overflow or invalid geometry".into())
++        };
++        if u32::try_from(allocators.region_allocators.len()).ok() != Some(num_regions) {
++            return Err(invalid_geometry());
++        }
++        let region_tracker_len = allocators
++            .region_tracker
++            .checked_encoded_len()
++            .ok_or_else(invalid_geometry)?;
+         let region_lens: Vec<usize> = allocators
+             .region_allocators
+             .iter()
+-            .map(|x| x.to_vec().len())
+-            .collect();
++            .map(BuddyAllocator::checked_encoded_len)
++            .collect::<Option<Vec<_>>>()
++            .ok_or_else(invalid_geometry)?;
+         drop(state);
+ 
+         for i in 0..num_regions {
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/region.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/region.rs
+@@ -8,6 +8,22 @@
+ use core::cmp::{self, max};
+ use core::mem::size_of;
+ 
++// Unlike bitmap/buddy metadata, this header stores individual u32 lengths,
++// not absolute end offsets. The aggregate only needs to fit usize.
++fn checked_length_encoded_len(
++    prefix_bytes: usize,
++    mut children: impl ExactSizeIterator<Item = Option<usize>>,
++) -> Option<usize> {
++    u32::try_from(children.len()).ok()?;
++    let metadata = children.len().checked_mul(size_of::<u32>())?;
++    let header = prefix_bytes.checked_add(metadata)?;
++    children.try_fold(header, |total, child| {
++        let len = child?;
++        u32::try_from(len).ok()?;
++        total.checked_add(len)
++    })
++}
++
+ // Tracks the page orders that MAY BE free in each region. This data structure is optimistic, so
+ // a region may not actually have a page free for a given order
+ pub(crate) struct RegionTracker {
+@@ -29,6 +45,16 @@
+     // num_orders: u32 number of order allocators
+     // allocator_lens: u32 length of each allocator
+     // data: BtreeBitmap data for each order
++    /// Exact serialized length without creating any order bitmap image.
++    pub(super) fn checked_encoded_len(&self) -> Option<usize> {
++        checked_length_encoded_len(
++            size_of::<u32>(),
++            self.order_trackers
++                .iter()
++                .map(BtreeBitmap::checked_encoded_len),
++        )
++    }
++
+     pub(super) fn to_vec(&self) -> Vec<u8> {
+         let mut result = vec![];
+         let orders: u32 = self.order_trackers.len().try_into().unwrap();
+@@ -203,3 +229,78 @@
+         }
+     }
+ }
++
++#[cfg(test)]
++mod encoding_tests {
++    use super::RegionTracker;
++    use crate::admission::observe_test_allocations;
++    use crate::tree_store::page_store::base::MAX_REGIONS;
++    use crate::tree_store::page_store::page_manager::{INITIAL_REGIONS, MAX_MAX_PAGE_ORDER};
++
++    #[test]
++    fn checked_tracker_length_arithmetic_handles_field_and_total_limits() {
++        use super::checked_length_encoded_len;
++        use core::iter::{empty, once, repeat_n};
++
++        let (outcomes, allocations) = observe_test_allocations(|| {
++            [
++                checked_length_encoded_len(4, empty()),
++                checked_length_encoded_len(4, once(Some(u32::MAX as usize))),
++                checked_length_encoded_len(usize::MAX, once(Some(0))),
++                checked_length_encoded_len(usize::MAX - 8, once(Some(5))),
++                checked_length_encoded_len(4, once(Some(usize::MAX))),
++                checked_length_encoded_len(4, once(None)),
++                checked_length_encoded_len(4, repeat_n(Some(0), usize::MAX)),
++            ]
++        });
++        assert_eq!(allocations, 0);
++        // A valid individual length may put the aggregate past u32::MAX on
++        // wider targets; only the child length is an on-disk u32 field.
++        let largest_child = (u32::MAX as usize).checked_add(8);
++        assert_eq!(
++            outcomes,
++            [Some(4), largest_child, None, None, None, None, None]
++        );
++    }
++
++    #[test]
++    fn checked_tracker_lengths_match_bytes_at_region_and_order_boundaries() {
++        for orders in [1, 2, 7, MAX_MAX_PAGE_ORDER + 1] {
++            for regions in [
++                0,
++                1,
++                63,
++                64,
++                65,
++                INITIAL_REGIONS - 1,
++                INITIAL_REGIONS,
++                INITIAL_REGIONS + 1,
++                4097,
++                MAX_REGIONS,
++            ] {
++                let mut tracker = RegionTracker::new(regions, orders);
++                if regions > 0 {
++                    tracker.mark_free(orders - 1, regions - 1);
++                }
++                let bytes = tracker.to_vec();
++                let (planned, allocations) =
++                    observe_test_allocations(|| tracker.checked_encoded_len());
++                assert_eq!(planned, Some(bytes.len()));
++                assert_eq!(allocations, 0);
++                assert_eq!(tracker.to_vec(), bytes);
++                assert_eq!(
++                    RegionTracker::from_bytes(&bytes).checked_encoded_len(),
++                    planned
++                );
++            }
++        }
++        let mut tracker = RegionTracker::new(4097, MAX_MAX_PAGE_ORDER + 1);
++        for regions in [65, 0, 64, INITIAL_REGIONS, 4097] {
++            tracker.resize(regions);
++            let bytes = tracker.to_vec();
++            let (planned, allocations) = observe_test_allocations(|| tracker.checked_encoded_len());
++            assert_eq!(planned, Some(bytes.len()));
++            assert_eq!(allocations, 0);
++        }
++    }
++}

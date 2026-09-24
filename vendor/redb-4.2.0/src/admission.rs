@@ -1,5 +1,6 @@
 //! The physical owner is installed before storage construction and survives all
 //! database, transaction and backend handles. There is no unowned default.
+use alloc::boxed::Box;
 use core::fmt::Debug;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13,12 +14,25 @@ pub enum AdmissionError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OwnerFailed;
 
+/// An exact resident reservation kept alive with the allocated object.
+/// Implementations must retire physical backing before this token returns
+/// credit. The trait object itself is part of the charged allocation plan.
+pub trait ResidentLease: Send + Sync {}
+impl<T: Send + Sync> ResidentLease for T {}
+
 /// Admission for the exact physical file supplied to the database builder.
 /// Implementations retain physical charges after handles close; only verified
 /// physical reclamation or a complete drained census may release those charges.
 pub trait StorageAdmission: Debug + Send + Sync + 'static {
     /// Observe the retained owner fence without reserving or allocating.
     fn check_owner(&self) -> Result<(), OwnerFailed>;
+    /// Reserve resident backing before allocating `bytes`. The returned lease
+    /// stays with the actual object, including error and cancellation paths.
+    /// The provider also charges its concrete token and returned box backing.
+    fn reserve_workspace(
+        &self,
+        bytes: u64,
+    ) -> core::result::Result<Box<dyn ResidentLease>, AdmissionError>;
     /// Reserve before growing the physical file. Denial must have no effects.
     fn reserve_growth(&self, current_len: u64, requested_len: u64) -> Result<(), AdmissionError>;
     /// Synchronize and settle unused reservation against this exact retained
@@ -37,6 +51,12 @@ impl StorageAdmission for TestAdmission {
     fn check_owner(&self) -> Result<(), OwnerFailed> {
         Ok(())
     }
+    fn reserve_workspace(
+        &self,
+        _: u64,
+    ) -> core::result::Result<Box<dyn ResidentLease>, AdmissionError> {
+        Ok(Box::new(()))
+    }
     fn reserve_growth(&self, _: u64, _: u64) -> Result<(), AdmissionError> {
         Ok(())
     }
@@ -52,3 +72,14 @@ pub(crate) fn test_admission() -> alloc::sync::Arc<dyn StorageAdmission> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, not(redb_no_std), panic = "unwind"))]
+#[path = "cache_admission_tests.rs"]
+mod cache_admission_tests;
+
+#[cfg(test)]
+pub(crate) fn observe_test_allocations<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+    tests::begin_allocation_observation();
+    let result = operation();
+    (result, tests::end_allocation_observation())
+}

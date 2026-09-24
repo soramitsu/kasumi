@@ -1,0 +1,112 @@
+{
+  "branch": "master",
+  "files": [
+    {
+      "bytes": 2165,
+      "mode": "0o644",
+      "path": "README.md",
+      "sha256": "79d186d97dfefa05f8e9c68e023dbd810a1f678442ffe1d982e6c927a09ca7d0",
+      "source": null
+    },
+    {
+      "bytes": 871,
+      "mode": "0o644",
+      "path": "correction/actual-application-receipt.json",
+      "sha256": "fb981d0261bb6b88908c026b019cd3f6d8d1b76f98fbdb2a196929cf044dea53",
+      "source": "target/installed-disk-validation/actual-application-authority-route/receipt.json"
+    },
+    {
+      "bytes": 560,
+      "mode": "0o644",
+      "path": "correction/correction.patch",
+      "sha256": "19dbeef91d95304eeea60dba22cca7b7956618f4dfac3eb12697a023cf802403",
+      "source": "target/installed-disk-validation/authority-target-stop-route-correction/correction.patch"
+    },
+    {
+      "bytes": 2076,
+      "mode": "0o644",
+      "path": "correction/manifest.json",
+      "sha256": "3085e9edb20c6f6bdb00ee1be07beed204de9c1dfbec0cfd0c598863905c56a4",
+      "source": "target/installed-disk-validation/authority-target-stop-route-correction/manifest.json"
+    },
+    {
+      "bytes": 1093,
+      "mode": "0o644",
+      "path": "focused/focused-original.log",
+      "sha256": "77c95121a112f85a600a3183e3e6e47ec2dfcfdf5a83623b80d3d19e1946a3d8",
+      "source": "target/installed-disk-validation/actual-authority-route-qualification/native-01/focused-original.log"
+    },
+    {
+      "bytes": 7822,
+      "mode": "0o644",
+      "path": "focused/run.py",
+      "sha256": "f277246eb53deb8211219aa290e47358a880a7346256f806face36126a238d74",
+      "source": "target/installed-disk-validation/actual-authority-route-qualification/native-01/run.py"
+    },
+    {
+      "bytes": 2303,
+      "mode": "0o644",
+      "path": "focused/terminal-receipt.json",
+      "sha256": "5afa4f5e29fc7e3c1b4a7f095918b6fb8826ab6334d428a097517d94825357e9",
+      "source": "target/installed-disk-validation/actual-authority-route-qualification/native-01/terminal-receipt.json"
+    },
+    {
+      "bytes": 345,
+      "mode": "0o644",
+      "path": "main/official-verifier.log",
+      "sha256": "eb0dd3737aba60ccd80fde615f3eebe4d60bf632e9d01a1db97a80bf4bbec7c6",
+      "source": "target/installed-disk-validation/actual-combined-qualification/provenance-01/official-verifier.log"
+    },
+    {
+      "bytes": 329,
+      "mode": "0o644",
+      "path": "main/provenance-result.json",
+      "sha256": "a00129fdd3794bb81db52d7b7bd3105dab6242f529fc7c9a87356ea4713d7500",
+      "source": "target/installed-disk-validation/actual-combined-qualification/provenance-01/result.json"
+    },
+    {
+      "bytes": 3107,
+      "mode": "0o644",
+      "path": "main/python-regressions.log",
+      "sha256": "bb96ba665a71f2e007528bf65b225d26467f34137b2e6f94c66c4f11de741391",
+      "source": "target/installed-disk-validation/actual-combined-qualification/provenance-01/python-regressions.log"
+    },
+    {
+      "bytes": 8416,
+      "mode": "0o644",
+      "path": "main/run.py",
+      "sha256": "2850f382cfa49e5db0c36c5eb619ebe8e9fdb77ab94d5b69b91dc05a8f93e955",
+      "source": "target/installed-disk-validation/actual-combined-qualification/run.py"
+    },
+    {
+      "bytes": 922,
+      "mode": "0o644",
+      "path": "main/source-drift-receipt.json",
+      "sha256": "49bfeb0f3acea8bee87d8b011f7331507eee82f073b18f09361ee1268b4d8234",
+      "source": "target/installed-disk-validation/actual-combined-qualification/source-drift/receipt.json"
+    },
+    {
+      "bytes": 885,
+      "mode": "0o644",
+      "path": "main/source-drift.patch",
+      "sha256": "1a8e53a4a7d990960681dcce587a3fcc6d1c27fee0a9ad23b6f31cbf5315cad8",
+      "source": "target/installed-disk-validation/actual-combined-qualification/source-drift/change.patch"
+    },
+    {
+      "bytes": 3489,
+      "mode": "0o644",
+      "path": "main/terminal-receipt.json",
+      "sha256": "b19300bba957a5446cbc12e16ca1e33bdd6504dcd66758b280833e0dc097ef75",
+      "source": "target/installed-disk-validation/actual-combined-qualification/terminal-receipt.json"
+    },
+    {
+      "bytes": 560012,
+      "mode": "0o644",
+      "path": "main/workspace-tests-full.log",
+      "sha256": "0b55e7e086d65e15cc1a994f08d313bd2cba80043bfd66001d9a5d16129081be",
+      "source": "target/installed-disk-validation/actual-combined-qualification/workspace-tests-full.log"
+    }
+  ],
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "status": "failed main native trial preserved; focused authority correction passed; no release acceptance"
+}

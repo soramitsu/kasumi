@@ -1,0 +1,9 @@
+{
+  "pid": 6613,
+  "pgid": 6613,
+  "argv": [
+    "target/installed-disk-validation/directory-managed-namespace/native-02/run.py"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp"
+}

@@ -1,0 +1,820 @@
+--- a/vendor/redb-4.2.0/src/db.rs
++++ b/vendor/redb-4.2.0/src/db.rs
+@@ -35,7 +35,7 @@
+ use crate::sealed::{Sealed, SealedInApi5};
+ use crate::transactions::{
+     ALLOCATOR_STATE_TABLE_NAME, AllocatorStateKey, AllocatorStateTree, DATA_ALLOCATED_TABLE,
+-    DATA_FREED_TABLE, PageList, SYSTEM_FREED_TABLE, SystemTableDefinition,
++    DATA_FREED_TABLE, PageList, PageListKind, SYSTEM_FREED_TABLE, SystemTableDefinition,
+     TransactionIdWithPagination,
+ };
+ #[cfg(not(redb_no_std))]
+@@ -841,8 +841,9 @@
+             )?;
+             for result in ReadableTable::iter(&table)? {
+                 let (_, pages) = result?;
+-                for i in 0..pages.value().len() {
+-                    assert!(mem.is_allocated(pages.value().get(i)));
++                let pages = pages.value().checked(PageListKind::Data)?;
++                for i in 0..pages.len() {
++                    assert!(mem.is_allocated(pages.get(i)));
+                 }
+             }
+         }
+@@ -853,6 +854,7 @@
+     fn visit_freed_tree<K: Key, V: Value, F>(
+         system_root: Option<BtreeHeader>,
+         table_def: SystemTableDefinition<K, V>,
++        kind: PageListKind,
+         mem: Arc<TransactionalMemory>,
+         mut visitor: F,
+     ) -> Result
+@@ -898,8 +900,9 @@
+                 )?;
+             for result in ReadableTable::iter(&table)? {
+                 let (_, page_list) = result?;
+-                for i in 0..page_list.value().len() {
+-                    visitor(page_list.value().get(i))?;
++                let pages = page_list.value().checked(kind)?;
++                for i in 0..pages.len() {
++                    visitor(pages.get(i))?;
+                 }
+             }
+         }
+@@ -941,14 +944,26 @@
+             })?;
+         }
+ 
+-        Self::visit_freed_tree(system_root, DATA_FREED_TABLE, mem.clone(), |page| {
+-            mem.mark_debug_allocated_page(page);
+-            Ok(())
+-        })?;
+-        Self::visit_freed_tree(system_root, SYSTEM_FREED_TABLE, mem.clone(), |page| {
+-            mem.mark_debug_allocated_page(page);
+-            Ok(())
+-        })?;
++        Self::visit_freed_tree(
++            system_root,
++            DATA_FREED_TABLE,
++            PageListKind::Data,
++            mem.clone(),
++            |page| {
++                mem.mark_debug_allocated_page(page);
++                Ok(())
++            },
++        )?;
++        Self::visit_freed_tree(
++            system_root,
++            SYSTEM_FREED_TABLE,
++            PageListKind::System,
++            mem.clone(),
++            |page| {
++                mem.mark_debug_allocated_page(page);
++                Ok(())
++            },
++        )?;
+ 
+         Ok(())
+     }
+@@ -1036,12 +1051,20 @@
+             Self::with_recounted_length(root, system_tables.count_tables()?)
+         };
+ 
+-        Self::visit_freed_tree(system_root, DATA_FREED_TABLE, mem.clone(), |page| {
+-            mem.mark_page_allocated(page)
+-        })?;
+-        Self::visit_freed_tree(system_root, SYSTEM_FREED_TABLE, mem.clone(), |page| {
+-            mem.mark_page_allocated(page)
+-        })?;
++        Self::visit_freed_tree(
++            system_root,
++            DATA_FREED_TABLE,
++            PageListKind::Data,
++            mem.clone(),
++            |page| mem.mark_page_allocated(page),
++        )?;
++        Self::visit_freed_tree(
++            system_root,
++            SYSTEM_FREED_TABLE,
++            PageListKind::System,
++            mem.clone(),
++            |page| mem.mark_page_allocated(page),
++        )?;
+         #[cfg(debug_assertions)]
+         {
+             Self::check_repaired_allocated_pages_table(system_root, mem.clone())?;
+--- a/vendor/redb-4.2.0/src/error.rs
++++ b/vendor/redb-4.2.0/src/error.rs
+@@ -16,6 +16,8 @@
+     CapacityDenied,
+     /// Cache entry capacity was exhausted before creating a new cached page.
+     CacheCapacityDenied,
++    /// A page-list record does not have the canonical writer shape or count.
++    InvalidPageList,
+     /// Physical ownership or I/O is uncertain; drain and census before reopening.
+     OwnerFailed,
+     /// The Database is corrupted
+@@ -48,6 +50,7 @@
+         match err {
+             StorageError::CapacityDenied => Error::CapacityDenied,
+             StorageError::CacheCapacityDenied => Error::CacheCapacityDenied,
++            StorageError::InvalidPageList => Error::InvalidPageList,
+             StorageError::OwnerFailed => Error::OwnerFailed,
+             StorageError::Corrupted(msg) => Error::Corrupted(msg),
+             StorageError::ValueTooLarge(x) => Error::ValueTooLarge(x),
+@@ -66,6 +69,7 @@
+         match self {
+             StorageError::CapacityDenied => write!(f, "installed storage capacity denied"),
+             StorageError::CacheCapacityDenied => write!(f, "cache entry capacity denied"),
++            StorageError::InvalidPageList => write!(f, "invalid canonical page-list record"),
+             StorageError::OwnerFailed => write!(f, "installed storage owner failed"),
+             StorageError::Corrupted(msg) => {
+                 write!(f, "DB corrupted: {msg}")
+@@ -497,6 +501,8 @@
+ #[derive(Debug)]
+ #[non_exhaustive]
+ pub enum Error {
++    /// A page-list record does not have the canonical writer shape or count.
++    InvalidPageList,
+     CapacityDenied,
+     /// Cache entry capacity was exhausted before creating a new cached page.
+     CacheCapacityDenied,
+@@ -575,6 +581,7 @@
+         match self {
+             Error::CapacityDenied => write!(f, "installed storage capacity denied"),
+             Error::CacheCapacityDenied => write!(f, "cache entry capacity denied"),
++            Error::InvalidPageList => write!(f, "invalid canonical page-list record"),
+             Error::OwnerFailed => write!(f, "installed storage owner failed"),
+             Error::Corrupted(msg) => {
+                 write!(f, "DB corrupted: {msg}")
+--- /dev/null
++++ b/vendor/redb-4.2.0/src/page_list_tests.rs
+@@ -0,0 +1,342 @@
++use super::*;
++use crate::{
++    AdmissionError, Database, DatabaseCloseSettlement, OwnerFailed, RetainedDatabase,
++    RetainedWriteTransaction, StorageAdmission, StorageBackend, TerminalObservation,
++    WriteTerminalSettlement,
++};
++use std::sync::atomic::{AtomicU8, AtomicU64};
++
++fn record(kind: PageListKind, count: usize) -> Vec<u8> {
++    let mut bytes = vec![0xa5; PageList::required_bytes(kind.capacity())];
++    bytes[..2].copy_from_slice(&u16::try_from(count).unwrap().to_le_bytes());
++    for index in 0..count.min(kind.capacity()) {
++        let offset = 2 + index * PageNumber::serialized_size();
++        bytes[offset..offset + 8]
++            .copy_from_slice(&PageNumber::new(0, index as u32, 0).to_le_bytes());
++    }
++    bytes
++}
++
++#[test]
++fn canonical_page_list_shapes_accept_used_entries_and_reject_other_shapes_without_allocating() {
++    for kind in [PageListKind::Data, PageListKind::System] {
++        for count in [1, kind.capacity()] {
++            let bytes = record(kind, count);
++            let (checked, allocations) = crate::admission::observe_test_allocations(|| {
++                PageList { data: &bytes }.checked(kind)
++            });
++            assert_eq!(allocations, 0);
++            let checked = checked.unwrap();
++            assert_eq!(checked.len(), count);
++            assert_eq!(
++                checked.get(count - 1),
++                PageNumber::new(0, (count - 1) as u32, 0)
++            );
++        }
++        let valid = record(kind, 1);
++        let invalid = [
++            Vec::new(),
++            vec![1],
++            valid[..10].to_vec(),
++            record(kind, 0),
++            record(kind, kind.capacity() + 1),
++            record(kind, u16::MAX as usize),
++        ];
++        for bytes in invalid {
++            let (result, allocations) = crate::admission::observe_test_allocations(|| {
++                PageList { data: &bytes }.checked(kind)
++            });
++            assert!(matches!(result, Err(StorageError::InvalidPageList)));
++            assert_eq!(allocations, 0);
++        }
++    }
++    let data = record(PageListKind::Data, 1);
++    assert!(matches!(
++        PageList { data: &data }.checked(PageListKind::System),
++        Err(StorageError::InvalidPageList)
++    ));
++    let system = record(PageListKind::System, 1);
++    assert!(matches!(
++        PageList { data: &system }.checked(PageListKind::Data),
++        Err(StorageError::InvalidPageList)
++    ));
++}
++
++#[test]
++fn malformed_record_in_either_namespace_is_rejected_before_any_pending_removal() {
++    for invalid_kind in [PageListKind::Data, PageListKind::System] {
++        let file = crate::create_tempfile();
++        let mut database = Database::builder(crate::test_admission())
++            .create(file.path())
++            .unwrap()
++            .retain();
++        let mut tx = database.database().unwrap().begin_write().unwrap();
++        let first = TransactionIdWithPagination {
++            transaction_id: 10_000,
++            pagination_id: 0,
++        };
++        let second = TransactionIdWithPagination {
++            transaction_id: 10_000,
++            pagination_id: 1,
++        };
++        let valid = record(PageListKind::Data, 1);
++        let malformed = record(invalid_kind, invalid_kind.capacity() + 1);
++        {
++            let mut namespace = tx.system_tables.lock().unwrap();
++            namespace
++                .open_system_table(&tx, DATA_FREED_TABLE)
++                .unwrap()
++                .insert(first, PageList { data: &valid })
++                .unwrap();
++            let definition = match invalid_kind {
++                PageListKind::Data => DATA_FREED_TABLE,
++                PageListKind::System => SYSTEM_FREED_TABLE,
++            };
++            namespace
++                .open_system_table(&tx, definition)
++                .unwrap()
++                .insert(second, PageList { data: &malformed })
++                .unwrap();
++        }
++        let result = tx.process_freed_pages(TransactionId::new(10_001));
++        assert!(matches!(result, Err(StorageError::InvalidPageList)));
++        assert!(tx.deferred_reclaim.is_empty());
++        assert!(tx.is_poisoned());
++        {
++            let mut namespace = tx.system_tables.lock().unwrap();
++            let data = namespace.open_system_table(&tx, DATA_FREED_TABLE).unwrap();
++            assert_eq!(data.get(first).unwrap().unwrap().value().data, valid);
++            drop(data);
++            let definition = match invalid_kind {
++                PageListKind::Data => DATA_FREED_TABLE,
++                PageListKind::System => SYSTEM_FREED_TABLE,
++            };
++            let bad = namespace.open_system_table(&tx, definition).unwrap();
++            assert_eq!(bad.get(second).unwrap().unwrap().value().data, malformed);
++        }
++        let mut tx = tx.retain();
++        assert_eq!(tx.abort().settlement(), WriteTerminalSettlement::Settled);
++        assert!(tx.dispose_settled(&database).disposal_complete());
++        let check = database.database().unwrap().begin_write().unwrap();
++        assert!(
++            check
++                .system_tables
++                .lock()
++                .unwrap()
++                .get_system_table_root(DATA_FREED_TABLE)
++                .unwrap()
++                .is_none()
++        );
++        let mut check = check.retain();
++        assert_eq!(check.abort().settlement(), WriteTerminalSettlement::Settled);
++        assert!(check.dispose_settled(&database).disposal_complete());
++        let close = database.close();
++        assert_eq!(close.settlement(), DatabaseCloseSettlement::Settled);
++        assert!(matches!(
++            close.shutdown(),
++            TerminalObservation::Returned(Ok(()))
++        ));
++        assert!(matches!(
++            close.backend(),
++            TerminalObservation::Returned(Ok(()))
++        ));
++    }
++}
++
++#[derive(Debug)]
++struct Marker;
++#[derive(Debug)]
++struct OriginalIo(Arc<Marker>);
++impl core::fmt::Display for OriginalIo {
++    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
++        f.write_str("original page-list close growth synchronization failure")
++    }
++}
++impl std::error::Error for OriginalIo {}
++#[derive(Debug)]
++struct Owner {
++    failed: AtomicBool,
++}
++impl StorageAdmission for Owner {
++    fn check_owner(&self) -> core::result::Result<(), OwnerFailed> {
++        if self.failed.load(Ordering::Acquire) {
++            Err(OwnerFailed)
++        } else {
++            Ok(())
++        }
++    }
++    fn reserve_growth(&self, _: u64, _: u64) -> core::result::Result<(), AdmissionError> {
++        Ok(())
++    }
++    fn settle_growth(&self, _: u64) -> core::result::Result<(), OwnerFailed> {
++        Ok(())
++    }
++    fn owner_failed(&self) {
++        self.failed.store(true, Ordering::Release);
++    }
++}
++#[derive(Debug)]
++struct Backend {
++    file: crate::tree_store::file_backend::FileBackend,
++    mode: Arc<AtomicU8>,
++    syncs: Arc<AtomicU64>,
++    marker: Arc<Marker>,
++}
++impl StorageBackend for Backend {
++    fn len(&self) -> std::io::Result<u64> {
++        self.file.len()
++    }
++    fn read(&self, offset: u64, output: &mut [u8]) -> std::io::Result<()> {
++        self.file.read(offset, output)
++    }
++    fn set_len(&self, len: u64) -> std::io::Result<()> {
++        self.file.set_len(len)
++    }
++    fn write(&self, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
++        self.file.write(offset, bytes)
++    }
++    fn sync_data(&self) -> std::io::Result<()> {
++        self.file.sync_data()?;
++        self.syncs.fetch_add(1, Ordering::AcqRel);
++        if self.mode.load(Ordering::Acquire) == 1 {
++            Err(std::io::Error::other(OriginalIo(self.marker.clone())))
++        } else {
++            Ok(())
++        }
++    }
++    fn close(&self) -> std::io::Result<()> {
++        self.file.close()
++    }
++}
++struct FailureCustody {
++    _error: StorageError,
++    _transaction: RetainedWriteTransaction,
++    _database: RetainedDatabase,
++    _file: tempfile::NamedTempFile,
++}
++static FAILURE: std::sync::Mutex<Option<FailureCustody>> = std::sync::Mutex::new(None);
++
++#[test]
++fn early_extraction_close_failure_keeps_original_error_and_fences_publication() {
++    let file = crate::create_tempfile();
++    let mode = Arc::new(AtomicU8::new(0));
++    let syncs = Arc::new(AtomicU64::new(0));
++    let marker = Arc::new(Marker);
++    let owner = Arc::new(Owner {
++        failed: AtomicBool::new(false),
++    });
++    let backend = Backend {
++        file: crate::tree_store::file_backend::FileBackend::new(file.reopen().unwrap()).unwrap(),
++        mode: mode.clone(),
++        syncs: syncs.clone(),
++        marker: marker.clone(),
++    };
++    let mut database = Database::builder(owner.clone())
++        .set_page_size(4096)
++        .set_region_size(128 << 10)
++        .create_with_backend(backend)
++        .unwrap()
++        .retain();
++    // Each canonical record retains one real allocated page. This is a
++    // valid pending-page tree; test setup never invents dangling page numbers.
++    let tx = database.database().unwrap().begin_write().unwrap();
++    let seed_transaction_id = tx.transaction_id.raw_id();
++    for pagination_id in 0..8 {
++        let page = tx
++            .page_allocator()
++            .allocate(4096, &PageTracker::ignore())
++            .unwrap();
++        let number = page.get_page_number();
++        drop(page);
++        let mut bytes = record(PageListKind::System, 1);
++        bytes[2..10].copy_from_slice(&number.to_le_bytes());
++        tx.system_tables
++            .lock()
++            .unwrap()
++            .open_system_table(&tx, SYSTEM_FREED_TABLE)
++            .unwrap()
++            .insert(
++                TransactionIdWithPagination {
++                    transaction_id: seed_transaction_id,
++                    pagination_id,
++                },
++                PageList { data: &bytes },
++            )
++            .unwrap();
++    }
++    let mut tx = tx.retain();
++    assert_eq!(tx.commit().settlement(), WriteTerminalSettlement::Settled);
++    assert!(tx.dispose_settled(&database).disposal_complete());
++    let tx = database.database().unwrap().begin_write().unwrap();
++    // Force the close's next COW allocation to grow the actual file, making the
++    // injected sync error deterministic instead of relying on cache eviction.
++    let free = tx.mem.count_free_pages().unwrap();
++    for _ in 0..free {
++        drop(
++            tx.page_allocator()
++                .allocate(4096, &PageTracker::ignore())
++                .unwrap(),
++        );
++    }
++    assert_eq!(tx.mem.count_free_pages().unwrap(), 0);
++    let before_syncs = syncs.load(Ordering::Acquire);
++    let before_len = file.as_file().metadata().unwrap().len();
++    let mut namespace = tx.system_tables.lock().unwrap();
++    let mut table = namespace
++        .open_system_table(&tx, SYSTEM_FREED_TABLE)
++        .unwrap();
++    let key = TransactionIdWithPagination {
++        transaction_id: seed_transaction_id,
++        pagination_id: 0,
++    };
++    table
++        .validate_page_lists(key..=key, PageListKind::System)
++        .unwrap();
++    let mut iter = table.extract_from_if(key..=key, |_, _| true).unwrap();
++    let entry = iter.next().unwrap().unwrap();
++    assert_eq!(
++        entry.1.value().checked(PageListKind::System).unwrap().len(),
++        1
++    );
++    drop(entry);
++    mode.store(1, Ordering::Release);
++    let error = tx.finish_page_list_extraction(iter, Ok(())).unwrap_err();
++    let StorageError::Io(original) = &error else {
++        panic!("close lost original I/O: {error:?}");
++    };
++    assert!(Arc::ptr_eq(
++        &original
++            .get_ref()
++            .unwrap()
++            .downcast_ref::<OriginalIo>()
++            .unwrap()
++            .0,
++        &marker
++    ));
++    assert!(syncs.load(Ordering::Acquire) > before_syncs);
++    assert!(file.as_file().metadata().unwrap().len() > before_len);
++    assert!(tx.is_poisoned());
++    assert!(owner.failed.load(Ordering::Acquire));
++    drop(table);
++    drop(namespace);
++    let mut tx = tx.retain();
++    let report = tx.abort();
++    assert_eq!(report.settlement(), WriteTerminalSettlement::Retained);
++    assert!(matches!(
++        report.terminal(),
++        TerminalObservation::Returned(Err(WriteTerminalError::Abort(StorageError::OwnerFailed)))
++    ));
++    assert!(!tx.dispose_settled(&database).disposal_complete());
++    assert_eq!(
++        database.close().settlement(),
++        DatabaseCloseSettlement::WaitingForTransactions
++    );
++    let mut custody = FAILURE.lock().unwrap();
++    assert!(custody.is_none());
++    *custody = Some(FailureCustody {
++        _error: error,
++        _transaction: tx,
++        _database: database,
++        _file: file,
++    });
++}
+--- a/vendor/redb-4.2.0/src/transactions.rs
++++ b/vendor/redb-4.2.0/src/transactions.rs
+@@ -82,16 +82,60 @@
+     data: &'a [u8],
+ }
+ 
+-impl PageList<'_> {
++#[derive(Clone, Copy)]
++pub(crate) enum PageListKind {
++    Data,
++    System,
++}
++impl PageListKind {
++    pub(crate) const fn capacity(self) -> usize {
++        match self {
++            Self::Data => 400,
++            Self::System => 200,
++        }
++    }
++}
++
++struct ValidatedPageListRange {
++    definition: SystemTableDefinition<'static, TransactionIdWithPagination, PageList<'static>>,
++    kind: PageListKind,
++    free_until: TransactionId,
++    root: Option<BtreeHeader>,
++}
++
++pub(crate) struct CheckedPageList<'a> {
++    data: &'a [u8],
++    len: usize,
++}
++impl<'a> PageList<'a> {
+     fn required_bytes(len: usize) -> usize {
+         2 + PageNumber::serialized_size() * len
+     }
+ 
++    pub(crate) fn checked(self, kind: PageListKind) -> Result<CheckedPageList<'a>> {
++        let capacity = kind.capacity();
++        if self.data.len() != Self::required_bytes(capacity) {
++            return Err(StorageError::InvalidPageList);
++        }
++        let len = usize::from(u16::from_le_bytes(self.data[..2].try_into().unwrap()));
++        if len == 0 || len > capacity {
++            return Err(StorageError::InvalidPageList);
++        }
++        // The writers reserve a complete fixed-size record but only initialize
++        // the used entries. Unused padding is not a second supported format.
++        Ok(CheckedPageList {
++            data: self.data,
++            len,
++        })
++    }
++}
++impl CheckedPageList<'_> {
+     pub(crate) fn len(&self) -> usize {
+-        u16::from_le_bytes(self.data[..size_of::<u16>()].try_into().unwrap()).into()
++        self.len
+     }
+ 
+     pub(crate) fn get(&self, index: usize) -> PageNumber {
++        assert!(index < self.len);
+         let start = size_of::<u16>() + PageNumber::serialized_size() * index;
+         PageNumber::from_le_bytes(
+             self.data[start..(start + PageNumber::serialized_size())]
+@@ -496,6 +540,20 @@
+             &self.tree,
+             self.tree.get_root().map(|x| x.length).unwrap_or_default(),
+         );
++    }
++}
++
++impl SystemTable<'_, TransactionIdWithPagination, PageList<'static>> {
++    fn validate_page_lists(
++        &self,
++        range: impl RangeBounds<TransactionIdWithPagination>,
++        kind: PageListKind,
++    ) -> Result {
++        for entry in self.range(range)? {
++            let (_, pages) = entry?;
++            pages.value().checked(kind)?;
++        }
++        Ok(())
+     }
+ }
+ 
+@@ -1039,7 +1097,7 @@
+                 .unwrap();
+             for entry in data_freed.range::<TransactionIdWithPagination>(..).unwrap() {
+                 let (_, entry) = entry.unwrap();
+-                let value = entry.value();
++                let value = entry.value().checked(PageListKind::Data).unwrap();
+                 for i in 0..value.len() {
+                     let p = value.get(i);
+                     assert!(all_allocated.remove(&p));
+@@ -1058,7 +1116,7 @@
+                 .unwrap()
+             {
+                 let (_, entry) = entry.unwrap();
+-                let value = entry.value();
++                let value = entry.value().checked(PageListKind::System).unwrap();
+                 for i in 0..value.len() {
+                     let p = value.get(i);
+                     assert!(all_allocated.remove(&p));
+@@ -1305,6 +1363,7 @@
+             let mut system_tables = self.system_tables.lock().unwrap();
+             let mut data_freed = system_tables.open_system_table(self, DATA_FREED_TABLE)?;
+             let drain = || -> Result<(), StorageError> {
++                data_freed.validate_page_lists(lower.., PageListKind::Data)?;
+                 let mut iter = data_freed.extract_from_if(lower.., |_, _| true)?;
+                 for entry in &mut iter {
+                     entry?;
+@@ -1345,8 +1404,9 @@
+             };
+             for entry in data_allocated.range(lower..)? {
+                 let (_, value) = entry?;
+-                for i in 0..value.value().len() {
+-                    data_freed_pages.push(value.value().get(i));
++                let pages = value.value().checked(PageListKind::Data)?;
++                for i in 0..pages.len() {
++                    data_freed_pages.push(pages.get(i));
+                 }
+             }
+             // These are tracked in memory rather than in DATA_ALLOCATED_TABLE. We don't remove
+@@ -1602,7 +1662,7 @@
+         #[cfg(debug_assertions)]
+         let page_allocator = self.page_allocator();
+         while !freed_pages.is_empty() {
+-            let chunk_size = 400;
++            let chunk_size = PageListKind::Data.capacity();
+             let buffer_size = PageList::required_bytes(chunk_size);
+             let key = TransactionIdWithPagination {
+                 transaction_id: transaction_id.raw_id(),
+@@ -1674,9 +1734,15 @@
+             transaction_id: oldest,
+             pagination_id: 0,
+         };
+-        for entry in allocated_table.extract_from_if(..key, |_, _| true)? {
+-            entry?;
+-        }
++        allocated_table.validate_page_lists(..key, PageListKind::Data)?;
++        let mut iter = allocated_table.extract_from_if(..key, |_, _| true)?;
++        let result = (|| {
++            for entry in &mut iter {
++                entry?;
++            }
++            Ok(())
++        })();
++        self.finish_page_list_extraction(iter, result)?;
+ 
+         Ok(oldest)
+     }
+@@ -1688,7 +1754,7 @@
+     ) -> Result {
+         let mut pagination_counter = 0;
+         while !pages.is_empty() {
+-            let chunk_size = 400;
++            let chunk_size = PageListKind::Data.capacity();
+             let buffer_size = PageList::required_bytes(chunk_size);
+             let key = TransactionIdWithPagination {
+                 transaction_id: transaction_id.raw_id(),
+@@ -1926,49 +1992,120 @@
+ 
+         {
+             let mut system_tables = self.system_tables.lock().unwrap();
+-            self.extract_freed_pages(
+-                &mut system_tables,
+-                DATA_FREED_TABLE,
+-                free_until,
+-                &mut free_page,
+-            )?;
+-            self.extract_freed_pages(
+-                &mut system_tables,
+-                SYSTEM_FREED_TABLE,
+-                free_until,
+-                &mut free_page,
+-            )?;
++            // Validate BOTH selected ranges before either tree is mutated.
++            // Otherwise a malformed system record could be discovered only
++            // after valid data records had already been removed.
++            let plans = (|| {
++                Ok([
++                    self.validate_freed_page_range(
++                        &mut system_tables,
++                        DATA_FREED_TABLE,
++                        PageListKind::Data,
++                        free_until,
++                    )?,
++                    self.validate_freed_page_range(
++                        &mut system_tables,
++                        SYSTEM_FREED_TABLE,
++                        PageListKind::System,
++                        free_until,
++                    )?,
++                ])
++            })();
++            let plans = match plans {
++                Ok(plans) => plans,
++                Err(error) => {
++                    self.poison();
++                    return Err(error);
++                }
++            };
++            for plan in plans {
++                self.extract_freed_pages(&mut system_tables, plan, &mut free_page)?;
++            }
+         }
+         self.deferred_reclaim.extend(deferred);
+ 
+         Ok(())
++    }
++
++    fn validate_freed_page_range(
++        &self,
++        system_tables: &mut SystemNamespace,
++        definition: SystemTableDefinition<'static, TransactionIdWithPagination, PageList<'static>>,
++        kind: PageListKind,
++        free_until: TransactionId,
++    ) -> Result<ValidatedPageListRange> {
++        let root = system_tables.get_system_table_root(definition)?;
++        if root.is_some() {
++            let table = system_tables.open_system_table(self, definition)?;
++            let key = TransactionIdWithPagination {
++                transaction_id: free_until.raw_id(),
++                pagination_id: 0,
++            };
++            table.validate_page_lists(..key, kind)?;
++        }
++        Ok(ValidatedPageListRange {
++            definition,
++            kind,
++            free_until,
++            root,
++        })
+     }
+ 
+     fn extract_freed_pages(
+         &self,
+         system_tables: &mut SystemNamespace,
+-        definition: SystemTableDefinition<TransactionIdWithPagination, PageList>,
+-        free_until: TransactionId,
++        plan: ValidatedPageListRange,
+         mut process_page: impl FnMut(PageNumber),
+     ) -> Result<()> {
+-        if system_tables.get_system_table_root(definition)?.is_none() {
++        if system_tables.get_system_table_root(plan.definition)? != plan.root {
++            self.poison();
++            return Err(StorageError::InvalidPageList);
++        }
++        if plan.root.is_none() {
+             return Ok(());
+         }
+-
+-        let mut freed = system_tables.open_system_table(self, definition)?;
++        let mut freed = system_tables.open_system_table(self, plan.definition)?;
+         let key = TransactionIdWithPagination {
+-            transaction_id: free_until.raw_id(),
++            transaction_id: plan.free_until.raw_id(),
+             pagination_id: 0,
+         };
+-        for entry in freed.extract_from_if(..key, |_, _| true)? {
+-            let (_, page_list) = entry?;
+-            let page_list = page_list.value();
+-            for i in 0..page_list.len() {
+-                process_page(page_list.get(i));
+-            }
+-        }
+-
+-        Ok(())
++        let kind = plan.kind;
++        let mut iter = freed.extract_from_if(..key, |_, _| true)?;
++        let result = (|| {
++            for entry in &mut iter {
++                let (_, page_list) = entry?;
++                let page_list = page_list.value().checked(kind)?;
++                for i in 0..page_list.len() {
++                    process_page(page_list.get(i));
++                }
++            }
++            Ok(())
++        })();
++        self.finish_page_list_extraction(iter, result)
++    }
++
++    // Explicit close remains mandatory even if this loop later stops at a
++    // bounded prefix. System-table iterators carry no automatic poison target.
++    // Preserve the first iteration failure; close after it may only re-raise
++    // PreviousIo. A new close failure after successful iteration is returned
++    // unchanged, and neither failure permits this transaction to publish.
++    fn finish_page_list_extraction<F>(
++        &self,
++        iter: ExtractIf<'_, TransactionIdWithPagination, PageList<'static>, F>,
++        result: Result,
++    ) -> Result
++    where
++        F: for<'f> FnMut(TransactionIdWithPagination, PageList<'f>) -> bool,
++    {
++        let closed = iter.close();
++        let result = match result {
++            Err(original) => Err(original),
++            Ok(()) => closed,
++        };
++        if result.is_err() {
++            self.poison();
++        }
++        result
+     }
+ 
+     fn store_system_freed_pages(
+@@ -1988,7 +2125,7 @@
+                 let mut pagination_id =
+                     Self::next_system_freed_pagination_id(system_freed_tree, transaction_id)?;
+                 while !system_freed_pages.lock().unwrap().is_empty() {
+-                    let chunk_size = 200;
++                    let chunk_size = PageListKind::System.capacity();
+                     let buffer_size = PageList::required_bytes(chunk_size);
+                     let key = TransactionIdWithPagination {
+                         transaction_id: transaction_id.raw_id(),
+@@ -2411,3 +2548,7 @@
+         assert_eq!(write_txn.transaction_id, remove_txn_id.next());
+     }
+ }
++
++#[cfg(all(test, not(redb_no_std), panic = "unwind"))]
++#[path = "page_list_tests.rs"]
++mod page_list_tests;

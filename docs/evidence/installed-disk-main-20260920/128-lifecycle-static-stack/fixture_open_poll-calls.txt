@@ -1,0 +1,428 @@
+10003c330: 94672b2a    	bl	0x101a06fd8 <<core::ops::range::RangeInclusive<u64>>::new>
+10003c334: 14000031    	b	0x10003c3f8 <<lifecycle::Fixture>::open::{closure#0}+0x1d4>
+10003c340: 1400003e    	b	0x10003c438 <<lifecycle::Fixture>::open::{closure#0}+0x214>
+10003c34c: 1400003e    	b	0x10003c444 <<lifecycle::Fixture>::open::{closure#0}+0x220>
+10003c358: 1400003e    	b	0x10003c450 <<lifecycle::Fixture>::open::{closure#0}+0x22c>
+10003c364: 14000040    	b	0x10003c464 <<lifecycle::Fixture>::open::{closure#0}+0x240>
+10003c370: 14000042    	b	0x10003c478 <<lifecycle::Fixture>::open::{closure#0}+0x254>
+10003c37c: 14000044    	b	0x10003c48c <<lifecycle::Fixture>::open::{closure#0}+0x268>
+10003c388: 14000046    	b	0x10003c4a0 <<lifecycle::Fixture>::open::{closure#0}+0x27c>
+10003c394: 14000048    	b	0x10003c4b4 <<lifecycle::Fixture>::open::{closure#0}+0x290>
+10003c3a0: 1400004a    	b	0x10003c4c8 <<lifecycle::Fixture>::open::{closure#0}+0x2a4>
+10003c3ac: 1400018a    	b	0x10003c9d4 <<lifecycle::Fixture>::open::{closure#0}+0x7b0>
+10003c3b8: 1400070e    	b	0x10003dff0 <<lifecycle::Fixture>::open::{closure#0}+0x1dcc>
+10003c3cc: 948d4c16    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>
+10003c3dc: 14000001    	b	0x10003c3e0 <<lifecycle::Fixture>::open::{closure#0}+0x1bc>
+10003c3f4: 17fffff2    	b	0x10003c3bc <<lifecycle::Fixture>::open::{closure#0}+0x198>
+10003c400: 9467323d    	bl	0x101a08cf4 <<core::ops::range::RangeInclusive<u64> as core::iter::traits::collect::IntoIterator>::into_iter>
+10003c404: 14000001    	b	0x10003c408 <<lifecycle::Fixture>::open::{closure#0}+0x1e4>
+10003c41c: 14000001    	b	0x10003c420 <<lifecycle::Fixture>::open::{closure#0}+0x1fc>
+10003c428: 94674578    	bl	0x101a0da08 <<core::ops::range::RangeInclusive<u64> as core::iter::traits::iterator::Iterator>::next>
+10003c434: 14000138    	b	0x10003c914 <<lifecycle::Fixture>::open::{closure#0}+0x6f0>
+10003c440: 948d4b8f    	bl	0x10238f27c <core::panicking::panic_const::panic_const_async_fn_resumed>
+10003c44c: 948d4b93    	bl	0x10238f298 <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+10003c460: 140002f2    	b	0x10003d028 <<lifecycle::Fixture>::open::{closure#0}+0xe04>
+10003c474: 1400027f    	b	0x10003ce70 <<lifecycle::Fixture>::open::{closure#0}+0xc4c>
+10003c488: 1400046b    	b	0x10003d634 <<lifecycle::Fixture>::open::{closure#0}+0x1410>
+10003c49c: 140003a1    	b	0x10003d320 <<lifecycle::Fixture>::open::{closure#0}+0x10fc>
+10003c4b0: 14000565    	b	0x10003da44 <<lifecycle::Fixture>::open::{closure#0}+0x1820>
+10003c4c4: 140004db    	b	0x10003d830 <<lifecycle::Fixture>::open::{closure#0}+0x160c>
+10003c4d8: 1400000a    	b	0x10003c500 <<lifecycle::Fixture>::open::{closure#0}+0x2dc>
+10003c4e4: 9401d50c    	bl	0x1000b1914 <core::ptr::drop_glue::<kasumi_engine::bootstrap::fixtures::open_fixture_replicated::{closure#0}>>
+10003c4e8: 1400002c    	b	0x10003c598 <<lifecycle::Fixture>::open::{closure#0}+0x374>
+10003c4fc: 17fffff8    	b	0x10003c4dc <<lifecycle::Fixture>::open::{closure#0}+0x2b8>
+10003c508: 94200452    	bl	0x10083d650 <kasumi_engine::bootstrap::fixtures::open_fixture_replicated::{closure#0}>
+10003c514: 14000001    	b	0x10003c518 <<lifecycle::Fixture>::open::{closure#0}+0x2f4>
+10003c53c: 14000001    	b	0x10003c540 <<lifecycle::Fixture>::open::{closure#0}+0x31c>
+10003c590: 9401d4e1    	bl	0x1000b1914 <core::ptr::drop_glue::<kasumi_engine::bootstrap::fixtures::open_fixture_replicated::{closure#0}>>
+10003c594: 1400000e    	b	0x10003c5cc <<lifecycle::Fixture>::open::{closure#0}+0x3a8>
+10003c5a0: 1400033c    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003c5b0: 14000001    	b	0x10003c5b4 <<lifecycle::Fixture>::open::{closure#0}+0x390>
+10003c5c8: 17fffff4    	b	0x10003c598 <<lifecycle::Fixture>::open::{closure#0}+0x374>
+10003c5e4: 14000001    	b	0x10003c5e8 <<lifecycle::Fixture>::open::{closure#0}+0x3c4>
+10003c614: 948d49fe    	bl	0x10238ee0c <core::result::unwrap_failed>
+10003c618: 14000008    	b	0x10003c638 <<lifecycle::Fixture>::open::{closure#0}+0x414>
+10003c630: 9454cad0    	bl	0x10156f170 <core::ptr::drop_glue::<anyhow::Error>>
+10003c634: 14000003    	b	0x10003c640 <<lifecycle::Fixture>::open::{closure#0}+0x41c>
+10003c63c: 948d4a0e    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+10003c654: 17ffffd8    	b	0x10003c5b4 <<lifecycle::Fixture>::open::{closure#0}+0x390>
+10003c664: 14000001    	b	0x10003c668 <<lifecycle::Fixture>::open::{closure#0}+0x444>
+10003c688: 943383b5    	bl	0x100d1d55c <<alloc::sync::Arc<kasumi_raft::network::InProcessRouter> as core::ops::deref::Deref>::deref>
+10003c690: 1400000a    	b	0x10003c6b8 <<lifecycle::Fixture>::open::{closure#0}+0x494>
+10003c6a0: 17ffffbe    	b	0x10003c598 <<lifecycle::Fixture>::open::{closure#0}+0x374>
+10003c6b4: 17fffff8    	b	0x10003c694 <<lifecycle::Fixture>::open::{closure#0}+0x470>
+10003c6cc: 9445acab    	bl	0x1011a7978 <<core::fmt::rt::Argument>::new_display::<alloc::string::String>>
+10003c6d0: 14000009    	b	0x10003c6f4 <<lifecycle::Fixture>::open::{closure#0}+0x4d0>
+10003c6dc: 17ffffee    	b	0x10003c694 <<lifecycle::Fixture>::open::{closure#0}+0x470>
+10003c6f0: 17fffff9    	b	0x10003c6d4 <<lifecycle::Fixture>::open::{closure#0}+0x4b0>
+10003c710: 94558a0e    	bl	0x10159ef48 <<core::fmt::Arguments>::new::<20, 1>>
+10003c71c: 14000001    	b	0x10003c720 <<lifecycle::Fixture>::open::{closure#0}+0x4fc>
+10003c730: 94028a6a    	bl	0x1000df0d8 <alloc::fmt::format>
+10003c734: 14000001    	b	0x10003c738 <<lifecycle::Fixture>::open::{closure#0}+0x514>
+10003c74c: 14000001    	b	0x10003c750 <<lifecycle::Fixture>::open::{closure#0}+0x52c>
+10003c770: 943383d6    	bl	0x100d1d6c8 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+10003c778: 1400000a    	b	0x10003c7a0 <<lifecycle::Fixture>::open::{closure#0}+0x57c>
+10003c788: 140005a6    	b	0x10003de20 <<lifecycle::Fixture>::open::{closure#0}+0x1bfc>
+10003c79c: 17fffff8    	b	0x10003c77c <<lifecycle::Fixture>::open::{closure#0}+0x558>
+10003c7a4: 94302afc    	bl	0x100c47394 <<kasumi_engine::service::Database>::raft_group>
+10003c7ac: 14000001    	b	0x10003c7b0 <<lifecycle::Fixture>::open::{closure#0}+0x58c>
+10003c7b4: 943e5bc5    	bl	0x100fd36c8 <<kasumi_raft::RaftGroup>::raft>
+10003c7bc: 14000001    	b	0x10003c7c0 <<lifecycle::Fixture>::open::{closure#0}+0x59c>
+10003c7c4: 9440b96e    	bl	0x10106ad7c <<openraft::raft::Raft<kasumi_raft::TypeConfig> as core::clone::Clone>::clone>
+10003c7cc: 14000001    	b	0x10003c7d0 <<lifecycle::Fixture>::open::{closure#0}+0x5ac>
+10003c7ec: 9438db36    	bl	0x100e734c4 <<kasumi_raft::network::InProcessRouter>::register>
+10003c7f0: 14000001    	b	0x10003c7f4 <<lifecycle::Fixture>::open::{closure#0}+0x5d0>
+10003c808: 9400d5f4    	bl	0x100071fd8 <<alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe> as core::ops::deref::Deref>::deref>
+10003c810: 14000001    	b	0x10003c814 <<lifecycle::Fixture>::open::{closure#0}+0x5f0>
+10003c828: 943383a8    	bl	0x100d1d6c8 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+10003c830: 14000001    	b	0x10003c834 <<lifecycle::Fixture>::open::{closure#0}+0x610>
+10003c838: 94302ad7    	bl	0x100c47394 <<kasumi_engine::service::Database>::raft_group>
+10003c840: 14000001    	b	0x10003c844 <<lifecycle::Fixture>::open::{closure#0}+0x620>
+10003c848: 943e5ba0    	bl	0x100fd36c8 <<kasumi_raft::RaftGroup>::raft>
+10003c850: 14000001    	b	0x10003c854 <<lifecycle::Fixture>::open::{closure#0}+0x630>
+10003c858: 9440b8ba    	bl	0x10106ab40 <<openraft::raft::Raft<kasumi_raft::TypeConfig>>::metrics>
+10003c864: 14000001    	b	0x10003c868 <<lifecycle::Fixture>::open::{closure#0}+0x644>
+10003c878: 9402ae07    	bl	0x1000e8094 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::register>
+10003c87c: 14000001    	b	0x10003c880 <<lifecycle::Fixture>::open::{closure#0}+0x65c>
+10003c89c: 9402f56f    	bl	0x1000f9e58 <<alloc::collections::btree::map::BTreeMap<u64, alloc::sync::Arc<kasumi_engine::service::Database>>>::insert>
+10003c8a4: 14000001    	b	0x10003c8a8 <<lifecycle::Fixture>::open::{closure#0}+0x684>
+10003c8b8: 940175bf    	bl	0x100099fb4 <core::ptr::drop_glue::<core::option::Option<alloc::sync::Arc<kasumi_engine::service::Database>>>>
+10003c8bc: 14000001    	b	0x10003c8c0 <<lifecycle::Fixture>::open::{closure#0}+0x69c>
+10003c8d8: 9402f48f    	bl	0x1000f9b14 <<alloc::collections::btree::map::BTreeMap<u64, alloc::sync::Arc<kasumi_engine::security_audit::SecurityAudit>>>::insert>
+10003c8e0: 14000001    	b	0x10003c8e4 <<lifecycle::Fixture>::open::{closure#0}+0x6c0>
+10003c8f4: 9401759f    	bl	0x100099f70 <core::ptr::drop_glue::<core::option::Option<alloc::sync::Arc<kasumi_engine::security_audit::SecurityAudit>>>>
+10003c8f8: 14000001    	b	0x10003c8fc <<lifecycle::Fixture>::open::{closure#0}+0x6d8>
+10003c910: 17fffec4    	b	0x10003c420 <<lifecycle::Fixture>::open::{closure#0}+0x1fc>
+10003c92c: 14000001    	b	0x10003c930 <<lifecycle::Fixture>::open::{closure#0}+0x70c>
+10003c944: 14000029    	b	0x10003c9e8 <<lifecycle::Fixture>::open::{closure#0}+0x7c4>
+10003c964: 9402fbf6    	bl	0x1000fb93c <<alloc::collections::btree::map::BTreeMap<u64, alloc::sync::Arc<kasumi_engine::service::Database>> as core::ops::index::Index<&u64>>::index>
+10003c96c: 14000001    	b	0x10003c970 <<lifecycle::Fixture>::open::{closure#0}+0x74c>
+10003c974: 94338355    	bl	0x100d1d6c8 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+10003c97c: 14000001    	b	0x10003c980 <<lifecycle::Fixture>::open::{closure#0}+0x75c>
+10003c994: 94263a39    	bl	0x1009cb278 <kasumi_engine::bootstrap::initialize_replicated>
+10003c998: 14000001    	b	0x10003c99c <<lifecycle::Fixture>::open::{closure#0}+0x778>
+10003c9ac: 94027e8d    	bl	0x1000dc3e0 <<kasumi_engine::bootstrap::initialize_replicated::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003c9b0: 14000001    	b	0x10003c9b4 <<lifecycle::Fixture>::open::{closure#0}+0x790>
+10003c9cc: 948d4b53    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003c9d0: 14000001    	b	0x10003c9d4 <<lifecycle::Fixture>::open::{closure#0}+0x7b0>
+10003c9e4: 1400052b    	b	0x10003de90 <<lifecycle::Fixture>::open::{closure#0}+0x1c6c>
+10003ca00: 9402fc0d    	bl	0x1000fba34 <<alloc::collections::btree::map::BTreeMap<u64, lifecycle::common::PhysicalFixture> as core::ops::index::Index<&u64>>::index>
+10003ca08: 14000017    	b	0x10003ca64 <<lifecycle::Fixture>::open::{closure#0}+0x840>
+10003ca24: 9402fc04    	bl	0x1000fba34 <<alloc::collections::btree::map::BTreeMap<u64, lifecycle::common::PhysicalFixture> as core::ops::index::Index<&u64>>::index>
+10003ca2c: 14000074    	b	0x10003cbfc <<lifecycle::Fixture>::open::{closure#0}+0x9d8>
+10003ca38: 17fffe61    	b	0x10003c3bc <<lifecycle::Fixture>::open::{closure#0}+0x198>
+10003ca48: 14000001    	b	0x10003ca4c <<lifecycle::Fixture>::open::{closure#0}+0x828>
+10003ca60: 17fffff4    	b	0x10003ca30 <<lifecycle::Fixture>::open::{closure#0}+0x80c>
+10003ca7c: 947a5ea8    	bl	0x101ed451c <<tempfile::dir::TempDir>::path>
+10003ca88: 14000001    	b	0x10003ca8c <<lifecycle::Fixture>::open::{closure#0}+0x868>
+10003ca98: 94418d78    	bl	0x1010a0078 <<u64 as alloc::string::ToString>::to_string>
+10003ca9c: 14000001    	b	0x10003caa0 <<lifecycle::Fixture>::open::{closure#0}+0x87c>
+10003cab0: 9474287a    	bl	0x101d46c98 <<std::path::Path>::join::<alloc::string::String>>
+10003cab4: 14000001    	b	0x10003cab8 <<lifecycle::Fixture>::open::{closure#0}+0x894>
+10003cabc: 94024deb    	bl	0x1000d0268 <<std::path::PathBuf as core::ops::deref::Deref>::deref>
+10003cac8: 14000009    	b	0x10003caec <<lifecycle::Fixture>::open::{closure#0}+0x8c8>
+10003cad0: 947a5cbf    	bl	0x101ed3dcc <core::ptr::drop_glue::<std::path::PathBuf>>
+10003cad4: 17ffffd7    	b	0x10003ca30 <<lifecycle::Fixture>::open::{closure#0}+0x80c>
+10003cae8: 17fffff9    	b	0x10003cacc <<lifecycle::Fixture>::open::{closure#0}+0x8a8>
+10003cb08: 94742889    	bl	0x101d46d2c <<std::path::Path>::join::<&str>>
+10003cb0c: 14000001    	b	0x10003cb10 <<lifecycle::Fixture>::open::{closure#0}+0x8ec>
+10003cb30: 9402fd95    	bl	0x1000fc184 <<kasumi_engine::test_utils::FixtureStorage>::open_existing::<std::path::PathBuf>>
+10003cb3c: 14000001    	b	0x10003cb40 <<lifecycle::Fixture>::open::{closure#0}+0x91c>
+10003cb54: 947a5c9e    	bl	0x101ed3dcc <core::ptr::drop_glue::<std::path::PathBuf>>
+10003cb58: 14000001    	b	0x10003cb5c <<lifecycle::Fixture>::open::{closure#0}+0x938>
+10003cb74: 14000001    	b	0x10003cb78 <<lifecycle::Fixture>::open::{closure#0}+0x954>
+10003cba4: 948d489a    	bl	0x10238ee0c <core::result::unwrap_failed>
+10003cba8: 14000008    	b	0x10003cbc8 <<lifecycle::Fixture>::open::{closure#0}+0x9a4>
+10003cbc0: 9454c96c    	bl	0x10156f170 <core::ptr::drop_glue::<anyhow::Error>>
+10003cbc4: 14000003    	b	0x10003cbd0 <<lifecycle::Fixture>::open::{closure#0}+0x9ac>
+10003cbcc: 948d48aa    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+10003cbe4: 17ffff9a    	b	0x10003ca4c <<lifecycle::Fixture>::open::{closure#0}+0x828>
+10003cbf4: 14000040    	b	0x10003ccf4 <<lifecycle::Fixture>::open::{closure#0}+0xad0>
+10003cbf8: 948d489f    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+10003cc14: 947a5e42    	bl	0x101ed451c <<tempfile::dir::TempDir>::path>
+10003cc20: 14000001    	b	0x10003cc24 <<lifecycle::Fixture>::open::{closure#0}+0xa00>
+10003cc30: 94418d12    	bl	0x1010a0078 <<u64 as alloc::string::ToString>::to_string>
+10003cc34: 14000001    	b	0x10003cc38 <<lifecycle::Fixture>::open::{closure#0}+0xa14>
+10003cc48: 94742814    	bl	0x101d46c98 <<std::path::Path>::join::<alloc::string::String>>
+10003cc4c: 14000001    	b	0x10003cc50 <<lifecycle::Fixture>::open::{closure#0}+0xa2c>
+10003cc54: 94024d85    	bl	0x1000d0268 <<std::path::PathBuf as core::ops::deref::Deref>::deref>
+10003cc60: 14000009    	b	0x10003cc84 <<lifecycle::Fixture>::open::{closure#0}+0xa60>
+10003cc68: 947a5c59    	bl	0x101ed3dcc <core::ptr::drop_glue::<std::path::PathBuf>>
+10003cc6c: 17ffff71    	b	0x10003ca30 <<lifecycle::Fixture>::open::{closure#0}+0x80c>
+10003cc80: 17fffff9    	b	0x10003cc64 <<lifecycle::Fixture>::open::{closure#0}+0xa40>
+10003cca0: 94742823    	bl	0x101d46d2c <<std::path::Path>::join::<&str>>
+10003cca4: 14000001    	b	0x10003cca8 <<lifecycle::Fixture>::open::{closure#0}+0xa84>
+10003ccc8: 9402fce9    	bl	0x1000fc06c <<kasumi_engine::test_utils::FixtureStorage>::create_new::<std::path::PathBuf>>
+10003ccd4: 14000001    	b	0x10003ccd8 <<lifecycle::Fixture>::open::{closure#0}+0xab4>
+10003ccec: 947a5c38    	bl	0x101ed3dcc <core::ptr::drop_glue::<std::path::PathBuf>>
+10003ccf0: 17ffff9b    	b	0x10003cb5c <<lifecycle::Fixture>::open::{closure#0}+0x938>
+10003cd10: 14000001    	b	0x10003cd14 <<lifecycle::Fixture>::open::{closure#0}+0xaf0>
+10003cd1c: 9475743e    	bl	0x101d99e14 <<alloc::sync::Arc<kasumi_store::NodeStore> as core::clone::Clone>::clone>
+10003cd24: 1400000e    	b	0x10003cd5c <<lifecycle::Fixture>::open::{closure#0}+0xb38>
+10003cd30: 94757439    	bl	0x101d99e14 <<alloc::sync::Arc<kasumi_store::NodeStore> as core::clone::Clone>::clone>
+10003cd38: 14000083    	b	0x10003cf44 <<lifecycle::Fixture>::open::{closure#0}+0xd20>
+10003cd44: 14000031    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003cd58: 17fffff9    	b	0x10003cd3c <<lifecycle::Fixture>::open::{closure#0}+0xb18>
+10003cd88: 9402fb2b    	bl	0x1000fba34 <<alloc::collections::btree::map::BTreeMap<u64, lifecycle::common::PhysicalFixture> as core::ops::index::Index<&u64>>::index>
+10003cd90: 1400000a    	b	0x10003cdb8 <<lifecycle::Fixture>::open::{closure#0}+0xb94>
+10003cda0: 1400005a    	b	0x10003cf08 <<lifecycle::Fixture>::open::{closure#0}+0xce4>
+10003cdb4: 17fffff8    	b	0x10003cd94 <<lifecycle::Fixture>::open::{closure#0}+0xb70>
+10003cdc0: 94338013    	bl	0x100d1ce0c <<alloc::sync::Arc<kasumi_engine::admission::NodeAdmission> as core::clone::Clone>::clone>
+10003cdc8: 14000001    	b	0x10003cdcc <<lifecycle::Fixture>::open::{closure#0}+0xba8>
+10003cde4: 9400c492    	bl	0x10006e02c <lifecycle::common::existing_security_audit>
+10003cde8: 14000001    	b	0x10003cdec <<lifecycle::Fixture>::open::{closure#0}+0xbc8>
+10003ce00: 97ff2a02    	bl	0x100007608 <<lifecycle::common::existing_security_audit::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003ce04: 1400000b    	b	0x10003ce30 <<lifecycle::Fixture>::open::{closure#0}+0xc0c>
+10003ce18: 17ffff06    	b	0x10003ca30 <<lifecycle::Fixture>::open::{closure#0}+0x80c>
+10003ce2c: 17fffff7    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003ce44: 948d4a35    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003ce48: 17fffd87    	b	0x10003c464 <<lifecycle::Fixture>::open::{closure#0}+0x240>
+10003ce54: 9401d26a    	bl	0x1000b17fc <core::ptr::drop_glue::<lifecycle::common::existing_security_audit::{closure#0}>>
+10003ce58: 17ffffec    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003ce6c: 17fffff8    	b	0x10003ce4c <<lifecycle::Fixture>::open::{closure#0}+0xc28>
+10003ce78: 97ff27fa    	bl	0x100006e60 <lifecycle::common::existing_security_audit::{closure#0}>
+10003ce80: 14000001    	b	0x10003ce84 <<lifecycle::Fixture>::open::{closure#0}+0xc60>
+10003cea0: 14000001    	b	0x10003cea4 <<lifecycle::Fixture>::open::{closure#0}+0xc80>
+10003cef0: 9401d243    	bl	0x1000b17fc <core::ptr::drop_glue::<lifecycle::common::existing_security_audit::{closure#0}>>
+10003cef4: 14000001    	b	0x10003cef8 <<lifecycle::Fixture>::open::{closure#0}+0xcd4>
+10003cf04: 1400006b    	b	0x10003d0b0 <<lifecycle::Fixture>::open::{closure#0}+0xe8c>
+10003cf10: 17ffffbe    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003cf1c: 9477e502    	bl	0x101e36324 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::NodeStore>>>
+10003cf20: 17fffffa    	b	0x10003cf08 <<lifecycle::Fixture>::open::{closure#0}+0xce4>
+10003cf2c: 17ffffb7    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003cf40: 17fffff9    	b	0x10003cf24 <<lifecycle::Fixture>::open::{closure#0}+0xd00>
+10003cf70: 9402fab1    	bl	0x1000fba34 <<alloc::collections::btree::map::BTreeMap<u64, lifecycle::common::PhysicalFixture> as core::ops::index::Index<&u64>>::index>
+10003cf78: 1400000a    	b	0x10003cfa0 <<lifecycle::Fixture>::open::{closure#0}+0xd7c>
+10003cf88: 140003a0    	b	0x10003de08 <<lifecycle::Fixture>::open::{closure#0}+0x1be4>
+10003cf9c: 17fffff8    	b	0x10003cf7c <<lifecycle::Fixture>::open::{closure#0}+0xd58>
+10003cfa8: 94337f99    	bl	0x100d1ce0c <<alloc::sync::Arc<kasumi_engine::admission::NodeAdmission> as core::clone::Clone>::clone>
+10003cfb0: 14000001    	b	0x10003cfb4 <<lifecycle::Fixture>::open::{closure#0}+0xd90>
+10003cfc8: 9400c40f    	bl	0x10006e004 <lifecycle::common::security_audit>
+10003cfcc: 14000001    	b	0x10003cfd0 <<lifecycle::Fixture>::open::{closure#0}+0xdac>
+10003cfe0: 97ff297e    	bl	0x1000075d8 <<lifecycle::common::security_audit::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003cfe4: 14000001    	b	0x10003cfe8 <<lifecycle::Fixture>::open::{closure#0}+0xdc4>
+10003cffc: 948d49c7    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003d000: 17fffd14    	b	0x10003c450 <<lifecycle::Fixture>::open::{closure#0}+0x22c>
+10003d00c: 9401d1b6    	bl	0x1000b16e4 <core::ptr::drop_glue::<lifecycle::common::security_audit::{closure#0}>>
+10003d010: 17ffff7e    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003d024: 17fffff8    	b	0x10003d004 <<lifecycle::Fixture>::open::{closure#0}+0xde0>
+10003d030: 97ff2653    	bl	0x10000697c <lifecycle::common::security_audit::{closure#0}>
+10003d038: 14000001    	b	0x10003d03c <<lifecycle::Fixture>::open::{closure#0}+0xe18>
+10003d058: 14000001    	b	0x10003d05c <<lifecycle::Fixture>::open::{closure#0}+0xe38>
+10003d0a8: 9401d18f    	bl	0x1000b16e4 <core::ptr::drop_glue::<lifecycle::common::security_audit::{closure#0}>>
+10003d0ac: 17ffff93    	b	0x10003cef8 <<lifecycle::Fixture>::open::{closure#0}+0xcd4>
+10003d0ec: 948149e1    	bl	0x10208f870 <<&str as core::convert::Into<alloc::string::String>>::into>
+10003d0f0: 1400001c    	b	0x10003d160 <<lifecycle::Fixture>::open::{closure#0}+0xf3c>
+10003d130: 948149d0    	bl	0x10208f870 <<&str as core::convert::Into<alloc::string::String>>::into>
+10003d134: 140000e3    	b	0x10003d4c0 <<lifecycle::Fixture>::open::{closure#0}+0x129c>
+10003d148: 140000cd    	b	0x10003d47c <<lifecycle::Fixture>::open::{closure#0}+0x1258>
+10003d15c: 17fffff7    	b	0x10003d138 <<lifecycle::Fixture>::open::{closure#0}+0xf14>
+10003d194: 94755f72    	bl	0x101d94f5c <<kasumi_store::test_utils::LocalKeyProvider>::new>
+10003d198: 1400000b    	b	0x10003d1c4 <<lifecycle::Fixture>::open::{closure#0}+0xfa0>
+10003d1ac: 17ffffe3    	b	0x10003d138 <<lifecycle::Fixture>::open::{closure#0}+0xf14>
+10003d1c0: 17fffff7    	b	0x10003d19c <<lifecycle::Fixture>::open::{closure#0}+0xf78>
+10003d1cc: 9400d18d    	bl	0x100071800 <<alloc::sync::Arc<kasumi_store::test_utils::LocalKeyProvider>>::new>
+10003d1d4: 14000001    	b	0x10003d1d8 <<lifecycle::Fixture>::open::{closure#0}+0xfb4>
+10003d200: 9474cd35    	bl	0x101d706d4 <<kasumi_store::serving_access::StorageAccess>::node_control>
+10003d204: 1400000a    	b	0x10003d22c <<lifecycle::Fixture>::open::{closure#0}+0x1008>
+10003d214: 17ffffe2    	b	0x10003d19c <<lifecycle::Fixture>::open::{closure#0}+0xf78>
+10003d228: 17fffff8    	b	0x10003d208 <<lifecycle::Fixture>::open::{closure#0}+0xfe4>
+10003d260: 94797a44    	bl	0x101e9bb70 <<kasumi_store::TenantStore>::open_existing_fixture_with_access>
+10003d264: 14000001    	b	0x10003d268 <<lifecycle::Fixture>::open::{closure#0}+0x1044>
+10003d288: 9400b12d    	bl	0x10006973c <<<kasumi_store::TenantStore>::open_existing_fixture_with_access::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003d28c: 14000014    	b	0x10003d2dc <<lifecycle::Fixture>::open::{closure#0}+0x10b8>
+10003d29c: 17fffedb    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003d2ac: 14000001    	b	0x10003d2b0 <<lifecycle::Fixture>::open::{closure#0}+0x108c>
+10003d2c0: 14000001    	b	0x10003d2c4 <<lifecycle::Fixture>::open::{closure#0}+0x10a0>
+10003d2d8: 17ffffee    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003d2f4: 948d4909    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003d2f8: 17fffc65    	b	0x10003c48c <<lifecycle::Fixture>::open::{closure#0}+0x268>
+10003d304: 9401943e    	bl	0x1000a23fc <core::ptr::drop_glue::<<kasumi_store::TenantStore>::open_existing_fixture_with_access::{closure#0}>>
+10003d308: 17ffffe2    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003d31c: 17fffff8    	b	0x10003d2fc <<lifecycle::Fixture>::open::{closure#0}+0x10d8>
+10003d328: 9400affb    	bl	0x100069314 <<kasumi_store::TenantStore>::open_existing_fixture_with_access::{closure#0}>
+10003d334: 14000001    	b	0x10003d338 <<lifecycle::Fixture>::open::{closure#0}+0x1114>
+10003d35c: 14000001    	b	0x10003d360 <<lifecycle::Fixture>::open::{closure#0}+0x113c>
+10003d3b0: 94019413    	bl	0x1000a23fc <core::ptr::drop_glue::<<kasumi_store::TenantStore>::open_existing_fixture_with_access::{closure#0}>>
+10003d3b4: 14000001    	b	0x10003d3b8 <<lifecycle::Fixture>::open::{closure#0}+0x1194>
+10003d3d0: 14000001    	b	0x10003d3d4 <<lifecycle::Fixture>::open::{closure#0}+0x11b0>
+10003d404: 948d4682    	bl	0x10238ee0c <core::result::unwrap_failed>
+10003d408: 14000009    	b	0x10003d42c <<lifecycle::Fixture>::open::{closure#0}+0x1208>
+10003d424: 9454c753    	bl	0x10156f170 <core::ptr::drop_glue::<anyhow::Error>>
+10003d428: 14000003    	b	0x10003d434 <<lifecycle::Fixture>::open::{closure#0}+0x1210>
+10003d430: 948d4691    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+10003d448: 17ffff9f    	b	0x10003d2c4 <<lifecycle::Fixture>::open::{closure#0}+0x10a0>
+10003d458: 1400009d    	b	0x10003d6cc <<lifecycle::Fixture>::open::{closure#0}+0x14a8>
+10003d464: 9477e35f    	bl	0x101e361e0 <core::ptr::drop_glue::<alloc::sync::Arc<dyn kasumi_store::keys::KeyProvider>>>
+10003d468: 17ffff4d    	b	0x10003d19c <<lifecycle::Fixture>::open::{closure#0}+0xf78>
+10003d474: 94656932    	bl	0x10199793c <core::ptr::drop_glue::<alloc::string::String>>
+10003d478: 17ffff30    	b	0x10003d138 <<lifecycle::Fixture>::open::{closure#0}+0xf14>
+10003d484: 17ffff83    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003d490: 9477e3a5    	bl	0x101e36324 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::NodeStore>>>
+10003d494: 17fffffa    	b	0x10003d47c <<lifecycle::Fixture>::open::{closure#0}+0x1258>
+10003d4a8: 14000251    	b	0x10003ddec <<lifecycle::Fixture>::open::{closure#0}+0x1bc8>
+10003d4bc: 17fffff7    	b	0x10003d498 <<lifecycle::Fixture>::open::{closure#0}+0x1274>
+10003d4f4: 94755e9a    	bl	0x101d94f5c <<kasumi_store::test_utils::LocalKeyProvider>::new>
+10003d4f8: 1400000b    	b	0x10003d524 <<lifecycle::Fixture>::open::{closure#0}+0x1300>
+10003d50c: 17ffffe3    	b	0x10003d498 <<lifecycle::Fixture>::open::{closure#0}+0x1274>
+10003d520: 17fffff7    	b	0x10003d4fc <<lifecycle::Fixture>::open::{closure#0}+0x12d8>
+10003d52c: 9400d0b5    	bl	0x100071800 <<alloc::sync::Arc<kasumi_store::test_utils::LocalKeyProvider>>::new>
+10003d534: 14000001    	b	0x10003d538 <<lifecycle::Fixture>::open::{closure#0}+0x1314>
+10003d560: 9474cc5d    	bl	0x101d706d4 <<kasumi_store::serving_access::StorageAccess>::node_control>
+10003d564: 1400000a    	b	0x10003d58c <<lifecycle::Fixture>::open::{closure#0}+0x1368>
+10003d574: 17ffffe2    	b	0x10003d4fc <<lifecycle::Fixture>::open::{closure#0}+0x12d8>
+10003d588: 17fffff8    	b	0x10003d568 <<lifecycle::Fixture>::open::{closure#0}+0x1344>
+10003d5c0: 94797988    	bl	0x101e9bbe0 <<kasumi_store::TenantStore>::initialize_catalog_fixture_with_access>
+10003d5c4: 14000001    	b	0x10003d5c8 <<lifecycle::Fixture>::open::{closure#0}+0x13a4>
+10003d5e8: 9475abbc    	bl	0x101da84d8 <<<kasumi_store::TenantStore>::initialize_catalog_fixture_with_access::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003d5ec: 14000001    	b	0x10003d5f0 <<lifecycle::Fixture>::open::{closure#0}+0x13cc>
+10003d608: 948d4844    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003d60c: 17fffb9b    	b	0x10003c478 <<lifecycle::Fixture>::open::{closure#0}+0x254>
+10003d618: 94780467    	bl	0x101e3e7b4 <core::ptr::drop_glue::<<kasumi_store::TenantStore>::initialize_catalog_fixture_with_access::{closure#0}>>
+10003d61c: 17ffff1d    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003d630: 17fffff8    	b	0x10003d610 <<lifecycle::Fixture>::open::{closure#0}+0x13ec>
+10003d63c: 9475aab5    	bl	0x101da8110 <<kasumi_store::TenantStore>::initialize_catalog_fixture_with_access::{closure#0}>
+10003d648: 14000001    	b	0x10003d64c <<lifecycle::Fixture>::open::{closure#0}+0x1428>
+10003d670: 14000001    	b	0x10003d674 <<lifecycle::Fixture>::open::{closure#0}+0x1450>
+10003d6c4: 9478043c    	bl	0x101e3e7b4 <core::ptr::drop_glue::<<kasumi_store::TenantStore>::initialize_catalog_fixture_with_access::{closure#0}>>
+10003d6c8: 17ffff3c    	b	0x10003d3b8 <<lifecycle::Fixture>::open::{closure#0}+0x1194>
+10003d6e0: 14000001    	b	0x10003d6e4 <<lifecycle::Fixture>::open::{closure#0}+0x14c0>
+10003d720: 94755e0f    	bl	0x101d94f5c <<kasumi_store::test_utils::LocalKeyProvider>::new>
+10003d724: 1400001b    	b	0x10003d790 <<lifecycle::Fixture>::open::{closure#0}+0x156c>
+10003d764: 94755dfe    	bl	0x101d94f5c <<kasumi_store::test_utils::LocalKeyProvider>::new>
+10003d768: 1400008f    	b	0x10003d9a4 <<lifecycle::Fixture>::open::{closure#0}+0x1780>
+10003d778: 1400007b    	b	0x10003d964 <<lifecycle::Fixture>::open::{closure#0}+0x1740>
+10003d78c: 17fffff8    	b	0x10003d76c <<lifecycle::Fixture>::open::{closure#0}+0x1548>
+10003d798: 9400d01a    	bl	0x100071800 <<alloc::sync::Arc<kasumi_store::test_utils::LocalKeyProvider>>::new>
+10003d7a0: 14000001    	b	0x10003d7a4 <<lifecycle::Fixture>::open::{closure#0}+0x1580>
+10003d7c4: 94755f7d    	bl	0x101d955b8 <kasumi_store::test_utils::open_existing_custody_fixture>
+10003d7c8: 14000001    	b	0x10003d7cc <<lifecycle::Fixture>::open::{closure#0}+0x15a8>
+10003d7e4: 9402fbda    	bl	0x1000fc74c <<kasumi_store::test_utils::open_existing_custody_fixture::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003d7e8: 14000001    	b	0x10003d7ec <<lifecycle::Fixture>::open::{closure#0}+0x15c8>
+10003d804: 948d47c5    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003d808: 17fffb2b    	b	0x10003c4b4 <<lifecycle::Fixture>::open::{closure#0}+0x290>
+10003d814: 9401a211    	bl	0x1000a6058 <core::ptr::drop_glue::<kasumi_store::test_utils::open_existing_custody_fixture::{closure#0}>>
+10003d818: 17fffe9e    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003d82c: 17fffff8    	b	0x10003d80c <<lifecycle::Fixture>::open::{closure#0}+0x15e8>
+10003d838: 9474c630    	bl	0x101d6f0f8 <kasumi_store::test_utils::open_existing_custody_fixture::{closure#0}>
+10003d844: 14000001    	b	0x10003d848 <<lifecycle::Fixture>::open::{closure#0}+0x1624>
+10003d86c: 14000001    	b	0x10003d870 <<lifecycle::Fixture>::open::{closure#0}+0x164c>
+10003d8c0: 9401a1e6    	bl	0x1000a6058 <core::ptr::drop_glue::<kasumi_store::test_utils::open_existing_custody_fixture::{closure#0}>>
+10003d8c4: 14000001    	b	0x10003d8c8 <<lifecycle::Fixture>::open::{closure#0}+0x16a4>
+10003d8e0: 14000001    	b	0x10003d8e4 <<lifecycle::Fixture>::open::{closure#0}+0x16c0>
+10003d910: 948d453f    	bl	0x10238ee0c <core::result::unwrap_failed>
+10003d914: 14000008    	b	0x10003d934 <<lifecycle::Fixture>::open::{closure#0}+0x1710>
+10003d92c: 9454c611    	bl	0x10156f170 <core::ptr::drop_glue::<anyhow::Error>>
+10003d930: 14000003    	b	0x10003d93c <<lifecycle::Fixture>::open::{closure#0}+0x1718>
+10003d938: 948d454f    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+10003d950: 17fffe58    	b	0x10003d2b0 <<lifecycle::Fixture>::open::{closure#0}+0x108c>
+10003d960: 1400005f    	b	0x10003dadc <<lifecycle::Fixture>::open::{closure#0}+0x18b8>
+10003d96c: 17fffe49    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003d978: 9477e262    	bl	0x101e36300 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::TenantStore>>>
+10003d97c: 17fffffa    	b	0x10003d964 <<lifecycle::Fixture>::open::{closure#0}+0x1740>
+10003d98c: 14000109    	b	0x10003ddb0 <<lifecycle::Fixture>::open::{closure#0}+0x1b8c>
+10003d9a0: 17fffff8    	b	0x10003d980 <<lifecycle::Fixture>::open::{closure#0}+0x175c>
+10003d9ac: 9400cf95    	bl	0x100071800 <<alloc::sync::Arc<kasumi_store::test_utils::LocalKeyProvider>>::new>
+10003d9b4: 14000001    	b	0x10003d9b8 <<lifecycle::Fixture>::open::{closure#0}+0x1794>
+10003d9d8: 94755eeb    	bl	0x101d95584 <kasumi_store::test_utils::initialize_custody_fixture>
+10003d9dc: 14000001    	b	0x10003d9e0 <<lifecycle::Fixture>::open::{closure#0}+0x17bc>
+10003d9f8: 9402fb49    	bl	0x1000fc71c <<kasumi_store::test_utils::initialize_custody_fixture::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003d9fc: 14000001    	b	0x10003da00 <<lifecycle::Fixture>::open::{closure#0}+0x17dc>
+10003da18: 948d4740    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003da1c: 17fffaa1    	b	0x10003c4a0 <<lifecycle::Fixture>::open::{closure#0}+0x27c>
+10003da28: 9401a103    	bl	0x1000a5e34 <core::ptr::drop_glue::<kasumi_store::test_utils::initialize_custody_fixture::{closure#0}>>
+10003da2c: 17fffe19    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003da40: 17fffff8    	b	0x10003da20 <<lifecycle::Fixture>::open::{closure#0}+0x17fc>
+10003da4c: 9474c3c3    	bl	0x101d6e958 <kasumi_store::test_utils::initialize_custody_fixture::{closure#0}>
+10003da58: 14000001    	b	0x10003da5c <<lifecycle::Fixture>::open::{closure#0}+0x1838>
+10003da80: 14000001    	b	0x10003da84 <<lifecycle::Fixture>::open::{closure#0}+0x1860>
+10003dad4: 9401a0d8    	bl	0x1000a5e34 <core::ptr::drop_glue::<kasumi_store::test_utils::initialize_custody_fixture::{closure#0}>>
+10003dad8: 17ffff7c    	b	0x10003d8c8 <<lifecycle::Fixture>::open::{closure#0}+0x16a4>
+10003db10: 9400d0e2    	bl	0x100071e98 <<alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe> as core::clone::Clone>::clone>
+10003db18: 1400000c    	b	0x10003db48 <<lifecycle::Fixture>::open::{closure#0}+0x1924>
+10003db2c: 9477e246    	bl	0x101e36444 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::storage_domains::TenantStorageSet>>>
+10003db30: 1400009d    	b	0x10003dda4 <<lifecycle::Fixture>::open::{closure#0}+0x1b80>
+10003db44: 17fffff6    	b	0x10003db1c <<lifecycle::Fixture>::open::{closure#0}+0x18f8>
+10003db70: 944153cb    	bl	0x101092a9c <<openraft::config::config::Config as core::default::Default>::default>
+10003db74: 1400000c    	b	0x10003dba4 <<lifecycle::Fixture>::open::{closure#0}+0x1980>
+10003db88: 940e988b    	bl	0x1003e3db4 <core::ptr::drop_glue::<alloc::sync::Arc<dyn kasumi_raft::network::RaftTransport>>>
+10003db8c: 1400007d    	b	0x10003dd80 <<lifecycle::Fixture>::open::{closure#0}+0x1b5c>
+10003dba0: 17fffff6    	b	0x10003db78 <<lifecycle::Fixture>::open::{closure#0}+0x1954>
+10003dc64: 94337b20    	bl	0x100d1c8e4 <<alloc::sync::Arc<kasumi_engine::security_audit::SecurityAudit> as core::clone::Clone>::clone>
+10003dc6c: 1400000a    	b	0x10003dc94 <<lifecycle::Fixture>::open::{closure#0}+0x1a70>
+10003dc7c: 14000028    	b	0x10003dd1c <<lifecycle::Fixture>::open::{closure#0}+0x1af8>
+10003dc90: 17fffff8    	b	0x10003dc70 <<lifecycle::Fixture>::open::{closure#0}+0x1a4c>
+10003dccc: 941099bd    	bl	0x1004643c0 <kasumi_engine::bootstrap::fixtures::open_fixture_replicated>
+10003dcd0: 14000001    	b	0x10003dcd4 <<lifecycle::Fixture>::open::{closure#0}+0x1ab0>
+10003dcf4: 940279c7    	bl	0x1000dc410 <<kasumi_engine::bootstrap::fixtures::open_fixture_replicated::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003dcf8: 14000001    	b	0x10003dcfc <<lifecycle::Fixture>::open::{closure#0}+0x1ad8>
+10003dd14: 948d4681    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003dd18: 17fff9ec    	b	0x10003c4c8 <<lifecycle::Fixture>::open::{closure#0}+0x2a4>
+10003dd2c: 14000005    	b	0x10003dd40 <<lifecycle::Fixture>::open::{closure#0}+0x1b1c>
+10003dd38: 94417c0e    	bl	0x10109cd70 <core::ptr::drop_glue::<openraft::config::config::Config>>
+10003dd3c: 17fffff8    	b	0x10003dd1c <<lifecycle::Fixture>::open::{closure#0}+0x1af8>
+10003dd50: 14000005    	b	0x10003dd64 <<lifecycle::Fixture>::open::{closure#0}+0x1b40>
+10003dd5c: 940e9816    	bl	0x1003e3db4 <core::ptr::drop_glue::<alloc::sync::Arc<dyn kasumi_raft::network::RaftTransport>>>
+10003dd60: 17fffff8    	b	0x10003dd40 <<lifecycle::Fixture>::open::{closure#0}+0x1b1c>
+10003dd6c: 17fffa0b    	b	0x10003c598 <<lifecycle::Fixture>::open::{closure#0}+0x374>
+10003dd78: 9477e1b3    	bl	0x101e36444 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::storage_domains::TenantStorageSet>>>
+10003dd7c: 17fffffa    	b	0x10003dd64 <<lifecycle::Fixture>::open::{closure#0}+0x1b40>
+10003dd90: 9477e1ad    	bl	0x101e36444 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::storage_domains::TenantStorageSet>>>
+10003dd94: 14000001    	b	0x10003dd98 <<lifecycle::Fixture>::open::{closure#0}+0x1b74>
+10003dda0: 17fff9fe    	b	0x10003c598 <<lifecycle::Fixture>::open::{closure#0}+0x374>
+10003ddac: 17fff9fb    	b	0x10003c598 <<lifecycle::Fixture>::open::{closure#0}+0x374>
+10003ddb8: 17fffd36    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003ddc4: 9477e14f    	bl	0x101e36300 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::TenantStore>>>
+10003ddc8: 17fffffa    	b	0x10003ddb0 <<lifecycle::Fixture>::open::{closure#0}+0x1b8c>
+10003ddd4: 9477e103    	bl	0x101e361e0 <core::ptr::drop_glue::<alloc::sync::Arc<dyn kasumi_store::keys::KeyProvider>>>
+10003ddd8: 17fffdc9    	b	0x10003d4fc <<lifecycle::Fixture>::open::{closure#0}+0x12d8>
+10003dde4: 946566d6    	bl	0x10199793c <core::ptr::drop_glue::<alloc::string::String>>
+10003dde8: 17fffdac    	b	0x10003d498 <<lifecycle::Fixture>::open::{closure#0}+0x1274>
+10003ddf4: 17fffd27    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003de00: 9477e149    	bl	0x101e36324 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::NodeStore>>>
+10003de04: 17fffffa    	b	0x10003ddec <<lifecycle::Fixture>::open::{closure#0}+0x1bc8>
+10003de10: 17fffbfe    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003de18: 9477e143    	bl	0x101e36324 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::NodeStore>>>
+10003de1c: 17fffffb    	b	0x10003de08 <<lifecycle::Fixture>::open::{closure#0}+0x1be4>
+10003de28: 17fffa1b    	b	0x10003c694 <<lifecycle::Fixture>::open::{closure#0}+0x470>
+10003de34: 946566c2    	bl	0x10199793c <core::ptr::drop_glue::<alloc::string::String>>
+10003de38: 17fffffa    	b	0x10003de20 <<lifecycle::Fixture>::open::{closure#0}+0x1bfc>
+10003de44: 940e9a5b    	bl	0x1003e47b0 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+10003de48: 17fff9d4    	b	0x10003c598 <<lifecycle::Fixture>::open::{closure#0}+0x374>
+10003de54: 940e9a18    	bl	0x1003e46b4 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::security_audit::SecurityAudit>>>
+10003de58: 17fffbec    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003de64: 9477e130    	bl	0x101e36324 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::NodeStore>>>
+10003de68: 17fffaf2    	b	0x10003ca30 <<lifecycle::Fixture>::open::{closure#0}+0x80c>
+10003de74: 9401a0de    	bl	0x1000a61ec <core::ptr::drop_glue::<kasumi_engine::bootstrap::initialize_replicated::{closure#0}>>
+10003de78: 17fff951    	b	0x10003c3bc <<lifecycle::Fixture>::open::{closure#0}+0x198>
+10003de8c: 17fffff8    	b	0x10003de6c <<lifecycle::Fixture>::open::{closure#0}+0x1c48>
+10003de98: 940bdc65    	bl	0x10033502c <kasumi_engine::bootstrap::initialize_replicated::{closure#0}>
+10003dea4: 14000001    	b	0x10003dea8 <<lifecycle::Fixture>::open::{closure#0}+0x1c84>
+10003dec0: 14000001    	b	0x10003dec4 <<lifecycle::Fixture>::open::{closure#0}+0x1ca0>
+10003df08: 9401a0b9    	bl	0x1000a61ec <core::ptr::drop_glue::<kasumi_engine::bootstrap::initialize_replicated::{closure#0}>>
+10003df0c: 14000001    	b	0x10003df10 <<lifecycle::Fixture>::open::{closure#0}+0x1cec>
+10003df28: 14000001    	b	0x10003df2c <<lifecycle::Fixture>::open::{closure#0}+0x1d08>
+10003df58: 948d43ad    	bl	0x10238ee0c <core::result::unwrap_failed>
+10003df5c: 14000008    	b	0x10003df7c <<lifecycle::Fixture>::open::{closure#0}+0x1d58>
+10003df74: 9454c47f    	bl	0x10156f170 <core::ptr::drop_glue::<anyhow::Error>>
+10003df78: 14000003    	b	0x10003df84 <<lifecycle::Fixture>::open::{closure#0}+0x1d60>
+10003df80: 948d43bd    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+10003df98: 17fff912    	b	0x10003c3e0 <<lifecycle::Fixture>::open::{closure#0}+0x1bc>
+10003df9c: 14000001    	b	0x10003dfa0 <<lifecycle::Fixture>::open::{closure#0}+0x1d7c>
+10003dfb0: 94026e19    	bl	0x1000d9814 <<lifecycle::Fixture>::leader>
+10003dfb4: 14000001    	b	0x10003dfb8 <<lifecycle::Fixture>::open::{closure#0}+0x1d94>
+10003dfc8: 9400043c    	bl	0x10003f0b8 <<<lifecycle::Fixture>::leader::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003dfcc: 14000001    	b	0x10003dfd0 <<lifecycle::Fixture>::open::{closure#0}+0x1dac>
+10003dfe8: 948d45cc    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003dfec: 14000001    	b	0x10003dff0 <<lifecycle::Fixture>::open::{closure#0}+0x1dcc>
+10003e000: 1400000a    	b	0x10003e028 <<lifecycle::Fixture>::open::{closure#0}+0x1e04>
+10003e00c: 94019023    	bl	0x1000a2098 <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+10003e010: 17fff8eb    	b	0x10003c3bc <<lifecycle::Fixture>::open::{closure#0}+0x198>
+10003e024: 17fffff8    	b	0x10003e004 <<lifecycle::Fixture>::open::{closure#0}+0x1de0>
+10003e030: 9400026e    	bl	0x10003e9e8 <<lifecycle::Fixture>::leader::{closure#0}>
+10003e038: 14000001    	b	0x10003e03c <<lifecycle::Fixture>::open::{closure#0}+0x1e18>
+10003e058: 14000001    	b	0x10003e05c <<lifecycle::Fixture>::open::{closure#0}+0x1e38>
+10003e0a0: 94018ffe    	bl	0x1000a2098 <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+10003e0a4: 14000001    	b	0x10003e0a8 <<lifecycle::Fixture>::open::{closure#0}+0x1e84>
+10003e0b0: 940e99c0    	bl	0x1003e47b0 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+10003e0b4: 14000001    	b	0x10003e0b8 <<lifecycle::Fixture>::open::{closure#0}+0x1e94>

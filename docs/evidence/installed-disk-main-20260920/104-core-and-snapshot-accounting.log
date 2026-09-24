@@ -1,0 +1,71 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+   Compiling kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 43s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_engine-d4dda2ec4274de51)
+
+running 49 tests
+test admission::disk_memory::tests::installed_box_stays_charged_after_facade_drop_with_operation_slots_full ... ok
+test admission::disk_memory::tests::lease_overhead_is_admitted_before_boxing_and_denial_preserves_counters ... ok
+test admission::installed::tests::concurrent_selection_is_denied_without_publishing_an_independent_core ... ok
+test admission::installed::tests::conflicting_policy_never_replaces_or_charges_the_retained_core ... ok
+test admission::installed::tests::failed_sampler_denies_reuse_and_keeps_original_core_and_panic ... 
+thread 'kasumi-rss' (4204257) panicked at crates/kasumi-engine/src/admission/installed.rs:113:21:
+Box<dyn Any>
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ok
+test admission::installed::tests::retained_registry_reuses_core_across_sealed_runtime_facades ... ok
+test admission::startup::tests::actual_children_and_original_errors_survive_cancelled_drain_and_caller_drop ... ok
+test admission::startup::tests::capacity_and_budget_denial_precede_inert_builder_and_preserve_existing_owner ... ok
+test admission::startup_integration_tests::cancelled_local_startup_and_node_census_keep_actual_group_and_charges_until_join ... ok
+test admission::tests::cancelled_detached_worker_keeps_semaphore_and_reservation_until_exit ... ok
+test admission::tests::completed_failure_keeps_original_report_and_inventory_charge_until_facade_drop ... ok
+test admission::tests::empty_inventory_capacity_is_charged_until_actual_sealed_drain ... ok
+test admission::tests::exhausted_startup_inventory_denies_before_charging_another_owner ... ok
+test admission::tests::explicit_high_water_cannot_bypass_detected_memory_capacity ... ok
+test admission::tests::fixed_bookkeeping_is_denied_before_its_allocation_when_budget_is_too_small ... ok
+test admission::tests::fixed_charge_slots_reuse_capacity_without_forgetting_live_owners ... ok
+test admission::tests::fixture_total_resolution_preserves_the_original_runtime_payload_boundary ... ok
+test admission::tests::identifier_exhaustion_preserves_existing_charge_and_free_slot ... ok
+test admission::tests::initial_bookkeeping_obeys_the_existing_low_water_startup_fence ... ok
+test admission::tests::last_reservation_waits_for_paused_sampler_and_actual_source_destruction ... ok
+test admission::tests::new_inventory_policies_are_required_without_legacy_aliases ... ok
+test admission::tests::pressure_cancels_queries_but_never_changes_write_work_and_uses_hysteresis ... ok
+test admission::tests::queued_rebuild_expands_its_existing_slot_and_rejects_growth_without_losing_charge ... ok
+test admission::tests::real_process_rss_and_physical_capacity_are_measured ... ok
+test admission::tests::replacement_facade_preserves_resident_charge_and_has_fresh_startup_fence ... ok
+test admission::tests::reserved_audit_workspace_remains_usable_under_rss_pressure ... ok
+test admission::tests::resident_admission_never_consumes_an_operation_slot ... ok
+test admission::tests::result_release_rechecks_pressure_after_suspend_even_for_completed_work ... ok
+test admission::tests::retained_cursor_releases_operation_slot_but_keeps_bytes_until_last_owner ... ok
+test admission::tests::sampler_panic_fences_fresh_admission_and_preserves_original_join_outcome ... 
+thread 'kasumi-rss' (4204327) panicked at crates/kasumi-engine/src/admission.rs:1811:21:
+Box<dyn Any>
+ok
+test admission::tests::shutdown_drain_waits_for_detached_work_to_release_its_registration ... ok
+test admission::tests::snapshot_startup_inventory_is_charged_without_a_governor_cycle ... ok
+test admission::tests::suspend_invalidates_old_measurement_and_slow_or_failed_probe_denies ... ok
+test admission::tests::workspace_handoff_preserves_slot_owner_and_checks_only_replacement_growth ... ok
+test snapshot_codec::frame_tests::inspection_reads_large_typed_payload_in_fixed_chunks_before_any_dto ... ok
+test snapshot_codec::frame_tests::obsolete_receipt_tuple_and_resident_header_fields_are_rejected ... ok
+test snapshot_codec::frame_tests::permanent_aggregate_does_not_become_ram_and_all_layout_arithmetic_is_checked ... ok
+test snapshot_codec::frame_tests::permanent_kind_cannot_forward_a_resident_payload_to_semantic_consumers ... ok
+test snapshot_codec::frame_tests::typed_inspection_rejects_bounds_kind_order_and_terminal_substitutions ... ok
+test snapshot_codec::literal_tests::literal_marker_documents_schema_and_staged_records_survive_canonical_snapshots ... ok
+test snapshot_codec::record_work::tests::dense_numeric_sites_are_charged_before_serde_and_independent_of_token_width ... ok
+test snapshot_codec::record_work::tests::escaped_and_duplicate_keys_are_counted_with_bounded_depth_before_decode ... ok
+test snapshot_codec::recovery_tests::application_backup_rejects_control_recovery_and_embedded_or_orphan_records ... ok
+test snapshot_codec::recovery_tests::canonical_recovery_records_roundtrip_and_point_accounting_match_stream ... ok
+test snapshot_codec::recovery_tests::completion_history_stream_is_resident_and_counts_in_snapshot_admission_and_quota ... ok
+test snapshot_codec::tests::archived_audit_prefix_preserves_absolute_sequences_and_head ... ok
+test snapshot_codec::tests::authenticated_duplicate_header_is_rejected ... ok
+test snapshot_codec::tests::canonical_stream_requires_terminal_counts_digest_and_exact_eof ... ok
+test snapshot_codec::tests::oversized_record_is_rejected_before_payload_read_or_allocation ... ok
+
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 169 filtered out; finished in 5.69s
+

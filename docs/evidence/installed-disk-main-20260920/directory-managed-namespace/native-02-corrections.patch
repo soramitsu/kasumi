@@ -1,0 +1,64 @@
+--- a/crates/kasumi-store/src/node_disk/directory/managed.rs
++++ b/crates/kasumi-store/src/node_disk/directory/managed.rs
+@@ -907,9 +907,19 @@
+         .as_ref()
+         .expect("retained child")
+         .metadata()?;
+-    if Some(Identity::of(&metadata)) != operation.identity || metadata.nlink() != 0 {
++    if Some(Identity::of(&metadata)) != operation.identity {
+         return Err(io::ErrorKind::InvalidData.into());
+     }
++    // Darwin may retain the original directory nlink value after rmdir. Verify
++    // the exact bound name is absent; the actual old inode remains in custody
++    // until its explicit close below, before any physical credit is returned.
++    let mut absent: libc::stat = unsafe { std::mem::zeroed() };
++    if unsafe { libc::fstatat(operation.parent.file().as_raw_fd(), operation.name().as_ptr(),
++        &mut absent, libc::AT_SYMLINK_NOFOLLOW) } == 0 {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    let absence = io::Error::last_os_error();
++    if absence.kind() != io::ErrorKind::NotFound { return Err(absence); }
+     settle_parent(disk, state)?;
+     let bytes = state
+         .bytes
+--- a/crates/kasumi-store/src/node_disk/directory/managed/tests.rs
++++ b/crates/kasumi-store/src/node_disk/directory/managed/tests.rs
+@@ -98,7 +98,7 @@
+ #[test]
+ fn managed_child_names_depth_existing_identity_and_root_removal_are_exact() {
+     let (directory, mut config, memory) = fixture();
+-    config.max_depth = 2;
++    config.max_depth = u32::try_from(directory.path().components().count()).unwrap();
+     let disk = open(&config, &memory);
+     let parent = root(&disk);
+     for name in [c"", c".", c"..", c"a/b"] {
+@@ -119,13 +119,13 @@
+             .kind(),
+         io::ErrorKind::AlreadyExists
+     );
+-    assert_eq!(
+-        child
+-            .create_child(c"too-deep", DiskWork::Foreground)
+-            .unwrap_err()
+-            .kind(),
+-        io::ErrorKind::InvalidInput
+-    );
++    let mut chain = vec![child];
++    for _ in 2..config.max_depth {
++        let next = chain.last().unwrap().create_child(c"level", DiskWork::Foreground).unwrap();
++        chain.push(next);
++    }
++    assert_eq!(chain.last().unwrap().create_child(c"too-deep", DiskWork::Foreground)
++        .unwrap_err().kind(), io::ErrorKind::InvalidInput);
+     assert_eq!(
+         parent.remove_if_empty().unwrap_err().kind(),
+         io::ErrorKind::InvalidInput
+@@ -135,7 +135,7 @@
+         inode
+     );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+-    child.remove_if_empty().unwrap();
++    while let Some(child) = chain.pop() { child.remove_if_empty().unwrap(); }
+ }
+ 
+ #[test]

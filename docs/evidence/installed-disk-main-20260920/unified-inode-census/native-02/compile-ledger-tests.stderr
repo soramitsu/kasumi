@@ -1,0 +1,16 @@
+warning: unused imports: `Arc`, `BTreeMap`, `HashMap`, `Mutex`, `Weak`, `ffi::CString`, `fs::File`, and `path::PathBuf`
+ --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-02/ledger_tests.rs:2:25
+  |
+2 | use std::{collections::{BTreeMap,HashMap},ffi::CString,fs::File,path::PathBuf,sync::{Arc,Mutex,Weak}};
+  |                         ^^^^^^^^ ^^^^^^^  ^^^^^^^^^^^^ ^^^^^^^^ ^^^^^^^^^^^^^        ^^^ ^^^^^ ^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `ledger::AccountedInode`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-02/ledger_tests.rs:36:5
+   |
+36 | use ledger::AccountedInode;
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: 2 warnings emitted
+

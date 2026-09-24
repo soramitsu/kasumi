@@ -528,12 +528,94 @@ mod tests {
         tenant: &str,
     ) -> (tempfile::TempDir, Arc<TenantEngine>, Arc<TenantStore>) {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
+        kasumi_store::private_files::create_directory(&directory.path().join("persistent"))
+            .unwrap();
+        let disk =
+            kasumi_store::ScratchDisk::fixture(directory.path().join("scratch"), memory.clone());
         let node = NodeStore::create_new_fixture(
-            directory.path().join("node.redb"),
+            directory.path().join("persistent/node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+            memory,
+            disk,
         )
         .unwrap();
+        fixture_on_node(directory, node, incarnation, tenant).await
+    }
+    type Fixture = (tempfile::TempDir, Arc<TenantEngine>, Arc<TenantStore>);
+    async fn admitted_pair(
+        incarnation: &str,
+        config: crate::admission::AdmissionConfig,
+    ) -> (Fixture, Fixture, Arc<crate::admission::NodeAdmission>, u64) {
+        let left = kasumi_store::test_utils::private_tempdir().unwrap();
+        let right = kasumi_store::test_utils::private_tempdir().unwrap();
+        let (left_persistent, left_scratch) =
+            crate::test_utils::fixture_disk_configs(left.path()).unwrap();
+        let (right_persistent, right_scratch) =
+            crate::test_utils::fixture_disk_configs(right.path()).unwrap();
+        let metadata_bytes =
+            crate::test_utils::isolated_disk_metadata_bytes(&left_persistent, &left_scratch)
+                .unwrap()
+                .checked_add(
+                    crate::test_utils::isolated_disk_metadata_bytes(
+                        &right_persistent,
+                        &right_scratch,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        // Both real installations share the original single operation allowance.
+        let config = crate::test_utils::isolated_disk_config_with_metadata(
+            config,
+            &left_persistent,
+            &left_scratch,
+        )
+        .unwrap();
+        let config = crate::test_utils::isolated_disk_config_with_metadata(
+            config,
+            &right_persistent,
+            &right_scratch,
+        )
+        .unwrap();
+        let admission = crate::admission::NodeAdmission::new(config).unwrap();
+        let left_storage = crate::test_utils::FixtureStorage::with_admission(
+            &left_persistent,
+            &left_scratch,
+            admission.clone(),
+        )
+        .unwrap();
+        let right_storage = crate::test_utils::FixtureStorage::with_admission(
+            &right_persistent,
+            &right_scratch,
+            admission.clone(),
+        )
+        .unwrap();
+        let left_node = left_storage
+            .create_new(
+                left.path().join("persistent/node.redb"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
+        let right_node = right_storage
+            .create_new(
+                right.path().join("persistent/node.redb"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
+        let left = fixture_on_node(left, left_node, incarnation, "tenant").await;
+        let right = fixture_on_node(right, right_node, incarnation, "tenant").await;
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            metadata_bytes
+        );
+        (left, right, admission, metadata_bytes)
+    }
+    async fn fixture_on_node(
+        directory: tempfile::TempDir,
+        node: Arc<NodeStore>,
+        incarnation: &str,
+        tenant: &str,
+    ) -> Fixture {
         let store = TenantStore::initialize_catalog_fixture(
             node,
             tenant.into(),
@@ -607,6 +689,7 @@ mod tests {
                 .prepare_state(
                     state,
                     engine.generation().unwrap().receipts.clone(),
+                    engine.generation().unwrap().backup_bindings.clone(),
                     engine.generation().unwrap().terminals.clone(),
                     engine.generation().unwrap().target_resolutions.clone(),
                 )
@@ -661,7 +744,7 @@ mod tests {
         let references = install_chain(&source, &source_store);
         let snapshot = capture(source.clone()).await.unwrap();
         let logical = source
-            .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
+            .logical_snapshot(source_store.scratch_disk())
             .unwrap();
         let incomplete_target = target.clone();
         let candidate = logical.clone();
@@ -749,7 +832,7 @@ mod tests {
         assert_eq!(target.generation().unwrap().state.audit_retention, before);
         // The logical-only encoding is not a supported transport fallback.
         let logical = source
-            .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
+            .logical_snapshot(source_store.scratch_disk())
             .unwrap();
         let mut logical_bytes = Vec::new();
         logical.reader().read_to_end(&mut logical_bytes).unwrap();
@@ -771,6 +854,7 @@ mod tests {
                 .prepare_state(
                     state,
                     source.generation().unwrap().receipts.clone(),
+                    source.generation().unwrap().backup_bindings.clone(),
                     source.generation().unwrap().terminals.clone(),
                     source.generation().unwrap().target_resolutions.clone(),
                 )
@@ -784,6 +868,7 @@ mod tests {
                 .prepare_state(
                     state,
                     source.generation().unwrap().receipts.clone(),
+                    source.generation().unwrap().backup_bindings.clone(),
                     source.generation().unwrap().terminals.clone(),
                     source.generation().unwrap().target_resolutions.clone(),
                 )
@@ -829,6 +914,100 @@ mod tests {
         target_store.shutdown().await.unwrap();
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn snapshot_operations_reject_foreign_equal_policy_memory_before_dispatch() {
+        use crate::admission::{AdmissionConfig, NodeAdmission};
+        use std::{
+            future::Future,
+            task::{Context, Poll, Waker},
+        };
+
+        fn ready_error<T>(
+            future: impl Future<Output = kasumi_types::Result<T>>,
+        ) -> kasumi_types::Error {
+            let mut future = std::pin::pin!(future);
+            match future
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+            {
+                Poll::Ready(Err(error)) => error,
+                Poll::Ready(Ok(_)) => panic!("foreign memory owner was accepted"),
+                Poll::Pending => panic!("foreign owner reached asynchronous work"),
+            }
+        }
+        fn usage(node: &NodeAdmission) -> (u64, usize, usize) {
+            let snapshot = node.snapshot();
+            (
+                snapshot.reserved_bytes,
+                snapshot.live_reservations,
+                snapshot.inflight_operations,
+            )
+        }
+        let config = AdmissionConfig::default();
+        let original_total = config.resolved_fixture_total_bytes().unwrap();
+        let incarnation = uuid::Uuid::new_v4().to_string();
+        let (
+            (_source_dir, source, source_store),
+            (_target_dir, target, target_store),
+            admission,
+            metadata_bytes,
+        ) = admitted_pair(&incarnation, config.clone()).await;
+        let foreign_config = AdmissionConfig {
+            max_inflight_bytes: Some(original_total.checked_add(metadata_bytes).unwrap()),
+            ..config
+        };
+        admission.memory().require_policy(&foreign_config).unwrap();
+        let foreign = NodeAdmission::new(foreign_config).unwrap();
+        assert!(!admission.shares_memory(&foreign));
+        let image = source.snapshot(admission.clone(), 60_000).await.unwrap();
+        let before = (usage(&admission), usage(&foreign));
+        let files = (
+            source_store.scratch_disk().snapshot().live_files,
+            target_store.scratch_disk().snapshot().live_files,
+        );
+        assert_eq!(
+            ready_error(source.snapshot(foreign.clone(), 60_000)).code,
+            kasumi_types::ErrorCode::Conflict
+        );
+        assert_eq!(
+            ready_error(target.prepare_snapshot_restore(image.clone(), foreign.clone(), 60_000))
+                .code,
+            kasumi_types::ErrorCode::Conflict
+        );
+        // Even the no-archive shortcut must validate the supplied memory owner.
+        let mut dependencies =
+            std::pin::pin!(source.verify_bootstrap_dependencies_owned(foreign.clone()));
+        let Poll::Ready(Err(error)) = dependencies
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+        else {
+            panic!("foreign dependency admission did not fail before dispatch")
+        };
+        assert_eq!(
+            error.downcast_ref::<kasumi_types::Error>().unwrap().code,
+            kasumi_types::ErrorCode::Conflict
+        );
+        assert_eq!((usage(&admission), usage(&foreign)), before);
+        assert_eq!(
+            (
+                source_store.scratch_disk().snapshot().live_files,
+                target_store.scratch_disk().snapshot().live_files,
+            ),
+            files
+        );
+        let prepared = target
+            .prepare_snapshot_restore(image.clone(), admission.clone(), 60_000)
+            .await
+            .unwrap();
+        assert_eq!(prepared.image(), &image);
+        source
+            .verify_bootstrap_dependencies_owned(admission)
+            .await
+            .unwrap();
+        source_store.shutdown().await.unwrap();
+        target_store.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn public_restore_admits_resident_state_without_charging_permanent_stream_as_ram() {
         use crate::staged_terminal::{AppliedIdentity, AppliedOrigin, Builder, Row};
         use kasumi_types::{
@@ -837,8 +1016,20 @@ mod tests {
         };
 
         let incarnation = uuid::Uuid::new_v4().to_string();
-        let (_source_dir, source, source_store) = fixture(&incarnation).await;
-        let (_target_dir, target, target_store) = fixture(&incarnation).await;
+        let maximum = 80 << 20;
+        let config = crate::test_utils::admission_config_with_bookkeeping(
+            crate::admission::AdmissionConfig {
+                max_inflight_bytes: Some(maximum),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (
+            (_source_dir, source, source_store),
+            (_target_dir, target, target_store),
+            admission,
+            metadata_bytes,
+        ) = admitted_pair(&incarnation, config).await;
         let previous = source.generation().unwrap();
         let mut state = previous.state.clone();
         state.revision = 512;
@@ -918,6 +1109,7 @@ mod tests {
             .prepare_state(
                 state,
                 previous.receipts.clone(),
+                previous.backup_bindings.clone(),
                 install.view,
                 previous.target_resolutions.clone(),
             )
@@ -925,44 +1117,33 @@ mod tests {
         source.publish_generation(Some(Arc::new(generation)));
         drop(previous);
 
-        // This is a fixture governor with no production maintenance lanes. It
-        // isolates point-stream admission, not final production node capacity.
-        let maximum = 80 << 20;
-        let admission = crate::admission::NodeAdmission::new(
-            crate::test_utils::admission_config_with_bookkeeping(
-                crate::admission::AdmissionConfig {
-                    max_inflight_bytes: Some(maximum),
-                    ..Default::default()
-                },
-            )
-            .unwrap(),
-        )
-        .unwrap();
         let image = source.snapshot(admission.clone(), 60_000).await.unwrap();
         let layout = inspect(&mut image.reader()).unwrap();
         assert_eq!(layout.kinds[21].records, 512);
         assert!(layout.bytes.checked_mul(3).unwrap() + (64 << 20) > maximum);
         assert!(layout.materialization_workspace().unwrap() < maximum);
-        let denied = crate::admission::NodeAdmission::new(
-            crate::test_utils::admission_config_with_bookkeeping(
-                crate::admission::AdmissionConfig {
-                    max_inflight_bytes: Some(layout.materialization_workspace().unwrap() - 1),
-                    ..Default::default()
-                },
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        let available = layout.materialization_workspace().unwrap() - 1;
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            metadata_bytes
+        );
+        let held = admission
+            .reserve(maximum.checked_sub(available).unwrap(), None)
+            .unwrap();
         let live_files = image.disk().snapshot().live_files;
         let error = target
-            .prepare_snapshot_restore(image.clone(), denied.clone(), 60_000)
+            .prepare_snapshot_restore(image.clone(), admission.clone(), 60_000)
             .await
             .err()
             .expect("accounted record work must be admitted before staging");
         assert_eq!(error.code, ErrorCode::ResourceExhausted);
         assert_eq!(image.disk().snapshot().live_files, live_files);
-        assert_eq!(crate::test_utils::reserved_payload_bytes(&denied), 0);
-        assert_eq!(denied.snapshot().inflight_operations, 0);
+        drop(held);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            metadata_bytes
+        );
+        assert_eq!(admission.snapshot().inflight_operations, 0);
         let prepared = target
             .prepare_snapshot_restore(image.clone(), admission.clone(), 60_000)
             .await
@@ -971,7 +1152,10 @@ mod tests {
         assert_eq!(prepared.image(), &image);
         assert_eq!(target.generation().unwrap().state.revision, 0);
         assert_eq!(target.generation().unwrap().terminals.head().count, 0);
-        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            metadata_bytes
+        );
         assert_eq!(admission.snapshot().inflight_operations, 0);
         source_store.shutdown().await.unwrap();
         target_store.shutdown().await.unwrap();
@@ -980,10 +1164,21 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn public_capture_and_restore_preparation_are_complete_admitted_and_never_publish() {
         let incarnation = uuid::Uuid::new_v4().to_string();
-        let (_source_dir, source, source_store) = fixture(&incarnation).await;
-        let (_target_dir, target, target_store) = fixture(&incarnation).await;
+        let config = crate::admission::AdmissionConfig::default();
+        let operation_capacity = config
+            .resolved_fixture_total_bytes()
+            .unwrap()
+            .checked_sub(
+                crate::admission::NodeAdmission::required_bookkeeping_bytes(&config).unwrap(),
+            )
+            .unwrap();
+        let (
+            (_source_dir, source, source_store),
+            (_target_dir, target, target_store),
+            admission,
+            metadata_bytes,
+        ) = admitted_pair(&incarnation, config).await;
         install_chain(&source, &source_store);
-        let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
         let image = source.snapshot(admission.clone(), 60_000).await.unwrap();
         let before = target.generation().unwrap().state.audit_retention.clone();
         let prepared = target
@@ -998,12 +1193,15 @@ mod tests {
         );
         assert_eq!(prepared.image(), &image);
         assert_eq!(target.generation().unwrap().state.audit_retention, before);
-        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            metadata_bytes
+        );
         assert!(
             target
                 .prepare_snapshot_restore(
                     source
-                        .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
+                        .logical_snapshot(source_store.scratch_disk())
                         .unwrap(),
                     admission.clone(),
                     60_000
@@ -1011,18 +1209,30 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
-        let denied = crate::admission::NodeAdmission::new(
-            crate::test_utils::admission_config_with_bookkeeping(
-                crate::admission::AdmissionConfig {
-                    max_inflight_bytes: Some(1 << 20),
-                    ..Default::default()
-                },
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert!(source.snapshot(denied, 60_000).await.is_err());
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            metadata_bytes
+        );
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            metadata_bytes
+        );
+        let held = admission
+            .reserve(operation_capacity.checked_sub(1 << 20).unwrap(), None)
+            .unwrap();
+        assert_eq!(
+            source
+                .snapshot(admission.clone(), 60_000)
+                .await
+                .unwrap_err()
+                .code,
+            kasumi_types::ErrorCode::ResourceExhausted
+        );
+        drop(held);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            metadata_bytes
+        );
         source_store.shutdown().await.unwrap();
         target_store.shutdown().await.unwrap();
     }

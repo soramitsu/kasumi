@@ -1,0 +1,11 @@
+{
+  "status": "SOURCE_ONLY_EXACT_BASE_REBINDING_NATIVE_HELD",
+  "predecessor_package": "target/installed-disk-validation/filesystem-backup-admission-revision4",
+  "predecessor_runner_sha256": "231eb56a1abb2e7e89068cac8cb9bf14a36a80a00219f135bbdf46cc5ed97ebd",
+  "runner_sha256": "2295bf365c477df784c7fe4ab0ea9089b69a7ec764f5328ce368640fc7a30832",
+  "predecessor_preparer_sha256": "f699492520ffb1b5f3bdcedf6a7528a6a858b7f8fa8e59545306f33c444c75af",
+  "preparer_sha256": "7b7d8e36cb2dca56b13bb3a908d7121991cdca6ef4aaea74f78007378aae4046",
+  "gate_checker_byte_identical": true,
+  "changes": "Only exact own/base manifest constants and revision5-to-revision6 source binding text; acceptance and dispatch logic unchanged.",
+  "previous_independent_review_sha256": "c643766df6f21731ba5c385e465cc48ade94d7b00d520cfa50e8790ef1d990b3"
+}

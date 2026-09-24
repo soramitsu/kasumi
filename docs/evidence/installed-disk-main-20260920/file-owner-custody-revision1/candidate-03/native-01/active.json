@@ -1,0 +1,12 @@
+{
+  "name": "run",
+  "pid": 30313,
+  "pgid": 30313,
+  "argv": [
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-owner-custody-revision1/candidate-03/native-01/tests",
+    "node_disk::",
+    "backup_sessions::",
+    "--nocapture",
+    "--test-threads=1"
+  ]
+}

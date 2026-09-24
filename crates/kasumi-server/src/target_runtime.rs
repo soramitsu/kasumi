@@ -13,7 +13,9 @@ use kasumi_engine::{
     TargetRequestAdmission, TargetSigner, admission::NodeAdmission,
 };
 use kasumi_serving::*;
-use kasumi_store::{BackupDestination, NodeStore, StorageAccess, TenantStorageSet, TenantStore};
+use kasumi_store::{
+    BackupDestination, NodeDiskDirectory, NodeStore, StorageAccess, TenantStorageSet, TenantStore,
+};
 use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
 use kasumi_types::*;
 use ring::signature::{Ed25519KeyPair, KeyPair};
@@ -24,13 +26,15 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 use tokio::sync::{Mutex, Semaphore};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 const MAX_CALLS: u32 = 64;
 type GenerationKey = (String, Uuid);
+#[path = "target_call_jobs.rs"]
+mod target_call_jobs;
+use target_call_jobs::TargetCallJobs;
 #[path = "target_serving_runtime.rs"]
 mod serving;
 #[cfg(test)]
@@ -315,10 +319,16 @@ impl TargetRuntimeReply {
             }
             ResponseEvidence::Stopped(stop, key) => {
                 self.runtime.journal.stop(&self.operation, stop)?;
+                let path = self.runtime.path(key)?;
                 ensure!(
-                    !target_file_exists(&self.runtime.path(key)?)?,
+                    !target_file_exists(&path)?,
                     "target storage reappeared after stop"
                 );
+                target_absence_from_installed_disk(
+                    &self.runtime.config.persistent_disk,
+                    self.runtime.audit.store().persistent_disk(),
+                    &path,
+                )?;
             }
         }
         self.operation.check()?;
@@ -343,14 +353,24 @@ pub struct TargetRecoveryRuntime {
     cluster: Arc<ClusterNetwork>,
     destinations: BTreeMap<String, Arc<dyn BackupDestination>>,
     root: PathBuf,
+    generation_directory: NodeDiskDirectory,
     generations: Mutex<BTreeMap<GenerationKey, Arc<Mutex<Generation>>>>,
     calls: Arc<Semaphore>,
+    call_jobs: TargetCallJobs,
     closing: AtomicBool,
 }
 /// Keep the outer owner reachable across cancellation of its recursive drain.
 pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime>>) -> DrainResult {
-    if let Some(target) = owner.as_ref() {
-        target.shutdown().await?;
+    if let Some(target) = owner.as_ref()
+        && let Err(failure) = target.shutdown().await
+    {
+        if failure.completion() == DrainCompletion::Complete {
+            // The original diagnostic has been returned to the caller, and
+            // no child or physical generation remains. Do not strand the
+            // fully drained runtime merely because its report is nonempty.
+            owner.take();
+        }
+        return Err(failure);
     }
     owner.take();
     Ok(())
@@ -417,9 +437,15 @@ impl TargetRecoveryRuntime {
         monitor_charge.retain(monitor_bytes);
         let monitor_budget =
             kasumi_serving::BackgroundWorkBudget::new(1, Arc::new(monitor_charge))?;
+        let call_jobs = TargetCallJobs::new(&admission)?;
         // Finish fallible filesystem setup before a journal catalog can start
-        // renewal workers. A rejected root must not detach storage ownership.
-        std::fs::create_dir_all(&installed.generation_root)?;
+        // renewal workers. This directory is under an already-censused NodeDisk;
+        // every new component must publish through its managed namespace.
+        let generation_directory = crate::persistent_disk::open_or_create_directory(
+            &config.persistent_disk,
+            audit.store().persistent_disk(),
+            &installed.generation_root,
+        )?;
         ensure!(
             !std::fs::symlink_metadata(&installed.generation_root)?
                 .file_type()
@@ -427,7 +453,7 @@ impl TargetRecoveryRuntime {
             "target root cannot be a symlink"
         );
         let root = std::fs::canonicalize(&installed.generation_root)?;
-        std::fs::File::open(&root)?.sync_all()?;
+        generation_directory.sync_all()?;
         let key = read_private_file(&installed.attestation_key, 1 << 20)?;
         let signer = TargetSigner::from_pkcs8(installed.node.clone(), &key)?;
         let cleanup_key =
@@ -504,8 +530,10 @@ impl TargetRecoveryRuntime {
             cluster,
             destinations,
             root,
+            generation_directory,
             generations: Mutex::new(BTreeMap::new()),
             calls: Arc::new(Semaphore::new(MAX_CALLS as usize)),
+            call_jobs,
             closing: AtomicBool::new(false),
         });
         if let Err(error) = runtime.start_serving_reconciliation(&monitor_budget) {
@@ -542,6 +570,7 @@ impl TargetRecoveryRuntime {
             self.installed.limits.operation_timeout_ms,
             request.not_after_ms,
         )?;
+        let deadline = admission.response_deadline()?;
         context
             .authorization
             .require_control(&self.installed.control_root.control_incarnation.to_string())?;
@@ -564,17 +593,22 @@ impl TargetRecoveryRuntime {
             "target runtime closing"
         );
         let this = self.clone();
-        let timeout = self.installed.limits.operation_timeout_ms;
-        let task = tokio::spawn(async move {
-            let mut reply = this
-                .execute_owned(context, bearer, request, admission)
-                .await?;
-            reply.permit = Some(permit);
-            Ok::<_, anyhow::Error>(reply)
-        });
-        // A timeout/disconnect drops only the waiter. The task retains the call
-        // permit, generation lock and actual engine work until effects finish.
-        await_target_task(Duration::from_millis(timeout), task).await
+        // The response deadline was captured before authority acquisition and
+        // cannot extend the coordinator's original not_after cap.
+        let receive = self
+            .call_jobs
+            .submit(deadline, async move {
+                let mut reply = this
+                    .execute_owned(context, bearer, request, admission)
+                    .await?;
+                reply.permit = Some(permit);
+                Ok::<_, anyhow::Error>(reply)
+            })
+            .await?;
+        // A lost waiter returns UnknownOutcome. The private ticket owns a
+        // completed result until a synchronous claim; the child retires any
+        // unclaimed reply and preserves its exact terminal outcome.
+        self.call_jobs.await_reply(deadline, receive).await
     }
     async fn execute_owned(
         self: Arc<Self>,
@@ -945,18 +979,12 @@ impl TargetRecoveryRuntime {
         )
     }
     fn path(&self, key: &GenerationKey) -> Result<PathBuf> {
-        ensure!(
-            std::fs::canonicalize(&self.installed.generation_root)? == self.root
-                && !std::fs::symlink_metadata(&self.installed.generation_root)?
-                    .file_type()
-                    .is_symlink(),
-            "installed target root changed"
-        );
-        let path = self
-            .root
-            .join(format!("{}.{}.redb", digest(&key.0)?, key.1));
-        target_file_exists(&path)?;
-        Ok(path)
+        checked_generation_path(
+            &self.generation_directory,
+            &self.installed.generation_root,
+            &self.root,
+            key,
+        )
     }
     async fn perform(
         &self,
@@ -1385,8 +1413,17 @@ impl TargetRecoveryRuntime {
             op.check()?;
             node.delete()?;
         } else {
-            std::fs::File::open(&self.root)?.sync_all()?;
+            // A path-based NotFound is only a hint. Verify it against the
+            // installed, enrolled parent before signing an absence claim.
+            target_absence_from_installed_disk(
+                &self.config.persistent_disk,
+                self.audit.store().persistent_disk(),
+                &path,
+            )?;
         }
+        // Keep the same enrolled parent directory under physical ownership
+        // through both exact unlink and the absent-file cleanup case.
+        self.generation_directory.sync_all()?;
         op.check()?;
         self.journal.stop(op, proof)?;
         let intent = op
@@ -1424,6 +1461,7 @@ impl TargetRecoveryRuntime {
         let mut report = self.shutdown_gate.lock().await;
         let mut retained = None;
         self.closing.store(true, Ordering::Release);
+        self.call_jobs.close();
         // RuntimeWorker returns only after its exact handle joins. Retain its
         // actual JoinError before waiting for any target or admitted call.
         if let Err(error) = self.serving_monitor.drain().await {
@@ -1432,6 +1470,31 @@ impl TargetRecoveryRuntime {
                 retained = Some(error);
             }
         }
+        if retained.is_some() {
+            return report.outcome(retained);
+        }
+        if let Err(error) = self.call_jobs.drain().await {
+            report.merge(&error);
+            if error.completion() == DrainCompletion::Retained {
+                retained = Some(error);
+            }
+        }
+        if retained.is_some() {
+            return report.outcome(retained);
+        }
+        // A completed target child may have installed a generation after this
+        // shutdown began. Census only after every exact child joins and every
+        // claimed response releases its permit.
+        let _all = match self.calls.clone().acquire_many_owned(MAX_CALLS).await {
+            Ok(all) => all,
+            Err(error) => {
+                return Err(DrainFailure::retained(report.record(
+                    "target admitted calls",
+                    0,
+                    error.into(),
+                )));
+            }
+        };
         let targets = self
             .generations
             .lock()
@@ -1446,16 +1509,6 @@ impl TargetRecoveryRuntime {
                 p.close();
             }
         }
-        let _all = match self.calls.clone().acquire_many_owned(MAX_CALLS).await {
-            Ok(all) => all,
-            Err(error) => {
-                return Err(DrainFailure::retained(report.record(
-                    "target admitted calls",
-                    0,
-                    error.into(),
-                )));
-            }
-        };
         for target in targets {
             if let Err(failure) = target
                 .lock()
@@ -1486,6 +1539,31 @@ impl TargetRecoveryRuntime {
         report.outcome(retained)
     }
 }
+// StopLocal resolves this exact path before it can claim or unlink a target
+// inode. A retained managed-directory failure is a custody fence, not an
+// absent-file observation from which cleanup evidence could be signed.
+fn checked_generation_path(
+    directory: &NodeDiskDirectory,
+    installed_root: &Path,
+    opened_root: &Path,
+    key: &GenerationKey,
+) -> Result<PathBuf> {
+    directory.sync_all()?;
+    ensure!(
+        std::fs::canonicalize(installed_root)? == opened_root
+            && !std::fs::symlink_metadata(installed_root)?
+                .file_type()
+                .is_symlink(),
+        "installed target root changed"
+    );
+    // NodeDisk binds paths against the installed lexical accounting root.
+    // Its canonical identity is checked above, but using it to construct the
+    // file path can escape that binding (for example /var versus /private/var).
+    let path = installed_root.join(format!("{}.{}.redb", digest(&key.0)?, key.1));
+    target_file_exists(&path)?;
+    Ok(path)
+}
+
 // A failed filesystem observation is not an absence proof. In particular,
 // Path::exists must not turn permission/I/O failures into successful cleanup.
 fn target_file_exists(path: &Path) -> Result<bool> {
@@ -1502,6 +1580,34 @@ fn target_file_exists(path: &Path) -> Result<bool> {
     }
 }
 
+// NodeDisk opens the final name relative to its verified, enrolled parent.
+// Only its healthy NotFound is an absence proof. A path-only observation can
+// instead see a transiently substituted root and mistake a retained file for
+// absence. Keep the existing UnknownOutcome path for every uncertain result.
+fn target_absence_from_installed_disk(
+    config: &kasumi_store::NodeDiskConfig,
+    disk: &Arc<kasumi_store::NodeDisk>,
+    path: &Path,
+) -> Result<()> {
+    let (root, relative) = config.binding(path)?;
+    match disk.open_file(root, relative) {
+        Ok(mut file) => {
+            file.close()?;
+            anyhow::bail!("target storage remains under installed root")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // Parent acquisition can also fail with NotFound after sealing the
+            // disk. That error is never a successful leaf-absence observation.
+            ensure!(
+                disk.snapshot().phase == kasumi_store::NodeDiskPhase::Open,
+                "target absence observation failed installed disk"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn unknown(error: impl std::fmt::Display) -> anyhow::Error {
     let _ = error;
     Error::new(
@@ -1509,83 +1615,4 @@ fn unknown(error: impl std::fmt::Display) -> anyhow::Error {
         "target outcome unresolved; recover the exact committed identity",
     )
     .into()
-}
-
-async fn await_target_task<T>(
-    timeout: Duration,
-    task: tokio::task::JoinHandle<Result<T>>,
-) -> Result<T> {
-    tokio::time::timeout(timeout, task)
-        .await
-        .map_err(unknown)?
-        .map_err(unknown)?
-}
-#[cfg(test)]
-mod outcome_tests {
-    use super::*;
-    #[tokio::test]
-    async fn panic_and_abort_after_dispatch_are_unknown_but_inner_rejection_is_preserved() {
-        let published = Arc::new(AtomicBool::new(false));
-        let marker = published.clone();
-        let task = tokio::spawn(async move {
-            marker.store(true, Ordering::Release);
-            panic!("worker lost after publication");
-            #[allow(unreachable_code)]
-            Ok(())
-        });
-        let error = await_target_task(Duration::from_secs(1), task)
-            .await
-            .unwrap_err();
-        assert!(published.load(Ordering::Acquire));
-        assert_eq!(
-            error.downcast_ref::<Error>().unwrap().code,
-            ErrorCode::UnknownOutcome
-        );
-        let task = tokio::spawn(async { std::future::pending::<Result<()>>().await });
-        task.abort();
-        let error = await_target_task(Duration::from_secs(1), task)
-            .await
-            .unwrap_err();
-        assert_eq!(
-            error.downcast_ref::<Error>().unwrap().code,
-            ErrorCode::UnknownOutcome
-        );
-        let task = tokio::spawn(async {
-            Err::<(), _>(Error::new(ErrorCode::Forbidden, "definite ordered rejection").into())
-        });
-        let error = await_target_task(Duration::from_secs(1), task)
-            .await
-            .unwrap_err();
-        assert_eq!(
-            error.downcast_ref::<Error>().unwrap().code,
-            ErrorCode::Forbidden
-        );
-    }
-    #[tokio::test]
-    async fn timed_out_waiter_keeps_actual_worker_admission_owned_until_completion() {
-        let capacity = Arc::new(Semaphore::new(1));
-        let permit = capacity.clone().acquire_owned().await.unwrap();
-        let (finish, completion) = tokio::sync::oneshot::channel();
-        let (done, completed) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            let _permit = permit;
-            completion.await?;
-            let _ = done.send(());
-            Ok::<_, anyhow::Error>(())
-        });
-        let error = await_target_task(Duration::from_millis(1), task)
-            .await
-            .unwrap_err();
-        assert_eq!(
-            error.downcast_ref::<Error>().unwrap().code,
-            ErrorCode::UnknownOutcome
-        );
-        assert_eq!(capacity.available_permits(), 0);
-        finish.send(()).unwrap();
-        completed.await.unwrap();
-        let _permit = tokio::time::timeout(Duration::from_secs(1), capacity.acquire())
-            .await
-            .unwrap()
-            .unwrap();
-    }
 }

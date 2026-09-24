@@ -1,0 +1,2598 @@
+{
+  "schema": "kasumi-immutable-evidence-archive-v1",
+  "qualified_candidate_manifest_sha256": "b2d6f9f980a55d0e1a688093cf2deb64269878005ff78e15f394af8341b336e5",
+  "qualification_receipt_sha256": "cb6d9df3b4c6d61c9427553a28eda3273e36a16be76a7d49270b5c2b0f7986f5",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "status": "QUALIFIED_PREREQUISITE_NOT_RELEASE_ACCEPTANCE",
+  "files": [
+    {
+      "archive_path": "README.md",
+      "archive_sha256": "622f7dea9885d956258f7392ef8cfa1c3145029aecc5f41a148a2de65ce25992",
+      "archive_bytes": 3579,
+      "encoding": "identity",
+      "source_path": null,
+      "source_sha256": "622f7dea9885d956258f7392ef8cfa1c3145029aecc5f41a148a2de65ce25992",
+      "source_bytes": 3579
+    },
+    {
+      "archive_path": "candidate/README.md",
+      "archive_sha256": "f229cfffabbabc7749b1c4098b35620652f68fb19aac3397a060e8be4bbd26b4",
+      "archive_bytes": 962,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/README.md",
+      "source_sha256": "f229cfffabbabc7749b1c4098b35620652f68fb19aac3397a060e8be4bbd26b4",
+      "source_bytes": 962
+    },
+    {
+      "archive_path": "candidate/apply-readback.json",
+      "archive_sha256": "e5f2e740a4bbf7ccd5eda1cca1273437f067fba0409d2ef9752aa62989132403",
+      "archive_bytes": 8796,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/apply-readback.json",
+      "source_sha256": "e5f2e740a4bbf7ccd5eda1cca1273437f067fba0409d2ef9752aa62989132403",
+      "source_bytes": 8796
+    },
+    {
+      "archive_path": "candidate/archive-handoff.py",
+      "archive_sha256": "77d50f74dd6b53b769a598f410ab9fff22963357927b43bfd0e554bd03410717",
+      "archive_bytes": 10069,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/archive-handoff.py",
+      "source_sha256": "77d50f74dd6b53b769a598f410ab9fff22963357927b43bfd0e554bd03410717",
+      "source_bytes": 10069
+    },
+    {
+      "archive_path": "candidate/changed-paths.json",
+      "archive_sha256": "4eba79c9cac535885cd95a154729061e1effb0c5aed2f3fcf5d23ca3d7aaad9c",
+      "archive_bytes": 694,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/changed-paths.json",
+      "source_sha256": "4eba79c9cac535885cd95a154729061e1effb0c5aed2f3fcf5d23ca3d7aaad9c",
+      "source_bytes": 694
+    },
+    {
+      "archive_path": "candidate/combined.patch.gz",
+      "archive_sha256": "08e871c6c65511dee3c1a584b4cd9116f72765a27c9bb788b146dcac5525e231",
+      "archive_bytes": 137390,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/combined.patch",
+      "source_sha256": "791f80c362c9ee0c317e0a46a4fedb26054e50a274aad0e735641e339737f2c9",
+      "source_bytes": 710028
+    },
+    {
+      "archive_path": "candidate/composition.json",
+      "archive_sha256": "da3cb7e5a615d7af145801d69f2b4785ee296b0b61ee3f92a9c0cb41b4264669",
+      "archive_bytes": 12839,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/composition.json",
+      "source_sha256": "da3cb7e5a615d7af145801d69f2b4785ee296b0b61ee3f92a9c0cb41b4264669",
+      "source_bytes": 12839
+    },
+    {
+      "archive_path": "candidate/correction.patch",
+      "archive_sha256": "335b964997d012e175b1039137733d86e7031c85a67f4b56821d86cf21f997dd",
+      "archive_bytes": 13309,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/correction.patch",
+      "source_sha256": "335b964997d012e175b1039137733d86e7031c85a67f4b56821d86cf21f997dd",
+      "source_bytes": 13309
+    },
+    {
+      "archive_path": "candidate/custody-to-combined-overlaps.patch",
+      "archive_sha256": "33d278fb6abb39475d14058cdba75444c97159e786213c548cace33314f8d522",
+      "archive_bytes": 49720,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/custody-to-combined-overlaps.patch",
+      "source_sha256": "33d278fb6abb39475d14058cdba75444c97159e786213c548cace33314f8d522",
+      "source_bytes": 49720
+    },
+    {
+      "archive_path": "candidate/expected-store-tests.json",
+      "archive_sha256": "b6232809b7324a6fd6f52b387a0688a5d7c59df0d213d7d9a41c55765b9c7d57",
+      "archive_bytes": 34136,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/expected-store-tests.json",
+      "source_sha256": "b6232809b7324a6fd6f52b387a0688a5d7c59df0d213d7d9a41c55765b9c7d57",
+      "source_bytes": 34136
+    },
+    {
+      "archive_path": "candidate/focused-test-plan.json",
+      "archive_sha256": "4188aa5d03456931bbdd3306ba77395e3f20b957be2b0b65e4bfe9f591a5bf86",
+      "archive_bytes": 36546,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/focused-test-plan.json",
+      "source_sha256": "4188aa5d03456931bbdd3306ba77395e3f20b957be2b0b65e4bfe9f591a5bf86",
+      "source_bytes": 36546
+    },
+    {
+      "archive_path": "candidate/freeze-handoff.py",
+      "archive_sha256": "6e423079b665fc92cd2ec0cdc93824710ff5409a1e8da8695bf98f84c24f026e",
+      "archive_bytes": 6230,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/freeze-handoff.py",
+      "source_sha256": "6e423079b665fc92cd2ec0cdc93824710ff5409a1e8da8695bf98f84c24f026e",
+      "source_bytes": 6230
+    },
+    {
+      "archive_path": "candidate/integration-gaps.json",
+      "archive_sha256": "46db15c2773b977d0fd153d5072d1c3ea8ef07e92b47aef0962041548d89783c",
+      "archive_bytes": 2624,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/integration-gaps.json",
+      "source_sha256": "46db15c2773b977d0fd153d5072d1c3ea8ef07e92b47aef0962041548d89783c",
+      "source_bytes": 2624
+    },
+    {
+      "archive_path": "candidate/manifest.json",
+      "archive_sha256": "b2d6f9f980a55d0e1a688093cf2deb64269878005ff78e15f394af8341b336e5",
+      "archive_bytes": 35703,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/manifest.json",
+      "source_sha256": "b2d6f9f980a55d0e1a688093cf2deb64269878005ff78e15f394af8341b336e5",
+      "source_bytes": 35703
+    },
+    {
+      "archive_path": "candidate/qualification-receipt.json",
+      "archive_sha256": "cb6d9df3b4c6d61c9427553a28eda3273e36a16be76a7d49270b5c2b0f7986f5",
+      "archive_bytes": 12137,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/qualification-receipt.json",
+      "source_sha256": "cb6d9df3b4c6d61c9427553a28eda3273e36a16be76a7d49270b5c2b0f7986f5",
+      "source_bytes": 12137
+    },
+    {
+      "archive_path": "candidate/revision6-to-combined.patch.gz",
+      "archive_sha256": "c1900fcb959538d95209e9c5874e57a5fd17c11c315d71450b6570b38a40e738",
+      "archive_bytes": 32524,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/revision6-to-combined.patch",
+      "source_sha256": "637ea19e395d15d3e10626a410d7bd7f60d77a98af2b571e1910bc2ed96772ce",
+      "source_bytes": 176208
+    },
+    {
+      "archive_path": "candidate/terminal-drain.json",
+      "archive_sha256": "91737ff1b5519fb82c1a7ef46f902439ee28a226ab1d218451981ac0b1703e9b",
+      "archive_bytes": 1354,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/terminal-drain.json",
+      "source_sha256": "91737ff1b5519fb82c1a7ef46f902439ee28a226ab1d218451981ac0b1703e9b",
+      "source_bytes": 1354
+    },
+    {
+      "archive_path": "failed-trials/index.json",
+      "archive_sha256": "eced912393e048a17d8d0ca6937f07a7f3de9cf7d54006b9d637ad57ecc1ec32",
+      "archive_bytes": 2225,
+      "encoding": "identity",
+      "source_path": null,
+      "source_sha256": "eced912393e048a17d8d0ca6937f07a7f3de9cf7d54006b9d637ad57ecc1ec32",
+      "source_bytes": 2225
+    },
+    {
+      "archive_path": "failed-trials/revision2/failure-receipt.json",
+      "archive_sha256": "1cf95116c6c468405fcdd7222fdad37246995fcab2a49f61cda81d4378d21895",
+      "archive_bytes": 1573,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2-native01-failure-receipt.json",
+      "source_sha256": "1cf95116c6c468405fcdd7222fdad37246995fcab2a49f61cda81d4378d21895",
+      "source_bytes": 1573
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/active.json",
+      "archive_sha256": "1a7e040e5a092481c259d9736f9e3dbc9a8b3aee3de60dae4502c2b52bc25f9e",
+      "archive_bytes": 671,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/active.json",
+      "source_sha256": "1a7e040e5a092481c259d9736f9e3dbc9a8b3aee3de60dae4502c2b52bc25f9e",
+      "source_bytes": 671
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/result.json",
+      "archive_sha256": "d27b945afd05b5fd1e3daee1e6f1ab49b4c7ea7abb39984c461e4f689f625819",
+      "archive_bytes": 341,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/result.json",
+      "source_sha256": "d27b945afd05b5fd1e3daee1e6f1ab49b4c7ea7abb39984c461e4f689f625819",
+      "source_bytes": 341
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/results.json",
+      "archive_sha256": "3deefd637cfa2689bc3e1f0567309ee9534a54756bc213441fc37c2255a73b3e",
+      "archive_bytes": 2864,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/results.json",
+      "source_sha256": "3deefd637cfa2689bc3e1f0567309ee9534a54756bc213441fc37c2255a73b3e",
+      "source_bytes": 2864
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/run.py",
+      "archive_sha256": "fb7882afe20a3d966780afcff9eb1d6ff9f0f7d4da10f5df166ff278975a2c53",
+      "archive_bytes": 9850,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/run.py",
+      "source_sha256": "fb7882afe20a3d966780afcff9eb1d6ff9f0f7d4da10f5df166ff278975a2c53",
+      "source_bytes": 9850
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/runner-freeze.json",
+      "archive_sha256": "ca6c175e2ca48d50474ad0a501b6687f00009c45f615b7deab259b3d3e69d216",
+      "archive_bytes": 553,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/runner-freeze.json",
+      "source_sha256": "ca6c175e2ca48d50474ad0a501b6687f00009c45f615b7deab259b3d3e69d216",
+      "source_bytes": 553
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/source-after.json.gz",
+      "archive_sha256": "97acafbc44da396f3d94009776bc16b67803eee034314c676f01e6537e88da62",
+      "archive_bytes": 172435,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/source-after.json",
+      "source_sha256": "6ec3aaad9129a3dde38804136f8af2075163c9c79d3c469a82a0336e5cec9abf",
+      "source_bytes": 811265
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/source-before.json.gz",
+      "archive_sha256": "97acafbc44da396f3d94009776bc16b67803eee034314c676f01e6537e88da62",
+      "archive_bytes": 172435,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/source-before.json",
+      "source_sha256": "6ec3aaad9129a3dde38804136f8af2075163c9c79d3c469a82a0336e5cec9abf",
+      "source_bytes": 811265
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/workspace-check-artifacts.json.gz",
+      "archive_sha256": "f73df5245a10ec2d41bcf479efcd756e16555154d163a6edafbf98bc2b3afcf5",
+      "archive_bytes": 57956,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/workspace-check-artifacts.json",
+      "source_sha256": "8c0523ae5bb310f217791f3905c0a760b662e9c279186d2095ed07c9f37d59f3",
+      "source_bytes": 543093
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/workspace-check-diagnostics.json",
+      "archive_sha256": "5d2abaa00128ae64c8dea753c99f7b72dab3f1751358f3c4e67f71348ba3f213",
+      "archive_bytes": 18274,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/workspace-check-diagnostics.json",
+      "source_sha256": "5d2abaa00128ae64c8dea753c99f7b72dab3f1751358f3c4e67f71348ba3f213",
+      "source_bytes": 18274
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/workspace-check-diagnostics.txt",
+      "archive_sha256": "573b02529b50126186c70420b8625ec7a4ff86b7790a2977df6299ef18259175",
+      "archive_bytes": 2236,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/workspace-check-diagnostics.txt",
+      "source_sha256": "573b02529b50126186c70420b8625ec7a4ff86b7790a2977df6299ef18259175",
+      "source_bytes": 2236
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/workspace-check-processes.json.gz",
+      "archive_sha256": "6b1da9c6fc6ee37e4c4b142ca19788206abe84a0a9963906f47af7edc81e7416",
+      "archive_bytes": 62160,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/workspace-check-processes.json",
+      "source_sha256": "33e1dd113496ab1fd9e30e83934ddcedc069ebddd58620cc8296989aa7c79425",
+      "source_bytes": 910816
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/workspace-check.log.gz",
+      "archive_sha256": "a052d502e9511cef7b8c304d6e7858ca6e36ff36292042130c16708ab4674d73",
+      "archive_bytes": 39245,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/workspace-check.log",
+      "source_sha256": "fd9c457436f27db084e9a2cedfcf583880fb81de753b8011579a0cf386ae49b5",
+      "source_bytes": 594603
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/workspace-clippy-artifacts.json.gz",
+      "archive_sha256": "063b523947e5b933106693442616116f6d7cf02c8533617a658ff6caced05cd2",
+      "archive_bytes": 55699,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/workspace-clippy-artifacts.json",
+      "source_sha256": "3ecda00e1f29fbebda2c7fa6cf011811d92ac290d6efb8d4aa245d45f348f922",
+      "source_bytes": 488428
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/workspace-clippy-diagnostics.json",
+      "archive_sha256": "7cd45375ffe382a25986db8b69cbd7e895d97456473cb6d7472d527b1629f756",
+      "archive_bytes": 28106,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/workspace-clippy-diagnostics.json",
+      "source_sha256": "7cd45375ffe382a25986db8b69cbd7e895d97456473cb6d7472d527b1629f756",
+      "source_bytes": 28106
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/workspace-clippy-diagnostics.txt",
+      "archive_sha256": "a5c202115c0fa6745b0d1b793cf09a3aa8806f90be6f5a7d0c9b78d38cc8b464",
+      "archive_bytes": 3518,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/workspace-clippy-diagnostics.txt",
+      "source_sha256": "a5c202115c0fa6745b0d1b793cf09a3aa8806f90be6f5a7d0c9b78d38cc8b464",
+      "source_bytes": 3518
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/workspace-clippy-processes.json",
+      "archive_sha256": "e1f1a050a50f1d92bcd475c1d727720d9ccb0704db8668fdc6a0e0ac50c56450",
+      "archive_bytes": 39058,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/workspace-clippy-processes.json",
+      "source_sha256": "e1f1a050a50f1d92bcd475c1d727720d9ccb0704db8668fdc6a0e0ac50c56450",
+      "source_bytes": 39058
+    },
+    {
+      "archive_path": "failed-trials/revision2/native-01/workspace-clippy.log.gz",
+      "archive_sha256": "5054388a22acf33a8fc609989a84d71e2fcc9aefc1d0810532867cc24ab2c26f",
+      "archive_bytes": 33674,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/native-01/workspace-clippy.log",
+      "source_sha256": "73027dd4ba6cf33b6df9a23504cb53f76bb2653fd99137b2b4651fc516695406",
+      "source_bytes": 527238
+    },
+    {
+      "archive_path": "failed-trials/revision3/failure-receipt.json",
+      "archive_sha256": "631b49c1bfcb97ef8a030e8e4ef8c29663048de8a35fde128ddc63ca60c61ea0",
+      "archive_bytes": 1827,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3-native01-failure-receipt.json",
+      "source_sha256": "631b49c1bfcb97ef8a030e8e4ef8c29663048de8a35fde128ddc63ca60c61ea0",
+      "source_bytes": 1827
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/active.json",
+      "archive_sha256": "509f31233a5ca9867856bf1506eafaf363861c60f1daeea454338d3a29c67fb1",
+      "archive_bytes": 666,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/active.json",
+      "source_sha256": "509f31233a5ca9867856bf1506eafaf363861c60f1daeea454338d3a29c67fb1",
+      "source_bytes": 666
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/launcher-processes.json",
+      "archive_sha256": "1e2c65cb6dd0f06991076263cd8d93513281faf2fe551888bf5457ff3857fc7b",
+      "archive_bytes": 312,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/launcher-processes.json",
+      "source_sha256": "1e2c65cb6dd0f06991076263cd8d93513281faf2fe551888bf5457ff3857fc7b",
+      "source_bytes": 312
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/result.json",
+      "archive_sha256": "f633a6e653c60e9dd7a072796241d4f3d80632fb3e65e41cca2d1fd252154c70",
+      "archive_bytes": 339,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/result.json",
+      "source_sha256": "f633a6e653c60e9dd7a072796241d4f3d80632fb3e65e41cca2d1fd252154c70",
+      "source_bytes": 339
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/results.json",
+      "archive_sha256": "0bd11cfa4ecafb9e720f340ccea703b87ee92955aec14746da62ed0d2ddd2b43",
+      "archive_bytes": 2856,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/results.json",
+      "source_sha256": "0bd11cfa4ecafb9e720f340ccea703b87ee92955aec14746da62ed0d2ddd2b43",
+      "source_bytes": 2856
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/run.py",
+      "archive_sha256": "9b012fb198a4da9be76c33df90669854c2d85d0cc249309f366f0b8fd02dffec",
+      "archive_bytes": 9936,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/run.py",
+      "source_sha256": "9b012fb198a4da9be76c33df90669854c2d85d0cc249309f366f0b8fd02dffec",
+      "source_bytes": 9936
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/runner-freeze.json",
+      "archive_sha256": "2e7803694cb6979b568442d742a4edda004335f4c3e3b6e6d3368ddfbc8b73f1",
+      "archive_bytes": 845,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/runner-freeze.json",
+      "source_sha256": "2e7803694cb6979b568442d742a4edda004335f4c3e3b6e6d3368ddfbc8b73f1",
+      "source_bytes": 845
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/source-after.json.gz",
+      "archive_sha256": "8d001a9ffcd9adfba1e748b9342195458310aacb43c4ecae74c67c7bf4d04ab1",
+      "archive_bytes": 173242,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/source-after.json",
+      "source_sha256": "e25b22bfe32a9454c41f395e316a303cbdd94c18b04a8186a0e9f6e4cf399333",
+      "source_bytes": 833086
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/source-before.json.gz",
+      "archive_sha256": "8d001a9ffcd9adfba1e748b9342195458310aacb43c4ecae74c67c7bf4d04ab1",
+      "archive_bytes": 173242,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/source-before.json",
+      "source_sha256": "e25b22bfe32a9454c41f395e316a303cbdd94c18b04a8186a0e9f6e4cf399333",
+      "source_bytes": 833086
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/workspace-check-artifacts.json.gz",
+      "archive_sha256": "73aad6a7f0120cc54eb6b1a6b06f091335d9d6559827880dbff7d0f9a7541e47",
+      "archive_bytes": 57957,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/workspace-check-artifacts.json",
+      "source_sha256": "d6b5631c680abf1647e0a3f0b32d8eb7324a5f7699a1c490ade740f32ed7b505",
+      "source_bytes": 543093
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/workspace-check-diagnostics.json",
+      "archive_sha256": "c21e12ba2cf388ec4bab5a425166c76929a460f0f708a9906a1107b734e9ebd6",
+      "archive_bytes": 12970,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/workspace-check-diagnostics.json",
+      "source_sha256": "c21e12ba2cf388ec4bab5a425166c76929a460f0f708a9906a1107b734e9ebd6",
+      "source_bytes": 12970
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/workspace-check-diagnostics.txt",
+      "archive_sha256": "cc3b660d5b41fb78ac429c3b5eb9eb46c13e6a70978752734a2b499b520030fe",
+      "archive_bytes": 1334,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/workspace-check-diagnostics.txt",
+      "source_sha256": "cc3b660d5b41fb78ac429c3b5eb9eb46c13e6a70978752734a2b499b520030fe",
+      "source_bytes": 1334
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/workspace-check-processes.json.gz",
+      "archive_sha256": "f181fa6940e0db6a0008be9cd78124a100f9dd3cb34ea5361533624202143c6a",
+      "archive_bytes": 71254,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/workspace-check-processes.json",
+      "source_sha256": "8a1982ee367520a2004f1f786551d78c6dff9bfc77ca9774cd3097a5fa095591",
+      "source_bytes": 1009500
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/workspace-check.log.gz",
+      "archive_sha256": "b5c646eed5a3596c816cac74833f9f867df7162c7973e00d8ac4200076fc345c",
+      "archive_bytes": 38646,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/workspace-check.log",
+      "source_sha256": "bd1ab03c3f77f898192e46b6b3b413505ad863b3b6a1765ec3fba4083aa1b4a0",
+      "source_bytes": 590257
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/workspace-clippy-artifacts.json.gz",
+      "archive_sha256": "090e26df3ef4ec48932f32704d425075f9a37837709f56f8879dc3d38d4afe8c",
+      "archive_bytes": 55692,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/workspace-clippy-artifacts.json",
+      "source_sha256": "4adfd74115ac5b850c51260f7f6d29e8f0ee12ef7284e6cc43528cc9959595a6",
+      "source_bytes": 488428
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/workspace-clippy-diagnostics.json",
+      "archive_sha256": "f41dccdad579aff4332e72a9ddf788b065f5551b05f972c4b087a88d70c6fb05",
+      "archive_bytes": 13218,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/workspace-clippy-diagnostics.json",
+      "source_sha256": "f41dccdad579aff4332e72a9ddf788b065f5551b05f972c4b087a88d70c6fb05",
+      "source_bytes": 13218
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/workspace-clippy-diagnostics.txt",
+      "archive_sha256": "793dd85dcd6ac407d059b9fdf854b3e33c51d3896c94b9555e94be9959de28b4",
+      "archive_bytes": 1377,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/workspace-clippy-diagnostics.txt",
+      "source_sha256": "793dd85dcd6ac407d059b9fdf854b3e33c51d3896c94b9555e94be9959de28b4",
+      "source_bytes": 1377
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/workspace-clippy-processes.json",
+      "archive_sha256": "4c57d56cf7d0925eb602c6b0f88257e25c8534d1e1bf8b3d110a349528c34215",
+      "archive_bytes": 35844,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/workspace-clippy-processes.json",
+      "source_sha256": "4c57d56cf7d0925eb602c6b0f88257e25c8534d1e1bf8b3d110a349528c34215",
+      "source_bytes": 35844
+    },
+    {
+      "archive_path": "failed-trials/revision3/native-01/workspace-clippy.log.gz",
+      "archive_sha256": "9194e98fbc3311100567220a3ed4788320d1894e6ce3f2010e03eea39a035ba5",
+      "archive_bytes": 32834,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/native-01/workspace-clippy.log",
+      "source_sha256": "8c8127f1d36912a11b61285de333e9e2b64e7a809a8d5718d26ba298d205efc4",
+      "source_bytes": 516797
+    },
+    {
+      "archive_path": "failed-trials/revision4/failure-receipt.json",
+      "archive_sha256": "12ee014010cd8e409302f40f39c22c06346a8850cea12b71cf9d8eecaffea666",
+      "archive_bytes": 3052,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4-native01-failure-receipt.json",
+      "source_sha256": "12ee014010cd8e409302f40f39c22c06346a8850cea12b71cf9d8eecaffea666",
+      "source_bytes": 3052
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/active.json",
+      "archive_sha256": "5ce80187c4139b2e50fe17aa941f2a14b6b6a5fa0e3a2c813c3370b2d842958b",
+      "archive_bytes": 586,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/active.json",
+      "source_sha256": "5ce80187c4139b2e50fe17aa941f2a14b6b6a5fa0e3a2c813c3370b2d842958b",
+      "source_bytes": 586
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/compile-store-artifacts.json.gz",
+      "archive_sha256": "f4f5af98fc7051c6d4fb5c03e55e61fd0e1c45b2f772615733ed2fada7f4bfc1",
+      "archive_bytes": 26036,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/compile-store-artifacts.json",
+      "source_sha256": "16ef362e71171e20b19c77bf51b0205a43a165dd381010b41c1cd3167eea463a",
+      "source_bytes": 208418
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/compile-store-diagnostics.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/compile-store-diagnostics.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/compile-store-diagnostics.txt",
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "archive_bytes": 0,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/compile-store-diagnostics.txt",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_bytes": 0
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/compile-store-processes.json.gz",
+      "archive_sha256": "e947cb8ccbc6bf336ada9e90e4e17bc24a5cb80c5a1e8cc4052be3e2fc0adad4",
+      "archive_bytes": 20923,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/compile-store-processes.json",
+      "source_sha256": "3c291fbcb383ecd2a0419321f49a000dce88f96a17004c4c4fd5a3a4f6978e16",
+      "source_bytes": 220762
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/compile-store.log.gz",
+      "archive_sha256": "7b5b94edffff624072d253ab8907f83ede05a863bb0973cbe532fd87a755c492",
+      "archive_bytes": 13309,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/compile-store.log",
+      "source_sha256": "868b1c24c451f17293071c4d4431e01612613cfe64e32063e885a99671eecaa8",
+      "source_bytes": 204087
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/launcher-processes.json",
+      "archive_sha256": "8724af6a0e019a81b47dd9ec7cf77741ebe328356dc7f8de7b1e5282954a1111",
+      "archive_bytes": 312,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/launcher-processes.json",
+      "source_sha256": "8724af6a0e019a81b47dd9ec7cf77741ebe328356dc7f8de7b1e5282954a1111",
+      "source_bytes": 312
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/result.json",
+      "archive_sha256": "4e3783247f69f43c5082cf9558288e67be405cdf7ddf3955b4ffcc9bb9b11231",
+      "archive_bytes": 341,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/result.json",
+      "source_sha256": "4e3783247f69f43c5082cf9558288e67be405cdf7ddf3955b4ffcc9bb9b11231",
+      "source_bytes": 341
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/results.json",
+      "archive_sha256": "085946962f240184a4362610cdf9f47917c7045b30ceba898624269bb0afaa6b",
+      "archive_bytes": 7248,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/results.json",
+      "source_sha256": "085946962f240184a4362610cdf9f47917c7045b30ceba898624269bb0afaa6b",
+      "source_bytes": 7248
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/run.py",
+      "archive_sha256": "3e2412deb94a80e6d074be766d4640ab714caad720daea59559ffad2bb60aedf",
+      "archive_bytes": 10066,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/run.py",
+      "source_sha256": "3e2412deb94a80e6d074be766d4640ab714caad720daea59559ffad2bb60aedf",
+      "source_bytes": 10066
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/runner-freeze.json",
+      "archive_sha256": "32ea927f90668344bd89a53ff322649a894d90c324ec3b759245dc71b3233b33",
+      "archive_bytes": 977,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/runner-freeze.json",
+      "source_sha256": "32ea927f90668344bd89a53ff322649a894d90c324ec3b759245dc71b3233b33",
+      "source_bytes": 977
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/source-after.json.gz",
+      "archive_sha256": "88f24471d4ebf828137b7ebd788c609ba19a1831868802e36194f02b986e115b",
+      "archive_bytes": 173791,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/source-after.json",
+      "source_sha256": "7a01204c697798e4af870354ebc890a310701d5a385c3aeeea6239045057fa7d",
+      "source_bytes": 853946
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/source-before.json.gz",
+      "archive_sha256": "88f24471d4ebf828137b7ebd788c609ba19a1831868802e36194f02b986e115b",
+      "archive_bytes": 173791,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/source-before.json",
+      "source_sha256": "7a01204c697798e4af870354ebc890a310701d5a385c3aeeea6239045057fa7d",
+      "source_bytes": 853946
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/store-binary-provenance.json",
+      "archive_sha256": "7050369be9cd50e8d0bbd4671482473a30000063449fd54baba6f2b2c8c2e7fb",
+      "archive_bytes": 1679,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/store-binary-provenance.json",
+      "source_sha256": "7050369be9cd50e8d0bbd4671482473a30000063449fd54baba6f2b2c8c2e7fb",
+      "source_bytes": 1679
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/store-full-processes.json",
+      "archive_sha256": "5e449d5c585cec65015db77737813d1cec8b9382087add2a7fa9d946eecf54af",
+      "archive_bytes": 1670,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/store-full-processes.json",
+      "source_sha256": "5e449d5c585cec65015db77737813d1cec8b9382087add2a7fa9d946eecf54af",
+      "source_bytes": 1670
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/store-full.log.gz",
+      "archive_sha256": "04fbdbbd16205b8b3b932907d9fddce800652051e6272475fa17893dbc9a7831",
+      "archive_bytes": 15800,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/store-full.log",
+      "source_sha256": "55149d9f0db83d3f780415947b773b44058378ddb23409ac6f5a91a75509ddff",
+      "source_bytes": 128989
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/store-inventory-processes.json",
+      "archive_sha256": "949c85dc9dc56e7e3591a719d690ff818d3aae273eb372db3d4e34f4ce338d87",
+      "archive_bytes": 229,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/store-inventory-processes.json",
+      "source_sha256": "949c85dc9dc56e7e3591a719d690ff818d3aae273eb372db3d4e34f4ce338d87",
+      "source_bytes": 229
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/store-inventory-proof.json",
+      "archive_sha256": "311fc20c4dcdf0e7e555733d2153bf16e13a29b0d879b0f94edbf0cc36e918e2",
+      "archive_bytes": 33256,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/store-inventory-proof.json",
+      "source_sha256": "311fc20c4dcdf0e7e555733d2153bf16e13a29b0d879b0f94edbf0cc36e918e2",
+      "source_bytes": 33256
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/store-inventory.log",
+      "archive_sha256": "83633bfe117325316eb940ad44a22f4016bd47f023648625e81876fbc1f3299d",
+      "archive_bytes": 32805,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/store-inventory.log",
+      "source_sha256": "83633bfe117325316eb940ad44a22f4016bd47f023648625e81876fbc1f3299d",
+      "source_bytes": 32805
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/workspace-check-artifacts.json.gz",
+      "archive_sha256": "010be2c11e2a8b825f58ec5f906cc60eec3483156bda3cf78e71a630b5f4d487",
+      "archive_bytes": 57981,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/workspace-check-artifacts.json",
+      "source_sha256": "cc8ee338c246e648d70c17c1b64e5de2bacaa7cdbe332df81466dd554574c76a",
+      "source_bytes": 542558
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/workspace-check-diagnostics.json",
+      "archive_sha256": "66213ab6fcf9454ff8ac5ca3fd25020051fdc5375f48fdf092a6703e9a75e068",
+      "archive_bytes": 8474,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/workspace-check-diagnostics.json",
+      "source_sha256": "66213ab6fcf9454ff8ac5ca3fd25020051fdc5375f48fdf092a6703e9a75e068",
+      "source_bytes": 8474
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/workspace-check-diagnostics.txt",
+      "archive_sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "archive_bytes": 1104,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/workspace-check-diagnostics.txt",
+      "source_sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "source_bytes": 1104
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/workspace-check-processes.json.gz",
+      "archive_sha256": "d9a589e4e32720c09bbf59fd89fffba79cc933589fbb4791d1511d92d214fdda",
+      "archive_bytes": 9762,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/workspace-check-processes.json",
+      "source_sha256": "1bec2f344fcfa29257403c8191b73501bf48b999d414870f71491ab138253be3",
+      "source_bytes": 386401
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/workspace-check.log.gz",
+      "archive_sha256": "b5cc733d3884467699c81f4bc2852acc72792f6f53d276aaf006d8a6718327c7",
+      "archive_bytes": 34542,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/workspace-check.log",
+      "source_sha256": "ffe32f82e59c7a353ce41ac7896f9937000ff07578d2c38fe20ac120a220ea50",
+      "source_bytes": 573074
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/workspace-clippy-artifacts.json.gz",
+      "archive_sha256": "9bc1d16372136d0418a9935234e17dafa7a017499620196dfbc71cafdccf7c8d",
+      "archive_bytes": 58035,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/workspace-clippy-artifacts.json",
+      "source_sha256": "2b6e62f23eeb9dfefe4bd247a8e856bde77aab74b514547ca03ba96024b7f218",
+      "source_bytes": 543094
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/workspace-clippy-diagnostics.json",
+      "archive_sha256": "66213ab6fcf9454ff8ac5ca3fd25020051fdc5375f48fdf092a6703e9a75e068",
+      "archive_bytes": 8474,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/workspace-clippy-diagnostics.json",
+      "source_sha256": "66213ab6fcf9454ff8ac5ca3fd25020051fdc5375f48fdf092a6703e9a75e068",
+      "source_bytes": 8474
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/workspace-clippy-diagnostics.txt",
+      "archive_sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "archive_bytes": 1104,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/workspace-clippy-diagnostics.txt",
+      "source_sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "source_bytes": 1104
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/workspace-clippy-processes.json.gz",
+      "archive_sha256": "4432af67ff1f4d1bc6baea152c562c54ae48ed6f09f5b30bc469b3699713eb82",
+      "archive_bytes": 73971,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/workspace-clippy-processes.json",
+      "source_sha256": "ddf9483ce163b7169a5b7f995380d3260a772ae9adf386519566ad61d858d67b",
+      "source_bytes": 1052797
+    },
+    {
+      "archive_path": "failed-trials/revision4/native-01/workspace-clippy.log.gz",
+      "archive_sha256": "e771d166f6098af05512f125d35bac62b227e7de6107a4899ceab8684f2008a1",
+      "archive_bytes": 38160,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/native-01/workspace-clippy.log",
+      "source_sha256": "22d224ce3c8a4f3bf0b13e233cb420ce56d81e02f524bb1376b5d57033f53f01",
+      "source_bytes": 587479
+    },
+    {
+      "archive_path": "failed-trials/revision5/failure-receipt.json",
+      "archive_sha256": "deed480897d30e15b4871af19a09bbab4b80ab0195738a30eea3aa0add3714cd",
+      "archive_bytes": 8015,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5-native01-failure-receipt.json",
+      "source_sha256": "deed480897d30e15b4871af19a09bbab4b80ab0195738a30eea3aa0add3714cd",
+      "source_bytes": 8015
+    },
+    {
+      "archive_path": "failed-trials/revision5/format-diagnostic-01/active.json",
+      "archive_sha256": "59ce149fcd221a1843383566c04361b690f108d9443d246172e1b3c3f0ea71a7",
+      "archive_bytes": 492,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/format-diagnostic-01/active.json",
+      "source_sha256": "59ce149fcd221a1843383566c04361b690f108d9443d246172e1b3c3f0ea71a7",
+      "source_bytes": 492
+    },
+    {
+      "archive_path": "failed-trials/revision5/format-diagnostic-01/format.log",
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "archive_bytes": 0,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/format-diagnostic-01/format.log",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_bytes": 0
+    },
+    {
+      "archive_path": "failed-trials/revision5/format-diagnostic-01/processes.json",
+      "archive_sha256": "8e4cb40ff24dd0630de31a96737833d3a9c495117207137a8dea3f969a8f22a0",
+      "archive_bytes": 8040,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/format-diagnostic-01/processes.json",
+      "source_sha256": "8e4cb40ff24dd0630de31a96737833d3a9c495117207137a8dea3f969a8f22a0",
+      "source_bytes": 8040
+    },
+    {
+      "archive_path": "failed-trials/revision5/format-diagnostic-01/result.json",
+      "archive_sha256": "0d5c739400fc32ee2e1c92f79cdb041f9fef5c005c8fcfe232047c8b4494d2f1",
+      "archive_bytes": 1217,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/format-diagnostic-01/result.json",
+      "source_sha256": "0d5c739400fc32ee2e1c92f79cdb041f9fef5c005c8fcfe232047c8b4494d2f1",
+      "source_bytes": 1217
+    },
+    {
+      "archive_path": "failed-trials/revision5/format-diagnostic-01/run.py",
+      "archive_sha256": "6f5ecc7d193b156b278b0840ebb8d8829466b0b21ee8521f0f98c458e8c167b8",
+      "archive_bytes": 4130,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/format-diagnostic-01/run.py",
+      "source_sha256": "6f5ecc7d193b156b278b0840ebb8d8829466b0b21ee8521f0f98c458e8c167b8",
+      "source_bytes": 4130
+    },
+    {
+      "archive_path": "failed-trials/revision5/format-diagnostic-01/runner-freeze.json",
+      "archive_sha256": "69d94c61f3f1cf4a5b83f36b49c731016a27175dbc2fd3a02c86c6fed473e494",
+      "archive_bytes": 235,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/format-diagnostic-01/runner-freeze.json",
+      "source_sha256": "69d94c61f3f1cf4a5b83f36b49c731016a27175dbc2fd3a02c86c6fed473e494",
+      "source_bytes": 235
+    },
+    {
+      "archive_path": "failed-trials/revision5/format-diagnostic-01/source-after.json.gz",
+      "archive_sha256": "e9a57e774abd75086c2e2e607e927406def40b231ad418cdd41fbac5f8d88dbb",
+      "archive_bytes": 175056,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/format-diagnostic-01/source-after.json",
+      "source_sha256": "81f906109c3d8ecf6019f6879a725f170d84e3a8620714fd8029277677a468ec",
+      "source_bytes": 878285
+    },
+    {
+      "archive_path": "failed-trials/revision5/format-diagnostic-01/source-before.json.gz",
+      "archive_sha256": "e9a57e774abd75086c2e2e607e927406def40b231ad418cdd41fbac5f8d88dbb",
+      "archive_bytes": 175056,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/format-diagnostic-01/source-before.json",
+      "source_sha256": "81f906109c3d8ecf6019f6879a725f170d84e3a8620714fd8029277677a468ec",
+      "source_bytes": 878285
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/active.json",
+      "archive_sha256": "4c925fd39eccacf51d7d5c22dbd2da7054039318c4d6711bca034e0866a439af",
+      "archive_bytes": 586,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/active.json",
+      "source_sha256": "4c925fd39eccacf51d7d5c22dbd2da7054039318c4d6711bca034e0866a439af",
+      "source_bytes": 586
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/compile-store-artifacts.json.gz",
+      "archive_sha256": "e98b98c407078a9471ce485b6c4660aded0e2b9b4da1ef2e5064d23ac98ef612",
+      "archive_bytes": 26010,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/compile-store-artifacts.json",
+      "source_sha256": "6089525126bac0a17c09325f22b58ef20d3871d9bbae399f7ffac44d15f93d5b",
+      "source_bytes": 208447
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/compile-store-diagnostics.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/compile-store-diagnostics.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/compile-store-diagnostics.txt",
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "archive_bytes": 0,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/compile-store-diagnostics.txt",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_bytes": 0
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/compile-store-processes.json.gz",
+      "archive_sha256": "97eb7d966fc8ddb702128da6dcb0fb58c7251a7b967cad698f85da18339ffafe",
+      "archive_bytes": 32681,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/compile-store-processes.json",
+      "source_sha256": "e313d3a8756bb3284836e9b7d2d228d557533d2782888cb8b460b83b7367d2ea",
+      "source_bytes": 354144
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/compile-store.log.gz",
+      "archive_sha256": "b3129a10b18286bbef2412f8e02b33be1f99f1d7aae0cdedacc0b9ee6905850a",
+      "archive_bytes": 13389,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/compile-store.log",
+      "source_sha256": "8923227aeea0e442f1fd7c3db409fa5e85cae4593c4643d92aa73dcb4d2666a2",
+      "source_bytes": 204554
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-01-processes.json",
+      "archive_sha256": "61e5c7628aace7e0111706122a25f358f65eaa01d7c462cea72cba6878dec5a2",
+      "archive_bytes": 104,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-01-processes.json",
+      "source_sha256": "61e5c7628aace7e0111706122a25f358f65eaa01d7c462cea72cba6878dec5a2",
+      "source_bytes": 104
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-01.log",
+      "archive_sha256": "602cb62a0b1e18ae5b9c91d7ef75b4ef65b10fa2e0d90fdc8e8bbde29a9f02f0",
+      "archive_bytes": 240,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-01.log",
+      "source_sha256": "602cb62a0b1e18ae5b9c91d7ef75b4ef65b10fa2e0d90fdc8e8bbde29a9f02f0",
+      "source_bytes": 240
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-02-processes.json",
+      "archive_sha256": "c177c4e0500d9bcc2e0a81a117cd6fb38090fd0a6f2ed43c64aa25cbd5d2118c",
+      "archive_bytes": 104,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-02-processes.json",
+      "source_sha256": "c177c4e0500d9bcc2e0a81a117cd6fb38090fd0a6f2ed43c64aa25cbd5d2118c",
+      "source_bytes": 104
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-02.log",
+      "archive_sha256": "f9d5a48a4aec0adc1a55ae57341a60db51240293e4f6cb875fcc3a14f73f98a6",
+      "archive_bytes": 8411,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-02.log",
+      "source_sha256": "f9d5a48a4aec0adc1a55ae57341a60db51240293e4f6cb875fcc3a14f73f98a6",
+      "source_bytes": 8411
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-03-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-03-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-03.log",
+      "archive_sha256": "c2c2fc56c9aeb1e0f5e4f0ee64a3ba6a7b0d6ac4e9a8c0b2edcda7e7d4e0b78b",
+      "archive_bytes": 221,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-03.log",
+      "source_sha256": "c2c2fc56c9aeb1e0f5e4f0ee64a3ba6a7b0d6ac4e9a8c0b2edcda7e7d4e0b78b",
+      "source_bytes": 221
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-04-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-04-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-04.log",
+      "archive_sha256": "79b89d6e227f6b6840c75f0cf2f91a60b8057486d1b938c8636c07c55e7ba4bd",
+      "archive_bytes": 216,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-04.log",
+      "source_sha256": "79b89d6e227f6b6840c75f0cf2f91a60b8057486d1b938c8636c07c55e7ba4bd",
+      "source_bytes": 216
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-05-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-05-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-05.log",
+      "archive_sha256": "fd444ad48d61103d5af1d28d1378d6c6dd5bbc729fafe19061d6b3bfefb0ea71",
+      "archive_bytes": 222,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-05.log",
+      "source_sha256": "fd444ad48d61103d5af1d28d1378d6c6dd5bbc729fafe19061d6b3bfefb0ea71",
+      "source_bytes": 222
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-06-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-06-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-06.log",
+      "archive_sha256": "5f4a836e42c384d111b9ebe2a2c4ccc16e923bbdd334e5a7ed6aa7d051a044f6",
+      "archive_bytes": 217,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-06.log",
+      "source_sha256": "5f4a836e42c384d111b9ebe2a2c4ccc16e923bbdd334e5a7ed6aa7d051a044f6",
+      "source_bytes": 217
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-07-processes.json",
+      "archive_sha256": "b58c60bc23fc10a282b4a3db7c94e38441369fb4b7cecf643b1248de844f6e82",
+      "archive_bytes": 351,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-07-processes.json",
+      "source_sha256": "b58c60bc23fc10a282b4a3db7c94e38441369fb4b7cecf643b1248de844f6e82",
+      "source_bytes": 351
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-07.log",
+      "archive_sha256": "606663fc84f6444e111fa4b06d329d4f1d6eb2f11a40dcbcb7cf328597bc686b",
+      "archive_bytes": 218,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-07.log",
+      "source_sha256": "606663fc84f6444e111fa4b06d329d4f1d6eb2f11a40dcbcb7cf328597bc686b",
+      "source_bytes": 218
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-08-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-08-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-08.log",
+      "archive_sha256": "ae10ac90d287e8714fd4e4e3ae924a2b428cc99be628c36c33a544d4bca5d1af",
+      "archive_bytes": 213,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-08.log",
+      "source_sha256": "ae10ac90d287e8714fd4e4e3ae924a2b428cc99be628c36c33a544d4bca5d1af",
+      "source_bytes": 213
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-09-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-09-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-09.log",
+      "archive_sha256": "e50b8e91a4f43b64e7daeee8993996f38910781606034f7f6f771a34a6600315",
+      "archive_bytes": 225,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-09.log",
+      "source_sha256": "e50b8e91a4f43b64e7daeee8993996f38910781606034f7f6f771a34a6600315",
+      "source_bytes": 225
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-10-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-10-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-10.log",
+      "archive_sha256": "286816c124190d7ad4b0812995649f75897ab367006291710895bc4dcd22fd0c",
+      "archive_bytes": 221,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-10.log",
+      "source_sha256": "286816c124190d7ad4b0812995649f75897ab367006291710895bc4dcd22fd0c",
+      "source_bytes": 221
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-11-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-11-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-11.log",
+      "archive_sha256": "8af84e410bfaeee5a853d24aa9dfb8cebde3a7b3615044666b273170bf556f64",
+      "archive_bytes": 213,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-11.log",
+      "source_sha256": "8af84e410bfaeee5a853d24aa9dfb8cebde3a7b3615044666b273170bf556f64",
+      "source_bytes": 213
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-12-processes.json",
+      "archive_sha256": "014c8b57b7b9af5fef3895fc4a649d5c814fbf7e24ad7f17285e058994a54202",
+      "archive_bytes": 339,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-12-processes.json",
+      "source_sha256": "014c8b57b7b9af5fef3895fc4a649d5c814fbf7e24ad7f17285e058994a54202",
+      "source_bytes": 339
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/focused-12.log",
+      "archive_sha256": "315f103ab471a17a524d78ecfed14c514816b86bc03d4af9ba3331e2290e827c",
+      "archive_bytes": 206,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-12.log",
+      "source_sha256": "315f103ab471a17a524d78ecfed14c514816b86bc03d4af9ba3331e2290e827c",
+      "source_bytes": 206
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/launcher-processes.json",
+      "archive_sha256": "491acee434bd6b3e87c610df9db31d57eca689660dd8b146cf77a74746a6a870",
+      "archive_bytes": 312,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/launcher-processes.json",
+      "source_sha256": "491acee434bd6b3e87c610df9db31d57eca689660dd8b146cf77a74746a6a870",
+      "source_bytes": 312
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/result.json",
+      "archive_sha256": "bb91421f37b42bcb88b4656a41ea7e8862f663e455fb262e83ad2ac06aa0b122",
+      "archive_bytes": 343,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/result.json",
+      "source_sha256": "bb91421f37b42bcb88b4656a41ea7e8862f663e455fb262e83ad2ac06aa0b122",
+      "source_bytes": 343
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/results.json",
+      "archive_sha256": "eb3f1234bd05c62063a458a18ea99c5dfffc403e97a9614ca9d357fba083fc42",
+      "archive_bytes": 28250,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/results.json",
+      "source_sha256": "eb3f1234bd05c62063a458a18ea99c5dfffc403e97a9614ca9d357fba083fc42",
+      "source_bytes": 28250
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/run.py",
+      "archive_sha256": "7f66fabaa4f0a1dd846da617f81dc80e2a3bd3738758bd1894554cfc0ab0aefe",
+      "archive_bytes": 10695,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/run.py",
+      "source_sha256": "7f66fabaa4f0a1dd846da617f81dc80e2a3bd3738758bd1894554cfc0ab0aefe",
+      "source_bytes": 10695
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/runner-freeze.json",
+      "archive_sha256": "43576648643e3ea03b8361876ca830a016f6079a0d7df6695c81d977e703ac8f",
+      "archive_bytes": 900,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/runner-freeze.json",
+      "source_sha256": "43576648643e3ea03b8361876ca830a016f6079a0d7df6695c81d977e703ac8f",
+      "source_bytes": 900
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/source-after.json.gz",
+      "archive_sha256": "72f53b6148176fd9732234ac99e49a1dd3c272bdc2f274956761eb8bc516305f",
+      "archive_bytes": 174893,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/source-after.json",
+      "source_sha256": "41a186155701805b43b60fc10154360cc9d7eecc0613e78574cd421b60aa59f0",
+      "source_bytes": 877652
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/source-before.json.gz",
+      "archive_sha256": "72f53b6148176fd9732234ac99e49a1dd3c272bdc2f274956761eb8bc516305f",
+      "archive_bytes": 174893,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/source-before.json",
+      "source_sha256": "41a186155701805b43b60fc10154360cc9d7eecc0613e78574cd421b60aa59f0",
+      "source_bytes": 877652
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/store-binary-provenance.json",
+      "archive_sha256": "e14c5a3d4e0c4e9ed7765804e010dfff722982e6ebf0848ed363e564a280e292",
+      "archive_bytes": 1679,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-binary-provenance.json",
+      "source_sha256": "e14c5a3d4e0c4e9ed7765804e010dfff722982e6ebf0848ed363e564a280e292",
+      "source_bytes": 1679
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/store-full-processes.json",
+      "archive_sha256": "73e48b6811c5710cae99083bcd28ae4525b6150e4708ad6c7290366e3229ee2a",
+      "archive_bytes": 1578,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-full-processes.json",
+      "source_sha256": "73e48b6811c5710cae99083bcd28ae4525b6150e4708ad6c7290366e3229ee2a",
+      "source_bytes": 1578
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/store-full.log.gz",
+      "archive_sha256": "7524a53092fd5c13d2b52d85c8d05534e686f5440fe6116b5e2f8ef503b1d617",
+      "archive_bytes": 16320,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-full.log",
+      "source_sha256": "edf4a3a842d7feb2f5e78c05e1b6c614f18036abddb8adbadc8e67d242df2fbf",
+      "source_bytes": 143010
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/store-inventory-processes.json",
+      "archive_sha256": "1ff8696c5890cff644c89cf4674163c0358e46efe09e6cf124bafce7ce9e0494",
+      "archive_bytes": 229,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-inventory-processes.json",
+      "source_sha256": "1ff8696c5890cff644c89cf4674163c0358e46efe09e6cf124bafce7ce9e0494",
+      "source_bytes": 229
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/store-inventory-proof.json",
+      "archive_sha256": "378aabdc5e0ca2698bd68eaa69e655dcef9f4bbdf9b61e25e401dab857b4651c",
+      "archive_bytes": 33970,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-inventory-proof.json",
+      "source_sha256": "378aabdc5e0ca2698bd68eaa69e655dcef9f4bbdf9b61e25e401dab857b4651c",
+      "source_bytes": 33970
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/store-inventory.log",
+      "archive_sha256": "75a962adde9ecfdf1dca83d557bba73dd8220faf0f83e09858055dd4e96ed8d4",
+      "archive_bytes": 33512,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-inventory.log",
+      "source_sha256": "75a962adde9ecfdf1dca83d557bba73dd8220faf0f83e09858055dd4e96ed8d4",
+      "source_bytes": 33512
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/workspace-check-artifacts.json.gz",
+      "archive_sha256": "f5429f4380f0981c2e2428325db3d242ec8ad3cdb84aeb97da20c80c958397ab",
+      "archive_bytes": 58017,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/workspace-check-artifacts.json",
+      "source_sha256": "b5c5ff9d347c43f7ca750815b9afa3d174de8e6ee885a2ceb497667d02187f3d",
+      "source_bytes": 542558
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/workspace-check-diagnostics.json",
+      "archive_sha256": "5bf505c51e479b87153ef9f9b4696ff743c2439bf41823de1163f9170888e824",
+      "archive_bytes": 8474,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/workspace-check-diagnostics.json",
+      "source_sha256": "5bf505c51e479b87153ef9f9b4696ff743c2439bf41823de1163f9170888e824",
+      "source_bytes": 8474
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/workspace-check-diagnostics.txt",
+      "archive_sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "archive_bytes": 1104,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/workspace-check-diagnostics.txt",
+      "source_sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "source_bytes": 1104
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/workspace-check-processes.json.gz",
+      "archive_sha256": "f10c1d5b896b69a575bb32c027a44da6aa860452498b4bb04fdda6b92f4af060",
+      "archive_bytes": 9876,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/workspace-check-processes.json",
+      "source_sha256": "2828465d840234ce6491e77789cee01320885899d2a0ced43199584366cd566e",
+      "source_bytes": 390958
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/workspace-check.log.gz",
+      "archive_sha256": "a586accd27dbda5716ddc02b6ae7bb3ddfcf45dba36ebe21d775540cb188afe1",
+      "archive_bytes": 34532,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/workspace-check.log",
+      "source_sha256": "0c32e77dc3abf1f7c4b93a47318eba1ac254858f8d166b5cbdffcc2aa071649f",
+      "source_bytes": 573074
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/workspace-clippy-artifacts.json.gz",
+      "archive_sha256": "6ac01e93c1faf4d43264a6acfebfd0d8153857d354e93e710d84ecdce37c5d19",
+      "archive_bytes": 57988,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/workspace-clippy-artifacts.json",
+      "source_sha256": "80159634272fc2e7c469e5dba5be92cf60ffb02973c9fd55eda61a7de6afae95",
+      "source_bytes": 543065
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/workspace-clippy-diagnostics.json",
+      "archive_sha256": "5bf505c51e479b87153ef9f9b4696ff743c2439bf41823de1163f9170888e824",
+      "archive_bytes": 8474,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/workspace-clippy-diagnostics.json",
+      "source_sha256": "5bf505c51e479b87153ef9f9b4696ff743c2439bf41823de1163f9170888e824",
+      "source_bytes": 8474
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/workspace-clippy-diagnostics.txt",
+      "archive_sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "archive_bytes": 1104,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/workspace-clippy-diagnostics.txt",
+      "source_sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "source_bytes": 1104
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/workspace-clippy-processes.json.gz",
+      "archive_sha256": "01e31b4e0823467d182898f2ad5279cb525b0053e4a034a74f884dc2754edb78",
+      "archive_bytes": 60660,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/workspace-clippy-processes.json",
+      "source_sha256": "85da92f077e71870e6de663fd83f0141f9b0271e4218a1f6b9c4e44a07a0d17d",
+      "source_bytes": 901787
+    },
+    {
+      "archive_path": "failed-trials/revision5/native-01/workspace-clippy.log.gz",
+      "archive_sha256": "0bf2986fc126c820be79296ab053e1040897dff09d9be2b58746b1ad53bbdba5",
+      "archive_bytes": 37959,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/workspace-clippy.log",
+      "source_sha256": "16b9a062c08acbcd679a1c78f3fa327d44ccc1f8dbc1185c017842bb9f961d45",
+      "source_bytes": 587012
+    },
+    {
+      "archive_path": "format-01/active.json",
+      "archive_sha256": "1070d8c85478d8270a077d56ddc25328a68e2ff734886a57dec74e5cf4ea5402",
+      "archive_bytes": 481,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/format-01/active.json",
+      "source_sha256": "1070d8c85478d8270a077d56ddc25328a68e2ff734886a57dec74e5cf4ea5402",
+      "source_bytes": 481
+    },
+    {
+      "archive_path": "format-01/format.log",
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "archive_bytes": 0,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/format-01/format.log",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_bytes": 0
+    },
+    {
+      "archive_path": "format-01/processes.json",
+      "archive_sha256": "fcef8d7d9097a0f4eafe540f8d76cbdf0e4d1a91dcec462577094b7a3c6cb553",
+      "archive_bytes": 7948,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/format-01/processes.json",
+      "source_sha256": "fcef8d7d9097a0f4eafe540f8d76cbdf0e4d1a91dcec462577094b7a3c6cb553",
+      "source_bytes": 7948
+    },
+    {
+      "archive_path": "format-01/result.json",
+      "archive_sha256": "ab94d2962b92f55540db4bb382381eb693bb4484d2758d4327b1aa97b7741324",
+      "archive_bytes": 1150,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/format-01/result.json",
+      "source_sha256": "ab94d2962b92f55540db4bb382381eb693bb4484d2758d4327b1aa97b7741324",
+      "source_bytes": 1150
+    },
+    {
+      "archive_path": "format-01/run.py",
+      "archive_sha256": "1326b0aa402670b2db85bf168388694f1e064442688326458a4cedfc040b5c35",
+      "archive_bytes": 4022,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/format-01/run.py",
+      "source_sha256": "1326b0aa402670b2db85bf168388694f1e064442688326458a4cedfc040b5c35",
+      "source_bytes": 4022
+    },
+    {
+      "archive_path": "format-01/runner-freeze.json",
+      "archive_sha256": "fbaaecc797a80564e91508ae2407eb4aa5e477a3dff827f2e8a757f802c9957a",
+      "archive_bytes": 273,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/format-01/runner-freeze.json",
+      "source_sha256": "fbaaecc797a80564e91508ae2407eb4aa5e477a3dff827f2e8a757f802c9957a",
+      "source_bytes": 273
+    },
+    {
+      "archive_path": "format-01/source-after.json.gz",
+      "archive_sha256": "7870f8e167fb3a4b2ee8ee8946c6cfaca480ff639df9feceef1b61a5640ed1f5",
+      "archive_bytes": 175894,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/format-01/source-after.json",
+      "source_sha256": "ac10190296121847fdc44cc2410bd705e79f46757e0e75a3b770e161b82d21be",
+      "source_bytes": 900451
+    },
+    {
+      "archive_path": "format-01/source-before.json.gz",
+      "archive_sha256": "7870f8e167fb3a4b2ee8ee8946c6cfaca480ff639df9feceef1b61a5640ed1f5",
+      "archive_bytes": 175894,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/format-01/source-before.json",
+      "source_sha256": "ac10190296121847fdc44cc2410bd705e79f46757e0e75a3b770e161b82d21be",
+      "source_bytes": 900451
+    },
+    {
+      "archive_path": "inherited-python/HANDOFF.md",
+      "archive_sha256": "d9886be5bec7149e9ec6223b331faf9bd77b18527c7fa628883e2e2670842fca",
+      "archive_bytes": 1832,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/HANDOFF.md",
+      "source_sha256": "d9886be5bec7149e9ec6223b331faf9bd77b18527c7fa628883e2e2670842fca",
+      "source_bytes": 1832
+    },
+    {
+      "archive_path": "inherited-python/native-full-store/conservative-terminal-acceptance.json",
+      "archive_sha256": "e724bbddb228a5bf0a9a607195ae6be4cc4e72d076a73379851e75ced868ee2b",
+      "archive_bytes": 1356,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/conservative-terminal-acceptance.json",
+      "source_sha256": "e724bbddb228a5bf0a9a607195ae6be4cc4e72d076a73379851e75ced868ee2b",
+      "source_bytes": 1356
+    },
+    {
+      "archive_path": "inherited-python/native-full-store/python-version-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/python-version-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "inherited-python/native-full-store/python-version.log",
+      "archive_sha256": "4c3569f5da09975434dd9fd9a91fadbc4367a91d8f3c3fab59e9241ab9ee4bd8",
+      "archive_bytes": 15,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/python-version.log",
+      "source_sha256": "4c3569f5da09975434dd9fd9a91fadbc4367a91d8f3c3fab59e9241ab9ee4bd8",
+      "source_bytes": 15
+    },
+    {
+      "archive_path": "inherited-python/native-full-store/result.json",
+      "archive_sha256": "5ada5a2f06c160c48c6fca90e64d58b11d74c5ce145833fc3f9b63d845f0e565",
+      "archive_bytes": 313,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/result.json",
+      "source_sha256": "5ada5a2f06c160c48c6fca90e64d58b11d74c5ce145833fc3f9b63d845f0e565",
+      "source_bytes": 313
+    },
+    {
+      "archive_path": "inherited-python/native-full-store/results.json",
+      "archive_sha256": "805cf38961517a1f48bedca62bb3036cfe4901bf6974a206bd901bc75bacd496",
+      "archive_bytes": 6991,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/results.json",
+      "source_sha256": "805cf38961517a1f48bedca62bb3036cfe4901bf6974a206bd901bc75bacd496",
+      "source_bytes": 6991
+    },
+    {
+      "archive_path": "inherited-python/native-full-store/smoke-script-tests-processes.json",
+      "archive_sha256": "9015540dc1ef2027edba166af07b5713eb233e24baba3d34290c10311bc74860",
+      "archive_bytes": 216,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/smoke-script-tests-processes.json",
+      "source_sha256": "9015540dc1ef2027edba166af07b5713eb233e24baba3d34290c10311bc74860",
+      "source_bytes": 216
+    },
+    {
+      "archive_path": "inherited-python/native-full-store/smoke-script-tests.log",
+      "archive_sha256": "11dab31fa64bebeaf85eafeea38c3e3b6270f45212213e4c308f044239285327",
+      "archive_bytes": 3086,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/smoke-script-tests.log",
+      "source_sha256": "11dab31fa64bebeaf85eafeea38c3e3b6270f45212213e4c308f044239285327",
+      "source_bytes": 3086
+    },
+    {
+      "archive_path": "inherited-python/native-full-store/source-after.json.gz",
+      "archive_sha256": "ba2cbd4579e0551af1fb2979e74afb7375ca6b0a1b6218ed0434153069881a5a",
+      "archive_bytes": 166230,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/source-after.json",
+      "source_sha256": "a0f31b3d9ab79855041566ebbf443f16d5371019e3eb1508fb67259b559fbe39",
+      "source_bytes": 746638
+    },
+    {
+      "archive_path": "inherited-python/native-full-store/source-before.json.gz",
+      "archive_sha256": "ba2cbd4579e0551af1fb2979e74afb7375ca6b0a1b6218ed0434153069881a5a",
+      "archive_bytes": 166230,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/source-before.json",
+      "source_sha256": "a0f31b3d9ab79855041566ebbf443f16d5371019e3eb1508fb67259b559fbe39",
+      "source_bytes": 746638
+    },
+    {
+      "archive_path": "inherited-python/qualification-receipt.json",
+      "archive_sha256": "4d42479278f4a297d21250418c4e5544f4c5929ea6c0a22b259545337b512382",
+      "archive_bytes": 4382,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/qualification-receipt.json",
+      "source_sha256": "4d42479278f4a297d21250418c4e5544f4c5929ea6c0a22b259545337b512382",
+      "source_bytes": 4382
+    },
+    {
+      "archive_path": "inherited-python/workspace-qualification-receipt.json",
+      "archive_sha256": "6fa8e163d87b9fa0abb743fce5afa9ede1c877ad8e4e823f0239c7bd98c05025",
+      "archive_bytes": 3660,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/workspace-qualification-receipt.json",
+      "source_sha256": "6fa8e163d87b9fa0abb743fce5afa9ede1c877ad8e4e823f0239c7bd98c05025",
+      "source_bytes": 3660
+    },
+    {
+      "archive_path": "lineage/audit-archive-custody-fixture-correction/correction.patch",
+      "archive_sha256": "c0a1725fb1d91212bd2182463a300f8c536b74c3db10b73c2e9c958eaab993b2",
+      "archive_bytes": 5133,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/audit-archive-custody-fixture-correction/correction.patch",
+      "source_sha256": "c0a1725fb1d91212bd2182463a300f8c536b74c3db10b73c2e9c958eaab993b2",
+      "source_bytes": 5133
+    },
+    {
+      "archive_path": "lineage/audit-archive-custody-fixture-correction/manifest.json",
+      "archive_sha256": "75a316e99dd498f2e7a309315ba2d4ced8701e56804ad764a9249f4166ba6ff5",
+      "archive_bytes": 957,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/audit-archive-custody-fixture-correction/manifest.json",
+      "source_sha256": "75a316e99dd498f2e7a309315ba2d4ced8701e56804ad764a9249f4166ba6ff5",
+      "source_bytes": 957
+    },
+    {
+      "archive_path": "lineage/custody-fenced-observation-fixture-correction/correction.patch",
+      "archive_sha256": "4a2019bd47ea64e00321030e7afaca8b890b99d32045f47c58f4ae4078d6eb26",
+      "archive_bytes": 3574,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/custody-fenced-observation-fixture-correction/correction.patch",
+      "source_sha256": "4a2019bd47ea64e00321030e7afaca8b890b99d32045f47c58f4ae4078d6eb26",
+      "source_bytes": 3574
+    },
+    {
+      "archive_path": "lineage/custody-fenced-observation-fixture-correction/manifest.json",
+      "archive_sha256": "3e19767c4dffc58f669baa3ed40b7ae0790f45e6012191a22c16e0e4f5e38bd2",
+      "archive_bytes": 1243,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/custody-fenced-observation-fixture-correction/manifest.json",
+      "source_sha256": "3e19767c4dffc58f669baa3ed40b7ae0790f45e6012191a22c16e0e4f5e38bd2",
+      "source_bytes": 1243
+    },
+    {
+      "archive_path": "lineage/file-explicit-close-revision1/candidate-01/close.patch",
+      "archive_sha256": "9d0c8fe323e1f13fdd84883db1ffe57a41e2e5842d9056af94dd67c6d33f7518",
+      "archive_bytes": 34240,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-explicit-close-revision1/candidate-01/close.patch",
+      "source_sha256": "9d0c8fe323e1f13fdd84883db1ffe57a41e2e5842d9056af94dd67c6d33f7518",
+      "source_bytes": 34240
+    },
+    {
+      "archive_path": "lineage/file-explicit-close-revision1/candidate-01/manifest.json",
+      "archive_sha256": "ce3e396af747696be59d6c1a77452bba0a1e95d15d8d8b1bd817047245167cca",
+      "archive_bytes": 3388,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-explicit-close-revision1/candidate-01/manifest.json",
+      "source_sha256": "ce3e396af747696be59d6c1a77452bba0a1e95d15d8d8b1bd817047245167cca",
+      "source_bytes": 3388
+    },
+    {
+      "archive_path": "lineage/file-owner-custody-revision1/candidate-04/candidate03-correction.patch",
+      "archive_sha256": "13c81fa16bde938a5cf3c298f65454f8e0843ea93089b200de3e1c4879621aa5",
+      "archive_bytes": 1871,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-owner-custody-revision1/candidate-04/candidate03-correction.patch",
+      "source_sha256": "13c81fa16bde938a5cf3c298f65454f8e0843ea93089b200de3e1c4879621aa5",
+      "source_bytes": 1871
+    },
+    {
+      "archive_path": "lineage/file-owner-custody-revision1/candidate-04/custody.patch.gz",
+      "archive_sha256": "1ae225e35f52996d4f8998b73758889286ec184209c021c93c53cdc382c1270f",
+      "archive_bytes": 23679,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-owner-custody-revision1/candidate-04/custody.patch",
+      "source_sha256": "48756df32f870731310a1cec7fc665c1311ea6b7aec4ef05a37f5bc42fb516ca",
+      "source_bytes": 128377
+    },
+    {
+      "archive_path": "lineage/file-owner-custody-revision1/candidate-04/manifest.json",
+      "archive_sha256": "89bf760a949096fe2c9c21a1907342bf21ecdfcdc5196f5e68785ba40800708d",
+      "archive_bytes": 2977,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-owner-custody-revision1/candidate-04/manifest.json",
+      "source_sha256": "89bf760a949096fe2c9c21a1907342bf21ecdfcdc5196f5e68785ba40800708d",
+      "source_bytes": 2977
+    },
+    {
+      "archive_path": "lineage/namespace-ancestor-custody-fixture-correction/correction.patch",
+      "archive_sha256": "4362bdb8fff0214fdd2667e2793947e584b9185693d67685ecb1204ccab489df",
+      "archive_bytes": 4617,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/namespace-ancestor-custody-fixture-correction/correction.patch",
+      "source_sha256": "4362bdb8fff0214fdd2667e2793947e584b9185693d67685ecb1204ccab489df",
+      "source_bytes": 4617
+    },
+    {
+      "archive_path": "lineage/namespace-ancestor-custody-fixture-correction/manifest.json",
+      "archive_sha256": "ef183c403290bed614f6474627e437b3a65b6b16cdd85410fb7d10e06769a91d",
+      "archive_bytes": 891,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/namespace-ancestor-custody-fixture-correction/manifest.json",
+      "source_sha256": "ef183c403290bed614f6474627e437b3a65b6b16cdd85410fb7d10e06769a91d",
+      "source_bytes": 891
+    },
+    {
+      "archive_path": "lineage/storage-and-namespace-integration-revision6/census-to-combined-overlaps.patch",
+      "archive_sha256": "310154b94bd15e30fd0060cb3462d7ede7c5cf62333c9c41a9aa8803147d77d9",
+      "archive_bytes": 26941,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/census-to-combined-overlaps.patch",
+      "source_sha256": "310154b94bd15e30fd0060cb3462d7ede7c5cf62333c9c41a9aa8803147d77d9",
+      "source_bytes": 26941
+    },
+    {
+      "archive_path": "lineage/storage-and-namespace-integration-revision6/combined.patch.gz",
+      "archive_sha256": "2bf49f279b5e627d1556ed4d39ecbe1728ccff16ed90e0ab0406f7c1720871dc",
+      "archive_bytes": 115763,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/combined.patch",
+      "source_sha256": "265379464e9b1c51e9e71ebaaa91a12e67ca4cf68256fee1f957f55f5d904dfc",
+      "source_bytes": 583273
+    },
+    {
+      "archive_path": "lineage/storage-and-namespace-integration-revision6/correction.patch",
+      "archive_sha256": "411ec2365a68f4ce771d530fad30271d5de6106a08fe5f057fccb918b3ff5cf1",
+      "archive_bytes": 4599,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/correction.patch",
+      "source_sha256": "411ec2365a68f4ce771d530fad30271d5de6106a08fe5f057fccb918b3ff5cf1",
+      "source_bytes": 4599
+    },
+    {
+      "archive_path": "lineage/storage-and-namespace-integration-revision6/manifest.json",
+      "archive_sha256": "2b3f0ef55c95be88eb086b7cdfd9793406123d7efcf4f0a0f8396e883625d24f",
+      "archive_bytes": 29115,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/manifest.json",
+      "source_sha256": "2b3f0ef55c95be88eb086b7cdfd9793406123d7efcf4f0a0f8396e883625d24f",
+      "source_bytes": 29115
+    },
+    {
+      "archive_path": "lineage/storage-and-namespace-integration-revision6/namespace-to-combined-overlaps.patch",
+      "archive_sha256": "a14e5b89b889482f30ece2de69a48b1df60ed153f163ff802ca36d13c2462516",
+      "archive_bytes": 4892,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/namespace-to-combined-overlaps.patch",
+      "source_sha256": "a14e5b89b889482f30ece2de69a48b1df60ed153f163ff802ca36d13c2462516",
+      "source_bytes": 4892
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision2/combined.patch.gz",
+      "archive_sha256": "3ced31a8c4a45ebc34a68fc1ec0d55a400a889be13d76e82705fd2a5ab1315c9",
+      "archive_bytes": 129557,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/combined.patch",
+      "source_sha256": "df6b8f8b8e5e9d34a03d3a38d16aa59fb3281ecf5c072248ed52a9c0d8972405",
+      "source_bytes": 664725
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision2/correction.patch",
+      "archive_sha256": "62d07914c2c471e8f2a575197e009827c2393032dd4bdb6c765c49d76986c696",
+      "archive_bytes": 2373,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/correction.patch",
+      "source_sha256": "62d07914c2c471e8f2a575197e009827c2393032dd4bdb6c765c49d76986c696",
+      "source_bytes": 2373
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision2/custody-to-combined-overlaps.patch",
+      "archive_sha256": "c19a08a2b9db8ec6d4ac2a97f92e0ae021947e37134a14baea6fcdde5d88dc0c",
+      "archive_bytes": 10716,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/custody-to-combined-overlaps.patch",
+      "source_sha256": "c19a08a2b9db8ec6d4ac2a97f92e0ae021947e37134a14baea6fcdde5d88dc0c",
+      "source_bytes": 10716
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision2/manifest.json",
+      "archive_sha256": "93ce8996fc13e0c84d77ddf22f9b71875124286c7de12367c216eea3c0026d24",
+      "archive_bytes": 32330,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/manifest.json",
+      "source_sha256": "93ce8996fc13e0c84d77ddf22f9b71875124286c7de12367c216eea3c0026d24",
+      "source_bytes": 32330
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision2/revision6-to-combined.patch.gz",
+      "archive_sha256": "ce534862ef8b4eb0d58ccb550f06e4feec22bf146bec50e92bea1035d204ed79",
+      "archive_bytes": 22525,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision2/revision6-to-combined.patch",
+      "source_sha256": "2933c5ad3728940f4936509f7f0d0a83a8816ce007f78c8e917ca9a98f2ae1be",
+      "source_bytes": 119409
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision3/combined.patch.gz",
+      "archive_sha256": "cca5cf3fe7d139e540a0dc5c25a83d645949e084b6b915fb019d02d9819217e6",
+      "archive_bytes": 129920,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/combined.patch",
+      "source_sha256": "d904609811574e3f10bd200255d918d172f2e654e30c435c0028c52217f4d98b",
+      "source_bytes": 665786
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision3/correction.patch",
+      "archive_sha256": "af5b3c4d351ee3fc4e584a37088a5836a2cc4b3664e72df7e3a96a731b03491d",
+      "archive_bytes": 5788,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/correction.patch",
+      "source_sha256": "af5b3c4d351ee3fc4e584a37088a5836a2cc4b3664e72df7e3a96a731b03491d",
+      "source_bytes": 5788
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision3/custody-to-combined-overlaps.patch",
+      "archive_sha256": "9c5c37db28a12317c20a6371da8a9bc0c55c1ea6db576c275b324481a95ba285",
+      "archive_bytes": 19687,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/custody-to-combined-overlaps.patch",
+      "source_sha256": "9c5c37db28a12317c20a6371da8a9bc0c55c1ea6db576c275b324481a95ba285",
+      "source_bytes": 19687
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision3/manifest.json",
+      "archive_sha256": "09b411af5662c5e14a7a93b1ab2dd476ef2e4925c3f42cbbd21f95a3019828c7",
+      "archive_bytes": 32932,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/manifest.json",
+      "source_sha256": "09b411af5662c5e14a7a93b1ab2dd476ef2e4925c3f42cbbd21f95a3019828c7",
+      "source_bytes": 32932
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision3/revision6-to-combined.patch.gz",
+      "archive_sha256": "beea799ba7353e385d162141014571183b85bf845112f7b435597fd9091b7ce3",
+      "archive_bytes": 23187,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision3/revision6-to-combined.patch",
+      "source_sha256": "69f6cb1b98156980dc4461f2509b6fbadb6cf37e52bab4447f20c72cc98a83b0",
+      "source_bytes": 122844
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision4/combined.patch.gz",
+      "archive_sha256": "dde08a01d0aec5b6f6612236e49cd0f248d41b0d580e68ff67155f5f2bc04b9a",
+      "archive_bytes": 129922,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/combined.patch",
+      "source_sha256": "c41f0ef642848a12d1579980be43e5520821d2537c6ee0c100698186c2b737ff",
+      "source_bytes": 665795
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision4/correction.patch",
+      "archive_sha256": "2ceae1a5347026275cb56599d2c5ed783e79ad790bb32819a8d704d8fc325fa1",
+      "archive_bytes": 825,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/correction.patch",
+      "source_sha256": "2ceae1a5347026275cb56599d2c5ed783e79ad790bb32819a8d704d8fc325fa1",
+      "source_bytes": 825
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision4/custody-to-combined-overlaps.patch",
+      "archive_sha256": "6559cee4900c109d30484b55efc87420eeffb63f73d3605d58b3554722d64b81",
+      "archive_bytes": 20107,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/custody-to-combined-overlaps.patch",
+      "source_sha256": "6559cee4900c109d30484b55efc87420eeffb63f73d3605d58b3554722d64b81",
+      "source_bytes": 20107
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision4/manifest.json",
+      "archive_sha256": "83ab0cf18c5ee3d5b4b00309c4073200faa1d753254b9f871da2837018b4faec",
+      "archive_bytes": 33350,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/manifest.json",
+      "source_sha256": "83ab0cf18c5ee3d5b4b00309c4073200faa1d753254b9f871da2837018b4faec",
+      "source_bytes": 33350
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision4/revision6-to-combined.patch.gz",
+      "archive_sha256": "e6c5143f9b2b9ac73bbbf12ab1758dc94aa66764aa495622c29121620d6b8847",
+      "archive_bytes": 23281,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision4/revision6-to-combined.patch",
+      "source_sha256": "3ab30c26507f1a979f8322c1453fdb05fdf0f1dc43daff5f189e250fe74a8061",
+      "source_bytes": 123029
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision5/combined.patch.gz",
+      "archive_sha256": "e7d99a01c8881c01e9a511403925cbeecb8b2a1b5eaed3fdd8e2f0a1499ae489",
+      "archive_bytes": 136057,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/combined.patch",
+      "source_sha256": "f240092b164897c61be4d21c5a395d78f2c1a9d5d253a101af7306b4ed365ed6",
+      "source_bytes": 702424
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision5/correction.patch",
+      "archive_sha256": "72a2174419c18e733d13963a481742519ba9cc9d3caff6578fe48d0f0ea2d104",
+      "archive_bytes": 42858,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/correction.patch",
+      "source_sha256": "72a2174419c18e733d13963a481742519ba9cc9d3caff6578fe48d0f0ea2d104",
+      "source_bytes": 42858
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision5/custody-to-combined-overlaps.patch",
+      "archive_sha256": "33d278fb6abb39475d14058cdba75444c97159e786213c548cace33314f8d522",
+      "archive_bytes": 49720,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/custody-to-combined-overlaps.patch",
+      "source_sha256": "33d278fb6abb39475d14058cdba75444c97159e786213c548cace33314f8d522",
+      "source_bytes": 49720
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision5/manifest.json",
+      "archive_sha256": "64a8b440408c734c05b442aafbb9fa969862d78662178b8029a287dd66578b2e",
+      "archive_bytes": 34745,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/manifest.json",
+      "source_sha256": "64a8b440408c734c05b442aafbb9fa969862d78662178b8029a287dd66578b2e",
+      "source_bytes": 34745
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration-revision5/revision6-to-combined.patch.gz",
+      "archive_sha256": "d6026f62a14066f66e2d49ddb8dff469464f3dd97928087f2459aa7719d54e69",
+      "archive_bytes": 30038,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/revision6-to-combined.patch",
+      "source_sha256": "c3a409f83181d01ebc7781c6a321993f13d7e4a5a1fc1556c5efff038d869642",
+      "source_bytes": 163074
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration/combined.patch.gz",
+      "archive_sha256": "5a0ba795a47cb12f1222c38ce23c78920803604e106420956ab26eb275a8d472",
+      "archive_bytes": 129410,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration/combined.patch",
+      "source_sha256": "7b23b1d2638776a21c864fe878120c4192669673cfc7a90d707939da4214f46f",
+      "source_bytes": 662907
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration/custody-to-combined-overlaps.patch",
+      "archive_sha256": "568b71720f02c7392a7be208a64b07aa2d827c530827daddf3d0cad05ec5da95",
+      "archive_bytes": 12890,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration/custody-to-combined-overlaps.patch",
+      "source_sha256": "568b71720f02c7392a7be208a64b07aa2d827c530827daddf3d0cad05ec5da95",
+      "source_bytes": 12890
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration/manifest.json",
+      "archive_sha256": "685c94e8e7b80349d9488c925de9347d02a4d9db2e27d4b78a91f7ad72f30209",
+      "archive_bytes": 31923,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration/manifest.json",
+      "source_sha256": "685c94e8e7b80349d9488c925de9347d02a4d9db2e27d4b78a91f7ad72f30209",
+      "source_bytes": 31923
+    },
+    {
+      "archive_path": "lineage/storage-namespace-custody-integration/revision6-to-combined.patch.gz",
+      "archive_sha256": "c4768b724d35e86f31aa65521d52f26beb633011713ff58ddaa617af155bfd8b",
+      "archive_bytes": 22822,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration/revision6-to-combined.patch",
+      "source_sha256": "93f247f7c4f3ee1aee68ef8966db8bcb152cae7e8391a971ba62a3bea542bcfd",
+      "source_bytes": 121061
+    },
+    {
+      "archive_path": "lineage/storage-opening-explicit-close-fixture-correction-revision2/correction.patch",
+      "archive_sha256": "e0b442426e43491e141f61e8cb457d810ae2b45c9149b18208ce16d5a4c61352",
+      "archive_bytes": 7865,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-opening-explicit-close-fixture-correction-revision2/correction.patch",
+      "source_sha256": "e0b442426e43491e141f61e8cb457d810ae2b45c9149b18208ce16d5a4c61352",
+      "source_bytes": 7865
+    },
+    {
+      "archive_path": "lineage/storage-opening-explicit-close-fixture-correction-revision2/manifest.json",
+      "archive_sha256": "3e691433246ee3fbe43a516d65ede88a2bfa16eb65343126f497ed78a4b63f9b",
+      "archive_bytes": 1941,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-opening-explicit-close-fixture-correction-revision2/manifest.json",
+      "source_sha256": "3e691433246ee3fbe43a516d65ede88a2bfa16eb65343126f497ed78a4b63f9b",
+      "source_bytes": 1941
+    },
+    {
+      "archive_path": "lineage/storage-opening-explicit-close-fixture-correction-revision2/revision1-delta.patch",
+      "archive_sha256": "b8490f5f6af6535ed20a7aeaf5c77a3a59428afcf95eb4a98c491e1b0d2dfc97",
+      "archive_bytes": 2520,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-opening-explicit-close-fixture-correction-revision2/revision1-delta.patch",
+      "source_sha256": "b8490f5f6af6535ed20a7aeaf5c77a3a59428afcf95eb4a98c491e1b0d2dfc97",
+      "source_bytes": 2520
+    },
+    {
+      "archive_path": "native-01/active.json",
+      "archive_sha256": "11541ef2df8710820fdbb8c7247641648fdeda1718aa348fced8a60c0b752f2a",
+      "archive_bytes": 590,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/active.json",
+      "source_sha256": "11541ef2df8710820fdbb8c7247641648fdeda1718aa348fced8a60c0b752f2a",
+      "source_bytes": 590
+    },
+    {
+      "archive_path": "native-01/compile-store-artifacts.json.gz",
+      "archive_sha256": "7ac4b77a03cd96b20a938ce0dc547d3759f99e0f3fe86204946971fd82770cd3",
+      "archive_bytes": 26031,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/compile-store-artifacts.json",
+      "source_sha256": "44eb5f8143de4e598fbfb3f0c6ee537bc030f2b38ae2c9f44cc79b7244775c77",
+      "source_bytes": 208447
+    },
+    {
+      "archive_path": "native-01/compile-store-diagnostics.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/compile-store-diagnostics.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "native-01/compile-store-diagnostics.txt",
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "archive_bytes": 0,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/compile-store-diagnostics.txt",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_bytes": 0
+    },
+    {
+      "archive_path": "native-01/compile-store-processes.json.gz",
+      "archive_sha256": "3d7a4bbe689df408fa2902ccb9dc2561f09e366195bd0fdbc5c75ee01fca15f7",
+      "archive_bytes": 23101,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/compile-store-processes.json",
+      "source_sha256": "694045f566b8d816316a7f42c48371b56aedade1061045a6f27db55f18cd8092",
+      "source_bytes": 245118
+    },
+    {
+      "archive_path": "native-01/compile-store.log.gz",
+      "archive_sha256": "897dffba5ac768fdaca6b9ceded695db2f6b14f5a65f4046bf882a0a483cb45c",
+      "archive_bytes": 13397,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/compile-store.log",
+      "source_sha256": "d67edb3bd8dbde667e33263573085e1346658975b1be314b08fd71d1bbcc4552",
+      "source_bytes": 204554
+    },
+    {
+      "archive_path": "native-01/focused-01-processes.json",
+      "archive_sha256": "6d6da06646aec5dad70fd4db7e053e2343938a99af3521f23d618b8ccc3bdda4",
+      "archive_bytes": 374,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-01-processes.json",
+      "source_sha256": "6d6da06646aec5dad70fd4db7e053e2343938a99af3521f23d618b8ccc3bdda4",
+      "source_bytes": 374
+    },
+    {
+      "archive_path": "native-01/focused-01.log",
+      "archive_sha256": "5fceddb402decec20845a5a835649ccd06f53bbbf491320171cea7933a3c4bb8",
+      "archive_bytes": 241,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-01.log",
+      "source_sha256": "5fceddb402decec20845a5a835649ccd06f53bbbf491320171cea7933a3c4bb8",
+      "source_bytes": 241
+    },
+    {
+      "archive_path": "native-01/focused-02-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-02-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "native-01/focused-02.log",
+      "archive_sha256": "42fc901eb4d53054aa296b755208b2626fa7da8ebc2a04ba0a74cb2f74cb1351",
+      "archive_bytes": 224,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-02.log",
+      "source_sha256": "42fc901eb4d53054aa296b755208b2626fa7da8ebc2a04ba0a74cb2f74cb1351",
+      "source_bytes": 224
+    },
+    {
+      "archive_path": "native-01/focused-03-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-03-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "native-01/focused-03.log",
+      "archive_sha256": "85b88ea2fa1a93fcdf35ff67bde8c78182faf63b08b8c1cadabe94897b5f77a8",
+      "archive_bytes": 240,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-03.log",
+      "source_sha256": "85b88ea2fa1a93fcdf35ff67bde8c78182faf63b08b8c1cadabe94897b5f77a8",
+      "source_bytes": 240
+    },
+    {
+      "archive_path": "native-01/focused-04-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-04-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "native-01/focused-04.log",
+      "archive_sha256": "647884b2047ea2e8342d295c15a46bf54ff4b51a4b0ce12f82d39f901dcdc84c",
+      "archive_bytes": 8411,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-04.log",
+      "source_sha256": "647884b2047ea2e8342d295c15a46bf54ff4b51a4b0ce12f82d39f901dcdc84c",
+      "source_bytes": 8411
+    },
+    {
+      "archive_path": "native-01/focused-05-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-05-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "native-01/focused-05.log",
+      "archive_sha256": "bf689f3d3adab3a710357905689f05f65bc8469e856cf4a486277065ba9c20e9",
+      "archive_bytes": 221,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-05.log",
+      "source_sha256": "bf689f3d3adab3a710357905689f05f65bc8469e856cf4a486277065ba9c20e9",
+      "source_bytes": 221
+    },
+    {
+      "archive_path": "native-01/focused-06-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-06-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "native-01/focused-06.log",
+      "archive_sha256": "60e804cb9edb30e90e643e38008a90acabbb1a5aa217eed119531a2e8be83beb",
+      "archive_bytes": 216,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-06.log",
+      "source_sha256": "60e804cb9edb30e90e643e38008a90acabbb1a5aa217eed119531a2e8be83beb",
+      "source_bytes": 216
+    },
+    {
+      "archive_path": "native-01/focused-07-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-07-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "native-01/focused-07.log",
+      "archive_sha256": "2e5538295085aa30699428f57917835e515ad84fcd9f384d08b70c88f9d74ce4",
+      "archive_bytes": 222,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-07.log",
+      "source_sha256": "2e5538295085aa30699428f57917835e515ad84fcd9f384d08b70c88f9d74ce4",
+      "source_bytes": 222
+    },
+    {
+      "archive_path": "native-01/focused-08-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-08-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "native-01/focused-08.log",
+      "archive_sha256": "267a620da886b1d9d7ce081c6d10e9d214d58d45a77f8e77dd571c61d406c927",
+      "archive_bytes": 217,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-08.log",
+      "source_sha256": "267a620da886b1d9d7ce081c6d10e9d214d58d45a77f8e77dd571c61d406c927",
+      "source_bytes": 217
+    },
+    {
+      "archive_path": "native-01/focused-09-processes.json",
+      "archive_sha256": "2711bb5dc440cd592fc04caf2564d0623cca19b8b9cd0c4d34355ea20a859287",
+      "archive_bytes": 351,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-09-processes.json",
+      "source_sha256": "2711bb5dc440cd592fc04caf2564d0623cca19b8b9cd0c4d34355ea20a859287",
+      "source_bytes": 351
+    },
+    {
+      "archive_path": "native-01/focused-09.log",
+      "archive_sha256": "78f1fe52d3d43a352fabefcee61e6b1961109b1587e52c32f363896519428a8d",
+      "archive_bytes": 218,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-09.log",
+      "source_sha256": "78f1fe52d3d43a352fabefcee61e6b1961109b1587e52c32f363896519428a8d",
+      "source_bytes": 218
+    },
+    {
+      "archive_path": "native-01/focused-10-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-10-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "native-01/focused-10.log",
+      "archive_sha256": "903b478eb474b38a3db2aea5dacb9a18751a41f5de2b8742d6727f3c6ad4946e",
+      "archive_bytes": 213,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-10.log",
+      "source_sha256": "903b478eb474b38a3db2aea5dacb9a18751a41f5de2b8742d6727f3c6ad4946e",
+      "source_bytes": 213
+    },
+    {
+      "archive_path": "native-01/focused-11-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-11-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "native-01/focused-11.log",
+      "archive_sha256": "70761658790a9610cc49139fe6ac8377ab5535d03b1d7d86f78a99914a8da6cc",
+      "archive_bytes": 225,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-11.log",
+      "source_sha256": "70761658790a9610cc49139fe6ac8377ab5535d03b1d7d86f78a99914a8da6cc",
+      "source_bytes": 225
+    },
+    {
+      "archive_path": "native-01/focused-12-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-12-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "native-01/focused-12.log",
+      "archive_sha256": "4cea0629f8e3751f2757f35311e1d22cf14e5cc9d73264974139a2bed469cfb7",
+      "archive_bytes": 221,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-12.log",
+      "source_sha256": "4cea0629f8e3751f2757f35311e1d22cf14e5cc9d73264974139a2bed469cfb7",
+      "source_bytes": 221
+    },
+    {
+      "archive_path": "native-01/focused-13-processes.json",
+      "archive_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "archive_bytes": 3,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-13-processes.json",
+      "source_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "source_bytes": 3
+    },
+    {
+      "archive_path": "native-01/focused-13.log",
+      "archive_sha256": "8eb379a9e2ed524123c8cbe3f48e7b49e3a303dee5a883cdde1d44a779ed3d6a",
+      "archive_bytes": 213,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-13.log",
+      "source_sha256": "8eb379a9e2ed524123c8cbe3f48e7b49e3a303dee5a883cdde1d44a779ed3d6a",
+      "source_bytes": 213
+    },
+    {
+      "archive_path": "native-01/focused-14-processes.json",
+      "archive_sha256": "df7f388d71d00a5e4ebb4fe65cccc0a467422fbae44114559fbc49333a80def5",
+      "archive_bytes": 339,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-14-processes.json",
+      "source_sha256": "df7f388d71d00a5e4ebb4fe65cccc0a467422fbae44114559fbc49333a80def5",
+      "source_bytes": 339
+    },
+    {
+      "archive_path": "native-01/focused-14.log",
+      "archive_sha256": "d7566fdcbaed2f62be1f57b66871c9b87d4d09ca4bf910e62f811e466ad89471",
+      "archive_bytes": 206,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/focused-14.log",
+      "source_sha256": "d7566fdcbaed2f62be1f57b66871c9b87d4d09ca4bf910e62f811e466ad89471",
+      "source_bytes": 206
+    },
+    {
+      "archive_path": "native-01/launcher-processes.json",
+      "archive_sha256": "194bca46c99933210a331f334551bd8c1a97dc6bc66930093eaf7e3414d6f5b3",
+      "archive_bytes": 312,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/launcher-processes.json",
+      "source_sha256": "194bca46c99933210a331f334551bd8c1a97dc6bc66930093eaf7e3414d6f5b3",
+      "source_bytes": 312
+    },
+    {
+      "archive_path": "native-01/result.json",
+      "archive_sha256": "f65746a8e2c766571b61e6625d103d8e7838ea79637e569c2ff6caad190d6685",
+      "archive_bytes": 342,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/result.json",
+      "source_sha256": "f65746a8e2c766571b61e6625d103d8e7838ea79637e569c2ff6caad190d6685",
+      "source_bytes": 342
+    },
+    {
+      "archive_path": "native-01/results.json",
+      "archive_sha256": "9c5bddb773db5ba29bbf140b541af7b63a7584778ea4af86446296d567ebddf0",
+      "archive_bytes": 31799,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/results.json",
+      "source_sha256": "9c5bddb773db5ba29bbf140b541af7b63a7584778ea4af86446296d567ebddf0",
+      "source_bytes": 31799
+    },
+    {
+      "archive_path": "native-01/run.py",
+      "archive_sha256": "cc663fa1881818d344c4e52e9f806412164c424e03473fd73fc82c9600dce097",
+      "archive_bytes": 10695,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/run.py",
+      "source_sha256": "cc663fa1881818d344c4e52e9f806412164c424e03473fd73fc82c9600dce097",
+      "source_bytes": 10695
+    },
+    {
+      "archive_path": "native-01/runner-freeze.json",
+      "archive_sha256": "bf019759e1350d197964372343b25421bad2914641393eabf1d5353ae26ca452",
+      "archive_bytes": 900,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/runner-freeze.json",
+      "source_sha256": "bf019759e1350d197964372343b25421bad2914641393eabf1d5353ae26ca452",
+      "source_bytes": 900
+    },
+    {
+      "archive_path": "native-01/source-after.json.gz",
+      "archive_sha256": "2f9d0c4135ef01ec606697006475496aa8231a9f4fa915ee5d23a2f362606f48",
+      "archive_bytes": 175746,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/source-after.json",
+      "source_sha256": "d06c0e06117acd8e538e01b5caf6c30b5dfd2f310d97fc159874ec7220c48572",
+      "source_bytes": 899829
+    },
+    {
+      "archive_path": "native-01/source-before.json.gz",
+      "archive_sha256": "2f9d0c4135ef01ec606697006475496aa8231a9f4fa915ee5d23a2f362606f48",
+      "archive_bytes": 175746,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/source-before.json",
+      "source_sha256": "d06c0e06117acd8e538e01b5caf6c30b5dfd2f310d97fc159874ec7220c48572",
+      "source_bytes": 899829
+    },
+    {
+      "archive_path": "native-01/store-binary-provenance.json",
+      "archive_sha256": "82feb25b87c4b95620ff41b111ebfec9358ed4707f2d6a9ef56d1cd971406b3b",
+      "archive_bytes": 1679,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/store-binary-provenance.json",
+      "source_sha256": "82feb25b87c4b95620ff41b111ebfec9358ed4707f2d6a9ef56d1cd971406b3b",
+      "source_bytes": 1679
+    },
+    {
+      "archive_path": "native-01/store-full-processes.json",
+      "archive_sha256": "ca56cb1cc9da8dca33ef066b1cfdba702771005a03d461360c2f5f1ff95f83aa",
+      "archive_bytes": 1400,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/store-full-processes.json",
+      "source_sha256": "ca56cb1cc9da8dca33ef066b1cfdba702771005a03d461360c2f5f1ff95f83aa",
+      "source_bytes": 1400
+    },
+    {
+      "archive_path": "native-01/store-full.log.gz",
+      "archive_sha256": "51656b01b12b518870220873829edde65b766968e79c3d065b512853c976c09c",
+      "archive_bytes": 15663,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/store-full.log",
+      "source_sha256": "fb9dcdb026e45c1bd8e6bea9c5106840ebe66371ccc63ac6a6a9b6278401ed02",
+      "source_bytes": 130623
+    },
+    {
+      "archive_path": "native-01/store-inventory-processes.json",
+      "archive_sha256": "3f247a8b328230204b970c6b50948d9aef64f5d23cde80237ecf76dc7ac22f99",
+      "archive_bytes": 229,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/store-inventory-processes.json",
+      "source_sha256": "3f247a8b328230204b970c6b50948d9aef64f5d23cde80237ecf76dc7ac22f99",
+      "source_bytes": 229
+    },
+    {
+      "archive_path": "native-01/store-inventory-proof.json",
+      "archive_sha256": "378aabdc5e0ca2698bd68eaa69e655dcef9f4bbdf9b61e25e401dab857b4651c",
+      "archive_bytes": 33970,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/store-inventory-proof.json",
+      "source_sha256": "378aabdc5e0ca2698bd68eaa69e655dcef9f4bbdf9b61e25e401dab857b4651c",
+      "source_bytes": 33970
+    },
+    {
+      "archive_path": "native-01/store-inventory.log",
+      "archive_sha256": "75a962adde9ecfdf1dca83d557bba73dd8220faf0f83e09858055dd4e96ed8d4",
+      "archive_bytes": 33512,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/store-inventory.log",
+      "source_sha256": "75a962adde9ecfdf1dca83d557bba73dd8220faf0f83e09858055dd4e96ed8d4",
+      "source_bytes": 33512
+    },
+    {
+      "archive_path": "native-01/workspace-check-artifacts.json.gz",
+      "archive_sha256": "c80e97e69f92b673ce4c22647fb6a087bb1b9cd7fcc6efd430d07d7800de157e",
+      "archive_bytes": 57971,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/workspace-check-artifacts.json",
+      "source_sha256": "70e4aa03d096cb0d11d5a0de337120d50226004cc37909caa1efac3e04beaa40",
+      "source_bytes": 542558
+    },
+    {
+      "archive_path": "native-01/workspace-check-diagnostics.json",
+      "archive_sha256": "3b9ba48833c725b692570592beede0b186c3b1e92636f268a7868190185a397a",
+      "archive_bytes": 8474,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/workspace-check-diagnostics.json",
+      "source_sha256": "3b9ba48833c725b692570592beede0b186c3b1e92636f268a7868190185a397a",
+      "source_bytes": 8474
+    },
+    {
+      "archive_path": "native-01/workspace-check-diagnostics.txt",
+      "archive_sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "archive_bytes": 1104,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/workspace-check-diagnostics.txt",
+      "source_sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "source_bytes": 1104
+    },
+    {
+      "archive_path": "native-01/workspace-check-processes.json.gz",
+      "archive_sha256": "c7da9778e29e8f98c327c5a4737d9316903463f86c3d5f9be9cf27bbfa66a5cf",
+      "archive_bytes": 9432,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/workspace-check-processes.json",
+      "source_sha256": "0831ec5e5b2d3931cea6771ea07e5b63ec56c1a228c00ab2633c022095dcf457",
+      "source_bytes": 333632
+    },
+    {
+      "archive_path": "native-01/workspace-check.log.gz",
+      "archive_sha256": "9ad6daa33ac8eadd3705335b5312c5393c0a372c0ac45f57fdd833ee44f4195e",
+      "archive_bytes": 34574,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/workspace-check.log",
+      "source_sha256": "acf1fac5dc43930ce7024a46cfa4988cb97a543fe158e6436bff9bfb1851bb54",
+      "source_bytes": 573074
+    },
+    {
+      "archive_path": "native-01/workspace-clippy-artifacts.json.gz",
+      "archive_sha256": "175a00e360eb851efde1e6678886579c84efce08bbde9a3134fc5a374e1b6e7c",
+      "archive_bytes": 58023,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/workspace-clippy-artifacts.json",
+      "source_sha256": "8df6f426f4a15fb0868c8523d9773cb5be10db3b24f569972b7660de48589e8c",
+      "source_bytes": 543065
+    },
+    {
+      "archive_path": "native-01/workspace-clippy-diagnostics.json",
+      "archive_sha256": "3b9ba48833c725b692570592beede0b186c3b1e92636f268a7868190185a397a",
+      "archive_bytes": 8474,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/workspace-clippy-diagnostics.json",
+      "source_sha256": "3b9ba48833c725b692570592beede0b186c3b1e92636f268a7868190185a397a",
+      "source_bytes": 8474
+    },
+    {
+      "archive_path": "native-01/workspace-clippy-diagnostics.txt",
+      "archive_sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "archive_bytes": 1104,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/workspace-clippy-diagnostics.txt",
+      "source_sha256": "e0cefd0a6e29093c240fec77ca222efa6c8a0fc71c03fb31ce731d31dd239218",
+      "source_bytes": 1104
+    },
+    {
+      "archive_path": "native-01/workspace-clippy-processes.json.gz",
+      "archive_sha256": "96c398efba6c0c8285a9e61f793f947817ab6526e74d3b13b496ccd8bb10130a",
+      "archive_bytes": 60071,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/workspace-clippy-processes.json",
+      "source_sha256": "5fa8f76741a5ec19924a4ce2213d010702d572c34764afc403047e18a2a60631",
+      "source_bytes": 907291
+    },
+    {
+      "archive_path": "native-01/workspace-clippy.log.gz",
+      "archive_sha256": "87e53f1401ca17a3c7b6e3ec7a83786537dac2db2f05331f6ab4a8ef536fbd32",
+      "archive_bytes": 38059,
+      "encoding": "gzip",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/workspace-clippy.log",
+      "source_sha256": "fa8e301e716b0923bdbab6df70fcc9967ce0772bab51837e0a3454229bf01a41",
+      "source_bytes": 587012
+    },
+    {
+      "archive_path": "reviews/audit-archive-custody-fixture-opening-review/receipt.json",
+      "archive_sha256": "fe37c224ee265fe27073d0243a7140f76c6186bedb983922bc29f8052bbba8f5",
+      "archive_bytes": 1564,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/audit-archive-custody-fixture-opening-review/receipt.json",
+      "source_sha256": "fe37c224ee265fe27073d0243a7140f76c6186bedb983922bc29f8052bbba8f5",
+      "source_bytes": 1564
+    },
+    {
+      "archive_path": "reviews/combined-store-runner-and-revision6-independent-review/initial-review.json",
+      "archive_sha256": "180891ddceaff3e84b36f4d186fcb83cb3e2c0caa689a000179ecbecd973e5e3",
+      "archive_bytes": 3986,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/combined-store-runner-and-revision6-independent-review/initial-review.json",
+      "source_sha256": "180891ddceaff3e84b36f4d186fcb83cb3e2c0caa689a000179ecbecd973e5e3",
+      "source_bytes": 3986
+    },
+    {
+      "archive_path": "reviews/combined-store-runner-and-revision6-independent-review/revision3-review.json",
+      "archive_sha256": "c80a68c020c4b368148e78d96da8268cdd2324726455a37b901421e8c81d00de",
+      "archive_bytes": 1632,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/combined-store-runner-and-revision6-independent-review/revision3-review.json",
+      "source_sha256": "c80a68c020c4b368148e78d96da8268cdd2324726455a37b901421e8c81d00de",
+      "source_bytes": 1632
+    },
+    {
+      "archive_path": "reviews/file-explicit-close-managed-review/receipt.json",
+      "archive_sha256": "b9aed47cbab188321e9527d1b3551a8a5ef5e13b3984555c4934713ce4e67e82",
+      "archive_bytes": 3724,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-explicit-close-managed-review/receipt.json",
+      "source_sha256": "b9aed47cbab188321e9527d1b3551a8a5ef5e13b3984555c4934713ce4e67e82",
+      "source_bytes": 3724
+    },
+    {
+      "archive_path": "reviews/file-explicit-close-revision5-composition-review/inventory-readback.json",
+      "archive_sha256": "6d2e7d464d256f2df181df0f273c07f6142db4f4c966777b8cba3b4e3aa40f11",
+      "archive_bytes": 398,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-explicit-close-revision5-composition-review/inventory-readback.json",
+      "source_sha256": "6d2e7d464d256f2df181df0f273c07f6142db4f4c966777b8cba3b4e3aa40f11",
+      "source_bytes": 398
+    },
+    {
+      "archive_path": "reviews/file-explicit-close-revision5-composition-review/receipt.json",
+      "archive_sha256": "38a3c5f7fc412d5d384481244397697b3cfcfa6bda142828c531c190251f98e2",
+      "archive_bytes": 6227,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-explicit-close-revision5-composition-review/receipt.json",
+      "source_sha256": "38a3c5f7fc412d5d384481244397697b3cfcfa6bda142828c531c190251f98e2",
+      "source_bytes": 6227
+    },
+    {
+      "archive_path": "reviews/storage-custody-revision3-lint-independent-review/receipt.json",
+      "archive_sha256": "5a9238165db0bbbfdec3c904792f1035543373fdb6915ae42152ef438204616d",
+      "archive_bytes": 1199,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-custody-revision3-lint-independent-review/receipt.json",
+      "source_sha256": "5a9238165db0bbbfdec3c904792f1035543373fdb6915ae42152ef438204616d",
+      "source_bytes": 1199
+    },
+    {
+      "archive_path": "reviews/storage-namespace-custody-overlap-managed-review/receipt.json",
+      "archive_sha256": "a49db1f997883b50bb85e92367ff7f44556d07db7309a920d4752b68564cfd91",
+      "archive_bytes": 2126,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-overlap-managed-review/receipt.json",
+      "source_sha256": "a49db1f997883b50bb85e92367ff7f44556d07db7309a920d4752b68564cfd91",
+      "source_bytes": 2126
+    },
+    {
+      "archive_path": "reviews/storage-namespace-custody-overlap-managed-review/revision2-receipt.json",
+      "archive_sha256": "6eb91d888f021809c164b35a82bdb2a88f7fff62280643cbc3e6ef04db9cf5d9",
+      "archive_bytes": 1822,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-overlap-managed-review/revision2-receipt.json",
+      "source_sha256": "6eb91d888f021809c164b35a82bdb2a88f7fff62280643cbc3e6ef04db9cf5d9",
+      "source_bytes": 1822
+    },
+    {
+      "archive_path": "reviews/storage-namespace-custody-rev3-root-review/receipt.json",
+      "archive_sha256": "82b15093d7d75fc44246ed3bdac360c0f75ac0c11db1b9da9d2d77b04caa23fa",
+      "archive_bytes": 733,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-rev3-root-review/receipt.json",
+      "source_sha256": "82b15093d7d75fc44246ed3bdac360c0f75ac0c11db1b9da9d2d77b04caa23fa",
+      "source_bytes": 733
+    },
+    {
+      "archive_path": "reviews/storage-namespace-custody-rev4-root-review/receipt.json",
+      "archive_sha256": "cb735b9a2cd07964f8c8ad1ba6a3ba574fcf1d0aaccb07cea2e196417e7e7ec4",
+      "archive_bytes": 687,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-rev4-root-review/receipt.json",
+      "source_sha256": "cb735b9a2cd07964f8c8ad1ba6a3ba574fcf1d0aaccb07cea2e196417e7e7ec4",
+      "source_bytes": 687
+    },
+    {
+      "archive_path": "reviews/storage-namespace-custody-rev5-root-review/receipt.json",
+      "archive_sha256": "fdb65adf8935b1f6b5d2636a68505900af7dafc1e1bb5bf1c3de54d44aa4d521",
+      "archive_bytes": 977,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-rev5-root-review/receipt.json",
+      "source_sha256": "fdb65adf8935b1f6b5d2636a68505900af7dafc1e1bb5bf1c3de54d44aa4d521",
+      "source_bytes": 977
+    },
+    {
+      "archive_path": "reviews/storage-namespace-custody-rev6-native-independent-review/receipt.json",
+      "archive_sha256": "18746cd2c4e6f47f695179044366ee66c5be85c898160900f29f26dfe0777240",
+      "archive_bytes": 2357,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-rev6-native-independent-review/receipt.json",
+      "source_sha256": "18746cd2c4e6f47f695179044366ee66c5be85c898160900f29f26dfe0777240",
+      "source_bytes": 2357
+    },
+    {
+      "archive_path": "reviews/storage-namespace-custody-rev6-root-review/receipt.json",
+      "archive_sha256": "ed0f18fdae5a72a2c6db09a92da0b3a79247240042e623fcbe7df8d044d87f91",
+      "archive_bytes": 756,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-rev6-root-review/receipt.json",
+      "source_sha256": "ed0f18fdae5a72a2c6db09a92da0b3a79247240042e623fcbe7df8d044d87f91",
+      "source_bytes": 756
+    },
+    {
+      "archive_path": "reviews/storage-namespace-custody-root-review/receipt.json",
+      "archive_sha256": "e08880cfcff816c74c594f57c1eed5b3b385ef65356e3affb50c108f3d8e5f95",
+      "archive_bytes": 1232,
+      "encoding": "identity",
+      "source_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-root-review/receipt.json",
+      "source_sha256": "e08880cfcff816c74c594f57c1eed5b3b385ef65356e3affb50c108f3d8e5f95",
+      "source_bytes": 1232
+    },
+    {
+      "archive_path": "verify.py",
+      "archive_sha256": "22dc3d025fddfc6c153aed264c77455e9db0f5386360bb80b444e9f6963f489f",
+      "archive_bytes": 1346,
+      "encoding": "identity",
+      "source_path": null,
+      "source_sha256": "22dc3d025fddfc6c153aed264c77455e9db0f5386360bb80b444e9f6963f489f",
+      "source_bytes": 1346
+    }
+  ],
+  "unarchived_binary": {
+    "selected": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/assembly/crates/kasumi-store#0.1.0",
+      "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/assembly/crates/kasumi-store/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "kasumi_store",
+        "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/assembly/crates/kasumi-store/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [
+        "test-utils"
+      ],
+      "filenames": [
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/cargo-target/debug/deps/kasumi_store-da802ca493244251"
+      ],
+      "executable": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/cargo-target/debug/deps/kasumi_store-da802ca493244251",
+      "fresh": false
+    },
+    "retained_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/store-test-binary",
+    "sha256": "5f19f351c612e52e67036db0609ae434eac767f61098848251721bdb04de1e80",
+    "bytes": 54718560
+  },
+  "source_bundles_preserved": true,
+  "archive_manifest_self_excluded": true
+}

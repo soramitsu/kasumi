@@ -1,0 +1,27 @@
+{
+  "scope": "development Raft mandatory disk-memory caller and typed drain regression; excludes separately failed unresolved custody-capacity case, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-raft",
+    "--all-features",
+    "--lib",
+    "--tests",
+    "--",
+    "--test-threads=1",
+    "--skip",
+    "custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 45960,
+  "exit_code": 0,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 515.8561160564423,
+  "inventoried_source_unchanged": true
+}

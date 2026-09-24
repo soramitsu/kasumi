@@ -1,0 +1,195 @@
+[
+  {
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+      "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+      "bytes": 412504
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+      "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+      "bytes": 412504
+    },
+    "executable_unchanged": true,
+    "argv": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+      "-vV"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp",
+    "timeout_seconds": 120,
+    "name": "compiler",
+    "pid": 14226,
+    "pgid": 14226,
+    "exit_code": 0,
+    "timed_out": false,
+    "process_group_drained": true,
+    "elapsed_seconds": 0.030833082999999872,
+    "stdout_sha256": "e794146d99fad54562fdcbd4a7c8b22b0240d2b0312ff6d879d67939b3131850",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+      "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+      "bytes": 412504
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+      "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+      "bytes": 412504
+    },
+    "executable_unchanged": true,
+    "argv": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+      "--edition=2024",
+      "--crate-name",
+      "directory_managed_namespace_native",
+      "-L",
+      "dependency=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps",
+      "--extern",
+      "anyhow=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libanyhow-a99e56a6aef2a202.rlib",
+      "--extern",
+      "serde=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libserde-6e5990041b5fa831.rlib",
+      "--extern",
+      "uuid=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libuuid-68e334add96507a0.rlib",
+      "--extern",
+      "libc=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/liblibc-259df0b9de2373d4.rlib",
+      "--extern",
+      "sha2=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libsha2-99a75cdbd7b7c566.rlib",
+      "--extern",
+      "parking_lot=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libparking_lot-699a212a3864092e.rlib",
+      "--extern",
+      "zeroize=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libzeroize-1057c5d5924b5ca2.rlib",
+      "--extern",
+      "tempfile=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libtempfile-162b26d7eb0fc3ad.rlib",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace-generic/native-01/driver.rs",
+      "-o",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace-generic/native-01/production"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp",
+    "timeout_seconds": 120,
+    "name": "compile-production",
+    "pid": 14227,
+    "pgid": 14227,
+    "exit_code": 0,
+    "timed_out": false,
+    "process_group_drained": true,
+    "elapsed_seconds": 0.6782544999999998,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+      "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+      "bytes": 412504
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+      "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+      "bytes": 412504
+    },
+    "executable_unchanged": true,
+    "argv": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+      "--edition=2024",
+      "--crate-name",
+      "directory_managed_namespace_native",
+      "-L",
+      "dependency=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps",
+      "--extern",
+      "anyhow=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libanyhow-a99e56a6aef2a202.rlib",
+      "--extern",
+      "serde=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libserde-6e5990041b5fa831.rlib",
+      "--extern",
+      "uuid=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libuuid-68e334add96507a0.rlib",
+      "--extern",
+      "libc=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/liblibc-259df0b9de2373d4.rlib",
+      "--extern",
+      "sha2=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libsha2-99a75cdbd7b7c566.rlib",
+      "--extern",
+      "parking_lot=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libparking_lot-699a212a3864092e.rlib",
+      "--extern",
+      "zeroize=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libzeroize-1057c5d5924b5ca2.rlib",
+      "--extern",
+      "tempfile=/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/deps/libtempfile-162b26d7eb0fc3ad.rlib",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace-generic/native-01/driver.rs",
+      "--test",
+      "-o",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace-generic/native-01/tests"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp",
+    "timeout_seconds": 120,
+    "name": "compile-tests",
+    "pid": 14239,
+    "pgid": 14239,
+    "exit_code": 0,
+    "timed_out": false,
+    "process_group_drained": true,
+    "elapsed_seconds": 1.1921107919999998,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace-generic/native-01/production",
+      "sha256": "e50e89653a9cdb2f493571fb9b20f7890f88935aaa142a42fa4a0707cbf15dd2",
+      "bytes": 729448
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace-generic/native-01/production",
+      "sha256": "e50e89653a9cdb2f493571fb9b20f7890f88935aaa142a42fa4a0707cbf15dd2",
+      "bytes": 729448
+    },
+    "executable_unchanged": true,
+    "argv": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace-generic/native-01/production"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp",
+    "timeout_seconds": 120,
+    "name": "run-production",
+    "pid": 14257,
+    "pgid": 14257,
+    "exit_code": 0,
+    "timed_out": false,
+    "process_group_drained": true,
+    "elapsed_seconds": 0.25874104200000003,
+    "stdout_sha256": "be5c47d3e86980b5bd653c51b01a5268d1d5c49e2234a972815dd36e306ebe31",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace-generic/native-01/tests",
+      "sha256": "adeaaad6c0ec71519a5ad463d012e362c60dbe9f29807c5cb31d36e71eaa64b5",
+      "bytes": 3790840
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace-generic/native-01/tests",
+      "sha256": "adeaaad6c0ec71519a5ad463d012e362c60dbe9f29807c5cb31d36e71eaa64b5",
+      "bytes": 3790840
+    },
+    "executable_unchanged": true,
+    "argv": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-managed-namespace-generic/native-01/tests",
+      "node_disk::",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp",
+    "timeout_seconds": 120,
+    "name": "run",
+    "pid": 14261,
+    "pgid": 14261,
+    "exit_code": 0,
+    "timed_out": false,
+    "process_group_drained": true,
+    "elapsed_seconds": 2.5349387080000003,
+    "stdout_sha256": "0dc4d3f3c0446d1be311fb551485d1a18abc8e7da53a214e4b993d9e7ebeb11c",
+    "stderr_sha256": "c4ca8bacc5cdb84989065af267e35361f9ddd4b189ca4bd007ebb3eccf2a16ed"
+  }
+]

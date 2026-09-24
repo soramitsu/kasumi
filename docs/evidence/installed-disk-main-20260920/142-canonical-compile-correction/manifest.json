@@ -1,0 +1,22 @@
+{
+  "status": "FROZEN TARGET-ONLY compile correction; no Cargo/native",
+  "depends_on_patch_sha256": "f2103f19fa5223101a83c8c6cdf230a658f1d26fcfb54be56ab2ea5660cb85f8",
+  "patch_sha256": "6eb30fe4ce22d0ced8e896413ddeacf0fb7567a970b7426e58ff37da0cba3c40",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "before_sha256": "1209c02021691458e421e34c1baa8f00896a924bf3508f47ec8ea75b73d0ce58",
+      "proposed_sha256": "26aac3a2915250a146f0b8066edfe3a035482d692a706c96e920c6cf4fa4ddd0"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/page_list_tests.rs",
+      "before_sha256": "b68adbe9a837904d1fb6dabc10d89eb6695a857877402704eaa1125d4e00507c",
+      "proposed_sha256": "ab8a173509aaf654412890f7179819ce8b45a7a00334e806535854d9b1af3515"
+    }
+  ],
+  "checks": {
+    "target_rustfmt": 0,
+    "git_apply_check": 0
+  },
+  "public_method_inventory_sha256": "4956336550cecec418534284a4dcd826b9916bccca6f0624b7d7f2013a493a32"
+}

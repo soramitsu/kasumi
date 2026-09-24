@@ -1,0 +1,153 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010003dff8 <<lifecycle::Fixture>::leader::{closure#0}>:
+10003dff8: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+10003dffc: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10003e000: 910043fd    	add	x29, sp, #0x10
+10003e004: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+10003e008: f90003ff    	str	xzr, [sp]
+10003e00c: d13fc3ff    	sub	sp, sp, #0xff0
+10003e010: f90003ff    	str	xzr, [sp]
+10003e014: f9001fe0    	str	x0, [sp, #0x38]
+10003e018: f90027e1    	str	x1, [sp, #0x48]
+10003e01c: aa0003e8    	mov	x8, x0
+10003e020: f81c03a8    	stur	x8, [x29, #-0x40]
+10003e024: aa0003e8    	mov	x8, x0
+10003e028: f81c83a8    	stur	x8, [x29, #-0x38]
+10003e02c: 396aa008    	ldrb	w8, [x0, #0xaa8]
+10003e030: b90047e8    	str	w8, [sp, #0x44]
+10003e034: 34000168    	cbz	w8, 0x10003e060 <<lifecycle::Fixture>::leader::{closure#0}+0x68>
+10003e038: 14000001    	b	0x10003e03c <<lifecycle::Fixture>::leader::{closure#0}+0x44>
+10003e03c: b94047e8    	ldr	w8, [sp, #0x44]
+10003e040: 71000508    	subs	w8, w8, #0x1
+10003e044: 54000200    	b.eq	0x10003e084 <<lifecycle::Fixture>::leader::{closure#0}+0x8c>
+10003e048: 14000001    	b	0x10003e04c <<lifecycle::Fixture>::leader::{closure#0}+0x54>
+10003e04c: b94047e8    	ldr	w8, [sp, #0x44]
+10003e050: 71000908    	subs	w8, w8, #0x2
+10003e054: 540001e0    	b.eq	0x10003e090 <<lifecycle::Fixture>::leader::{closure#0}+0x98>
+10003e058: 14000001    	b	0x10003e05c <<lifecycle::Fixture>::leader::{closure#0}+0x64>
+10003e05c: 14000010    	b	0x10003e09c <<lifecycle::Fixture>::leader::{closure#0}+0xa4>
+10003e060: f9401fe9    	ldr	x9, [sp, #0x38]
+10003e064: f9400128    	ldr	x8, [x9]
+10003e068: f9000528    	str	x8, [x9, #0x8]
+10003e06c: 52800148    	mov	w8, #0xa                ; =10
+10003e070: aa0803e0    	mov	x0, x8
+10003e074: 94015b12    	bl	0x100094cbc <<core::time::Duration>::from_secs>
+10003e078: f90017e0    	str	x0, [sp, #0x28]
+10003e07c: b90037e1    	str	w1, [sp, #0x34]
+10003e080: 14000013    	b	0x10003e0cc <<lifecycle::Fixture>::leader::{closure#0}+0xd4>
+10003e084: 52800008    	mov	w8, #0x0                ; =0
+10003e088: 3707ffe8    	tbnz	w8, #0x0, 0x10003e084 <<lifecycle::Fixture>::leader::{closure#0}+0x8c>
+10003e08c: 1400002e    	b	0x10003e144 <<lifecycle::Fixture>::leader::{closure#0}+0x14c>
+10003e090: 52800008    	mov	w8, #0x0                ; =0
+10003e094: 3707ffe8    	tbnz	w8, #0x0, 0x10003e090 <<lifecycle::Fixture>::leader::{closure#0}+0x98>
+10003e098: 1400002e    	b	0x10003e150 <<lifecycle::Fixture>::leader::{closure#0}+0x158>
+10003e09c: f94027e8    	ldr	x8, [sp, #0x48]
+10003e0a0: f90027e8    	str	x8, [sp, #0x48]
+10003e0a4: 14000023    	b	0x10003e130 <<lifecycle::Fixture>::leader::{closure#0}+0x138>
+10003e0a8: f9401fe9    	ldr	x9, [sp, #0x38]
+10003e0ac: 52800048    	mov	w8, #0x2                ; =2
+10003e0b0: 392aa128    	strb	w8, [x9, #0xaa8]
+10003e0b4: f85d03a0    	ldur	x0, [x29, #-0x30]
+10003e0b8: 948d2794    	bl	0x102387f08 <dyld_stub_binder+0x102387f08>
+10003e0bc: f81d03a0    	stur	x0, [x29, #-0x30]
+10003e0c0: aa0103e8    	mov	x8, x1
+10003e0c4: b81d83a8    	stur	w8, [x29, #-0x28]
+10003e0c8: 17fffff8    	b	0x10003e0a8 <<lifecycle::Fixture>::leader::{closure#0}+0xb0>
+10003e0cc: b94037e1    	ldr	w1, [sp, #0x34]
+10003e0d0: f94017e0    	ldr	x0, [sp, #0x28]
+10003e0d4: f9401fe8    	ldr	x8, [sp, #0x38]
+10003e0d8: f9400508    	ldr	x8, [x8, #0x8]
+10003e0dc: 914007e2    	add	x2, sp, #0x1, lsl #12   ; =0x1000
+10003e0e0: 91162042    	add	x2, x2, #0x588
+10003e0e4: f90ac7e8    	str	x8, [sp, #0x1588]
+10003e0e8: 911647e8    	add	x8, sp, #0x591
+10003e0ec: 393ffd1f    	strb	wzr, [x8, #0xfff]
+10003e0f0: 912bc3e8    	add	x8, sp, #0xaf0
+10003e0f4: 9002e9c3    	adrp	x3, 0x105d76000 <dyld_stub_binder+0x105d76000>
+10003e0f8: 9114c063    	add	x3, x3, #0x530
+10003e0fc: 9402f841    	bl	0x1000fc200 <tokio::time::timeout::timeout::<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}>>
+10003e100: 14000001    	b	0x10003e104 <<lifecycle::Fixture>::leader::{closure#0}+0x10c>
+10003e104: 910163e8    	add	x8, sp, #0x58
+10003e108: 912bc3e0    	add	x0, sp, #0xaf0
+10003e10c: 9402ff29    	bl	0x1000fddb0 <<tokio::time::timeout::Timeout<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}> as core::future::into_future::IntoFuture>::into_future>
+10003e110: 14000001    	b	0x10003e114 <<lifecycle::Fixture>::leader::{closure#0}+0x11c>
+10003e114: f9401fe8    	ldr	x8, [sp, #0x38]
+10003e118: 91004100    	add	x0, x8, #0x10
+10003e11c: 910163e1    	add	x1, sp, #0x58
+10003e120: 52815308    	mov	w8, #0xa98              ; =2712
+10003e124: aa0803e2    	mov	x2, x8
+10003e128: 948d2835    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10003e12c: 14000001    	b	0x10003e130 <<lifecycle::Fixture>::leader::{closure#0}+0x138>
+10003e130: f9401fe8    	ldr	x8, [sp, #0x38]
+10003e134: 91004108    	add	x8, x8, #0x10
+10003e138: f90013e8    	str	x8, [sp, #0x20]
+10003e13c: f81e83a8    	stur	x8, [x29, #-0x18]
+10003e140: 1400000f    	b	0x10003e17c <<lifecycle::Fixture>::leader::{closure#0}+0x184>
+10003e144: 9002e9c0    	adrp	x0, 0x105d76000 <dyld_stub_binder+0x105d76000>
+10003e148: 91152000    	add	x0, x0, #0x548
+10003e14c: 948d2705    	bl	0x102387d60 <core::panicking::panic_const::panic_const_async_fn_resumed>
+10003e150: 9002e9c0    	adrp	x0, 0x105d76000 <dyld_stub_binder+0x105d76000>
+10003e154: 91152000    	add	x0, x0, #0x548
+10003e158: 948d2709    	bl	0x102387d7c <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+10003e15c: f9401fe8    	ldr	x8, [sp, #0x38]
+10003e160: 91004100    	add	x0, x8, #0x10
+10003e164: 94017214    	bl	0x10009a9b4 <core::ptr::drop_glue::<tokio::time::timeout::Timeout<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}>>>
+10003e168: 17ffffd0    	b	0x10003e0a8 <<lifecycle::Fixture>::leader::{closure#0}+0xb0>
+10003e16c: f81d03a0    	stur	x0, [x29, #-0x30]
+10003e170: aa0103e8    	mov	x8, x1
+10003e174: b81d83a8    	stur	w8, [x29, #-0x28]
+10003e178: 17fffff9    	b	0x10003e15c <<lifecycle::Fixture>::leader::{closure#0}+0x164>
+10003e17c: f94013e0    	ldr	x0, [sp, #0x20]
+10003e180: f94027e1    	ldr	x1, [sp, #0x48]
+10003e184: 9403002b    	bl	0x1000fe230 <<tokio::time::timeout::Timeout<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}> as core::future::future::Future>::poll>
+10003e188: f9000be0    	str	x0, [sp, #0x10]
+10003e18c: f9000fe1    	str	x1, [sp, #0x18]
+10003e190: 14000001    	b	0x10003e194 <<lifecycle::Fixture>::leader::{closure#0}+0x19c>
+10003e194: f9400fe8    	ldr	x8, [sp, #0x18]
+10003e198: f9400be9    	ldr	x9, [sp, #0x10]
+10003e19c: f81b03a9    	stur	x9, [x29, #-0x50]
+10003e1a0: f81b83a8    	stur	x8, [x29, #-0x48]
+10003e1a4: f85b03a8    	ldur	x8, [x29, #-0x50]
+10003e1a8: 36000188    	tbz	w8, #0x0, 0x10003e1d8 <<lifecycle::Fixture>::leader::{closure#0}+0x1e0>
+10003e1ac: 14000001    	b	0x10003e1b0 <<lifecycle::Fixture>::leader::{closure#0}+0x1b8>
+10003e1b0: f9401fe9    	ldr	x9, [sp, #0x38]
+10003e1b4: f9002bff    	str	xzr, [sp, #0x50]
+10003e1b8: 52800068    	mov	w8, #0x3                ; =3
+10003e1bc: 392aa128    	strb	w8, [x9, #0xaa8]
+10003e1c0: f9402be0    	ldr	x0, [sp, #0x50]
+10003e1c4: 914007ff    	add	sp, sp, #0x1, lsl #12   ; =0x1000
+10003e1c8: 913fc3ff    	add	sp, sp, #0xff0
+10003e1cc: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10003e1d0: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10003e1d4: d65f03c0    	ret
+10003e1d8: f9401fe8    	ldr	x8, [sp, #0x38]
+10003e1dc: f85b83a9    	ldur	x9, [x29, #-0x48]
+10003e1e0: f90007e9    	str	x9, [sp, #0x8]
+10003e1e4: f81e03a9    	stur	x9, [x29, #-0x20]
+10003e1e8: 91004100    	add	x0, x8, #0x10
+10003e1ec: 940171f2    	bl	0x10009a9b4 <core::ptr::drop_glue::<tokio::time::timeout::Timeout<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}>>>
+10003e1f0: 14000001    	b	0x10003e1f4 <<lifecycle::Fixture>::leader::{closure#0}+0x1fc>
+10003e1f4: f94007e0    	ldr	x0, [sp, #0x8]
+10003e1f8: f9401fe8    	ldr	x8, [sp, #0x38]
+10003e1fc: f9400501    	ldr	x1, [x8, #0x8]
+10003e200: 9002e9c2    	adrp	x2, 0x105d76000 <dyld_stub_binder+0x105d76000>
+10003e204: 91158042    	add	x2, x2, #0x560
+10003e208: 94030493    	bl	0x1000ff454 <<core::result::Result<alloc::sync::Arc<kasumi_engine::service::Database>, tokio::time::error::Elapsed>>::unwrap_or_else::<<lifecycle::Fixture>::leader::{closure#0}::{closure#1}>>
+10003e20c: f90003e0    	str	x0, [sp]
+10003e210: 14000001    	b	0x10003e214 <<lifecycle::Fixture>::leader::{closure#0}+0x21c>
+10003e214: f9401fe9    	ldr	x9, [sp, #0x38]
+10003e218: f94003e8    	ldr	x8, [sp]
+10003e21c: f9002be8    	str	x8, [sp, #0x50]
+10003e220: 52800028    	mov	w8, #0x1                ; =1
+10003e224: 392aa128    	strb	w8, [x9, #0xaa8]
+10003e228: f9402be0    	ldr	x0, [sp, #0x50]
+10003e22c: 914007ff    	add	sp, sp, #0x1, lsl #12   ; =0x1000
+10003e230: 913fc3ff    	add	sp, sp, #0xff0
+10003e234: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10003e238: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10003e23c: d65f03c0    	ret
+10003e240: 948d25c6    	bl	0x102387958 <core::panicking::panic_in_cleanup>

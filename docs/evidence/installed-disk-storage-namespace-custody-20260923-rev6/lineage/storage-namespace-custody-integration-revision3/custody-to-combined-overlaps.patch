@@ -1,0 +1,426 @@
+diff --git a/crates/kasumi-store/src/node_disk.rs b/crates/kasumi-store/src/node_disk.rs
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -508,14 +508,14 @@
+         if self.committed {
+             return;
+         }
+-        if let Registration::Preparing(prepared) = &self.entry().registration {
+-            if prepared.streams.outstanding() != 0 {
+-                // The pre-effect registry node remains the actual owner of all
+-                // resource backing, locks, leases AND native close diagnostics.
+-                // A later constructor reports this retained failure. Never retry
+-                // a possibly consumed DIR or allocate a detached retention task.
+-                return;
+-            }
++        if let Registration::Preparing(prepared) = &self.entry().registration
++            && prepared.streams.outstanding() != 0
++        {
++            // The pre-effect registry node remains the actual owner of all
++            // resource backing, locks, leases AND native close diagnostics.
++            // A later constructor reports this retained failure. Never retry
++            // a possibly consumed DIR or allocate a detached retention task.
++            return;
+         }
+         // Removing the actual node deallocates its backing before returning
+         // the value; ordered fields then retire resources before lease credit.
+@@ -765,20 +765,33 @@
+         path: impl AsRef<std::path::Path>,
+         memory: Arc<dyn NodeDiskMemoryAdmission>,
+     ) -> std::result::Result<Arc<Self>, DiskOpenError> {
++        if let Some(owner) = Self::fixture_registered_for_path(path.as_ref(), &memory)? {
++            return Ok(owner);
++        }
++        let config = Self::fixture_config(path.as_ref())?;
++        Self::open_fixture(&config, memory, &CensusCancellation::default())
++    }
++    /// Test-only lookup keeps known installed custody authoritative even if a
++    /// destination path disappeared. Absence alone permits fresh fixture setup.
++    #[cfg(any(test, feature = "test-utils"))]
++    pub(crate) fn fixture_registered_for_path(
++        path: &std::path::Path,
++        memory: &Arc<dyn NodeDiskMemoryAdmission>,
++    ) -> std::result::Result<Option<Arc<Self>>, DiskOpenError> {
+         let existing = {
+             let installed = registry().try_lock().ok_or(DiskOpenError::RegistryBusy)?;
+             installed
+                 .find(|entry| {
+                     entry
+                         .config()
+-                        .is_some_and(|config| config.binding(path.as_ref()).is_ok())
++                        .is_some_and(|config| config.binding(path).is_ok())
+                 })
+                 .map(|entry| entry.owner().cloned())
+                 .transpose()?
+         };
+         if let Some(owner) = existing {
+             disk_memory::require(
+-                Arc::ptr_eq(owner.memory(), &memory),
++                Arc::ptr_eq(owner.memory(), memory),
+                 "fixture persistent owner has different memory admission",
+             )?;
+             for root in owner.roots.values() {
+@@ -792,10 +805,9 @@
+             {
+                 owner.reconcile(&CensusCancellation::default())?;
+             }
+-            return Ok(owner);
+-        }
+-        let config = Self::fixture_config(path.as_ref())?;
+-        Self::open_fixture(&config, memory, &CensusCancellation::default())
++            return Ok(Some(owner));
++        }
++        Ok(None)
+     }
+     /// Explicit bounded generic fixture policy. Production installation policy
+     /// retains one million files, one million subdirectories and 4096 owners in the server generator.
+@@ -896,11 +908,11 @@
+                 && state.census_streams.outstanding() == 0,
+             "persistent file or directory owners are still live"
+         );
+-        if let Some(operation) = &mut state.pending_directory {
+-            if let Err(error) = operation.close_resources() {
+-                self.fail_locked(&mut state);
+-                return Err(error.into());
+-            }
++        if let Some(operation) = &mut state.pending_directory
++            && let Err(error) = operation.close_resources()
++        {
++            self.fail_locked(&mut state);
++            return Err(error.into());
+         }
+         if let Err(error) = state.file_custody.close_retained() {
+             self.fail_locked(&mut state);
+@@ -970,7 +982,7 @@
+         // before publishing the operational slot as available again.
+         drop(state.pending_directory.take());
+         drop(state.namespace_batch.take());
+-        drop(state.namespace_claim.take());
++        state.namespace_claim = None;
+         state.open_directories = 0;
+         state.phase = NodeDiskPhase::Open;
+         promises.reconcile_owner();
+diff --git a/crates/kasumi-store/src/node_disk/file.rs b/crates/kasumi-store/src/node_disk/file.rs
+--- a/crates/kasumi-store/src/node_disk/file.rs
++++ b/crates/kasumi-store/src/node_disk/file.rs
+@@ -353,8 +353,9 @@
+         ) {
+             Ok(file) => file,
+             Err(error) => {
+-                if create && error.kind() == io::ErrorKind::AlreadyExists {
+-                    if let Err(rollback) = transition
++                if create
++                    && error.kind() == io::ErrorKind::AlreadyExists
++                    && let Err(rollback) = transition
+                         .take()
+                         .expect("prepared creation parent")
+                         .unchanged(
+@@ -362,10 +363,9 @@
+                             state,
+                             &[resources.parent.as_ref().expect("prepared parent")],
+                         )
+-                    {
+-                        disk.fail_locked(state);
+-                        return Err(rollback);
+-                    }
++                {
++                    disk.fail_locked(state);
++                    return Err(rollback);
+                 }
+                 // An absent final leaf is harmless only if its complete name
+                 // was never enrolled and the prepared parent is still rooted.
+@@ -1140,7 +1140,7 @@
+         owner.record_enrollment(&mut state, &budget);
+         let actual = budget.file.as_ref().expect("live persistent descriptor");
+         let result = (|| -> io::Result<(u64, u64)> {
+-            owner.verify(&actual)?;
++            owner.verify(actual)?;
+             let current = actual.metadata()?.len();
+             if current != budget.actual_len {
+                 return Err(io::ErrorKind::InvalidData.into());
+@@ -1153,7 +1153,7 @@
+                 #[cfg(test)]
+                 self.namespace_checkpoint(NamespaceFailure::ReclaimFileSync)?;
+                 actual.sync_all()?;
+-                owner.verify(&actual)?;
++                owner.verify(actual)?;
+                 if actual.metadata()?.len() != len {
+                     return Err(io::ErrorKind::InvalidData.into());
+                 }
+@@ -2175,14 +2175,13 @@
+         };
+         let disk = owner.disk.clone();
+         let mut state = disk.lock_state();
+-        if !settled {
+-            if let Some(enrolled) = state
++        if !settled
++            && let Some(enrolled) = state
+                 .accounted
+                 .get_mut(&owner.identity)
+                 .and_then(AccountedInode::file_mut)
+-            {
+-                enrolled.settled = false;
+-            }
++        {
++            enrolled.settled = false;
+         }
+         if result.is_err() || !owner.retire_registration(&mut state) {
+             owner.retain_locked(&mut state);
+diff --git a/crates/kasumi-store/src/node_disk/namespace.rs b/crates/kasumi-store/src/node_disk/namespace.rs
+--- a/crates/kasumi-store/src/node_disk/namespace.rs
++++ b/crates/kasumi-store/src/node_disk/namespace.rs
+@@ -129,33 +129,6 @@
+     /// Compare every retained ancestor and the actual parent descriptor. This
+     /// deliberately does not require the affected parent's pre-effect extent:
+     /// the prepared transition owns that snapshot until explicit settlement.
+-    // Existing directory verification remains outside the file-custody successor.
+-    pub(super) fn verify(&self, root: &census::Root, names: &[CString]) -> io::Result<()> {
+-        root.verify_nonallocating()?;
+-        if self.ancestors.len() != names.len() + 1 || self.ancestors[0] != root.identity {
+-            return Err(io::ErrorKind::InvalidData.into());
+-        }
+-        let mut current = root.file.try_clone()?;
+-        for (index, name) in names.iter().enumerate() {
+-            let child = census::open_at(&current, name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+-            let metadata = child.metadata()?;
+-            census::directory_nonallocating(&metadata)?;
+-            if metadata.dev() != root.identity.0
+-                || Identity::of(&metadata) != self.ancestors[index + 1]
+-            {
+-                return Err(io::ErrorKind::InvalidData.into());
+-            }
+-            current = child;
+-        }
+-        let retained = self.file().metadata()?;
+-        census::directory_nonallocating(&retained)?;
+-        if Identity::of(&current.metadata()?) != self.identity
+-            || Identity::of(&retained) != self.identity
+-        {
+-            return Err(io::ErrorKind::InvalidData.into());
+-        }
+-        Ok(())
+-    }
+     pub(super) fn verify_file(&self, root: &census::Root, names: &[CString]) -> io::Result<()> {
+         if let Some(outcome) = &self.close_outcome {
+             return Err(native_file::projection(&outcome.error));
+@@ -528,11 +501,11 @@
+                 .flatten()
+                 .find(|(identity, _)| *identity == change.identity)
+                 .ok_or(io::ErrorKind::InvalidData)?;
+-            census::directory_nonallocating(&metadata)?;
+-            if Identity::of(&metadata) != change.identity {
++            census::directory_nonallocating(metadata)?;
++            if Identity::of(metadata) != change.identity {
+                 return Err(io::ErrorKind::InvalidData.into());
+             }
+-            let observed = census::directory_extent(&metadata)?;
++            let observed = census::directory_extent(metadata)?;
+             let charged = change.before.bytes.max(observed);
+             let new_pending = charged
+                 .checked_sub(observed)
+diff --git a/crates/kasumi-store/src/node_disk/tests.rs b/crates/kasumi-store/src/node_disk/tests.rs
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -188,8 +188,8 @@
+         let file = disk.open_file("data", Path::new(name)).unwrap();
+         disk.delete_file(file).unwrap();
+     }
+-    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+-    assert_eq!(disk.snapshot().pending_bytes, namespace_pending(&disk));
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(disk));
++    assert_eq!(disk.snapshot().pending_bytes, namespace_pending(disk));
+     disk.pause().unwrap();
+ }
+ 
+@@ -264,7 +264,7 @@
+     assert!(Arc::ptr_eq(&same, &disk));
+     assert_eq!(same.snapshot().charged_bytes, charged.charged_bytes);
+     disk.reconcile(&CensusCancellation::default()).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk));
+     assert!(disk.snapshot().filesystem_admission_ready);
+     clean(&disk, &["pending"]);
+ }
+@@ -364,7 +364,7 @@
+         namespace_charge(&disk) + (32 << 10)
+     );
+     disk.delete_file(file).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk));
+     assert!(!config.roots["data"].join("data").exists());
+     disk.pause().unwrap();
+ }
+@@ -669,7 +669,7 @@
+             .is_err()
+     );
+     assert_eq!(file.observed_len().unwrap(), 0);
+-    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk));
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     assert!(charge.grow(disk.unit).is_err());
+     assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+@@ -852,12 +852,11 @@
+         assert_eq!(allocations, 0, "uncertain shrink allocated: {failure:?}");
+         assert_eq!(
+             file.observed_len().unwrap(),
+-            namespace_charge(&disk)
+-                + if failure == file::ShrinkFailure::Truncate {
+-                    128 << 10
+-                } else {
+-                    32 << 10
+-                }
++            if failure == file::ShrinkFailure::Truncate {
++                128 << 10
++            } else {
++                32 << 10
++            }
+         );
+         assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+         assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+@@ -1110,7 +1109,7 @@
+     published.read_exact_at(&mut bytes, 0).unwrap();
+     assert_eq!(bytes, [41; 4096]);
+     disk.delete_file(published).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk));
+ }
+ 
+ #[test]
+@@ -1187,7 +1186,7 @@
+     disk.delete_file(raw).unwrap();
+     let retained = disk.open_file("data", Path::new("retained")).unwrap();
+     disk.delete_file(retained).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk));
+     assert_eq!(disk.snapshot().persistent_files, 0);
+     disk.pause().unwrap();
+ }
+@@ -1221,7 +1220,7 @@
+     );
+     let file = disk.open_file("data", Path::new("file")).unwrap();
+     disk.delete_file(file).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk));
+     assert_eq!(disk.snapshot().persistent_files, 0);
+     disk.pause().unwrap();
+ }
+@@ -1274,7 +1273,7 @@
+     );
+     assert_eq!(disk.snapshot().persistent_files, 1);
+     disk.delete_file(file).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk));
+     assert_eq!(disk.snapshot().pending_bytes, namespace_pending(&disk));
+     assert_eq!(disk.snapshot().persistent_files, 0);
+     assert!(
+@@ -1536,7 +1535,7 @@
+     let (result, allocations) = crate::allocation_tests::measure(|| disk.delete_file(file));
+     result.unwrap();
+     assert_eq!(allocations, 0);
+-    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk));
+     assert_eq!(disk.snapshot().persistent_files, 0);
+     assert_eq!(disk.snapshot().open_files, 0);
+ }
+@@ -1646,7 +1645,7 @@
+             let file = disk.open_file("data", Path::new("file")).unwrap();
+             disk.delete_file(file).unwrap();
+         }
+-        assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
++        assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk));
+         assert_eq!(disk.snapshot().persistent_files, 0);
+     }
+ }
+@@ -2220,7 +2219,10 @@
+     let cap = crate::test_utils::TestDiskMemory::required_reservation_bytes(required.owner_bytes)
+         .unwrap()
+         - 1;
+-    let memory = crate::test_utils::TestDiskMemory::new(cap, 4);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + cap,
++        4,
++    );
+     let crate::DiskOpenError::Failed(error) = crate::test_utils::retry_disk_registry(|| {
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     })
+@@ -2242,7 +2244,10 @@
+     for slots in [1, 2, 3] {
+         let (_directory, config) = installation();
+         let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+-        let memory = crate::test_utils::TestDiskMemory::new(total, slots);
++        let memory = crate::test_utils::TestDiskMemory::new(
++            crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(slots).unwrap() + total,
++            slots,
++        );
+         assert!(
+             crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+                 &config,
+@@ -2264,7 +2269,10 @@
+ fn installed_metadata_reuse_keeps_one_exact_core_and_one_retained_envelope() {
+     let (_directory, config) = installation();
+     let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+-    let memory = crate::test_utils::TestDiskMemory::new(total, 4);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total,
++        4,
++    );
+     let disk = crate::test_utils::retry_disk_registry(|| {
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     })
+@@ -2278,7 +2286,10 @@
+     .unwrap();
+     assert!(Arc::ptr_eq(&disk, &same));
+     assert_eq!(memory.snapshot(), held);
+-    let foreign = crate::test_utils::TestDiskMemory::new(total, 4);
++    let foreign = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total,
++        4,
++    );
+     assert!(
+         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+             &config,
+@@ -2312,7 +2323,10 @@
+     let (_directory, config) = installation();
+     symlink("missing", config.roots["data"].join("invalid")).unwrap();
+     let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+-    let memory = crate::test_utils::TestDiskMemory::new(total, 4);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total,
++        4,
++    );
+     assert!(
+         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+             &config,
+@@ -2341,7 +2355,10 @@
+     let (_directory, config) = installation();
+     seed(&config, "owned-empty", 0);
+     let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+-    let memory = crate::test_utils::TestDiskMemory::new(total, 4);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total,
++        4,
++    );
+     let disk = crate::test_utils::retry_disk_registry(|| {
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     })
+@@ -2395,7 +2412,10 @@
+ #[test]
+ fn registry_busy_precedes_memory_acquisition_without_allocating() {
+     let (_directory, config) = installation();
+-    let memory = crate::test_utils::TestDiskMemory::new(1, 1);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(1).unwrap() + 1,
++        1,
++    );
+     let guard = registry().lock();
+     let (result, allocations) = crate::allocation_tests::measure(|| {
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+@@ -2590,7 +2610,7 @@
+             assert_eq!(after.pending_bytes, before.pending_bytes);
+         } else {
+             assert_eq!(after.phase, NodeDiskPhase::Open);
+-            assert_eq!(after.charged_bytes, namespace_charge(&disk) + (0));
++            assert_eq!(after.charged_bytes, namespace_charge(&disk));
+             assert_eq!(after.pending_bytes, namespace_pending(&disk));
+         }
+         disk.reconcile(&CensusCancellation::default()).unwrap();

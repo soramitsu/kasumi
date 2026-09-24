@@ -1,0 +1,54 @@
+{
+  "workspace": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "base_sha256": "72d369c48d5947972f1d721e88eaa64bd87e81247d8bcd0ea7050b2156d3c869",
+      "proposed_sha256": "d8b20ab61cd6864d7704312c868d66e729a4bab6f54a55993cd9257850a8b8ff"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/lib.rs",
+      "base_sha256": "fa003f8401aa9b91d8d5265b1c05385dddf6dedf9abd0c982cc01520197715c9",
+      "proposed_sha256": "5f587febd53cccaf8b10be5bed3d0f60fdd46d5b3c3fbd536460d90f1d208d06"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_transaction.rs",
+      "base_sha256": null,
+      "proposed_sha256": "98efcb4039728e7cc18178e1b9c000f411555dc836dfafec29b9645732880315"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_transaction_tests.rs",
+      "base_sha256": null,
+      "proposed_sha256": "47d8917f9b36919ae4c6d4046bda6621ba28485bfe1adcffd1ffa939da23dbc3"
+    }
+  ],
+  "status": "PREPARED_NOT_APPLIED_NOT_COMPILED_NOT_EXECUTED",
+  "patch_sha256": "0e24a98eb895f58ad55521f1b37a2f23268f79f6a11c6c29ad964a38e248782f",
+  "prepared_tests": 8,
+  "unconverted_production_commit_calls": 12,
+  "source_sha256": {
+    "vendor/redb-4.2.0/src/transactions.rs": "72d369c48d5947972f1d721e88eaa64bd87e81247d8bcd0ea7050b2156d3c869",
+    "vendor/redb-4.2.0/src/lib.rs": "fa003f8401aa9b91d8d5265b1c05385dddf6dedf9abd0c982cc01520197715c9",
+    "vendor/redb-4.2.0/src/error.rs": "cced646dec3856bd7abe427a04eb328303a526b8a8335ab96f375611ad347686",
+    "vendor/redb-4.2.0/src/db.rs": "3e19185c6f93a25fe5f28a76e05c34dfff4210df54b88c279adbaccbdc6e5b14",
+    "vendor/redb-4.2.0/src/table.rs": "419f979536fa019dd55e0c8826d0c4c522d7246e715b0b7e117e437c24eaab76",
+    "vendor/redb-4.2.0/src/transaction_tracker.rs": "5d673a923d5c6995251ec6ec1a519be4e3b1e7db385f99f16410b375315ee8ab",
+    "vendor/redb-4.2.0/src/tree_store/table_tree.rs": "e4e53fcc516bf69c4f4918335be169d26b0abfc6d6976dbfbfd68c15904f12db",
+    "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs": "5266543540be85283f87fbed76d38e57a85334c728349c7e7002740b3336815d",
+    "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs": "acb378c1b912b049f7e580adb809c79dee352fd7ecc7d4941ca0b780e56a9d55",
+    "vendor/redb-4.2.0/src/admission.rs": "aceee2036eb30fce2ade997106f2b61e28f04bf2d4616180ef9cb9388cfc0817",
+    "vendor/redb-4.2.0/src/admission/tests.rs": "ccea4be7b866f1002e0eb419e1c0a01e5a4fe064ae9637356e6bd9717d77ff74",
+    "vendor/redb-4.2.0/tests/integration_tests.rs": "00e3a52833e78248fef1d142b021ee5c8b048d4319912af469d60dbe810d59c3",
+    "target/installed-disk-validation/staging-batch-design/design.md": "0484d5636ab8c6d536d5f8d7718cca4dbb201cb8c055242bb64481fec372f079",
+    "crates/kasumi-store/src/node_database.rs": "437c5c7e4b38a57cc32a3607488b6d553b4bebf6e45439aee16a159978c7d4b3",
+    "crates/kasumi-store/src/lib.rs": "94d7b163909a3ba8b239cbd3dcaa4f50560a4bfa39603326de5ebc3ca8e84f2b",
+    "crates/kasumi-store/src/scratch_table.rs": "c099e1652bf36951dd57a100922c4d6b4cac669c73375086978b981c03f49961",
+    "crates/kasumi-store/src/storage_domains.rs": "e0b66b91324b47cfbd46b6903e05bc0928e5e0daf6ac7c2fdd077bf88537c6b0",
+    "crates/kasumi-store/src/storage_domains/catalog_initialization.rs": "d82e12d8224f250765b4e1428976d625883d3749ce8ae6bab3292d9615c4fc69",
+    "crates/kasumi-store/src/read_view.rs": "e95e5e095df98004565643fe523d1cbd3c2e62ba068b4777e99cf6d38c4b0bce",
+    "crates/kasumi-store/src/live_trust.rs": "7c55eb43915ebc37fd8d213f4748b938fa03806da25066cc000aa4cd88df9d92",
+    "crates/kasumi-store/src/single_catalog.rs": "8d44d318048f84d367b0a6a0b9e1172cea3c5307339b333c152cc9857a14b2b8"
+  }
+}

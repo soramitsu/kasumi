@@ -6,7 +6,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::ops::{Index, IndexMut};
+use core::ops::{Deref, Index, IndexMut};
 use core::slice::SliceIndex;
 #[cfg(feature = "cache_metrics")]
 use core::sync::atomic::AtomicU64;
@@ -17,6 +17,30 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 fn zero_filled_arc(len: usize) -> Arc<[u8]> {
     // This is documented to do a single allocation: https://doc.rust-lang.org/std/sync/struct.Arc.html#iterators-of-known-length
     core::iter::repeat_n(0u8, len).collect()
+}
+
+/// A direct read's byte buffer and the exact resident credit that preceded it.
+/// The fields drop in declaration order, so buffer storage retires before the
+/// lease returns its credit. Header parsing may retain this across operations.
+pub(super) struct AdmittedBytes {
+    bytes: Vec<u8>,
+    _lease: Box<dyn crate::ResidentLease>,
+}
+pub(super) struct DirectReadCredit {
+    len: usize,
+    lease: Box<dyn crate::ResidentLease>,
+}
+impl Deref for AdmittedBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+impl AsRef<[u8]> for AdmittedBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 pub(super) struct WritablePage {
@@ -99,19 +123,9 @@ impl LRUWriteCache {
     }
 
     fn pop_lowest_priority(&mut self) -> Option<(u64, Arc<[u8]>)> {
-        for _ in 0..self.cache.len() {
-            if let Some((k, v)) = self.cache.pop_lowest_priority() {
-                if let Some(v_inner) = v {
-                    return Some((k, v_inner));
-                }
-
-                // Value is borrowed by take_value(). We can't evict it, so put it back.
-                self.cache.insert(k, v);
-            } else {
-                break;
-            }
-        }
-        None
+        self.cache
+            .pop_lowest_priority_if(Option::is_some)
+            .map(|(key, value)| (key, value.unwrap()))
     }
 
     fn clear(&mut self) {
@@ -130,8 +144,11 @@ struct CheckedBackend {
 
 impl Drop for CheckedBackend {
     fn drop(&mut self) {
-        if !self.closed.swap(true, Ordering::AcqRel) && self.file.close().is_err() {
-            self.fail_owner();
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            let (result, native) = self.file.close().into_parts();
+            if result.is_err() || native != crate::BackendNativeDisposition::Drained {
+                self.fail_owner();
+            }
         }
     }
 }
@@ -167,17 +184,25 @@ impl CheckedBackend {
     }
 
     fn io<T>(&self, result: core::result::Result<T, crate::io::Error>) -> Result<T> {
-        result.map_err(|_| {
+        result.map_err(|error| {
+            // Fence later access without replacing this operation's original
+            // I/O object. Its caller owns the actual cause of the uncertainty.
             self.fail_owner();
-            StorageError::OwnerFailed
+            StorageError::Io(error)
         })
     }
 
-    fn close(&self) -> Result {
+    fn close(&self) -> (Result, crate::BackendNativeDisposition) {
         if self.closed.swap(true, Ordering::AcqRel) {
-            return Ok(());
+            // The first caller owns the original outcome. Re-observation must
+            // never manufacture positive native evidence or replay the call.
+            return (
+                Err(StorageError::DatabaseClosed),
+                crate::BackendNativeDisposition::Retained,
+            );
         }
-        self.io(self.file.close())
+        let (result, native) = self.file.close().into_parts();
+        (self.io(result), native)
     }
 
     fn len(&self) -> Result<u64> {
@@ -188,6 +213,21 @@ impl CheckedBackend {
     fn read(&self, offset: u64, out: &mut [u8]) -> Result<()> {
         self.check_failure()?;
         self.io(self.file.read(offset, out))
+    }
+
+    fn reserve_workspace(&self, bytes: u64) -> Result<Box<dyn crate::ResidentLease>> {
+        self.check_failure()?;
+        match self.admission.reserve_workspace(bytes) {
+            Ok(lease) => Ok(lease),
+            Err(crate::AdmissionError::CapacityDenied) => {
+                self.capacity_denied.store(true, Ordering::Release);
+                Err(StorageError::CapacityDenied)
+            }
+            Err(crate::AdmissionError::OwnerFailed) => {
+                self.fail_owner();
+                Err(StorageError::OwnerFailed)
+            }
+        }
     }
 
     fn set_len(&self, len: u64) -> Result<()> {
@@ -258,6 +298,13 @@ pub(super) struct PagedCachedFile {
     #[cfg(test)]
     committed_pages_buffered: AtomicBool,
     max_cache_size: usize,
+    // Fixed metadata capacities, independent of the lifetime's visited offsets.
+    // Payload remains subject to the existing soft byte target.
+    read_entry_capacity: usize,
+    write_entry_capacity: usize,
+    cache_capacity_denied: AtomicBool,
+    #[cfg(test)]
+    write_entry_capacity_override: AtomicUsize,
     // Rotates the starting stripe for read-cache eviction
     next_eviction_stripe: AtomicUsize,
     #[cfg(feature = "cache_metrics")]
@@ -279,27 +326,73 @@ pub(super) struct PagedCachedFile {
 }
 
 impl PagedCachedFile {
+    #[cfg(test)]
     pub(super) fn new(
         file: Box<dyn StorageBackend>,
         admission: Arc<dyn crate::StorageAdmission>,
         page_size: u64,
         max_cache_size: usize,
     ) -> Result<Self, DatabaseError> {
+        Self::new_retained(&mut Some(file), admission, page_size, max_cache_size)
+    }
+
+    // The caller keeps its exact backend through every fallible preparation.
+    // The final take occurs after geometry checks and all cache construction.
+    pub(super) fn new_retained(
+        file: &mut Option<Box<dyn StorageBackend>>,
+        admission: Arc<dyn crate::StorageAdmission>,
+        page_size: u64,
+        max_cache_size: usize,
+    ) -> Result<Self, DatabaseError> {
+        let page_size_usize = usize::try_from(page_size)
+            .map_err(|_| DatabaseError::Storage(StorageError::CacheCapacityDenied))?;
+        if page_size_usize == 0 {
+            return Err(StorageError::CacheCapacityDenied.into());
+        }
+        let lock_stripes =
+            usize::try_from(Self::lock_stripes()).map_err(|_| StorageError::CacheCapacityDenied)?;
+        let read_entry_capacity = max_cache_size
+            .div_ceil(page_size_usize)
+            .div_ceil(lock_stripes)
+            .max(1);
+        // A depth-bounded internal mutation can retain ancestor PageMut values
+        // plus a leaf, split siblings and direct-header preparation. This is a
+        // capacity policy, not a proof that arbitrary external table guards fit.
+        let write_entry_capacity = read_entry_capacity
+            .checked_add(crate::tree_store::btree_base::MAX_BTREE_DEPTH)
+            .and_then(|n| n.checked_add(4))
+            .ok_or(StorageError::CacheCapacityDenied)?;
         let read_cache = (0..Self::lock_stripes())
-            .map(|_| RwLock::new(LRUCache::new()))
+            .map(|_| {
+                let stripe = RwLock::new(LRUCache::new());
+                drop(stripe.write().unwrap());
+                stripe
+            })
             .collect();
         let write_buffer = (0..Self::lock_stripes())
-            .map(|_| Arc::new(Mutex::new(LRUWriteCache::new())))
+            .map(|_| {
+                let stripe = Mutex::new(LRUWriteCache::new());
+                drop(stripe.lock().unwrap());
+                Arc::new(stripe)
+            })
             .collect();
 
         Ok(Self {
-            file: CheckedBackend::new(file, admission),
+            file: CheckedBackend::new(
+                file.take().expect("retained backend attached once"),
+                admission,
+            ),
             page_size,
             read_cache_bytes: AtomicUsize::new(0),
             write_buffer_bytes: AtomicUsize::new(0),
             #[cfg(test)]
             committed_pages_buffered: AtomicBool::new(false),
             max_cache_size,
+            read_entry_capacity,
+            write_entry_capacity,
+            cache_capacity_denied: AtomicBool::new(false),
+            #[cfg(test)]
+            write_entry_capacity_override: AtomicUsize::new(usize::MAX),
             next_eviction_stripe: AtomicUsize::new(0),
             #[cfg(feature = "cache_metrics")]
             reads_total: AtomicU64::default(),
@@ -354,7 +447,7 @@ impl PagedCachedFile {
         }
     }
 
-    pub(crate) fn close(&self) -> Result {
+    pub(crate) fn close(&self) -> (Result, crate::BackendNativeDisposition) {
         self.file.close()
     }
 
@@ -362,12 +455,71 @@ impl PagedCachedFile {
         self.file.settle_growth()
     }
 
-    pub(crate) fn capacity_denied(&self) -> bool {
-        self.file.capacity_denied.load(Ordering::Acquire)
+    pub(crate) fn capacity_error(&self) -> Option<StorageError> {
+        if self.file.capacity_denied.load(Ordering::Acquire) {
+            Some(StorageError::CapacityDenied)
+        } else if self.cache_capacity_denied.load(Ordering::Acquire) {
+            Some(StorageError::CacheCapacityDenied)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_write_entry_capacity_for_test(&self, capacity: usize) {
+        self.write_entry_capacity_override
+            .store(capacity, Ordering::Release);
+    }
+
+    fn write_entry_capacity(&self) -> usize {
+        #[cfg(test)]
+        {
+            self.write_entry_capacity_override
+                .load(Ordering::Acquire)
+                .min(self.write_entry_capacity)
+        }
+        #[cfg(not(test))]
+        {
+            self.write_entry_capacity
+        }
+    }
+
+    fn prepare_read_entry(&self, cache: &mut LRUCache<Arc<[u8]>>, offset: u64) {
+        if !cache.contains_key(offset) && cache.len() >= self.read_entry_capacity {
+            let (_, removed) = cache.pop_lowest_priority().unwrap();
+            self.read_cache_bytes
+                .fetch_sub(removed.len(), Ordering::AcqRel);
+            #[cfg(feature = "cache_metrics")]
+            self.evictions.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn prepare_write_entry(&self, cache: &mut LRUWriteCache, offset: u64) -> Result {
+        if cache.cache.contains_key(offset) || cache.cache.len() < self.write_entry_capacity() {
+            return Ok(());
+        }
+        // Inspect without changing LRU priority/counters. A denied all-borrowed
+        // stripe leaves every cached Arc, queue registration and byte intact.
+        if self.write_entry_capacity() == 0 || !cache.cache.iter().any(|(_, value)| value.is_some())
+        {
+            self.cache_capacity_denied.store(true, Ordering::Release);
+            return Err(StorageError::CacheCapacityDenied);
+        }
+        // One successful flush creates the required slot. An I/O failure keeps
+        // its original error and owner fence; it is never a capacity outcome.
+        self.flush_lowest_priority(cache, 1)?;
+        // Prove that eviction made room rather than inferring it from a
+        // successful I/O result: zero bytes may mean no entry was selected.
+        if cache.cache.len() >= self.write_entry_capacity() {
+            self.cache_capacity_denied.store(true, Ordering::Release);
+            return Err(StorageError::CacheCapacityDenied);
+        }
+        Ok(())
     }
 
     pub(crate) fn begin_transaction(&self) {
         self.file.capacity_denied.store(false, Ordering::Release);
+        self.cache_capacity_denied.store(false, Ordering::Release);
     }
 
     pub(super) fn prepare_publication(&self) {
@@ -452,6 +604,7 @@ impl PagedCachedFile {
                 if cache_size + len <= self.max_cache_size {
                     let cache_slot: usize = (offset % Self::lock_stripes()).try_into().unwrap();
                     let mut lock = self.read_cache[cache_slot].write().unwrap();
+                    self.prepare_read_entry(&mut lock, *offset);
                     if let Some(replaced) = lock.insert(*offset, buffer) {
                         // A race could cause us to replace an existing buffer
                         self.read_cache_bytes
@@ -542,10 +695,30 @@ impl PagedCachedFile {
     }
 
     // Read directly from the file, ignoring any cached data
-    pub(super) fn read_direct(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
+    pub(super) fn reserve_direct_read(&self, len: usize) -> Result<DirectReadCredit> {
+        let requested = u64::try_from(len).map_err(|_| StorageError::CapacityDenied)?;
+        let lease = self.file.reserve_workspace(requested)?;
+        Ok(DirectReadCredit { len, lease })
+    }
+
+    pub(super) fn read_direct_reserved(
+        &self,
+        offset: u64,
+        credit: DirectReadCredit,
+    ) -> Result<AdmittedBytes> {
+        let DirectReadCredit { len, lease } = credit;
         let mut buffer = vec![0; len];
         self.file.read(offset, &mut buffer)?;
-        Ok(buffer)
+        Ok(AdmittedBytes {
+            bytes: buffer,
+            _lease: lease,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn read_direct(&self, offset: u64, len: usize) -> Result<AdmittedBytes> {
+        let credit = self.reserve_direct_read(len)?;
+        self.read_direct_reserved(offset, credit)
     }
 
     // Like `read_direct`, but writes directly into an `Arc<[u8]>` instead of a
@@ -607,6 +780,7 @@ impl PagedCachedFile {
                 let cache_size = self.read_cache_bytes.fetch_add(len, Ordering::AcqRel);
                 if cache_size + len <= self.max_cache_size {
                     let mut write_lock = self.read_cache[cache_slot].write().unwrap();
+                    self.prepare_read_entry(&mut write_lock, offset);
                     if let Some(replaced) = write_lock.insert(offset, result.clone()) {
                         // A race could cause us to replace an existing buffer
                         self.read_cache_bytes
@@ -632,8 +806,9 @@ impl PagedCachedFile {
             }
         }
 
-        let cache_size = self.read_cache_bytes.fetch_add(len, Ordering::AcqRel);
         let mut write_lock = self.read_cache[cache_slot].write().unwrap();
+        self.prepare_read_entry(&mut write_lock, offset);
+        let cache_size = self.read_cache_bytes.fetch_add(len, Ordering::AcqRel);
         let cache_size = if let Some(replaced) = write_lock.insert(offset, buffer.clone()) {
             // A race could cause us to replace an existing buffer
             self.read_cache_bytes
@@ -765,6 +940,7 @@ impl PagedCachedFile {
         assert_eq!(0, offset % self.page_size);
         let stripe = self.write_buffer_stripe(offset);
         let mut lock = stripe.lock().unwrap();
+        self.prepare_write_entry(&mut lock, offset)?;
 
         let cache_slot: usize = (offset % Self::lock_stripes()).try_into().unwrap();
         let existing = {
@@ -862,12 +1038,13 @@ mod test {
     use crate::tree_store::PageHint;
     use crate::tree_store::page_store::cached_file::PagedCachedFile;
     use alloc::sync::Arc;
-    use core::sync::atomic::{AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     #[derive(Debug)]
     struct CountingBackend {
         inner: InMemoryBackend,
         writes: Arc<AtomicU64>,
+        reads: Arc<AtomicU64>,
     }
 
     impl CountingBackend {
@@ -879,6 +1056,7 @@ mod test {
                 Self {
                     inner,
                     writes: writes.clone(),
+                    reads: Arc::new(AtomicU64::new(0)),
                 },
                 writes,
             )
@@ -886,11 +1064,15 @@ mod test {
     }
 
     impl StorageBackend for CountingBackend {
+        fn close(&self) -> crate::BackendCloseOutcome {
+            self.inner.close()
+        }
         fn len(&self) -> Result<u64, std::io::Error> {
             self.inner.len()
         }
 
         fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), std::io::Error> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
             self.inner.read(offset, out)
         }
 
@@ -906,6 +1088,78 @@ mod test {
             self.writes.fetch_add(1, Ordering::SeqCst);
             self.inner.write(offset, data)
         }
+    }
+
+    #[derive(Debug, Default)]
+    struct WorkspaceOwner {
+        available: AtomicBool,
+        failed: AtomicBool,
+        live: Arc<AtomicU64>,
+    }
+    struct WorkspaceLease {
+        bytes: u64,
+        live: Arc<AtomicU64>,
+    }
+    impl Drop for WorkspaceLease {
+        fn drop(&mut self) {
+            self.live.fetch_sub(self.bytes, Ordering::SeqCst);
+        }
+    }
+    impl crate::StorageAdmission for WorkspaceOwner {
+        fn check_owner(&self) -> Result<(), crate::OwnerFailed> {
+            if self.failed.load(Ordering::Acquire) {
+                Err(crate::OwnerFailed)
+            } else {
+                Ok(())
+            }
+        }
+        fn reserve_workspace(
+            &self,
+            bytes: u64,
+        ) -> Result<Box<dyn crate::ResidentLease>, crate::AdmissionError> {
+            if !self.available.load(Ordering::Acquire) {
+                return Err(crate::AdmissionError::CapacityDenied);
+            }
+            self.check_owner()
+                .map_err(|_| crate::AdmissionError::OwnerFailed)?;
+            self.live.fetch_add(bytes, Ordering::SeqCst);
+            Ok(Box::new(WorkspaceLease {
+                bytes,
+                live: self.live.clone(),
+            }))
+        }
+        fn reserve_growth(&self, _: u64, _: u64) -> Result<(), crate::AdmissionError> {
+            Ok(())
+        }
+        fn settle_growth(&self, _: u64) -> Result<(), crate::OwnerFailed> {
+            self.check_owner()
+        }
+        fn owner_failed(&self) {
+            self.failed.store(true, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn direct_header_read_denies_before_allocation_or_io_and_retains_its_credit() {
+        let (backend, _) = CountingBackend::new(1024);
+        let reads = backend.reads.clone();
+        let owner = Arc::new(WorkspaceOwner::default());
+        let cached_file =
+            PagedCachedFile::new(Box::new(backend), owner.clone(), 128, 1024).unwrap();
+        let (denied, allocations) =
+            crate::admission::observe_test_allocations(|| cached_file.read_direct(0, 128));
+        assert!(matches!(denied, Err(crate::StorageError::CapacityDenied)));
+        assert_eq!(allocations, 0);
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        assert_eq!(owner.live.load(Ordering::SeqCst), 0);
+
+        owner.available.store(true, Ordering::Release);
+        let header = cached_file.read_direct(0, 128).unwrap();
+        assert_eq!(header.len(), 128);
+        assert_eq!(owner.live.load(Ordering::SeqCst), 128);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        drop(header);
+        assert_eq!(owner.live.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -1024,12 +1278,15 @@ mod test {
             &*cached_file.read(0, 128, PageHint::None).unwrap(),
             [0xAB; 128].as_slice()
         );
-        assert_eq!(cached_file.read_direct(0, 128).unwrap(), vec![0; 128]);
+        assert_eq!(cached_file.read_direct(0, 128).unwrap().as_ref(), &[0; 128]);
 
         // A flush writes the page out and clears the buffer
         cached_file.flush().unwrap();
         assert_eq!(writes.load(Ordering::SeqCst), 1);
-        assert_eq!(cached_file.read_direct(0, 128).unwrap(), vec![0xAB; 128]);
+        assert_eq!(
+            cached_file.read_direct(0, 128).unwrap().as_ref(),
+            &[0xAB; 128]
+        );
         assert_eq!(
             &*cached_file.read(0, 128, PageHint::Clean).unwrap(),
             [0xAB; 128].as_slice()
@@ -1151,4 +1408,210 @@ mod test {
             );
         }
     }
+    #[test]
+    fn all_borrowed_entry_denial_is_nonallocating_and_leaves_caches_unchanged() {
+        let (backend, writes) = CountingBackend::new(128 * 132);
+        let cache =
+            PagedCachedFile::new(Box::new(backend), crate::test_admission(), 128, 4096).unwrap();
+        cache.set_write_entry_capacity_for_test(1);
+        let first = cache.write(0, 128, true).unwrap();
+        let target = 128 * 131;
+        let retained = cache.read(target, 128, PageHint::Clean).unwrap();
+        let read_before = cache.read_cache_bytes.load(Ordering::Acquire);
+        let write_before = cache.write_buffer_bytes.load(Ordering::Acquire);
+        let calls = writes.load(Ordering::Acquire);
+        let (result, allocations) =
+            crate::admission::observe_test_allocations(|| cache.write(target, 128, true));
+        assert!(matches!(
+            result,
+            Err(crate::StorageError::CacheCapacityDenied)
+        ));
+        assert_eq!(allocations, 0);
+        assert_eq!(writes.load(Ordering::Acquire), calls);
+        assert_eq!(cache.read_cache_bytes.load(Ordering::Acquire), read_before);
+        assert_eq!(
+            cache.write_buffer_bytes.load(Ordering::Acquire),
+            write_before
+        );
+        assert!(Arc::ptr_eq(
+            &retained,
+            &cache.read(target, 128, PageHint::Clean).unwrap()
+        ));
+        assert_eq!(cache.write_buffer_stripe(0).lock().unwrap().cache.len(), 1);
+        drop(first);
+        drop(retained);
+        cache.begin_transaction();
+        let second = cache.write(target, 128, true).unwrap();
+        assert_eq!(writes.load(Ordering::Acquire), calls + 1);
+        assert_eq!(cache.write_buffer_stripe(0).lock().unwrap().cache.len(), 1);
+        drop(second);
+    }
+
+    #[test]
+    fn mixed_borrowed_and_second_chance_entries_make_real_room_before_insert() {
+        let page_size = 128u64;
+        let stride = page_size * PagedCachedFile::lock_stripes();
+        let (backend, writes) = CountingBackend::new(stride * 3);
+        let cache =
+            PagedCachedFile::new(Box::new(backend), crate::test_admission(), page_size, 4096)
+                .unwrap();
+        cache.set_write_entry_capacity_for_test(2);
+        let mut borrowed = cache
+            .write(0, usize::try_from(page_size).unwrap(), true)
+            .unwrap();
+        borrowed.mem_mut().fill(11);
+        // With only A borrowed, an attempted flush cannot select a page. The
+        // former remove/reinsert selector left A's flag false in this state.
+        assert_eq!(cache.flush_buffered_pages(1).unwrap(), 0);
+        let mut available = cache
+            .write(stride, usize::try_from(page_size).unwrap(), true)
+            .unwrap();
+        available.mem_mut().fill(22);
+        drop(available); // Returning B gives it a second chance.
+        let before = cache.write_buffer_bytes.load(Ordering::Acquire);
+        let mut new_page = cache
+            .write(stride * 2, usize::try_from(page_size).unwrap(), true)
+            .unwrap();
+        new_page.mem_mut().fill(33);
+        assert_eq!(writes.load(Ordering::Acquire), 1);
+        assert_eq!(cache.write_buffer_stripe(0).lock().unwrap().cache.len(), 2);
+        assert_eq!(cache.write_buffer_bytes.load(Ordering::Acquire), before);
+        assert!(cache.capacity_error().is_none());
+        assert!(borrowed.mem().iter().all(|byte| *byte == 11));
+        drop(new_page);
+        drop(borrowed);
+        cache.flush().unwrap();
+        for (offset, byte) in [(0, 11), (stride, 22), (stride * 2, 33)] {
+            let value = cache
+                .read(offset, usize::try_from(page_size).unwrap(), PageHint::Clean)
+                .unwrap();
+            assert!(value.iter().all(|actual| *actual == byte));
+        }
+        assert_eq!(cache.write_buffer_bytes.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn long_same_stripe_traversal_preserves_entry_caps_and_payload() {
+        let page_size = 128u64;
+        let stride = page_size * PagedCachedFile::lock_stripes();
+        let (backend, _) = CountingBackend::new(stride * 128 + page_size);
+        let cache =
+            PagedCachedFile::new(Box::new(backend), crate::test_admission(), page_size, 4096)
+                .unwrap();
+        cache.set_write_entry_capacity_for_test(1);
+        for index in 0..128u64 {
+            let mut page = cache
+                .write(index * stride, usize::try_from(page_size).unwrap(), true)
+                .unwrap();
+            page.mem_mut().fill(u8::try_from(index).unwrap());
+            drop(page);
+            assert!(cache.write_buffer_stripe(0).lock().unwrap().cache.len() <= 1);
+        }
+        cache.flush().unwrap();
+        for index in 0..128u64 {
+            let value = cache
+                .read(
+                    index * stride,
+                    usize::try_from(page_size).unwrap(),
+                    PageHint::Clean,
+                )
+                .unwrap();
+            assert!(
+                value
+                    .iter()
+                    .all(|byte| *byte == u8::try_from(index).unwrap())
+            );
+            assert!(cache.read_cache[0].read().unwrap().len() <= cache.read_entry_capacity);
+        }
+        assert_eq!(cache.write_buffer_bytes.load(Ordering::Acquire), 0);
+        assert!(cache.read_cache_bytes.load(Ordering::Acquire) <= cache.max_cache_size);
+    }
+
+    #[test]
+    fn entry_eviction_io_keeps_original_failure_and_never_becomes_capacity() {
+        #[derive(Debug)]
+        struct Original(Arc<()>);
+        impl core::fmt::Display for Original {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("original eviction failure")
+            }
+        }
+        impl std::error::Error for Original {}
+        #[derive(Debug)]
+        struct Failing {
+            inner: CountingBackend,
+            fail: Arc<core::sync::atomic::AtomicBool>,
+            marker: Arc<()>,
+        }
+        impl StorageBackend for Failing {
+            fn close(&self) -> crate::BackendCloseOutcome {
+                self.inner.close()
+            }
+            fn len(&self) -> std::io::Result<u64> {
+                self.inner.len()
+            }
+            fn read(&self, o: u64, b: &mut [u8]) -> std::io::Result<()> {
+                self.inner.read(o, b)
+            }
+            fn set_len(&self, n: u64) -> std::io::Result<()> {
+                self.inner.set_len(n)
+            }
+            fn sync_data(&self) -> std::io::Result<()> {
+                self.inner.sync_data()
+            }
+            fn write(&self, o: u64, b: &[u8]) -> std::io::Result<()> {
+                self.inner.write(o, b)?;
+                if self.fail.load(Ordering::Acquire) {
+                    Err(std::io::Error::other(Original(self.marker.clone())))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let (inner, writes) = CountingBackend::new(128 * 132);
+        let fail = Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let marker = Arc::new(());
+        let cache = PagedCachedFile::new(
+            Box::new(Failing {
+                inner,
+                fail: fail.clone(),
+                marker: marker.clone(),
+            }),
+            crate::test_admission(),
+            128,
+            4096,
+        )
+        .unwrap();
+        cache.set_write_entry_capacity_for_test(1);
+        drop(cache.write(0, 128, true).unwrap());
+        let bytes = cache.write_buffer_bytes.load(Ordering::Acquire);
+        fail.store(true, Ordering::Release);
+        let Err(error) = cache.write(128 * 131, 128, true) else {
+            panic!("eviction should fail")
+        };
+        let crate::StorageError::Io(error) = error else {
+            panic!("original I/O became capacity")
+        };
+        assert!(Arc::ptr_eq(
+            &error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<Original>()
+                .unwrap()
+                .0,
+            &marker
+        ));
+        assert_eq!(writes.load(Ordering::Acquire), 1);
+        assert_eq!(cache.write_buffer_bytes.load(Ordering::Acquire), bytes);
+        assert_eq!(cache.write_buffer_stripe(0).lock().unwrap().cache.len(), 1);
+        assert!(cache.capacity_error().is_none());
+        assert!(matches!(
+            cache.read(0, 128, PageHint::None),
+            Err(crate::StorageError::OwnerFailed)
+        ));
+    }
 }
+
+#[cfg(test)]
+#[path = "checked_backend_tests.rs"]
+mod checked_backend_tests;

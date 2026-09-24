@@ -10,18 +10,24 @@ pub(crate) struct OperatorState {
     pub(crate) node: Arc<NodeStore>,
     pub(crate) audit: Arc<kasumi_engine::SecurityAudit>,
     pub(crate) credentials: Arc<LocalCredentials>,
+    pub(crate) installed_owner: Arc<InstalledStandaloneOwner>,
     control: tokio::sync::Mutex<Option<Arc<kasumi_engine::Database>>>,
     resources: tokio::sync::Mutex<Resources>,
 }
 impl OperatorState {
-    pub(crate) async fn open(config: &RuntimeConfig) -> Result<Self> {
+    pub(crate) async fn open(
+        config: &RuntimeConfig,
+        storage: crate::runtime_memory::RuntimeStorage,
+    ) -> Result<Self> {
         let mut pending = Resources::default();
         let opened = async {
             config.validate()?;
-            let persistent_disk = crate::persistent_disk::open(&config.persistent_disk)?;
-            pending.standalone_lock = Some(
-                claim(config, &persistent_disk)?.context("operator requires standalone mode")?,
-            );
+            let admission = storage.facade(&config.admission)?;
+            pending.owned_admissions.push(admission.clone());
+            let persistent_disk = crate::persistent_disk::open(&config.persistent_disk, &storage)?;
+            let installed_owner =
+                claim(config, &persistent_disk)?.context("operator requires standalone mode")?;
+            pending.standalone_owner = Some(installed_owner.clone());
             let AuthKeySource::Local { signer_file } = &config.auth.source else {
                 anyhow::bail!("operator requires a local issuer");
             };
@@ -29,7 +35,7 @@ impl OperatorState {
                 &config.database_path,
                 config.database_id,
                 persistent_disk,
-                kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
+                storage.open_scratch(&config.scratch_disk)?,
             )?;
             pending.owned_nodes.push(node.clone());
             #[cfg(test)]
@@ -45,8 +51,6 @@ impl OperatorState {
             )
             .await?;
             pending.stores.push(store.clone());
-            let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
-            pending.owned_admissions.push(admission.clone());
             let audit = config.security_audit.open(store.clone(), admission)?;
             pending.audits.push(audit.clone());
             crate::node_enrollment::require_complete(
@@ -62,15 +66,16 @@ impl OperatorState {
                 config.auth.issuer.clone(),
                 config.auth.audience.clone(),
             )?;
-            Ok::<_, anyhow::Error>((node, audit, credentials))
+            Ok::<_, anyhow::Error>((node, audit, credentials, installed_owner))
         }
         .await;
         match opened {
-            Ok((node, audit, credentials)) => Ok(Self {
+            Ok((node, audit, credentials, installed_owner)) => Ok(Self {
                 config: config.clone(),
                 node,
                 audit,
                 credentials,
+                installed_owner,
                 control: tokio::sync::Mutex::new(None),
                 resources: tokio::sync::Mutex::new(pending),
             }),

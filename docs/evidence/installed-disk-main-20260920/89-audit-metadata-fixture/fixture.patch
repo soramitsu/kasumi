@@ -1,0 +1,36 @@
+--- a/crates/kasumi-engine/src/security_audit_retention.rs
++++ b/crates/kasumi-engine/src/security_audit_retention.rs
+@@ -692,6 +692,9 @@
+         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+         let (persistent_config, scratch_config) =
+             crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
++        let metadata =
++            crate::test_utils::isolated_disk_metadata_bytes(&persistent_config, &scratch_config)
++                .unwrap();
+         let storage = crate::test_utils::FixtureStorage::open(
+             &persistent_config,
+             &scratch_config,
+@@ -717,6 +720,10 @@
+             archive_bytes: 128 << 20,
+         };
+         let admission = storage.admission.clone();
++        assert_eq!(
++            crate::test_utils::reserved_payload_bytes(&admission),
++            metadata
++        );
+         let store = TenantStore::initialize_catalog_fixture(
+             storage
+                 .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+@@ -852,6 +859,11 @@
+         archive.release.add_permits(1);
+         shutdown.await.unwrap();
+         assert!(store.check_access().is_err());
+-        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
++        // Strong installed disk owners and their eight metadata leases survive
++        // audit shutdown; every operation and maintenance charge has drained.
++        assert_eq!(
++            crate::test_utils::reserved_payload_bytes(&admission),
++            metadata
++        );
+     }
+ }

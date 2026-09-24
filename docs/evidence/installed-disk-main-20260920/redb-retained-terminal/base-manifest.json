@@ -1,0 +1,23 @@
+{
+  "workspace": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "base_sha256": "72d369c48d5947972f1d721e88eaa64bd87e81247d8bcd0ea7050b2156d3c869"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/lib.rs",
+      "base_sha256": "fa003f8401aa9b91d8d5265b1c05385dddf6dedf9abd0c982cc01520197715c9"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_transaction.rs",
+      "base_sha256": null
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_transaction_tests.rs",
+      "base_sha256": null
+    }
+  ]
+}

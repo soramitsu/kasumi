@@ -1,0 +1,25 @@
+{
+  "scope": "Strict vendored redb all-target/all-feature Clippy after retained opening and canonical allocator-key validation; no final acceptance",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "clippy",
+    "--offline",
+    "--locked",
+    "--manifest-path",
+    "vendor/redb-4.2.0/Cargo.toml",
+    "--all-targets",
+    "--all-features",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 26707,
+  "exit_code": 0,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 11.983251810073853,
+  "inventoried_source_unchanged": true
+}

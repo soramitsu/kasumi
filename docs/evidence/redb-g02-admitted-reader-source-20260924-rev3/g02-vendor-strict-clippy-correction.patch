@@ -1,0 +1,45 @@
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/file_backend/optimized.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/file_backend/optimized.rs
+@@ -154,9 +154,8 @@
+         &self,
+         closer: impl FnOnce(NativeHandle) -> io::Result<()>,
+     ) -> BackendCloseOutcome {
+-        let mut state = match self.file.write() {
+-            Ok(state) => state,
+-            Err(_) => return BackendCloseOutcome::retained(io::ErrorKind::Other.into()),
++        let Ok(mut state) = self.file.write() else {
++            return BackendCloseOutcome::retained(io::ErrorKind::Other.into());
+         };
+         match std::mem::replace(&mut *state, CloseState::Attempting) {
+             CloseState::Open(file) => {
+--- a/vendor/redb-4.2.0/src/retained_database_tests.rs
++++ b/vendor/redb-4.2.0/src/retained_database_tests.rs
+@@ -376,6 +376,7 @@
+ 
+ #[test]
+ fn unknown_native_close_cannot_enter_failed_disposal_or_retry_backend() {
++    static UNKNOWN: Mutex<Option<Fixture>> = Mutex::new(None);
+     let mut fixture = Fixture::new();
+     fixture.control.close_mode.store(1, Ordering::SeqCst);
+     let report = fixture.owner.close();
+@@ -397,12 +398,12 @@
+     }
+     // Actual backend still owns its unclosed descriptor; retain it explicitly.
+     // This test's owner is not evidence that a caller/census budget is complete.
+-    static UNKNOWN: Mutex<Option<Fixture>> = Mutex::new(None);
+     *UNKNOWN.lock().unwrap() = Some(fixture);
+ }
+ 
+ #[test]
+ fn failed_disposal_unwind_retains_original_close_errors_and_never_replays_drop() {
++    static DISPOSAL_PANIC: Mutex<Option<Fixture>> = Mutex::new(None);
+     let mut fixture = Fixture::new();
+     fixture.control.sync_mode.store(1, Ordering::SeqCst);
+     fixture.control.close_mode.store(3, Ordering::SeqCst);
+@@ -429,6 +430,5 @@
+         assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 1);
+         assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 1);
+     }
+-    static DISPOSAL_PANIC: Mutex<Option<Fixture>> = Mutex::new(None);
+     *DISPOSAL_PANIC.lock().unwrap() = Some(fixture);
+ }

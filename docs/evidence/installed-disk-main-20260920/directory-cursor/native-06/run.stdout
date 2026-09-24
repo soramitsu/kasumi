@@ -1,0 +1,16 @@
+
+running 11 tests
+test node_disk::directory::cursor::tests::alias_denial_and_cancellation_preserve_exact_cursor_and_directory_lifetimes ... ok
+test node_disk::directory::cursor::tests::an_unenrolled_actual_entry_fences_and_failed_cursor_cannot_report_later_eof ... ok
+test node_disk::directory::cursor::tests::cancellation_preserves_independent_close_error_and_explicit_close_cannot_report_success ... ok
+test node_disk::directory::cursor::tests::census_workspace_cursor_limit_does_not_reduce_independent_directory_handle_limit ... ok
+test node_disk::directory::cursor::tests::configured_name_boundary_is_read_without_truncation_or_native_name_copy ... ok
+test node_disk::directory::cursor::tests::explicit_failed_partial_page_close_cannot_advertise_later_eof ... ok
+test node_disk::directory::cursor::tests::managed_same_extent_rename_invalidates_scan_without_fencing_healthy_storage ... ok
+test node_disk::directory::cursor::tests::repeated_independent_streams_borrow_bounded_names_and_retire_without_allocating ... ok
+test node_disk::directory::cursor::tests::same_length_raw_sparse_materialization_rejects_changed_settled_extent ... ok
+test node_disk::directory::cursor::tests::stream_fd_and_buffer_close_before_cursor_credit_and_before_directory_owner_drain ... ok
+test node_disk::directory::cursor::tests::uncertain_stream_close_retains_the_actual_installed_owner_after_all_external_arcs_drop ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.32s
+

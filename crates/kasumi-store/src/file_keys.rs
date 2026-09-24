@@ -33,13 +33,15 @@ impl Drop for Keyring {
 impl Keyring {
     fn validate(&self) -> Result<()> {
         ensure!(self.format == 1, "unsupported file keyring format");
-        ensure!(
-            !self.id.is_nil() && !self.domain.is_empty(),
-            "invalid file keyring identity"
-        );
+        ensure!(!self.id.is_nil(), "invalid file keyring identity");
+        kasumi_types::validate_name(&self.domain).context("invalid file keyring domain")?;
         ensure!(
             self.active > 0 && self.versions.contains_key(&self.active),
             "missing active wrapping key"
+        );
+        ensure!(
+            u64::try_from(self.versions.len())? == self.active,
+            "file keyring generations are not contiguous"
         );
         for (version, key) in &self.versions {
             ensure!(
@@ -102,8 +104,37 @@ impl FileKeyProvider {
         &self.key_ref
     }
     fn read(path: &Path) -> Result<Keyring> {
-        let ring: Keyring = serde_json::from_slice(&private_files::read(path, MAX_KEYRING_BYTES)?)?;
+        let bytes = private_files::read(path, MAX_KEYRING_BYTES)?;
+        let ring: Keyring = serde_json::from_slice(&bytes)?;
         ring.validate()?;
+        // Re-serialize into the bounded original row, never another full
+        // secret-bearing buffer. Every current writer uses to_vec on Keyring.
+        struct Exact<'a> {
+            original: &'a [u8],
+            offset: usize,
+        }
+        impl std::io::Write for Exact<'_> {
+            fn write(&mut self, encoded: &[u8]) -> std::io::Result<usize> {
+                let end = self
+                    .offset
+                    .checked_add(encoded.len())
+                    .ok_or_else(|| std::io::Error::other("noncanonical file keyring"))?;
+                if self.original.get(self.offset..end) != Some(encoded) {
+                    return Err(std::io::Error::other("noncanonical file keyring"));
+                }
+                self.offset = end;
+                Ok(encoded.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut exact = Exact {
+            original: bytes.as_slice(),
+            offset: 0,
+        };
+        serde_json::to_writer(&mut exact, &ring).context("noncanonical file keyring")?;
+        ensure!(exact.offset == bytes.len(), "noncanonical file keyring");
         Ok(ring)
     }
     fn load(&self) -> Result<Keyring> {
@@ -195,6 +226,13 @@ impl KeyProvider for FileKeyProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn must_fail<T>(result: Result<T>, message: &'static str) -> anyhow::Error {
+        match result {
+            Ok(_) => panic!("{message}"),
+            Err(error) => error,
+        }
+    }
     #[tokio::test]
     async fn file_keyring_rotation_binding_fresh_reads_and_reopen() {
         let root = crate::test_utils::private_tempdir().unwrap();
@@ -239,7 +277,126 @@ mod tests {
         assert!(provider.unwrap_key("tenant-a", &wrapped).await.is_err());
     }
     #[tokio::test]
+    async fn keyring_requires_current_writer_bytes_without_repair() -> Result<()> {
+        let root = crate::test_utils::private_tempdir()?;
+        let directory = root.path().join("private");
+        private_files::create_directory(&directory)?;
+        let path = directory.join("application.json");
+        let provider = FileKeyProvider::initialize(&path, "application")?;
+        let generated = provider.generate_key("tenant-a").await?;
+        assert_eq!(provider.rotate()?, 2);
+        let canonical = private_files::read(&path, MAX_KEYRING_BYTES)?;
+        let ring = FileKeyProvider::read(&path)?;
+        let writer = Zeroizing::new(serde_json::to_vec(&ring)?);
+        assert!(writer.as_slice() == canonical.as_slice());
+
+        let mut alternate = Zeroizing::new(canonical.to_vec());
+        alternate.push(b' ');
+        let parsed: Keyring = serde_json::from_slice(&alternate)?;
+        let parsed_writer = Zeroizing::new(serde_json::to_vec(&parsed)?);
+        assert!(parsed_writer.as_slice() == canonical.as_slice());
+        private_files::replace(&path, alternate.as_slice())?;
+        for error in [
+            must_fail(FileKeyProvider::open(&path), "alternate open must fail"),
+            must_fail(provider.generations(), "alternate load must fail"),
+            must_fail(provider.rotate(), "alternate rotation must fail"),
+            must_fail(
+                provider.unwrap_key("tenant-a", &generated.wrapped).await,
+                "alternate unwrap must fail",
+            ),
+        ] {
+            assert!(
+                format!("{error:#}").contains("noncanonical file keyring"),
+                "{error:#}"
+            );
+        }
+        assert!(
+            private_files::read(&path, MAX_KEYRING_BYTES)?.as_slice() == alternate.as_slice(),
+            "failed keyring operations repaired alternate bytes"
+        );
+
+        private_files::replace(&path, canonical.as_slice())?;
+        let restored = FileKeyProvider::open(&path)?;
+        assert_eq!(restored.generations()?, (2, vec![1, 2]));
+        assert!(
+            restored
+                .unwrap_key("tenant-a", &generated.wrapped)
+                .await?
+                .as_bytes()
+                == generated.plaintext.as_bytes(),
+            "restored key differs"
+        );
+        assert_eq!(restored.rotate()?, 3);
+        let rotated = private_files::read(&path, MAX_KEYRING_BYTES)?;
+        let ring = FileKeyProvider::read(&path)?;
+        let writer = Zeroizing::new(serde_json::to_vec(&ring)?);
+        assert!(writer.as_slice() == rotated.as_slice());
+        Ok(())
+    }
+
+    #[test]
+    fn keyring_rejects_writer_impossible_domain_and_generation_gaps_without_repair() -> Result<()> {
+        use zeroize::Zeroize;
+        let root = crate::test_utils::private_tempdir()?;
+        let directory = root.path().join("private");
+        private_files::create_directory(&directory)?;
+        let path = directory.join("application.json");
+        let provider = FileKeyProvider::initialize(&path, "application")?;
+        assert_eq!(provider.rotate()?, 2);
+        let canonical = private_files::read(&path, MAX_KEYRING_BYTES)?;
+
+        let mut invalid_domain = FileKeyProvider::read(&path)?;
+        invalid_domain.domain = "invalid\ndomain".into();
+        let invalid_bytes = Zeroizing::new(serde_json::to_vec(&invalid_domain)?);
+        private_files::replace(&path, invalid_bytes.as_slice())?;
+        let error = must_fail(FileKeyProvider::open(&path), "invalid domain must fail");
+        assert!(
+            format!("{error:#}").contains("invalid file keyring domain"),
+            "{error:#}"
+        );
+        let error = must_fail(provider.rotate(), "invalid domain rotation must fail");
+        assert!(
+            format!("{error:#}").contains("invalid file keyring domain"),
+            "{error:#}"
+        );
+        assert!(
+            private_files::read(&path, MAX_KEYRING_BYTES)?.as_slice() == invalid_bytes.as_slice()
+        );
+
+        private_files::replace(&path, canonical.as_slice())?;
+        let mut missing_generation = FileKeyProvider::read(&path)?;
+        let mut removed = missing_generation.versions.remove(&1).expect("prior key");
+        removed.zeroize();
+        let invalid_bytes = Zeroizing::new(serde_json::to_vec(&missing_generation)?);
+        private_files::replace(&path, invalid_bytes.as_slice())?;
+        let error = must_fail(FileKeyProvider::open(&path), "generation gap must fail");
+        assert!(
+            format!("{error:#}").contains("file keyring generations are not contiguous"),
+            "{error:#}"
+        );
+        let error = must_fail(provider.rotate(), "generation gap rotation must fail");
+        assert!(
+            format!("{error:#}").contains("file keyring generations are not contiguous"),
+            "{error:#}"
+        );
+        assert!(
+            private_files::read(&path, MAX_KEYRING_BYTES)?.as_slice() == invalid_bytes.as_slice()
+        );
+
+        private_files::replace(&path, canonical.as_slice())?;
+        assert_eq!(
+            FileKeyProvider::open(&path)?.generations()?,
+            (2, vec![1, 2])
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn standalone_catalog_binds_installation_tenant_and_generation() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
         use crate::{NodeStore, StorageAccess, TenantStore, WriteOp};
         use std::sync::Arc;
         let root = crate::test_utils::private_tempdir().unwrap();
@@ -251,7 +408,8 @@ mod tests {
         let node = NodeStore::create_new_fixture(
             root.path().join("db"),
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )
         .unwrap();
         let installation = Uuid::new_v4();

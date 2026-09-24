@@ -1,0 +1,102 @@
+{
+  "prepare_completion_poll": {
+    "start": "0x1001308dc",
+    "end": "0x10013e6dc",
+    "symbol": "lifecycle::recovery_control::prepare_completion::{closure#0}"
+  },
+  "complete_recovery_poll": {
+    "start": "0x10011ef80",
+    "end": "0x10012f440",
+    "symbol": "lifecycle::recovery_control::complete_recovery::{closure#0}"
+  },
+  "exercise_completed_recovery_poll": {
+    "start": "0x10014da4c",
+    "end": "0x10014e8cc",
+    "symbol": "lifecycle::recovery_control::exercise_completed_recovery::{closure#0}"
+  },
+  "resolve_expired_completion_poll": {
+    "start": "0x100146cf4",
+    "end": "0x10014da4c",
+    "symbol": "lifecycle::recovery_control::resolve_expired_completion::{closure#0}"
+  },
+  "exercise_route_publication_poll": {
+    "start": "0x10013fe00",
+    "end": "0x100146cf4",
+    "symbol": "lifecycle::recovery_control::exercise_route_publication::{closure#0}"
+  },
+  "prepare_next_poll": {
+    "start": "0x10011dfa8",
+    "end": "0x10011e578",
+    "symbol": "lifecycle::recovery_control::prepare_next::{closure#0}"
+  },
+  "resolve_phase_poll": {
+    "start": "0x10011ebdc",
+    "end": "0x10011ef80",
+    "symbol": "lifecycle::recovery_control::resolve_phase::{closure#0}"
+  },
+  "commit_next_control_poll": {
+    "start": "0x10013e6dc",
+    "end": "0x10013e958",
+    "symbol": "lifecycle::recovery_control::commit_next_control::{closure#0}"
+  },
+  "commit_next_control_for_poll": {
+    "start": "0x10013e958",
+    "end": "0x10013fe00",
+    "symbol": "lifecycle::recovery_control::commit_next_control_for::{closure#0}"
+  },
+  "snapshot_poll": {
+    "start": "0x10014fffc",
+    "end": "0x100150400",
+    "symbol": "lifecycle::recovery_control::snapshot::{closure#0}"
+  },
+  "leader_poll": {
+    "start": "0x10003dff8",
+    "end": "0x10003e244",
+    "symbol": "<lifecycle::Fixture>::leader::{closure#0}"
+  },
+  "leader_diagnostic": {
+    "start": "0x100025238",
+    "end": "0x100025334",
+    "symbol": "<lifecycle::Fixture>::leader::{closure#0}::{closure#1}"
+  },
+  "root_test_closure_0": {
+    "start": "0x10014fdf4",
+    "end": "0x10014fe20",
+    "symbol": "lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}"
+  },
+  "root_test_closure_1": {
+    "start": "0x100150800",
+    "end": "0x100150a04",
+    "symbol": "lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}"
+  },
+  "outer_constructor": {
+    "start": "0x1000cb664",
+    "end": "0x1000cb68c",
+    "symbol": "lifecycle::recovery_control::exercise_completed_recovery"
+  },
+  "prepare_completion_box_poll": {
+    "start": "0x1000d2ba4",
+    "end": "0x1000d2bf0",
+    "symbol": "<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>> as core::future::future::Future>::poll"
+  },
+  "complete_recovery_box_poll": {
+    "start": "0x1000d2b58",
+    "end": "0x1000d2ba4",
+    "symbol": "<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>> as core::future::future::Future>::poll"
+  },
+  "resolve_expired_completion_box_poll": {
+    "start": "0x1000d2c34",
+    "end": "0x1000d2c78",
+    "symbol": "<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>> as core::future::future::Future>::poll"
+  },
+  "exercise_route_publication_box_poll": {
+    "start": "0x1000d2bf0",
+    "end": "0x1000d2c34",
+    "symbol": "<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>> as core::future::future::Future>::poll"
+  },
+  "resolve_phase_box_poll": {
+    "start": "0x1000d2b0c",
+    "end": "0x1000d2b58",
+    "symbol": "<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_phase::{closure#0}>> as core::future::future::Future>::poll"
+  }
+}

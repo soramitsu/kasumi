@@ -311,6 +311,24 @@ class OwnedProcess:
         self.runner.persist()
 
 
+def load_directory_policy(path):
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            require(key not in value, "duplicate directory policy field")
+            value[key] = item
+        return value
+    with path.open("rb") as source:
+        raw = source.read(4097)
+    require(len(raw) <= 4096, "directory policy exceeds input bound")
+    value = json.loads(raw, object_pairs_hook=unique)
+    require(isinstance(value, dict) and set(value) == {"extent_bytes", "max_entries"}
+            and all(type(item) is int and item > 0 for item in value.values())
+            and value["extent_bytes"] <= (1 << 63) - 1 and value["max_entries"] <= (1 << 64) - 1,
+            "invalid explicit directory policy")
+    return raw, value
+
+
 class Runner:
     def __init__(self, args):
         self.args = args
@@ -384,6 +402,12 @@ class Runner:
         provenance.mkdir(mode=0o700)
         private_write(provenance / "build-evidence.json", evidence_bytes)
         private_write(provenance / "Cargo.lock", lock)
+        directory_policy_bytes, directory_policy = load_directory_policy(self.args.directory_policy)
+        self.directory_policy_file = provenance / "directory-policy.json"
+        private_write(self.directory_policy_file, directory_policy_bytes)
+        self.record["directory_policy"] = {"file": str(self.directory_policy_file),
+                                           "sha256": sha256(self.directory_policy_file),
+                                           "policy": directory_policy}
         collection = git("show", commit + ":benchmarks/capacity-collection.json")
         require(json.loads(collection)["name"] == "capacity", "unexpected source collection schema")
         private_write(self.output / "collection.json", collection)
@@ -527,15 +551,6 @@ class Runner:
     def exercise(self):
         daemon = self.binaries["kasumid"]
         installation = self.output / "installation"
-        self.command("init", [daemon, "init", "--mode", "standalone", installation, "--tenant", "capacity-smoke"])
-        self.config_file = installation / "kasumi.json"
-        config = read_json(self.config_file)
-        require(config["mode"] == "standalone" and not config["serving_authorities"]
-                and config["replication"] is None, "init did not produce explicit standalone storage")
-        certificate = Path(config["mcp"]["tls"]["certificate"]).read_text()
-        self.mcp_pin = hashlib.sha256(ssl.PEM_cert_to_DER_cert(certificate)).hexdigest()
-        profile_file = installation / "profiles/default.json"
-        control_file = installation / "profiles/control.json"
         held = []
         try:
             ports = {}
@@ -544,17 +559,41 @@ class Runner:
                 held.append(listener)
                 listener.bind(("127.0.0.1", 0))
                 ports[name] = listener.getsockname()[1]
-                config[name]["listen"] = "127.0.0.1:" + str(ports[name])
-            config["mcp"]["protocol"] = {"public_url": f"https://localhost:{ports['mcp']}/mcp",
-                                         "allowed_hosts": [f"localhost:{ports['mcp']}"], "allowed_origins": []}
-            write_json(self.config_file, config)
-            for path in (profile_file, control_file):
-                profile = read_json(path)
-                profile.update(native_endpoint=f"https://localhost:{ports['native']}",
-                               mcp_endpoint=config["mcp"]["protocol"]["public_url"])
-                profile["administrative_members"]["1"]["endpoint"] = f"https://localhost:{ports['admin']}"
-                write_json(path, profile)
+            network = {
+                "mcp_listen": f"127.0.0.1:{ports['mcp']}",
+                "mcp_public_url": f"https://localhost:{ports['mcp']}/mcp",
+                "native_listen": f"127.0.0.1:{ports['native']}",
+                "admin_listen": f"127.0.0.1:{ports['admin']}",
+            }
+            network_file = self.output / "provenance/standalone-network.json"
+            private_write(network_file, json.dumps(network, sort_keys=True).encode())
+            self.record["standalone_network"] = {
+                "file": str(network_file), "sha256": sha256(network_file), "network": network}
+            self.command("init", [daemon, "init", "--mode", "standalone", installation,
+                                  "--directory-policy", self.directory_policy_file,
+                                  "--network", network_file, "--tenant", "capacity-smoke"])
+            self.config_file = installation / "kasumi.json"
+            config = read_json(self.config_file)
+            require(config["mode"] == "standalone" and not config["serving_authorities"]
+                    and config["replication"] is None, "init did not produce explicit standalone storage")
+            require(config["persistent_disk"]["directory_policy"] == self.record["directory_policy"]["policy"],
+                    "init changed the supplied directory admission policy")
+            require(config["mcp"]["listen"] == network["mcp_listen"]
+                    and config["mcp"]["protocol"]["public_url"] == network["mcp_public_url"]
+                    and config["native"]["listen"] == network["native_listen"]
+                    and config["admin"]["listen"] == network["admin_listen"],
+                    "init changed selected listener identity")
+            certificate = Path(config["mcp"]["tls"]["certificate"]).read_text()
+            self.mcp_pin = hashlib.sha256(ssl.PEM_cert_to_DER_cert(certificate)).hexdigest()
+            profile_file = installation / "profiles/default.json"
+            control_file = installation / "profiles/control.json"
             profile, self.control = read_json(profile_file), read_json(control_file)
+            for selected in (profile, self.control):
+                require(selected["native_endpoint"] == f"https://localhost:{ports['native']}"
+                        and selected["mcp_endpoint"] == network["mcp_public_url"]
+                        and selected["administrative_members"]["1"]["endpoint"]
+                            == f"https://localhost:{ports['admin']}",
+                        "init changed selected client endpoints")
             self.record["ports"] = ports
             write_json(self.output / "installation-initial.json", private_inventory(installation))
             self.command("check-config", [daemon, "check-config", self.config_file])
@@ -656,6 +695,7 @@ def main(argv=None):
     parser.add_argument("--binaries", type=Path, required=True)
     parser.add_argument("--build-evidence", type=Path, required=True,
                         help="scripts/release_gate.py evidence.json for the actual binary builds")
+    parser.add_argument("--directory-policy", type=Path, required=True)
     parser.add_argument("--source", required=True)
     parser.add_argument("--repository", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -670,6 +710,7 @@ def main(argv=None):
     args.repository = args.repository.resolve(strict=True)
     args.binaries = args.binaries.resolve(strict=True)
     args.build_evidence = args.build_evidence.resolve(strict=True)
+    args.directory_policy = args.directory_policy.resolve(strict=True)
     require(args.output.is_absolute() and not args.output.exists() and not args.output.is_symlink()
             and not args.output.resolve().is_relative_to(args.repository),
             "output must be a new absolute directory outside the repository")

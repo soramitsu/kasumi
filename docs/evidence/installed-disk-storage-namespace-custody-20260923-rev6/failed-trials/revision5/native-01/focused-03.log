@@ -1,0 +1,6 @@
+
+running 1 test
+test node_disk::tests::explicit_file_close_drains_original_resources_before_credit_and_closed_calls ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 337 filtered out; finished in 0.06s
+

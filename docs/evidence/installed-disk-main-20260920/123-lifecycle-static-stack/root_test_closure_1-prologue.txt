@@ -1,0 +1,32 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+0000000100150800 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}>:
+100150800: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+100150804: a9017bfd    	stp	x29, x30, [sp, #0x10]
+100150808: 910043fd    	add	x29, sp, #0x10
+10015080c: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+100150810: f90003ff    	str	xzr, [sp]
+100150814: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+100150818: f90003ff    	str	xzr, [sp]
+10015081c: d12b83ff    	sub	sp, sp, #0xae0
+100150820: f90003ff    	str	xzr, [sp]
+100150824: d10107a8    	sub	x8, x29, #0x41
+100150828: f9000be8    	str	x8, [sp, #0x10]
+10015082c: f9000fe0    	str	x0, [sp, #0x18]
+100150830: f90017e1    	str	x1, [sp, #0x28]
+100150834: aa0003e8    	mov	x8, x0
+100150838: f81c03a8    	stur	x8, [x29, #-0x40]
+10015083c: aa0003e8    	mov	x8, x0
+100150840: f81d03a8    	stur	x8, [x29, #-0x30]
+100150844: 5282a708    	mov	w8, #0x1538             ; =5432
+100150848: 38686808    	ldrb	w8, [x0, x8]
+10015084c: b90027e8    	str	w8, [sp, #0x24]
+100150850: 34000168    	cbz	w8, 0x10015087c <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x7c>
+100150854: 14000001    	b	0x100150858 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x58>
+100150858: b94027e8    	ldr	w8, [sp, #0x24]
+10015085c: 71000508    	subs	w8, w8, #0x1
+100150860: 54000200    	b.eq	0x1001508a0 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0xa0>
+100150864: 14000001    	b	0x100150868 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x68>

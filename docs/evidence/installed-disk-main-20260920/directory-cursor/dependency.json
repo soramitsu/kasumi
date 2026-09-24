@@ -1,0 +1,44 @@
+{
+  "status": "working target-only successor; do not apply",
+  "package": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions",
+  "patch": "cumulative.patch",
+  "sha256": "5ae0623c48dbaf32af81544e7c3fafb2d6f25c84aab6f385c7e3a0b7e85ae3bd",
+  "baselines": {
+    "crates/kasumi-store/src/node_disk.rs": {
+      "baseline_source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk.rs",
+      "baseline_sha256": "d2f6fb0bc5c852c4e5a0510691ed94c09f23b0bdb292df41bd26266ea9a32b5e",
+      "from_prior_proposal": true,
+      "current_actual_sha256": "f230ff417b9abcfe5f15815aba38ab6fe8131d4920db9187894ec184cdf803f7"
+    },
+    "crates/kasumi-store/src/node_disk/directory.rs": {
+      "baseline_source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/directory.rs",
+      "baseline_sha256": "41b09d6bfea22f6e9db511e8dc113d58904c022542293f02714841bee6937b2d",
+      "from_prior_proposal": true,
+      "current_actual_sha256": null
+    },
+    "crates/kasumi-store/src/node_disk/memory.rs": {
+      "baseline_source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/memory.rs",
+      "baseline_sha256": "1504a8831ab5786677f0ad4e0cf24c63e1c4af3b0c8cf6a24933fbbf9048f191",
+      "from_prior_proposal": true,
+      "current_actual_sha256": "a818170d52397a3ac5987ab4e93f55897de82c61e14c2708dbfb799383176d12"
+    },
+    "crates/kasumi-store/src/node_disk/namespace.rs": {
+      "baseline_source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/namespace.rs",
+      "baseline_sha256": "39e164bfade10bbdfcb8a37c63d0d260d2a6c1e86edb3dd6dc1215b8b9a9610d",
+      "from_prior_proposal": true,
+      "current_actual_sha256": null
+    },
+    "crates/kasumi-store/src/lib.rs": {
+      "baseline_source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/lib.rs",
+      "baseline_sha256": "f54a2f2878cf000b6fd65731383641712268bd600d58a3d572b04cb456f673aa",
+      "from_prior_proposal": true,
+      "current_actual_sha256": "88f45bae174564f5496dff8bba211ca46ff28597c7e97501fac0a7dbe3c19225"
+    },
+    "crates/kasumi-store/src/backup_sessions_fs.rs": {
+      "baseline_source": "/Users/mtakemiya/dev/kasumi/crates/kasumi-store/src/backup_sessions_fs.rs",
+      "baseline_sha256": "2441aacf98327bd4c97e11c841178edd9966e7baf890c29df0b2d6b9bb06910c",
+      "from_prior_proposal": false,
+      "current_actual_sha256": "2441aacf98327bd4c97e11c841178edd9966e7baf890c29df0b2d6b9bb06910c"
+    }
+  }
+}

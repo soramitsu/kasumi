@@ -1,0 +1,15 @@
+{
+  "pid": 15196,
+  "returncode": 0,
+  "elapsed": 0.12350893020629883,
+  "files": [
+    "target/installed-disk-validation/file-owner-custody-revision1/proposed/crates/kasumi-store/src/node_disk.rs",
+    "target/installed-disk-validation/file-owner-custody-revision1/proposed/crates/kasumi-store/src/node_disk/memory.rs",
+    "target/installed-disk-validation/file-owner-custody-revision1/proposed/crates/kasumi-store/src/node_disk/native_file.rs",
+    "target/installed-disk-validation/file-owner-custody-revision1/proposed/crates/kasumi-store/src/node_disk/directory.rs",
+    "target/installed-disk-validation/file-owner-custody-revision1/proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "target/installed-disk-validation/file-owner-custody-revision1/proposed/crates/kasumi-store/src/node_disk/namespace.rs",
+    "target/installed-disk-validation/file-owner-custody-revision1/proposed/crates/kasumi-store/src/node_disk/file.rs",
+    "target/installed-disk-validation/file-owner-custody-revision1/proposed/crates/kasumi-store/src/node_disk/file/custody.rs"
+  ]
+}

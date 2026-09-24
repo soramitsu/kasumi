@@ -1,0 +1,13 @@
+{
+  "status": "TARGET_ONLY_UNAPPLIED_UNCOMPILED_UNEXECUTED",
+  "dependency_patch_sha256": "de8383c9c041c8dfd54ea8a7c0563de81dc8f46c86b0d95b65ffc2a9e1a688b8",
+  "patch_sha256": "368cd53ab8bfbad3a685e293278968ee7457de8d73a2d1e5f39b7074906caf52",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "before_sha256": "9cc67ebb75fa10ddc01f0026e14b5878ddef40a6024276c38eab8fc401ac04dc",
+      "proposed_sha256": "2fb12a568b3b0e39f871defe4055cbc6cf24ed9043315f67ebaa88f958c0c13a"
+    }
+  ],
+  "git_apply_check_exit": 0
+}

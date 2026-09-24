@@ -1,0 +1,15 @@
+{
+  "manifest_sha256": "b2d6f9f980a55d0e1a688093cf2deb64269878005ff78e15f394af8341b336e5",
+  "runner_sha256": "cc663fa1881818d344c4e52e9f806412164c424e03473fd73fc82c9600dce097",
+  "cumulative_patch_sha256": "791f80c362c9ee0c317e0a46a4fedb26054e50a274aad0e735641e339737f2c9",
+  "correction_patch_sha256": "335b964997d012e175b1039137733d86e7031c85a67f4b56821d86cf21f997dd",
+  "apply_readback_sha256": "e5f2e740a4bbf7ccd5eda1cca1273437f067fba0409d2ef9752aa62989132403",
+  "changed_paths_sha256": "4eba79c9cac535885cd95a154729061e1effb0c5aed2f3fcf5d23ca3d7aaad9c",
+  "expected_test_count": 338,
+  "focused_test_count": 14,
+  "cohort_bound_seconds": 1200,
+  "fresh_target": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/cargo-target",
+  "source_file_count": 75,
+  "changed_path_count": 3,
+  "qualification_status": "not_started"
+}

@@ -1,0 +1,743 @@
+--- a/crates/kasumi-engine/src/admission/snapshot_work.rs
++++ b/crates/kasumi-engine/src/admission/snapshot_work.rs
+@@ -10,10 +10,12 @@
+     any::Any,
+     error::Error as StdError,
+     future::Future,
++    mem::ManuallyDrop,
++    ops::Deref,
+     panic::{AssertUnwindSafe, catch_unwind},
+     pin::Pin,
+     sync::{Arc, Mutex},
+-    task::{Context, Poll, Wake, Waker},
++    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+ };
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -24,7 +26,7 @@
+ struct CensusSlot {
+     generation: u64,
+     reserved: bool,
+-    owner: Option<Arc<dyn ErasedWork>>,
++    owner: Option<ErasedOwner>,
+ }
+ pub(super) struct Census {
+     next: u64,
+@@ -131,33 +133,101 @@
+     join_error: Option<tokio::task::JoinError>,
+     panic: Option<OriginalPanic>,
+ }
+-#[derive(Default)]
++// The actual wake allocation can outlive its operation through a registered or
++// in-progress proxy Waker. Keep the original complete operation reservation here.
++// Every strong release uses into_inner, so this allocation itself is destroyed
++// before its final field can return admission credit. No raw Arc or Weak escapes.
+ struct WorkWake {
+     waiter: Mutex<Option<Waker>>,
+-}
+-impl Wake for WorkWake {
+-    fn wake(self: Arc<Self>) {
+-        self.wake_by_ref();
+-    }
+-    fn wake_by_ref(self: &Arc<Self>) {
+-        let waiter = self
+-            .waiter
+-            .lock()
+-            .unwrap_or_else(|p| p.into_inner())
+-            .clone();
++    _charge: Reservation,
++}
++impl WorkWake {
++    fn notify(&self) {
++        let waiter = self.waiter.lock().unwrap_or_else(|p| p.into_inner()).take();
++        // A wake consumes this registration; finish installs the next one before
++        // polling. Concurrent notifications coalesce without cloning a user
++        // waker under the lock. Neither callback nor destructor runs locked.
+         if let Some(waiter) = waiter {
+             waiter.wake();
+         }
+     }
++}
++struct OwnedWake(Option<Arc<WorkWake>>);
++impl OwnedWake {
++    fn new(charge: Reservation) -> Self {
++        Self(Some(Arc::new(WorkWake {
++            waiter: Mutex::new(None),
++            _charge: charge,
++        })))
++    }
++    fn waker(&self) -> Waker {
++        let wake = self.0.as_ref().expect("owned wake").clone();
++        let pointer = Arc::into_raw(wake).cast::<()>();
++        // SAFETY: the raw pointer transfers exactly one live Arc strong count
++        // into this Waker; every vtable operation follows that ownership below.
++        unsafe { Waker::from_raw(RawWaker::new(pointer, &WORK_WAKE_VTABLE)) }
++    }
++}
++impl Clone for OwnedWake {
++    fn clone(&self) -> Self {
++        Self(Some(self.0.as_ref().expect("owned wake").clone()))
++    }
++}
++impl Deref for OwnedWake {
++    type Target = WorkWake;
++    fn deref(&self) -> &Self::Target {
++        self.0.as_deref().expect("owned wake")
++    }
++}
++impl Drop for OwnedWake {
++    fn drop(&mut self) {
++        if let Some(wake) = self.0.take().and_then(Arc::into_inner) {
++            // No Weak exists. Arc::into_inner already retired the real backing.
++            drop(wake);
++        }
++    }
++}
++
++// These private callbacks are the only owners of raw WorkWake pointers. A raw
++// Waker owns one count, cloning creates one, wake/drop consume one, and
++// wake_by_ref only borrows one. Every consumed count goes through OwnedWake;
++// even a panicking user wake callback cannot skip the final retirement protocol.
++static WORK_WAKE_VTABLE: RawWakerVTable =
++    RawWakerVTable::new(clone_work_wake, wake_work, wake_work_by_ref, drop_work_wake);
++unsafe fn clone_work_wake(pointer: *const ()) -> RawWaker {
++    // SAFETY: the borrowed source Waker keeps this exact Arc allocation alive.
++    unsafe { Arc::increment_strong_count(pointer.cast::<WorkWake>()) };
++    RawWaker::new(pointer, &WORK_WAKE_VTABLE)
++}
++unsafe fn wake_work(pointer: *const ()) {
++    // SAFETY: wake consumes the source Waker's one strong count exactly once.
++    let wake = OwnedWake(Some(unsafe { Arc::from_raw(pointer.cast::<WorkWake>()) }));
++    wake.notify();
++    // OwnedWake also runs during callback unwinding.
++}
++unsafe fn wake_work_by_ref(pointer: *const ()) {
++    // SAFETY: this is a borrowed count owned by the source Waker. ManuallyDrop
++    // prevents decrementing it on return or callback unwind; the source still
++    // owns it. No new Arc count is created and no raw Arc is returned.
++    let wake = ManuallyDrop::new(unsafe { Arc::from_raw(pointer.cast::<WorkWake>()) });
++    wake.notify();
++}
++unsafe fn drop_work_wake(pointer: *const ()) {
++    // SAFETY: drop consumes the source Waker's one strong count exactly once.
++    drop(OwnedWake(Some(unsafe {
++        Arc::from_raw(pointer.cast::<WorkWake>())
++    })));
+ }
+ struct ClearWaiter<'a>(&'a WorkWake);
+ impl Drop for ClearWaiter<'_> {
+     fn drop(&mut self) {
+-        self.0
++        let waiter = self
++            .0
+             .waiter
+             .lock()
+             .unwrap_or_else(|p| p.into_inner())
+             .take();
++        drop(waiter);
+     }
+ }
+ 
+@@ -168,11 +238,58 @@
+     control: Mutex<Control>,
+     resource: Mutex<Resource<O>>,
+     serial: tokio::sync::Mutex<()>,
+-    wake: Arc<WorkWake>,
+     cancellation: QueryCancellation,
+     core: Arc<MemoryCore>,
+-    // Every input/result/original outcome dies before its admitted lease.
+-    _charge: Reservation,
++    // Last: actual Owner allocation and all fields retire before this count.
++    // External proxy wakers may retain the same original charge even longer.
++    wake: OwnedWake,
++}
++// Typed delivery/worker handles and erased report/census handles cannot expose
++// their inner Arc. Every final release moves the value out before destroying it,
++// rather than releasing a lease from inside the still-allocated Arc payload.
++struct OwnedOwner<O: SnapshotOperation>(Option<Arc<Owner<O>>>);
++impl<O: SnapshotOperation> OwnedOwner<O> {
++    fn erased(&self) -> ErasedOwner {
++        ErasedOwner(Some(self.0.as_ref().expect("owned operation").clone()))
++    }
++}
++impl<O: SnapshotOperation> Clone for OwnedOwner<O> {
++    fn clone(&self) -> Self {
++        Self(Some(self.0.as_ref().expect("owned operation").clone()))
++    }
++}
++impl<O: SnapshotOperation> Deref for OwnedOwner<O> {
++    type Target = Owner<O>;
++    fn deref(&self) -> &Self::Target {
++        self.0.as_deref().expect("owned operation")
++    }
++}
++impl<O: SnapshotOperation> Drop for OwnedOwner<O> {
++    fn drop(&mut self) {
++        if let Some(owner) = self.0.take().and_then(Arc::into_inner) {
++            drop(owner);
++        }
++    }
++}
++struct ErasedOwner(Option<Arc<dyn ErasedWork>>);
++impl Clone for ErasedOwner {
++    fn clone(&self) -> Self {
++        Self(Some(self.0.as_ref().expect("owned report").clone()))
++    }
++}
++impl Deref for ErasedOwner {
++    type Target = dyn ErasedWork;
++    fn deref(&self) -> &Self::Target {
++        self.0.as_deref().expect("owned report")
++    }
++}
++impl Drop for ErasedOwner {
++    fn drop(&mut self) {
++        if let Some(owner) = self.0.take() {
++            // Dynamic dispatch restores the concrete sized Arc before release.
++            owner.retire();
++        }
++    }
+ }
+ impl<O: SnapshotOperation> Owner<O> {
+     fn required_bytes(plan: &O::Plan) -> anyhow::Result<u64> {
+@@ -187,7 +304,7 @@
+             .and_then(|n| n.checked_add(backing))
+             .ok_or_else(|| anyhow::anyhow!("snapshot work allocation overflow or unsupported plan"))
+     }
+-    fn run(self: Arc<Self>) {
++    fn run(&self) {
+         let mut resource = self.resource.lock().unwrap_or_else(|p| p.into_inner());
+         let operation = resource
+             .operation
+@@ -205,15 +322,15 @@
+         }
+         // The Tokio handle, not this wake or callback return, proves termination.
+     }
+-    fn start(self: &Arc<Self>) -> Result<()> {
+-        let mut control = self.control.lock().unwrap_or_else(|p| p.into_inner());
++    fn start(owner: &OwnedOwner<O>) -> Result<()> {
++        let mut control = owner.control.lock().unwrap_or_else(|p| p.into_inner());
+         if control.closing || control.started || control.panic.is_some() {
+             return Err(Error::new(
+                 ErrorCode::Conflict,
+                 "snapshot work is closed or already started",
+             ));
+         }
+-        if self
++        if owner
+             .resource
+             .lock()
+             .unwrap_or_else(|p| p.into_inner())
+@@ -226,7 +343,7 @@
+             ));
+         }
+         control.started = true;
+-        let worker = self.clone();
++        let worker = owner.clone();
+         // No suspension or application work intervenes between actual spawn and
+         // retaining its original handle in the already published owner.
+         match catch_unwind(AssertUnwindSafe(|| {
+@@ -335,7 +452,8 @@
+     fn id(&self) -> SnapshotWorkId;
+     fn core(&self) -> &Arc<MemoryCore>;
+     fn serial(&self) -> &tokio::sync::Mutex<()>;
+-    fn wake(&self) -> &Arc<WorkWake>;
++    fn wake(&self) -> &OwnedWake;
++    fn retire(self: Arc<Self>);
+     fn close(&self);
+     fn poll_finish(&self, cx: &mut Context<'_>, discard: bool) -> Poll<()>;
+     fn completion(&self) -> DrainCompletion;
+@@ -351,8 +469,13 @@
+     fn serial(&self) -> &tokio::sync::Mutex<()> {
+         &self.serial
+     }
+-    fn wake(&self) -> &Arc<WorkWake> {
++    fn wake(&self) -> &OwnedWake {
+         &self.wake
++    }
++    fn retire(self: Arc<Self>) {
++        if let Some(owner) = Arc::into_inner(self) {
++            drop(owner);
++        }
+     }
+     fn close(&self) {
+         self.control
+@@ -415,7 +538,7 @@
+ /// Caller delivery capability. Dropping it cancels delivery, never the actual
+ /// handle or result retained in MemoryCore's fixed strong census.
+ pub struct SnapshotWork<O: SnapshotOperation> {
+-    owner: Arc<Owner<O>>,
++    owner: OwnedOwner<O>,
+ }
+ impl<O: SnapshotOperation> Drop for SnapshotWork<O> {
+     fn drop(&mut self) {
+@@ -427,11 +550,11 @@
+         self.owner.id
+     }
+     pub fn start(&self) -> Result<()> {
+-        self.owner.start()
++        Owner::start(&self.owner)
+     }
+     pub fn report(&self) -> SnapshotWorkReport {
+         SnapshotWorkReport {
+-            owner: self.owner.clone(),
++            owner: self.owner.erased(),
+         }
+     }
+     /// Wait for the actual join and operation cleanup without moving its output
+@@ -439,6 +562,9 @@
+     pub async fn ready(&self) -> SnapshotWorkReport {
+         let report = self.report();
+         report.finish(false).await;
++        // A joined typed failure with positive cleanup has no pending output.
++        // Do not leave an already Complete operation in the strong core cycle.
++        report.retire_complete();
+         report
+     }
+     pub fn claim(&self) -> std::result::Result<O::Output, SnapshotWorkReport> {
+@@ -482,7 +608,7 @@
+ }
+ #[derive(Clone)]
+ pub struct SnapshotWorkReport {
+-    owner: Arc<dyn ErasedWork>,
++    owner: ErasedOwner,
+ }
+ impl SnapshotWorkReport {
+     pub fn id(&self) -> SnapshotWorkId {
+@@ -498,14 +624,20 @@
+         let _serial = self.owner.serial().lock().await;
+         let wake = self.owner.wake();
+         let _clear = ClearWaiter(wake);
+-        let proxy = Waker::from(wake.clone());
++        let proxy = wake.waker();
+         std::future::poll_fn(|cx| {
+-            {
++            // Clone callbacks may run arbitrary executor code; do this before
++            // acquiring the waiter lock, and destroy replaced counts after it.
++            let incoming = cx.waker().clone();
++            let replaced = {
+                 let mut waiter = wake.waiter.lock().unwrap_or_else(|p| p.into_inner());
+-                if waiter.as_ref().is_none_or(|old| !old.will_wake(cx.waker())) {
+-                    *waiter = Some(cx.waker().clone());
++                if waiter.as_ref().is_none_or(|old| !old.will_wake(&incoming)) {
++                    waiter.replace(incoming)
++                } else {
++                    Some(incoming)
+                 }
+-            }
++            };
++            drop(replaced);
+             self.owner
+                 .poll_finish(&mut Context::from_waker(&proxy), discard)
+         })
+@@ -615,7 +747,7 @@
+             ),
+         };
+         let allocation_panicked = panic.is_some();
+-        let owner = Arc::new(Owner {
++        let owner = OwnedOwner(Some(Arc::new(Owner {
+             id: ticket.id,
+             control: Mutex::new(Control {
+                 started: false,
+@@ -634,18 +766,17 @@
+                 cleanup_complete: false,
+             }),
+             serial: tokio::sync::Mutex::new(()),
+-            wake: Arc::new(WorkWake::default()),
+             cancellation,
+             core: self.core.clone(),
+-            _charge: charge,
+-        });
++            wake: OwnedWake::new(charge),
++        })));
+         {
+             let mut census = self
+                 .core
+                 .snapshot_work
+                 .lock()
+                 .unwrap_or_else(|p| p.into_inner());
+-            census.slots[ticket.id.slot].owner = Some(owner.clone());
++            census.slots[ticket.id.slot].owner = Some(owner.erased());
+             ticket.published = true;
+         }
+         if allocation_panicked {
+--- a/crates/kasumi-engine/src/admission/snapshot_work_tests.rs
++++ b/crates/kasumi-engine/src/admission/snapshot_work_tests.rs
+@@ -46,6 +46,7 @@
+     cleanup_calls: AtomicUsize,
+     output_drops: AtomicUsize,
+     allocations: AtomicUsize,
++    operation_drops: AtomicUsize,
+ }
+ impl Gate {
+     fn release(&self) {
+@@ -79,6 +80,11 @@
+     outcome: Outcome,
+     _cancel: QueryCancellation,
+     cleanup_failure: Option<OriginalFailure>,
++}
++impl Drop for Operation {
++    fn drop(&mut self) {
++        self.gate.operation_drops.fetch_add(1, Ordering::AcqRel);
++    }
+ }
+ struct Output {
+     gate: Arc<Gate>,
+@@ -464,3 +470,357 @@
+     drop(report);
+     assert_eq!(node.snapshot().reserved_bytes, before);
+ }
++
++// Observe the actual global allocator event, rather than a destructor callback
++// which runs before Arc backing is freed. Only two exact live allocation ranges
++// are armed; unrelated concurrent test/runtime allocations are forwarded intact.
++mod deallocation {
++    use super::*;
++    use std::alloc::{GlobalAlloc, Layout, System};
++
++    pub(super) struct Watch {
++        address: AtomicUsize,
++        block: AtomicBool,
++        entered: AtomicBool,
++        released: AtomicBool,
++        finished: AtomicBool,
++        count: AtomicUsize,
++    }
++    impl Watch {
++        const fn new() -> Self {
++            Self {
++                address: AtomicUsize::new(0),
++                block: AtomicBool::new(false),
++                entered: AtomicBool::new(false),
++                released: AtomicBool::new(false),
++                finished: AtomicBool::new(false),
++                count: AtomicUsize::new(0),
++            }
++        }
++        pub(super) fn arm(&'static self, address: usize, block: bool) -> Release {
++            assert_ne!(address, 0);
++            assert_eq!(self.address.load(Ordering::Acquire), 0);
++            self.block.store(block, Ordering::Relaxed);
++            self.entered.store(false, Ordering::Relaxed);
++            self.released.store(false, Ordering::Relaxed);
++            self.finished.store(false, Ordering::Relaxed);
++            self.count.store(0, Ordering::Relaxed);
++            self.address.store(address, Ordering::Release);
++            Release(self)
++        }
++        fn before(&self, pointer: *mut u8, layout: Layout) -> bool {
++            let address = self.address.load(Ordering::Acquire);
++            if address == 0 || address.wrapping_sub(pointer as usize) >= layout.size() {
++                return false;
++            }
++            if self
++                .address
++                .compare_exchange(address, 0, Ordering::AcqRel, Ordering::Acquire)
++                .is_err()
++            {
++                return false;
++            }
++            self.count.fetch_add(1, Ordering::AcqRel);
++            self.entered.store(true, Ordering::Release);
++            while self.block.load(Ordering::Acquire) && !self.released.load(Ordering::Acquire) {
++                std::thread::yield_now();
++            }
++            true
++        }
++        pub(super) async fn entered(&self) {
++            tokio::time::timeout(Duration::from_secs(5), async {
++                while !self.entered.load(Ordering::Acquire) {
++                    tokio::task::yield_now().await;
++                }
++            })
++            .await
++            .unwrap();
++        }
++        pub(super) fn finished(&self) -> bool {
++            self.finished.load(Ordering::Acquire)
++        }
++        pub(super) fn count(&self) -> usize {
++            self.count.load(Ordering::Acquire)
++        }
++    }
++    pub(super) struct Release(&'static Watch);
++    impl Release {
++        pub(super) fn release(&self) {
++            self.0.released.store(true, Ordering::Release);
++        }
++    }
++    impl Drop for Release {
++        fn drop(&mut self) {
++            self.release();
++            self.0.address.store(0, Ordering::Release);
++        }
++    }
++    pub(super) static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
++    pub(super) static OWNER: Watch = Watch::new();
++    pub(super) static WAKE: Watch = Watch::new();
++    struct ObservedSystem;
++    #[global_allocator]
++    static ALLOCATOR: ObservedSystem = ObservedSystem;
++    // SAFETY: every allocation operation is forwarded unchanged to System. The
++    // deallocation observer uses only atomics and yield_now, never allocation,
++    // dereference of observed payload pointers, formatting, or user callbacks.
++    unsafe impl GlobalAlloc for ObservedSystem {
++        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++            unsafe { System.alloc(layout) }
++        }
++        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
++            unsafe { System.alloc_zeroed(layout) }
++        }
++        unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
++            unsafe { System.realloc(pointer, layout, size) }
++        }
++        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
++            let owner = OWNER.before(pointer, layout);
++            let wake = WAKE.before(pointer, layout);
++            unsafe { System.dealloc(pointer, layout) };
++            if owner {
++                OWNER.finished.store(true, Ordering::Release);
++            }
++            if wake {
++                WAKE.finished.store(true, Ordering::Release);
++            }
++        }
++    }
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn ready_failure_retires_census_without_a_redundant_drain() {
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Failure);
++    work.start().unwrap();
++    gate.started().await;
++    gate.release();
++    let report = work.ready().await;
++    assert_eq!(report.completion(), DrainCompletion::Complete);
++    assert!(node.memory().snapshot_work_at(work.id().slot).is_none());
++    let identity = original(&report);
++    let failed_claim = work
++        .claim()
++        .err()
++        .expect("typed failure cannot become output");
++    assert_eq!(original(&failed_claim), identity);
++    drop(failed_claim);
++    drop(report);
++    drop(work);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++    assert_eq!(node.snapshot().inflight_operations, 0);
++    let successor = prepare(&node, &gate, Outcome::Failure);
++    drop(successor.report().drain().await);
++    drop(successor);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn concurrent_final_reports_cannot_reuse_credit_before_actual_owner_deallocation() {
++    let _serial = deallocation::SERIAL.lock().await;
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Failure);
++    let owner_address = std::ptr::from_ref::<Owner<Operation>>(&work.owner) as usize;
++    let wake_address = std::ptr::from_ref::<WorkWake>(&work.owner.wake) as usize;
++    work.start().unwrap();
++    gate.started().await;
++    gate.release();
++    let report = work.ready().await;
++    let charged = node.snapshot().reserved_bytes;
++    let rendezvous = Arc::new(std::sync::Barrier::new(9));
++    let mut threads = Vec::new();
++    for _ in 0..8 {
++        let report = report.clone();
++        let rendezvous = rendezvous.clone();
++        threads.push(std::thread::spawn(move || {
++            rendezvous.wait();
++            drop(report);
++        }));
++    }
++    let owner_release = deallocation::OWNER.arm(owner_address, true);
++    let _wake_release = deallocation::WAKE.arm(wake_address, false);
++    drop(report);
++    drop(work);
++    rendezvous.wait();
++    deallocation::OWNER.entered().await;
++    assert!(!deallocation::OWNER.finished());
++    assert_eq!(gate.operation_drops.load(Ordering::Acquire), 0);
++    assert_eq!(node.snapshot().reserved_bytes, charged);
++    assert_eq!(node.snapshot().inflight_operations, 1);
++    assert!(
++        node.reserve(0, None).is_err(),
++        "actual operation backing is still alive"
++    );
++    owner_release.release();
++    for thread in threads {
++        thread.join().unwrap();
++    }
++    assert!(deallocation::OWNER.finished());
++    assert!(deallocation::WAKE.finished());
++    assert_eq!(deallocation::OWNER.count(), 1);
++    assert_eq!(deallocation::WAKE.count(), 1);
++    assert_eq!(gate.operation_drops.load(Ordering::Acquire), 1);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++    assert_eq!(node.snapshot().inflight_operations, 0);
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn proxy_waker_outlives_all_owner_views_and_keeps_credit_until_actual_deallocation() {
++    let _serial = deallocation::SERIAL.lock().await;
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Failure);
++    let owner_address = std::ptr::from_ref::<Owner<Operation>>(&work.owner) as usize;
++    let wake_address = std::ptr::from_ref::<WorkWake>(&work.owner.wake) as usize;
++    // The identical proxy type handed to cleanup/JoinHandle can remain alive
++    // after its registration is removed or while a concurrent wake is running.
++    let proxy = work.owner.wake.waker();
++    let last_proxy = proxy.clone();
++    work.start().unwrap();
++    gate.started().await;
++    gate.release();
++    let report = work.ready().await;
++    let charged = node.snapshot().reserved_bytes;
++    let _owner_release = deallocation::OWNER.arm(owner_address, false);
++    let wake_release = deallocation::WAKE.arm(wake_address, true);
++    drop(report);
++    drop(work);
++    assert!(deallocation::OWNER.finished());
++    assert_eq!(gate.operation_drops.load(Ordering::Acquire), 1);
++    proxy.wake_by_ref();
++    proxy.wake();
++    assert_eq!(node.snapshot().reserved_bytes, charged);
++    assert_eq!(node.snapshot().inflight_operations, 1);
++    let thread = std::thread::spawn(move || last_proxy.wake());
++    deallocation::WAKE.entered().await;
++    assert!(!deallocation::WAKE.finished());
++    assert_eq!(node.snapshot().reserved_bytes, charged);
++    assert!(node.reserve(0, None).is_err());
++    wake_release.release();
++    thread.join().unwrap();
++    assert!(deallocation::WAKE.finished());
++    assert_eq!(deallocation::OWNER.count(), 1);
++    assert_eq!(deallocation::WAKE.count(), 1);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++    assert_eq!(node.snapshot().inflight_operations, 0);
++}
++
++struct ReentrantWake {
++    wake: OwnedWake,
++    wake_calls: Arc<AtomicUsize>,
++    drops: Arc<AtomicUsize>,
++    panic_on_wake: bool,
++}
++impl ReentrantWake {
++    fn check_unlocked(&self) {
++        match self.wake.waiter.try_lock() {
++            Ok(guard) => drop(guard),
++            Err(std::sync::TryLockError::Poisoned(error)) => drop(error.into_inner()),
++            Err(std::sync::TryLockError::WouldBlock) => panic!("waker callback under waiter lock"),
++        }
++    }
++}
++impl std::task::Wake for ReentrantWake {
++    fn wake(self: Arc<Self>) {
++        self.check_unlocked();
++        self.wake_calls.fetch_add(1, Ordering::AcqRel);
++        assert!(!self.panic_on_wake, "original executor wake panic");
++    }
++}
++impl Drop for ReentrantWake {
++    fn drop(&mut self) {
++        self.check_unlocked();
++        self.drops.fetch_add(1, Ordering::AcqRel);
++    }
++}
++fn reentrant_waker(
++    wake: &OwnedWake,
++    calls: &Arc<AtomicUsize>,
++    drops: &Arc<AtomicUsize>,
++    panic: bool,
++) -> Waker {
++    Waker::from(Arc::new(ReentrantWake {
++        wake: wake.clone(),
++        wake_calls: calls.clone(),
++        drops: drops.clone(),
++        panic_on_wake: panic,
++    }))
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn cancelled_finish_destroys_executor_waiter_after_unlock_and_before_next_poll() {
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Failure);
++    work.start().unwrap();
++    gate.started().await;
++    let calls = Arc::new(AtomicUsize::new(0));
++    let drops = Arc::new(AtomicUsize::new(0));
++    let outer = reentrant_waker(&work.owner.wake, &calls, &drops, false);
++    let mut ready = Box::pin(work.ready());
++    assert!(
++        ready
++            .as_mut()
++            .poll(&mut Context::from_waker(&outer))
++            .is_pending()
++    );
++    drop(outer);
++    assert_eq!(drops.load(Ordering::Acquire), 0);
++    drop(ready);
++    assert_eq!(drops.load(Ordering::Acquire), 1);
++    assert!(work.owner.wake.waiter.lock().unwrap().is_none());
++    assert_eq!(calls.load(Ordering::Acquire), 0);
++    // The next waiter must use the same actual operation; no dropped wrapper
++    // may erase its join custody or let another operation consume the slot.
++    gate.release();
++    drop(work.ready().await);
++    drop(work);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++}
++
++#[tokio::test]
++async fn proxy_callback_panic_and_poison_preserve_borrowed_and_consumed_count_ownership() {
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Failure);
++    let wake = work.owner.wake.clone();
++    let proxy = wake.waker();
++    let calls = Arc::new(AtomicUsize::new(0));
++    let drops = Arc::new(AtomicUsize::new(0));
++    let report = work.report().drain().await;
++    let charged = node.snapshot().reserved_bytes;
++    drop(report);
++    drop(work);
++    assert!(
++        catch_unwind(AssertUnwindSafe(|| {
++            let _locked = wake.waiter.lock().unwrap();
++            panic!("fixture waiter poison");
++        }))
++        .is_err()
++    );
++    *wake.waiter.lock().unwrap_or_else(|p| p.into_inner()) =
++        Some(reentrant_waker(&wake, &calls, &drops, true));
++    assert!(catch_unwind(AssertUnwindSafe(|| proxy.wake_by_ref())).is_err());
++    assert_eq!(calls.load(Ordering::Acquire), 1);
++    assert_eq!(drops.load(Ordering::Acquire), 1);
++    assert_eq!(
++        node.snapshot().reserved_bytes,
++        charged,
++        "borrowed wake kept its count"
++    );
++    *wake.waiter.lock().unwrap_or_else(|p| p.into_inner()) =
++        Some(reentrant_waker(&wake, &calls, &drops, true));
++    drop(wake);
++    assert!(catch_unwind(AssertUnwindSafe(|| proxy.wake())).is_err());
++    assert_eq!(calls.load(Ordering::Acquire), 2);
++    assert_eq!(drops.load(Ordering::Acquire), 2);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++    assert_eq!(node.snapshot().inflight_operations, 0);
++}

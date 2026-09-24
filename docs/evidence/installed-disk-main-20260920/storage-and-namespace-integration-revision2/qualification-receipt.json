@@ -1,0 +1,20 @@
+{
+  "status": "Full workspace check PASS; strict Clippy FAILED",
+  "manifest_sha256": "e5fcfa19ce0fd57e05245edbd30030193a6a5a1b6d535f32934456edf9e77736",
+  "patch_sha256": "f994664c462f84e588051a17130c451c0e088fbe49c214f981390f69f43dee6f",
+  "native_result": {
+    "source_unchanged": true,
+    "changed_inputs": [],
+    "source_count": 3290,
+    "completed_stages": 2,
+    "expected_stages": 2,
+    "all_passed": false,
+    "cohort_elapsed_seconds": 249.550033083,
+    "cohort_bound_seconds": 1200,
+    "results_sha256": "62d915154a357b5cd1b793d70aac3e99f63a7fa08aa6e45e0db4d44d37843f36",
+    "native_runtime_tests": false,
+    "artifact_scope": "Exact check/Clippy compiler artifacts and tool binaries; no runnable test execution."
+  },
+  "no_runtime_test_claim": true,
+  "next": "Distinct equivalent namespace lint-correction successor; full store and script tests remain required"
+}

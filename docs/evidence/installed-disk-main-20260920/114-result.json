@@ -1,0 +1,25 @@
+{
+  "scope": "Complete store library after borrowed scratch close prerequisite and actual backing-before-credit field order; production adapter still open",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-store",
+    "--all-features",
+    "--lib",
+    "--",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 27024,
+  "exit_code": 0,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 107.21453595161438,
+  "inventoried_source_unchanged": true
+}

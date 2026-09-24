@@ -1,0 +1,66 @@
+1001236d8: 9487930b    	bl	0x102308304 <<std::time::Instant>::elapsed>
+1001236ec: 9484b55c    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+100123758: 948295e2    	bl	0x1021c8ee0 <<core::fmt::rt::Argument>::new_display::<uuid::Uuid>>
+100123768: 948295de    	bl	0x1021c8ee0 <<core::fmt::rt::Argument>::new_display::<uuid::Uuid>>
+100123778: 948295da    	bl	0x1021c8ee0 <<core::fmt::rt::Argument>::new_display::<uuid::Uuid>>
+100123788: 97fe9ac6    	bl	0x1000ca2a0 <<core::fmt::rt::Argument>::new_debug::<kasumi_types::lifecycle::LifecyclePhase>>
+100123798: 941e92c8    	bl	0x1008c82b8 <<core::fmt::rt::Argument>::new_debug::<core::time::Duration>>
+1001237a8: 97fe9ad4    	bl	0x1000ca2f8 <<core::fmt::rt::Argument>::new_debug::<(u64, u64, core::option::Option<u64>, openraft::core::server_state::ServerState)>>
+1001237b8: 97fe9a99    	bl	0x1000ca21c <<core::fmt::rt::Argument>::new_debug::<kasumi_types::Error>>
+100123824: 97ff92e8    	bl	0x1001083c4 <<core::fmt::Arguments>::new::<113, 7>>
+10012383c: 9487e034    	bl	0x10231b90c <std::io::stdio::_eprint>
+100123854: 97ff62bf    	bl	0x1000fc350 <<&alloc::collections::btree::map::BTreeMap<u64, alloc::sync::Arc<kasumi_engine::service::Database>> as core::iter::traits::collect::IntoIterator>::into_iter>
+10012386c: 9489b6ab    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100123878: 97ff6329    	bl	0x1000fc51c <<alloc::collections::btree::map::Iter<u64, alloc::sync::Arc<kasumi_engine::service::Database>> as core::iter::traits::iterator::Iterator>::next>
+1001238c0: 942fedf9    	bl	0x100d1f0a4 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+1001238d8: 97fd39a8    	bl	0x100071f78 <<alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe> as core::ops::deref::Deref>::deref>
+1001238ec: 97ff1144    	bl	0x1000e7dfc <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::diagnostic>
+100123904: 94421694    	bl	0x1011a9354 <<core::fmt::rt::Argument>::new_display::<alloc::string::String>>
+100123910: 9461d682    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100123940: 94508488    	bl	0x101544b60 <<core::fmt::Arguments>::new::<28, 1>>
+100123958: 9487dfed    	bl	0x10231b90c <std::io::stdio::_eprint>
+100123964: 9461d66d    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100123978: 97fe9a29    	bl	0x1000ca21c <<core::fmt::rt::Argument>::new_debug::<kasumi_types::Error>>
+100123998: 947e8726    	bl	0x1020c5630 <<core::fmt::Arguments>::new::<44, 1>>
+1001239b8: 9489b4b4    	bl	0x102390c88 <core::panicking::panic_fmt>
+1001239c4: 9489b42c    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+1001239cc: 942c94e9    	bl	0x100c48d70 <<kasumi_engine::service::Database>::raft_group>
+1001239dc: 943ac4ad    	bl	0x100fd4c90 <<kasumi_raft::RaftGroup>::check_access>
+1001239f4: 942fedac    	bl	0x100d1f0a4 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+100123a04: 94782739    	bl	0x101f2d6e8 <core::ptr::drop_glue::<core::result::Result<(), anyhow::Error>>>
+100123a20: 942c99ee    	bl	0x100c4a1d8 <<kasumi_engine::service::Database>::engine>
+100123a30: 942fed96    	bl	0x100d1f088 <<alloc::sync::Arc<kasumi_engine::state::TenantEngine> as core::ops::deref::Deref>::deref>
+100123a44: 94051a1a    	bl	0x10026a2ac <<kasumi_engine::state::TenantEngine>::generation>
+100123a5c: 97ff808c    	bl	0x100103c8c <<core::result::Result<alloc::sync::Arc<kasumi_engine::state::Generation>, kasumi_types::Error>>::map::<(u64, core::option::Option<(uuid::Uuid, kasumi_types::lifecycle::LifecyclePhase, u64, u64, u64)>), lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}>>
+100123a68: 942fed8f    	bl	0x100d1f0a4 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+100123a78: 97fddbc7    	bl	0x10009a994 <core::ptr::drop_glue::<core::result::Result<(u64, core::option::Option<(uuid::Uuid, kasumi_types::lifecycle::LifecyclePhase, u64, u64, u64)>), kasumi_types::Error>>>
+100123a94: 942c94b7    	bl	0x100c48d70 <<kasumi_engine::service::Database>::raft_group>
+100123aa4: 943ac580    	bl	0x100fd50a4 <<kasumi_raft::RaftGroup>::raft>
+100123ab4: 943d229a    	bl	0x10106c51c <<openraft::raft::Raft<kasumi_raft::TypeConfig>>::metrics>
+100123ad8: 943ac7bb    	bl	0x100fd59c4 <<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>::borrow>
+100123aec: 9432c999    	bl	0x100dd6150 <core::ptr::drop_glue::<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>>
+100123b40: 947fc1e9    	bl	0x1021142e4 <<core::fmt::rt::Argument>::new_display::<&u64>>
+100123b4c: 9432c95d    	bl	0x100dd60c0 <core::ptr::drop_glue::<tokio::sync::watch::Ref<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>>
+100123b6c: 97fe9975    	bl	0x1000ca140 <<core::fmt::rt::Argument>::new_debug::<core::result::Result<(), anyhow::Error>>>
+100123b7c: 97fe9966    	bl	0x1000ca114 <<core::fmt::rt::Argument>::new_debug::<core::result::Result<(u64, core::option::Option<(uuid::Uuid, kasumi_types::lifecycle::LifecyclePhase, u64, u64, u64)>), kasumi_types::Error>>>
+100123b8c: 97fe9983    	bl	0x1000ca198 <<core::fmt::rt::Argument>::new_debug::<tokio::sync::watch::Ref<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>>
+100123bd4: 941badf8    	bl	0x10080f3b4 <<core::fmt::Arguments>::new::<67, 4>>
+100123bec: 9487df48    	bl	0x10231b90c <std::io::stdio::_eprint>
+100123bf8: 9432c932    	bl	0x100dd60c0 <core::ptr::drop_glue::<tokio::sync::watch::Ref<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>>
+100123c04: 9432c953    	bl	0x100dd6150 <core::ptr::drop_glue::<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>>
+100123c24: 97ff6150    	bl	0x1000fc164 <<alloc::collections::btree::map::BTreeMap<u64, lifecycle::common::PhysicalFixture> as core::ops::index::Index<&u64>>::index>
+100123c48: 9471e0d8    	bl	0x101d9bfa8 <<alloc::sync::Arc<kasumi_store::node_disk::NodeDisk> as core::ops::deref::Deref>::deref>
+100123c5c: 9472aa2c    	bl	0x101dce50c <<kasumi_store::node_disk::NodeDisk>::snapshot>
+100123c6c: 9471e09e    	bl	0x101d9bee4 <<alloc::sync::Arc<kasumi_store::scratch_disk::ScratchDisk> as core::ops::deref::Deref>::deref>
+100123c80: 947001c7    	bl	0x101d2439c <<kasumi_store::scratch_disk::ScratchDisk>::snapshot>
+100123c8c: 942fed1b    	bl	0x100d1f0f8 <<alloc::sync::Arc<kasumi_engine::admission::NodeAdmission> as core::ops::deref::Deref>::deref>
+100123ca0: 9421ccd1    	bl	0x100996fe4 <<kasumi_engine::admission::NodeAdmission>::snapshot>
+100123cd0: 947fc185    	bl	0x1021142e4 <<core::fmt::rt::Argument>::new_display::<&u64>>
+100123ce0: 97fe9965    	bl	0x1000ca274 <<core::fmt::rt::Argument>::new_debug::<kasumi_store::node_disk::NodeDiskSnapshot>>
+100123cf0: 97fe9956    	bl	0x1000ca248 <<core::fmt::rt::Argument>::new_debug::<kasumi_store::scratch_disk::ScratchDiskSnapshot>>
+100123d00: 97fe9973    	bl	0x1000ca2cc <<core::fmt::rt::Argument>::new_debug::<kasumi_engine::admission::AdmissionSnapshot>>
+100123d38: 97ff919c    	bl	0x1001083a8 <<core::fmt::Arguments>::new::<70, 4>>
+100123d50: 9487deef    	bl	0x10231b90c <std::io::stdio::_eprint>
+100123d5c: 97fddb0e    	bl	0x10009a994 <core::ptr::drop_glue::<core::result::Result<(u64, core::option::Option<(uuid::Uuid, kasumi_types::lifecycle::LifecyclePhase, u64, u64, u64)>), kasumi_types::Error>>>
+100123d68: 94782660    	bl	0x101f2d6e8 <core::ptr::drop_glue::<core::result::Result<(), anyhow::Error>>>
+100123d74: 9489b4ac    	bl	0x102391024 <dyld_stub_binder+0x102391024>

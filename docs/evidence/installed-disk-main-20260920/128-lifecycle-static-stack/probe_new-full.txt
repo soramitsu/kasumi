@@ -1,0 +1,97 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000e7a60 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new>:
+1000e7a60: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1000e7a64: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1000e7a68: 910043fd    	add	x29, sp, #0x10
+1000e7a6c: d14023e9    	sub	x9, sp, #0x8, lsl #12   ; =0x8000
+1000e7a70: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+1000e7a74: f90003ff    	str	xzr, [sp]
+1000e7a78: eb2963ff    	cmp	sp, x9
+1000e7a7c: 54ffffa1    	b.ne	0x1000e7a70 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x10>
+1000e7a80: d12cc3ff    	sub	sp, sp, #0xb30
+1000e7a84: f90003ff    	str	xzr, [sp]
+1000e7a88: d100a3a9    	sub	x9, x29, #0x28
+1000e7a8c: f9000be9    	str	x9, [sp, #0x10]
+1000e7a90: f9000fe8    	str	x8, [sp, #0x18]
+1000e7a94: aa0003e8    	mov	x8, x0
+1000e7a98: f9000128    	str	x8, [x9]
+1000e7a9c: f9001be0    	str	x0, [sp, #0x30]
+1000e7aa0: 94887b17    	bl	0x1023066fc <<std::time::Instant>::now>
+1000e7aa4: f90013e0    	str	x0, [sp, #0x20]
+1000e7aa8: b9002fe1    	str	w1, [sp, #0x2c]
+1000e7aac: 14000009    	b	0x1000e7ad0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x70>
+1000e7ab0: 9100c3e0    	add	x0, sp, #0x30
+1000e7ab4: 940bf2b8    	bl	0x1003e4594 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_raft::network::InProcessRouter>>>
+1000e7ab8: 14000042    	b	0x1000e7bc0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x160>
+1000e7abc: f9400be9    	ldr	x9, [sp, #0x10]
+1000e7ac0: f9000520    	str	x0, [x9, #0x8]
+1000e7ac4: aa0103e8    	mov	x8, x1
+1000e7ac8: b9001128    	str	w8, [x9, #0x10]
+1000e7acc: 17fffff9    	b	0x1000e7ab0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x50>
+1000e7ad0: 9101e3e8    	add	x8, sp, #0x78
+1000e7ad4: 97ffa38a    	bl	0x1000d08fc <core::array::from_fn::<core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, 3, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#0}>>
+1000e7ad8: 14000001    	b	0x1000e7adc <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x7c>
+1000e7adc: 9100e3e8    	add	x8, sp, #0x38
+1000e7ae0: 9101e3e0    	add	x0, sp, #0x78
+1000e7ae4: 97ff6dee    	bl	0x1000c329c <<std::sync::poison::mutex::Mutex<[core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>; 3]>>::new>
+1000e7ae8: 14000001    	b	0x1000e7aec <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x8c>
+1000e7aec: 914017e8    	add	x8, sp, #0x5, lsl #12   ; =0x5000
+1000e7af0: 91346108    	add	x8, x8, #0xd18
+1000e7af4: 97ffa391    	bl	0x1000d0938 <core::array::from_fn::<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>, 32, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>>
+1000e7af8: 14000009    	b	0x1000e7b1c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0xbc>
+1000e7afc: 9100e3e0    	add	x0, sp, #0x38
+1000e7b00: 97fed49d    	bl	0x10009cd74 <core::ptr::drop_glue::<std::sync::poison::mutex::Mutex<[core::option::Option<tokio::sync::watch::Receiver<openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>; 3]>>>
+1000e7b04: 17ffffeb    	b	0x1000e7ab0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x50>
+1000e7b08: f9400be9    	ldr	x9, [sp, #0x10]
+1000e7b0c: f9000520    	str	x0, [x9, #0x8]
+1000e7b10: aa0103e8    	mov	x8, x1
+1000e7b14: b9001128    	str	w8, [x9, #0x10]
+1000e7b18: 17fffff9    	b	0x1000e7afc <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x9c>
+1000e7b1c: 91400be0    	add	x0, sp, #0x2, lsl #12   ; =0x2000
+1000e7b20: 913ba000    	add	x0, x0, #0xee8
+1000e7b24: f90007e0    	str	x0, [sp, #0x8]
+1000e7b28: 914017e1    	add	x1, sp, #0x5, lsl #12   ; =0x5000
+1000e7b2c: 91346021    	add	x1, x1, #0xd18
+1000e7b30: 5285c008    	mov	w8, #0x2e00             ; =11776
+1000e7b34: aa0803e2    	mov	x2, x8
+1000e7b38: 948a9ef8    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e7b3c: f94007e0    	ldr	x0, [sp, #0x8]
+1000e7b40: f92e77ff    	str	xzr, [sp, #0x5ce8]
+1000e7b44: f92e7bff    	str	xzr, [sp, #0x5cf0]
+1000e7b48: f92e7fff    	str	xzr, [sp, #0x5cf8]
+1000e7b4c: f92e83ff    	str	xzr, [sp, #0x5d00]
+1000e7b50: f92e87ff    	str	xzr, [sp, #0x5d08]
+1000e7b54: f92e8bff    	str	xzr, [sp, #0x5d10]
+1000e7b58: 9102a3e8    	add	x8, sp, #0xa8
+1000e7b5c: 97ff6def    	bl	0x1000c3318 <<std::sync::poison::mutex::Mutex<lifecycle::bootstrap_vote_probe::History>>::new>
+1000e7b60: 14000001    	b	0x1000e7b64 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new+0x104>
+1000e7b64: f9400fe0    	ldr	x0, [sp, #0x18]
+1000e7b68: b9402fe8    	ldr	w8, [sp, #0x2c]
+1000e7b6c: f94013e9    	ldr	x9, [sp, #0x20]
+1000e7b70: f9401bea    	ldr	x10, [sp, #0x30]
+1000e7b74: f917400a    	str	x10, [x0, #0x2e80]
+1000e7b78: f9174409    	str	x9, [x0, #0x2e88]
+1000e7b7c: b92e9008    	str	w8, [x0, #0x2e90]
+1000e7b80: 9100e3e1    	add	x1, sp, #0x38
+1000e7b84: 52800808    	mov	w8, #0x40               ; =64
+1000e7b88: aa0803e2    	mov	x2, x8
+1000e7b8c: 948a9ee3    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e7b90: f9400fe8    	ldr	x8, [sp, #0x18]
+1000e7b94: 91010100    	add	x0, x8, #0x40
+1000e7b98: 9102a3e1    	add	x1, sp, #0xa8
+1000e7b9c: 5285c808    	mov	w8, #0x2e40             ; =11840
+1000e7ba0: aa0803e2    	mov	x2, x8
+1000e7ba4: 948a9edd    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e7ba8: 914023ff    	add	sp, sp, #0x8, lsl #12   ; =0x8000
+1000e7bac: 912cc3ff    	add	sp, sp, #0xb30
+1000e7bb0: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+1000e7bb4: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+1000e7bb8: d65f03c0    	ret
+1000e7bbc: 948a9cae    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+1000e7bc0: f9400be8    	ldr	x8, [sp, #0x10]
+1000e7bc4: f9400500    	ldr	x0, [x8, #0x8]
+1000e7bc8: 948a9e17    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>

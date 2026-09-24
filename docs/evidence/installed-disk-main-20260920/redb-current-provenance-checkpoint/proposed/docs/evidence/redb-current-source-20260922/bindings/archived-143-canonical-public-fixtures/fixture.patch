@@ -1,0 +1,74 @@
+--- a/vendor/redb-4.2.0/tests/canonical_format.rs
++++ b/vendor/redb-4.2.0/tests/canonical_format.rs
+@@ -1,5 +1,5 @@
+ //! The first release accepts exact canonical identities and rejects alternate protocols.
+-//! Identical canonical bytes are not a legacy decoder, regardless of their producer.
++//! Only the current format opens; an upstream producer cannot select a legacy decoder.
+ #[path = "common/admission.rs"]
+ mod admission_support;
+ 
+@@ -56,8 +56,8 @@
+                 .unwrap();
+             write.commit().unwrap();
+         }
+-        // Clean upstream close can mark the shared v3 layout as two-phase.
+-        // Force the unsupported one-phase protocol for this rejection case.
++        // Preserve the original unsupported one-phase protocol rejection case.
++        // Format rejection must occur without normalizing these old bytes.
+         let mut before = std::fs::read(file.path()).unwrap();
+         before[9] &= !4;
+         std::fs::write(file.path(), &before).unwrap();
+@@ -84,8 +84,9 @@
+     }
+     let mut bytes = std::fs::read(file.path()).unwrap();
+     bytes[9] &= !4;
+-    std::fs::write(file.path(), bytes).unwrap();
++    std::fs::write(file.path(), &bytes).unwrap();
+     assert!(redb::Database::open(file.path(), admission_support::admission()).is_err());
++    assert_eq!(std::fs::read(file.path()).unwrap(), bytes);
+ }
+ 
+ // The bug this guards against: a composite of a user-defined type must never silently alias the
+@@ -141,8 +142,7 @@
+ }
+ 
+ #[test]
+-fn recognized_header_does_not_enable_old_composite_aliases() {
+-    use redb::ReadableDatabase;
++fn upstream_two_phase_format_three_is_rejected_before_table_decoding() {
+     let file = create_tempfile();
+     {
+         let db = redb2_6::Database::builder()
+@@ -159,21 +159,19 @@
+             .unwrap();
+         write.commit().unwrap();
+     }
+-    // A producer can emit byte-identical canonical headers. Exact table identity
+-    // still prevents selecting a decoder through an obsolete composite spelling.
+-    let db = redb::Database::open(file.path(), admission_support::admission()).unwrap();
+-    let read = db.begin_read().unwrap();
+-    let builtin: redb::TableDefinition<u64, Option<u32>> = redb::TableDefinition::new("old");
+-    let user: redb::TableDefinition<u64, Option<CollidingUserType>> =
+-        redb::TableDefinition::new("old");
++    // A clean upstream two-phase close is still format three. Reject it before
++    // selecting either a built-in or user composite decoder. Current-format
++    // composite identity rejection is covered in both directions above and by
++    // table_tree_base::canonical_identity_tests for the actual stored old name.
++    let before = std::fs::read(file.path()).unwrap();
+     assert!(matches!(
+-        read.open_table(builtin),
+-        Err(redb::TableError::TableTypeMismatch { .. })
++        redb::Database::open(file.path(), admission_support::admission()),
++        Err(redb::DatabaseError::UnsupportedFileFormat(3))
+     ));
++    assert_eq!(std::fs::read(file.path()).unwrap(), before);
+     assert!(matches!(
+-        read.open_table(user),
+-        Err(redb::TableError::TableTypeMismatch { .. })
++        redb::Database::builder(admission_support::admission()).open_read_only(file.path()),
++        Err(redb::DatabaseError::UnsupportedFileFormat(3))
+     ));
+-    drop(read);
+-    db.close().unwrap();
++    assert_eq!(std::fs::read(file.path()).unwrap(), before);
+ }

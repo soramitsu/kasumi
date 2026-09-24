@@ -1,0 +1,31 @@
+warning: function `measure` is never used
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/proposed/crates/kasumi-store/src/allocation_tests.rs:50:15
+   |
+50 | pub(crate) fn measure<T>(work: impl FnOnce() -> T) -> (T, usize) {
+   |               ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: type alias `Lease` is never used
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/lease-extracted.rs:55:17
+   |
+55 | pub(crate) type Lease = DiskMemoryLease;
+   |                 ^^^^^
+
+warning: function `arc` is never used
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/lease-extracted.rs:73:15
+   |
+73 | pub(crate) fn arc<T>() -> io::Result<u64> {
+   |               ^^^
+
+error: local variable doesn't need to be boxed here
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-01/lease-extracted.rs:23:19
+   |
+23 | fn unbox_lease<T>(allocation: Box<T>) -> T {
+   |                   ^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#boxed_local
+   = note: requested on the command line with `-D clippy::boxed-local`
+
+error: aborting due to 1 previous error; 3 warnings emitted
+

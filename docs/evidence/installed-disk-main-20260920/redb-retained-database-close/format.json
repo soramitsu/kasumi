@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-retained-database-close/proposed/vendor/redb-4.2.0/src/db.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-retained-database-close/proposed/vendor/redb-4.2.0/src/lib.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-retained-database-close/proposed/vendor/redb-4.2.0/src/retained_database.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-retained-database-close/proposed/vendor/redb-4.2.0/src/retained_database_tests.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-retained-database-close/proposed/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs"
+  ],
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": ""
+}

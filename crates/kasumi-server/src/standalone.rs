@@ -12,13 +12,18 @@ use kasumi_store::{
     DiskWork, FileKeyProvider, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeStore, StorageAccess,
     TenantStore, private_files,
 };
-use kasumi_types::{Action, CreateCredential, CredentialResource, Grant, Policy};
+use kasumi_types::{
+    Action, CreateCredential, CredentialResource, Grant, Policy, TrustVerifierIdentity,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
 };
+#[cfg(test)]
+pub(crate) use tenant_staging::stage_tenant_with_storage;
 pub use tenant_staging::{StageTenantRequest, StagedTenant, stage_tenant, tenant_stage_status};
 use uuid::Uuid;
 
@@ -27,9 +32,83 @@ use uuid::Uuid;
 struct Installation {
     format: u32,
     installation_id: Uuid,
+    origin_node_id: u64,
     control_incarnation: Uuid,
     database_id: Uuid,
     database_path: PathBuf,
+}
+
+const STANDALONE_ORIGIN_NODE_ID: u64 = 1;
+
+/// Verified installed identity held together with the exact enrolled disk and
+/// its exclusive lock. A configured path or tenant UUID cannot construct this.
+pub(crate) struct InstalledStandaloneOwner {
+    identity: TrustVerifierIdentity,
+    disk: Arc<NodeDisk>,
+    lock: NodeDiskFile,
+}
+impl InstalledStandaloneOwner {
+    pub(crate) fn identity_for(&self, disk: &Arc<NodeDisk>) -> Result<TrustVerifierIdentity> {
+        ensure!(
+            Arc::ptr_eq(&self.disk, disk),
+            "standalone installed owner belongs to another physical disk"
+        );
+        ensure!(
+            self.lock.observed_len()? == 0,
+            "standalone installation lock changed"
+        );
+        Ok(self.identity.clone())
+    }
+}
+
+/// Listener identity selected before immutable standalone Control genesis.
+/// Generated certificates and client profiles are valid for localhost only.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StandaloneNetwork {
+    pub mcp_listen: SocketAddr,
+    pub mcp_public_url: String,
+    pub native_listen: SocketAddr,
+    pub admin_listen: SocketAddr,
+}
+
+impl StandaloneNetwork {
+    pub fn validate(&self) -> Result<()> {
+        let listeners = [self.mcp_listen, self.native_listen, self.admin_listen];
+        ensure!(
+            listeners.iter().all(|address| {
+                address.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+                    && address.port() > 0
+            }) && listeners[0] != listeners[1]
+                && listeners[0] != listeners[2]
+                && listeners[1] != listeners[2],
+            "standalone listeners require distinct IPv4 loopback addresses and nonzero ports"
+        );
+        let url = url::Url::parse(&self.mcp_public_url)?;
+        ensure!(
+            url.scheme() == "https"
+                && url.host_str() == Some("localhost")
+                && self.mcp_public_url
+                    == format!("https://localhost:{}/mcp", self.mcp_listen.port())
+                && url.path() == "/mcp"
+                && url.query().is_none()
+                && url.fragment().is_none()
+                && url.username().is_empty()
+                && url.password().is_none(),
+            "standalone MCP public URL must be https://localhost:<mcp-listen-port>/mcp"
+        );
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture() -> Self {
+        Self {
+            mcp_listen: "127.0.0.1:9443".parse().unwrap(),
+            mcp_public_url: "https://localhost:9443/mcp".into(),
+            native_listen: "127.0.0.1:9444".parse().unwrap(),
+            admin_listen: "127.0.0.1:9445".parse().unwrap(),
+        }
+    }
 }
 
 pub(crate) fn requires_provisioned(config: &RuntimeConfig) -> bool {
@@ -89,7 +168,10 @@ pub(crate) fn read_installed_file(file: &NodeDiskFile, maximum: usize) -> Result
 
 /// The marker binds physical standalone ownership to this configured database.
 /// A process retains the returned lock until every serving/storage owner drains.
-pub(crate) fn claim(config: &RuntimeConfig, disk: &Arc<NodeDisk>) -> Result<Option<NodeDiskFile>> {
+pub(crate) fn claim(
+    config: &RuntimeConfig,
+    disk: &Arc<NodeDisk>,
+) -> Result<Option<Arc<InstalledStandaloneOwner>>> {
     if config.mode != DeploymentMode::Standalone {
         return Ok(None);
     }
@@ -134,7 +216,8 @@ pub(crate) fn claim(config: &RuntimeConfig, disk: &Arc<NodeDisk>) -> Result<Opti
     )?)?;
     ensure!(
         prepared == installed
-            && installed.format == 3
+            && installed.format == 4
+            && installed.origin_node_id == STANDALONE_ORIGIN_NODE_ID
             && installed.database_id == config.database_id
             && !installed.database_id.is_nil()
             && installed.database_path == config.database_path
@@ -145,7 +228,16 @@ pub(crate) fn claim(config: &RuntimeConfig, disk: &Arc<NodeDisk>) -> Result<Opti
         "standalone installation binding differs"
     );
     ensure!(config.tenants.iter().all(|tenant| matches!(tenant.serving, TenantServingConfig::Standalone { installation_id } if installation_id == installed.installation_id)), "standalone installation identity differs");
-    Ok(Some(lock))
+    let identity = TrustVerifierIdentity {
+        installation_id: installed.installation_id,
+        node_id: installed.origin_node_id,
+    };
+    identity.validate()?;
+    Ok(Some(Arc::new(InstalledStandaloneOwner {
+        identity,
+        disk: disk.clone(),
+        lock,
+    })))
 }
 
 pub(crate) fn installation_root(config: &RuntimeConfig) -> Result<&Path> {
@@ -362,14 +454,31 @@ async fn operator_tenants(
 /// Policy validation requires such an administrator, even when every token is
 /// lost or expired. No policy bypass is installed in the running server.
 pub async fn recover_administrator(configuration: &Path, output: &Path) -> Result<Vec<PathBuf>> {
-    let configuration = configuration.to_owned();
-    let output = output.to_owned();
-    operator::run(async move { recover_administrator_owned(&configuration, &output).await }).await
+    let config = RuntimeConfig::load(configuration)?;
+    let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+    recover_administrator_with_storage(configuration, output, storage).await
 }
 
-async fn recover_administrator_owned(configuration: &Path, output: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) async fn recover_administrator_with_storage(
+    configuration: &Path,
+    output: &Path,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<Vec<PathBuf>> {
+    let configuration = configuration.to_owned();
+    let output = output.to_owned();
+    operator::run(
+        async move { recover_administrator_owned(&configuration, &output, storage).await },
+    )
+    .await
+}
+
+async fn recover_administrator_owned(
+    configuration: &Path,
+    output: &Path,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<Vec<PathBuf>> {
     let mut config = RuntimeConfig::load(configuration)?;
-    let mut owner = OperatorState::open(&config).await?;
+    let mut owner = OperatorState::open(&config, storage).await?;
     let result = async {
         let node = owner.node.clone();
         let audit = owner.audit.clone();
@@ -535,13 +644,25 @@ async fn recover_administrator_owned(configuration: &Path, output: &Path) -> Res
 }
 
 pub async fn rotate_wrapping_keys(configuration: &Path) -> Result<()> {
-    let configuration = configuration.to_owned();
-    operator::run(async move { rotate_wrapping_keys_owned(&configuration).await }).await
+    let config = RuntimeConfig::load(configuration)?;
+    let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+    rotate_wrapping_keys_with_storage(configuration, storage).await
 }
 
-async fn rotate_wrapping_keys_owned(configuration: &Path) -> Result<()> {
+pub(crate) async fn rotate_wrapping_keys_with_storage(
+    configuration: &Path,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<()> {
+    let configuration = configuration.to_owned();
+    operator::run(async move { rotate_wrapping_keys_owned(&configuration, storage).await }).await
+}
+
+async fn rotate_wrapping_keys_owned(
+    configuration: &Path,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<()> {
     let config = RuntimeConfig::load(configuration)?;
-    let mut owner = OperatorState::open(&config).await?;
+    let mut owner = OperatorState::open(&config, storage).await?;
     let result = async {
         let node = owner.node.clone();
         let audit = owner.audit.clone();
@@ -631,13 +752,25 @@ async fn rotate_wrapping_keys_owned(configuration: &Path) -> Result<()> {
 }
 
 pub async fn rotate_signing_key(configuration: &Path) -> Result<u64> {
-    let configuration = configuration.to_owned();
-    operator::run(async move { rotate_signing_key_owned(&configuration).await }).await
+    let config = RuntimeConfig::load(configuration)?;
+    let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+    rotate_signing_key_with_storage(configuration, storage).await
 }
 
-async fn rotate_signing_key_owned(configuration: &Path) -> Result<u64> {
+pub(crate) async fn rotate_signing_key_with_storage(
+    configuration: &Path,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<u64> {
+    let configuration = configuration.to_owned();
+    operator::run(async move { rotate_signing_key_owned(&configuration, storage).await }).await
+}
+
+async fn rotate_signing_key_owned(
+    configuration: &Path,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<u64> {
     let config = RuntimeConfig::load(configuration)?;
-    let mut owner = OperatorState::open(&config).await?;
+    let mut owner = OperatorState::open(&config, storage).await?;
     let result = async {
         let audit = owner.audit.clone();
         let operation = Uuid::new_v4().to_string();
@@ -667,13 +800,25 @@ async fn rotate_signing_key_owned(configuration: &Path) -> Result<u64> {
 /// Offline certificate/key replacement keeps the installed CA identity. Local
 /// generated profiles are updated to the exact new native/admin leaf pins.
 pub async fn rotate_certificates(configuration: &Path) -> Result<serde_json::Value> {
-    let configuration = configuration.to_owned();
-    operator::run(async move { rotate_certificates_owned(&configuration).await }).await
+    let config = RuntimeConfig::load(configuration)?;
+    let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+    rotate_certificates_with_storage(configuration, storage).await
 }
 
-async fn rotate_certificates_owned(configuration: &Path) -> Result<serde_json::Value> {
+pub(crate) async fn rotate_certificates_with_storage(
+    configuration: &Path,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<serde_json::Value> {
+    let configuration = configuration.to_owned();
+    operator::run(async move { rotate_certificates_owned(&configuration, storage).await }).await
+}
+
+async fn rotate_certificates_owned(
+    configuration: &Path,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<serde_json::Value> {
     let config = RuntimeConfig::load(configuration)?;
-    let mut owner = OperatorState::open(&config).await?;
+    let mut owner = OperatorState::open(&config, storage).await?;
     let result = async {
         let audit = owner.audit.clone();
         crate::local_recovery::require_runtime_ready(audit.store())?;
@@ -808,14 +953,29 @@ async fn rotate_certificates_owned(configuration: &Path) -> Result<serde_json::V
 }
 
 pub async fn backup_operator_keys(configuration: &Path, output: &Path) -> Result<()> {
-    let configuration = configuration.to_owned();
-    let output = output.to_owned();
-    operator::run(async move { backup_operator_keys_owned(&configuration, &output).await }).await
+    let config = RuntimeConfig::load(configuration)?;
+    let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+    backup_operator_keys_with_storage(configuration, output, storage).await
 }
 
-async fn backup_operator_keys_owned(configuration: &Path, output: &Path) -> Result<()> {
+pub(crate) async fn backup_operator_keys_with_storage(
+    configuration: &Path,
+    output: &Path,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<()> {
+    let configuration = configuration.to_owned();
+    let output = output.to_owned();
+    operator::run(async move { backup_operator_keys_owned(&configuration, &output, storage).await })
+        .await
+}
+
+async fn backup_operator_keys_owned(
+    configuration: &Path,
+    output: &Path,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<()> {
     let config = RuntimeConfig::load(configuration)?;
-    let mut owner = OperatorState::open(&config).await?;
+    let mut owner = OperatorState::open(&config, storage).await?;
     let result = async {
         let audit = owner.audit.clone();
         let operation = Uuid::new_v4().to_string();
@@ -851,14 +1011,104 @@ async fn backup_operator_keys_owned(configuration: &Path, output: &Path) -> Resu
 
 /// Creates an exclusive private directory. Failure leaves a visibly incomplete
 /// private installation; it never overwrites or adopts an existing directory.
-pub async fn initialize(directory: &Path, tenant: &str) -> Result<InitializedInstallation> {
+pub async fn initialize(
+    directory: &Path,
+    tenant: &str,
+    directory_policy: kasumi_store::DirectoryPolicy,
+    network: StandaloneNetwork,
+) -> Result<InitializedInstallation> {
+    network.validate()?;
+    let storage = crate::runtime_memory::RuntimeStorage::installed(
+        &example_config(directory_policy)?.admission,
+    )?;
+    initialize_with_storage(directory, tenant, directory_policy, network, storage).await
+}
+
+pub(crate) async fn initialize_with_storage(
+    directory: &Path,
+    tenant: &str,
+    directory_policy: kasumi_store::DirectoryPolicy,
+    network: StandaloneNetwork,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<InitializedInstallation> {
+    directory_policy.validate()?;
+    network.validate()?;
     // The owned operation retains its exclusive lock and drains every database
     // even if the CLI invocation loses its reply. Installation completion is a
     // durable marker written only after those owners have drained.
     let directory = directory.to_owned();
     let tenant = tenant.to_owned();
     operator::run(async move {
-        initialize_owned(&directory, &tenant, InitializationOptions::default()).await
+        initialize_owned(
+            &directory,
+            &tenant,
+            directory_policy,
+            network,
+            InitializationOptions::default(),
+            storage,
+        )
+        .await
+    })
+    .await
+}
+/// Install a real external tenant-audit destination before the placement
+/// identity is persisted. Used by the protected outage observation fixture.
+#[cfg(test)]
+pub(crate) async fn initialize_with_storage_and_tenant_archive(
+    directory: &Path,
+    tenant: &str,
+    storage: crate::runtime_memory::RuntimeStorage,
+    archive: crate::audit_destination::AuditDestinationConfig,
+) -> Result<InitializedInstallation> {
+    let directory_policy = kasumi_store::DirectoryPolicy::fixture();
+    let network = StandaloneNetwork::fixture();
+    directory_policy.validate()?;
+    network.validate()?;
+    let directory = directory.to_owned();
+    let tenant = tenant.to_owned();
+    operator::run(async move {
+        initialize_owned(
+            &directory,
+            &tenant,
+            directory_policy,
+            network,
+            InitializationOptions {
+                tenant_audit_archive: Some(archive),
+                ..Default::default()
+            },
+            storage,
+        )
+        .await
+    })
+    .await
+}
+/// Install actual encrypted local groups in one owned offline initialization.
+/// This fixture exercises the production catalog and topology path, not a
+/// synthetic readiness cache or absent-route count.
+#[cfg(test)]
+pub(crate) async fn initialize_many_with_storage(
+    directory: &Path,
+    tenant_count: usize,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<InitializedInstallation> {
+    ensure!(
+        (1..=10_000).contains(&tenant_count),
+        "fixture tenant count is invalid"
+    );
+    let directory = directory.to_owned();
+    operator::run(async move {
+        initialize_owned(
+            &directory,
+            "healthy-000",
+            kasumi_store::DirectoryPolicy::fixture(),
+            StandaloneNetwork::fixture(),
+            InitializationOptions {
+                extra_tenants: tenant_count - 1,
+                ..Default::default()
+            },
+            storage,
+        )
+        .await
     })
     .await
 }
@@ -866,11 +1116,18 @@ pub async fn initialize(directory: &Path, tenant: &str) -> Result<InitializedIns
 struct InitializationOptions {
     #[cfg(test)]
     obstruct_profile_publication: bool,
+    #[cfg(test)]
+    extra_tenants: usize,
+    #[cfg(test)]
+    tenant_audit_archive: Option<crate::audit_destination::AuditDestinationConfig>,
 }
 async fn initialize_owned(
     directory: &Path,
     tenant: &str,
+    directory_policy: kasumi_store::DirectoryPolicy,
+    network: StandaloneNetwork,
     options: InitializationOptions,
+    storage: crate::runtime_memory::RuntimeStorage,
 ) -> Result<InitializedInstallation> {
     #[cfg(not(test))]
     let _ = options;
@@ -883,6 +1140,11 @@ async fn initialize_owned(
         directory.is_absolute(),
         "installation directory must be absolute"
     );
+    let mut config = example_config(directory_policy)?;
+    config.admission = storage.policy().clone();
+    let admission = storage.facade(&config.admission)?;
+    let mut pending = crate::startup_resources::Resources::default();
+    pending.owned_admissions.push(admission.clone());
     private_files::create_directory(directory)?;
     let directory = std::fs::canonicalize(directory)?;
     for name in ["data", "operator", "tls", "profiles", "backups"] {
@@ -894,12 +1156,14 @@ async fn initialize_owned(
     let profiles = directory.join("profiles");
     // Root directory creation remains the explicit installer boundary. Directory
     // mutation/accounting below those roots still needs its own NodeDisk API.
-    let persistent_config = crate::persistent_disk::initial_config(BTreeMap::from([
-        ("data".into(), data.clone()),
-        ("backups".into(), directory.join("backups")),
-    ]));
-    let persistent_disk = crate::persistent_disk::open(&persistent_config)?;
-    let mut pending = crate::startup_resources::Resources::default();
+    let persistent_config = storage.new_installation_disk_config(
+        BTreeMap::from([
+            ("data".into(), data.clone()),
+            ("backups".into(), directory.join("backups")),
+        ]),
+        directory_policy,
+    )?;
+    let persistent_disk = crate::persistent_disk::open(&persistent_config, &storage)?;
     pending.standalone_lock = Some(create_installed_file(
         &persistent_config,
         &persistent_disk,
@@ -913,8 +1177,9 @@ async fn initialize_owned(
         let tenant_incarnation = Uuid::new_v4();
         let database_path = data.join("node.redb");
         let installation = Installation {
-            format: 3,
+            format: 4,
             installation_id,
+            origin_node_id: STANDALONE_ORIGIN_NODE_ID,
             control_incarnation,
             database_id: Uuid::new_v4(),
             database_path: database_path.clone(),
@@ -969,7 +1234,6 @@ async fn initialize_owned(
         let provider = |domain: &str| KeyProviderSettings::File {
             path: operator.join(format!("{domain}-keys.json")),
         };
-        let mut config = example_config();
         config.mode = DeploymentMode::Standalone;
         config.serving_authorities.clear();
         config.signer_verifier = None;
@@ -994,13 +1258,13 @@ async fn initialize_owned(
             algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
         };
-        config.mcp.listen = "127.0.0.1:9443".parse()?;
+        config.mcp.listen = network.mcp_listen;
         config.mcp.tls = identities["mcp"].clone();
-        config.mcp.protocol = crate::mcp::McpConfig::new("https://localhost:9443/mcp".into())?;
-        config.native.listen = "127.0.0.1:9444".parse()?;
+        config.mcp.protocol = crate::mcp::McpConfig::new(network.mcp_public_url.clone())?;
+        config.native.listen = network.native_listen;
         config.native.tls = identities["native"].clone();
         config.native.client_ca = tls.join("ca.pem");
-        config.admin.listen = "127.0.0.1:9445".parse()?;
+        config.admin.listen = network.admin_listen;
         config.admin.tls = identities["admin"].clone();
         config.admin.client_ca = tls.join("ca.pem");
         config.control.keys = provider("control");
@@ -1014,12 +1278,35 @@ async fn initialize_owned(
         config.tenants[0].custody_keys = provider("custody");
         config.tenants[0].initial_policy = policy;
         config.tenants[0].incarnation = Some(tenant_incarnation.to_string());
+        #[cfg(test)]
+        if let Some(archive) = &options.tenant_audit_archive {
+            config
+                .tenant_audit_archives
+                .insert(tenant.into(), archive.clone());
+        }
+        #[cfg(test)]
+        for index in 1..=options.extra_tenants {
+            let name = format!("healthy-{index:03}");
+            let application = format!("{name}-application");
+            let custody = format!("{name}-custody");
+            FileKeyProvider::initialize(
+                &operator.join(format!("{application}-keys.json")),
+                &application,
+            )?;
+            FileKeyProvider::initialize(&operator.join(format!("{custody}-keys.json")), &custody)?;
+            let mut extra = config.tenants[0].clone();
+            extra.tenant = name;
+            extra.keys = provider(&application);
+            extra.custody_keys = provider(&custody);
+            extra.incarnation = Some(Uuid::new_v4().to_string());
+            config.tenants.push(extra);
+        }
         config.validate()?;
         let node = NodeStore::create_new(
             &database_path,
             installation.database_id,
             persistent_disk.clone(),
-            kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
+            storage.open_scratch(&config.scratch_disk)?,
         )?;
         pending.owned_nodes.push(node.clone());
         #[cfg(test)]
@@ -1035,8 +1322,6 @@ async fn initialize_owned(
         )
         .await?;
         pending.stores.push(security_store.clone());
-        let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
-        pending.owned_admissions.push(admission.clone());
         let audit = config
             .security_audit
             .initialize(security_store.clone(), admission)?;
@@ -1096,15 +1381,15 @@ async fn initialize_owned(
                     family_id: issued.family_id,
                     tenant: tenant.into(),
                     resource,
-                    native_endpoint: "https://localhost:9444".into(),
+                    native_endpoint: format!("https://localhost:{}", network.native_listen.port()),
                     administrative_members: BTreeMap::from([(
                         1,
                         crate::serving_runtime::AuthorityEndpoint {
-                            endpoint: "https://localhost:9445".into(),
+                            endpoint: format!("https://localhost:{}", network.admin_listen.port()),
                             certificate_pins: BTreeSet::from([admin_pin.clone()]),
                         },
                     )]),
-                    mcp_endpoint: "https://localhost:9443/mcp".into(),
+                    mcp_endpoint: network.mcp_public_url.clone(),
                     identity: client_identity.clone(),
                     server_ca: tls.join("ca.pem"),
                     native_certificate_pin: native_pin.clone(),
@@ -1151,10 +1436,13 @@ async fn initialize_owned(
 }
 
 #[cfg(test)]
-pub(crate) async fn configure_test_topology(config: &RuntimeConfig) {
+pub(crate) async fn configure_test_topology(
+    config: &RuntimeConfig,
+    storage: crate::runtime_memory::RuntimeStorage,
+) {
     // Tests allocate fresh private listener ports after init. Change the already
     // installed topology with an explicit stopped-operator CAS, never restart genesis.
-    let mut owner = OperatorState::open(config).await.unwrap();
+    let mut owner = OperatorState::open(config, storage).await.unwrap();
     let database = owner.control().await.unwrap();
     let plane = kasumi_engine::control::ControlPlane::new(database.clone()).unwrap();
     let context = crate::runtime::configured_control_context(&config.control).unwrap();

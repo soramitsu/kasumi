@@ -46,21 +46,43 @@ impl kasumi_raft::StateMachineBackend for Backend {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_until_join()
 -> anyhow::Result<()> {
-    let config = AdmissionConfig::default();
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let (persistent_config, scratch_config) =
+        crate::test_utils::fixture_disk_configs(directory.path())?;
+    let metadata_bytes =
+        crate::test_utils::isolated_disk_metadata_bytes(&persistent_config, &scratch_config)?;
+    // The original fixed 2 GiB source resolves Default to a 256 MiB total.
+    // Add only the new physical metadata; do not resolve against host RAM.
+    let config = crate::admission::AdmissionConfig {
+        max_inflight_bytes: Some(
+            (256_u64 << 20)
+                .checked_add(crate::test_utils::isolated_disk_metadata_bytes(
+                    &persistent_config,
+                    &scratch_config,
+                )?)
+                .ok_or_else(|| anyhow::anyhow!("fixture metadata budget overflow"))?,
+        ),
+        ..Default::default()
+    };
     let core_base = MemoryCore::required_bookkeeping_bytes(&config)?;
     let admission = NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
+    let storage = crate::test_utils::FixtureStorage::with_admission(
+        &persistent_config,
+        &scratch_config,
+        admission.clone(),
+    )?;
     let core = admission.memory().clone();
     let baseline = admission.snapshot();
     let owner = admission.snapshot_buffer_owner()?;
     let owner_bytes = SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)?;
     let owner_weak = Arc::downgrade(&owner);
     let gate = LocalStartupGate::install(&owner, OriginalStartupFailure(211).into())?;
-    let directory = kasumi_store::test_utils::private_tempdir()?;
     let stores = kasumi_store::TenantStorageSet::initialize_catalogs_fixture(
-        kasumi_store::NodeStore::create_new_fixture(
-            directory.path().join("cancelled-node-startup.redb"),
+        storage.create_new(
+            directory
+                .path()
+                .join("persistent/cancelled-node-startup.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
         )?,
         "cancelled-startup".into(),
         Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([19; 32])),
@@ -100,7 +122,10 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
         pending.reserved_bytes,
         baseline.reserved_bytes + owner_bytes
     );
-    assert_eq!(pending.resident_reserved_bytes, owner_bytes);
+    assert_eq!(
+        pending.resident_reserved_bytes,
+        metadata_bytes + owner_bytes
+    );
     assert_eq!(pending.inflight_operations, 0);
     assert!(gate.claim_is_live());
     assert!(owner_weak.upgrade().is_some());
@@ -144,7 +169,7 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
     // child's resident owner charge is released at successful census completion.
     assert_eq!(completed.bookkeeping_bytes, baseline.bookkeeping_bytes);
     assert_eq!(completed.reserved_bytes, baseline.reserved_bytes);
-    assert_eq!(completed.resident_reserved_bytes, 0);
+    assert_eq!(completed.resident_reserved_bytes, metadata_bytes);
     for _ in 0..2 {
         let repeated = admission.drain_snapshot_startups().await.unwrap_err();
         assert_eq!(repeated.completion(), DrainCompletion::Complete);
@@ -159,9 +184,10 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
     let facade_weak = Arc::downgrade(&admission);
     drop(failure);
     drop(original);
+    drop(storage);
     drop(admission);
     assert!(facade_weak.upgrade().is_none());
-    assert_eq!(core.snapshot().reserved_bytes, core_base);
+    assert_eq!(core.snapshot().reserved_bytes, core_base + metadata_bytes);
     // The old facade remains sealed; a fresh facade shares accounting and a
     // real group can reopen the exact same storage only after actual join.
     let replacement = NodeAdmission::from_memory(core.clone())?;
@@ -180,6 +206,6 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
     drop(reopened);
     replacement.drain_snapshot_startups().await?;
     drop(replacement);
-    assert_eq!(core.snapshot().reserved_bytes, core_base);
+    assert_eq!(core.snapshot().reserved_bytes, core_base + metadata_bytes);
     Ok(())
 }

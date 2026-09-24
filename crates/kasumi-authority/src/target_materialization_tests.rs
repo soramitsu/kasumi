@@ -9,6 +9,228 @@ use kasumi_engine::{
 };
 use kasumi_store::{FilesystemBackupDestination, StorageAccess, TenantStorageSet, TenantStore};
 
+/// Immediate phase closure can race the final durable application or its
+/// acknowledgement. Completion still requires every actual owner to join;
+/// preserve the exact access-fenced error rather than assuming a clean exit.
+fn is_access_fenced_write(error: &openraft::StorageError<u64>) -> bool {
+    if !matches!(error, openraft::StorageError::IO { .. }) {
+        return false;
+    }
+    [
+        "tenant is sealed: key-access lease unavailable or expired",
+        "domain transaction committed; access expired before acknowledgment; outcome unknown",
+        "Sealed: independent serving authority unavailable",
+    ]
+    .into_iter()
+    .any(|message| {
+        // The adapter's terminal I/O cause is untyped. Compare the complete
+        // Store/Write diagnostic, never an arbitrary matching substring.
+        let expected = openraft::StorageError::<u64>::from_io_error(
+            openraft::ErrorSubject::Store,
+            openraft::ErrorVerb::Write,
+            std::io::Error::other(message),
+        );
+        error.to_string() == expected.to_string()
+    })
+}
+
+fn is_access_fenced_core(error: &openraft::error::Fatal<u64>) -> bool {
+    matches!(error, openraft::error::Fatal::StorageError(storage) if is_access_fenced_write(storage))
+}
+
+fn is_access_fenced_replication(
+    replication: &openraft::error::ReplicationShutdownError<u64, tokio::task::JoinError>,
+) -> bool {
+    (1..=4).contains(&replication.target)
+        && replication.snapshot.is_none()
+        && replication
+            .stream
+            .as_ref()
+            .and_then(|stream| stream.storage_error())
+            .is_some_and(|error| is_access_fenced_write(error))
+}
+
+fn assert_target_close_outcomes(
+    original: kasumi_types::drain::DrainResult,
+    repeated: kasumi_types::drain::DrainResult,
+) {
+    use kasumi_types::drain::DrainCompletion;
+    let (failure, repeated) = match (original, repeated) {
+        (Ok(()), Ok(())) => return,
+        (Err(failure), Err(repeated)) => (failure, repeated),
+        outcomes => panic!("target drain changed its original outcome: {outcomes:?}"),
+    };
+    assert_eq!(failure.completion(), DrainCompletion::Complete);
+    assert_eq!(repeated.completion(), DrainCompletion::Complete);
+    assert_eq!(failure.issues().len(), 1, "{failure:?}");
+    assert_eq!(repeated.issues().len(), 1, "{repeated:?}");
+    let issue = &failure.issues()[0];
+    assert!(Arc::ptr_eq(issue, &repeated.issues()[0]));
+    assert_eq!(issue.component(), "OpenRaft runtime");
+    assert_eq!(issue.instance(), 0);
+    let runtime = issue
+        .error()
+        .downcast_ref::<openraft::error::ShutdownError<u64, tokio::task::JoinError>>()
+        .expect("original typed OpenRaft shutdown error missing");
+    assert!(runtime.core_join_error().is_none(), "{runtime:?}");
+    assert!(runtime.ticker().is_none(), "{runtime:?}");
+    assert!(runtime.snapshot_builder().is_none(), "{runtime:?}");
+    assert!(runtime.auxiliary().is_empty(), "{runtime:?}");
+    assert!(runtime.incoming_snapshot().is_none(), "{runtime:?}");
+    let mut observed = 0;
+    if let Some(core) = runtime.core() {
+        assert!(is_access_fenced_core(core), "{core:?}");
+        observed += 1;
+    }
+    if let Some(worker) = runtime.state_machine() {
+        let storage = worker
+            .storage_error()
+            .expect("actual access-fenced state-machine error missing");
+        assert!(is_access_fenced_write(storage), "{storage:?}");
+        observed += 1;
+    }
+    // Immediate gate closure also fences an actual replication storage reader.
+    // Preserve its exact child identity and original storage cause; a join or
+    // snapshot failure cannot pass this classifier.
+    for replication in runtime.replications() {
+        assert!(is_access_fenced_replication(replication), "{replication:?}");
+        observed += 1;
+    }
+    assert!(
+        observed > 0,
+        "no original access-fenced child failure: {runtime:?}"
+    );
+    eprintln!("target owners drained with their original access-fenced outcome: {failure:?}");
+}
+
+#[test]
+fn target_close_diagnostic_rejects_unrelated_storage_failures() {
+    use openraft::{ErrorSubject, ErrorVerb, StorageError};
+    let closed = "tenant is sealed: key-access lease unavailable or expired";
+    let serving_closed = "Sealed: independent serving authority unavailable";
+    let failure = |subject, verb, message: &str| {
+        StorageError::<u64>::from_io_error(subject, verb, std::io::Error::other(message))
+    };
+    assert!(is_access_fenced_write(&failure(
+        ErrorSubject::Store,
+        ErrorVerb::Write,
+        closed,
+    )));
+    assert!(is_access_fenced_write(&failure(
+        ErrorSubject::Store,
+        ErrorVerb::Write,
+        serving_closed,
+    )));
+    assert!(!is_access_fenced_write(&failure(
+        ErrorSubject::Store,
+        ErrorVerb::Read,
+        serving_closed,
+    )));
+    assert!(!is_access_fenced_write(&failure(
+        ErrorSubject::Vote,
+        ErrorVerb::Write,
+        serving_closed,
+    )));
+    assert!(!is_access_fenced_write(&failure(
+        ErrorSubject::Store,
+        ErrorVerb::Read,
+        closed,
+    )));
+    assert!(!is_access_fenced_write(&failure(
+        ErrorSubject::Vote,
+        ErrorVerb::Write,
+        closed,
+    )));
+    assert!(!is_access_fenced_write(&failure(
+        ErrorSubject::Store,
+        ErrorVerb::Write,
+        "injected storage failure",
+    )));
+    assert!(!is_access_fenced_write(&failure(
+        ErrorSubject::Store,
+        ErrorVerb::Write,
+        &format!("unrelated failure: {closed}"),
+    )));
+    assert!(!is_access_fenced_write(&failure(
+        ErrorSubject::Store,
+        ErrorVerb::Write,
+        &format!("unrelated failure: {serving_closed}"),
+    )));
+}
+
+#[test]
+fn target_close_core_diagnostic_requires_exact_access_fenced_write() {
+    use openraft::{ErrorSubject, ErrorVerb, StorageError, error::Fatal};
+    let failure = |subject, verb, message: &str| {
+        Fatal::StorageError(StorageError::<u64>::from_io_error(
+            subject,
+            verb,
+            std::io::Error::other(message),
+        ))
+    };
+    let closed = "tenant is sealed: key-access lease unavailable or expired";
+    assert!(is_access_fenced_core(&failure(
+        ErrorSubject::Store,
+        ErrorVerb::Write,
+        closed,
+    )));
+    assert!(!is_access_fenced_core(&failure(
+        ErrorSubject::Store,
+        ErrorVerb::Read,
+        closed,
+    )));
+    assert!(!is_access_fenced_core(&failure(
+        ErrorSubject::Vote,
+        ErrorVerb::Write,
+        closed,
+    )));
+    assert!(!is_access_fenced_core(&failure(
+        ErrorSubject::Store,
+        ErrorVerb::Write,
+        "unrelated failure",
+    )));
+    assert!(!is_access_fenced_core(&Fatal::Panicked));
+}
+
+#[test]
+fn target_close_replication_diagnostic_preserves_child_failure_boundaries() {
+    use openraft::error::{ReplicationShutdownError, ShutdownTaskError};
+    let error = || {
+        openraft::StorageError::<u64>::from_io_error(
+            openraft::ErrorSubject::Store,
+            openraft::ErrorVerb::Write,
+            std::io::Error::other("tenant is sealed: key-access lease unavailable or expired"),
+        )
+    };
+    let mut replication = ReplicationShutdownError::<u64, tokio::task::JoinError> {
+        owner_id: 1,
+        target: 3,
+        stream: Some(ShutdownTaskError::Storage(Arc::new(error()))),
+        snapshot: None,
+    };
+    assert!(is_access_fenced_replication(&replication));
+    replication.snapshot = Some(ShutdownTaskError::Storage(Arc::new(error())));
+    assert!(!is_access_fenced_replication(&replication));
+    replication.snapshot = None;
+    // The first retained OpenRaft replication owner has sequence zero.
+    replication.owner_id = 0;
+    assert!(is_access_fenced_replication(&replication));
+    replication.owner_id = 1;
+    replication.target = 5;
+    assert!(!is_access_fenced_replication(&replication));
+    replication.target = 3;
+    replication.stream = None;
+    assert!(!is_access_fenced_replication(&replication));
+    replication.stream = Some(ShutdownTaskError::Storage(Arc::new(
+        openraft::StorageError::<u64>::from_io_error(
+            openraft::ErrorSubject::Store,
+            openraft::ErrorVerb::Write,
+            std::io::Error::other("unrelated replication write failure"),
+        ),
+    )));
+    assert!(!is_access_fenced_replication(&replication));
+}
+
 async fn audit(
     node: Arc<NodeStore>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
@@ -44,21 +266,19 @@ struct MaterialFixture {
     input: TargetMaterializationInput,
     intent: SignedControlIntent,
     signers: BTreeMap<u64, TargetSigner>,
-    admissions: BTreeMap<u64, Arc<kasumi_engine::admission::NodeAdmission>>,
+    physical: BTreeMap<u64, PhysicalFixture>,
+    _source_physical: PhysicalFixture,
     target_files: std::sync::Mutex<BTreeSet<u64>>,
 }
 impl MaterialFixture {
     async fn new() -> Self {
         let control = ControlFixture::new();
         let issuer = control.issuer().await;
-        let node = NodeStore::create_new_fixture(
-            issuer._dir.path().join("source.redb"),
-            Uuid::new_v4(),
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap();
-        let source_admission =
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
+        let source_physical = PhysicalFixture::new().unwrap();
+        let node = source_physical
+            .create_new(source_physical.path("source.redb"), Uuid::new_v4())
+            .unwrap();
+        let source_admission = source_physical.admission.clone();
         let security = audit(node.clone(), source_admission.clone(), false).await;
         let sourcekey = Arc::new(LocalKeyProvider::new([51; 32]));
         let app = TenantStore::initialize_catalog_fixture(node, "city".into(), sourcekey.clone())
@@ -123,8 +343,12 @@ impl MaterialFixture {
             .await
             .unwrap();
         let destination = Arc::new(
-            FilesystemBackupDestination::new_fixture(issuer._dir.path().join("backups"), 16 << 20)
-                .unwrap(),
+            FilesystemBackupDestination::new(
+                source_physical.path("backups"),
+                16 << 20,
+                source_physical.persistent.clone(),
+            )
+            .unwrap(),
         );
         let checkpoint = source_db
             .backup_checkpoint(context, destination.as_ref(), uuid::Uuid::new_v4())
@@ -211,14 +435,10 @@ impl MaterialFixture {
             intent,
             signers,
             target_files: Default::default(),
-            admissions: (1..=3)
-                .map(|id| {
-                    (
-                        id,
-                        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
-                    )
-                })
+            physical: (1..=3)
+                .map(|id| (id, PhysicalFixture::new().unwrap()))
                 .collect(),
+            _source_physical: source_physical,
         }
     }
     async fn phase(
@@ -304,23 +524,20 @@ impl MaterialFixture {
         // materialization still explicitly obtains its registered operation.
         let first_creation = self.target_files.lock().unwrap().insert(id);
         let node = {
-            let path = self.issuer._dir.path().join(format!("target-{id}.redb"));
+            let path = self.physical[&id].path(format!("target-{id}.redb"));
             if first_creation {
-                NodeStore::create_new_fixture(
-                    path,
-                    node_store_id,
-                    kasumi_store::ScratchDisk::fixture(),
-                )
+                self.physical[&id].create_new(path, node_store_id)
             } else {
-                NodeStore::open_existing_fixture(
-                    path,
-                    node_store_id,
-                    kasumi_store::ScratchDisk::fixture(),
-                )
+                self.physical[&id].open_existing(path, node_store_id)
             }
             .unwrap()
         };
-        let security = audit(node.clone(), self.admissions[&id].clone(), !first_creation).await;
+        let security = audit(
+            node.clone(),
+            self.physical[&id].admission.clone(),
+            !first_creation,
+        )
+        .await;
         let stores = if first_creation {
             TenantStorageSet::initialize_catalogs(
                 node,
@@ -361,7 +578,7 @@ impl MaterialFixture {
                     )
                 })
                 .collect(),
-            admission: self.admissions[&id].clone(),
+            admission: self.physical[&id].admission.clone(),
         }
     }
     async fn close(self) {
@@ -777,7 +994,7 @@ impl MaterialFixture {
                         election_timeout_max: 400,
                         ..Config::default()
                     },
-                    admission: self.admissions[&id].clone(),
+                    admission: self.physical[&id].admission.clone(),
                 },
                 router.clone(),
                 audit.clone(),
@@ -803,11 +1020,18 @@ impl MaterialFixture {
     async fn close_targets(&self, targets: Vec<RunningTarget>, router: &InProcessRouter) {
         for mut t in targets {
             router.unregister(&format!("city/{}", self.target.incarnation), t.id);
-            t.owner.close().await.unwrap();
+            let original = t.owner.close().await;
+            let repeated = t.owner.close().await;
+            assert_target_close_outcomes(original, repeated);
+            assert!(t.operation.invocation().gate().check().is_err());
+            assert!(t.owner.database().raft_group().check_access().is_err());
+            assert!(t.stores.application().check_access().is_err());
+            assert!(t.stores.custody().store().check_access().is_err());
             drop(t.owner);
             drop(t.operation);
             t.scope.close();
             t.scope.drain().await;
+            assert!(t.scope.is_idle());
             t.stores.custody().store().shutdown().await.unwrap();
             drop(t.stores);
             t.audit.shutdown().await.unwrap();
@@ -1045,7 +1269,7 @@ async fn exercise_target_activation(maintenance: bool) {
     );
     // Independent journal reserves activation and permanent stop headroom
     // before the actual local effect. It uses neither source nor target key.
-    let journal_path = f.issuer._dir.path().join("activation-journal.redb");
+    let journal_path = f.physical[&selected.id].path("activation-journal.redb");
     let journal_installation = kasumi_engine::TargetJournalInstallation {
         root: f.control.root.clone(),
         node: nodes()
@@ -1068,12 +1292,9 @@ async fn exercise_target_activation(maintenance: bool) {
     )
     .unwrap();
     let journal_store = TenantStore::initialize_catalog(
-        NodeStore::create_new_fixture(
-            &journal_path,
-            journal_file_id,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap(),
+        f.physical[&projected_node_id]
+            .create_new(&journal_path, journal_file_id)
+            .unwrap(),
         journal_tenant.clone(),
         journal_provider.clone(),
         journal_access.clone(),
@@ -1087,7 +1308,7 @@ async fn exercise_target_activation(maintenance: bool) {
         journal_store.clone(),
         journal_installation.clone(),
         journal_limits.clone(),
-        f.admissions[&projected_node_id].clone(),
+        f.physical[&projected_node_id].admission.clone(),
     )
     .unwrap();
     assert!(
@@ -1161,8 +1382,22 @@ async fn exercise_target_activation(maintenance: bool) {
         }
         assert!(follower.owner.database().check_serving().is_err());
     }
+    // The original leader proof was released before confirming every voter.
+    // Bind this voter's local projection to that same signed, persisted fact.
+    let local_completed = selected
+        .owner
+        .database()
+        .confirm_target_activation(&selected.operation, actual_signed_activation.clone())
+        .await
+        .unwrap();
+    assert_eq!(local_completed.fact(), completed.fact());
+    assert_eq!(local_completed.observation().observer_node_id, selected.id);
     let projected = journal
-        .record_activation(&selected.operation, &completed, &f.signers[&selected.id])
+        .record_activation(
+            &selected.operation,
+            &local_completed,
+            &f.signers[&selected.id],
+        )
         .await
         .unwrap();
     let exact_execution = projected.execution().unwrap();
@@ -1176,7 +1411,11 @@ async fn exercise_target_activation(maintenance: bool) {
         .clone();
     projected.check(&serving_gate).unwrap();
     let replayed = journal
-        .record_activation(&selected.operation, &completed, &f.signers[&selected.id])
+        .record_activation(
+            &selected.operation,
+            &local_completed,
+            &f.signers[&selected.id],
+        )
         .await
         .unwrap();
     assert_eq!(replayed.execution().unwrap(), exact_execution);
@@ -1188,12 +1427,9 @@ async fn exercise_target_activation(maintenance: bool) {
     // Reopen only the separately encrypted journal, independently of all app
     // providers. Exact signatures survive restart; substituted facts fail closed.
     let journal_store = TenantStore::open_existing(
-        NodeStore::open_existing_fixture(
-            &journal_path,
-            journal_file_id,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap(),
+        f.physical[&projected_node_id]
+            .open_existing(&journal_path, journal_file_id)
+            .unwrap(),
         journal_tenant.clone(),
         journal_provider.clone(),
         journal_access.clone(),
@@ -1204,7 +1440,7 @@ async fn exercise_target_activation(maintenance: bool) {
         journal_store.clone(),
         journal_installation.clone(),
         journal_limits.clone(),
-        f.admissions[&projected_node_id].clone(),
+        f.physical[&projected_node_id].admission.clone(),
     )
     .unwrap();
     let projection = journal
@@ -1241,7 +1477,7 @@ async fn exercise_target_activation(maintenance: bool) {
             journal_store.clone(),
             journal_installation.clone(),
             journal_limits.clone(),
-            f.admissions[&projected_node_id].clone()
+            f.physical[&projected_node_id].admission.clone()
         )
         .is_err()
     );
@@ -1256,7 +1492,7 @@ async fn exercise_target_activation(maintenance: bool) {
         journal_store.clone(),
         journal_installation.clone(),
         journal_limits.clone(),
-        f.admissions[&projected_node_id].clone(),
+        f.physical[&projected_node_id].admission.clone(),
     )
     .unwrap();
     let projection = journal
@@ -1270,6 +1506,7 @@ async fn exercise_target_activation(maintenance: bool) {
     drop(journal_store);
     // A lifecycle-gated handle never turns into an ordinary data route.
     assert!(selected.owner.database().check_serving().is_err());
+    drop(local_completed);
     drop(completed);
     f.close_targets(targets, &router).await;
     let targets = f.open_targets(&intent, &input, &router).await;
@@ -1517,14 +1754,13 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         root: f.control.root.clone(),
         node: nodes().first().unwrap().clone(),
     };
-    let path = f.issuer._dir.path().join("independent-target-journal.redb");
+    let path = f.physical[&1].path("independent-target-journal.redb");
     let file_id = kasumi_store::node_store_ids::target_journal(
         installation.root.control_incarnation,
         &installation.node.verifier,
     )
     .unwrap();
-    let node = NodeStore::create_new_fixture(&path, file_id, kasumi_store::ScratchDisk::fixture())
-        .unwrap();
+    let node = f.physical[&1].create_new(&path, file_id).unwrap();
     let tenant = format!("kasumi.target.{}.1", f.control.root.control_incarnation);
     let provider = Arc::new(LocalKeyProvider::new([238; 32]));
     let access = StorageAccess::target_journal(&installation.root, &installation.node).unwrap();
@@ -1553,14 +1789,14 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         store.clone(),
         installation.clone(),
         limits.clone(),
-        f.admissions[&1].clone(),
+        f.physical[&1].admission.clone(),
     )
     .unwrap();
     let again = TargetJournal::open_existing(
         store.clone(),
         installation.clone(),
         limits.clone(),
-        f.admissions[&1].clone(),
+        f.physical[&1].admission.clone(),
     )
     .unwrap();
     assert!(Arc::ptr_eq(&journal, &again));
@@ -1579,32 +1815,29 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     }
     // Crash after durable creation intent, before the file exists. Losing the
     // first permit must never turn its original replay into a new creator.
-    let file_path = f.issuer._dir.path().join("file-intent-target.redb");
+    let file_path = f.physical[&1].path("file-intent-target.redb");
     let creation = journal.reserve_materialization_file(&op).unwrap();
     drop(creation);
     assert!(
         journal
             .reserve_materialization_file(&op)
             .unwrap()
-            .open(&file_path, kasumi_store::ScratchDisk::fixture())
+            .open(&file_path, f.physical[&1].scratch.clone())
             .is_err()
     );
     assert!(!file_path.exists());
     // A replacement node, even a canonical Kasumi file, cannot be adopted when
     // its installed UUID differs. The rejected replay must leave its bytes alone.
-    let unrelated = NodeStore::create_new_fixture(
-        &file_path,
-        Uuid::new_v4(),
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
+    let unrelated = f.physical[&1]
+        .create_new(&file_path, Uuid::new_v4())
+        .unwrap();
     drop(unrelated);
     let unrelated_bytes = std::fs::read(&file_path).unwrap();
     assert!(
         journal
             .reserve_materialization_file(&op)
             .unwrap()
-            .open(&file_path, kasumi_store::ScratchDisk::fixture())
+            .open(&file_path, f.physical[&1].scratch.clone())
             .is_err()
     );
     assert_eq!(std::fs::read(&file_path).unwrap(), unrelated_bytes);
@@ -1633,7 +1866,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         store.clone(),
         installation.clone(),
         limits.clone(),
-        f.admissions[&1].clone(),
+        f.physical[&1].admission.clone(),
     )
     .unwrap();
     let extra = f
@@ -1665,7 +1898,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         store.clone(),
         installation.clone(),
         limits.clone(),
-        f.admissions[&1].clone(),
+        f.physical[&1].admission.clone(),
     )
     .unwrap();
     let retained = journal
@@ -1683,7 +1916,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         store.clone(),
         installation.clone(),
         limits.clone(),
-        f.admissions[&1].clone(),
+        f.physical[&1].admission.clone(),
     )
     .unwrap();
     journal
@@ -1751,9 +1984,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     store.shutdown().await.unwrap();
     drop(store);
     drop(node);
-    let node =
-        NodeStore::open_existing_fixture(path, file_id, kasumi_store::ScratchDisk::fixture())
-            .unwrap();
+    let node = f.physical[&1].open_existing(path, file_id).unwrap();
     let store = TenantStore::open_existing(node, tenant, provider, access)
         .await
         .unwrap();
@@ -1761,7 +1992,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         store.clone(),
         installation.clone(),
         limits.clone(),
-        f.admissions[&1].clone(),
+        f.physical[&1].admission.clone(),
     )
     .unwrap();
     reopened.stop(&stop_op, &proof).unwrap();
@@ -1778,7 +2009,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
             .unwrap(),
         terminal
     );
-    assert!(!f.issuer._dir.path().join("target-1.redb").exists());
+    assert!(!f.physical[&1].path("target-1.redb").exists());
     drop(stop_op);
     stop_scope.close();
     stop_scope.drain().await;
@@ -1805,7 +2036,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
                 store.clone(),
                 installation.clone(),
                 limits.clone(),
-                f.admissions[&1].clone()
+                f.physical[&1].admission.clone()
             )
             .is_err()
         );
@@ -1829,7 +2060,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
             store.clone(),
             installation,
             limits,
-            f.admissions[&1].clone()
+            f.physical[&1].admission.clone()
         )
         .is_err()
     );
@@ -1906,17 +2137,17 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         root: f.control.root.clone(),
         node: nodes().first().unwrap().clone(),
     };
-    let journal_path = f.issuer._dir.path().join("creation-outcome-journal.redb");
-    let node = NodeStore::create_new_fixture(
-        &journal_path,
-        kasumi_store::node_store_ids::target_journal(
-            installation.root.control_incarnation,
-            &installation.node.verifier,
+    let journal_path = f.physical[&1].path("creation-outcome-journal.redb");
+    let node = f.physical[&1]
+        .create_new(
+            &journal_path,
+            kasumi_store::node_store_ids::target_journal(
+                installation.root.control_incarnation,
+                &installation.node.verifier,
+            )
+            .unwrap(),
         )
-        .unwrap(),
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
+        .unwrap();
     let store = TenantStore::initialize_catalog(
         node.clone(),
         format!("kasumi.target.{}.1", installation.root.control_incarnation),
@@ -1931,7 +2162,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         TargetJournalLimits {
             max_metadata_bytes: 4 << 20,
         },
-        f.admissions[&1].clone(),
+        f.physical[&1].admission.clone(),
     )
     .unwrap();
     let scope = f.journal_scope(&f.intent).await;
@@ -1939,11 +2170,11 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     journal
         .prepare(&operation, &f.input.digest().unwrap())
         .unwrap();
-    let path = f.issuer._dir.path().join("creation-outcome-target.redb");
+    let path = f.physical[&1].path("creation-outcome-target.redb");
     let MaterializationNode::Created(target) = journal
         .reserve_materialization_file(&operation)
         .unwrap()
-        .open(&path, kasumi_store::ScratchDisk::fixture())
+        .open(&path, f.physical[&1].scratch.clone())
         .unwrap()
     else {
         panic!("original durable file dispatch lost catalog initialization permission")
@@ -1954,7 +2185,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     let MaterializationNode::Existing(target) = journal
         .reserve_materialization_file(&operation)
         .unwrap()
-        .open(&path, kasumi_store::ScratchDisk::fixture())
+        .open(&path, f.physical[&1].scratch.clone())
         .unwrap()
     else {
         panic!("replay regained original catalog initialization permission")
@@ -1978,7 +2209,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         journal
             .reserve_materialization_file(&operation)
             .unwrap()
-            .open(&path, kasumi_store::ScratchDisk::fixture())
+            .open(&path, f.physical[&1].scratch.clone())
             .is_err()
     );
     assert!(!path.exists());

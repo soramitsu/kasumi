@@ -807,6 +807,9 @@ pub trait ReadableTable<K: Key + 'static, V: Value + 'static>: ReadableTableMeta
 pub struct ReadOnlyUntypedTable {
     name: String,
     tree: RawBtree,
+    // An untyped handle can outlive its ReadTransaction. It must pin the
+    // transaction tracker just like a typed read table does.
+    _transaction_guard: Arc<TransactionGuard>,
 }
 
 impl Sealed for ReadOnlyUntypedTable {}
@@ -844,11 +847,13 @@ impl ReadOnlyUntypedTable {
         hint: PageHint,
         fixed_key_size: Option<usize>,
         fixed_value_size: Option<usize>,
+        guard: Arc<TransactionGuard>,
         mem: PageResolver,
     ) -> Self {
         Self {
             name: name.to_string(),
             tree: RawBtree::new(root_page, fixed_key_size, fixed_value_size, mem, hint),
+            _transaction_guard: guard,
         }
     }
 }

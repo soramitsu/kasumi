@@ -1,0 +1,11 @@
+{
+  "name": "run",
+  "pid": 46335,
+  "pgid": 46335,
+  "argv": [
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-04/tests",
+    "node_disk::directory::cursor::tests::",
+    "--nocapture",
+    "--test-threads=1"
+  ]
+}

@@ -1,0 +1,35 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+0000000100109ba8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}>:
+100109ba8: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+100109bac: a9017bfd    	stp	x29, x30, [sp, #0x10]
+100109bb0: 910043fd    	add	x29, sp, #0x10
+100109bb4: d12c43ff    	sub	sp, sp, #0xb10
+100109bb8: f90003ff    	str	xzr, [sp]
+100109bbc: f90053e8    	str	x8, [sp, #0xa0]
+100109bc0: f90057e0    	str	x0, [sp, #0xa8]
+100109bc4: f9005fe1    	str	x1, [sp, #0xb8]
+100109bc8: aa0003e8    	mov	x8, x0
+100109bcc: f81883a8    	stur	x8, [x29, #-0x78]
+100109bd0: aa0003e8    	mov	x8, x0
+100109bd4: f81903a8    	stur	x8, [x29, #-0x70]
+100109bd8: 39482008    	ldrb	w8, [x0, #0x208]
+100109bdc: b900b7e8    	str	w8, [sp, #0xb4]
+100109be0: 34000168    	cbz	w8, 0x100109c0c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x64>
+100109be4: 14000001    	b	0x100109be8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x40>
+100109be8: b940b7e8    	ldr	w8, [sp, #0xb4]
+100109bec: 71000508    	subs	w8, w8, #0x1
+100109bf0: 54000260    	b.eq	0x100109c3c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x94>
+100109bf4: 14000001    	b	0x100109bf8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x50>
+100109bf8: b940b7e8    	ldr	w8, [sp, #0xb4]
+100109bfc: 71000908    	subs	w8, w8, #0x2
+100109c00: 54000240    	b.eq	0x100109c48 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0xa0>
+100109c04: 14000001    	b	0x100109c08 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x60>
+100109c08: 14000013    	b	0x100109c54 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0xac>
+100109c0c: f94057e9    	ldr	x9, [sp, #0xa8]
+100109c10: 3908253f    	strb	wzr, [x9, #0x209]
+100109c14: 3908293f    	strb	wzr, [x9, #0x20a]
+100109c18: 52800028    	mov	w8, #0x1                ; =1

@@ -1,0 +1,32 @@
+10003c034: 14000001    	b	0x10003c038 <<lifecycle::Fixture>::new::{closure#0}+0x5c>
+10003c044: 14000001    	b	0x10003c048 <<lifecycle::Fixture>::new::{closure#0}+0x6c>
+10003c054: 14000001    	b	0x10003c058 <<lifecycle::Fixture>::new::{closure#0}+0x7c>
+10003c058: 1400000b    	b	0x10003c084 <<lifecycle::Fixture>::new::{closure#0}+0xa8>
+10003c064: 948602d6    	bl	0x1021bcbbc <<kasumi_types::Limits as core::default::Default>::default>
+10003c068: 14000016    	b	0x10003c0c0 <<lifecycle::Fixture>::new::{closure#0}+0xe4>
+10003c074: 1400002a    	b	0x10003c11c <<lifecycle::Fixture>::new::{closure#0}+0x140>
+10003c080: 1400002a    	b	0x10003c128 <<lifecycle::Fixture>::new::{closure#0}+0x14c>
+10003c08c: 14000021    	b	0x10003c110 <<lifecycle::Fixture>::new::{closure#0}+0x134>
+10003c0a8: 948d4cdf    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>
+10003c0bc: 17fffff5    	b	0x10003c090 <<lifecycle::Fixture>::new::{closure#0}+0xb4>
+10003c0c0: 14000001    	b	0x10003c0c4 <<lifecycle::Fixture>::new::{closure#0}+0xe8>
+10003c0dc: 940275d5    	bl	0x1000d9830 <<lifecycle::Fixture>::limits>
+10003c0e0: 14000001    	b	0x10003c0e4 <<lifecycle::Fixture>::new::{closure#0}+0x108>
+10003c0f0: 94000bfe    	bl	0x10003f0e8 <<<lifecycle::Fixture>::limits::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003c0f4: 14000001    	b	0x10003c0f8 <<lifecycle::Fixture>::new::{closure#0}+0x11c>
+10003c108: 948d4d84    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003c10c: 14000001    	b	0x10003c110 <<lifecycle::Fixture>::new::{closure#0}+0x134>
+10003c118: 1400000f    	b	0x10003c154 <<lifecycle::Fixture>::new::{closure#0}+0x178>
+10003c124: 948d4c56    	bl	0x10238f27c <core::panicking::panic_const::panic_const_async_fn_resumed>
+10003c130: 948d4c5a    	bl	0x10238f298 <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+10003c138: 940197f9    	bl	0x1000a211c <core::ptr::drop_glue::<<lifecycle::Fixture>::limits::{closure#0}>>
+10003c13c: 17ffffd5    	b	0x10003c090 <<lifecycle::Fixture>::new::{closure#0}+0xb4>
+10003c150: 17fffff9    	b	0x10003c134 <<lifecycle::Fixture>::new::{closure#0}+0x158>
+10003c164: 94000ab4    	bl	0x10003ec34 <<lifecycle::Fixture>::limits::{closure#0}>
+10003c168: 14000001    	b	0x10003c16c <<lifecycle::Fixture>::new::{closure#0}+0x190>
+10003c180: 14000001    	b	0x10003c184 <<lifecycle::Fixture>::new::{closure#0}+0x1a8>
+10003c1d0: 948d4d52    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003c1d8: 940197d1    	bl	0x1000a211c <core::ptr::drop_glue::<<lifecycle::Fixture>::limits::{closure#0}>>
+10003c1dc: 14000001    	b	0x10003c1e0 <<lifecycle::Fixture>::new::{closure#0}+0x204>
+10003c1f4: 948d4d49    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003c220: 948d4b15    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>

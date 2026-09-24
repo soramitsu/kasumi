@@ -3,7 +3,7 @@ use super::*;
 use crate::ReadableTable;
 use crate::{
     CloseError, CommitError, Database, DatabaseError, ReadableDatabase, ReadableTableMetadata,
-    StorageError, TableDefinition,
+    StorageError, TableDefinition, TransactionError,
 };
 use std::sync::{
     Arc,
@@ -19,6 +19,8 @@ struct Owner {
     failures: AtomicU64,
     settled: AtomicU64,
     reservations: AtomicU64,
+    workspace_denied: AtomicBool,
+    workspace_calls: AtomicU64,
 }
 impl Owner {
     fn new(maximum: u64) -> Arc<Self> {
@@ -28,10 +30,24 @@ impl Owner {
             failures: AtomicU64::new(0),
             settled: AtomicU64::new(0),
             reservations: AtomicU64::new(0),
+            workspace_denied: AtomicBool::new(false),
+            workspace_calls: AtomicU64::new(0),
         })
     }
 }
 impl StorageAdmission for Owner {
+    fn reserve_workspace(
+        &self,
+        _bytes: u64,
+    ) -> core::result::Result<Box<dyn crate::ResidentLease>, crate::AdmissionError> {
+        self.workspace_calls.fetch_add(1, Ordering::Relaxed);
+        if self.workspace_denied.load(Ordering::Acquire) {
+            return Err(crate::AdmissionError::CapacityDenied);
+        }
+        self.check_owner()
+            .map_err(|_| crate::AdmissionError::OwnerFailed)?;
+        Ok(Box::new(()))
+    }
     fn check_owner(&self) -> Result<(), OwnerFailed> {
         if self.failed.load(Ordering::Acquire) {
             Err(OwnerFailed)
@@ -95,6 +111,31 @@ fn construction_denial_never_grows_or_fails_owner() {
         Err(DatabaseError::Storage(StorageError::CapacityDenied))
     ));
     assert_eq!(file.as_file().metadata().unwrap().len(), 0);
+    assert_eq!(owner.failures.load(Ordering::Relaxed), 0);
+}
+#[test]
+fn direct_header_workspace_denial_precedes_create_file_mutation() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let owner = Owner::new(u64::MAX);
+    owner.workspace_denied.store(true, Ordering::Release);
+    assert!(matches!(
+        Database::builder(owner.clone()).create(file.path()),
+        Err(DatabaseError::Storage(StorageError::CapacityDenied))
+    ));
+    assert!(owner.workspace_calls.load(Ordering::Relaxed) >= 1);
+    assert_eq!(file.as_file().metadata().unwrap().len(), 0);
+    assert_eq!(owner.failures.load(Ordering::Relaxed), 0);
+    owner.workspace_denied.store(false, Ordering::Release);
+    let db = create(&file, owner.clone());
+    seed(&db);
+    db.close().unwrap();
+    let before = std::fs::read(file.path()).unwrap();
+    owner.workspace_denied.store(true, Ordering::Release);
+    assert!(matches!(
+        Database::builder(owner.clone()).open(file.path()),
+        Err(DatabaseError::Storage(StorageError::CapacityDenied))
+    ));
+    assert_eq!(std::fs::read(file.path()).unwrap(), before);
     assert_eq!(owner.failures.load(Ordering::Relaxed), 0);
 }
 #[test]
@@ -252,13 +293,21 @@ impl crate::StorageBackend for FaultBackend {
         }
         self.file.sync_data()
     }
-    fn close(&self) -> std::io::Result<()> {
+    fn close(&self) -> crate::BackendCloseOutcome {
         self.faults.closes.fetch_add(1, Ordering::Relaxed);
-        self.file.close()?;
-        if self.faults.fail_close.load(Ordering::Relaxed) {
-            return Err(std::io::Error::from(std::io::ErrorKind::Other));
+        let outcome = self.file.close();
+        if self.faults.fail_close.load(Ordering::Relaxed)
+            && matches!(
+                outcome.native_disposition(),
+                crate::BackendNativeDisposition::Drained
+            )
+        {
+            let (result, _) = outcome.into_parts();
+            return crate::BackendCloseOutcome::drained(
+                result.and_then(|()| Err(std::io::ErrorKind::Other.into())),
+            );
         }
-        Ok(())
+        outcome
     }
 }
 fn fault_database(
@@ -295,10 +344,17 @@ fn publication_and_sync_uncertainty_fences_once_and_reopens_an_atomic_root() {
         faults.fail_sync.store(sync, Ordering::Relaxed);
         assert!(matches!(
             write.commit(),
-            Err(CommitError::Storage(StorageError::OwnerFailed))
+            Err(CommitError::Storage(StorageError::Io(error)))
+                if error.kind() == std::io::ErrorKind::Other
         ));
-        assert!(db.begin_write().is_err());
-        assert!(db.begin_read().is_err());
+        assert!(matches!(
+            db.begin_write(),
+            Err(TransactionError::Storage(StorageError::OwnerFailed))
+        ));
+        assert!(matches!(
+            db.begin_read(),
+            Err(TransactionError::Storage(StorageError::OwnerFailed))
+        ));
         assert_eq!(owner.failures.load(Ordering::Relaxed), 1);
         drop(db);
         assert_eq!(faults.closes.load(Ordering::Relaxed), 1);
@@ -324,7 +380,8 @@ fn explicit_close_propagates_failure_and_never_closes_backend_twice() {
     faults.fail_close.store(true, Ordering::Relaxed);
     assert!(matches!(
         db.close(),
-        Err(CloseError::Storage(StorageError::OwnerFailed))
+        Err(CloseError::Storage(StorageError::Io(error)))
+            if error.kind() == std::io::ErrorKind::Other
     ));
     assert_eq!(faults.closes.load(Ordering::Relaxed), 1);
     assert_eq!(owner.failures.load(Ordering::Relaxed), 1);
@@ -397,11 +454,11 @@ fn observe_allocation() {
         }
     });
 }
-fn begin_allocation_observation() {
+pub(super) fn begin_allocation_observation() {
     ALLOCATIONS.with(|count| count.set(0));
     ALLOCATION_GUARD.with(|guard| guard.set(true));
 }
-fn end_allocation_observation() -> usize {
+pub(super) fn end_allocation_observation() -> usize {
     ALLOCATION_GUARD.with(|guard| guard.set(false));
     ALLOCATIONS.with(std::cell::Cell::get)
 }
@@ -611,7 +668,8 @@ fn uncertain_winning_header_failure_is_nonallocating_and_fences_once() {
     let allocations = end_allocation_observation();
     assert!(matches!(
         result,
-        Err(CommitError::Storage(StorageError::OwnerFailed))
+        Err(CommitError::Storage(StorageError::Io(error)))
+            if error.kind() == std::io::ErrorKind::Other
     ));
     assert_eq!(allocations, 0);
     assert_eq!(owner.failures.load(Ordering::Relaxed), 1);

@@ -174,6 +174,9 @@ pub fn peer_client_config(
             identity.private_key.clone_key(),
         )?;
     config.enable_early_data = false;
+    // This config is shared by pinned cluster HTTP and native gRPC peers.
+    // Require HTTP/2 for authenticated, multiplexed peer traffic.
+    config.alpn_protocols = vec![b"h2".to_vec()];
     Ok(config)
 }
 

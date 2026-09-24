@@ -175,6 +175,12 @@ async fn page(operation: &str, profile_path: &Path, input: &Path, output: &Path)
                         stream_id: status.position.stream_id,
                         next_index: 0,
                         through_index: status.archive_segments,
+                        snapshot_head: status
+                            .position
+                            .archive_head
+                            .as_ref()
+                            .map(|archive| archive.object.clone()),
+                        previous: None,
                     });
                 }
                 serde_json::to_value(request)?

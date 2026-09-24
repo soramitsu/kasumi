@@ -1,0 +1,38 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi/vendor/redb-4.2.0)
+warning: `panic` is ambiguous
+   --> src/page_list_tests.rs:305:9
+    |
+305 |         panic!("close lost original I/O: {error:?}");
+    |         ^^^^^ ambiguous name
+    |
+    = note: ambiguous because of a conflict between a name from a glob import and an outer scope during import or macro resolution
+note: `panic` could refer to the macro imported here
+   --> src/page_list_tests.rs:1:5
+    |
+  1 | use super::*;
+    |     ^^^^^^^^
+    = help: consider adding an explicit import of `panic` to disambiguate
+    = help: or use `self::panic` to refer to this macro unambiguously
+note: `panic` could also refer to a macro from prelude
+   --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/prelude/mod.rs:171:12
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #147319 <https://github.com/rust-lang/rust/issues/147319>
+    = note: `#[warn(ambiguous_panic_imports)]` (part of `#[warn(future_incompatible)]`) on by default
+
+error[E0596]: cannot borrow `drain` as mutable, as it is not declared as mutable
+    --> src/transactions.rs:1377:26
+     |
+1367 |                 let mut iter = data_freed.extract_from_if(lower.., |_, _| true)?;
+     |                                ---------- calling `drain` requires mutable binding due to mutable borrow of `data_freed`
+...
+1377 |             let result = drain();
+     |                          ^^^^^ cannot borrow as mutable
+     |
+help: consider changing this to be mutable
+     |
+1365 |             let mut drain = || -> Result<(), StorageError> {
+     |                 +++
+
+For more information about this error, try `rustc --explain E0596`.
+warning: `redb` (lib test) generated 1 warning
+error: could not compile `redb` (lib test) due to 1 previous error; 1 warning emitted

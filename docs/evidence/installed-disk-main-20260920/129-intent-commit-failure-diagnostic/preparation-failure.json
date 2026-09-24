@@ -1,0 +1,6 @@
+{
+  "status": "PREPARATION_ONLY_FAILED_BEFORE_SOURCE_WRITE",
+  "reason": "Initial replace selector matched two helpers; constrained successor to commit_next_intent only",
+  "actual_source_changed": false,
+  "rust_invoked": false
+}

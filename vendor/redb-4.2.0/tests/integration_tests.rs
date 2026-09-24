@@ -127,7 +127,7 @@ impl StorageBackend for BlockingSyncBackend {
         self.inner.write(offset, data)
     }
 
-    fn close(&self) -> Result<(), std::io::Error> {
+    fn close(&self) -> redb::BackendCloseOutcome {
         self.inner.close()
     }
 }
@@ -177,6 +177,10 @@ impl StorageBackend for SharedInMemoryBackend {
         guard[offset..end].copy_from_slice(data);
         Ok(())
     }
+
+    fn close(&self) -> redb::BackendCloseOutcome {
+        redb::BackendCloseOutcome::drained(Ok(()))
+    }
 }
 
 #[derive(Debug)]
@@ -209,6 +213,10 @@ impl StorageBackend for WriteCountingBackend {
             self.header_writes.fetch_add(1, Ordering::SeqCst);
         }
         self.inner.write(offset, data)
+    }
+
+    fn close(&self) -> redb::BackendCloseOutcome {
+        self.inner.close()
     }
 }
 
@@ -269,6 +277,10 @@ impl StorageBackend for FailingBackend {
 
     fn write(&self, offset: u64, data: &[u8]) -> Result<(), std::io::Error> {
         self.inner.write(offset, data)
+    }
+
+    fn close(&self) -> redb::BackendCloseOutcome {
+        self.inner.close()
     }
 }
 
@@ -478,9 +490,9 @@ fn close_called_exactly_once_on_shutdown_io_error() {
             self.inner.write(offset, data)
         }
 
-        fn close(&self) -> Result<(), std::io::Error> {
+        fn close(&self) -> redb::BackendCloseOutcome {
             self.close_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            self.inner.close()
         }
     }
 
@@ -563,9 +575,9 @@ fn close_called_exactly_once_when_open_fails() {
             Ok(())
         }
 
-        fn close(&self) -> Result<(), std::io::Error> {
+        fn close(&self) -> redb::BackendCloseOutcome {
             self.close_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            redb::BackendCloseOutcome::drained(Ok(()))
         }
     }
 
@@ -953,13 +965,13 @@ fn corrupted_persistent_savepoint_record() {
         id
     };
 
-    // Find the serialized savepoint record: version 3, the savepoint id, a plausible
+    // Find the serialized savepoint record: version 4, the savepoint id, a plausible
     // transaction id, and a non-null user root
     let mut data = fs::read(path).unwrap();
     let mut offsets = vec![];
     for i in 0..data.len() - 18 {
         let transaction_id = u64::from_le_bytes(data[i + 9..i + 17].try_into().unwrap());
-        if data[i] == 3
+        if data[i] == 4
             && u64::from_le_bytes(data[i + 1..i + 9].try_into().unwrap()) == savepoint_id
             && transaction_id > 0
             && transaction_id < 100

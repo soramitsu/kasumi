@@ -37,8 +37,15 @@ async fn run(arguments: &[String]) -> Result<()> {
         return Ok(());
     }
     match arguments {
-        [command] if command == "example-config" => {
-            println!("{}", serde_json::to_string_pretty(&example_config())?);
+        [command, policy_flag, policy]
+            if command == "example-config" && policy_flag == "--directory-policy" =>
+        {
+            let policy =
+                kasumi_server::standalone_cli::directory_policy(std::path::Path::new(policy))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&example_config(policy)?)?
+            );
             Ok(())
         }
         [command, path] if command == "check-config" => {
@@ -87,7 +94,7 @@ async fn run(arguments: &[String]) -> Result<()> {
             result
         }
         _ => bail!(
-            "usage: kasumid init --mode standalone <absolute-directory> [--tenant name] | initialize-target-journal <runtime.json> | example-config | check-config <configuration.json> | provision-node <configuration.json> | serve <configuration.json> | tenant stage <configuration.json> <request.json> | tenant stage-status <configuration.json> <operation-uuid> | credential create <control-profile> <request.json> <output-profile> | credential renew|watch <profile> | credential status|revoke <control-profile> <family-uuid> | maintenance rotate-wrapping-keys|rotate-signer|rotate-certificates <configuration.json> | recover-administrator <configuration.json> <new-private-directory> | backup-operator-keys <configuration.json> <new-private-directory> | verify-operator-keys <private-directory> | backup create <database-profile> <destination> <checkpoint.json> | backup status|verify <database-profile> <destination> <session-uuid> | backup abort <database-profile> <destination> <session-uuid> <reason> | backup cleanup <database-profile> <destination> <session-uuid> <max-objects> | audit status <control-profile> | audit export|archives <control-profile> <request.json> <output.json> | audit verify <control-profile> <stream-uuid> <index> | control-recovery configuration-digest|start|status|resume|stop|phase <arguments> | local-recovery start|status|resume|stop <configuration.json> <request.json-or-operation-uuid>"
+            "usage: kasumid init --mode standalone <absolute-directory> --directory-policy <policy.json> --network <network.json> [--tenant name] | initialize-target-journal <runtime.json> | example-config --directory-policy <policy.json> | check-config <configuration.json> | provision-node <configuration.json> | serve <configuration.json> | tenant stage <configuration.json> <request.json> | tenant stage-status <configuration.json> <operation-uuid> | credential create <control-profile> <request.json> <output-profile> | credential renew|watch <profile> | credential status|revoke <control-profile> <family-uuid> | maintenance rotate-wrapping-keys|rotate-signer|rotate-certificates <configuration.json> | recover-administrator <configuration.json> <new-private-directory> | backup-operator-keys <configuration.json> <new-private-directory> | verify-operator-keys <private-directory> | backup create <database-profile> <destination> <checkpoint.json> | backup status|verify <database-profile> <destination> <session-uuid> | backup abort <database-profile> <destination> <session-uuid> <reason> | backup cleanup <database-profile> <destination> <session-uuid> <max-objects> | audit status <control-profile> | audit export|archives <control-profile> <request.json> <output.json> | audit verify <control-profile> <stream-uuid> <index> | control-recovery configuration-digest|start|status|resume|stop|phase <arguments> | local-recovery start|status|resume|stop <configuration.json> <request.json-or-operation-uuid>"
         ),
     }
 }

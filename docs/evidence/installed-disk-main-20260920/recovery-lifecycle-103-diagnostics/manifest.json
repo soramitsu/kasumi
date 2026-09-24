@@ -1,0 +1,29 @@
+{
+  "status": "PREPARED_UNAPPLIED_UNCOMPILED",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "patch_sha256": "e56e14c5c30758240eb9d57806e4dfa2d721e60439fd52adb3807f8bfb2d338c",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/recovery_service.rs",
+      "before_sha256": "fee3b592052995aca30633da7a1fc36fe0be5f3ef74b0df737141d51d64fc0af",
+      "proposed_sha256": "4bb07d3d50e666deb39bfe25acebc5783ab0d5415db344c09f14b0ee2536da7a"
+    },
+    {
+      "path": "crates/kasumi-engine/src/service.rs",
+      "before_sha256": "ec626a8a8d6729917e0fcbbac8c64b84fb60e4b4869f3fa971197a7d38a41072",
+      "proposed_sha256": "4ae922724056357579b842e82d982553f17550e05ab11eb01954ce23908f80c6"
+    },
+    {
+      "path": "crates/kasumi-engine/tests/common/recovery_control.rs",
+      "before_sha256": "385db3954c23cd9b22a9bac87d29113685f2744a1957635305469bf48e29eb87",
+      "proposed_sha256": "78a61799150f2db94644fd0b55916ff2994ebd276c9d87cf567c58ba279d8f03"
+    }
+  ],
+  "cargo_run": false,
+  "tests_run": false,
+  "git_apply_check_exit": 0,
+  "rustfmt_check_exit": 0,
+  "readme_sha256": "7d76f412f184dba15a84e584dc421ceae93f2b90cb264a6e631547351e351369",
+  "unknown_outcome_original_cause": "not present in run103; diagnostic only"
+}

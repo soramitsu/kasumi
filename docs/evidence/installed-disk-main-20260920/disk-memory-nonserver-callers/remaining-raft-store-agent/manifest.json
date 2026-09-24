@@ -1,0 +1,152 @@
+{
+  "status": "PREPARED_UNAPPLIED_UNCOMPILED",
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "combined_patch_sha256": "bacf3ac67ba6400d60ca71aff9a4acc19f8a627b4dc16395517d8d99832a4247",
+  "followup_patch_sha256": "55dff7fe066e5797da24b8480184745a4b680a56feab2af7b8eccf6f0f7dd98e",
+  "first_layer_sha256": "23ba7539be11910d5d271bcdd6a725032435f715e240f8a615b7e158fb7df23e",
+  "store_revision2_sha256": "10ebc1c6ee2a0df7c65b67302757b537ddedcb000008ea5391a82d030fab5259",
+  "files": [
+    {
+      "path": "crates/kasumi-raft/src/control_tests.rs",
+      "actual_before_sha256": "1a95dc15b3acbf9a7c8ad2d108678bdf4986010bfb911181dfe7f09329f125c2",
+      "after_first_layer_sha256": "5eb714405f56ca62a22d2add2c0581b39bebc6e5bdaa507d4061959558f6509b",
+      "proposed_sha256": "d723fc8c0c1cba2c2ab27a665e796914d161ed2e63917c36befab7775d8dea1d",
+      "stacked": true,
+      "scratch_calls": 11,
+      "test_attributes": 13
+    },
+    {
+      "path": "crates/kasumi-raft/src/custody_capacity_tests.rs",
+      "actual_before_sha256": "bf19a850d29e30ca06c1280d166d4feaed905f402eeaa10355208473427d3798",
+      "after_first_layer_sha256": "384b0f81690d1b298a852969c9214544176f41730b1fbc0d4365f1bb448dfd7e",
+      "proposed_sha256": "acebc8f3a409bfb5f4080fbd872dbfffedbd49a52daa71cf18d200ae06f264fb",
+      "stacked": true,
+      "scratch_calls": 1,
+      "test_attributes": 1
+    },
+    {
+      "path": "crates/kasumi-raft/src/custody_machine.rs",
+      "actual_before_sha256": "98dcad5d583a93b192e3a7d21961cf3dceefc71c43ec73dfe9977977c929839f",
+      "after_first_layer_sha256": "f96f62c59b418380d979207a4f0433467c63a4571282144cce4f8a2a3d04ccd2",
+      "proposed_sha256": "c56d405b2a70e7b9aa5964ec876878fe51b34ec01d801dc7cf05d5e6b80da026",
+      "stacked": true,
+      "scratch_calls": 7,
+      "test_attributes": 7
+    },
+    {
+      "path": "crates/kasumi-raft/src/custody_records.rs",
+      "actual_before_sha256": "a58161ea2faf11f3c9f21889aa0e499571f6645e6b82d1560dc38643924e5c1b",
+      "after_first_layer_sha256": "e0b3ab584e05f5a0e09fd384e2515132d4192a53d6854feeadb31c2be46704d9",
+      "proposed_sha256": "e0b3ab584e05f5a0e09fd384e2515132d4192a53d6854feeadb31c2be46704d9",
+      "stacked": true,
+      "scratch_calls": 0,
+      "test_attributes": 0
+    },
+    {
+      "path": "crates/kasumi-raft/src/snapshot_buffer_tests.rs",
+      "actual_before_sha256": "b6b376aeecc200b03f45da710ea1b6afdbd7c7d1331aa32bd90edafd9eb267d1",
+      "after_first_layer_sha256": "e4d5d93b3d19169be31966d0397ad017a666d417c3cf2fe4068a5818799b3353",
+      "proposed_sha256": "c468f0ab0e191ede4fe1b30dc77af654753656b280aad1f72b39fdca6474c723",
+      "stacked": true,
+      "scratch_calls": 7,
+      "test_attributes": 8
+    },
+    {
+      "path": "crates/kasumi-raft/src/startup_owner_tests.rs",
+      "actual_before_sha256": "093e2bba6dd708dad1fa403a6f672dd4e97aef7a9ee8b81dda1bca7b87922041",
+      "after_first_layer_sha256": "093e2bba6dd708dad1fa403a6f672dd4e97aef7a9ee8b81dda1bca7b87922041",
+      "proposed_sha256": "fa2822153604d1ce1184ea06b15eaae49ea4ef0329a9e0b34d89c003bf05461d",
+      "stacked": false,
+      "scratch_calls": 2,
+      "test_attributes": 11
+    },
+    {
+      "path": "crates/kasumi-raft/src/storage/joint_publication_tests.rs",
+      "actual_before_sha256": "50cde7e432448778df9b7066b487f4baa5c42520d8f0519b7c562b888e5c8d54",
+      "after_first_layer_sha256": "50cde7e432448778df9b7066b487f4baa5c42520d8f0519b7c562b888e5c8d54",
+      "proposed_sha256": "324d20d02db48bc2d9f931851c59f8f486b8cee897c41e374a95b8bf7f22ccdd",
+      "stacked": false,
+      "scratch_calls": 2,
+      "test_attributes": 2
+    },
+    {
+      "path": "crates/kasumi-raft/src/storage/snapshot_custody_tests.rs",
+      "actual_before_sha256": "561ce300471980e35a15f65fb53fda3e00125de3bf731874e514fc9abef4cf8c",
+      "after_first_layer_sha256": "bc6e4d529ae2016da518377c47d905c6d8ab405736b72acff89342e2b5f04c5c",
+      "proposed_sha256": "b10639b26d5ed19d52f5dffa9dae7d528bc7fd5fbbecd2b0bea9a9387ccbadfd",
+      "stacked": true,
+      "scratch_calls": 10,
+      "test_attributes": 10
+    },
+    {
+      "path": "crates/kasumi-raft/src/storage/tests.rs",
+      "actual_before_sha256": "7b2fb683463033d5076397e0518e22ca867aaa45a45ef10472de78f649e5e3d3",
+      "after_first_layer_sha256": "7b2fb683463033d5076397e0518e22ca867aaa45a45ef10472de78f649e5e3d3",
+      "proposed_sha256": "17fa04d0587a18c7eba6e7e57de93e8a6ccd32e4b413a3a491e2cb613d5d5f88",
+      "stacked": false,
+      "scratch_calls": 7,
+      "test_attributes": 7
+    },
+    {
+      "path": "crates/kasumi-raft/src/storage/worker_failure_tests.rs",
+      "actual_before_sha256": "315dd0d4fdc38a2678dd88a4cad5f6d1fa0696b91fdb70faffe30854c79c1587",
+      "after_first_layer_sha256": "315dd0d4fdc38a2678dd88a4cad5f6d1fa0696b91fdb70faffe30854c79c1587",
+      "proposed_sha256": "dd60e0e35cc564348e636b2bcaf18dbfced08ecbc5bbaebe050d89ca7b9fa553",
+      "stacked": false,
+      "scratch_calls": 1,
+      "test_attributes": 2
+    },
+    {
+      "path": "crates/kasumi-raft/tests/cluster.rs",
+      "actual_before_sha256": "86a6c174891899e18322958ed79e1be5e5170089f9f5582518202c52a6abd117",
+      "after_first_layer_sha256": "86a6c174891899e18322958ed79e1be5e5170089f9f5582518202c52a6abd117",
+      "proposed_sha256": "31bc3447262ac3760de15fb1cd77d75fe4839a3c0d3a9403563f5fc2f279714c",
+      "stacked": false,
+      "scratch_calls": 6,
+      "test_attributes": 7
+    },
+    {
+      "path": "crates/kasumi-raft/tests/common/mod.rs",
+      "actual_before_sha256": "383bbd341a835ed6a6440ace1f32e9fee0ec8d1e86562e63e9d0794d4bf5b757",
+      "after_first_layer_sha256": "383bbd341a835ed6a6440ace1f32e9fee0ec8d1e86562e63e9d0794d4bf5b757",
+      "proposed_sha256": "47080ae691d9109b2f9d78fff37679badf183f3e473bee7523000cc5db05e8ed",
+      "stacked": false,
+      "scratch_calls": 0,
+      "test_attributes": 0
+    },
+    {
+      "path": "crates/kasumi-raft/tests/read_barrier.rs",
+      "actual_before_sha256": "f0c299b86f501a79eb76e691a4ca0f19786e9796102b93230074b4f4fab1da12",
+      "after_first_layer_sha256": "f0c299b86f501a79eb76e691a4ca0f19786e9796102b93230074b4f4fab1da12",
+      "proposed_sha256": "8d41f5fb2b8e50a59e9812cb12b86387517181751c7285733928dee5fe2064f0",
+      "stacked": false,
+      "scratch_calls": 1,
+      "test_attributes": 5
+    },
+    {
+      "path": "crates/kasumi-raft/tests/shutdown.rs",
+      "actual_before_sha256": "8135aea048eb45cc8e0178a2bb9d4c981b50d3a4c61d6bd6f767ff0b0eea1d9b",
+      "after_first_layer_sha256": "8135aea048eb45cc8e0178a2bb9d4c981b50d3a4c61d6bd6f767ff0b0eea1d9b",
+      "proposed_sha256": "8b2db3491c5f5b992adbdd3607001dca6650d381c8c3ebfe81ebc37ffa79acab",
+      "stacked": false,
+      "scratch_calls": 1,
+      "test_attributes": 1
+    },
+    {
+      "path": "crates/kasumi-raft/tests/storage_conformance.rs",
+      "actual_before_sha256": "74b5de4f7784616ff338036414c853be8a2c21d72b62a4f36893f7446a9913b6",
+      "after_first_layer_sha256": "74b5de4f7784616ff338036414c853be8a2c21d72b62a4f36893f7446a9913b6",
+      "proposed_sha256": "aa013e1397221013106df370cfcd4132ca1e543da05933f7598fd61efc1c88a3",
+      "stacked": false,
+      "scratch_calls": 5,
+      "test_attributes": 5
+    }
+  ],
+  "rustfmt": "passed target-only",
+  "patch_check_exit_code": 0,
+  "actual_source_unchanged": true,
+  "cargo_runs": [],
+  "application": "Apply combined-raft-callers.patch directly to current actual source OR first layer callers.patch then followup.patch. Never apply both combined and first layer.",
+  "scope": "All current Raft scratch/physical-disk fixture constructor callers and helper dependencies; engine/server/authority/client/bench remain separate."
+}

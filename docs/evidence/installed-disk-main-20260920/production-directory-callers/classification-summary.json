@@ -1,0 +1,18 @@
+{
+  "groups": 28,
+  "production_call_sites": 44,
+  "raw_match_lines": 209,
+  "classifications": {
+    "test_or_test_utils": 112,
+    "production_site": 44,
+    "test_module": 6,
+    "inline_test": 39,
+    "production_owner_field": 1,
+    "test_function": 1,
+    "comment": 3,
+    "regular_file_unlink": 2,
+    "helper_declaration": 1
+  },
+  "production_remove_dir_all_or_AT_REMOVEDIR_sites": 0,
+  "notes": "No raw crate production recursive directory removal call found; TempDir cleanup in developer fixtures is listed separately. Scope includes benchmarks/examples, separated from daemon/library APIs."
+}

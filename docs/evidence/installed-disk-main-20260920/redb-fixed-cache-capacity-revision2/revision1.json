@@ -1,0 +1,6 @@
+{
+  "package": "target/installed-disk-validation/redb-fixed-cache-capacity",
+  "patch_sha256": "7ebe5c6ce81537ad3a862620ea45608ff31cf7aad524d3542417c5400ee26304",
+  "manifest_sha256": "f707d8ac54462f03fe7a35ce55ff58d66edebe5710c8ed2b8f6e5687ec03d792",
+  "actual_disposal_dependency": "2933c5a6b379bf61146a9a88b01f912f4ec5018d7182346307a341009f6bb434"
+}

@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "rg",
+    "--json",
+    "-n",
+    "\\b(create_directory|create_dir_all|create_dir|remove_dir_all|remove_dir|read_dir|DirBuilder|mkdirat|mkdir|rmdir|unlinkat|AT_REMOVEDIR|opendir|fdopendir|readdir|tempdir|tempdir_in|TempDir|WalkDir|walkdir)\\b",
+    "crates",
+    "--glob",
+    "*.rs"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "exit_code": 0,
+  "source_files": 499,
+  "test_files_included_in_raw_search": true,
+  "classification": "Human-reviewed cfg/module/caller classification in inventory.json; filename exclusions alone are insufficient."
+}

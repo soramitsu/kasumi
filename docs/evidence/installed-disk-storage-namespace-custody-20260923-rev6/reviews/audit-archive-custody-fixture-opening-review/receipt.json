@@ -1,0 +1,25 @@
+{
+  "status": "SCOPED_STATIC_REVIEW_PASS_RUNTIME_PENDING",
+  "manifest_sha256": "75a316e99dd498f2e7a309315ba2d4ced8701e56804ad764a9249f4166ba6ff5",
+  "patch_sha256": "c0a1725fb1d91212bd2182463a300f8c536b74c3db10b73c2e9c958eaab993b2",
+  "independent_apply_readback_matches": true,
+  "single_existing_test_only": true,
+  "preserved": [
+    "Original uncertain publication and substituted namespace cases, original archive inode/content and unrelated-file protections.",
+    "Repeated TenantStore shutdown is moved before explicit store drop, not removed.",
+    "Same installed disk, archive owner reopen, publication observer and final failure assertions."
+  ],
+  "added": [
+    "Stable original DrainIssue Arc identity across repeated failed NodeDatabase shutdown.",
+    "Retained installed FileOwner attempt, open-file credit, byte and pending promises while archive directory blocks census.",
+    "Explicit facade and directory drop, canceled-census retention, then accepted census before zero custody/credit assertions.",
+    "Node file identity and bytes before/after cleanup."
+  ],
+  "limitations": [
+    "Exact transfer into installed file_custody at legacy NodeDatabase shutdown is source-derived and remains runtime-unqualified.",
+    "DrainCompletion::Complete from the existing consuming NodeDatabase path is not proof that physical FileOwner custody drained.",
+    "This fixture does not establish mandatory production retained-opening/StorageCensus adoption or total memory bounds."
+  ],
+  "actual_source_changes": false,
+  "native_dispatched": false
+}

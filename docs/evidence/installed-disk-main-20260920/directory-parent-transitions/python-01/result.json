@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/python-01/driver.py"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp",
+  "pid": 34616,
+  "pgid": 34616,
+  "exit_code": 1,
+  "process_group_drained": true,
+  "elapsed_seconds": 0.206014666
+}

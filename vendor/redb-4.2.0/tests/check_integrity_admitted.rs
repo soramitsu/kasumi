@@ -78,6 +78,10 @@ impl StorageBackend for PatchBackend {
         guard[offset..offset + data.len()].copy_from_slice(data);
         Ok(())
     }
+
+    fn close(&self) -> redb::BackendCloseOutcome {
+        redb::BackendCloseOutcome::drained(Ok(()))
+    }
 }
 
 fn make_db(backend: PatchBackend, n: u64) -> Database {

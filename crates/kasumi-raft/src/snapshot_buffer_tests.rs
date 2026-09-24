@@ -54,7 +54,10 @@ async fn begin_write(buffer: &mut SnapshotBuffer) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_write_and_shutdown_join_actual_child_before_freezing() -> anyhow::Result<()> {
-    let disk = kasumi_store::ScratchDisk::fixture();
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let disk = fixture_scratch.clone();
     let owner = SnapshotBufferOwner::fixture();
     let mut buffer = SnapshotBuffer::new(&disk, 1 << 20, &owner)?;
     let (control, release) = ChildControl::paused(&buffer, 0);
@@ -88,7 +91,10 @@ async fn cancelled_write_and_shutdown_join_actual_child_before_freezing() -> any
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn abandoned_facade_and_cancelled_owner_drain_keep_actual_panic_and_charge()
 -> anyhow::Result<()> {
-    let disk = kasumi_store::ScratchDisk::fixture();
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let disk = fixture_scratch.clone();
     let charged = Arc::new(());
     let owner = SnapshotBufferOwner::new(1, charged.clone())?;
     let weak = Arc::downgrade(&owner);
@@ -134,7 +140,10 @@ async fn abandoned_facade_and_cancelled_owner_drain_keep_actual_panic_and_charge
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn original_io_failure_survives_io_bridge_and_repeated_typed_drain() -> anyhow::Result<()> {
-    let disk = kasumi_store::ScratchDisk::fixture();
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let disk = fixture_scratch.clone();
     let owner = SnapshotBufferOwner::fixture();
     let mut buffer = SnapshotBuffer::new(&disk, 1 << 20, &owner)?;
     let (control, release) = ChildControl::paused(&buffer, 1);
@@ -173,7 +182,10 @@ async fn original_io_failure_survives_io_bridge_and_repeated_typed_drain() -> an
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pending_read_is_joined_by_shutdown_and_cancelled_read_keeps_unread_bytes()
 -> anyhow::Result<()> {
-    let disk = kasumi_store::ScratchDisk::fixture();
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let disk = fixture_scratch.clone();
     let owner = SnapshotBufferOwner::fixture();
     let mut buffer = SnapshotBuffer::from_bytes(&disk, b"abcdefgh".to_vec(), 8, &owner)?;
     let (control, release) = ChildControl::paused(&buffer, 0);
@@ -226,7 +238,10 @@ async fn pending_read_is_joined_by_shutdown_and_cancelled_read_keeps_unread_byte
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pending_child_holds_its_fixed_slot_until_actual_join() -> anyhow::Result<()> {
-    let disk = kasumi_store::ScratchDisk::fixture();
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let disk = fixture_scratch.clone();
     let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
     let mut buffer = SnapshotBuffer::new(&disk, 1 << 20, &owner)?;
     let (control, release) = ChildControl::paused(&buffer, 0);
@@ -259,7 +274,10 @@ fn unused_owner_releases_its_reservation_without_a_drain() -> anyhow::Result<()>
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_startup_keeps_original_error_while_actual_child_drains() -> anyhow::Result<()> {
-    let disk = kasumi_store::ScratchDisk::fixture();
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let disk = fixture_scratch.clone();
     let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
     let mut buffer = SnapshotBuffer::new(&disk, 1 << 20, &owner)?;
     let (control, release) = ChildControl::paused(&buffer, 1);
@@ -324,7 +342,10 @@ async fn failed_startup_keeps_original_error_while_actual_child_drains() -> anyh
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_close_retains_the_actual_flush_child() -> anyhow::Result<()> {
-    let disk = kasumi_store::ScratchDisk::fixture();
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let disk = fixture_scratch.clone();
     let owner = SnapshotBufferOwner::fixture();
     let mut buffer = SnapshotBuffer::new(&disk, 1 << 20, &owner)?;
     buffer.write_all(b"dirty encrypted block").await?;

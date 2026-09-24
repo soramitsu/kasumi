@@ -1,0 +1,2 @@
+command: git apply --check --directory=target/installed-disk-validation/redb-page-list-key-copy-followup/base /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-page-list-key-copy-followup/correction.patch
+exit: 0

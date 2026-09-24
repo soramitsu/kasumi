@@ -1,5 +1,5 @@
 //! Local operator commands. Bearer material is written only to private files.
-use crate::standalone::{ClientProfile, initialize};
+use crate::standalone::{ClientProfile, StandaloneNetwork, initialize};
 use anyhow::{Context, Result, ensure};
 use kasumi_store::private_files;
 use std::path::Path;
@@ -123,23 +123,63 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
             }
             _ => anyhow::bail!("unknown maintenance operation"),
         },
-        [command, mode_flag, mode, directory]
-            if command == "init" && mode_flag == "--mode" && mode == "standalone" =>
+        [
+            command,
+            mode_flag,
+            mode,
+            directory,
+            policy_flag,
+            policy,
+            network_flag,
+            network,
+        ] if command == "init"
+            && mode_flag == "--mode"
+            && mode == "standalone"
+            && policy_flag == "--directory-policy"
+            && network_flag == "--network" =>
         {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&initialize(Path::new(directory), "default").await?)?
+                serde_json::to_string_pretty(
+                    &initialize(
+                        Path::new(directory),
+                        "default",
+                        directory_policy(Path::new(policy))?,
+                        standalone_network(Path::new(network))?
+                    )
+                    .await?
+                )?
             );
         }
-        [command, mode_flag, mode, directory, tenant_flag, tenant]
-            if command == "init"
-                && mode_flag == "--mode"
-                && mode == "standalone"
-                && tenant_flag == "--tenant" =>
+        [
+            command,
+            mode_flag,
+            mode,
+            directory,
+            policy_flag,
+            policy,
+            network_flag,
+            network,
+            tenant_flag,
+            tenant,
+        ] if command == "init"
+            && mode_flag == "--mode"
+            && mode == "standalone"
+            && policy_flag == "--directory-policy"
+            && network_flag == "--network"
+            && tenant_flag == "--tenant" =>
         {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&initialize(Path::new(directory), tenant).await?)?
+                serde_json::to_string_pretty(
+                    &initialize(
+                        Path::new(directory),
+                        tenant,
+                        directory_policy(Path::new(policy))?,
+                        standalone_network(Path::new(network))?
+                    )
+                    .await?
+                )?
             );
         }
         [command, action, path]
@@ -301,4 +341,88 @@ async fn renew(profile: &ClientProfile) -> Result<u64> {
     std::fs::remove_file(&journal)?;
     private_files::sync_parent(&journal)?;
     Ok(issued.expires_at_ms)
+}
+
+/// Load the caller's explicit namespace bounds before any installation work.
+/// Numeric validity does not replace qualification of the selected filesystem.
+pub fn directory_policy(path: &Path) -> Result<kasumi_store::DirectoryPolicy> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(4097)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() <= 4096, "directory policy exceeds size limit");
+    let policy: kasumi_store::DirectoryPolicy = serde_json::from_slice(&bytes)?;
+    policy.validate()?;
+    Ok(policy)
+}
+
+/// Read the complete selected loopback identity before creating installation files.
+pub fn standalone_network(path: &Path) -> Result<StandaloneNetwork> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(4097)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() <= 4096, "standalone network exceeds size limit");
+    let network: StandaloneNetwork = serde_json::from_slice(&bytes)?;
+    network.validate()?;
+    Ok(network)
+}
+
+#[cfg(test)]
+mod standalone_network_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_network_is_strict_and_prevalidated() {
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let path = directory.path().join("network.json");
+        let valid = br#"{"mcp_listen":"127.0.0.1:19443","mcp_public_url":"https://localhost:19443/mcp","native_listen":"127.0.0.1:19444","admin_listen":"127.0.0.1:19445"}"#;
+        std::fs::write(&path, valid).unwrap();
+        let selected = standalone_network(&path).unwrap();
+        assert_eq!(selected.mcp_listen.port(), 19443);
+        let explicit_default_https_port = br#"{"mcp_listen":"127.0.0.1:443","mcp_public_url":"https://localhost:443/mcp","native_listen":"127.0.0.1:19444","admin_listen":"127.0.0.1:19445"}"#;
+        std::fs::write(&path, explicit_default_https_port).unwrap();
+        assert_eq!(standalone_network(&path).unwrap().mcp_listen.port(), 443);
+        for bytes in [
+            br#"{}"#.as_slice(),
+            br#"{"mcp_listen":"127.0.0.1:19443","mcp_public_url":"https://localhost:19444/mcp","native_listen":"127.0.0.1:19444","admin_listen":"127.0.0.1:19445"}"#.as_slice(),
+            br#"{"mcp_listen":"127.0.0.1:19443","mcp_public_url":"https://localhost:19443/mcp","native_listen":"127.0.0.1:19443","admin_listen":"127.0.0.1:19445"}"#.as_slice(),
+            br#"{"mcp_listen":"127.0.0.1:19443","mcp_public_url":"https://localhost:19443/mcp","native_listen":"127.0.0.1:19444","admin_listen":"127.0.0.1:19445","legacy_port":9443}"#.as_slice(),
+            br#"{"mcp_listen":"127.0.0.1:19443","mcp_public_url":"https://localhost:19443/mcp","native_listen":"127.0.0.1:19444","admin_listen":"127.0.0.1:19445","mcp_listen":"127.0.0.1:19446"}"#.as_slice(),
+            br#"{"mcp_listen":"127.0.0.1:443","mcp_public_url":"https://localhost/mcp","native_listen":"127.0.0.1:19444","admin_listen":"127.0.0.1:19445"}"#.as_slice(),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(standalone_network(&path).is_err());
+        }
+        std::fs::write(&path, vec![b' '; 4097]).unwrap();
+        assert!(standalone_network(&path).is_err());
+    }
+}
+
+#[cfg(test)]
+mod directory_policy_tests {
+    use super::*;
+    #[test]
+    fn explicit_policy_is_bounded_strict_and_preserves_caller_values() {
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let path = directory.path().join("policy.json");
+        std::fs::write(&path, br#"{"extent_bytes":1048576,"max_entries":32768}"#).unwrap();
+        let policy = directory_policy(&path).unwrap();
+        assert_eq!(policy.extent_bytes, 1048576);
+        assert_eq!(policy.max_entries, 32768);
+        for bytes in [
+            br#"{}"#.as_slice(),
+            br#"{"extent_bytes":1048576}"#.as_slice(),
+            br#"{"extent_bytes":0,"max_entries":1}"#.as_slice(),
+            br#"{"extent_bytes":1,"max_entries":1,"legacy_default":true}"#.as_slice(),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(directory_policy(&path).is_err());
+        }
+        std::fs::write(&path, vec![b' '; 4097]).unwrap();
+        assert!(directory_policy(&path).is_err());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 }

@@ -1,0 +1,14 @@
+10014e370: 97fdf2da    	bl	0x1000caed8 <lifecycle::recovery_control::complete_recovery>
+10014e40c: 97fd5baa    	bl	0x1000a52b4 <core::ptr::drop_glue::<lifecycle::recovery_control::complete_recovery::{closure#0}>>
+10014e464: 97fe0f7a    	bl	0x1000d224c <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>> as core::future::into_future::IntoFuture>::into_future>
+10014e4b8: 97fd29f5    	bl	0x100098c8c <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>>>>
+10014e4dc: 97fe0fc9    	bl	0x1000d2400 <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>> as core::future::future::Future>::poll>
+10014e560: 97fd29cb    	bl	0x100098c8c <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>>>>
+10014e5d0: 97fdf279    	bl	0x1000cafb4 <lifecycle::recovery_control::exercise_route_publication>
+10014e644: 97fd7139    	bl	0x1000aab28 <core::ptr::drop_glue::<lifecycle::recovery_control::exercise_route_publication::{closure#0}>>
+10014e6a0: 97fe0ef0    	bl	0x1000d2260 <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>> as core::future::into_future::IntoFuture>::into_future>
+10014e6f8: 97fd296e    	bl	0x100098cb0 <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>>>>
+10014e718: 97fe0f4d    	bl	0x1000d244c <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>> as core::future::future::Future>::poll>
+10014e770: 97fd2950    	bl	0x100098cb0 <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>>>>
+10014e790: 97fd877e    	bl	0x1000b0588 <core::ptr::drop_glue::<lifecycle::Fixture>>
+10014e7b0: 97fd8776    	bl	0x1000b0588 <core::ptr::drop_glue::<lifecycle::Fixture>>

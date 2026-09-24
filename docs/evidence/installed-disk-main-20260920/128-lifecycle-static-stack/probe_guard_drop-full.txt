@@ -1,0 +1,29 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000b4030 <<lifecycle::bootstrap_vote_probe::Guard as core::ops::drop::Drop>::drop>:
+1000b4030: d10303ff    	sub	sp, sp, #0xc0
+1000b4034: a90b7bfd    	stp	x29, x30, [sp, #0xb0]
+1000b4038: 9102c3fd    	add	x29, sp, #0xb0
+1000b403c: f90007e0    	str	x0, [sp, #0x8]
+1000b4040: aa0003e8    	mov	x8, x0
+1000b4044: f81f83a8    	stur	x8, [x29, #-0x8]
+1000b4048: 3940c008    	ldrb	w8, [x0, #0x30]
+1000b404c: 370001a8    	tbnz	w8, #0x0, 0x1000b4080 <<lifecycle::bootstrap_vote_probe::Guard as core::ops::drop::Drop>::drop+0x50>
+1000b4050: 14000001    	b	0x1000b4054 <<lifecycle::bootstrap_vote_probe::Guard as core::ops::drop::Drop>::drop+0x24>
+1000b4054: 97fd7e98    	bl	0x100013ab4 <std::thread::functions::panicking>
+1000b4058: aa0003e8    	mov	x8, x0
+1000b405c: f94007e0    	ldr	x0, [sp, #0x8]
+1000b4060: 910043e1    	add	x1, sp, #0x10
+1000b4064: 390047e8    	strb	w8, [sp, #0x11]
+1000b4068: 528000a8    	mov	w8, #0x5                ; =5
+1000b406c: 390043e8    	strb	w8, [sp, #0x10]
+1000b4070: 52800008    	mov	w8, #0x0                ; =0
+1000b4074: 12000102    	and	w2, w8, #0x1
+1000b4078: 9400d15e    	bl	0x1000e85f0 <<lifecycle::bootstrap_vote_probe::Guard>::finish>
+1000b407c: 14000001    	b	0x1000b4080 <<lifecycle::bootstrap_vote_probe::Guard as core::ops::drop::Drop>::drop+0x50>
+1000b4080: a94b7bfd    	ldp	x29, x30, [sp, #0xb0]
+1000b4084: 910303ff    	add	sp, sp, #0xc0
+1000b4088: d65f03c0    	ret

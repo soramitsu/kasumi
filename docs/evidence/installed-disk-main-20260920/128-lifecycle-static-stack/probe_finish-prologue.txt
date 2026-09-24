@@ -1,0 +1,35 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000e85f0 <<lifecycle::bootstrap_vote_probe::Guard>::finish>:
+1000e85f0: d10583ff    	sub	sp, sp, #0x160
+1000e85f4: a9146ffc    	stp	x28, x27, [sp, #0x140]
+1000e85f8: a9157bfd    	stp	x29, x30, [sp, #0x150]
+1000e85fc: 910543fd    	add	x29, sp, #0x150
+1000e8600: f90037e0    	str	x0, [sp, #0x68]
+1000e8604: f9002be1    	str	x1, [sp, #0x50]
+1000e8608: b90077e2    	str	w2, [sp, #0x74]
+1000e860c: aa0003e8    	mov	x8, x0
+1000e8610: f81703a8    	stur	x8, [x29, #-0x90]
+1000e8614: 3817f3a2    	sturb	w2, [x29, #-0x81]
+1000e8618: 91004000    	add	x0, x0, #0x10
+1000e861c: 9488783a    	bl	0x102306704 <<std::time::Instant>::elapsed>
+1000e8620: f94037e8    	ldr	x8, [sp, #0x68]
+1000e8624: f9002fe0    	str	x0, [sp, #0x58]
+1000e8628: b90067e1    	str	w1, [sp, #0x64]
+1000e862c: f81803a0    	stur	x0, [x29, #-0x80]
+1000e8630: b81883a1    	stur	w1, [x29, #-0x78]
+1000e8634: f9401100    	ldr	x0, [x8, #0x20]
+1000e8638: f9401501    	ldr	x1, [x8, #0x28]
+1000e863c: 9101e3e8    	add	x8, sp, #0x78
+1000e8640: 97ffff2a    	bl	0x1000e82e8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate>
+1000e8644: f94037e0    	ldr	x0, [sp, #0x68]
+1000e8648: f9401000    	ldr	x0, [x0, #0x20]
+1000e864c: 97fffe82    	bl	0x1000e8054 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::history>
+1000e8650: b94077e2    	ldr	w2, [sp, #0x74]
+1000e8654: f81603a0    	stur	x0, [x29, #-0xa0]
+1000e8658: 12000028    	and	w8, w1, #0x1
+1000e865c: 381683a8    	sturb	w8, [x29, #-0x98]
+1000e8660: 370000c2    	tbnz	w2, #0x0, 0x1000e8678 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x88>

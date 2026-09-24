@@ -9,7 +9,7 @@ use crate::tree_store::multimap_btree::{
 use crate::tree_store::{
     Btree, BtreeCursorRange, BtreeMut, InternalTableDefinition, PageAllocator, PageHint,
     PageNumber, PageNumberHashMap, PageNumberHashSet, PageResolver, PageTracker, RawBtree,
-    TableType, multimap_btree_stats,
+    RawTableDefinition, TableType, multimap_btree_stats,
 };
 use crate::types::{Key, Value};
 use crate::{DatabaseStats, Result};
@@ -46,7 +46,7 @@ impl PageListMut {
 }
 
 pub struct TableNameIter {
-    inner: BtreeCursorRange<&'static str, InternalTableDefinition>,
+    inner: BtreeCursorRange<&'static str, RawTableDefinition<'static>>,
     table_type: TableType,
 }
 
@@ -57,7 +57,11 @@ impl Iterator for TableNameIter {
         for entry in self.inner.by_ref() {
             match entry {
                 Ok(entry) => {
-                    if entry.value().get_type() == self.table_type {
+                    if match entry.value().checked() {
+                        Ok(definition) => definition.get_type(),
+                        Err(error) => return Some(Err(error)),
+                    } == self.table_type
+                    {
                         return Some(Ok(entry.key().to_string()));
                     }
                 }
@@ -71,7 +75,7 @@ impl Iterator for TableNameIter {
 }
 
 pub(crate) struct TableTree {
-    tree: Btree<&'static str, InternalTableDefinition>,
+    tree: Btree<&'static str, RawTableDefinition<'static>>,
     mem: PageResolver,
 }
 
@@ -99,7 +103,7 @@ impl TableTree {
 
         for entry in self.tree.range::<RangeFull, &str>(&(..))? {
             let entry = entry?;
-            let definition = entry.value();
+            let definition = entry.value().checked()?;
             match definition {
                 InternalTableDefinition::Normal {
                     table_root,
@@ -166,13 +170,17 @@ impl TableTree {
         Ok(result)
     }
 
+    pub(crate) fn contains_table_name(&self, name: &str) -> Result<bool> {
+        Ok(self.tree.get(&name)?.is_some())
+    }
+
     pub(crate) fn get_table_untyped(
         &self,
         name: &str,
         table_type: TableType,
     ) -> Result<Option<InternalTableDefinition>, TableError> {
         if let Some(guard) = self.tree.get(&name)? {
-            let definition = guard.value();
+            let definition = guard.value().checked()?;
             definition.check_match_untyped(table_type, name)?;
             Ok(Some(definition))
         } else {
@@ -201,6 +209,10 @@ impl TableTree {
     where
         F: FnMut(&PagePath) -> Result,
     {
+        // Metadata roots remain raw until every definition in this walk passes.
+        for entry in self.tree.range::<RangeFull, &str>(&(..))? {
+            entry?.value().checked()?;
+        }
         // All the pages in the table tree itself
         self.tree.visit_all_pages(&mut visitor)?;
 
@@ -226,7 +238,7 @@ impl TableTree {
 }
 
 pub(crate) struct TableTreeMut {
-    tree: BtreeMut<&'static str, InternalTableDefinition>,
+    tree: BtreeMut<&'static str, RawTableDefinition<'static>>,
     guard: Arc<TransactionGuard>,
     page_allocator: PageAllocator,
     // Cached updates from tables that have been closed. These must be flushed to the btree.
@@ -279,6 +291,10 @@ impl TableTreeMut {
     where
         F: FnMut(&PagePath) -> Result,
     {
+        // Validate every raw definition before the first visitor callback.
+        for entry in self.tree.range::<RangeFull, &str>(&(..))? {
+            entry?.value().checked()?;
+        }
         // All the pages in the table tree itself
         self.tree.visit_all_pages(&mut visitor)?;
 
@@ -356,11 +372,14 @@ impl TableTreeMut {
     }
 
     pub(crate) fn flush_table_root_updates(&mut self) -> Result<&mut Self> {
+        for name in self.pending_table_updates.keys() {
+            self.tree.get(&name.as_str())?.unwrap().value().checked()?;
+        }
         for (name, (new_root, new_length, dirty)) in
             core::mem::take(&mut self.pending_table_updates)
         {
             // Bypass .get_table() since the table types are dynamic
-            let mut definition = self.tree.get(&name.as_str())?.unwrap().value();
+            let mut definition = self.tree.get(&name.as_str())?.unwrap().value().checked()?;
             // No-op if the root has not changed and checksums are already finalized
             if !dirty {
                 match definition {
@@ -407,57 +426,9 @@ impl TableTreeMut {
                     *table_length = new_length;
                 }
             }
-            self.tree.insert(&name.as_str(), &definition)?;
+            self.tree.insert(&name.as_str(), &definition.as_raw())?;
         }
         Ok(self)
-    }
-
-    // Opens a table, calls the provided closure to insert entries into it, and then
-    // flushes the table root. The flush is done using insert_inplace(), so it's guaranteed
-    // that no pages will be allocated or freed after the closure returns
-    pub(crate) fn open_table_and_flush_table_root<K: Key + 'static, V: Value + 'static>(
-        &mut self,
-        name: &str,
-        f: impl FnOnce(&mut BtreeMut<K, V>) -> Result,
-    ) -> Result {
-        assert!(self.pending_table_updates.is_empty());
-
-        // Reserve space in the table tree, and make sure the path to the entry is
-        // uncommitted, so that the final insert_inplace() below won't allocate or
-        // free any pages.
-        let bytes = self.tree.force_uncommitted(
-            &name,
-            &InternalTableDefinition::new::<K, V>(TableType::Normal, None, 0),
-        )?;
-
-        let table_root = match InternalTableDefinition::from_bytes(&bytes) {
-            InternalTableDefinition::Normal { table_root, .. } => table_root,
-            InternalTableDefinition::Multimap { .. } => {
-                unreachable!()
-            }
-        };
-
-        // Open the table and call the provided closure on it
-        let mut tree: BtreeMut<K, V> = BtreeMut::new(
-            table_root,
-            self.guard.clone(),
-            self.page_allocator.clone(),
-            self.freed_pages.clone(),
-            self.allocated_pages.clone(),
-        );
-        f(&mut tree)?;
-
-        // Finalize the table's checksums
-        let table_root = tree.finalize_dirty_checksums()?;
-        let table_length = tree.get_root().map(|x| x.length).unwrap_or_default();
-
-        // Flush the root to the table tree, without allocating
-        self.tree.insert_inplace(
-            &name,
-            &InternalTableDefinition::new::<K, V>(TableType::Normal, table_root, table_length),
-        )?;
-
-        Ok(())
     }
 
     // Creates a new table, calls the provided closure to insert entries into it, and then
@@ -474,7 +445,7 @@ impl TableTreeMut {
         // Reserve space in the table tree
         self.tree.insert(
             &name,
-            &InternalTableDefinition::new::<K, V>(TableType::Normal, None, 0),
+            &InternalTableDefinition::new::<K, V>(TableType::Normal, None, 0).as_raw(),
         )?;
 
         // Create an empty table and call the provided closure on it
@@ -494,7 +465,8 @@ impl TableTreeMut {
         // Flush the root to the table tree, without allocating
         self.tree.insert_inplace(
             &name,
-            &InternalTableDefinition::new::<K, V>(TableType::Normal, table_root, table_length),
+            &InternalTableDefinition::new::<K, V>(TableType::Normal, table_root, table_length)
+                .as_raw(),
         )?;
 
         Ok(())
@@ -513,6 +485,10 @@ impl TableTreeMut {
             self.page_allocator.resolver(),
         )?;
         tree.list_tables(table_type)
+    }
+
+    pub(crate) fn contains_table_name(&self, name: &str) -> Result<bool> {
+        Ok(self.tree.get(&name)?.is_some())
     }
 
     pub(crate) fn get_table_untyped(
@@ -569,7 +545,7 @@ impl TableTreeMut {
         // Move the definition as stored, not the pending update: staged roots must stay out
         // of the master tree, since reopening the table can free their pages (see stats())
         let stored_definition = if let Some(guard) = self.tree.get(&name)? {
-            let definition = guard.value();
+            let definition = guard.value().checked()?;
             definition.check_match_untyped(table_type, name)?;
             Some(definition)
         } else {
@@ -584,7 +560,7 @@ impl TableTreeMut {
                     .insert(new_name.to_string(), update);
             }
             assert!(self.tree.remove(&name)?.is_some());
-            assert!(self.tree.insert(&new_name, &definition)?.is_none());
+            assert!(self.tree.insert(&new_name, &definition.as_raw())?.is_none());
         } else {
             return Err(TableError::TableDoesNotExist(name.to_string()));
         }
@@ -640,7 +616,7 @@ impl TableTreeMut {
             found
         } else {
             let table = InternalTableDefinition::new::<K, V>(table_type, None, 0);
-            self.tree.insert(&name, &table)?;
+            self.tree.insert(&name, &table.as_raw())?;
             table
         };
 
@@ -665,9 +641,13 @@ impl TableTreeMut {
         n: usize,
         output: &mut BTreeMap<PageNumber, PagePath>,
     ) -> Result {
+        // A later invalid definition must not leave an earlier path in output.
+        for entry in self.tree.range::<RangeFull, &str>(&(..))? {
+            entry?.value().checked()?;
+        }
         for entry in self.tree.range::<RangeFull, &str>(&(..))? {
             let entry = entry?;
-            let mut definition = entry.value();
+            let mut definition = entry.value().checked()?;
             if let Some((updated_root, updated_length, _)) =
                 self.pending_table_updates.get(entry.key())
             {
@@ -699,8 +679,11 @@ impl TableTreeMut {
         relocation_map: &PageNumberHashMap<PageNumber>,
     ) -> Result {
         for entry in self.tree.range::<RangeFull, &str>(&(..))? {
+            entry?.value().checked()?;
+        }
+        for entry in self.tree.range::<RangeFull, &str>(&(..))? {
             let entry = entry?;
-            let mut definition = entry.value();
+            let mut definition = entry.value().checked()?;
             if let Some((updated_root, updated_length, _)) =
                 self.pending_table_updates.get(entry.key())
             {
@@ -740,7 +723,7 @@ impl TableTreeMut {
         let resolver = self.page_allocator.resolver();
         for entry in self.tree.range::<RangeFull, &str>(&(..))? {
             let entry = entry?;
-            let mut definition = entry.value();
+            let mut definition = entry.value().checked()?;
             if let Some((updated_root, length, _)) = self.pending_table_updates.get(entry.key()) {
                 definition.set_header(*updated_root, *length);
             }
@@ -811,7 +794,6 @@ impl Drop for TableTreeMut {
 
 #[cfg(test)]
 mod test {
-    use crate::Value;
     use crate::tree_store::table_tree_base::InternalTableDefinition;
     use crate::types::TypeName;
 
@@ -827,7 +809,168 @@ mod test {
             key_type: TypeName::new("test::Key"),
             value_type: TypeName::new("test::Value"),
         };
-        let y = InternalTableDefinition::from_bytes(InternalTableDefinition::as_bytes(&x).as_ref());
+        let y = InternalTableDefinition::checked(InternalTableDefinition::as_bytes(&x).as_ref())
+            .unwrap();
         assert_eq!(x, y);
+    }
+
+    #[test]
+    fn every_master_table_entry_point_rejects_raw_root_before_visitation_or_mutation() {
+        use super::*;
+        use crate::tree_store::btree_base::{LeafBuilder, leaf_checksum};
+        use crate::tree_store::{AllocationPolicy, InMemoryBackend, Page, TransactionalMemory};
+        for table_type in [TableType::Normal, TableType::Multimap] {
+            for alias in [0, 1] {
+                let mem = Arc::new(
+                    TransactionalMemory::new(
+                        Box::new(InMemoryBackend::new()),
+                        crate::test_admission(),
+                        true,
+                        4096,
+                        None,
+                        0,
+                    )
+                    .unwrap(),
+                );
+                mem.reset_allocator_state().unwrap();
+                let allocator = PageAllocator::new(mem.clone(), AllocationPolicy::Default);
+                let tracker = Arc::new(PageTracker::ignore());
+                let freed = Arc::new(Mutex::new(vec![]));
+                let guard = Arc::new(TransactionGuard::untracked());
+                let pair = 1_u64.to_le_bytes();
+                let mut builder = LeafBuilder::new(&allocator, &tracker, 1, Some(8), Some(8));
+                builder.push(&pair, &pair);
+                let page = builder.build().unwrap();
+                let leaf = BtreeHeader::new(
+                    page.get_page_number(),
+                    leaf_checksum(&page, Some(8), Some(8)).unwrap(),
+                    1,
+                );
+                drop(page);
+                let good =
+                    InternalTableDefinition::new::<u64, u64>(TableType::Normal, Some(leaf), 1);
+                let mut bad =
+                    InternalTableDefinition::new::<u64, u64>(table_type, Some(leaf), 1).as_bytes();
+                let raw = u64::from_le_bytes(bad[10..18].try_into().unwrap());
+                let alias = if alias == 0 {
+                    raw | (1_u64 << 40)
+                } else {
+                    (raw & !(0x1f_u64 << 59)) | (4_u64 << 59) | (1_u64 << 19)
+                };
+                bad[10..18].copy_from_slice(&alias.to_le_bytes());
+                let mut tables = TableTreeMut::new(
+                    None,
+                    guard.clone(),
+                    allocator.clone(),
+                    freed.clone(),
+                    tracker.clone(),
+                );
+                tables.tree.insert(&"a", &good.as_raw()).unwrap();
+                tables
+                    .tree
+                    .insert(&"z", &RawTableDefinition::from_bytes(&bad))
+                    .unwrap();
+                let root = tables.tree.finalize_dirty_checksums().unwrap();
+                let readonly =
+                    TableTree::new(root, PageHint::None, guard.clone(), allocator.resolver())
+                        .unwrap();
+                let mut visits = 0;
+                assert!(matches!(
+                    readonly.visit_all_pages(|_| {
+                        visits += 1;
+                        Ok(())
+                    }),
+                    Err(crate::StorageError::Corrupted(_))
+                ));
+                assert_eq!(visits, 0);
+                let mut mutable_visits = 0;
+                assert!(matches!(
+                    tables.visit_all_pages(|_| {
+                        mutable_visits += 1;
+                        Ok(())
+                    }),
+                    Err(crate::StorageError::Corrupted(_))
+                ));
+                assert_eq!(mutable_visits, 0);
+                let mut highest = BTreeMap::new();
+                assert!(matches!(
+                    tables.highest_index_pages(2, &mut highest),
+                    Err(crate::StorageError::Corrupted(_))
+                ));
+                assert!(highest.is_empty());
+                assert!(matches!(
+                    readonly.get_table_untyped("z", table_type),
+                    Err(TableError::Storage(crate::StorageError::Corrupted(_)))
+                ));
+                assert!(matches!(
+                    readonly.list_tables(table_type),
+                    Err(crate::StorageError::Corrupted(_))
+                ));
+                assert!(matches!(
+                    readonly.verify_checksums(),
+                    Err(crate::StorageError::Corrupted(_))
+                ));
+                drop(readonly);
+                let mut target = allocator.allocate(4096, &tracker).unwrap();
+                target.memory_mut().fill(0xa5);
+                let target_number = target.get_page_number();
+                drop(target);
+                let pages = [root.unwrap().root, leaf.root, target_number];
+                let before: Vec<_> = pages
+                    .iter()
+                    .map(|number| {
+                        allocator
+                            .get_page(*number, PageHint::None)
+                            .unwrap()
+                            .memory()
+                            .to_vec()
+                    })
+                    .collect();
+                let allocated = mem.count_allocated_pages().unwrap();
+                let original_root = tables.tree.get_root();
+                assert!(matches!(
+                    tables.rename_table("z", "renamed", table_type),
+                    Err(TableError::Storage(crate::StorageError::Corrupted(_)))
+                ));
+                assert!(matches!(
+                    tables.delete_table("z", table_type),
+                    Err(TableError::Storage(crate::StorageError::Corrupted(_)))
+                ));
+                assert!(matches!(
+                    tables.get_or_create_table::<u64, u64>("z", table_type),
+                    Err(TableError::Storage(crate::StorageError::Corrupted(_)))
+                ));
+                let mut map = PageNumberHashMap::default();
+                map.insert(leaf.root, target_number);
+                assert!(matches!(
+                    tables.relocate_tables(&map),
+                    Err(crate::StorageError::Corrupted(_))
+                ));
+                tables
+                    .pending_table_updates
+                    .insert("a".to_string(), (Some(leaf), 1, true));
+                tables
+                    .pending_table_updates
+                    .insert("z".to_string(), (Some(leaf), 1, true));
+                assert!(matches!(
+                    tables.flush_table_root_updates(),
+                    Err(crate::StorageError::Corrupted(_))
+                ));
+                assert_eq!(tables.pending_table_updates.len(), 2);
+                assert_eq!(tables.tree.get_root(), original_root);
+                assert!(freed.lock().unwrap().is_empty());
+                assert_eq!(mem.count_allocated_pages().unwrap(), allocated);
+                assert_eq!(
+                    RawTableDefinition::as_bytes(&tables.tree.get(&"z").unwrap().unwrap().value()),
+                    bad
+                );
+                for (index, page) in pages.iter().enumerate() {
+                    assert_eq!(
+                        allocator.get_page(*page, PageHint::None).unwrap().memory(),
+                        before[index]
+                    );
+                }
+            }
+        }
     }
 }

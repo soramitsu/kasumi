@@ -1,0 +1,91 @@
+{
+  "status": "PURE_SOURCE_DERIVED_SHAPES_NOT_TOTAL_WORKSPACE",
+  "constants": {
+    "page_bytes": 4096,
+    "maximum_region_pages": 1048576,
+    "orders": 21,
+    "initial_region_tracker_slots": 1000
+  },
+  "cases": [
+    {
+      "logical_extent_cap": 67108864,
+      "conservative_base_page_slots": 16384,
+      "conservative_regions": 1,
+      "buddy_bitmap_objects": 21,
+      "buddy_level_objects": 45,
+      "buddy_word_elements": 545,
+      "buddy_word_payload_bytes": 4360,
+      "all_buddy_serialized_bytes": 4896,
+      "largest_buddy_serialized_bytes": 4896,
+      "tracker_bitmap_objects": 21,
+      "tracker_level_objects": 84,
+      "tracker_word_elements": 399,
+      "tracker_serialized_bytes": 4036,
+      "warning": "Counts only. Region/header overhead is ignored conservatively in page count. Vec/HashMap capacity, layouts, native locks, allocation headers, clones, scratch and error payloads are not this number."
+    },
+    {
+      "logical_extent_cap": 268435456,
+      "conservative_base_page_slots": 65536,
+      "conservative_regions": 1,
+      "buddy_bitmap_objects": 21,
+      "buddy_level_objects": 45,
+      "buddy_word_elements": 2103,
+      "buddy_word_payload_bytes": 16824,
+      "all_buddy_serialized_bytes": 17360,
+      "largest_buddy_serialized_bytes": 17360,
+      "tracker_bitmap_objects": 21,
+      "tracker_level_objects": 84,
+      "tracker_word_elements": 399,
+      "tracker_serialized_bytes": 4036,
+      "warning": "Counts only. Region/header overhead is ignored conservatively in page count. Vec/HashMap capacity, layouts, native locks, allocation headers, clones, scratch and error payloads are not this number."
+    },
+    {
+      "logical_extent_cap": 1073741824,
+      "conservative_base_page_slots": 262144,
+      "conservative_regions": 1,
+      "buddy_bitmap_objects": 21,
+      "buddy_level_objects": 45,
+      "buddy_word_elements": 8341,
+      "buddy_word_payload_bytes": 66728,
+      "all_buddy_serialized_bytes": 67264,
+      "largest_buddy_serialized_bytes": 67264,
+      "tracker_bitmap_objects": 21,
+      "tracker_level_objects": 84,
+      "tracker_word_elements": 399,
+      "tracker_serialized_bytes": 4036,
+      "warning": "Counts only. Region/header overhead is ignored conservatively in page count. Vec/HashMap capacity, layouts, native locks, allocation headers, clones, scratch and error payloads are not this number."
+    },
+    {
+      "logical_extent_cap": 8589934592,
+      "conservative_base_page_slots": 2097152,
+      "conservative_regions": 2,
+      "buddy_bitmap_objects": 42,
+      "buddy_level_objects": 90,
+      "buddy_word_elements": 66606,
+      "buddy_word_payload_bytes": 532848,
+      "all_buddy_serialized_bytes": 533920,
+      "largest_buddy_serialized_bytes": 266960,
+      "tracker_bitmap_objects": 21,
+      "tracker_level_objects": 84,
+      "tracker_word_elements": 399,
+      "tracker_serialized_bytes": 4036,
+      "warning": "Counts only. Region/header overhead is ignored conservatively in page count. Vec/HashMap capacity, layouts, native locks, allocation headers, clones, scratch and error payloads are not this number."
+    },
+    {
+      "logical_extent_cap": 1099511627776,
+      "conservative_base_page_slots": 268435456,
+      "conservative_regions": 256,
+      "buddy_bitmap_objects": 5376,
+      "buddy_level_objects": 11520,
+      "buddy_word_elements": 8525568,
+      "buddy_word_payload_bytes": 68204544,
+      "all_buddy_serialized_bytes": 68341760,
+      "largest_buddy_serialized_bytes": 266960,
+      "tracker_bitmap_objects": 21,
+      "tracker_level_objects": 84,
+      "tracker_word_elements": 399,
+      "tracker_serialized_bytes": 4036,
+      "warning": "Counts only. Region/header overhead is ignored conservatively in page count. Vec/HashMap capacity, layouts, native locks, allocation headers, clones, scratch and error payloads are not this number."
+    }
+  ]
+}

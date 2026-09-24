@@ -1,0 +1,42 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010011e750 <lifecycle::recovery_control::complete_recovery::{closure#0}>:
+10011e750: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+10011e754: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10011e758: 910043fd    	add	x29, sp, #0x10
+10011e75c: d14527e9    	sub	x9, sp, #0x149, lsl #12 ; =0x149000
+10011e760: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+10011e764: f90003ff    	str	xzr, [sp]
+10011e768: eb2963ff    	cmp	sp, x9
+10011e76c: 54ffffa1    	b.ne	0x10011e760 <lifecycle::recovery_control::complete_recovery::{closure#0}+0x10>
+10011e770: d11783ff    	sub	sp, sp, #0x5e0
+10011e774: f90003ff    	str	xzr, [sp]
+10011e778: 914527e9    	add	x9, sp, #0x149, lsl #12 ; =0x149000
+10011e77c: 91034129    	add	x9, x9, #0xd0
+10011e780: f91043e9    	str	x9, [sp, #0x2080]
+10011e784: 914513e9    	add	x9, sp, #0x144, lsl #12 ; =0x144000
+10011e788: 913c4129    	add	x9, x9, #0xf10
+10011e78c: f91047e9    	str	x9, [sp, #0x2088]
+10011e790: 914513e9    	add	x9, sp, #0x144, lsl #12 ; =0x144000
+10011e794: 9128e129    	add	x9, x9, #0xa38
+10011e798: f9104be9    	str	x9, [sp, #0x2090]
+10011e79c: 914513e9    	add	x9, sp, #0x144, lsl #12 ; =0x144000
+10011e7a0: 91169d29    	add	x9, x9, #0x5a7
+10011e7a4: f9104fe9    	str	x9, [sp, #0x2098]
+10011e7a8: 91450fe9    	add	x9, sp, #0x143, lsl #12 ; =0x143000
+10011e7ac: 9110c129    	add	x9, x9, #0x430
+10011e7b0: f91053e9    	str	x9, [sp, #0x20a0]
+10011e7b4: 91450fe9    	add	x9, sp, #0x143, lsl #12 ; =0x143000
+10011e7b8: 9104bd29    	add	x9, x9, #0x12f
+10011e7bc: f91057e9    	str	x9, [sp, #0x20a8]
+10011e7c0: 914507e9    	add	x9, sp, #0x141, lsl #12 ; =0x141000
+10011e7c4: 913dc129    	add	x9, x9, #0xf70
+10011e7c8: f9105be9    	str	x9, [sp, #0x20b0]
+10011e7cc: 914507e9    	add	x9, sp, #0x141, lsl #12 ; =0x141000
+10011e7d0: 9131fd29    	add	x9, x9, #0xc7f
+10011e7d4: f9105fe9    	str	x9, [sp, #0x20b8]
+10011e7d8: 914503e9    	add	x9, sp, #0x140, lsl #12 ; =0x140000
+10011e7dc: 911dc129    	add	x9, x9, #0x770

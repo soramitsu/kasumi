@@ -369,16 +369,10 @@ impl FilesystemBackupDestination {
         disk: Arc<crate::NodeDisk>,
     ) -> Result<Self> {
         ensure!(max_bytes > 0, "backup byte limit must be positive");
-        disk.binding(&root.as_ref().join("backup-accounting-anchor"))?;
-        if !root.as_ref().exists() {
-            crate::private_files::create_directory(root.as_ref())?;
-        }
-        crate::private_files::check_directory(root.as_ref())?;
-        let root = std::fs::canonicalize(root)?;
-        let sessions = Arc::new(crate::backup_sessions::filesystem::Directory::open(
-            &root,
-            disk.clone(),
-        )?);
+        let root = root.as_ref().to_owned();
+        let sessions = Arc::new(
+            crate::backup_sessions::filesystem::Directory::open_or_create(&root, disk.clone())?,
+        );
         Ok(Self {
             root,
             disk,
@@ -444,34 +438,10 @@ impl BackupDestination for FilesystemBackupDestination {
             encrypted.len() <= self.max_bytes,
             "backup exceeds destination byte limit"
         );
-        let path = self.path(id);
-        let disk = self.disk.clone();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            ensure!(!path.try_exists()?, "backup already published");
-            let temporary = path.with_file_name(format!("{id}.kasumi.pending"));
-            let (root, relative) = disk.binding(&temporary)?;
-            let mut file = if temporary.try_exists()? {
-                disk.open_file(root, relative)?
-            } else {
-                disk.create_file(root, relative, crate::DiskWork::Foreground)?
-            };
-            let before = file.observed_len()?;
-            let length = encrypted.len() as u64;
-            if before > length {
-                file.shrink(length)?;
-            } else {
-                file.reserve_growth(before, length, crate::DiskWork::Foreground)?;
-                file.grow_reserved(length)?;
-            }
-            file.write_all_at(&encrypted, 0)?;
-            file.sync_all_and_parent()?;
-            let (root, relative) = disk.binding(&path)?;
-            let published = disk.publish_file(file, root, relative)?;
-            drop(published);
-            Ok(())
-        })
-        .await?
+        let root = self.sessions.clone();
+        tokio::task::spawn_blocking(move || root.put_backup(id, &encrypted)).await?
     }
+
     async fn get(&self, id: Uuid, max_bytes: usize) -> Result<Vec<u8>> {
         let path = self.path(id);
         let disk = self.disk.clone();
@@ -559,7 +529,23 @@ impl S3BackupDestination {
             self.endpoint, self.region, self.bucket, self.prefix
         )
     }
+    /// Physical session identity excludes renewable credentials and trust files.
+    /// The constructor validates that every installed destination can yield it.
+    pub fn namespace_binding(&self) -> Result<kasumi_types::BackupNamespaceBinding> {
+        let binding = kasumi_types::BackupNamespaceBinding::S3 {
+            https_origin: self.endpoint.as_str().to_owned(),
+            region: self.region.clone(),
+            bucket: self.bucket.clone(),
+            prefix: self.prefix.clone(),
+        };
+        binding.validate()?;
+        Ok(binding)
+    }
     pub fn new(config: S3BackupConfig) -> Result<Self> {
+        ensure!(
+            config.endpoint.len() <= 2048,
+            "S3 endpoint exceeds binding limit"
+        );
         let endpoint = Url::parse(&config.endpoint)?;
         ensure!(
             endpoint.scheme() == "https"
@@ -587,7 +573,7 @@ impl S3BackupDestination {
         if let Some(ca) = config.ca_pem {
             client = client.add_root_certificate(reqwest::Certificate::from_pem(&ca)?);
         }
-        Ok(Self {
+        let destination = Self {
             endpoint,
             region: config.region,
             bucket: config.bucket,
@@ -595,7 +581,9 @@ impl S3BackupDestination {
             credential: config.credential,
             max_bytes: config.max_bytes,
             client: client.build()?,
-        })
+        };
+        destination.namespace_binding()?;
+        Ok(destination)
     }
 
     fn object_url(&self, id: Uuid) -> Result<Url> {
@@ -809,13 +797,18 @@ mod tests {
 
     #[tokio::test]
     async fn encrypted_bundle_round_trip_filesystem_reopen_and_tamper_rejection() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
         let dir = crate::test_utils::private_tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([17; 32]));
         let store = TenantStore::initialize_catalog_fixture_with_clock(
             NodeStore::create_new_fixture(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
-                crate::ScratchDisk::fixture(),
+                fixture_memory.clone(),
+                fixture_scratch.clone(),
             )
             .unwrap(),
             "tenant".into(),
@@ -835,8 +828,12 @@ mod tests {
                 .windows(b"very-private".len())
                 .any(|window| window == b"very-private")
         );
-        let destination =
-            FilesystemBackupDestination::new_fixture(dir.path().join("backups"), 1 << 20).unwrap();
+        let destination = FilesystemBackupDestination::new_fixture(
+            dir.path().join("backups"),
+            1 << 20,
+            fixture_memory.clone(),
+        )
+        .unwrap();
         destination.put(backup.id(), bytes.clone()).await.unwrap();
         assert!(destination.put(backup.id(), bytes.clone()).await.is_err());
         let read = destination.get(backup.id(), 16 << 20).await.unwrap();
@@ -871,13 +868,18 @@ mod tests {
 
     #[tokio::test]
     async fn historical_backup_keeps_original_key_dependencies_after_rewrap() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
         let dir = crate::test_utils::private_tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([22; 32]));
         let store = TenantStore::initialize_catalog_fixture_with_clock(
             NodeStore::create_new_fixture(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
-                crate::ScratchDisk::fixture(),
+                fixture_memory.clone(),
+                fixture_scratch.clone(),
             )
             .unwrap(),
             "t".into(),
@@ -900,13 +902,18 @@ mod tests {
 
     #[tokio::test]
     async fn removal_of_an_inactive_backup_key_dependency_breaks_authentication() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
         let dir = crate::test_utils::private_tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([31; 32]));
         let store = TenantStore::initialize_catalog_fixture_with_clock(
             NodeStore::create_new_fixture(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
-                crate::ScratchDisk::fixture(),
+                fixture_memory.clone(),
+                fixture_scratch.clone(),
             )
             .unwrap(),
             "tenant".into(),
@@ -934,8 +941,11 @@ mod tests {
 
     #[tokio::test]
     async fn destination_byte_limits_and_untrusted_format_are_rejected() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let dir = crate::test_utils::private_tempdir().unwrap();
-        let destination = FilesystemBackupDestination::new_fixture(dir.path(), 5).unwrap();
+        let destination =
+            FilesystemBackupDestination::new_fixture(dir.path(), 5, fixture_memory.clone())
+                .unwrap();
         let id = Uuid::new_v4();
         assert!(destination.put(id, vec![0; 6]).await.is_err());
         std::fs::write(destination.path(id), [0; 6]).unwrap();
@@ -984,6 +994,57 @@ mod s3_tests {
             ca_pem: ca,
             max_bytes: 1 << 20,
         }
+    }
+
+    #[test]
+    fn s3_namespace_binding_tracks_physical_namespace_not_credentials() {
+        let original = S3BackupDestination::new(config("https://S3.EXAMPLE:443", None)).unwrap();
+        let binding = original.namespace_binding().unwrap();
+        assert_eq!(
+            binding,
+            kasumi_types::BackupNamespaceBinding::S3 {
+                https_origin: "https://s3.example/".into(),
+                region: "us-east-1".into(),
+                bucket: "examplebucket".into(),
+                prefix: "backup/v1".into(),
+            }
+        );
+        let mut rotated_config = config("https://s3.example/", None);
+        rotated_config.credential = test_credential(Some("renewed-session"));
+        let rotated = S3BackupDestination::new(rotated_config).unwrap();
+        assert_eq!(binding, rotated.namespace_binding().unwrap());
+        let mut changed = config("https://s3.example/", None);
+        changed.prefix = "backup/v2".into();
+        let changed = S3BackupDestination::new(changed).unwrap();
+        assert_ne!(binding, changed.namespace_binding().unwrap());
+        let mut changed = config("https://s3.example/", None);
+        changed.bucket = "another-bucket".into();
+        assert_ne!(
+            binding,
+            S3BackupDestination::new(changed)
+                .unwrap()
+                .namespace_binding()
+                .unwrap()
+        );
+        let mut changed = config("https://s3.example/", None);
+        changed.region = "ap-northeast-1".into();
+        assert_ne!(
+            binding,
+            S3BackupDestination::new(changed)
+                .unwrap()
+                .namespace_binding()
+                .unwrap()
+        );
+        assert_ne!(
+            binding,
+            S3BackupDestination::new(config("https://other.example/", None))
+                .unwrap()
+                .namespace_binding()
+                .unwrap()
+        );
+        let mut invalid = config("https://s3.example/", None);
+        invalid.prefix = "backup/../other".into();
+        assert!(S3BackupDestination::new(invalid).is_err());
     }
 
     #[test]
@@ -1466,6 +1527,10 @@ mod s3_tests {
 
     #[tokio::test]
     async fn s3_tls_round_trip_signed_session_token_create_only_and_bounded_download() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
         let state = Arc::new(Objects::default());
         let fixture = TlsFixture::spawn(
             Router::new()
@@ -1486,7 +1551,8 @@ mod s3_tests {
             crate::NodeStore::create_new_fixture(
                 directory.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
-                crate::ScratchDisk::fixture(),
+                fixture_memory.clone(),
+                fixture_scratch.clone(),
             )
             .unwrap(),
             "tenant".into(),

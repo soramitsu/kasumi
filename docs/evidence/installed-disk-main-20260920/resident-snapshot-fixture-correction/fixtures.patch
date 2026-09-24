@@ -1,0 +1,227 @@
+--- a/crates/kasumi-engine/src/test_utils.rs
++++ b/crates/kasumi-engine/src/test_utils.rs
+@@ -273,6 +273,14 @@
+     max_bytes: u64,
+ ) -> Result<SnapshotImage> {
+     SnapshotImage::capture(disk, max_bytes, |writer| state.write_fixture(writer))
++        .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))
++}
++/// Authenticate the complete snapshot framing, digest and EOF before selecting
++/// resident semantic bytes. Permanent receipt/terminal rows remain in the image
++/// and are excluded by the same inspected stream model used for admission.
++pub fn snapshot_resident_bytes(candidate: &SnapshotImage) -> Result<u64> {
++    crate::snapshot_codec::inspect(&mut candidate.reader())
++        .and_then(|summary| summary.resident_bytes())
+         .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))
+ }
+ pub fn decode_snapshot_candidate(candidate: &SnapshotImage) -> Result<SnapshotCandidate> {
+--- a/crates/kasumi-engine/tests/guarded_staging.rs
++++ b/crates/kasumi-engine/tests/guarded_staging.rs
+@@ -1,5 +1,5 @@
+ //! Guarded stop behavior against actual encrypted Kasumi execution and restart.
+-use kasumi_engine::test_utils::SnapshotFixture;
++use kasumi_engine::test_utils::{SnapshotFixture, snapshot_resident_bytes};
+ mod common;
+ use kasumi_engine::{Database, SecurityAudit};
+ use kasumi_store::{TenantStorageSet, test_utils::LocalKeyProvider};
+@@ -294,16 +294,26 @@
+     assert!(stopped.received_chunks.is_empty());
+     let current = db.engine().generation().unwrap();
+     assert!(current.state.active_staged_transactions.is_empty());
+-    assert!(
+-        current
+-            .state
+-            .staged_transactions
+-            .values()
+-            .all(|s| s.chunks.is_empty() && s.uploaded_payload_bytes == 0)
+-    );
++    assert!(current.state.staged_transactions.is_empty());
++    assert_eq!(current.state.reserved_staged_terminal_bytes, 0);
++    assert_eq!(current.state.staged_terminal_head.count, 2);
++    let terminal_head = current.state.staged_terminal_head.clone();
+     let mut limits = current.state.limits.clone();
+     limits.atomic.max_permanent_staged_bytes = current.state.permanent_staged_bytes;
+     drop(current);
++    // Point reads authenticate the actual terminal rows and validate that their
++    // payload/counters are cleared; an empty resident map alone is insufficient.
++    for (original, expected) in [(&first, &stopped), (&never, &absent)] {
++        let observed = db
++            .staged_transaction_status(&context(), &original.reference().unwrap())
++            .await
++            .unwrap();
++        assert_eq!(observed.transaction, original.reference().unwrap());
++        assert_eq!(observed.manifest, original.manifest);
++        assert_eq!(observed.outcome, expected.outcome);
++        assert_eq!(observed.expires_at_ms, expected.expires_at_ms);
++        assert!(observed.received_chunks.is_empty());
++    }
+     db.administer(context(), Operation::SetLimits(limits))
+         .await
+         .unwrap();
+@@ -315,14 +325,18 @@
+             .code,
+         ErrorCode::QuotaExceeded
+     );
+-    assert_eq!(
+-        db.engine()
+-            .generation()
+-            .unwrap()
+-            .state
+-            .staged_transactions
+-            .len(),
+-        2
++    let current = db.engine().generation().unwrap();
++    assert!(current.state.staged_transactions.is_empty());
++    assert!(current.state.active_staged_transactions.is_empty());
++    assert_eq!(current.state.reserved_staged_terminal_bytes, 0);
++    assert_eq!(current.state.staged_terminal_head, terminal_head);
++    drop(current);
++    assert_eq!(
++        db.staged_transaction_status(&context(), &third.reference().unwrap())
++            .await
++            .unwrap_err()
++            .code,
++        ErrorCode::NotFound
+     );
+     close(db, audit).await;
+ }
+@@ -646,6 +660,13 @@
+         ttl_ms: 60_000,
+         manifest: StagedManifest::from_chunks(&vec![chunk; 512]).unwrap(),
+     };
++    let terminal_head = db
++        .engine()
++        .generation()
++        .unwrap()
++        .state
++        .staged_terminal_head
++        .clone();
+     assert_eq!(
+         db.stop_staged_transaction(context(), stop(&db, &original))
+             .await
+@@ -654,16 +675,26 @@
+         ErrorCode::QuotaExceeded
+     );
+     let generation = db.engine().generation().unwrap();
++    assert_eq!(generation.state.staged_terminal_head, terminal_head);
+     assert!(generation.state.staged_transactions.is_empty());
+     assert!(generation.state.active_staged_transactions.is_empty());
+     assert_eq!(
+         db.engine().snapshot_bytes().unwrap() as u64,
+-        db.engine()
+-            .fixture_snapshot(&physical.storage.scratch)
+-            .unwrap()
+-            .len()
++        snapshot_resident_bytes(
++            &db.engine()
++                .fixture_snapshot(&physical.storage.scratch)
++                .unwrap(),
++        )
++        .unwrap()
+     );
+     drop(generation);
++    assert_eq!(
++        db.staged_transaction_status(&context(), &original.reference().unwrap())
++            .await
++            .unwrap_err()
++            .code,
++        ErrorCode::NotFound
++    );
+     close(db, audit).await;
+ }
+ 
+--- a/crates/kasumi-engine/tests/history.rs
++++ b/crates/kasumi-engine/tests/history.rs
+@@ -1,4 +1,4 @@
+-use kasumi_engine::test_utils::SnapshotFixture;
++use kasumi_engine::test_utils::{SnapshotFixture, snapshot_resident_bytes};
+ mod common;
+ use kasumi_engine::{Database, SecurityAudit};
+ use kasumi_store::BackupDestination;
+@@ -198,10 +198,12 @@
+     assert!(caught_up);
+     assert_eq!(
+         db.engine().snapshot_bytes().unwrap() as u64,
+-        db.engine()
+-            .fixture_snapshot(&physical.storage.scratch)
+-            .unwrap()
+-            .len()
++        snapshot_resident_bytes(
++            &db.engine()
++                .fixture_snapshot(&physical.storage.scratch)
++                .unwrap(),
++        )
++        .unwrap()
+     );
+     db.shutdown().await.unwrap();
+     audit.shutdown().await.unwrap();
+@@ -314,10 +316,12 @@
+     );
+     assert_eq!(
+         db.engine().snapshot_bytes().unwrap() as u64,
+-        db.engine()
+-            .fixture_snapshot(&physical.storage.scratch)
+-            .unwrap()
+-            .len()
++        snapshot_resident_bytes(
++            &db.engine()
++                .fixture_snapshot(&physical.storage.scratch)
++                .unwrap(),
++        )
++        .unwrap()
+     );
+     db.shutdown().await.unwrap();
+     audit.shutdown().await.unwrap();
+@@ -519,10 +523,12 @@
+         .unwrap();
+     assert_eq!(
+         db.engine().snapshot_bytes().unwrap() as u64,
+-        db.engine()
+-            .fixture_snapshot(&physical.storage.scratch)
+-            .unwrap()
+-            .len()
++        snapshot_resident_bytes(
++            &db.engine()
++                .fixture_snapshot(&physical.storage.scratch)
++                .unwrap(),
++        )
++        .unwrap()
+     );
+     assert!(
+         !db.backup(context(), destination.as_ref(), uuid::Uuid::new_v4())
+--- a/crates/kasumi-engine/tests/schema_activation.rs
++++ b/crates/kasumi-engine/tests/schema_activation.rs
+@@ -1,4 +1,4 @@
+-use kasumi_engine::test_utils::SnapshotFixture;
++use kasumi_engine::test_utils::{SnapshotFixture, snapshot_resident_bytes};
+ mod common;
+ use common::FixtureEngine;
+ use kasumi_engine::{Database, SecurityAudit, TenantEngine};
+@@ -82,7 +82,7 @@
+         )
+         .unwrap();
+     assert_eq!(
+-        db.fixture_snapshot(&db.disk).unwrap().len(),
++        snapshot_resident_bytes(&db.fixture_snapshot(&db.disk).unwrap()).unwrap(),
+         db.snapshot_bytes().unwrap() as u64
+     );
+     result
+--- a/crates/kasumi-engine/tests/staged_transactions.rs
++++ b/crates/kasumi-engine/tests/staged_transactions.rs
+@@ -1,4 +1,4 @@
+-use kasumi_engine::test_utils::SnapshotFixture;
++use kasumi_engine::test_utils::{SnapshotFixture, snapshot_resident_bytes};
+ mod common;
+ use common::FixtureEngine;
+ use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
+@@ -114,8 +114,8 @@
+         .unwrap();
+     assert_eq!(
+         db.snapshot_bytes().unwrap() as u64,
+-        db.fixture_snapshot(&db.disk).unwrap().len(),
+-        "canonical stage accounting after revision {revision}"
++        snapshot_resident_bytes(&db.fixture_snapshot(&db.disk).unwrap()).unwrap(),
++        "canonical resident stage accounting after revision {revision}"
+     );
+     result
+ }

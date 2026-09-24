@@ -1,0 +1,2 @@
+1000d0968: 97fffec8    	bl	0x1000d0488 <core::array::try_from_fn::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, 32, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>>
+1000d097c: 948afb67    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>

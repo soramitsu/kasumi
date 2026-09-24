@@ -1,0 +1,28 @@
+{
+  "status": "FROZEN_INDEPENDENT_PINNED_SOURCE_DESIGN_PROOF_CANDIDATE_REVIEW_PENDING",
+  "files": {
+    "README.md": "ef3c6f0c3d93098187714bc86335c38f6552ad8d6515151abca8d4eae24c55f8",
+    "geometry.json": "ebe6ec1e09b7d3a4a11962e203ad48cb68aafe31825d0ef6c8b0bfe1abb3e936",
+    "geometry.py": "8705e99bc690ab3ff2d43bd569736c8eeffda2950f8ced727772d089099a3253",
+    "hashbrown-map.rs": "b79497ce537ffc5ed4f8f3399434b9216c01e7927fdc434fee190e9e9ce2abb0",
+    "inputs.json": "400bf08748bd8ba815e9da66367410cce74004ea7b89d41f55ef2230ee279eaf"
+  },
+  "strategy": {
+    "inode_banks": 2,
+    "inode_capacity_each": "checked(2*N+R)",
+    "census_destination": "inactive existing bank, logical N+R",
+    "live_banks_if_same_wrapper": 2,
+    "live_capacity_each": "H",
+    "reset": "drop(map.drain())",
+    "update": "get_mut then assignment",
+    "new_insert_certificate": "capacity()>len and logical quota under State guard"
+  },
+  "validation": {
+    "checked_python_arithmetic": "PASS",
+    "native_runs": false,
+    "cargo_runs": false,
+    "actual_source_edits": false,
+    "current_native_type_sizes": "pending; numeric comparison explicitly conditional"
+  },
+  "input_hashes": "inputs.json"
+}

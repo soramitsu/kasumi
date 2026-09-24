@@ -1,0 +1,29 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 36s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_authority-c9f40d981df0df58)
+
+running 4 tests
+test service::tests::coverage_dispatch_precedes_permission_and_survives_exact_encrypted_restart ... AUTHORITY_UNAVAILABLE at crates/kasumi-authority/src/signer_coverage_service.rs:88:32: installed signer publication transport unavailable
+ok
+test service::tests::encrypted_restart_restarts_full_drain_and_never_reuses_an_old_incarnation ... ok
+test service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain ... AUTHORITY_UNAVAILABLE at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5: control intent differs or epoch stopped
+
+thread 'service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain' (4147931) panicked at crates/kasumi-authority/src/issuer_tests.rs:296:5:
+assertion `left == right` failed
+  left: UnknownOutcome
+ right: Conflict
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain ... ok
+
+failures:
+
+failures:
+    service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 58 filtered out; finished in 76.07s
+
+error: test failed, to rerun pass `-p kasumi-authority --lib`

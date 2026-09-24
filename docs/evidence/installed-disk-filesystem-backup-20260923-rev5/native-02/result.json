@@ -1,0 +1,25 @@
+{
+  "binary_unchanged": true,
+  "compiled_binary": {
+    "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-test-binary",
+    "sha256": "8c4a6a6aa5aad8a7e5fc95c0a2f0f041aed0b41b759acb9903cd3a8f4d266b90",
+    "bytes": 54831152
+  },
+  "final_binary": {
+    "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-test-binary",
+    "sha256": "8c4a6a6aa5aad8a7e5fc95c0a2f0f041aed0b41b759acb9903cd3a8f4d266b90",
+    "bytes": 54831152
+  },
+  "compiled_artifacts_unchanged": true,
+  "compiled_artifact_count": 1112,
+  "source_unchanged": true,
+  "changed_inputs": [],
+  "source_count": 14963,
+  "dispatch_denied": null,
+  "completed_stages": 5,
+  "expected_stages": 5,
+  "all_passed": true,
+  "cohort_elapsed_seconds": 577.766906792,
+  "cohort_bound_seconds": 1200,
+  "results_sha256": "61c17ac659b342bb6d4315db1751cd00a4395cc2eadf3c6fec5bc48ef3b7f2f9"
+}

@@ -1,0 +1,35 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+0000000100038b48 <<lifecycle::Fixture>::configured::{closure#0}>:
+100038b48: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+100038b4c: a9017bfd    	stp	x29, x30, [sp, #0x10]
+100038b50: 910043fd    	add	x29, sp, #0x10
+100038b54: d14047e9    	sub	x9, sp, #0x11, lsl #12  ; =0x11000
+100038b58: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+100038b5c: f90003ff    	str	xzr, [sp]
+100038b60: eb2963ff    	cmp	sp, x9
+100038b64: 54ffffa1    	b.ne	0x100038b58 <<lifecycle::Fixture>::configured::{closure#0}+0x10>
+100038b68: d11903ff    	sub	sp, sp, #0x640
+100038b6c: f90003ff    	str	xzr, [sp]
+100038b70: 914047e9    	add	x9, sp, #0x11, lsl #12  ; =0x11000
+100038b74: 910fc129    	add	x9, x9, #0x3f0
+100038b78: f901abe9    	str	x9, [sp, #0x350]
+100038b7c: 914043e9    	add	x9, sp, #0x10, lsl #12  ; =0x10000
+100038b80: 913fa129    	add	x9, x9, #0xfe8
+100038b84: f901afe9    	str	x9, [sp, #0x358]
+100038b88: 91402bea    	add	x10, sp, #0xa, lsl #12  ; =0xa000
+100038b8c: 9120014a    	add	x10, x10, #0x800
+100038b90: f901b3ea    	str	x10, [sp, #0x360]
+100038b94: 914027ea    	add	x10, sp, #0x9, lsl #12  ; =0x9000
+100038b98: 9109e14a    	add	x10, x10, #0x278
+100038b9c: f901b7ea    	str	x10, [sp, #0x368]
+100038ba0: 91401bea    	add	x10, sp, #0x6, lsl #12  ; =0x6000
+100038ba4: 91001d4a    	add	x10, x10, #0x7
+100038ba8: f901bbea    	str	x10, [sp, #0x370]
+100038bac: 911803ea    	add	x10, sp, #0x600
+100038bb0: f901bfea    	str	x10, [sp, #0x378]
+100038bb4: f901c3e8    	str	x8, [sp, #0x380]
+100038bb8: f901c7e0    	str	x0, [sp, #0x388]

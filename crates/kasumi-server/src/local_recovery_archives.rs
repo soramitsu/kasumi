@@ -121,16 +121,17 @@ impl AuditArchivePublicationObserver for Observer {
 impl Operator {
     pub(super) fn prepare_archives(&self, journal: &mut Journal) -> Result<()> {
         let directory = journal.target_directory.join(CACHE);
+        let target = self
+            .open_target_directory(journal, false)?
+            .context("archive target directory is missing")?;
+        let _archive = self
+            .directory_child(&target, c"tenant-audit-archives", true)?
+            .context("archive directory was not created")?;
         if journal.archive_directory.is_none() {
-            if directory.try_exists()? {
-                private_files::check_directory(&directory)?;
-                ensure!(
-                    std::fs::read_dir(&directory)?.next().is_none(),
-                    "unbound archive directory is not empty"
-                );
-            } else {
-                private_files::create_directory(&directory)?;
-            }
+            ensure!(
+                std::fs::read_dir(&directory)?.next().is_none(),
+                "unbound archive directory is not empty"
+            );
             journal.archive_directory = Some(private_files::directory_identity(&directory)?);
             self.store().write_batch(&[
                 WriteOp::put(
@@ -181,9 +182,12 @@ impl Operator {
     pub(super) fn cleanup_archives(&self, journal: &Journal) -> Result<bool> {
         self.require_cleanup_disk()?;
         let directory = journal.target_directory.join(CACHE);
-        if !directory.try_exists()? {
+        let target = self
+            .open_target_directory(journal, false)?
+            .context("archive target directory is missing")?;
+        let Some(archive) = self.directory_child(&target, c"tenant-audit-archives", false)? else {
             return Ok(true);
-        }
+        };
         let identity = private_files::directory_identity(&directory)?;
         if let Some(expected) = &journal.archive_directory {
             ensure!(
@@ -303,9 +307,8 @@ impl Operator {
             private_files::directory_identity(&directory)? == identity,
             "archive directory changed during cleanup"
         );
-        // Exact directory mutation/accounting still needs a NodeDisk owner API.
         self.require_cleanup_disk()?;
-        std::fs::remove_dir(&directory)?;
+        archive.remove_if_empty()?;
         private_files::sync_parent(&directory)?;
         Ok(true)
     }

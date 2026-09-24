@@ -81,7 +81,7 @@ impl KasumiRetirementPool {
         timeout: Duration,
     ) -> std::result::Result<crate::VerifiedRetirementReceipt, ClientError> {
         self.inner
-            .request(timeout, true, |client, bearer| {
+            .request(timeout, false, |client, bearer| {
                 let request = request.clone();
                 Box::pin(async move { client.retire_source(bearer, &request).await })
             })
@@ -105,7 +105,7 @@ impl KasumiRetirementPool {
         timeout: Duration,
     ) -> std::result::Result<crate::VerifiedRetirementResolution, ClientError> {
         self.inner
-            .request(timeout, true, |client, bearer| {
+            .request(timeout, false, |client, bearer| {
                 let request = request.clone();
                 Box::pin(async move { client.abort_retirement(bearer, &request).await })
             })

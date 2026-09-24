@@ -1,0 +1,69 @@
+[
+  {
+    "name": "compile-store",
+    "pid": 81670,
+    "pgid": 81670,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kasumi-store",
+      "--all-features",
+      "--lib",
+      "--no-run",
+      "--message-format=json"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-full-store/compile-store.log",
+    "remaining_bound_seconds": 1199.979860792,
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 81.24552112500001,
+    "log_sha256": "dbd9379244b85647c5fea751d6942cb781a80f06aac6bdd23df5673c96b75395"
+  },
+  {
+    "name": "store-inventory",
+    "pid": 83149,
+    "pgid": 83149,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-full-store/store-test-binary",
+      "--list"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-full-store/store-inventory.log",
+    "remaining_bound_seconds": 1118.228103792,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-full-store/store-test-binary",
+      "sha256": "b5a6f147846656057c9949a1378148fa5667a53a97612471a40845f678e88bae",
+      "bytes": 54265856
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-full-store/store-test-binary",
+      "sha256": "b5a6f147846656057c9949a1378148fa5667a53a97612471a40845f678e88bae",
+      "bytes": 54265856
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.8419450829999988,
+    "log_sha256": "9a10a8a83ab25f712ea9c5b33ba2c0de4844278e87aca83b5bedd2ce606cc647",
+    "inventory_passed": false
+  }
+]

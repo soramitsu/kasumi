@@ -1,0 +1,51 @@
+# Frozen directory parent transitions proposal
+
+This package is target-only and **not merge-ready**. It adds a coherent managed-file namespace transition and required-policy API migration on top of the frozen unified inode census package. No actual checkout source was changed and no Cargo command was run.
+
+- `cumulative.patch` includes the unified census foundation and this successor. SHA-256: `5ae0623c48dbaf32af81544e7c3fafb2d6f25c84aab6f385c7e3a0b7e85ae3bd`.
+- `parent-transitions.patch` is the incremental successor. SHA-256: `895c3a45436c1d615d3cf0650157b90bdabe437b1c06a04b7fa51ed7fb11ef09`.
+- `manifest.json` binds every base, cumulative base, proposed file, and the unchanged unified dependency patch `dbc8eb840ccbbcc90c10138118b6bd693aea4096a1fa81aeeaeb7eee257f6dc8`.
+- `cumulative-base/` preserves the current existing `RetainedSpool` and `SpoolClosePhase` exports in `lib.rs`. The other cumulative bases are the frozen unified originals or the actual caller bytes read for this migration. Both patch forms are review artifacts, not permission to apply an incomplete namespace admission protocol.
+
+## Implemented slice
+
+Census records each directory's observed allocated blocks and reserves the larger of that observation and the required per-directory `DirectoryPolicy.extent_bytes`. Remaining directory promises participate in the same NodeDisk and DeviceDisk accounting as file promises. Above-policy existing usage is retained without clamping. The mandatory `max_entries` limits positive membership changes; file and census cardinalities are unchanged.
+
+File preparation walks exact enrolled ancestry, records every intermediate inode identity, and retains the actual final parent descriptor plus its ancestry allocation in FileOwner. Every later file operation verifies those original intermediate identities, even when a swapped ancestry still reaches the original final parent inode. A file parent's live directory registration remains until its real descriptor and ancestry allocation close. Its capacity remains funded by the unchanged file-owner quota; independently opened DirectoryOwner handles alone consume `max_open_directories`.
+
+Create, same-parent rename, cross-parent publication and unlink prepare an inline plan for at most two distinct affected parents under State serialization. Full configured directory promises are already held before the syscall. Positive work rechecks the existing foreground/maintenance/floor policy before the effect. Publication deduplicates a same-parent transition and retains both actual parent descriptors through synchronization. After affected parent fsyncs and exact ancestry verification, settlement measures the retained descriptors, updates membership and physical observations, and transfers pending promises under the shared DeviceDisk lock. A definite AlreadyExists outcome can restore original snapshots only after checking the unchanged actual parents. Other uncertain effects keep the original promises and fence the shared owner. Observed growth beyond the preexisting charge is recorded in full and fences admission; **this post-effect detection is not a physical upper-bound proof**.
+
+The first-release migration makes `directory_policy` a required NodeDiskConfig field. `initial_config`, `example_config`, standalone initialization and RuntimeStorage's installation generator require the explicit policy. `kasumid init` and `example-config` require `--directory-policy <file>`. The bounded JSON file rejects missing, unknown, duplicate, invalid and oversized fields. No production default or old-signature compatibility path exists. Fixture callers supply fixture-only values explicitly. The benchmark feature enables its explicit store fixture dependency. The native diagnostic copies/hashes the required policy and verifies that initialization preserves it. Operator documentation describes the input and its outstanding qualification.
+
+Existing file-specific test expectations add the separately retained directory component. The maintenance budget adds exactly its root directory charge; the shared-filesystem promise fixture adds exactly its existing directory promises. Original file sizes, quota counts, denial boundaries, timeouts and workloads are retained. The two file cardinality assertions inspect actual File variants. New Rust tests cover actual parent observations/custody, same- and cross-parent transitions, required-policy rejection, positive membership denial with cleanup, retained failed-fsync promises, and surviving-final-inode ancestry substitution. These Rust tests have not been executed in the full crate.
+
+## Validation and custody
+
+`native-05` compiles the exact proposed production NodeDisk, census, directory, file, namespace, ledger and memory modules with frozen existing disk_memory, device_disk and private_files implementations. Its own explicitly synthetic memory provider returns a fixture lease; this is not installed MemoryCore/RSS validation. Real filesystem operations pass create → same-parent publication → cross-parent publication → unlink, retained-directory reads, independent file/directory quotas, ancestor substitution rejection, actual file-owner drain and fresh-census repair. Compiler, compilation and execution all exited 0, with their process groups drained. The 288 proposal/import/dependency inventory entries were unchanged. All runtime Rust imports in that run match the final proposed production modules; subsequent additions were rejection tests and Python fixture corrections. `native-05/proposal-at-run/` preserves the exact complete proposal inventory from that run; reconstructed pre-edit files were checked byte-for-byte against its recorded SHA-256 inventory.
+
+Native attempts 01–04 retain their original failed compiler receipts. They exposed standalone harness module/dependency omissions (module resolution, private_files, zeroize derive and bitflags), not passing runtime evidence. Their outputs were not overwritten. Native-05 contains a private, fully inventoried compiled-dependency directory rather than resolving against Cargo's concurrently changing dependency directory. Tool executable identities, argv, bounds, raw stdout/stderr, return status and process-group drain are retained. All TMPDIRs were `/Users/mtakemiya/dev/kasumi/target/tmp`.
+
+`python-02` passes all 17 native-diagnostic unit tests, including exact policy-byte preservation, malformed/old-policy rejection and provenance hash custody. Its process exited 0/drained; all 45 proposal/runner inputs and all 160 loaded module-file hashes were unchanged with no late imports. These are mocked diagnostic tests, not native daemon or release-acceptance runs. `python-01` preserves the two original errors from the mock fixture's missing required policy; `python-01/proposal-at-run/` preserves its exact proposed inputs. The corrected fixture supplies the required explicit value and checks the preserved policy bytes/hash.
+
+`final-checks.json` records rustfmt checks and both non-mutating patch checks. Complete store/server/benchmark compilation, Clippy, store lifecycle/allocation tests, and native production/HA/release acceptance remain unrun for this package.
+
+## Exact memory accounting and unchanged limits
+
+For N admitted files/census-work entries and R installed roots, the retained union can reach 2N+R entries; the replacement census union reaches N+R. Directories do not consume the separately preserved N file slots. The unchanged four-times table coefficient funds both maps and their growth. File-parent ancestry allocations are included in the existing file-owner/prepared-publication envelope; the independent directory-owner envelope remains separate.
+
+Native-05 computes the actual proposed formula at N=1,000,000, 4,096 file handles, 4,096 independent directory handles, depth 64, name limit 255, and root `data=/var/lib/kasumi/data`:
+
+- owner: **1,920,246,108 bytes**;
+- owner registry: 4,128 bytes;
+- device: 8,304 bytes;
+- device registration: 4,160 bytes.
+
+The owner alone leaves **227,237,540 bytes** below 2 GiB. The four listed charges leave 227,220,948 bytes before provider lease-allocation allowances and every other engine/cache/scratch/database/worker reservation. This does **not** establish a usable default server. MemoryCore additionally requires checked `existing_reserved + new_charge <= max_bytes` and checked `resident_RSS + existing_reserved + new_charge < high_watermark`, along with a usable, unpressured sample and a free charge slot. Both constraints must hold simultaneously. There is no RSS qualification in this probe, and no admission limit was raised.
+
+## Remaining blockers
+
+1. No supported-filesystem proof establishes that every managed namespace syscall, including rename/unlink and durability effects, cannot allocate beyond the pre-admitted physical promise. An explicit numeric ceiling and an excess fence cannot retroactively prevent kernel allocation. Filesystem qualification remains required before production adoption; no guessed constant or universal hermetic prerequisite is substituted.
+2. Managed mkdir/rmdir, a bounded directory cursor and complete raw archive/backup/server namespace caller adoption remain unimplemented. Installer root creation is still an explicit raw boundary. This package cannot be applied as a complete installed namespace contract.
+3. Full Rust caller/fixture compilation and actual lifecycle/allocation tests remain required. Static call-site/baseline migration and the bounded production-module probe do not prove the whole crate's cfg(test), cfg(feature), CLI or benchmark combinations compile or pass.
+4. Whole-server 2 GiB admission remains unqualified. A separate structurally proved table-capacity/preallocation change may reduce the conservative growth coefficient; it must retain the original N-file admission and simultaneous replacement-map peak. This proposal deliberately does not change that coefficient, counts or memory policy.
+5. The custody model detects enrolled ancestry/extent changes under the existing private/cooperative ownership contract. A raw external membership change that preserves every checked inode/length/block observation is not a full directory-membership proof; completing raw-path adoption and cursor semantics remains necessary.

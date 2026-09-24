@@ -1,0 +1,3208 @@
+diff --git a/crates/kasumi-store/src/node_disk/directory.rs b/crates/kasumi-store/src/node_disk/directory.rs
+--- a/crates/kasumi-store/src/node_disk/directory.rs
++++ b/crates/kasumi-store/src/node_disk/directory.rs
+@@ -55,7 +55,7 @@
+     }
+ }
+ 
+-fn checked_entry<'a>(
++pub(super) fn checked_entry<'a>(
+     state: &'a State,
+     file: &File,
+     binding: NamespaceBinding,
+@@ -141,27 +141,6 @@
+     walk_observe(disk, state, root, names, absent_final, |_| {})
+ }
+ 
+-pub(super) fn file_parent(
+-    disk: &NodeDisk,
+-    state: &State,
+-    root: &str,
+-    names: &[CString],
+-) -> io::Result<(File, Box<[Identity]>)> {
+-    let count = names
+-        .len()
+-        .checked_add(1)
+-        .ok_or(io::ErrorKind::InvalidInput)?;
+-    let mut ancestors = Vec::new();
+-    ancestors
+-        .try_reserve_exact(count)
+-        .map_err(|_| io::ErrorKind::OutOfMemory)?;
+-    let file = walk_observe(disk, state, root, names, false, |identity| {
+-        ancestors.push(identity)
+-    })
+-    .map_err(|failure| failure.error)?;
+-    Ok((file, ancestors.into_boxed_slice()))
+-}
+-
+ pub(super) fn names(relative: &Path, depth: u32, maximum: u32) -> io::Result<Box<[CString]>> {
+     use std::os::unix::ffi::OsStrExt;
+     let mut names = Vec::new();
+diff --git a/crates/kasumi-store/src/node_disk/file/custody.rs b/crates/kasumi-store/src/node_disk/file/custody.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/file/custody.rs
+@@ -0,0 +1,242 @@
++//! Fixed retained failure slots. Reservation precedes all file descriptors.
++use super::*;
++
++pub(in crate::node_disk) struct CustodySlots {
++    slots: Box<[Slot]>,
++}
++struct Slot {
++    reserved: bool,
++    resources: Option<FileResources>,
++}
++impl CustodySlots {
++    fn count(handles: u32) -> io::Result<usize> {
++        usize::try_from(handles)
++            .map_err(|_| io::ErrorKind::InvalidInput)?
++            .checked_add(1)
++            .ok_or_else(|| io::ErrorKind::InvalidInput.into())
++    }
++    pub(in crate::node_disk) fn required_bytes(handles: u32) -> io::Result<u64> {
++        let count =
++            u64::try_from(Self::count(handles)?).map_err(|_| io::ErrorKind::InvalidInput)?;
++        crate::disk_memory::allocation::<Slot>(count)
++    }
++    pub(in crate::node_disk) fn new(handles: u32) -> io::Result<Self> {
++        let count = Self::count(handles)?;
++        let mut slots = Vec::new();
++        slots
++            .try_reserve_exact(count)
++            .map_err(|_| io::ErrorKind::OutOfMemory)?;
++        slots.resize_with(count, || Slot {
++            reserved: false,
++            resources: None,
++        });
++        Ok(Self {
++            slots: slots.into_boxed_slice(),
++        })
++    }
++    pub(super) fn reserve(&mut self) -> io::Result<usize> {
++        let index = self
++            .slots
++            .iter()
++            .position(|slot| !slot.reserved)
++            .ok_or(io::ErrorKind::StorageFull)?;
++        self.slots[index].reserved = true;
++        Ok(index)
++    }
++    pub(super) fn release(&mut self, index: usize) {
++        let slot = &mut self.slots[index];
++        assert!(
++            slot.reserved && slot.resources.is_none(),
++            "exact drained custody slot"
++        );
++        slot.reserved = false;
++    }
++    pub(super) fn retain(&mut self, resources: FileResources) {
++        let slot = &mut self.slots[resources.custody_slot];
++        assert!(
++            slot.reserved && slot.resources.is_none(),
++            "one retained outcome per admitted slot"
++        );
++        slot.resources = Some(resources);
++    }
++    pub(in crate::node_disk) fn internal_owners(&self) -> u32 {
++        self.slots
++            .iter()
++            .filter_map(|slot| slot.resources.as_ref())
++            .filter(|resources| resources.registration != 0)
++            .count() as u32
++    }
++    pub(in crate::node_disk) fn retained_attempts(&self) -> usize {
++        self.slots
++            .iter()
++            .filter(|slot| slot.resources.is_some())
++            .count()
++    }
++    pub(in crate::node_disk) fn close_diagnostic(&self) -> Option<(i32, i32)> {
++        self.slots
++            .iter()
++            .filter_map(|slot| slot.resources.as_ref())
++            .find_map(FileResources::close_diagnostic)
++    }
++    #[cfg(test)]
++    pub(in crate::node_disk) fn first_error_address(&self) -> Option<usize> {
++        self.slots
++            .iter()
++            .filter_map(|slot| slot.resources.as_ref())
++            .find_map(|resources| {
++                let original = resources.original_error.as_ref()?.lock().unwrap();
++                original
++                    .as_ref()
++                    .map(|error| std::ptr::from_ref(error) as usize)
++            })
++    }
++    pub(in crate::node_disk) fn close_retained(&mut self) -> io::Result<()> {
++        for resources in self
++            .slots
++            .iter_mut()
++            .filter_map(|slot| slot.resources.as_mut())
++        {
++            resources.close_descriptors()?;
++        }
++        Ok(())
++    }
++    pub(in crate::node_disk) fn retire_after_census(&mut self) {
++        for slot in &mut self.slots {
++            if let Some(resources) = slot.resources.take() {
++                assert!(resources.drained(), "census requires actual native drain");
++                // Actual heap backing and original outcomes retire before the slot.
++                drop(resources);
++                slot.reserved = false;
++            }
++        }
++    }
++}
++
++impl FileResources {
++    pub(super) fn empty() -> Self {
++        Self {
++            root: String::new(),
++            relative: PathBuf::new(),
++            parent_names: Box::new([]),
++            parent: None,
++            retiring_parent: None,
++            retired_parent: None,
++            name: None,
++            identity: Identity(0, 0),
++            binding: NamespaceBinding::root(Identity(0, 0)),
++            budget: None,
++            registration: 0,
++            custody_slot: usize::MAX,
++            allocation: None,
++            provisional_file: None,
++            provisional_close: None,
++            original_error: None,
++        }
++    }
++    pub(super) fn record_error(&self, error: io::Error) -> io::Error {
++        let returned = super::super::native_file::projection(&error);
++        let mut original = self
++            .original_error
++            .as_ref()
++            .expect("retained outcome mutex")
++            .lock()
++            .unwrap_or_else(|poison| poison.into_inner());
++        if original.is_none() {
++            *original = Some(error);
++        }
++        returned
++    }
++    pub(super) fn has_failure(&self) -> bool {
++        self.original_error.as_ref().is_some_and(|mutex| {
++            mutex.is_poisoned()
++                || mutex
++                    .lock()
++                    .unwrap_or_else(|poison| poison.into_inner())
++                    .is_some()
++        }) || self.provisional_close.is_some()
++            || self
++                .parent
++                .as_ref()
++                .is_some_and(RetainedParent::has_failure)
++            || self
++                .retiring_parent
++                .as_ref()
++                .is_some_and(RetainedParent::has_failure)
++            || self.budget.as_ref().is_some_and(|budget| {
++                budget
++                    .lock()
++                    .unwrap_or_else(|poison| poison.into_inner())
++                    .close_outcome
++                    .is_some()
++            })
++    }
++    fn close_diagnostic(&self) -> Option<(i32, i32)> {
++        fn diagnostic(outcome: &super::super::native_file::CloseOutcome) -> (i32, i32) {
++            (
++                outcome.descriptor,
++                outcome.error.raw_os_error().expect("native close errno"),
++            )
++        }
++        self.provisional_close
++            .as_ref()
++            .map(diagnostic)
++            .or_else(|| {
++                self.budget.as_ref().and_then(|budget| {
++                    budget
++                        .lock()
++                        .unwrap_or_else(|poison| poison.into_inner())
++                        .close_outcome
++                        .as_ref()
++                        .map(diagnostic)
++                })
++            })
++            .or_else(|| {
++                self.parent
++                    .as_ref()
++                    .and_then(RetainedParent::close_diagnostic)
++            })
++            .or_else(|| {
++                self.retiring_parent
++                    .as_ref()
++                    .and_then(RetainedParent::close_diagnostic)
++            })
++    }
++    pub(super) fn close_descriptors(&mut self) -> io::Result<()> {
++        let mut first = super::super::native_file::close(
++            &mut self.provisional_file,
++            &mut self.provisional_close,
++        )
++        .err();
++        if let Some(mutex) = &mut self.budget {
++            let budget = mutex.get_mut().unwrap_or_else(|poison| poison.into_inner());
++            let result =
++                super::super::native_file::close(&mut budget.file, &mut budget.close_outcome);
++            if first.is_none() {
++                first = result.err();
++            }
++        }
++        for parent in [&mut self.parent, &mut self.retiring_parent]
++            .into_iter()
++            .flatten()
++        {
++            let result = parent.close_resources();
++            if first.is_none() {
++                first = result.err();
++            }
++        }
++        first.map_or(Ok(()), Err)
++    }
++    pub(super) fn drained(&self) -> bool {
++        self.provisional_file.is_none()
++            && self.provisional_close.is_none()
++            && self.parent.as_ref().is_none_or(RetainedParent::drained)
++            && self
++                .retiring_parent
++                .as_ref()
++                .is_none_or(RetainedParent::drained)
++            && self.budget.as_ref().is_none_or(|budget| {
++                let budget = budget.lock().unwrap_or_else(|poison| poison.into_inner());
++                budget.file.is_none() && budget.close_outcome.is_none()
++            })
++    }
++}
+diff --git a/crates/kasumi-store/src/node_disk/file.rs b/crates/kasumi-store/src/node_disk/file.rs
+--- a/crates/kasumi-store/src/node_disk/file.rs
++++ b/crates/kasumi-store/src/node_disk/file.rs
+@@ -23,6 +23,7 @@
+     reserved_len: u64,
+     actual_len: u64,
+     settled: bool,
++    close_outcome: Option<super::native_file::CloseOutcome>,
+ }
+ 
+ impl Budget {
+@@ -40,6 +41,12 @@
+ 
+ pub(super) struct FileOwner {
+     disk: Arc<NodeDisk>,
++    resources: FileResources,
++}
++
++// No Arc<NodeDisk> is retained here: failed custody belongs to the installed
++// owner without creating a cycle back to itself.
++pub(super) struct FileResources {
+     root: String,
+     relative: PathBuf,
+     // Parent path names are validated and allocated once during acquisition.
+@@ -55,7 +62,26 @@
+     binding: NamespaceBinding,
+     budget: Option<Mutex<Budget>>,
+     registration: usize,
+-}
++    custody_slot: usize,
++    allocation: Option<Arc<std::mem::MaybeUninit<FileOwner>>>,
++    provisional_file: Option<File>,
++    provisional_close: Option<super::native_file::CloseOutcome>,
++    original_error: Option<Mutex<Option<io::Error>>>,
++}
++impl std::ops::Deref for FileOwner {
++    type Target = FileResources;
++    fn deref(&self) -> &FileResources {
++        &self.resources
++    }
++}
++impl std::ops::DerefMut for FileOwner {
++    fn deref_mut(&mut self) -> &mut FileResources {
++        &mut self.resources
++    }
++}
++#[path = "file/custody.rs"]
++mod custody;
++pub(super) use custody::CustodySlots;
+ 
+ #[cfg(test)]
+ pub(super) struct ClosePause {
+@@ -69,6 +95,7 @@
+ pub(super) enum CloseStage {
+     DataClosed,
+     ResourcesClosed,
++    ResourcesRetained,
+ }
+ 
+ #[cfg(test)]
+@@ -126,430 +153,474 @@
+     }
+ }
+ 
+-// Preparation owns all heap storage before a file can become visible. The Arc
+-// remains uninitialized on error, so provisional cleanup cannot run the live
+-// owner's registration destructor while the state mutex is held.
++// One serialized preparation owns its preallocated payload and custody slot
++// before the first descriptor. A failed or unwound operation transfers that
++// payload into State; it cannot unwind a raw File outside installed custody.
++struct FilePreparation<'a> {
++    disk: &'a Arc<NodeDisk>,
++    resources: Option<FileResources>,
++    state: Option<std::sync::MutexGuard<'a, State>>,
++    executing: bool,
++}
++impl FilePreparation<'_> {
++    fn acquire_parent(&mut self) -> io::Result<()> {
++        let resources = self.resources.as_mut().expect("prepared resources");
++        let state = self.state.as_mut().expect("prepared serialization");
++        let result = resources.parent.as_mut().expect("prepared parent").acquire(
++            self.disk,
++            state,
++            &resources.root,
++            &resources.parent_names,
++        );
++        match result {
++            Ok(()) => Ok(()),
++            Err(error) => {
++                self.disk.fail_locked(state);
++                Err(resources.record_error(error))
++            }
++        }
++    }
++    fn error(&mut self, error: io::Error) -> io::Error {
++        self.executing = false;
++        let resources = self.resources.as_ref().expect("prepared resources");
++        if self.state.as_ref().expect("prepared serialization").phase == NodeDiskPhase::Failed
++            || resources.has_failure()
++        {
++            resources.record_error(error)
++        } else {
++            error
++        }
++    }
++}
++impl Drop for FilePreparation<'_> {
++    fn drop(&mut self) {
++        let Some(mut resources) = self.resources.take() else {
++            return;
++        };
++        let state = self.state.as_mut().expect("custody retains serialization");
++        let retain =
++            self.executing || resources.has_failure() || state.phase == NodeDiskPhase::Failed;
++        let closed = resources.close_descriptors();
++        if retain || closed.is_err() {
++            self.disk.fail_locked(state);
++            state.file_custody.retain(resources);
++        } else {
++            let slot = resources.custody_slot;
++            // No native handle or owned backing remains when admission returns.
++            drop(resources);
++            state.file_custody.release(slot);
++        }
++    }
++}
++
+ pub(super) struct PreparedFile<'a> {
+-    disk: &'a Arc<NodeDisk>,
+-    allocation: Arc<std::mem::MaybeUninit<FileOwner>>,
+-    root: String,
+-    relative: PathBuf,
+-    parent_names: Box<[CString]>,
+-    parent: RetainedParent,
+-    name: CString,
++    prepared: FilePreparation<'a>,
+     device: u64,
+-    binding: NamespaceBinding,
+     create: bool,
+     work: Option<DiskWork>,
+-    budget: Mutex<Budget>,
+     admitted_growth: Option<(u64, u64)>,
+-    state: std::sync::MutexGuard<'a, State>,
+-}
+-
++}
+ impl PreparedFile<'_> {
+     #[cfg(test)]
+     pub(super) fn parent_descriptor(&self) -> std::os::fd::RawFd {
+-        self.parent.file().as_raw_fd()
++        self.prepared
++            .resources
++            .as_ref()
++            .expect("prepared resources")
++            .parent
++            .as_ref()
++            .expect("prepared parent")
++            .file()
++            .as_raw_fd()
+     }
+     pub(super) fn execute(mut self) -> io::Result<NodeDiskFile> {
+-        verify_parent(
+-            &self.disk.roots[&self.root],
+-            &self.parent_names,
+-            &self.parent,
++        self.prepared.executing = true;
++        let result = execute_prepared(
++            self.prepared.disk,
++            self.prepared
++                .state
++                .as_mut()
++                .expect("prepared serialization"),
++            self.prepared
++                .resources
++                .as_mut()
++                .expect("prepared resources"),
++            self.create,
++            self.work,
++            self.device,
++            self.admitted_growth,
++        );
++        let identity = match result {
++            Ok(identity) => identity,
++            Err(error) => return Err(self.prepared.error(error)),
++        };
++        let mut resources = self.prepared.resources.take().expect("prepared resources");
++        let mut allocation = resources
++            .allocation
++            .take()
++            .expect("prepared owner allocation");
++        resources.identity = identity;
++        Arc::get_mut(&mut allocation)
++            .expect("unpublished owner allocation")
++            .write(FileOwner {
++                disk: self.prepared.disk.clone(),
++                resources,
++            });
++        // SAFETY: the sole allocation is fully initialized; registration is infallible.
++        let mut owner = unsafe { allocation.assume_init() };
++        let registration = Arc::as_ptr(&owner) as usize;
++        Arc::get_mut(&mut owner)
++            .expect("unregistered owner")
++            .registration = registration;
++        let state = self
++            .prepared
++            .state
++            .as_mut()
++            .expect("prepared serialization");
++        state.open_files += 1;
++        state.live.insert(identity, Arc::downgrade(&owner));
++        Ok(NodeDiskFile(OwnedFileArc::new(owner)))
++    }
++}
++fn execute_prepared(
++    disk: &Arc<NodeDisk>,
++    state: &mut State,
++    resources: &mut FileResources,
++    create: bool,
++    work: Option<DiskWork>,
++    device: u64,
++    admitted_growth: Option<(u64, u64)>,
++) -> io::Result<Identity> {
++    verify_parent(
++        &disk.roots[&resources.root],
++        &resources.parent_names,
++        resources.parent.as_ref().expect("prepared parent"),
++    )
++    .inspect_err(|_| disk.fail_locked(state))?;
++    if create {
++        let result = verify_parent(
++            &disk.roots[&resources.root],
++            &resources.parent_names,
++            resources.parent.as_ref().expect("prepared parent"),
+         )
+-        .inspect_err(|_| self.disk.fail_locked(&mut self.state))?;
+-        if self.create {
+-            let result = verify_parent(
+-                &self.disk.roots[&self.root],
+-                &self.parent_names,
+-                &self.parent,
++        .and_then(|()| {
++            require_unenrolled_target(
++                state,
++                resources.binding,
++                resources.parent.as_ref().expect("prepared parent").file(),
++                resources.name.as_ref().expect("prepared name"),
++                device,
++                disk.unit,
+             )
+-            .and_then(|()| {
+-                require_unenrolled_target(
+-                    &self.state,
+-                    self.binding,
+-                    self.parent.file(),
+-                    &self.name,
+-                    self.device,
+-                    self.disk.unit,
+-                )
+-            });
+-            if let Err(error) = result {
+-                if error.kind() != io::ErrorKind::AlreadyExists {
+-                    self.disk.fail_locked(&mut self.state);
+-                }
+-                return Err(error);
+-            }
+-        }
+-        let mut transition = if self.create {
+-            Some(ParentTransition::prepare(
+-                self.disk,
+-                &mut self.state,
+-                (self.parent.identity(), 1),
+-                None,
+-                self.work,
+-            )?)
++        });
++        if let Err(error) = result {
++            if error.kind() != io::ErrorKind::AlreadyExists {
++                disk.fail_locked(state);
++            }
++            return Err(error);
++        }
++    }
++    let mut transition = if create {
++        Some(ParentTransition::prepare(
++            disk,
++            state,
++            (
++                resources
++                    .parent
++                    .as_ref()
++                    .expect("prepared parent")
++                    .identity(),
++                1,
++            ),
++            None,
++            work,
++        )?)
++    } else {
++        None
++    };
++    let flags = libc::O_RDWR
++        | libc::O_NONBLOCK
++        | if create {
++            libc::O_CREAT | libc::O_EXCL
+         } else {
+-            None
+-        };
+-        let flags = libc::O_RDWR
+-            | libc::O_NONBLOCK
+-            | if self.create {
+-                libc::O_CREAT | libc::O_EXCL
+-            } else {
+-                0
+-            };
+-        let file = match census::open_at(self.parent.file(), &self.name, flags) {
++            0
++        };
++    resources.provisional_file = Some(
++        match census::open_at(
++            resources.parent.as_ref().expect("prepared parent").file(),
++            resources.name.as_ref().expect("prepared name"),
++            flags,
++        ) {
+             Ok(file) => file,
+             Err(error) => {
+-                if self.create && error.kind() == io::ErrorKind::AlreadyExists {
++                if create && error.kind() == io::ErrorKind::AlreadyExists {
+                     if let Err(rollback) = transition
+                         .take()
+                         .expect("prepared creation parent")
+-                        .unchanged(self.disk, &mut self.state, &[&self.parent])
++                        .unchanged(
++                            disk,
++                            state,
++                            &[resources.parent.as_ref().expect("prepared parent")],
++                        )
+                     {
+-                        self.disk.fail_locked(&mut self.state);
++                        disk.fail_locked(state);
+                         return Err(rollback);
+                     }
+                 }
+                 // An absent final leaf is harmless only if its complete name
+                 // was never enrolled and the prepared parent is still rooted.
+-                if !self.create
++                if !create
+                     && error.kind() == io::ErrorKind::NotFound
+-                    && !self
+-                        .state
++                    && !state
+                         .accounted
+                         .values()
+                         .filter_map(AccountedInode::file)
+-                        .any(|entry| entry.binding == self.binding)
++                        .any(|entry| entry.binding == resources.binding)
+                 {
+                     if let Err(error) = verify_parent(
+-                        &self.disk.roots[&self.root],
+-                        &self.parent_names,
+-                        &self.parent,
++                        &disk.roots[&resources.root],
++                        &resources.parent_names,
++                        resources.parent.as_ref().expect("prepared parent"),
+                     ) {
+-                        self.disk.fail_locked(&mut self.state);
++                        disk.fail_locked(state);
+                         return Err(error);
+                     }
+                     return Err(error);
+                 }
+                 // A create-only conflict did not mutate the existing object.
+-                if !self.create || error.kind() != io::ErrorKind::AlreadyExists {
+-                    self.disk.fail_locked(&mut self.state);
++                if !create || error.kind() != io::ErrorKind::AlreadyExists {
++                    disk.fail_locked(state);
+                 }
+                 return Err(error);
+             }
+-        };
+-        let mut already_owned = false;
+-        let inspected = (|| -> io::Result<(Identity, AccountedFile)> {
+-            let metadata = file.metadata()?;
+-            census::regular_nonallocating(&metadata, self.device)?;
+-            let identity = Identity::of(&metadata);
+-            // A live inode under a different enrolled name is substitution,
+-            // never a harmless second open of its retained descriptor.
+-            if !self.create
+-                && self
+-                    .state
+-                    .accounted
+-                    .get(&identity)
+-                    .is_some_and(|entry| entry.binding() != self.binding)
+-            {
+-                return Err(io::ErrorKind::InvalidData.into());
+-            }
+-            if self.state.live.contains_key(&identity) {
+-                // This is an exclusive open, never an implicit owner clone.
+-                already_owned = true;
+-                return Err(io::ErrorKind::WouldBlock.into());
+-            }
+-            census::lock_nonallocating(&file, libc::LOCK_EX)?;
+-            let metadata = file.metadata()?;
+-            census::regular_nonallocating(&metadata, self.device)?;
+-            if Identity::of(&metadata) != identity {
+-                return Err(io::ErrorKind::InvalidData.into());
+-            }
+-            let (bytes, pending) = extent(&metadata, self.disk.unit)?;
+-            Ok((
+-                identity,
+-                AccountedFile::durable(self.binding, bytes, pending, metadata.len()),
+-            ))
++        },
++    );
++    let file = resources
++        .provisional_file
++        .as_ref()
++        .expect("retained acquired file");
++    let mut already_owned = false;
++    let inspected = (|| -> io::Result<(Identity, AccountedFile)> {
++        let metadata = file.metadata()?;
++        census::regular_nonallocating(&metadata, device)?;
++        let identity = Identity::of(&metadata);
++        // A live inode under a different enrolled name is substitution,
++        // never a harmless second open of its retained descriptor.
++        if !create
++            && state
++                .accounted
++                .get(&identity)
++                .is_some_and(|entry| entry.binding() != resources.binding)
++        {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        if state.live.contains_key(&identity) {
++            // This is an exclusive open, never an implicit owner clone.
++            already_owned = true;
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
++        census::lock_nonallocating(file, libc::LOCK_EX)?;
++        let metadata = file.metadata()?;
++        census::regular_nonallocating(&metadata, device)?;
++        if Identity::of(&metadata) != identity {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        let (bytes, pending) = extent(&metadata, disk.unit)?;
++        Ok((
++            identity,
++            AccountedFile::durable(resources.binding, bytes, pending, metadata.len()),
++        ))
++    })();
++    let (identity, mut enrolled) = match inspected {
++        Ok(value) => value,
++        Err(error) => {
++            // A still-live registered owner makes an attempted second open
++            // harmless; all physical verification failures seal admission.
++            if !already_owned || create {
++                disk.fail_locked(state);
++            }
++            return Err(error);
++        }
++    };
++    if create {
++        if state.accounted.contains_key(&identity) || enrolled.bytes != 0 {
++            disk.fail_locked(state);
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        let Some(files) = state.files.checked_add(1) else {
++            disk.fail_locked(state);
++            return Err(io::ErrorKind::InvalidData.into());
++        };
++        // Both tables have reserved capacity. Even this provisional inode
++        // survives a failed durability step in the retained census ledger.
++        state.accounted.insert(
++            identity,
++            AccountedInode::File(AccountedFile {
++                settled: false,
++                ..enrolled
++            }),
++        );
++        state.files = files;
++        let durable = (|| -> io::Result<()> {
++            #[cfg(test)]
++            disk.namespace_checkpoint(NamespaceFailure::CreateFileSync)?;
++            file.sync_all()?;
++            #[cfg(test)]
++            disk.namespace_checkpoint(NamespaceFailure::CreateParentSync)?;
++            resources
++                .parent
++                .as_ref()
++                .expect("prepared parent")
++                .file()
++                .sync_all()?;
++            verify_parent(
++                &disk.roots[&resources.root],
++                &resources.parent_names,
++                resources.parent.as_ref().expect("prepared parent"),
++            )?;
++            transition.take().expect("prepared creation parent").settle(
++                disk,
++                state,
++                &[resources.parent.as_ref().expect("prepared parent")],
++            )
+         })();
+-        let (identity, mut enrolled) = match inspected {
+-            Ok(value) => value,
+-            Err(error) => {
+-                // A still-live registered owner makes an attempted second open
+-                // harmless; all physical verification failures seal admission.
+-                if !already_owned || self.create {
+-                    self.disk.fail_locked(&mut self.state);
+-                }
+-                return Err(error);
+-            }
+-        };
+-        if self.create {
+-            if self.state.accounted.contains_key(&identity) || enrolled.bytes != 0 {
+-                self.disk.fail_locked(&mut self.state);
+-                return Err(io::ErrorKind::InvalidData.into());
+-            }
+-            let Some(files) = self.state.files.checked_add(1) else {
+-                self.disk.fail_locked(&mut self.state);
+-                return Err(io::ErrorKind::InvalidData.into());
+-            };
+-            // Both tables have reserved capacity. Even this provisional inode
+-            // survives a failed durability step in the retained census ledger.
+-            self.state.accounted.insert(
+-                identity,
+-                AccountedInode::File(AccountedFile {
+-                    settled: false,
+-                    ..enrolled
+-                }),
+-            );
+-            self.state.files = files;
+-            let durable = (|| -> io::Result<()> {
+-                #[cfg(test)]
+-                self.disk
+-                    .namespace_checkpoint(NamespaceFailure::CreateFileSync)?;
+-                file.sync_all()?;
+-                #[cfg(test)]
+-                self.disk
+-                    .namespace_checkpoint(NamespaceFailure::CreateParentSync)?;
+-                self.parent.file().sync_all()?;
+-                verify_parent(
+-                    &self.disk.roots[&self.root],
+-                    &self.parent_names,
+-                    &self.parent,
+-                )?;
+-                transition.take().expect("prepared creation parent").settle(
+-                    self.disk,
+-                    &mut self.state,
+-                    &[&self.parent],
+-                )
+-            })();
+-            if let Err(error) = durable {
+-                self.disk.fail_locked(&mut self.state);
+-                return Err(error);
+-            }
+-            *self
+-                .state
+-                .accounted
+-                .get_mut(&identity)
+-                .and_then(AccountedInode::file_mut)
+-                .expect("new enrolled inode") = enrolled;
+-        } else if self
+-            .state
++        if let Err(error) = durable {
++            disk.fail_locked(state);
++            return Err(error);
++        }
++        *state
+             .accounted
+-            .get(&identity)
+-            .and_then(AccountedInode::file)
+-            != Some(&enrolled)
+-        {
+-            self.disk.fail_locked(&mut self.state);
+-            return Err(io::ErrorKind::InvalidData.into());
+-        }
+-        if let Some((bytes, length)) = self.admitted_growth {
+-            // The batch already charged this exact future file. Transfer its
+-            // full promise into the inode ledger/budget without a second reserve.
+-            enrolled.bytes = bytes;
+-            enrolled.pending = bytes;
+-            enrolled.reserved_len = length;
+-            enrolled.settled = length == 0;
+-            *self
+-                .state
+-                .accounted
+-                .get_mut(&identity)
+-                .and_then(AccountedInode::file_mut)
+-                .expect("admitted new inode") = enrolled;
+-        }
+-        self.parent
+-            .register(self.disk, &mut self.state)
+-            .inspect_err(|_| self.disk.fail_locked(&mut self.state))?;
+-        *self.budget.get_mut().expect("unpublished budget") = Budget {
+-            file: Some(file),
+-            bytes: enrolled.bytes,
+-            pending: enrolled.pending,
+-            reserved_len: enrolled.reserved_len,
+-            actual_len: enrolled.actual_len,
+-            settled: enrolled.settled,
+-        };
+-        Arc::get_mut(&mut self.allocation)
+-            .expect("unpublished owner allocation")
+-            .write(FileOwner {
+-                disk: self.disk.clone(),
+-                root: self.root,
+-                relative: self.relative,
+-                parent_names: self.parent_names,
+-                parent: Some(self.parent),
+-                retiring_parent: None,
+-                retired_parent: None,
+-                name: Some(self.name),
+-                identity,
+-                binding: self.binding,
+-                budget: Some(self.budget),
+-                registration: 0,
+-            });
+-        // SAFETY: the sole allocation was initialized exactly once above. No
+-        // fallible work remains between initialization and live registration.
+-        let mut owner = unsafe { self.allocation.assume_init() };
+-        let registration = Arc::as_ptr(&owner) as usize;
+-        Arc::get_mut(&mut owner)
+-            .expect("unregistered file owner")
+-            .registration = registration;
+-        self.state.open_files += 1;
+-        self.state.live.insert(identity, Arc::downgrade(&owner));
+-        Ok(NodeDiskFile(OwnedFileArc::new(owner)))
+-    }
+-}
+-
+-// Abandoned target paths/FDs retire under serialization first. The guard then
+-// unlocks before registered custody runs its recursive retirement protocol.
++            .get_mut(&identity)
++            .and_then(AccountedInode::file_mut)
++            .expect("new enrolled inode") = enrolled;
++    } else if state
++        .accounted
++        .get(&identity)
++        .and_then(AccountedInode::file)
++        != Some(&enrolled)
++    {
++        disk.fail_locked(state);
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    if let Some((bytes, length)) = admitted_growth {
++        // The batch already charged this exact future file. Transfer its
++        // full promise into the inode ledger/budget without a second reserve.
++        enrolled.bytes = bytes;
++        enrolled.pending = bytes;
++        enrolled.reserved_len = length;
++        enrolled.settled = length == 0;
++        *state
++            .accounted
++            .get_mut(&identity)
++            .and_then(AccountedInode::file_mut)
++            .expect("admitted new inode") = enrolled;
++    }
++    resources
++        .parent
++        .as_mut()
++        .expect("prepared parent")
++        .register(disk, state)
++        .inspect_err(|_| disk.fail_locked(state))?;
++    *resources
++        .budget
++        .as_mut()
++        .expect("prepared budget")
++        .get_mut()
++        .expect("unpublished budget") = Budget {
++        file: resources.provisional_file.take(),
++        bytes: enrolled.bytes,
++        pending: enrolled.pending,
++        reserved_len: enrolled.reserved_len,
++        actual_len: enrolled.actual_len,
++        settled: enrolled.settled,
++        close_outcome: None,
++    };
++    Ok(identity)
++}
++
++// Destination preparation unlocks before the source owner's recursive Drop.
+ pub(super) struct PreparedPublication<'a> {
+-    disk: &'a Arc<NodeDisk>,
+-    allocation: Arc<std::mem::MaybeUninit<FileOwner>>,
+-    parent: RetainedParent,
+-    name: CString,
+-    root: String,
+-    relative: PathBuf,
+-    parent_names: Box<[CString]>,
+-    binding: NamespaceBinding,
+-    state: std::sync::MutexGuard<'a, State>,
+-    retained: FileOwner,
+-}
+-
++    prepared: Option<FilePreparation<'a>>,
++    retained: Option<FileOwner>,
++}
++impl Drop for PreparedPublication<'_> {
++    fn drop(&mut self) {
++        drop(self.prepared.take());
++        drop(self.retained.take());
++    }
++}
+ impl PreparedPublication<'_> {
+     #[cfg(test)]
+     pub(super) fn parent_descriptor(&self) -> std::os::fd::RawFd {
+-        self.parent.file().as_raw_fd()
+-    }
+-    pub(super) fn execute(self) -> io::Result<NodeDiskFile> {
+-        let Self {
+-            disk,
+-            mut retained,
+-            mut state,
+-            mut allocation,
+-            parent,
+-            name,
+-            root,
+-            relative,
+-            parent_names,
+-            binding,
+-        } = self;
+-        let mut renamed = false;
+-        let mut transition = None;
+-        let result = (|| -> io::Result<()> {
+-            let owner = &mut retained;
+-            if state.phase != NodeDiskPhase::Open || !disk.device.lock().admission_ready() {
+-                return Err(io::ErrorKind::Other.into());
+-            }
+-            {
+-                let budget = owner
+-                    .budget()
+-                    .lock()
+-                    .map_err(|_| io::ErrorKind::InvalidData)?;
+-                owner.check_enrollment(&mut state, &budget)?;
+-                if !budget.settled {
+-                    return Err(io::ErrorKind::InvalidData.into());
+-                }
+-                let actual = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
+-                owner.verify(actual)?;
+-                let metadata = actual.metadata()?;
+-                let (bytes, pending) = extent(&metadata, disk.unit)?;
+-                if AccountedFile::durable(owner.binding, bytes, pending, metadata.len())
+-                    != budget.accounted(owner.binding)
+-                {
+-                    return Err(io::ErrorKind::InvalidData.into());
+-                }
+-                actual.sync_all()?;
+-            }
+-            verify_parent(&disk.roots[&root], &parent_names, &parent)?;
+-            require_unenrolled_target(
+-                &state,
+-                binding,
+-                parent.file(),
+-                &name,
+-                owner.identity.0,
+-                disk.unit,
+-            )?;
+-            transition = Some(ParentTransition::prepare(
+-                disk,
+-                &mut state,
+-                (owner.parent_custody().identity(), -1),
+-                Some((parent.identity(), 1)),
+-                Some(DiskWork::Maintenance),
+-            )?);
+-            #[cfg(target_os = "linux")]
+-            let status = unsafe {
+-                libc::renameat2(
+-                    owner.parent().as_raw_fd(),
+-                    owner.name().as_ptr(),
+-                    parent.file().as_raw_fd(),
+-                    name.as_ptr(),
+-                    libc::RENAME_NOREPLACE,
+-                )
+-            };
+-            #[cfg(target_os = "macos")]
+-            let status = unsafe {
+-                libc::renameatx_np(
+-                    owner.parent().as_raw_fd(),
+-                    owner.name().as_ptr(),
+-                    parent.file().as_raw_fd(),
+-                    name.as_ptr(),
+-                    libc::RENAME_EXCL,
+-                )
+-            };
+-            if status != 0 {
+-                let error = io::Error::last_os_error();
+-                if error.kind() == io::ErrorKind::AlreadyExists {
+-                    transition
+-                        .take()
+-                        .expect("prepared publication parents")
+-                        .unchanged(disk, &mut state, &[owner.parent_custody(), &parent])?;
+-                }
+-                return Err(error);
+-            }
+-            renamed = true;
+-            assert!(
+-                owner.retiring_parent.is_none(),
+-                "one prepared parent transfer"
+-            );
+-            owner.retiring_parent = owner.parent.replace(parent);
+-            let old_root = std::mem::replace(&mut owner.root, root);
+-            owner.relative = relative;
+-            let old_parent_names = std::mem::replace(&mut owner.parent_names, parent_names);
+-            owner.name = Some(name);
+-            owner.binding = binding;
+-            // The source name stopped owning this inode at the rename. Update
+-            // the retained slot before any fallible durability step.
+-            state
+-                .accounted
+-                .get_mut(&owner.identity)
+-                .and_then(AccountedInode::file_mut)
+-                .expect("validated publication enrollment")
+-                .binding = binding;
+-            // The descriptor now belongs to the new name even if durability or
+-            // post-publication verification fails. Every error remains inline.
+-            #[cfg(test)]
+-            disk.namespace_checkpoint(NamespaceFailure::PublishSourceSync)?;
+-            owner
+-                .retiring_parent
+-                .as_ref()
+-                .expect("retained source parent")
+-                .file()
+-                .sync_all()?;
+-            #[cfg(test)]
+-            disk.namespace_checkpoint(NamespaceFailure::PublishDestinationSync)?;
+-            owner.parent().sync_all()?;
+-            verify_parent(
+-                &disk.roots[&old_root],
+-                &old_parent_names,
+-                owner
+-                    .retiring_parent
+-                    .as_ref()
+-                    .expect("retained source parent"),
+-            )?;
+-            #[cfg(test)]
+-            disk.namespace_checkpoint(NamespaceFailure::PublishVerify)?;
++        self.prepared
++            .as_ref()
++            .expect("prepared destination")
++            .resources
++            .as_ref()
++            .expect("prepared resources")
++            .parent
++            .as_ref()
++            .expect("prepared parent")
++            .file()
++            .as_raw_fd()
++    }
++    pub(super) fn execute(mut self) -> io::Result<NodeDiskFile> {
++        let prepared = self.prepared.as_mut().expect("prepared destination");
++        prepared.executing = true;
++        let result = execute_publication(
++            prepared.disk,
++            prepared.state.as_mut().expect("prepared serialization"),
++            prepared.resources.as_mut().expect("prepared resources"),
++            self.retained.as_mut().expect("retained publication owner"),
++        );
++        if let Err(error) = result {
++            return Err(prepared.error(error));
++        }
++        prepared.executing = false;
++        let target = prepared.resources.as_mut().expect("prepared resources");
++        let mut allocation = target.allocation.take().expect("prepared owner allocation");
++        Arc::get_mut(&mut allocation)
++            .expect("unpublished publication allocation")
++            .write(self.retained.take().expect("retained publication owner"));
++        // SAFETY: initialized exactly once above; only infallible registration follows.
++        let mut retained = OwnedFileArc::new(unsafe { allocation.assume_init() });
++        let registration = Arc::as_ptr(&retained) as usize;
++        Arc::get_mut(&mut retained)
++            .expect("unregistered publication Arc")
++            .registration = registration;
++        *prepared
++            .state
++            .as_mut()
++            .expect("prepared serialization")
++            .live
++            .get_mut(&retained.identity)
++            .expect("retained publication slot") = Arc::downgrade(&retained);
++        Ok(NodeDiskFile(retained))
++    }
++}
++fn execute_publication(
++    disk: &Arc<NodeDisk>,
++    state: &mut State,
++    target: &mut FileResources,
++    retained: &mut FileOwner,
++) -> io::Result<()> {
++    let mut renamed = false;
++    let mut transition = None;
++    let result = (|| -> io::Result<()> {
++        let owner = &mut *retained;
++        if state.phase != NodeDiskPhase::Open || !disk.device.lock().admission_ready() {
++            return Err(io::ErrorKind::Other.into());
++        }
++        {
+             let budget = owner
+                 .budget()
+                 .lock()
+-                .expect("exclusive verified publication budget");
+-            let actual = budget.file.as_ref().expect("live publication descriptor");
++                .map_err(|_| io::ErrorKind::InvalidData)?;
++            owner.check_enrollment(state, &budget)?;
++            if !budget.settled {
++                return Err(io::ErrorKind::InvalidData.into());
++            }
++            let actual = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
+             owner.verify(actual)?;
+             let metadata = actual.metadata()?;
+             let (bytes, pending) = extent(&metadata, disk.unit)?;
+@@ -558,64 +629,199 @@
+             {
+                 return Err(io::ErrorKind::InvalidData.into());
+             }
+-            drop(budget);
+-            transition
+-                .take()
+-                .expect("prepared publication parents")
+-                .settle(
+-                    disk,
+-                    &mut state,
+-                    &[
+-                        owner
+-                            .retiring_parent
+-                            .as_ref()
+-                            .expect("retained source parent"),
+-                        owner.parent_custody(),
+-                    ],
+-                )?;
+-            let old = owner
++            actual.sync_all()?;
++        }
++        verify_parent(
++            &disk.roots[&target.root],
++            &target.parent_names,
++            target.parent.as_ref().expect("prepared destination parent"),
++        )?;
++        require_unenrolled_target(
++            state,
++            target.binding,
++            target
++                .parent
++                .as_ref()
++                .expect("prepared destination parent")
++                .file(),
++            target.name.as_ref().expect("prepared destination name"),
++            owner.identity.0,
++            disk.unit,
++        )?;
++        transition = Some(ParentTransition::prepare(
++            disk,
++            state,
++            (owner.parent_custody().identity(), -1),
++            Some((
++                target
++                    .parent
++                    .as_ref()
++                    .expect("prepared destination parent")
++                    .identity(),
++                1,
++            )),
++            Some(DiskWork::Maintenance),
++        )?);
++        #[cfg(target_os = "linux")]
++        let status = unsafe {
++            libc::renameat2(
++                owner.parent().as_raw_fd(),
++                owner.name().as_ptr(),
++                target
++                    .parent
++                    .as_ref()
++                    .expect("prepared destination parent")
++                    .file()
++                    .as_raw_fd(),
++                target
++                    .name
++                    .as_ref()
++                    .expect("prepared destination name")
++                    .as_ptr(),
++                libc::RENAME_NOREPLACE,
++            )
++        };
++        #[cfg(target_os = "macos")]
++        let status = unsafe {
++            libc::renameatx_np(
++                owner.parent().as_raw_fd(),
++                owner.name().as_ptr(),
++                target
++                    .parent
++                    .as_ref()
++                    .expect("prepared destination parent")
++                    .file()
++                    .as_raw_fd(),
++                target
++                    .name
++                    .as_ref()
++                    .expect("prepared destination name")
++                    .as_ptr(),
++                libc::RENAME_EXCL,
++            )
++        };
++        if status != 0 {
++            let error = io::Error::last_os_error();
++            if error.kind() == io::ErrorKind::AlreadyExists {
++                transition
++                    .take()
++                    .expect("prepared publication parents")
++                    .unchanged(
++                        disk,
++                        state,
++                        &[
++                            owner.parent_custody(),
++                            target.parent.as_ref().expect("prepared destination parent"),
++                        ],
++                    )?;
++            }
++            return Err(error);
++        }
++        renamed = true;
++        assert!(
++            owner.retiring_parent.is_none(),
++            "one prepared parent transfer"
++        );
++        owner.retiring_parent = owner
++            .parent
++            .replace(target.parent.take().expect("prepared destination parent"));
++        let old_root = std::mem::replace(&mut owner.root, std::mem::take(&mut target.root));
++        owner.relative = std::mem::take(&mut target.relative);
++        let old_parent_names = std::mem::replace(
++            &mut owner.parent_names,
++            std::mem::replace(&mut target.parent_names, Box::new([])),
++        );
++        owner.name = target.name.take();
++        owner.binding = target.binding;
++        // The source name stopped owning this inode at the rename. Update
++        // the retained slot before any fallible durability step.
++        state
++            .accounted
++            .get_mut(&owner.identity)
++            .and_then(AccountedInode::file_mut)
++            .expect("validated publication enrollment")
++            .binding = target.binding;
++        // The descriptor now belongs to the new name even if durability or
++        // post-publication verification fails. Every error remains inline.
++        #[cfg(test)]
++        disk.namespace_checkpoint(NamespaceFailure::PublishSourceSync)?;
++        owner
++            .retiring_parent
++            .as_ref()
++            .expect("retained source parent")
++            .file()
++            .sync_all()?;
++        #[cfg(test)]
++        disk.namespace_checkpoint(NamespaceFailure::PublishDestinationSync)?;
++        owner.parent().sync_all()?;
++        verify_parent(
++            &disk.roots[&old_root],
++            &old_parent_names,
++            owner
+                 .retiring_parent
+-                .take()
+-                .expect("retained source parent")
+-                .retire()
+-                .expect("registered source parent");
+-            if !namespace::can_retire_parent(&state, old) {
+-                return Err(io::ErrorKind::InvalidData.into());
+-            }
+-            namespace::retire_parent(&mut state, old);
+-            owner
+-                .parent
+-                .as_mut()
+-                .expect("retained destination parent")
+-                .register(disk, &mut state)?;
+-            Ok(())
+-        })();
+-        if let Err(error) = result {
+-            if renamed || error.kind() != io::ErrorKind::AlreadyExists {
+-                disk.fail_locked(&mut state);
+-            }
+-            drop(allocation);
+-            drop(state);
+-            drop(retained);
+-            return Err(error);
+-        }
+-        Arc::get_mut(&mut allocation)
+-            .expect("unpublished publication allocation")
+-            .write(retained);
+-        // SAFETY: physical publication succeeded and the prepared allocation was
+-        // fully initialized exactly once. Nothing fallible follows registration.
+-        let mut retained = OwnedFileArc::new(unsafe { allocation.assume_init() });
+-        let registration = Arc::as_ptr(&retained) as usize;
+-        Arc::get_mut(&mut retained)
+-            .expect("unregistered publication Arc")
+-            .registration = registration;
+-        *state
+-            .live
+-            .get_mut(&retained.identity)
+-            .expect("retained publication slot") = Arc::downgrade(&retained);
+-        drop(state);
+-        Ok(NodeDiskFile(retained))
+-    }
++                .as_ref()
++                .expect("retained source parent"),
++        )?;
++        #[cfg(test)]
++        disk.namespace_checkpoint(NamespaceFailure::PublishVerify)?;
++        let budget = owner
++            .budget()
++            .lock()
++            .expect("exclusive verified publication budget");
++        let actual = budget.file.as_ref().expect("live publication descriptor");
++        owner.verify(actual)?;
++        let metadata = actual.metadata()?;
++        let (bytes, pending) = extent(&metadata, disk.unit)?;
++        if AccountedFile::durable(owner.binding, bytes, pending, metadata.len())
++            != budget.accounted(owner.binding)
++        {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        drop(budget);
++        transition
++            .take()
++            .expect("prepared publication parents")
++            .settle(
++                disk,
++                state,
++                &[
++                    owner
++                        .retiring_parent
++                        .as_ref()
++                        .expect("retained source parent"),
++                    owner.parent_custody(),
++                ],
++            )?;
++        owner
++            .retiring_parent
++            .as_mut()
++            .expect("retained source parent")
++            .close_resources()?;
++        let old = owner
++            .retiring_parent
++            .take()
++            .expect("retained source parent")
++            .retire_drained()
++            .expect("registered source parent");
++        if !namespace::can_retire_parent(state, old) {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        namespace::retire_parent(state, old);
++        owner
++            .parent
++            .as_mut()
++            .expect("retained destination parent")
++            .register(disk, state)?;
++        Ok(())
++    })();
++    if let Err(error) = result {
++        if renamed || error.kind() != io::ErrorKind::AlreadyExists {
++            disk.fail_locked(state);
++            return Err(retained.record_error(error));
++        }
++        return Err(error);
++    }
++    Ok(())
+ }
+ 
+ #[cfg(test)]
+@@ -748,24 +954,12 @@
+             .try_reserve(required)
+             .map_err(|_| io::ErrorKind::OutOfMemory)?;
+         let selected = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
+-        let parent_names = prepare_parent_names(relative, &self.config)?;
+-        let (parent, name, binding) =
+-            census::parent(selected, relative, &self.config).map_err(|error| {
+-                self.fail_locked(&mut state);
+-                // Path preparation precedes every physical create/publication.
+-                io::Error::other(error)
+-            })?;
++        let (name, parent_names, binding) =
++            prepare_file_names(selected.identity, relative, &self.config)?;
+         if create.is_some() && super::batch::reserved_binding(&state, binding) {
+             return Err(io::ErrorKind::WouldBlock.into());
+         }
+-        let raw_parent = parent;
+-        let parent = RetainedParent::prepare(self, &state, root, &parent_names)
+-            .inspect_err(|_| self.fail_locked(&mut state))?;
+-        if Identity::of(&raw_parent.metadata()?) != parent.identity() {
+-            self.fail_locked(&mut state);
+-            return Err(io::ErrorKind::InvalidData.into());
+-        }
+-        drop(raw_parent);
++        let parent = RetainedParent::prepare_storage(self, root, &parent_names)?;
+         let budget = Mutex::new(Budget {
+             file: None,
+             bytes: 0,
+@@ -773,29 +967,47 @@
+             reserved_len: 0,
+             actual_len: 0,
+             settled: false,
++            close_outcome: None,
+         });
+-        // Darwin's native mutex may allocate on first lock. Preparation includes
+-        // this initialization even when the first real operation is measured.
+         drop(budget.lock().expect("unpublished budget"));
++        let original_error = Mutex::new(None);
++        drop(original_error.lock().expect("unpublished original outcome"));
+         let (allocation, admitted_growth) = match admitted {
+             Some((allocation, bytes, length)) => (allocation, Some((bytes, length))),
+             None => (Arc::<FileOwner>::new_uninit(), None),
+         };
+-        Ok(PreparedFile {
+-            disk: self,
+-            state,
+-            allocation,
+-            admitted_growth,
++        let mut resources = FileResources {
+             root: root.to_owned(),
+             relative: relative.to_owned(),
+             parent_names,
+-            parent,
+-            name,
++            parent: Some(parent),
++            retiring_parent: None,
++            retired_parent: None,
++            name: Some(name),
++            identity: Identity(0, 0),
++            binding,
++            budget: Some(budget),
++            registration: 0,
++            custody_slot: usize::MAX,
++            allocation: Some(allocation),
++            provisional_file: None,
++            provisional_close: None,
++            original_error: Some(original_error),
++        };
++        resources.custody_slot = state.file_custody.reserve()?;
++        let mut prepared = FilePreparation {
++            disk: self,
++            resources: Some(resources),
++            state: Some(state),
++            executing: false,
++        };
++        prepared.acquire_parent()?;
++        Ok(PreparedFile {
++            prepared,
+             device: selected.identity.0,
+-            binding,
+             create: create.is_some(),
+             work: create,
+-            budget,
++            admitted_growth,
+         })
+     }
+ 
+@@ -831,56 +1043,64 @@
+         if !Arc::ptr_eq(self, &file.0.disk) {
+             return Err(io::ErrorKind::InvalidInput.into());
+         }
+-        // The installed envelope includes one publication preparation. Hold
+-        // serialization before allocating any replacement paths or owner storage.
+-        let retained;
++        // Hold the same serialization through all charged preparation and acquisition.
+         let mut state = self.lock_state();
++        if state.phase != NodeDiskPhase::Open || !self.device.lock().admission_ready() {
++            return Err(io::ErrorKind::Other.into());
++        }
+         let selected = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
+-        // Hold this same admission guard through physical path validation. On
+-        // preparation failure it drops before the input descriptor owner.
+-        let parent_names = prepare_parent_names(relative, &self.config)?;
+-        let (parent, name, binding) =
+-            census::parent(selected, relative, &self.config).map_err(|error| {
+-                self.fail_locked(&mut state);
+-                io::Error::other(error)
+-            })?;
++        let (name, parent_names, binding) =
++            prepare_file_names(selected.identity, relative, &self.config)?;
+         if super::batch::reserved_binding(&state, binding) {
+             return Err(io::ErrorKind::WouldBlock.into());
+         }
+-        let raw_parent = parent;
+-        let parent = RetainedParent::prepare(self, &state, root, &parent_names)
+-            .inspect_err(|_| self.fail_locked(&mut state))?;
+-        if Identity::of(&raw_parent.metadata()?) != parent.identity() {
+-            self.fail_locked(&mut state);
+-            return Err(io::ErrorKind::InvalidData.into());
+-        }
+-        drop(raw_parent);
+-        let root = root.to_owned();
+-        let relative = relative.to_owned();
+-        retained = match file.0.try_unwrap() {
++        let parent = RetainedParent::prepare_storage(self, root, &parent_names)?;
++        let original_error = Mutex::new(None);
++        drop(original_error.lock().expect("unpublished original outcome"));
++        let mut resources = FileResources {
++            root: root.to_owned(),
++            relative: relative.to_owned(),
++            parent_names,
++            parent: Some(parent),
++            retiring_parent: None,
++            retired_parent: None,
++            name: Some(name),
++            identity: Identity(0, 0),
++            binding,
++            budget: None,
++            registration: 0,
++            custody_slot: usize::MAX,
++            allocation: Some(Arc::<FileOwner>::new_uninit()),
++            provisional_file: None,
++            provisional_close: None,
++            original_error: Some(original_error),
++        };
++        resources.custody_slot = state.file_custody.reserve()?;
++        let prepared = FilePreparation {
++            disk: self,
++            resources: Some(resources),
++            state: Some(state),
++            executing: false,
++        };
++        // Never acquire a destination FD for an owner which cannot transfer.
++        let retained = match file.0.try_unwrap() {
+             Ok(owner) => owner,
+             Err(owner) => {
+-                drop((parent_names, parent, name, root, relative));
+-                drop(state);
++                drop(prepared);
+                 drop(owner);
+                 return Err(io::ErrorKind::WouldBlock.into());
+             }
+         };
+-        // The old weak slot stays registered under this mutex; moving its value
+-        // after rename does not allocate or admit an intervening reopen.
+-        let allocation = Arc::<FileOwner>::new_uninit();
+-        Ok(PreparedPublication {
+-            disk: self,
+-            allocation,
+-            state,
+-            retained,
+-            parent,
+-            name,
+-            root,
+-            relative,
+-            parent_names,
+-            binding,
+-        })
++        let mut result = PreparedPublication {
++            prepared: Some(prepared),
++            retained: Some(retained),
++        };
++        result
++            .prepared
++            .as_mut()
++            .expect("prepared destination")
++            .acquire_parent()?;
++        Ok(result)
+     }
+ 
+     fn reclaim(&self, file: NodeDiskFile, len: Option<u64>) -> io::Result<()> {
+@@ -918,7 +1138,7 @@
+         }
+         budget.settled = false;
+         owner.record_enrollment(&mut state, &budget);
+-        let actual = budget.file.take().expect("live persistent descriptor");
++        let actual = budget.file.as_ref().expect("live persistent descriptor");
+         let result = (|| -> io::Result<(u64, u64)> {
+             owner.verify(&actual)?;
+             let current = actual.metadata()?.len();
+@@ -967,19 +1187,37 @@
+                 Ok((0, 0))
+             }
+         })();
+-        // Close before advertising ownership drain or credit. Even failed
+-        // reclamation retains its ledger entry and original capacity charge.
+-        drop(actual);
++        // Every native descriptor stays in the admitted payload through one
++        // observed close; failure transfers its original outcome without credit.
++        let result = result.map_err(|error| owner.record_error(error));
++        let closed = {
++            let budget = &mut *budget;
++            super::native_file::close(&mut budget.file, &mut budget.close_outcome)
++        };
+         let old_bytes = budget.bytes;
+         let old_pending = budget.pending;
+         drop(budget);
+-        owner.retire_resources();
++        if let Err(error) = closed {
++            owner.retain_locked(&mut state);
++            return Err(error);
++        }
++        let result = match result {
++            Ok(value) => Ok(value),
++            Err(error) => {
++                let _closed = owner.resources.close_descriptors();
++                #[cfg(test)]
++                owner.close_checkpoint(CloseStage::ResourcesRetained);
++                owner.retain_locked(&mut state);
++                return Err(error);
++            }
++        };
++        if let Err(error) = owner.retire_resources() {
++            owner.retain_locked(&mut state);
++            return Err(error);
++        }
+         if !owner.retire_registration(&mut state) {
+-            self.fail_locked(&mut state);
+-            return match result {
+-                Err(error) => Err(error),
+-                Ok(_) => Err(io::ErrorKind::InvalidData.into()),
+-            };
++            owner.retain_locked(&mut state);
++            return Err(io::ErrorKind::InvalidData.into());
+         }
+         let outcome = match result {
+             Ok((bytes, pending)) if bytes <= old_bytes => {
+@@ -1041,6 +1279,7 @@
+                 Err(error)
+             }
+         };
++        drop(state);
+         drop(owner);
+         outcome
+     }
+@@ -1068,16 +1307,20 @@
+     else {
+         return Ok(());
+     };
+-    let observed = census::open_at(parent, name, libc::O_RDONLY | libc::O_NONBLOCK)?;
+-    let metadata = observed.metadata()?;
+-    census::regular_nonallocating(&metadata, device)?;
+-    let (bytes, pending) = extent(&metadata, unit)?;
+-    if Identity::of(&metadata) != *identity
+-        || metadata.len() != enrolled.actual_len
++    let metadata = stat_leaf(parent, name, device)?;
++    let length = u64::try_from(metadata.st_size).map_err(|_| io::ErrorKind::InvalidData)?;
++    let allocated = u64::try_from(metadata.st_blocks)
++        .map_err(|_| io::ErrorKind::InvalidData)?
++        .checked_mul(512)
++        .ok_or(io::ErrorKind::InvalidData)?;
++    let bytes = rounded(length.max(allocated), unit)?;
++    let pending = bytes - allocated;
++    if metadata.st_ino != identity.1
++        || length != enrolled.actual_len
+         || enrolled.actual_len > enrolled.reserved_len
+         || bytes > enrolled.bytes
+         || (enrolled.settled
+-            && *enrolled != AccountedFile::durable(binding, bytes, pending, metadata.len()))
++            && *enrolled != AccountedFile::durable(binding, bytes, pending, length))
+     {
+         return Err(io::ErrorKind::InvalidData.into());
+     }
+@@ -1085,6 +1328,37 @@
+     // admitted writes not yet reflected in pending physical materialization.
+     // Verify its exact known EOF and full allowance without releasing credit.
+     Err(io::ErrorKind::AlreadyExists.into())
++}
++
++// A single validated C-string component plus NOFOLLOW never follows an
++// intermediate symlink. All ancestors have already been checked by custody.
++fn stat_leaf(parent: &File, name: &std::ffi::CStr, device: u64) -> io::Result<libc::stat> {
++    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
++    // SAFETY: parent is retained, name is NUL-terminated, and stat is writable.
++    if unsafe {
++        libc::fstatat(
++            parent.as_raw_fd(),
++            name.as_ptr(),
++            stat.as_mut_ptr(),
++            libc::AT_SYMLINK_NOFOLLOW,
++        )
++    } != 0
++    {
++        return Err(io::Error::last_os_error());
++    }
++    // SAFETY: successful fstatat initializes the complete native structure.
++    let stat = unsafe { stat.assume_init() };
++    let observed_device = u64::try_from(stat.st_dev).map_err(|_| io::ErrorKind::InvalidData)?;
++    if stat.st_mode & libc::S_IFMT != libc::S_IFREG
++        || stat.st_nlink != 1
++        || observed_device != device
++    {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    if stat.st_uid != unsafe { libc::geteuid() } || stat.st_mode & 0o077 != 0 {
++        return Err(io::ErrorKind::PermissionDenied.into());
++    }
++    Ok(stat)
+ }
+ 
+ fn verify_parent(
+@@ -1092,7 +1366,36 @@
+     names: &[CString],
+     retained: &RetainedParent,
+ ) -> io::Result<()> {
+-    retained.verify(root, names)
++    retained.verify_file(root, names)
++}
++
++fn prepare_file_names(
++    root: Identity,
++    relative: &Path,
++    config: &super::NodeDiskConfig,
++) -> io::Result<(CString, Box<[CString]>, NamespaceBinding)> {
++    use std::os::unix::ffi::OsStrExt;
++    let parent_names = prepare_parent_names(relative, config)?;
++    let leaf = relative
++        .components()
++        .next_back()
++        .ok_or(io::ErrorKind::InvalidInput)?;
++    let std::path::Component::Normal(leaf) = leaf else {
++        return Err(io::ErrorKind::InvalidInput.into());
++    };
++    if leaf.len() > config.max_name_bytes as usize
++        || parent_names.len() >= config.max_depth as usize
++    {
++        return Err(io::ErrorKind::InvalidInput.into());
++    }
++    let name = CString::new(leaf.as_bytes()).map_err(|_| io::ErrorKind::InvalidInput)?;
++    let parent = parent_names
++        .iter()
++        .fold(NamespaceBinding::root(root), |binding, name| {
++            binding.child(name)
++        });
++    let binding = parent.child(&name);
++    Ok((name, parent_names, binding))
+ }
+ 
+ fn prepare_parent_names(
+@@ -1174,24 +1477,21 @@
+         })
+     }
+     fn verify(&self, file: &File) -> io::Result<()> {
+-        verify_parent(
+-            &self.disk.roots[&self.root],
+-            &self.parent_names,
+-            self.parent_custody(),
+-        )?;
+-        let observed = census::open_at(
+-            self.parent(),
+-            self.name(),
+-            libc::O_RDONLY | libc::O_NONBLOCK,
+-        )?;
+-        let metadata = observed.metadata()?;
+-        census::regular_nonallocating(&metadata, self.identity.0)?;
+-        if Identity::of(&metadata) != self.identity
+-            || Identity::of(&file.metadata()?) != self.identity
+-        {
+-            return Err(io::ErrorKind::InvalidData.into());
+-        }
+-        Ok(())
++        let result = (|| {
++            verify_parent(
++                &self.disk.roots[&self.root],
++                &self.parent_names,
++                self.parent_custody(),
++            )?;
++            let metadata = stat_leaf(self.parent(), self.name(), self.identity.0)?;
++            if metadata.st_ino != self.identity.1
++                || Identity::of(&file.metadata()?) != self.identity
++            {
++                return Err(io::ErrorKind::InvalidData.into());
++            }
++            Ok(())
++        })();
++        result.map_err(|error| self.record_error(error))
+     }
+ 
+     fn check(&self, file: &File) -> io::Result<()> {
+@@ -1203,8 +1503,14 @@
+     fn observe(&self, budget: &mut Budget) -> io::Result<()> {
+         let file = budget.file.as_ref().expect("live persistent descriptor");
+         self.check(file)?;
+-        let metadata = file.metadata().inspect_err(|_| self.disk.fail())?;
+-        let (observed, _) = extent(&metadata, self.disk.unit).inspect_err(|_| self.disk.fail())?;
++        let metadata = file.metadata().map_err(|error| {
++            self.disk.fail();
++            self.record_error(error)
++        })?;
++        let (observed, _) = extent(&metadata, self.disk.unit).map_err(|error| {
++            self.disk.fail();
++            self.record_error(error)
++        })?;
+         let extra = observed.saturating_sub(budget.bytes);
+         let bytes = budget.bytes.max(observed);
+         let allocated = metadata
+@@ -1278,7 +1584,10 @@
+         self.0.check_enrollment(&mut state, &budget)?;
+         if file
+             .metadata()
+-            .inspect_err(|_| self.0.disk.fail_locked(&mut state))?
++            .map_err(|error| {
++                self.0.disk.fail_locked(&mut state);
++                self.0.record_error(error)
++            })?
+             .len()
+             != budget.actual_len
+         {
+@@ -1326,7 +1635,10 @@
+             }
+             Ok((bytes, pending))
+         })();
+-        let (bytes, pending) = outcome.inspect_err(|_| self.0.disk.fail_locked(&mut state))?;
++        let (bytes, pending) = outcome.map_err(|error| {
++            self.0.disk.fail_locked(&mut state);
++            self.0.record_error(error)
++        })?;
+         let mut promises = self.0.disk.device.lock();
+         let next = promises
+             .checked_sub(budget.pending)
+@@ -1413,7 +1725,7 @@
+                 budget.settled = false;
+                 owner.record_enrollment(&mut state, &budget);
+                 owner.disk.fail_locked(&mut state);
+-                return Err(error);
++                return Err(self.0.record_error(error));
+             }
+         };
+         if current != budget.reserved_len || current != budget.actual_len {
+@@ -1461,7 +1773,7 @@
+             }
+             Err(error) => {
+                 owner.disk.fail_locked(&mut state);
+-                return Err(error);
++                return Err(self.0.record_error(error));
+             }
+         };
+         let mut promises = owner.disk.device.lock();
+@@ -1489,7 +1801,7 @@
+         if let Err(error) = promises.set_pending(next) {
+             state.phase = NodeDiskPhase::Failed;
+             promises.fail_owner();
+-            return Err(error);
++            return Err(self.0.record_error(error));
+         }
+         state.bytes = owned;
+         state.pending = own_next;
+@@ -1506,7 +1818,13 @@
+         let budget = self.0.lock_budget()?;
+         let file = budget.file.as_ref().expect("live persistent descriptor");
+         self.0.check(file)?;
+-        Ok(file.metadata().inspect_err(|_| self.0.disk.fail())?.len())
++        Ok(file
++            .metadata()
++            .map_err(|error| {
++                self.0.disk.fail();
++                self.0.record_error(error)
++            })?
++            .len())
+     }
+ 
+     /// A synchronous, pre-I/O exact growth reservation. Failure never resizes.
+@@ -1520,7 +1838,10 @@
+         let mut budget = self.0.lock_budget()?;
+         let file = budget.file.as_ref().expect("live persistent descriptor");
+         self.0.check(file)?;
+-        let actual = file.metadata().inspect_err(|_| self.0.disk.fail())?;
++        let actual = file.metadata().map_err(|error| {
++            self.0.disk.fail();
++            self.0.record_error(error)
++        })?;
+         if actual.len() != current_len
+             || current_len != budget.actual_len
+             || requested_len < current_len
+@@ -1546,7 +1867,13 @@
+         let mut budget = self.0.lock_budget()?;
+         let file = budget.file.as_ref().expect("live persistent descriptor");
+         self.0.check(file)?;
+-        let current = file.metadata().inspect_err(|_| self.0.disk.fail())?.len();
++        let current = file
++            .metadata()
++            .map_err(|error| {
++                self.0.disk.fail();
++                self.0.record_error(error)
++            })?
++            .len();
+         let mut state = self.0.disk.lock_state();
+         if state.phase == NodeDiskPhase::Failed
+             || !self.0.disk.device.lock().admission_ready()
+@@ -1566,7 +1893,7 @@
+         self.0.record_enrollment(&mut state, &budget);
+         if let Err(error) = budget.file.as_ref().expect("live descriptor").set_len(len) {
+             self.0.disk.fail_locked(&mut state);
+-            return Err(error);
++            return Err(self.0.record_error(error));
+         }
+         budget.actual_len = len;
+         budget.settled = false;
+@@ -1591,7 +1918,10 @@
+         self.0.check_enrollment(&mut state, &budget)?;
+         if file
+             .metadata()
+-            .inspect_err(|_| self.0.disk.fail_locked(&mut state))?
++            .map_err(|error| {
++                self.0.disk.fail_locked(&mut state);
++                self.0.record_error(error)
++            })?
+             .len()
+             != budget.actual_len
+         {
+@@ -1607,7 +1937,7 @@
+             .write_all_at(data, offset)
+         {
+             self.0.disk.fail_locked(&mut state);
+-            return Err(error);
++            return Err(self.0.record_error(error));
+         }
+         if !data.is_empty() {
+             budget.actual_len = budget.actual_len.max(end);
+@@ -1632,7 +1962,10 @@
+             file.read_exact_at(out, offset)?;
+             self.0.verify(file)
+         })();
+-        outcome.inspect_err(|_| self.0.disk.fail_locked(&mut state))
++        outcome.map_err(|error| {
++            self.0.disk.fail_locked(&mut state);
++            self.0.record_error(error)
++        })
+     }
+ 
+     /// Verified materialization retires only pending filesystem promises; the
+@@ -1653,7 +1986,10 @@
+             file.sync_all()?;
+             self.0.verify(file)
+         })();
+-        outcome.inspect_err(|_| self.0.disk.fail_locked(&mut state))?;
++        outcome.map_err(|error| {
++            self.0.disk.fail_locked(&mut state);
++            self.0.record_error(error)
++        })?;
+         drop(state);
+         self.0.observe(&mut budget)
+     }
+@@ -1692,7 +2028,7 @@
+         })();
+         if let Err(error) = outcome {
+             self.0.disk.fail_locked(&mut state);
+-            return Err(error);
++            return Err(self.0.record_error(error));
+         }
+         drop(state);
+         self.0.observe(&mut budget)
+@@ -1700,35 +2036,50 @@
+ }
+ 
+ impl FileOwner {
+-    // This value is outside its original Arc. The live-map Weak is the last
+-    // admitted backing reference, and remains in place until resources retire.
+-    fn retire_resources(&mut self) {
+-        let Some(mut mutex) = self.budget.take() else {
+-            return;
+-        };
+-        let budget = mutex.get_mut().unwrap_or_else(|p| p.into_inner());
+-        drop(budget.file.take());
++    // This value is outside its original Arc. The map's Weak keeps that exact
++    // allocation admitted while data/parent descriptors and heap backing retire.
++    fn retire_resources(&mut self) -> io::Result<()> {
++        if let Some(mutex) = &mut self.resources.budget {
++            let budget = mutex.get_mut().unwrap_or_else(|poison| poison.into_inner());
++            super::native_file::close(&mut budget.file, &mut budget.close_outcome)?;
++        }
+         #[cfg(test)]
+         self.close_checkpoint(CloseStage::DataClosed);
+-        for parent in [self.parent.take(), self.retiring_parent.take()]
+-            .into_iter()
+-            .flatten()
++        self.resources.close_descriptors()?;
++        if self.resources.has_failure() {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        for parent in [
++            self.resources.parent.take(),
++            self.resources.retiring_parent.take(),
++        ]
++        .into_iter()
++        .flatten()
+         {
+-            if let Some(identity) = parent.retire() {
++            if let Some(identity) = parent.retire_drained() {
+                 assert!(
+-                    self.retired_parent.replace(identity).is_none(),
+-                    "one file parent registration"
++                    self.resources.retired_parent.replace(identity).is_none(),
++                    "one parent registration"
+                 );
+             }
+         }
+-        drop(std::mem::take(&mut self.root));
+-        drop(std::mem::take(&mut self.relative));
+-        drop(std::mem::replace(&mut self.parent_names, Box::new([])));
+-        drop(self.name.take());
+-        // Includes the lazily initialized native mutex backing on Darwin.
+-        drop(mutex);
++        drop(std::mem::take(&mut self.resources.root));
++        drop(std::mem::take(&mut self.resources.relative));
++        drop(std::mem::replace(
++            &mut self.resources.parent_names,
++            Box::new([]),
++        ));
++        drop(self.resources.name.take());
++        drop(self.resources.budget.take());
++        drop(self.resources.original_error.take());
+         #[cfg(test)]
+         self.close_checkpoint(CloseStage::ResourcesClosed);
++        Ok(())
++    }
++    fn retain_locked(&mut self, state: &mut State) {
++        let resources = std::mem::replace(&mut self.resources, FileResources::empty());
++        self.disk.fail_locked(state);
++        state.file_custody.retain(resources);
+     }
+ 
+     #[cfg(test)]
+@@ -1775,39 +2126,62 @@
+         namespace::retire_parent(state, parent);
+         self.retired_parent = None;
+         state.open_files = next;
++        state.file_custody.release(self.custody_slot);
++        self.custody_slot = usize::MAX;
+         true
+     }
+ }
+ 
++// If a retirement checkpoint or another destructor unwinds, the actual
++// unfinished payload moves into its reserved slot before field destruction.
++struct Retirement<'a> {
++    owner: &'a mut FileOwner,
++    armed: bool,
++}
++impl Drop for Retirement<'_> {
++    fn drop(&mut self) {
++        if self.armed {
++            let disk = self.owner.disk.clone();
++            let mut state = disk.lock_state();
++            self.owner.retain_locked(&mut state);
++        }
++    }
++}
+ impl Drop for FileOwner {
+     fn drop(&mut self) {
+-        let Some(mutex) = self.budget.as_mut() else {
++        if self.resources.custody_slot == usize::MAX {
+             return;
+-        };
+-        let budget = mutex.get_mut().unwrap_or_else(|p| {
+-            let budget = p.into_inner();
+-            budget.settled = false;
+-            budget
++        }
++        let mut retirement = Retirement {
++            owner: self,
++            armed: true,
++        };
++        let owner = &mut *retirement.owner;
++        let settled = owner.resources.budget.as_mut().is_some_and(|mutex| {
++            let poisoned = mutex.is_poisoned();
++            let budget = mutex.get_mut().unwrap_or_else(|poison| poison.into_inner());
++            !poisoned && budget.settled
+         });
+-        let settled = budget.settled;
+-        if !settled {
+-            self.disk.fail();
+-        }
+-        self.retire_resources();
+-        let disk = self.disk.clone();
++        let result = if settled && !owner.resources.has_failure() {
++            owner.retire_resources()
++        } else {
++            let _closed = owner.resources.close_descriptors();
++            Err(io::ErrorKind::InvalidData.into())
++        };
++        let disk = owner.disk.clone();
+         let mut state = disk.lock_state();
+         if !settled {
+             if let Some(enrolled) = state
+                 .accounted
+-                .get_mut(&self.identity)
++                .get_mut(&owner.identity)
+                 .and_then(AccountedInode::file_mut)
+             {
+                 enrolled.settled = false;
+             }
+-            disk.fail_locked(&mut state);
+-        }
+-        if !self.retire_registration(&mut state) {
+-            disk.fail_locked(&mut state);
+-        }
+-    }
+-}
++        }
++        if result.is_err() || !owner.retire_registration(&mut state) {
++            owner.retain_locked(&mut state);
++        }
++        retirement.armed = false;
++    }
++}
+diff --git a/crates/kasumi-store/src/node_disk/memory.rs b/crates/kasumi-store/src/node_disk/memory.rs
+--- a/crates/kasumi-store/src/node_disk/memory.rs
++++ b/crates/kasumi-store/src/node_disk/memory.rs
+@@ -27,6 +27,7 @@
+         // census and is also the pre-effect tombstone rebuild workspace.
+         // No third map and no post-publication expansion allocation exist.
+         let ledgers = banks::<AccountedInode>(retained)?;
++        let custody = file::CustodySlots::required_bytes(config.max_open_files)?;
+         let live = banks::<Weak<file::FileOwner>>(
+             usize::try_from(handles).map_err(|_| disk_memory::overflow())?,
+         )?;
+@@ -40,7 +41,10 @@
+             add(size::<file::FileOwner>()?, 16)?,
+             add(
+                 NATIVE_HANDLE_WORKSPACE,
+-                add(parent_ancestry, add(paths, components)?)?,
++                add(
++                    mul(3, NATIVE_HANDLE_WORKSPACE)?,
++                    add(parent_ancestry, add(paths, components)?)?,
++                )?,
+             )?,
+         )?;
+         // Publication prepares a new owner/path while the old owner is live.
+@@ -57,7 +61,10 @@
+             add(size::<directory::DirectoryOwner>()?, 16)?,
+             add(
+                 NATIVE_HANDLE_WORKSPACE,
+-                add(parent_ancestry, add(paths, components)?)?,
++                add(
++                    NATIVE_HANDLE_WORKSPACE,
++                    add(parent_ancestry, add(paths, components)?)?,
++                )?,
+             )?,
+         )?;
+         let directory_owners = mul(
+@@ -124,7 +131,7 @@
+             add(
+                 ledgers,
+                 add(
+-                    live,
++                    add(live, custody)?,
+                     add(add(owners, directory_owners)?, add(census, roots)?)?,
+                 )?,
+             )?,
+diff --git a/crates/kasumi-store/src/node_disk/namespace.rs b/crates/kasumi-store/src/node_disk/namespace.rs
+--- a/crates/kasumi-store/src/node_disk/namespace.rs
++++ b/crates/kasumi-store/src/node_disk/namespace.rs
+@@ -1,11 +1,12 @@
+ //! Prepared directory custody and affected-parent namespace accounting.
+ //! File and directory owners share actual retained parent custody. Every
+ //! namespace effect still requires its own prepared, admitted transition.
++use super::native_file::{self, CloseOutcome, Walk};
+ use super::{
+     AccountedDirectory, AccountedInode, DiskWork, Identity, NodeDisk, NodeDiskPhase, State, census,
+     directory,
+ };
+-use std::{ffi::CString, fs::File, io, os::unix::fs::MetadataExt};
++use std::{ffi::CString, fs::File, io, os::unix::fs::MetadataExt, sync::Mutex};
+ 
+ /// Embedded in an admitted file or non-root directory owner. Preparation is unregistered;
+ /// its original parent's registration funds the transfer until actual close.
+@@ -15,30 +16,100 @@
+     identity: Identity,
+     ancestors: Box<[Identity]>,
+     registered: bool,
++    close_outcome: Option<CloseOutcome>,
++    walk: Mutex<Walk>,
+ }
+ impl RetainedParent {
+-    pub(super) fn prepare(
++    pub(super) fn prepare_storage(
+         disk: &NodeDisk,
+-        state: &State,
+         root: &str,
+         names: &[CString],
+     ) -> io::Result<Self> {
+-        let (file, ancestors) = directory::file_parent(disk, state, root, names)?;
+-        let identity = *ancestors.last().ok_or(io::ErrorKind::InvalidData)?;
+-        Ok(Self {
+-            file: Some(file),
+-            identity,
+-            ancestors,
+-            registered: false,
+-        })
++        let identity = disk
++            .roots
++            .get(root)
++            .ok_or(io::ErrorKind::InvalidInput)?
++            .identity;
++        let count = names
++            .len()
++            .checked_add(1)
++            .ok_or(io::ErrorKind::InvalidInput)?;
++        let mut ancestors = Vec::new();
++        ancestors
++            .try_reserve_exact(count)
++            .map_err(|_| io::ErrorKind::OutOfMemory)?;
++        ancestors.resize(count, identity);
++        Ok(Self::prepared(identity, ancestors.into_boxed_slice()))
+     }
+     pub(super) fn prepared(identity: Identity, ancestors: Box<[Identity]>) -> Self {
++        let walk = Mutex::new(Walk::default());
++        // Darwin's native mutex initialization belongs to preparation, before FD acquisition.
++        drop(walk.lock().expect("unpublished parent walk"));
+         Self {
+             file: None,
+             identity,
+             ancestors,
+             registered: false,
+-        }
++            close_outcome: None,
++            walk,
++        }
++    }
++    pub(super) fn acquire(
++        &mut self,
++        disk: &NodeDisk,
++        state: &State,
++        label: &str,
++        names: &[CString],
++    ) -> io::Result<()> {
++        let root = disk.roots.get(label).ok_or(io::ErrorKind::InvalidInput)?;
++        if let Some(outcome) = &self.close_outcome {
++            return Err(native_file::projection(&outcome.error));
++        }
++        if self.file.is_some()
++            || self.ancestors.first() != Some(&root.identity)
++            || self.ancestors.len()
++                != names
++                    .len()
++                    .checked_add(1)
++                    .ok_or(io::ErrorKind::InvalidInput)?
++        {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        let walk = self
++            .walk
++            .get_mut()
++            .map_err(|_| io::ErrorKind::InvalidData)?;
++        walk.ready()?;
++        let result = (|| {
++            root.verify_nonallocating()?;
++            let mut binding = super::NamespaceBinding::root(root.identity);
++            let (mut identity, _) = directory::checked_entry(state, &root.file, binding, None)?;
++            self.ancestors[0] = identity;
++            for (index, name) in names.iter().enumerate() {
++                walk.next = Some(census::open_at(
++                    walk.current.as_ref().unwrap_or(&root.file),
++                    name,
++                    libc::O_RDONLY | libc::O_DIRECTORY,
++                )?);
++                binding = binding.child(name);
++                let (child, _) = directory::checked_entry(
++                    state,
++                    walk.next.as_ref().expect("owned walk"),
++                    binding,
++                    Some(identity),
++                )?;
++                self.ancestors[index + 1] = child;
++                identity = child;
++                walk.advance()?;
++            }
++            self.file = match walk.current.take() {
++                Some(file) => Some(file),
++                None => Some(root.file.try_clone()?),
++            };
++            self.identity = identity;
++            Ok(())
++        })();
++        walk.record(result)
+     }
+     pub(super) fn observe_ancestor(&mut self, index: usize, identity: Identity) {
+         self.ancestors[index] = identity;
+@@ -58,6 +129,7 @@
+     /// Compare every retained ancestor and the actual parent descriptor. This
+     /// deliberately does not require the affected parent's pre-effect extent:
+     /// the prepared transition owns that snapshot until explicit settlement.
++    // Existing directory verification remains outside the file-custody successor.
+     pub(super) fn verify(&self, root: &census::Root, names: &[CString]) -> io::Result<()> {
+         root.verify_nonallocating()?;
+         if self.ancestors.len() != names.len() + 1 || self.ancestors[0] != root.identity {
+@@ -83,6 +155,96 @@
+             return Err(io::ErrorKind::InvalidData.into());
+         }
+         Ok(())
++    }
++    pub(super) fn verify_file(&self, root: &census::Root, names: &[CString]) -> io::Result<()> {
++        if let Some(outcome) = &self.close_outcome {
++            return Err(native_file::projection(&outcome.error));
++        }
++        let file = self.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
++        if self.ancestors.len()
++            != names
++                .len()
++                .checked_add(1)
++                .ok_or(io::ErrorKind::InvalidInput)?
++            || self.ancestors.first() != Some(&root.identity)
++        {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        let mut walk = self.walk.lock().map_err(|_| io::ErrorKind::InvalidData)?;
++        walk.ready()?;
++        let result = (|| {
++            root.verify_nonallocating()?;
++            for (index, name) in names.iter().enumerate() {
++                walk.next = Some(census::open_at(
++                    walk.current.as_ref().unwrap_or(&root.file),
++                    name,
++                    libc::O_RDONLY | libc::O_DIRECTORY,
++                )?);
++                let metadata = walk
++                    .next
++                    .as_ref()
++                    .expect("owned verification descriptor")
++                    .metadata()?;
++                census::directory_nonallocating(&metadata)?;
++                if metadata.dev() != root.identity.0
++                    || Identity::of(&metadata) != self.ancestors[index + 1]
++                {
++                    return Err(io::ErrorKind::InvalidData.into());
++                }
++                walk.advance()?;
++            }
++            let retained = file.metadata()?;
++            census::directory_nonallocating(&retained)?;
++            if Identity::of(&walk.current.as_ref().unwrap_or(&root.file).metadata()?)
++                != self.identity
++                || Identity::of(&retained) != self.identity
++            {
++                return Err(io::ErrorKind::InvalidData.into());
++            }
++            walk.close_resources()
++        })();
++        walk.record(result)
++    }
++    pub(super) fn close_resources(&mut self) -> io::Result<()> {
++        let walk = self
++            .walk
++            .get_mut()
++            .unwrap_or_else(|poison| poison.into_inner());
++        let first = walk.close_resources();
++        let second = native_file::close(&mut self.file, &mut self.close_outcome);
++        first.and(second)
++    }
++    pub(super) fn drained(&self) -> bool {
++        let walk = self
++            .walk
++            .lock()
++            .unwrap_or_else(|poison| poison.into_inner());
++        self.file.is_none() && self.close_outcome.is_none() && walk.drained()
++    }
++    pub(super) fn close_diagnostic(&self) -> Option<(i32, i32)> {
++        let walk = self
++            .walk
++            .lock()
++            .unwrap_or_else(|poison| poison.into_inner());
++        self.close_outcome
++            .as_ref()
++            .or_else(|| walk.uncertain_close())
++            .map(|outcome| {
++                (
++                    outcome.descriptor,
++                    outcome.error.raw_os_error().expect("native close errno"),
++                )
++            })
++    }
++    pub(super) fn has_failure(&self) -> bool {
++        let walk = self
++            .walk
++            .lock()
++            .unwrap_or_else(|poison| poison.into_inner());
++        self.walk.is_poisoned()
++            || self.close_outcome.is_some()
++            || walk.failure.is_some()
++            || walk.uncertain_close().is_some()
+     }
+     pub(super) fn file(&self) -> &File {
+         self.file.as_ref().expect("retained parent descriptor")
+@@ -122,15 +284,21 @@
+     }
+     /// Move the scalar registration across the resources' scope boundary.
+     /// Actual FD and ancestor allocation destruction precede returned credit.
++    // Existing directory retirement is unchanged and remains separately unqualified.
+     pub(super) fn retire(self) -> Option<Identity> {
+-        let Self {
+-            file,
+-            identity,
+-            ancestors,
+-            registered,
+-        } = self;
+-        drop(file);
+-        drop(ancestors);
++        let identity = self.identity;
++        let registered = self.registered;
++        drop(self);
++        registered.then_some(identity)
++    }
++    pub(super) fn retire_drained(self) -> Option<Identity> {
++        assert!(
++            self.drained(),
++            "retirement requires observed native descriptor drain"
++        );
++        let identity = self.identity;
++        let registered = self.registered;
++        drop(self);
+         registered.then_some(identity)
+     }
+ }
+diff --git a/crates/kasumi-store/src/node_disk/native_file.rs b/crates/kasumi-store/src/node_disk/native_file.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/native_file.rs
+@@ -0,0 +1,122 @@
++//! Inline custody for native descriptors used by admitted file operations.
++use std::{fs::File, io, os::fd::IntoRawFd};
++
++/// The original native close result is retained, not reconstructed from errno.
++/// The consumed descriptor number is diagnostic only and must never be retried.
++pub(super) struct CloseOutcome {
++    pub(super) descriptor: i32,
++    pub(super) error: io::Error,
++}
++
++pub(super) fn projection(error: &io::Error) -> io::Error {
++    error
++        .raw_os_error()
++        .map_or_else(|| error.kind().into(), io::Error::from_raw_os_error)
++}
++
++/// Close one exact owned descriptor once. An error consumes Rust ownership but
++/// does not establish physical drain; the original outcome remains in its slot.
++pub(super) fn close(file: &mut Option<File>, outcome: &mut Option<CloseOutcome>) -> io::Result<()> {
++    if let Some(outcome) = outcome {
++        return Err(projection(&outcome.error));
++    }
++    let Some(file) = file.take() else {
++        return Ok(());
++    };
++    let descriptor = file.into_raw_fd();
++    // SAFETY: ownership was consumed above. Neither File::drop nor any retry
++    // will close this integer after the one native attempt below.
++    let result = unsafe { libc::close(descriptor) };
++    let error = (result != 0).then(io::Error::last_os_error);
++    #[cfg(test)]
++    let error = {
++        CLOSE_ATTEMPTS.with(|count| count.set(count.get() + 1));
++        let injected = CLOSE_FAILURE.with(|failure| failure.take());
++        error.or_else(|| injected.map(io::Error::from_raw_os_error))
++    };
++    let Some(error) = error else {
++        return Ok(());
++    };
++    let returned = projection(&error);
++    *outcome = Some(CloseOutcome { descriptor, error });
++    Err(returned)
++}
++
++/// Two bounded walk descriptors. Every new FD is installed before metadata or
++/// identity checks. Failure leaves both descriptors and original result here.
++#[derive(Default)]
++pub(super) struct Walk {
++    pub(super) current: Option<File>,
++    pub(super) next: Option<File>,
++    pub(super) failure: Option<io::Error>,
++    current_close: Option<CloseOutcome>,
++    next_close: Option<CloseOutcome>,
++}
++
++impl Walk {
++    pub(super) fn ready(&self) -> io::Result<()> {
++        if let Some(error) = &self.failure {
++            return Err(projection(error));
++        }
++        if let Some(outcome) = self.current_close.as_ref().or(self.next_close.as_ref()) {
++            return Err(projection(&outcome.error));
++        }
++        if self.current.is_some() || self.next.is_some() {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        Ok(())
++    }
++
++    pub(super) fn record<T>(&mut self, result: io::Result<T>) -> io::Result<T> {
++        match result {
++            Ok(value) => Ok(value),
++            Err(error) => {
++                let returned = projection(&error);
++                if self.failure.is_none() {
++                    self.failure = Some(error);
++                }
++                Err(returned)
++            }
++        }
++    }
++
++    pub(super) fn advance(&mut self) -> io::Result<()> {
++        close(&mut self.current, &mut self.current_close)?;
++        self.current = self.next.take();
++        Ok(())
++    }
++
++    pub(super) fn close_resources(&mut self) -> io::Result<()> {
++        // Attempt both independent descriptors even if the first close fails.
++        let first = close(&mut self.current, &mut self.current_close);
++        let second = close(&mut self.next, &mut self.next_close);
++        first.and(second)
++    }
++
++    pub(super) fn drained(&self) -> bool {
++        self.current.is_none()
++            && self.next.is_none()
++            && self.current_close.is_none()
++            && self.next_close.is_none()
++    }
++
++    pub(super) fn uncertain_close(&self) -> Option<&CloseOutcome> {
++        self.current_close.as_ref().or(self.next_close.as_ref())
++    }
++}
++
++#[cfg(test)]
++std::thread_local! {
++    static CLOSE_FAILURE: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
++    static CLOSE_ATTEMPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
++}
++#[cfg(test)]
++pub(super) fn fail_next_close(errno: i32) {
++    // Perform the real close, then model an uncertain native result. This
++    // deliberately cannot prove that the descriptor survived the syscall.
++    CLOSE_FAILURE.with(|failure| assert!(failure.replace(Some(errno)).is_none()));
++}
++#[cfg(test)]
++pub(super) fn close_attempts() -> u64 {
++    CLOSE_ATTEMPTS.with(std::cell::Cell::get)
++}
+diff --git a/crates/kasumi-store/src/node_disk/tests.rs b/crates/kasumi-store/src/node_disk/tests.rs
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -173,8 +173,17 @@
+ }
+ 
+ fn clean(disk: &Arc<NodeDisk>, names: &[&str]) {
++    {
++        let state = disk.lock_state();
++        assert_eq!(
++            state.open_files,
++            state.file_custody.internal_owners(),
++            "all external file owners drained"
++        );
++    }
++    disk.reconcile(&CensusCancellation::default()).unwrap();
+     assert_eq!(disk.snapshot().open_files, 0);
+-    disk.reconcile(&CensusCancellation::default()).unwrap();
++    assert_eq!(disk.snapshot().retained_file_attempts, 0);
+     for name in names {
+         let file = disk.open_file("data", Path::new(name)).unwrap();
+         disk.delete_file(file).unwrap();
+@@ -863,7 +872,7 @@
+         assert!(file.shrink(0).is_err());
+         let ((), allocations) = crate::allocation_tests::measure(|| drop(file));
+         assert_eq!(allocations, 0, "uncertain descriptor drop allocated");
+-        assert_eq!(disk.snapshot().open_files, 0);
++        assert_eq!(disk.snapshot().open_files, 1);
+         assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+         assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+         assert_eq!(
+@@ -1046,7 +1055,7 @@
+     assert!(file.sync_all_and_parent().is_err());
+     assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+     drop(file);
+-    assert_eq!(disk.snapshot().open_files, 0);
++    assert_eq!(disk.snapshot().open_files, 1);
+     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+     assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+     disk.reconcile(&CensusCancellation::default()).unwrap();
+@@ -1553,7 +1562,7 @@
+         );
+         let snapshot = disk.snapshot();
+         assert_eq!(snapshot.phase, NodeDiskPhase::Failed);
+-        assert_eq!(snapshot.open_files, 0);
++        assert_eq!(snapshot.open_files, 1);
+         assert_eq!(snapshot.persistent_files, 1);
+         assert_eq!(snapshot.charged_bytes, namespace_charge(&disk) + (32 << 10));
+         let binding = NamespaceBinding::root(disk.roots["data"].identity).child(c"destination");
+@@ -1603,7 +1612,7 @@
+         assert_eq!(allocations, 0, "post-reclaim error allocated: {failure:?}");
+         let snapshot = disk.snapshot();
+         assert_eq!(snapshot.phase, NodeDiskPhase::Failed);
+-        assert_eq!(snapshot.open_files, 0);
++        assert_eq!(snapshot.open_files, 1);
+         assert_eq!(snapshot.persistent_files, 1);
+         assert_eq!(snapshot.charged_bytes, namespace_charge(&disk) + (32 << 10));
+         let path = config.roots["data"].join("file");
+@@ -1689,7 +1698,9 @@
+ #[test]
+ fn disappeared_censused_and_closed_created_names_fence_without_credit() {
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+-    for censused in [true, false] {
++    for (censused, before_preparation) in
++        [(true, true), (true, false), (false, true), (false, false)]
++    {
+         let (_directory, config) = installation();
+         crate::private_files::create_directory(&config.roots["data"].join("nested")).unwrap();
+         if censused {
+@@ -1708,19 +1719,30 @@
+         }
+         drop(disk.open_file("data", Path::new("nested/file")).unwrap());
+         let before = disk.snapshot();
+-        std::fs::remove_file(config.roots["data"].join("nested/file")).unwrap();
+-        let prepared = disk
+-            .prepare_file("data", Path::new("nested/file"), None)
+-            .unwrap();
+-        let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+-        assert_eq!(allocations, 0);
++        let path = config.roots["data"].join("nested/file");
++        if before_preparation {
++            std::fs::remove_file(&path).unwrap();
++            // The enrolled parent's changed metadata now fences preparation.
++            let error = disk
++                .prepare_file("data", Path::new("nested/file"), None)
++                .err()
++                .unwrap();
++            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
++        } else {
++            let prepared = disk
++                .prepare_file("data", Path::new("nested/file"), None)
++                .unwrap();
++            std::fs::remove_file(&path).unwrap();
++            let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
++            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
++            assert_eq!(allocations, 0);
++        }
+         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+         assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+         assert_eq!(disk.snapshot().persistent_files, 1);
+         assert_eq!(disk.snapshot().open_files, 0);
+         disk.reconcile(&CensusCancellation::default()).unwrap();
+-        assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
++        assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk));
+         assert_eq!(disk.snapshot().persistent_files, 0);
+         disk.pause().unwrap();
+     }
+@@ -1797,7 +1819,9 @@
+ #[test]
+ fn missing_enrolled_target_cannot_be_recreated_or_published_over() {
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+-    for publish in [false, true] {
++    for (publish, before_preparation) in
++        [(false, true), (false, false), (true, true), (true, false)]
++    {
+         let (_directory, config) = installation();
+         seed(&config, "target", 32 << 10);
+         let disk = open(config.clone(), fixture_memory.clone());
+@@ -1806,25 +1830,57 @@
+                 .unwrap()
+         });
+         let before = disk.snapshot();
+-        std::fs::remove_file(config.roots["data"].join("target")).unwrap();
+-        let (result, allocations) = if let Some(source) = source {
+-            let prepared = disk
+-                .prepare_publication(source, "data", Path::new("target"))
+-                .unwrap();
+-            crate::allocation_tests::measure(|| prepared.execute())
++        let target = config.roots["data"].join("target");
++        if before_preparation {
++            std::fs::remove_file(&target).unwrap();
++        }
++        let result = if let Some(source) = source {
++            match disk.prepare_publication(source, "data", Path::new("target")) {
++                Ok(prepared) => {
++                    assert!(!before_preparation);
++                    std::fs::remove_file(&target).unwrap();
++                    let (result, allocations) =
++                        crate::allocation_tests::measure(|| prepared.execute());
++                    assert_eq!(allocations, 0);
++                    result
++                }
++                Err(error) => {
++                    assert!(before_preparation);
++                    Err(error)
++                }
++            }
+         } else {
+-            let prepared = disk
+-                .prepare_file("data", Path::new("target"), Some(DiskWork::Foreground))
+-                .unwrap();
+-            crate::allocation_tests::measure(|| prepared.execute())
++            match disk.prepare_file("data", Path::new("target"), Some(DiskWork::Foreground)) {
++                Ok(prepared) => {
++                    assert!(!before_preparation);
++                    std::fs::remove_file(&target).unwrap();
++                    let (result, allocations) =
++                        crate::allocation_tests::measure(|| prepared.execute());
++                    assert_eq!(allocations, 0);
++                    result
++                }
++                Err(error) => {
++                    assert!(before_preparation);
++                    Err(error)
++                }
++            }
+         };
+-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+-        assert_eq!(allocations, 0);
+-        assert!(!config.roots["data"].join("target").exists());
++        assert_eq!(
++            result.unwrap_err().kind(),
++            if before_preparation {
++                io::ErrorKind::InvalidData
++            } else {
++                io::ErrorKind::NotFound
++            }
++        );
++        assert!(!target.exists());
+         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+         assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+         assert_eq!(disk.snapshot().persistent_files, before.persistent_files);
+-        assert_eq!(disk.snapshot().open_files, 0);
++        assert_eq!(
++            disk.snapshot().open_files,
++            u32::from(publish && !before_preparation)
++        );
+         if publish {
+             clean(&disk, &["source"]);
+         } else {
+@@ -1902,12 +1958,20 @@
+         disk.open_file("data", Path::new("nested/file"))
+             .unwrap_err()
+             .kind(),
+-        io::ErrorKind::NotFound
++        io::ErrorKind::InvalidData
+     );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     assert_eq!(
+         disk.snapshot().charged_bytes,
+         namespace_charge(&disk) + (32 << 10)
++    );
++    assert_eq!(
++        config.roots["data"]
++            .join("moved/file")
++            .metadata()
++            .unwrap()
++            .len(),
++        32 << 10
+     );
+     clean(&disk, &["moved/file"]);
+ }
+@@ -1977,28 +2041,41 @@
+ #[test]
+ fn publication_replaced_private_source_ancestor_fences_before_rename() {
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+-    let (_directory, config) = installation();
+-    let parent = config.roots["data"].join("nested");
+-    crate::private_files::create_directory(&parent).unwrap();
+-    seed(&config, "nested/source", 32 << 10);
+-    let disk = open(config.clone(), fixture_memory.clone());
+-    let source = disk.open_file("data", Path::new("nested/source")).unwrap();
+-    std::fs::rename(&parent, config.roots["data"].join("moved")).unwrap();
+-    crate::private_files::create_directory(&parent).unwrap();
+-    let prepared = disk
+-        .prepare_publication(source, "data", Path::new("nested/published"))
+-        .unwrap();
+-    let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+-    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+-    assert_eq!(allocations, 0);
+-    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+-    assert_eq!(
+-        disk.snapshot().charged_bytes,
+-        namespace_charge(&disk) + (32 << 10)
+-    );
+-    assert_eq!(disk.snapshot().open_files, 0);
+-    assert!(!parent.join("published").exists());
+-    clean(&disk, &["moved/source"]);
++    for before_preparation in [true, false] {
++        let (_directory, config) = installation();
++        let parent = config.roots["data"].join("nested");
++        let moved = config.roots["data"].join("moved");
++        crate::private_files::create_directory(&parent).unwrap();
++        seed(&config, "nested/source", 32 << 10);
++        let disk = open(config.clone(), fixture_memory.clone());
++        let source = disk.open_file("data", Path::new("nested/source")).unwrap();
++        let before = disk.snapshot();
++        if before_preparation {
++            std::fs::rename(&parent, &moved).unwrap();
++            crate::private_files::create_directory(&parent).unwrap();
++            let error = disk
++                .prepare_publication(source, "data", Path::new("nested/published"))
++                .err()
++                .unwrap();
++            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
++        } else {
++            let prepared = disk
++                .prepare_publication(source, "data", Path::new("nested/published"))
++                .unwrap();
++            std::fs::rename(&parent, &moved).unwrap();
++            crate::private_files::create_directory(&parent).unwrap();
++            let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
++            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
++            assert_eq!(allocations, 0);
++        }
++        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++        assert_eq!(disk.snapshot().open_files, u32::from(!before_preparation));
++        assert!(!parent.join("published").exists());
++        assert!(!moved.join("published").exists());
++        assert_eq!(moved.join("source").metadata().unwrap().len(), 32 << 10);
++        clean(&disk, &["moved/source"]);
++    }
+ }
+ 
+ #[test]
+@@ -2461,7 +2538,11 @@
+         let (entered, observed) = std::sync::mpsc::channel();
+         let (release, resumed) = std::sync::mpsc::channel();
+         *disk.after_file_close.lock().unwrap() = Some(file::ClosePause {
+-            stage: file::CloseStage::ResourcesClosed,
++            stage: if fail {
++                file::CloseStage::ResourcesRetained
++            } else {
++                file::CloseStage::ResourcesClosed
++            },
+             entered,
+             release: resumed,
+         });
+@@ -2470,8 +2551,9 @@
+         observed
+             .recv_timeout(std::time::Duration::from_secs(5))
+             .unwrap();
+-        // Resources are gone, but the exact Weak allocation/registration and
+-        // device promises still belong to this serialized reclaim transition.
++        // Success physically retires metadata before credit. Failure keeps
++        // that same metadata and original outcome under the admitted owner.
++        // Both retain the exact Weak registration and serialized promises.
+         assert!(disk.state.try_lock().is_err());
+         let expected_parent_pending = if fail {
+             old_parent_pending
+@@ -2486,8 +2568,8 @@
+         let result = closing.join().unwrap();
+         assert_eq!(result.is_err(), fail);
+         let after = disk.snapshot();
+-        assert_eq!(after.open_files, 0);
+-        assert!(disk.lock_state().live.is_empty());
++        assert_eq!(after.open_files, u32::from(fail));
++        assert_eq!(disk.lock_state().live.is_empty(), !fail);
+         if fail {
+             assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+             assert_eq!(after.phase, NodeDiskPhase::Failed);
+@@ -2499,6 +2581,9 @@
+             assert_eq!(after.pending_bytes, namespace_pending(&disk));
+         }
+         disk.reconcile(&CensusCancellation::default()).unwrap();
++        assert_eq!(disk.snapshot().open_files, 0);
++        assert!(disk.lock_state().live.is_empty());
++        assert_eq!(disk.snapshot().retained_file_attempts, 0);
+     }
+ }
+ 
+@@ -2575,3 +2660,150 @@
+     assert!(!config.roots["data"].join("unpublished").exists());
+     clean(&disk, &["created"]);
+ }
++
++#[test]
++fn file_preparation_unknown_native_close_retains_slot_and_never_retries_descriptor() {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let (_directory, config) = installation();
++    let disk = open(config.clone(), memory);
++    let before = disk.snapshot();
++    let prepared = disk
++        .prepare_file("data", Path::new("absent"), Some(DiskWork::Foreground))
++        .unwrap();
++    let descriptor = prepared.parent_descriptor();
++    native_file::fail_next_close(libc::EIO);
++    let attempts = native_file::close_attempts();
++    let ((), allocations) = crate::allocation_tests::measure(|| drop(prepared));
++    assert_eq!(allocations, 0);
++    assert_eq!(native_file::close_attempts(), attempts + 1);
++    let snapshot = disk.snapshot();
++    assert_eq!(snapshot.phase, NodeDiskPhase::Failed);
++    assert_eq!(snapshot.retained_file_attempts, 1);
++    assert_eq!(snapshot.uncertain_file_close, Some((descriptor, libc::EIO)));
++    assert_eq!(snapshot.charged_bytes, before.charged_bytes);
++    assert_eq!(snapshot.pending_bytes, before.pending_bytes);
++    assert_eq!(snapshot.persistent_files, 0);
++    assert!(!config.roots["data"].join("absent").exists());
++    for _ in 0..2 {
++        assert!(disk.pause().is_err());
++        assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++        assert_eq!(
++            native_file::close_attempts(),
++            attempts + 1,
++            "uncertain integer must never be retried"
++        );
++        assert_eq!(
++            disk.snapshot().uncertain_file_close,
++            Some((descriptor, libc::EIO))
++        );
++        assert_eq!(disk.snapshot().retained_file_attempts, 1);
++    }
++}
++
++#[test]
++fn failed_file_creation_keeps_original_outcome_backing_until_accepted_census() {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let (_directory, config) = installation();
++    let disk = open(config, memory);
++    let prepared = disk
++        .prepare_file("data", Path::new("created"), Some(DiskWork::Foreground))
++        .unwrap();
++    disk.namespace_failure.store(
++        file::NamespaceFailure::CreateFileSync as u8,
++        Ordering::Relaxed,
++    );
++    assert_eq!(prepared.execute().unwrap_err().kind(), io::ErrorKind::Other);
++    let address = disk
++        .lock_state()
++        .file_custody
++        .first_error_address()
++        .unwrap();
++    assert_eq!(disk.snapshot().retained_file_attempts, 1);
++    let cancelled = CensusCancellation::default();
++    cancelled.cancel();
++    assert!(disk.reconcile(&cancelled).is_err());
++    assert_eq!(
++        disk.lock_state().file_custody.first_error_address(),
++        Some(address)
++    );
++    assert_eq!(disk.snapshot().retained_file_attempts, 1);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    assert_eq!(disk.snapshot().retained_file_attempts, 0);
++    assert_eq!(disk.lock_state().file_custody.first_error_address(), None);
++    clean(&disk, &["created"]);
++}
++
++#[test]
++fn file_verification_walk_close_failure_keeps_registered_custody_after_owner_drop() {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let (_directory, config) = installation();
++    crate::private_files::create_directory(&config.roots["data"].join("child")).unwrap();
++    seed(&config, "child/file", 32 << 10);
++    let disk = open(config, memory);
++    let file = disk.open_file("data", Path::new("child/file")).unwrap();
++    let before = disk.snapshot();
++    native_file::fail_next_close(libc::EIO);
++    let (result, allocations) = crate::allocation_tests::measure(|| file.check_owner());
++    assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EIO));
++    assert_eq!(allocations, 0);
++    let ((), allocations) = crate::allocation_tests::measure(|| drop(file));
++    assert_eq!(allocations, 0);
++    let after = disk.snapshot();
++    assert_eq!(after.open_files, 1);
++    assert_eq!(after.retained_file_attempts, 1);
++    assert_eq!(after.charged_bytes, before.charged_bytes);
++    assert_eq!(after.pending_bytes, before.pending_bytes);
++    assert_eq!(after.uncertain_file_close.unwrap().1, libc::EIO);
++    let attempts = native_file::close_attempts();
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    assert_eq!(native_file::close_attempts(), attempts);
++    assert_eq!(disk.snapshot().open_files, 1);
++    assert!(!disk.lock_state().live.is_empty());
++}
++
++#[test]
++fn unwound_file_retirement_keeps_parent_and_weak_backing_until_census() {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let (_directory, config) = installation();
++    seed(&config, "file", 32 << 10);
++    let disk = open(config.clone(), memory);
++    let file = disk.open_file("data", Path::new("file")).unwrap();
++    let parent = file.parent_descriptor();
++    let before = disk.snapshot();
++    let (entered, observed) = std::sync::mpsc::channel();
++    let (release, resumed) = std::sync::mpsc::channel();
++    *disk.after_file_close.lock().unwrap() = Some(file::ClosePause {
++        stage: file::CloseStage::DataClosed,
++        entered,
++        release: resumed,
++    });
++    let closing = std::thread::spawn(move || {
++        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(file)))
++    });
++    observed
++        .recv_timeout(std::time::Duration::from_secs(5))
++        .unwrap();
++    // Force the existing retirement checkpoint to unwind after data close but
++    // before either the retained parent or admitted owner backing can retire.
++    drop(release);
++    assert!(closing.join().unwrap().is_err());
++    let after = disk.snapshot();
++    assert_eq!(after.phase, NodeDiskPhase::Failed);
++    assert_eq!(after.open_files, 1);
++    assert_eq!(after.retained_file_attempts, 1);
++    assert_eq!(after.charged_bytes, before.charged_bytes);
++    assert_eq!(after.pending_bytes, before.pending_bytes);
++    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
++    assert_eq!(unsafe { libc::fstat(parent, stat.as_mut_ptr()) }, 0);
++    assert_eq!(
++        unsafe { stat.assume_init() }.st_ino,
++        disk.roots["data"].identity.1
++    );
++    assert!(!disk.lock_state().live.is_empty());
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    retired_descriptor_no_longer_names(parent, disk.roots["data"].identity);
++    assert_eq!(disk.snapshot().open_files, 0);
++    assert_eq!(disk.snapshot().retained_file_attempts, 0);
++    assert!(disk.lock_state().live.is_empty());
++    clean(&disk, &["file"]);
++}
+diff --git a/crates/kasumi-store/src/node_disk.rs b/crates/kasumi-store/src/node_disk.rs
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -27,6 +27,7 @@
+ mod ledger;
+ mod memory;
+ mod namespace;
++mod native_file;
+ #[cfg(test)]
+ mod tests;
+ pub(crate) use batch::{
+@@ -250,6 +251,8 @@
+     pub open_directories: u32,
+     pub open_directory_cursors: u32,
+     pub open_census_streams: u32,
++    pub retained_file_attempts: usize,
++    pub uncertain_file_close: Option<(i32, i32)>,
+     pub census_close_errno: Option<i32>,
+     pub observed_directory_bytes: u64,
+     pub max_bytes: u64,
+@@ -352,6 +355,7 @@
+     directory_bytes: u64,
+     directories: u64,
+     live: fixed_map::Banks<Weak<file::FileOwner>>,
++    file_custody: file::CustodySlots,
+     accounted: fixed_map::Banks<AccountedInode>,
+ }
+ 
+@@ -458,6 +462,7 @@
+     ancestor_locks: Vec<File>,
+     accounted: fixed_map::Banks<AccountedInode>,
+     live: fixed_map::Banks<Weak<file::FileOwner>>,
++    file_custody: file::CustodySlots,
+     streams: census::Streams,
+     charge: Lease,
+ }
+@@ -642,6 +647,7 @@
+         let live = fixed_map::Banks::new(
+             usize::try_from(config.max_open_files).map_err(|_| disk_memory::overflow())?,
+         )?;
++        let file_custody = file::CustodySlots::new(config.max_open_files)?;
+         let identity = roots.values().next().expect("validated roots").identity;
+         // Fund and publish actual initial-census custody before fdopendir. A
+         // failed/uncertain constructor remains represented in this same node.
+@@ -654,6 +660,7 @@
+                 ancestor_locks,
+                 accounted,
+                 live,
++                file_custody,
+                 streams: census::Streams::default(),
+                 charge,
+             }),
+@@ -683,6 +690,7 @@
+             ancestor_locks,
+             accounted,
+             live,
++            file_custody,
+             streams: _,
+             charge,
+         } = registration.take();
+@@ -710,6 +718,7 @@
+                 directory_bytes: totals.directory_bytes,
+                 directories: totals.directories,
+                 live,
++                file_custody,
+                 accounted,
+             }),
+             #[cfg(test)]
+@@ -824,6 +833,8 @@
+             open_directories: state.open_directories,
+             open_directory_cursors: state.open_directory_cursors,
+             open_census_streams: state.census_streams.outstanding(),
++            retained_file_attempts: state.file_custody.retained_attempts(),
++            uncertain_file_close: state.file_custody.close_diagnostic(),
+             census_close_errno: state.census_streams.close_errno(),
+             observed_directory_bytes: state.directory_bytes,
+             max_bytes: self.config.max_bytes,
+@@ -844,6 +855,7 @@
+         }
+         ensure!(
+             state.open_files == 0
++                && state.file_custody.retained_attempts() == 0
+                 && state.open_directories == 0
+                 && state.open_directory_cursors == 0
+                 && state.census_streams.outstanding() == 0,
+@@ -875,8 +887,9 @@
+             "persistent namespace admission witness is still live"
+         );
+         let internal_directories = u32::from(state.pending_directory.is_some());
+-        ensure!(
+-            state.open_files == 0
++        let internal_files = state.file_custody.internal_owners();
++        ensure!(
++            state.open_files == internal_files
+                 && state.open_directories == internal_directories
+                 && state.open_directory_cursors == 0
+                 && state.census_streams.outstanding() == 0,
+@@ -887,6 +900,10 @@
+                 self.fail_locked(&mut state);
+                 return Err(error.into());
+             }
++        }
++        if let Err(error) = state.file_custody.close_retained() {
++            self.fail_locked(&mut state);
++            return Err(error.into());
+         }
+         let (_, census_limit) = ledger::map_limits(&self.config)?;
+         let result = {
+@@ -944,7 +961,9 @@
+         state.files = totals.files;
+         state.directory_bytes = totals.directory_bytes;
+         state.directories = totals.directories;
++        state.file_custody.retire_after_census();
+         state.live.clear();
++        state.open_files = 0;
+         // The candidate has accepted physical absence/presence after every
+         // internal FD closed. Retire retained names, ancestry and Arc backing
+         // before publishing the operational slot as available again.

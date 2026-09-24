@@ -1,0 +1,591 @@
+--- /dev/null
++++ b/vendor/redb-4.2.0/src/allocator_state_key_tests.rs
+@@ -0,0 +1,222 @@
++use super::*;
++use crate::{Database, DatabaseError};
++use std::sync::atomic::AtomicUsize;
++
++#[derive(Debug)]
++struct RawAllocatorKey;
++impl Value for RawAllocatorKey {
++    type SelfType<'a> = [u8; 5];
++    type AsBytes<'a> = [u8; 5];
++
++    fn fixed_width() -> Option<usize> {
++        Some(5)
++    }
++    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
++    where
++        Self: 'a,
++    {
++        data.try_into().unwrap()
++    }
++    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
++    where
++        Self: 'a,
++        Self: 'b,
++    {
++        *value
++    }
++    fn type_name() -> TypeName {
++        AllocatorStateKey::type_name()
++    }
++}
++impl Key for RawAllocatorKey {
++    fn compare(a: &[u8], b: &[u8]) -> core::cmp::Ordering {
++        a.cmp(b)
++    }
++}
++
++fn write_raw_snapshot_record(database: &Database, key: [u8; 5], value: &[u8]) {
++    let mut tx = database.begin_write().unwrap();
++    let system_root = {
++        let mut namespace = tx.system_tables.lock().unwrap();
++        {
++            let mut raw = namespace
++                .open_system_table(
++                    &tx.dirty,
++                    SystemTableDefinition::<RawAllocatorKey, &[u8]>::new(
++                        ALLOCATOR_STATE_TABLE_NAME,
++                    ),
++                )
++                .unwrap();
++            raw.insert(key, value).unwrap();
++        }
++        namespace
++            .table_tree
++            .flush_table_root_updates()
++            .unwrap()
++            .finalize_dirty_checksums()
++            .unwrap()
++    };
++    // Publish a deliberately malformed snapshot below the canonical commit
++    // writer, which otherwise replaces this table with only canonical keys.
++    tx.mem
++        .commit(
++            tx.mem.get_data_root(),
++            system_root,
++            tx.transaction_id,
++            ShrinkPolicy::Default,
++        )
++        .unwrap();
++    tx.page_allocator().discard_committed_allocations();
++    tx.completed = true;
++}
++
++fn assert_corrupted<T: core::fmt::Debug>(result: Result<T, DatabaseError>) {
++    assert!(
++        matches!(
++            result,
++            Err(DatabaseError::Storage(StorageError::Corrupted(_)))
++        ),
++        "{result:?}"
++    );
++}
++
++#[test]
++fn allocator_keys_have_only_exact_canonical_tags_width_and_padding() {
++    for key in [
++        AllocatorStateKey::Region(0),
++        AllocatorStateKey::Region(u32::MAX),
++        AllocatorStateKey::RegionTracker,
++        AllocatorStateKey::TransactionId,
++    ] {
++        let raw = AllocatorStateKey::as_bytes(&key);
++        let (parsed, allocations) =
++            crate::admission::observe_test_allocations(|| AllocatorStateKey::checked(&raw));
++        assert_eq!(allocations, 0);
++        assert_eq!(parsed.unwrap(), key);
++        assert_eq!(AllocatorStateKey::from_bytes(&raw), key);
++    }
++    for tag in [0, 1, 2, 6, 127, 255] {
++        assert!(matches!(
++            AllocatorStateKey::checked(&[tag, 0, 0, 0, 0]),
++            Err(StorageError::Corrupted(_))
++        ));
++    }
++    for bytes in [
++        &[][..],
++        &[3][..],
++        &[3, 0, 0, 0][..],
++        &[3, 0, 0, 0, 0, 0][..],
++    ] {
++        assert!(matches!(
++            AllocatorStateKey::checked(bytes),
++            Err(StorageError::Corrupted(_))
++        ));
++    }
++    for tag in [4, 5] {
++        for index in 1..5 {
++            let mut raw = [tag, 0, 0, 0, 0];
++            raw[index] = 1;
++            assert!(matches!(
++                AllocatorStateKey::checked(&raw),
++                Err(StorageError::Corrupted(_))
++            ));
++        }
++    }
++}
++
++#[test]
++fn obsolete_unknown_and_aliased_allocator_keys_never_repair_or_mutate_on_open() {
++    for key in [
++        [0, 0, 0, 0, 0],
++        [1, 0, 0, 0, 0],
++        [2, 0, 0, 0, 0],
++        [6, 0, 0, 0, 0],
++        [255, 0, 0, 0, 0],
++        [4, 1, 0, 0, 0],
++        [5, 0, 0, 0, 1],
++    ] {
++        for clean in [false, true] {
++            let file = crate::create_tempfile();
++            let database = Database::create(file.path(), crate::test_admission()).unwrap();
++            write_raw_snapshot_record(&database, key, &[0; 8]);
++            if clean {
++                database.close().unwrap();
++            } else {
++                database.get_memory().abandon().unwrap();
++                drop(database);
++            }
++            let before = std::fs::read(file.path()).unwrap();
++            let callbacks = Arc::new(AtomicUsize::new(0));
++            let observed = callbacks.clone();
++            assert_corrupted(
++                Database::builder(crate::test_admission())
++                    .set_repair_callback(move |_| {
++                        observed.fetch_add(1, Ordering::Relaxed);
++                    })
++                    .open(file.path()),
++            );
++            assert_eq!(callbacks.load(Ordering::Relaxed), 0);
++            assert_eq!(std::fs::read(file.path()).unwrap(), before);
++            assert_corrupted(
++                Database::builder(crate::test_admission()).open_read_only(file.path()),
++            );
++            assert_eq!(std::fs::read(file.path()).unwrap(), before);
++        }
++    }
++}
++
++#[test]
++fn malformed_allocator_transaction_stamp_is_corruption_before_stale_repair() {
++    for size in [0, 7, 9] {
++        let file = crate::create_tempfile();
++        let database = Database::create(file.path(), crate::test_admission()).unwrap();
++        write_raw_snapshot_record(&database, [5, 0, 0, 0, 0], &vec![0; size]);
++        database.close().unwrap();
++        let before = std::fs::read(file.path()).unwrap();
++        let callbacks = Arc::new(AtomicUsize::new(0));
++        let observed = callbacks.clone();
++        assert_corrupted(
++            Database::builder(crate::test_admission())
++                .set_repair_callback(move |_| {
++                    observed.fetch_add(1, Ordering::Relaxed);
++                })
++                .open(file.path()),
++        );
++        assert_eq!(callbacks.load(Ordering::Relaxed), 0);
++        assert_eq!(std::fs::read(file.path()).unwrap(), before);
++        assert_corrupted(Database::builder(crate::test_admission()).open_read_only(file.path()));
++        assert_eq!(std::fs::read(file.path()).unwrap(), before);
++    }
++}
++
++#[test]
++fn integrity_rejects_noncanonical_allocator_keys_without_storage_writes() {
++    let file = crate::create_tempfile();
++    let mut database = Database::create(file.path(), crate::test_admission()).unwrap();
++    write_raw_snapshot_record(&database, [255, 0, 0, 0, 0], &[0; 8]);
++    let before = std::fs::read(file.path()).unwrap();
++    assert_corrupted(database.check_integrity());
++    assert_eq!(std::fs::read(file.path()).unwrap(), before);
++    database.get_memory().abandon().unwrap();
++    drop(database);
++    assert_eq!(std::fs::read(file.path()).unwrap(), before);
++}
++
++#[test]
++fn exact_canonical_stale_allocator_stamp_still_uses_verified_repair() {
++    let file = crate::create_tempfile();
++    let database = Database::create(file.path(), crate::test_admission()).unwrap();
++    write_raw_snapshot_record(&database, [5, 0, 0, 0, 0], &0_u64.to_le_bytes());
++    database.close().unwrap();
++    let callbacks = Arc::new(AtomicUsize::new(0));
++    let observed = callbacks.clone();
++    let mut reopened = Database::builder(crate::test_admission())
++        .set_repair_callback(move |_| {
++            observed.fetch_add(1, Ordering::Relaxed);
++        })
++        .open(file.path())
++        .unwrap();
++    assert!(callbacks.load(Ordering::Relaxed) > 0);
++    assert!(reopened.check_integrity().unwrap());
++    reopened.close().unwrap();
++}
+--- a/vendor/redb-4.2.0/src/db.rs
++++ b/vendor/redb-4.2.0/src/db.rs
+@@ -509,6 +509,7 @@
+         let mem = Arc::new(mem);
+         Database::require_canonical_system_tables(&mem)?;
+         if mem.opened_unclean() {
++            Database::require_canonical_allocator_keys(&mem)?;
+             return Err(DatabaseError::RepairAborted);
+         }
+         // Load the allocator snapshot for this winner, or rebuild it if absent or stale.
+@@ -642,8 +643,28 @@
+         Ok(())
+     }
+ 
++    fn require_canonical_allocator_keys(mem: &Arc<TransactionalMemory>) -> Result {
++        let resolver = PageResolver::new(mem.clone());
++        let tables = TableTree::new(
++            mem.get_system_root(),
++            PageHint::None,
++            Arc::new(TransactionGuard::untracked()),
++            resolver.clone(),
++        )?;
++        if let Some(InternalTableDefinition::Normal { table_root, .. }) = tables
++            .get_table::<AllocatorStateKey, &[u8]>(ALLOCATOR_STATE_TABLE_NAME, TableType::Normal)
++            .map_err(|error| {
++                error.into_storage_error_or_corrupted("Invalid allocator-state table")
++            })?
++        {
++            crate::tree_store::validate_allocator_state_keys(table_root, &resolver)?;
++        }
++        Ok(())
++    }
++
+     pub(crate) fn verify_primary_checksums(mem: Arc<TransactionalMemory>) -> Result<bool> {
+         Self::require_canonical_system_tables(&mem)?;
++        Self::require_canonical_allocator_keys(&mem)?;
+         let data_root = mem.get_data_root();
+         let system_root = mem.get_system_root();
+         Self::verify_checksums(mem, data_root, system_root)
+@@ -1024,6 +1045,7 @@
+         repair_callback: &(dyn Fn(&mut RepairSession) + 'static),
+     ) -> Result<[Option<BtreeHeader>; 2], DatabaseError> {
+         Self::require_canonical_system_tables(mem)?;
++        Self::require_canonical_allocator_keys(mem)?;
+         mem.reset_allocator_state()?;
+ 
+         let data_root = {
+@@ -1185,6 +1207,10 @@
+         let InternalTableDefinition::Normal { table_root, .. } = allocator_state_table else {
+             unreachable!();
+         };
++        // Validate every raw leaf key, branch separator and transaction stamp
++        // before the typed comparator can inspect even one key. Stale snapshots
++        // are distinguished only after this canonical validation succeeds.
++        crate::tree_store::validate_allocator_state_keys(table_root, &resolver)?;
+         let tree = AllocatorStateTree::new(
+             table_root,
+             PageHint::None,
+--- a/vendor/redb-4.2.0/src/transactions.rs
++++ b/vendor/redb-4.2.0/src/transactions.rs
+@@ -298,10 +298,25 @@
+ 
+ #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
+ pub(crate) enum AllocatorStateKey {
+-    Deprecated,
+     Region(u32),
+     RegionTracker,
+     TransactionId,
++}
++
++impl AllocatorStateKey {
++    fn parse_canonical(data: &[u8]) -> Option<Self> {
++        match data {
++            [3, a, b, c, d] => Some(Self::Region(u32::from_le_bytes([*a, *b, *c, *d]))),
++            [4, 0, 0, 0, 0] => Some(Self::RegionTracker),
++            [5, 0, 0, 0, 0] => Some(Self::TransactionId),
++            _ => None,
++        }
++    }
++
++    pub(crate) fn checked(data: &[u8]) -> Result<Self> {
++        Self::parse_canonical(data)
++            .ok_or_else(|| StorageError::Corrupted("Invalid canonical allocator-state key".into()))
++    }
+ }
+ 
+ impl Value for AllocatorStateKey {
+@@ -316,14 +331,10 @@
+     where
+         Self: 'a,
+     {
+-        match data[0] {
+-            // 0, 1, 2 were used in redb 2.x and have a different format
+-            0..=2 => Self::Deprecated,
+-            3 => Self::Region(u32::from_le_bytes(data[1..].try_into().unwrap())),
+-            4 => Self::RegionTracker,
+-            5 => Self::TransactionId,
+-            _ => unreachable!(),
+-        }
++        // On-disk keys and branch separators are validated without a typed
++        // comparator before this internal tree is opened. Writers emit only
++        // these canonical forms; Value itself has no fallible decode method.
++        Self::parse_canonical(data).expect("allocator-state key was not validated")
+     }
+ 
+     fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+@@ -342,9 +353,6 @@
+             }
+             Self::TransactionId => {
+                 result[0] = 5;
+-            }
+-            AllocatorStateKey::Deprecated => {
+-                result[0] = 0;
+             }
+         }
+ 
+@@ -2623,3 +2631,7 @@
+ #[cfg(all(test, not(redb_no_std), panic = "unwind"))]
+ #[path = "page_list_tests.rs"]
+ mod page_list_tests;
++
++#[cfg(all(test, not(redb_no_std), panic = "unwind"))]
++#[path = "allocator_state_key_tests.rs"]
++mod allocator_state_key_tests;
+--- /dev/null
++++ b/vendor/redb-4.2.0/src/tree_store/allocator_state.rs
+@@ -0,0 +1,211 @@
++//! Canonical allocator keys are checked before any typed comparator or decoder.
++//! The raw walk uses the fixed five-byte key / variable value representation.
++use super::btree_base::{BRANCH, LEAF, MAX_BTREE_DEPTH};
++use super::{BtreeHeader, Page, PageHint, PageNumber, PageResolver};
++use crate::transactions::AllocatorStateKey;
++use crate::{Result, StorageError};
++use core::mem::size_of;
++
++fn malformed() -> StorageError {
++    StorageError::Corrupted("Invalid canonical allocator-state page or record".into())
++}
++
++fn read_end(bytes: &[u8], offset: usize) -> Result<usize> {
++    let raw = bytes
++        .get(offset..offset + size_of::<u32>())
++        .ok_or_else(malformed)?;
++    Ok(u32::from_le_bytes(raw.try_into().map_err(|_| malformed())?) as usize)
++}
++
++fn validate_leaf(bytes: &[u8], count: usize, previous: &mut Option<AllocatorStateKey>) -> Result {
++    let keys_start = 4_usize
++        .checked_add(count.checked_mul(4).ok_or_else(malformed)?)
++        .ok_or_else(malformed)?;
++    let keys_end = keys_start
++        .checked_add(count.checked_mul(5).ok_or_else(malformed)?)
++        .ok_or_else(malformed)?;
++    let keys = bytes.get(keys_start..keys_end).ok_or_else(malformed)?;
++    let mut value_start = keys_end;
++    for (index, raw) in keys.chunks_exact(5).enumerate() {
++        let key = AllocatorStateKey::checked(raw)?;
++        if previous.is_some_and(|last| last >= key) {
++            return Err(malformed());
++        }
++        let end = read_end(bytes, 4 + index * 4)?;
++        if end < value_start || end > bytes.len() {
++            return Err(malformed());
++        }
++        if key == AllocatorStateKey::TransactionId && end - value_start != size_of::<u64>() {
++            return Err(malformed());
++        }
++        *previous = Some(key);
++        value_start = end;
++    }
++    Ok(())
++}
++
++fn validate_page(
++    page_number: PageNumber,
++    resolver: &PageResolver,
++    path: &mut [Option<PageNumber>; MAX_BTREE_DEPTH],
++    depth: usize,
++    previous: &mut Option<AllocatorStateKey>,
++) -> Result {
++    if depth >= path.len() || path[..depth].contains(&Some(page_number)) {
++        return Err(malformed());
++    }
++    path[depth] = Some(page_number);
++    let page = resolver.get_page(page_number, PageHint::None)?;
++    let bytes = page.memory();
++    let prefix = bytes.get(..4).ok_or_else(malformed)?;
++    let count = usize::from(u16::from_le_bytes([prefix[2], prefix[3]]));
++    if count == 0 {
++        return Err(malformed());
++    }
++    match prefix[0] {
++        LEAF => validate_leaf(bytes, count, previous),
++        BRANCH => {
++            let children = count.checked_add(1).ok_or_else(malformed)?;
++            let children_start = 8_usize
++                .checked_add(children.checked_mul(16).ok_or_else(malformed)?)
++                .ok_or_else(malformed)?;
++            let keys_start = children_start
++                .checked_add(children.checked_mul(8).ok_or_else(malformed)?)
++                .ok_or_else(malformed)?;
++            let keys_end = keys_start
++                .checked_add(count.checked_mul(5).ok_or_else(malformed)?)
++                .ok_or_else(malformed)?;
++            let keys = bytes.get(keys_start..keys_end).ok_or_else(malformed)?;
++            let mut last_separator = None;
++            for raw in keys.chunks_exact(5) {
++                let key = AllocatorStateKey::checked(raw)?;
++                if last_separator.is_some_and(|last| last >= key) {
++                    return Err(malformed());
++                }
++                last_separator = Some(key);
++            }
++            // All branch metadata was checked before following even the first
++            // pointer, so malformed separators never reach typed comparison.
++            let raw_children = bytes
++                .get(children_start..keys_start)
++                .ok_or_else(malformed)?;
++            for raw in raw_children.chunks_exact(PageNumber::serialized_size()) {
++                let child = PageNumber::from_le_bytes(raw.try_into().map_err(|_| malformed())?);
++                validate_page(child, resolver, path, depth + 1, previous)?;
++            }
++            Ok(())
++        }
++        _ => Err(malformed()),
++    }
++}
++
++pub(crate) fn validate_allocator_state_keys(
++    root: Option<BtreeHeader>,
++    resolver: &PageResolver,
++) -> Result {
++    let mut path = [None; MAX_BTREE_DEPTH];
++    let mut previous = None;
++    if let Some(root) = root {
++        validate_page(root.root, resolver, &mut path, 0, &mut previous)?;
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::tree_store::{
++        AllocationPolicy, InMemoryBackend, PageAllocator, PageTracker, TransactionalMemory,
++    };
++    use alloc::boxed::Box;
++    use alloc::sync::Arc;
++    use alloc::vec;
++
++    fn leaf(key: [u8; 5], value: &[u8]) -> alloc::vec::Vec<u8> {
++        let mut bytes = vec![0; 13 + value.len()];
++        bytes[0] = LEAF;
++        bytes[2..4].copy_from_slice(&1_u16.to_le_bytes());
++        let end = u32::try_from(bytes.len()).unwrap();
++        bytes[4..8].copy_from_slice(&end.to_le_bytes());
++        bytes[8..13].copy_from_slice(&key);
++        bytes[13..].copy_from_slice(value);
++        bytes
++    }
++
++    #[test]
++    fn allocator_raw_leaf_geometry_is_checked_before_key_or_value_access() {
++        let valid = leaf([5, 0, 0, 0, 0], &[0; 8]);
++        validate_leaf(&valid, 1, &mut None).unwrap();
++        for end in 0..valid.len() {
++            assert!(matches!(
++                validate_leaf(&valid[..end], 1, &mut None),
++                Err(StorageError::Corrupted(_))
++            ));
++        }
++        let mut backwards = valid.clone();
++        backwards[4..8].copy_from_slice(&12_u32.to_le_bytes());
++        assert!(validate_leaf(&backwards, 1, &mut None).is_err());
++        let mut too_far = valid.clone();
++        too_far[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
++        assert!(validate_leaf(&too_far, 1, &mut None).is_err());
++        for size in [0, 7, 9] {
++            assert!(validate_leaf(&leaf([5, 0, 0, 0, 0], &vec![0; size]), 1, &mut None).is_err());
++        }
++        let mut previous = Some(AllocatorStateKey::TransactionId);
++        assert!(validate_leaf(&valid, 1, &mut previous).is_err());
++    }
++
++    #[test]
++    fn allocator_raw_walk_rejects_bad_branch_separator_and_cycle_without_comparison() {
++        let mem = TransactionalMemory::new(
++            Box::new(InMemoryBackend::new()),
++            crate::test_admission(),
++            true,
++            4096,
++            None,
++            0,
++        )
++        .unwrap();
++        mem.reset_allocator_state().unwrap();
++        let mem = Arc::new(mem);
++        let allocator = PageAllocator::new(mem, AllocationPolicy::Default);
++        let allocated = PageTracker::new_tracking();
++        let mut left = allocator.allocate(4096, &allocated).unwrap();
++        let raw = leaf([3, 0, 0, 0, 0], &[]);
++        left.memory_mut()[..raw.len()].copy_from_slice(&raw);
++        let left_number = left.get_page_number();
++        drop(left);
++        let mut right = allocator.allocate(4096, &allocated).unwrap();
++        let raw = leaf([5, 0, 0, 0, 0], &[0; 8]);
++        right.memory_mut()[..raw.len()].copy_from_slice(&raw);
++        let right_number = right.get_page_number();
++        drop(right);
++        let mut branch = allocator.allocate(4096, &allocated).unwrap();
++        branch.memory_mut().fill(0);
++        branch.memory_mut()[0] = BRANCH;
++        branch.memory_mut()[2..4].copy_from_slice(&1_u16.to_le_bytes());
++        branch.memory_mut()[40..48].copy_from_slice(&left_number.to_le_bytes());
++        branch.memory_mut()[48..56].copy_from_slice(&right_number.to_le_bytes());
++        branch.memory_mut()[56..61].copy_from_slice(&[3, 0, 0, 0, 0]);
++        let number = branch.get_page_number();
++        drop(branch);
++        let root = Some(BtreeHeader::new(number, 0, 2));
++        validate_allocator_state_keys(root, &allocator.resolver()).unwrap();
++
++        let mut branch = allocator.get_page_mut(number).unwrap();
++        branch.memory_mut()[56] = 255;
++        drop(branch);
++        assert!(matches!(
++            validate_allocator_state_keys(root, &allocator.resolver()),
++            Err(StorageError::Corrupted(_))
++        ));
++        let mut branch = allocator.get_page_mut(number).unwrap();
++        branch.memory_mut()[56] = 3;
++        branch.memory_mut()[40..48].copy_from_slice(&number.to_le_bytes());
++        drop(branch);
++        assert!(matches!(
++            validate_allocator_state_keys(root, &allocator.resolver()),
++            Err(StorageError::Corrupted(_))
++        ));
++    }
++}
+--- a/vendor/redb-4.2.0/src/tree_store/mod.rs
++++ b/vendor/redb-4.2.0/src/tree_store/mod.rs
+@@ -1,3 +1,4 @@
++mod allocator_state;
+ mod btree;
+ mod btree_base;
+ mod btree_cursor;
+@@ -10,6 +11,7 @@
+ mod table_tree;
+ mod table_tree_base;
+ 
++pub(crate) use allocator_state::validate_allocator_state_keys;
+ pub(crate) use btree::{Btree, BtreeMut, BtreeStats, RawBtree};
+ pub(crate) use btree_base::BtreeHeader;
+ pub use btree_base::{AccessGuard, AccessGuardMut, AccessGuardMutInPlace};
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
+@@ -821,7 +821,9 @@
+             return Ok(false);
+         };
+         let transaction_id =
+-            TransactionId::new(u64::from_le_bytes(value.value().try_into().unwrap()));
++            TransactionId::new(u64::from_le_bytes(value.value().try_into().map_err(
++                |_| StorageError::Corrupted("Invalid allocator-state transaction stamp".into()),
++            )?));
+ 
+         Ok(transaction_id == self.get_last_committed_transaction_id()?)
+     }

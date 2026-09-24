@@ -1,0 +1,22 @@
+warning: function `measure` is never used
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/proposed/crates/kasumi-store/src/allocation_tests.rs:50:15
+   |
+50 | pub(crate) fn measure<T>(work: impl FnOnce() -> T) -> (T, usize) {
+   |               ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: type alias `Lease` is never used
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-02/lease-extracted.rs:56:17
+   |
+56 | pub(crate) type Lease = DiskMemoryLease;
+   |                 ^^^^^
+
+warning: function `arc` is never used
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-02/lease-extracted.rs:74:15
+   |
+74 | pub(crate) fn arc<T>() -> io::Result<u64> {
+   |               ^^^
+
+warning: 3 warnings emitted
+

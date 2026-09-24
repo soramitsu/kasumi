@@ -1,0 +1,171 @@
+--- a/crates/kasumi-authority/src/service.rs
++++ b/crates/kasumi-authority/src/service.rs
+@@ -438,6 +438,11 @@
+                     || current.current_leader != Some(self.local_node_id)
+                     || current.running_state.is_err()
+                 {
++                    #[cfg(any(test, feature = "test-utils"))]
++                    eprintln!(
++                        "AUTHORITY_PROPOSAL_ROUTE: local={} admitted_term={term} current={current:?}",
++                        self.local_node_id
++                    );
+                     return Err(unknown("authority proposal leader changed"));
+                 }
+                 tokio::select! {
+--- a/crates/kasumi-authority/src/signer_directive_tests.rs
++++ b/crates/kasumi-authority/src/signer_directive_tests.rs
+@@ -322,7 +322,11 @@
+     let mut expired = activate;
+     expired.operation_id = Uuid::new_v4();
+     assert!(service.signing_maintenance(fixture.context("operator"), request(AuthoritySigningAction::Start { command: expired })).await.is_err());
+-    let (historical, _) = service.signing_maintenance(fixture.context("operator"), request(AuthoritySigningAction::Receipt { operation_id: stage.operation_id })).await.unwrap();
++    // The failed new effect can coincide with an election. Read the exact old
++    // receipt through the current quorum with one original read invocation.
++    let historical_context = fixture.context("operator");
++    let service = fixture.leader().await;
++    let (historical, _) = service.signing_maintenance(historical_context, request(AuthoritySigningAction::Receipt { operation_id: stage.operation_id })).await.unwrap();
+     assert_eq!(historical.status.unwrap().command, stage);
+     assert!(historical.current.retirement.is_some());
+     fixture.close().await;
+--- a/crates/kasumi-engine/src/service_serving_tests.rs
++++ b/crates/kasumi-engine/src/service_serving_tests.rs
+@@ -283,17 +283,44 @@
+             );
+             if let Err(failure) = db.shutdown().await {
+                 assert_eq!(failure.completion(), DrainCompletion::Complete);
++                assert_eq!(failure.issues().len(), 1, "{failure:?}");
+                 for issue in failure.issues() {
++                    assert_eq!(issue.component(), "OpenRaft runtime");
++                    assert_eq!(issue.instance(), 0);
+                     let original = issue.error()
+                         .downcast_ref::<openraft::error::ShutdownError<u64, tokio::task::JoinError>>()
+                         .expect("expired storage must retain the original OpenRaft failure");
+-                    assert!(original.core_join_error().is_none());
+-                    let message = original.to_string();
+-                    assert!(
+-                        message.contains("key-access lease unavailable or expired")
+-                            || message.contains("access expired before acknowledgment"),
+-                        "{message}"
+-                    );
++                    assert!(original.core_join_error().is_none(), "{original:?}");
++                    assert!(original.ticker().is_none(), "{original:?}");
++                    assert!(original.snapshot_builder().is_none(), "{original:?}");
++                    assert!(original.auxiliary().is_empty(), "{original:?}");
++                    assert!(original.incoming_snapshot().is_none(), "{original:?}");
++                    let mut observed = 0;
++                    if let Some(core) = original.core() {
++                        let openraft::error::Fatal::StorageError(error) = core else {
++                            panic!("unexpected expired core failure: {core:?}");
++                        };
++                        assert!(is_serving_expiry_write(error), "{error:?}");
++                        observed += 1;
++                    }
++                    if let Some(worker) = original.state_machine() {
++                        let error = worker.storage_error().expect("original storage error");
++                        assert!(is_serving_expiry_write(error), "{error:?}");
++                        observed += 1;
++                    }
++                    for replication in original.replications() {
++                        assert!(replication.owner_id > 0, "{replication:?}");
++                        assert!((1..=3).contains(&replication.target), "{replication:?}");
++                        assert!(replication.snapshot.is_none(), "{replication:?}");
++                        let error = replication
++                            .stream
++                            .as_ref()
++                            .and_then(|stream| stream.storage_error())
++                            .expect("original replication storage error");
++                        assert!(is_serving_expiry_write(error), "{error:?}");
++                        observed += 1;
++                    }
++                    assert!(observed > 0, "no original expiry failure: {original:?}");
+                 }
+                 let repeated = db.shutdown().await.unwrap_err();
+                 assert_eq!(repeated.completion(), DrainCompletion::Complete);
+@@ -319,6 +346,52 @@
+         self.drain_after_expiry().await;
+         self.open(false).await;
+         self.leader().await;
++    }
++}
++
++fn is_serving_expiry_write(error: &openraft::StorageError<u64>) -> bool {
++    if !matches!(error, openraft::StorageError::IO { .. }) {
++        return false;
++    }
++    [
++        "tenant is sealed: key-access lease unavailable or expired",
++        "domain transaction committed; access expired before acknowledgment; outcome unknown",
++    ]
++    .into_iter()
++    .any(|message| {
++        let expected = openraft::StorageError::<u64>::from_io_error(
++            openraft::ErrorSubject::Store,
++            openraft::ErrorVerb::Write,
++            std::io::Error::other(message),
++        );
++        error.to_string() == expected.to_string()
++    })
++}
++
++#[test]
++fn serving_expiry_drain_rejects_unrelated_storage_causes() {
++    use openraft::{ErrorSubject, ErrorVerb, StorageError};
++    let closed =
++        "domain transaction committed; access expired before acknowledgment; outcome unknown";
++    for (subject, verb, message, expected) in [
++        (ErrorSubject::Store, ErrorVerb::Write, closed, true),
++        (ErrorSubject::Store, ErrorVerb::Read, closed, false),
++        (ErrorSubject::Vote, ErrorVerb::Write, closed, false),
++        (
++            ErrorSubject::Store,
++            ErrorVerb::Write,
++            "unrelated I/O failure",
++            false,
++        ),
++        (
++            ErrorSubject::Store,
++            ErrorVerb::Write,
++            "unrelated access expired before acknowledgment",
++            false,
++        ),
++    ] {
++        let error = StorageError::from_io_error(subject, verb, std::io::Error::other(message));
++        assert_eq!(is_serving_expiry_write(&error), expected, "{error:?}");
+     }
+ }
+ 
+@@ -517,7 +590,11 @@
+             }
+         }
+     }
+-    fixture.drain().await;
++    if expired {
++        fixture.drain_after_expiry().await;
++    } else {
++        fixture.drain().await;
++    }
+     assert!(
+         expired,
+         "elections repeatedly prevented the controlled expiry attempt"
+--- a/crates/kasumi-engine/tests/lifecycle.rs
++++ b/crates/kasumi-engine/tests/lifecycle.rs
+@@ -297,7 +297,18 @@
+             }
+         })
+         .await
+-        .unwrap()
++        .unwrap_or_else(|error| {
++            panic!(
++                "control leader wait failed: {error}; states: {:?}",
++                self.nodes
++                    .iter()
++                    .map(|(id, db)| (
++                        *id,
++                        format!("{:?}", db.raft_group().raft().metrics().borrow())
++                    ))
++                    .collect::<Vec<_>>()
++            )
++        })
+     }
+     // A lost Raft acknowledgement is ambiguous even for an input expected to
+     // reject. Resolve the exact permanent phase and retry the unchanged input

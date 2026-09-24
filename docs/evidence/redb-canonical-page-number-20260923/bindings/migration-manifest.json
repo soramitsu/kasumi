@@ -1,0 +1,166 @@
+{
+  "status": "FROZEN_TARGET_ONLY_FOR_COMPILE_AND_TEST; not release accepted",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "frozen_at_utc": "2026-09-22T22:58:59.929198+00:00",
+  "base_inventory_sha256": "583cf4167a9cc3f8a65366c59657bd1cf207fa0b1cc7274d7117aaf1a1cc79d5",
+  "audit_manifest_sha256": "e43e1cb2136283eb0474e110d24115b68e57acbd34aedb44b9ce895bb61dddce",
+  "patch_sha256": "a8299d4bb9dd0dbbdc253ab23fb24b72c0ccfef1fb488ebe763ace1e1a88b105",
+  "changes": [
+    {
+      "path": "vendor/redb-4.2.0/src/multimap_table.rs",
+      "before_sha256": "157361f57dbf1658827bf662f304af0f4973119566718cc935bd157e6f818836",
+      "after_sha256": "0ae2109dd00d0e5ba0a917fea0dc0bb817745e0d8d2d858102504fdcc64a0bdb",
+      "mode": "0o644",
+      "bytes": 54408
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/page_list_tests.rs",
+      "before_sha256": "4c8ab00da96a217fdce9f6824c0b9beebba890dea217bae0aa3e8353766974a3",
+      "after_sha256": "c9e88976f84b1937db204e5a66c52edaf188beedc79667a823543e32a4e87fc2",
+      "mode": "0o644",
+      "bytes": 42251
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "before_sha256": "88228e7ca070c01954aa91833b702bda50446a554e53e279e22b50675da463a8",
+      "after_sha256": "03a46dcb58f865950a290e2a6e27fbdbb9c5348e53eaf17962e88c60e49fbd6f",
+      "mode": "0o644",
+      "bytes": 96689
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/allocator_state.rs",
+      "before_sha256": "6e34c9e08eff6ec3bca28629a0c1d6294dcf4999885006f08301741c416e4147",
+      "after_sha256": "ecae9c026a06984a134935065522966bf8de98952ccf124f330a0ad93a3cf661",
+      "mode": "0o644",
+      "bytes": 15498
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "before_sha256": "7cdfaedb6cbd25b97870913d0640c85d0b14feda7e4f8c1e0f548ba076be2d01",
+      "after_sha256": "99d9bf6768cb32dda6cbe25fc746aa47a906f5fa3c7664dbb09c78c726b3535d",
+      "mode": "0o644",
+      "bytes": 54092
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+      "before_sha256": "6bf0407250bcae126a6a04f5dbad1bf23aeb5b0a3098a0bc37b19544a9386a78",
+      "after_sha256": "db1ae26998a7f62ec6a3dee8b5af6121c352cd7e3ddf7f6863f058fda6c930af",
+      "mode": "0o644",
+      "bytes": 89538
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_cursor.rs",
+      "before_sha256": "347061bf7feda16f835cedd3eb4246bae22bc25c00bcc1b113c1ba37eff0320d",
+      "after_sha256": "66f99b513d01a75bc973054f5690d2642051c3a945ccc8045bceefebc62858ee",
+      "mode": "0o644",
+      "bytes": 119085
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_iters.rs",
+      "before_sha256": "34ecf2117b570e563a59876e95c9191d0fe9b8bdad89c7e04fb3a97dcb5f2abb",
+      "after_sha256": "c20882d9c86d0a648993cbd6ac48028d1895cdc740ffa1ccca2c686b326a1b9c",
+      "mode": "0o644",
+      "bytes": 4018
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "before_sha256": "6e8b4f5aaa8b359832309c3680db70afa6cabaa7d17e03039182e380fe6799a3",
+      "after_sha256": "fb6e0d28e063c0348dc04ee4b55d80ea108e9b99606f117e87b6d7623a64aba7",
+      "mode": "0o644",
+      "bytes": 88661
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/mod.rs",
+      "before_sha256": "47bef3e465fab0329c3c25a97ec26bffc70d35be64d3ab02a58903488b7ebc9c",
+      "after_sha256": "ff99a8e14856d8dfa29bac7dc661f32affa087e28ca253986ab9a5fcc801363d",
+      "mode": "0o644",
+      "bytes": 1619
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/multimap_btree.rs",
+      "before_sha256": "e9e9c86b75b05111dbde3220fc5133a55e98d2681c6d9fdc71737364d3a59702",
+      "after_sha256": "f9dfa62c521e066f42a8a157e40267e849f9eb7aa400c1d84078699ff1186418",
+      "mode": "0o644",
+      "bytes": 26053
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+      "before_sha256": "773858218823539467cd503b4524cbf97de1a20eb2745e97877921f8acc7a7d1",
+      "after_sha256": "0eea5d9c4ef3d196b196795eca8e2a75d89e8058481b3fc909c4768218b042fa",
+      "mode": "0o644",
+      "bytes": 17664
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/header.rs",
+      "before_sha256": "d2db298c18d107d8c371a6f4025fefe12e499a9b39ee9f74572bb34c6e1043a7",
+      "after_sha256": "aa6ef10fec56d66894e0245cf99dba46d64b6b695b6beffeb450945edb29f913",
+      "mode": "0o644",
+      "bytes": 74475
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "before_sha256": "e33035e264daca748c6d3f90bf95b95763d6e9e14a0ad593187e29a87bc18f80",
+      "after_sha256": "f02fee871c94e05261eba80c90633bbe09d5673b23e1db250f1532345287a47c",
+      "mode": "0o644",
+      "bytes": 63610
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/savepoint.rs",
+      "before_sha256": "7babc5a9cff6861da26bbdbc28103f034e12ac319d19e3da2a51b89d1dd77df7",
+      "after_sha256": "ed2d619e9ddc439ffe0641398dea33a7d81dd868be7c1d1cd3e42fd2346c24a2",
+      "mode": "0o644",
+      "bytes": 9773
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/table_tree.rs",
+      "before_sha256": "e0890dbbfbe8dabeca263a7a9055fbe6a6286cdfbeca82f913736c206909db90",
+      "after_sha256": "7fbc653eeed2097f19d3e9512b39df19e987f93c2db1a1facfec830b7a9bd618",
+      "mode": "0o644",
+      "bytes": 36421
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/table_tree_base.rs",
+      "before_sha256": "a9522ca49fc6a51f9eeedc342978b089a500f7899b4eef69c6e49757be1e71d2",
+      "after_sha256": "b1f7394949182822436190c94d8ab92bc611ad50fa3a500b73a144dac8925b9d",
+      "mode": "0o644",
+      "bytes": 22018
+    },
+    {
+      "path": "vendor/redb-4.2.0/CHANGELOG.md",
+      "before_sha256": "4f72520a8b311d43e30c1af2cc396ed5f833b92979bd35827d1aa1374b8a870d",
+      "after_sha256": "d44b41935dcb27e650c159671a5e6239a8122b4a06aedd787fd4ebe297860f38",
+      "mode": "0o644",
+      "bytes": 43271
+    },
+    {
+      "path": "vendor/redb-4.2.0/KASUMI_PATCH.md",
+      "before_sha256": "e830679024095d46e4ba2cdb5977ef95a71eabd769c73b77843fe29673e03745",
+      "after_sha256": "afe3e98dd0f5dadc9933970e46a7e10c9eb516ea695718064152800d8f650e38",
+      "mode": "0o644",
+      "bytes": 11588
+    }
+  ],
+  "apply_check": {
+    "argv": [
+      "git",
+      "apply",
+      "--check",
+      "--directory=target/installed-disk-validation/redb-canonical-page-number-migration/freeze-05/apply-check",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-canonical-page-number-migration/freeze-05/migration.patch"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "qualification_inputs_sha256": "75858ead83e09442cfb931b09ddf02cfb41ace534ee6b73ccae0eed6189c0b17",
+  "qualification_boundary": "copy of all 109 exact current vendor files plus proposal changes; copied package manifest appends a workspace boundary excluding crates/redb-derive from membership (recorded separately; companion remains the original path dependency); dependency/feature/target declarations and original package lock unchanged",
+  "actual_source_unchanged": true,
+  "native_or_runtime_pass_claim": false,
+  "scopes_open": [
+    "full reachable-root allocation ownership",
+    "total workspace/RSS admission",
+    "maintenance physical reserve",
+    "just test/just fuzz and full public targets pending"
+  ]
+}

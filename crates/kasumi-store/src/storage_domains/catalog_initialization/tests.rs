@@ -3,12 +3,16 @@ use crate::test_utils::LocalKeyProvider;
 use redb::ReadableTable;
 use std::{future::Future, task::Poll};
 
-fn node() -> Result<(tempfile::TempDir, Arc<NodeStore>)> {
+fn node(
+    fixture_memory: Arc<dyn crate::NodeDiskMemoryAdmission>,
+    fixture_scratch: std::sync::Arc<crate::ScratchDisk>,
+) -> Result<(tempfile::TempDir, Arc<NodeStore>)> {
     let directory = crate::test_utils::private_tempdir()?;
     let node = NodeStore::create_new_fixture(
         directory.path().join("catalogs.redb"),
         crate::test_utils::NODE_STORE_ID,
-        ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )?;
     Ok((directory, node))
 }
@@ -32,7 +36,11 @@ async fn drain(node: &NodeStore) -> Result<()> {
 #[tokio::test]
 async fn cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits() -> Result<()>
 {
-    let (_directory, node) = node()?;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_directory, node) = node(fixture_memory.clone(), fixture_scratch.clone())?;
     let (release, waiting) = oneshot::channel::<()>();
     let owned = node.clone();
     let pending = tokio::spawn(async move {
@@ -107,7 +115,11 @@ fn contents(node: &NodeStore) -> Result<Vec<u8>> {
 
 #[tokio::test]
 async fn buffered_unclaimed_ticket_drains_only_unpublished_new_owners() -> Result<()> {
-    let (_directory, node) = node()?;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_directory, node) = node(fixture_memory.clone(), fixture_scratch.clone())?;
     let (send, receive) = oneshot::channel();
     let prepared = prepare(input(node.clone()), &send).await?;
     let observed = prepared.stores.clone();
@@ -173,7 +185,11 @@ async fn buffered_unclaimed_ticket_drains_only_unpublished_new_owners() -> Resul
 #[tokio::test]
 async fn committed_pair_handoff_preserves_a_concurrent_borrower_through_initializer_drain()
 -> Result<()> {
-    let (_directory, node) = node()?;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_directory, node) = node(fixture_memory.clone(), fixture_scratch.clone())?;
     let ticket =
         tokio::time::timeout(Duration::from_secs(10), begin(input(node.clone())).await?).await??;
     let opening = TenantStore::open_existing_fixture(
@@ -218,8 +234,12 @@ async fn committed_pair_handoff_preserves_a_concurrent_borrower_through_initiali
 
 #[tokio::test]
 async fn fresh_pair_rejects_shared_partial_and_orphan_domains_without_mutation() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     for existing_custody in [false, true] {
-        let (_directory, node) = node()?;
+        let (_directory, node) = node(fixture_memory.clone(), fixture_scratch.clone())?;
         let name = if existing_custody {
             CustodyStore::catalog_name("new-tenant")
         } else {
@@ -256,7 +276,7 @@ async fn fresh_pair_rejects_shared_partial_and_orphan_domains_without_mutation()
         drain(&node).await?;
         assert_eq!(contents(&node)?, before);
     }
-    let (_directory, node) = node()?;
+    let (_directory, node) = node(fixture_memory.clone(), fixture_scratch.clone())?;
     let tx = node.db.begin_write()?;
     tx.open_table(RECORDS)?
         .insert(tenant_hash("new-tenant").as_slice(), b"unknown".as_slice())?;
@@ -301,7 +321,11 @@ impl KeyProvider for PausedProvider {
 #[tokio::test]
 async fn cancelled_receiver_keeps_preparation_registered_until_actual_provider_work_drains()
 -> Result<()> {
-    let (_directory, node) = node()?;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_directory, node) = node(fixture_memory.clone(), fixture_scratch.clone())?;
     let provider = Arc::new(PausedProvider {
         provider: LocalKeyProvider::new([51; 32]),
         entered: Notify::new(),
@@ -400,8 +424,12 @@ async fn buffered_failure(node: &Arc<NodeStore>) -> Result<oneshot::Receiver<Tic
 
 #[tokio::test]
 async fn buffered_preparation_error_requires_claim_before_registry_forgets_it() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     for claim in [false, true] {
-        let (_directory, node) = node()?;
+        let (_directory, node) = node(fixture_memory.clone(), fixture_scratch.clone())?;
         let before = contents(&node)?;
         let receive = buffered_failure(&node).await?;
         if claim {
@@ -431,7 +459,11 @@ async fn buffered_preparation_error_requires_claim_before_registry_forgets_it() 
 
 #[tokio::test]
 async fn cancelled_catalog_drain_preserves_unclaimed_preparation_error() -> Result<()> {
-    let (_directory, node) = node()?;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_directory, node) = node(fixture_memory.clone(), fixture_scratch.clone())?;
     let receive = buffered_failure(&node).await?;
     let (release, waiting) = oneshot::channel::<()>();
     let owned = node.clone();
@@ -489,7 +521,11 @@ async fn cancelled_catalog_drain_preserves_unclaimed_preparation_error() -> Resu
 
 #[tokio::test]
 async fn admission_reaper_reports_unclaimed_preparation_failure_before_new_work() -> Result<()> {
-    let (_directory, node) = node()?;
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let (_directory, node) = node(fixture_memory.clone(), fixture_scratch.clone())?;
     let before = contents(&node)?;
     drop(buffered_failure(&node).await?);
     tokio::time::timeout(Duration::from_secs(5), async {

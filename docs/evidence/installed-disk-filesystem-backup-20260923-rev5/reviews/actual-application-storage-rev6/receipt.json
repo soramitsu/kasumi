@@ -1,0 +1,11 @@
+{
+  "all_after_hashes_and_modes_verified": true,
+  "branch": "master",
+  "files_applied": 75,
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "original_bytes": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/actual-application-storage-rev6/before",
+  "package_manifest_sha256": "b2d6f9f980a55d0e1a688093cf2deb64269878005ff78e15f394af8341b336e5",
+  "patch_sha256": "791f80c362c9ee0c317e0a46a4fedb26054e50a274aad0e735641e339737f2c9",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "status": "APPLIED EXACTLY TO MASTER; not release accepted"
+}

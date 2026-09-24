@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -117,6 +118,39 @@ class ReleaseGateTests(unittest.TestCase):
                     release_gate.extract_source(root / "source.tar", root / "source")
                 self.assertFalse((root / "outside").exists())
 
+    def test_compiler_artifact_parser_bounds_lines_and_rejects_ambiguous_json(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "cargo.log"
+            log.write_bytes(b"x" * 129 + b"\n")
+            with patch.object(release_gate, "MAX_CARGO_LOG_LINE_BYTES", 128):
+                with self.assertRaisesRegex(ValueError, "oversized Cargo gate log line"):
+                    list(release_gate.compiler_artifact_messages(log))
+            log.write_bytes(b'{"reason":"compiler-artifact","reason":"compiler-artifact"}\n')
+            with self.assertRaisesRegex(ValueError, "malformed JSON-looking"):
+                list(release_gate.compiler_artifact_messages(log))
+            log.write_bytes(b'{"reason":"compiler\\u002dartifact","executable":null}\n')
+            self.assertEqual(len(list(release_gate.compiler_artifact_messages(log))), 1)
+
+    def test_runner_records_escaped_reason_and_rejects_duplicate_executable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "target").mkdir()
+            executable = root / "target" / "compiled-test"
+            executable.write_bytes(b"compiled test")
+            message = {"reason": "compiler-artifact", "executable": str(executable),
+                       "target": {"name": "compiled-test", "kind": ["test"],
+                                  "crate_types": ["bin"]}, "profile": {"test": True},
+                       "features": [],
+                       "package_id": "synthetic:compiled-test"}
+            encoded = json.dumps(message).replace("compiler-artifact", "compiler\\u002dartifact")
+            command = [sys.executable, "-c", "print(" + repr(encoded) + ")"]
+            result = release_gate.run_gate("escaped", command, root, root, os.environ.copy())
+            self.assertIn("compiled-test", result["executables"])
+            command = [sys.executable, "-c", "print(" + repr(encoded) + "); print(" + repr(encoded) + ")"]
+            with self.assertRaisesRegex(ValueError, "duplicate compiler-artifact"):
+                release_gate.run_gate("duplicate", command, root, root, os.environ.copy())
+            self.assertTrue((root / "duplicate-process.json").is_file())
+
     def test_failed_gate_retains_log_and_exact_executable_hash(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -124,7 +158,9 @@ class ReleaseGateTests(unittest.TestCase):
             executable = root / "target" / "tested-artifact"
             executable.write_bytes(b"exact compiled artifact")
             message = {"reason": "compiler-artifact", "executable": str(executable),
-                       "target": {"name": "test"}, "profile": {"test": True}, "package_id": "example"}
+                       "target": {"name": "test", "kind": ["test"],
+                                  "crate_types": ["bin"]}, "profile": {"test": True},
+                       "features": [], "package_id": "example"}
             command = [sys.executable, "-c", "import sys; print(" + repr(json.dumps(message)) + "); print('failed assertion'); sys.exit(7)"]
             result = release_gate.run_gate("failed", command, root, root, os.environ.copy())
             self.assertEqual(result["exit_code"], 7)
@@ -152,6 +188,17 @@ class ReleaseGateTests(unittest.TestCase):
             package = result["compiled_packages"]["registry+example#dep@1.0.0"]
             self.assertEqual(package["features"], ["alloc", "std"])
             self.assertEqual(len(package["targets"]), 2)
+
+    def test_compiler_artifact_package_metadata_is_typed_before_custody(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            message = {"reason": "compiler-artifact", "package_id": "fixture",
+                       "executable": None, "features": "test-utils",
+                       "target": {"name": "fixture", "kind": ["lib"],
+                                  "crate_types": ["lib"]}}
+            command = [sys.executable, "-c", "print(" + repr(json.dumps(message)) + ")"]
+            with self.assertRaisesRegex(ValueError, "package metadata is malformed"):
+                release_gate.run_gate("malformed-features", command, root, root, os.environ.copy())
 
     def test_content_and_new_inputs_change_inventory_without_relying_on_mtime(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -301,7 +348,8 @@ class ReleaseGateTests(unittest.TestCase):
 
             with (root / "delayed.log").open("wb") as stream:
                 result = release_gate.gate_process.run([sys.executable, "-c", "pass"], root,
-                                                       os.environ.copy(), stream, .05, observe)
+                                                       os.environ.copy(), stream, .05, observe,
+                                                       stderr=subprocess.STDOUT)
             self.assertEqual(result["exit_code"], 124)
             self.assertTrue(result["timed_out"])
             self.assertTrue(result["cleanup"]["drained"])

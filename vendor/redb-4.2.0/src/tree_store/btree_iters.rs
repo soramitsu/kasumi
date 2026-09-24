@@ -87,7 +87,13 @@ impl Iterator for AllPageNumbersBtreeIter {
         match page.memory()[0] {
             LEAF => {}
             BRANCH => {
-                let accessor = BranchAccessor::new(&page, self.fixed_key_size);
+                let accessor = match BranchAccessor::new(&page, self.fixed_key_size) {
+                    Ok(accessor) => accessor,
+                    Err(error) => {
+                        self.pending.clear();
+                        return Some(Err(error));
+                    }
+                };
                 // Push in reverse so children are popped left-to-right.
                 for child in (0..accessor.count_children()).rev() {
                     self.pending.push(accessor.child_page(child).unwrap());

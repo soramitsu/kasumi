@@ -21,7 +21,10 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use uuid::Uuid;
 
@@ -175,15 +178,50 @@ pub(crate) struct ManagedTenant {
     pub bootstrap: Option<ReplicatedBootstrap>,
     pub lease: Option<Arc<crate::serving_runtime::RuntimeLease>>,
 }
+#[path = "administration_command_jobs.rs"]
+mod command_jobs;
 #[path = "configured_tenant_enrollment.rs"]
 mod configured_tenant_enrollment;
 #[path = "administration_observability.rs"]
 mod observability;
+use command_jobs::CommandJobs;
 #[path = "original_serving_runtime.rs"]
 mod original_serving_runtime;
 #[path = "administration_readiness.rs"]
 mod readiness;
 use configured_tenant_enrollment::ProvisionSelection;
+
+/// Closure is synchronous; a shutdown waits for the original active command
+/// before releasing any generation it could still reach.
+#[derive(Default)]
+struct ManagementGate {
+    closed: AtomicBool,
+    active: Arc<tokio::sync::Mutex<()>>,
+}
+impl ManagementGate {
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+    fn closed_error() -> kasumi_types::Error {
+        kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Unavailable,
+            "administrative command admission is closed",
+        )
+    }
+    async fn enter(&self) -> kasumi_types::Result<tokio::sync::OwnedMutexGuard<()>> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Self::closed_error());
+        }
+        let guard = self.active.clone().lock_owned().await;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Self::closed_error());
+        }
+        Ok(guard)
+    }
+    async fn drain(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.active.lock().await
+    }
+}
 
 pub struct Administration {
     pub(crate) config: RuntimeConfig,
@@ -198,11 +236,12 @@ pub struct Administration {
     // Original configured owners only; canonical recovery targets belong to their runner.
     generations: RwLock<BTreeMap<(String, String), ManagedTenant>>,
     custody_generations: RwLock<BTreeMap<(String, String), Arc<kasumi_engine::RetiredCustody>>>,
-    gate: Arc<tokio::sync::Mutex<()>>,
+    gate: ManagementGate,
     // Closure and enrollment publication take this same synchronous boundary.
     enrollment_closed: std::sync::Mutex<bool>,
     // Retain observed failures if a caller cancels while another owner drains.
     shutdown_failure: tokio::sync::Mutex<DrainReport>,
+    command_jobs: CommandJobs,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
     credential: crate::serving_runtime::CredentialSource,
     pub(crate) readiness: crate::readiness::Coverage,
@@ -476,6 +515,9 @@ impl Administration {
         let control_context = crate::runtime::configured_control_context(&config.control)?;
         registry.observe_membership(&control)?;
         let readiness = crate::readiness::Coverage::new(&admission)?;
+        // Reserve the complete membership-child inventory on the installed
+        // memory core before this manager can accept an administrative command.
+        let command_jobs = CommandJobs::new(&admission)?;
         Ok(Arc::new(Self {
             config,
             authority_trusts,
@@ -488,9 +530,10 @@ impl Administration {
             destinations,
             generations: RwLock::new(generations),
             custody_generations: RwLock::new(BTreeMap::new()),
-            gate: Arc::new(tokio::sync::Mutex::new(())),
+            gate: ManagementGate::default(),
             enrollment_closed: std::sync::Mutex::new(false),
             shutdown_failure: tokio::sync::Mutex::new(DrainReport::default()),
+            command_jobs,
             admission,
             credential,
             readiness,
@@ -612,7 +655,7 @@ impl Administration {
         let context = &invocation.context;
         let command = &invocation.command;
         let source = &invocation.source;
-        let _guard = self.gate.lock().await;
+        let _guard = self.gate.enter().await?;
         let mut admitted = false;
         let mutation = !matches!(command, ManagementCommand::Status { .. });
         let mut result: Result<serde_json::Value> = async {
@@ -850,20 +893,31 @@ impl Administration {
                         source.database.engine().generation()?.state.revision,
                     )
                     .await?;
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
-                    source
-                        .database
-                        .raft_group()
-                        .add_learner(node_id, kasumi_raft::BasicNode::new(node.endpoint.clone())),
-                )
-                .await
-                .map_err(|_| {
-                    kasumi_types::Error::new(
-                        kasumi_types::ErrorCode::UnknownOutcome,
+                let selected = source.clone();
+                let original_context = context.clone();
+                let learner = kasumi_raft::BasicNode::new(node.endpoint.clone());
+                self.command_jobs
+                    .execute(
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+                        async move {
+                            // The child may wait behind a prior accepted command
+                            // after this caller has disappeared. Recheck original
+                            // authority immediately before Raft dispatch.
+                            selected.store.check_access()?;
+                            selected.database.engine().authorize(
+                                &original_context,
+                                None,
+                                Action::Admin,
+                            )?;
+                            selected
+                                .database
+                                .raft_group()
+                                .add_learner(node_id, learner)
+                                .await
+                        },
                         "learner catch-up deadline exceeded; inspect membership",
                     )
-                })??;
+                    .await?;
                 self.event(
                     context,
                     SecurityEventKind::Membership,
@@ -909,17 +963,27 @@ impl Administration {
                         source.database.engine().generation()?.state.revision,
                     )
                     .await?;
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
-                    source.database.raft_group().change_membership(voters),
-                )
-                .await
-                .map_err(|_| {
-                    kasumi_types::Error::new(
-                        kasumi_types::ErrorCode::UnknownOutcome,
+                let selected = source.clone();
+                let original_context = context.clone();
+                self.command_jobs
+                    .execute(
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+                        async move {
+                            selected.store.check_access()?;
+                            selected.database.engine().authorize(
+                                &original_context,
+                                None,
+                                Action::Admin,
+                            )?;
+                            selected
+                                .database
+                                .raft_group()
+                                .change_membership(voters)
+                                .await
+                        },
                         "membership deadline exceeded; inspect committed membership",
                     )
-                })??;
+                    .await?;
                 self.event(
                     context,
                     SecurityEventKind::Membership,
@@ -1325,7 +1389,7 @@ impl Administration {
     }
 
     pub(crate) async fn reconcile(&self) -> Result<()> {
-        let _guard = self.gate.lock().await;
+        let _guard = self.gate.enter().await?;
         if self.close_retired_generations().await.is_err() {
             tracing::warn!("retired generation reconciliation remains unavailable");
         }
@@ -1384,18 +1448,30 @@ impl Administration {
         Ok(())
     }
     pub(crate) async fn shutdown(&self) -> DrainResult {
-        let mut report = self.shutdown_failure.lock().await;
-        let mut retained = None;
-        match self.enrollment_closed.lock() {
-            Ok(mut closed) => *closed = true,
+        // Close synchronously with command publication before any shutdown
+        // await. Join exact membership children before closing their Raft group.
+        self.gate.close();
+        self.command_jobs.close();
+        // Close enrollment before the first await as well. A cancelled shutdown
+        // leaves both admission fences closed for its retry.
+        let enrollment_poisoned = match self.enrollment_closed.lock() {
+            Ok(mut closed) => {
+                *closed = true;
+                false
+            }
             Err(poisoned) => {
                 *poisoned.into_inner() = true;
-                report.record(
-                    "enrollment admission",
-                    0,
-                    anyhow::anyhow!("enrollment publication lock poisoned"),
-                );
+                true
             }
+        };
+        let mut report = self.shutdown_failure.lock().await;
+        let mut retained = None;
+        if enrollment_poisoned {
+            report.record(
+                "enrollment admission",
+                0,
+                anyhow::anyhow!("enrollment publication lock poisoned"),
+            );
         }
         if let Err(error) =
             crate::startup_owner::drain(crate::startup_owner::Kind::TenantEnrollment).await
@@ -1403,6 +1479,15 @@ impl Administration {
             // The registry returns only after its retained task inventory joins.
             report.record("tenant enrollment", 0, error);
         }
+        if let Err(failure) = self.command_jobs.drain().await {
+            report.merge(&failure);
+            if failure.completion() == DrainCompletion::Retained {
+                return report.outcome(Some(failure));
+            }
+        }
+        // No management execution or reconciliation can still be using an
+        // original generation when its Raft/database owner starts closing.
+        let _management = self.gate.drain().await;
         let generations = self
             .generations
             .read()
@@ -1584,6 +1669,47 @@ fn validate_voters(topology: &ControlTopology, voters: &BTreeSet<u64>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn shutdown_gate_waits_for_active_management_and_rejects_queued_work() {
+        use std::{future::Future, task::Poll, time::Duration};
+        let gate = ManagementGate::default();
+        let active = gate.enter().await.unwrap();
+        let mut queued = Box::pin(gate.enter());
+        std::future::poll_fn(|cx| {
+            assert!(queued.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        gate.close();
+        let mut shutdown = Box::pin(gate.drain());
+        std::future::poll_fn(|cx| {
+            assert!(shutdown.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(active);
+        let queued = tokio::time::timeout(Duration::from_secs(5), queued)
+            .await
+            .unwrap();
+        assert!(matches!(
+            queued,
+            Err(error) if error.code == kasumi_types::ErrorCode::Unavailable
+        ));
+        let shutdown = tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap();
+        // A new caller rejects immediately even while shutdown owns the gate.
+        let late = tokio::time::timeout(Duration::from_secs(5), gate.enter())
+            .await
+            .unwrap();
+        assert!(matches!(
+            late,
+            Err(error) if error.code == kasumi_types::ErrorCode::Unavailable
+        ));
+        drop(shutdown);
+    }
+
     #[test]
     fn management_entry_future_bounds_stack_residency() {
         fn future_size<A, F>(_: impl FnOnce(A) -> F) -> usize {

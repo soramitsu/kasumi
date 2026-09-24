@@ -17,6 +17,33 @@ pub(super) async fn pause_ready(id: Uuid) {
         pause.release.notified().await;
     }
 }
+async fn approve_fixture(
+    manager: &Arc<Administration>,
+    context: &RequestContext,
+    tenant: &str,
+) -> Result<()> {
+    let released = crate::api::mutation_release(
+        manager
+            .execute_for_test(
+                context.clone(),
+                ManagementCommand::ApproveTenant {
+                    tenant: tenant.into(),
+                },
+            )
+            .await,
+    );
+    match released {
+        Ok(_) => {}
+        Err(error) if error.code == kasumi_types::ErrorCode::UnknownOutcome => {}
+        Err(error) => return Err(error.into()),
+    }
+    ensure!(
+        manager.approved_enrollment(tenant)?.digest()?
+            == manager.enrollment_proposal(tenant)?.digest()?,
+        "fixture approval did not commit the exact configured proposal"
+    );
+    Ok(())
+}
 async fn dormant_resident() -> (
     tempfile::TempDir,
     crate::runtime::NodeRuntime,
@@ -24,10 +51,12 @@ async fn dormant_resident() -> (
     RequestContext,
 ) {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let installation =
-        crate::standalone::initialize(&directory.path().join("installed"), "tenant-a")
-            .await
-            .unwrap();
+    let (installation, storage) = Box::pin(crate::runtime_storage_fixtures::initialize_standalone(
+        &directory.path().join("installed"),
+        "tenant-a",
+    ))
+    .await
+    .unwrap();
     let mut config = RuntimeConfig::load(&installation.configuration).unwrap();
     let listeners = (0..3)
         .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
@@ -36,7 +65,13 @@ async fn dormant_resident() -> (
     config.native.listen = listeners[1].local_addr().unwrap();
     config.admin.listen = listeners[2].local_addr().unwrap();
     drop(listeners);
-    let runtime = crate::runtime::NodeRuntime::open(config).await.unwrap();
+    let runtime = Box::pin(crate::runtime::NodeRuntime::open_using_storage(
+        config,
+        crate::runtime::file_secret,
+        storage.clone(),
+    ))
+    .await
+    .unwrap();
     let manager = runtime.administration_for_enrollment_test();
     let context = crate::runtime::configured_control_context(&manager.config.control).unwrap();
     let plane = ControlPlane::new(manager.control.clone()).unwrap();
@@ -51,13 +86,7 @@ async fn dormant_resident() -> (
         )
         .await
         .unwrap();
-    manager
-        .execute_for_test(
-            context.clone(),
-            ManagementCommand::ApproveTenant {
-                tenant: "tenant-a".into(),
-            },
-        )
+    approve_fixture(&manager, &context, "tenant-a")
         .await
         .unwrap();
     (directory, runtime, manager, context)
@@ -159,8 +188,11 @@ async fn closure_before_actual_enrollment_handoff_rejects_publication_and_preser
 async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state()
 -> Result<()> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
-    let installed =
-        crate::standalone::initialize(&directory.path().join("installed"), "tenant-a").await?;
+    let (installed, storage) = Box::pin(crate::runtime_storage_fixtures::initialize_standalone(
+        &directory.path().join("installed"),
+        "tenant-a",
+    ))
+    .await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
     let request = crate::standalone::StageTenantRequest {
         operation_id: Uuid::new_v4(),
@@ -169,7 +201,12 @@ async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_r
         initial_policy: config.tenants[0].initial_policy.clone(),
         initial_limits: config.tenants[0].initial_limits.clone(),
     };
-    crate::standalone::stage_tenant(&installed.configuration, request.clone()).await?;
+    Box::pin(crate::standalone::stage_tenant_with_storage(
+        &installed.configuration,
+        request.clone(),
+        storage.clone(),
+    ))
+    .await?;
     let mut config = RuntimeConfig::load(&installed.configuration)?;
     let listeners = (0..3)
         .map(|_| std::net::TcpListener::bind("127.0.0.1:0"))
@@ -178,19 +215,17 @@ async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_r
     config.native.listen = listeners[1].local_addr()?;
     config.admin.listen = listeners[2].local_addr()?;
     drop(listeners);
-    let mut runtime = crate::runtime::NodeRuntime::open(config).await?;
+    let mut runtime = Box::pin(crate::runtime::NodeRuntime::open_using_storage(
+        config,
+        crate::runtime::file_secret,
+        storage.clone(),
+    ))
+    .await?;
     let manager = runtime.administration_for_enrollment_test();
     let original = manager.configured("tenant-a")?;
     let original_bytes = original.store.get("engine.bootstrap", b"manifest")?;
     let context = crate::runtime::configured_control_context(&manager.config.control)?;
-    manager
-        .execute_for_test(
-            context.clone(),
-            ManagementCommand::ApproveTenant {
-                tenant: request.tenant.clone(),
-            },
-        )
-        .await?;
+    approve_fixture(&manager, &context, &request.tenant).await?;
     let pause = Arc::new(Pause::default());
     pauses()
         .lock()

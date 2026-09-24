@@ -1,0 +1,240 @@
+diff --git a/crates/kasumi-engine/src/admission/snapshot_work.rs b/crates/kasumi-engine/src/admission/snapshot_work.rs
+--- a/crates/kasumi-engine/src/admission/snapshot_work.rs
++++ b/crates/kasumi-engine/src/admission/snapshot_work.rs
+@@ -174,6 +174,21 @@
+             waiter.wake();
+         }
+     }
++    fn dispatch_pending(&self) {
++        if std::thread::panicking() {
++            // As in DeferWake, never introduce an executor callback during an
++            // existing unwind. Preserve the registration and notification.
++            return;
++        }
++        let waiter = self
++            .state
++            .lock()
++            .unwrap_or_else(|p| p.into_inner())
++            .take_notification();
++        if let Some(waiter) = waiter {
++            waiter.wake();
++        }
++    }
+     fn defer(&self) -> DeferWake<'_> {
+         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+         state.owner_scopes = state
+@@ -651,8 +666,16 @@
+         report
+     }
+     pub fn claim(&self) -> std::result::Result<O::Output, SnapshotWorkReport> {
+-        let _defer = self.owner.wake.defer();
++        // Arbitrary executor callbacks must finish while the output is still
++        // in retained custody. They can themselves close/claim this owner, so
++        // recheck all eligibility only after dispatch returns.
++        self.owner.wake.dispatch_pending();
+         let report = self.report();
++        // This final section invokes no adapter, Waker or executor callback.
++        // In particular, do not add a dispatching DeferWake/Tokio guard here:
++        // a callback panic after output.take would destroy an undelivered value
++        // without its required poll_discard. Concurrent callbacks can contend
++        // for these std mutexes, but this section cannot call back into them.
+         let control = self.owner.control.lock().unwrap_or_else(|p| p.into_inner());
+         if control.closing
+             || !control.joined
+@@ -672,9 +695,28 @@
+         let Some(output) = resource.output.take() else {
+             return Err(report);
+         };
++        let retired = {
++            let mut census = self
++                .owner
++                .core
++                .snapshot_work
++                .lock()
++                .unwrap_or_else(|p| p.into_inner());
++            match census.slots.get_mut(self.owner.id.slot) {
++                Some(slot) if slot.generation == self.owner.id.generation => {
++                    slot.reserved = false;
++                    slot.owner.take()
++                }
++                _ => None,
++            }
++        };
+         drop(resource);
+         drop(control);
+-        report.retire_complete();
++        // No completion()/retire_complete() dispatch after the transfer. Both
++        // extra owner counts retire outside the locks; borrowed self guarantees
++        // that neither can be the final actual Owner/resource destruction.
++        drop(retired);
++        drop(report);
+         Ok(output)
+     }
+ }
+@@ -690,6 +732,9 @@
+         payload: &'a (dyn Any + Send),
+     },
+ }
++/// Executor callbacks may inspect completion, but must not synchronously block
++/// waiting for another finish/drain of this same owner. Those asynchronous
++/// operations share a serial gate protecting the single waiter registration.
+ #[derive(Clone)]
+ pub struct SnapshotWorkReport {
+     owner: ErasedOwner,
+diff --git a/crates/kasumi-engine/src/admission/snapshot_work_tests.rs b/crates/kasumi-engine/src/admission/snapshot_work_tests.rs
+--- a/crates/kasumi-engine/src/admission/snapshot_work_tests.rs
++++ b/crates/kasumi-engine/src/admission/snapshot_work_tests.rs
+@@ -1062,3 +1062,153 @@
+     drop(work);
+     assert_eq!(node.snapshot().reserved_bytes, baseline);
+ }
++
++fn queue_pending_on_unwind(wake: &OwnedWake, executor: Waker) {
++    wake.register(executor);
++    let proxy = wake.waker();
++    assert!(
++        catch_unwind(AssertUnwindSafe(|| {
++            let _scope = wake.defer();
++            proxy.wake_by_ref();
++            panic!("preserve pending notification for claim preflight");
++        }))
++        .is_err()
++    );
++    let state = wake.state.lock().unwrap();
++    assert_eq!(state.owner_scopes, 0);
++    assert!(state.notified);
++    assert!(state.waiter.is_some());
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn claim_executor_panic_keeps_original_output_and_census_until_successful_retry() {
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Success);
++    join_only(&work, &gate).await;
++    let report = work.ready().await;
++    let output_id = work
++        .owner
++        .resource
++        .lock()
++        .unwrap()
++        .output
++        .as_ref()
++        .unwrap()
++        ._charge
++        .id;
++    let charged = node.snapshot().reserved_bytes;
++    let (callback, outer) = completion_waker(&work);
++    callback.panic_on_wake.store(true, Ordering::Release);
++    queue_pending_on_unwind(&work.owner.wake, outer.clone());
++    let Err(panic) = catch_unwind(AssertUnwindSafe(|| work.claim())) else {
++        panic!("the real executor panic must occur before output transfer");
++    };
++    assert_eq!(
++        panic.downcast_ref::<&str>(),
++        Some(&"original deferred executor wake panic")
++    );
++    assert_eq!(callback.calls.load(Ordering::Acquire), 1);
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 0);
++    {
++        let resource = work.owner.resource.lock().unwrap();
++        assert_eq!(resource.output.as_ref().unwrap()._charge.id, output_id);
++        assert!(resource.discarded.is_none());
++        assert!(resource.panic.is_none());
++    }
++    assert_eq!(report.completion(), DrainCompletion::Retained);
++    assert!(node.memory().snapshot_work_at(work.id().slot).is_some());
++    assert_eq!(node.snapshot().reserved_bytes, charged);
++    assert_eq!(node.snapshot().inflight_operations, 1);
++    callback.panic_on_wake.store(false, Ordering::Release);
++    let output = match work.claim() {
++        Ok(output) => output,
++        Err(_) => panic!("retry must deliver the original retained output"),
++    };
++    assert_eq!(output._charge.id, output_id);
++    assert!(Arc::ptr_eq(&output.gate, &gate));
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 0);
++    assert_eq!(report.completion(), DrainCompletion::Complete);
++    assert!(node.memory().snapshot_work_at(work.id().slot).is_none());
++    drop(report);
++    drop(outer);
++    drop(callback);
++    drop(work);
++    assert_eq!(node.snapshot().inflight_operations, 0);
++    assert_eq!(
++        node.snapshot().reserved_bytes,
++        baseline + arc_bytes::<Gate>().unwrap()
++    );
++    drop(output);
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 1);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++}
++
++struct ClaimingWake {
++    owner: OwnedOwner<Operation>,
++    output: Mutex<Option<Output>>,
++    calls: AtomicUsize,
++}
++impl std::task::Wake for ClaimingWake {
++    fn wake(self: Arc<Self>) {
++        let work = SnapshotWork {
++            owner: self.owner.clone(),
++        };
++        let output = match work.claim() {
++            Ok(output) => output,
++            Err(_) => panic!("preflight callback must claim the still-owned output"),
++        };
++        self.calls.fetch_add(1, Ordering::AcqRel);
++        assert!(self.output.lock().unwrap().replace(output).is_none());
++    }
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn claim_revalidates_after_reentrant_executor_already_claims_the_output() {
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Success);
++    join_only(&work, &gate).await;
++    let report = work.ready().await;
++    let output_id = work
++        .owner
++        .resource
++        .lock()
++        .unwrap()
++        .output
++        .as_ref()
++        .unwrap()
++        ._charge
++        .id;
++    let callback = Arc::new(ClaimingWake {
++        owner: work.owner.clone(),
++        output: Mutex::new(None),
++        calls: AtomicUsize::new(0),
++    });
++    queue_pending_on_unwind(&work.owner.wake, Waker::from(callback.clone()));
++    let denied = match work.claim() {
++        Ok(_) => panic!("outer claim must not deliver the same output twice"),
++        Err(report) => report,
++    };
++    assert_eq!(denied.id(), report.id());
++    assert_eq!(denied.completion(), DrainCompletion::Complete);
++    assert_eq!(callback.calls.load(Ordering::Acquire), 1);
++    let output = callback.output.lock().unwrap().take().unwrap();
++    assert_eq!(output._charge.id, output_id);
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 0);
++    assert!(node.memory().snapshot_work_at(work.id().slot).is_none());
++    drop(denied);
++    drop(report);
++    drop(callback);
++    drop(work);
++    assert_eq!(node.snapshot().inflight_operations, 0);
++    assert_eq!(
++        node.snapshot().reserved_bytes,
++        baseline + arc_bytes::<Gate>().unwrap()
++    );
++    drop(output);
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 1);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++}

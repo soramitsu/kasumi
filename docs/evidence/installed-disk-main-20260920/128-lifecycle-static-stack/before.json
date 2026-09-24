@@ -1,0 +1,8 @@
+{
+  "target/debug/deps/lifecycle-377b80b89ca111b0": "631110f244e868c72e9966ec5af1df0d484b63bb8c26ffcde3d8c00a730ec098",
+  "crates/kasumi-engine/tests/lifecycle.rs": "b39feadc979cbab5a4646a687fd44552cfe4687220e36ada287b72e94db3004c",
+  "crates/kasumi-engine/tests/common/recovery_control.rs": "df389a1f5903728287ed45d01281119b797a3778b50d1d60adc17c62f2548eb3",
+  "crates/kasumi-engine/tests/common/bootstrap_vote_probe.rs": "bc13c13060a5de8427d79f72a5c073e3dbf7deb341c688c20434a8a6c44b597d",
+  "target/installed-disk-validation/128-result.json": "b63568f785f607b9a63fa2c7d66f08a6117bdfe78b674502d3834fd31f970524",
+  "target/installed-disk-validation/123-lifecycle-static-stack/manifest.json": "ac24bec4732c65f6600f2b9017b4d0cefab0ba0c609d50028834d0940880a604"
+}

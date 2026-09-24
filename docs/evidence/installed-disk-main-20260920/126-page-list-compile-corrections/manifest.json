@@ -1,0 +1,17 @@
+{
+  "status": "FROZEN_UNEXECUTED",
+  "patch_sha256": "6b13e03b2c7f15af9c7dcd38365b3d4de80ab887f9612649a71eb43c667c5ae6",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "before_sha256": "2fb12a568b3b0e39f871defe4055cbc6cf24ed9043315f67ebaa88f958c0c13a",
+      "proposed_sha256": "b6b3dc77f8d1a97fca8bcee0059ad2614b286e4636bece81266413ad32697c78"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/page_list_tests.rs",
+      "before_sha256": "0e0bfd151b7c18d97f3bca559dfe1b8a38ca38a970f799d5df64d39ff47aa284",
+      "proposed_sha256": "312382407366d3e653211330b55efb40f006393520074200d87cb6fdd9a80b08"
+    }
+  ],
+  "reason": "Copy key no longer consumes closure capture, so original savepoint drain needs FnMut binding; qualify the test macro against glob/prelude ambiguity."
+}

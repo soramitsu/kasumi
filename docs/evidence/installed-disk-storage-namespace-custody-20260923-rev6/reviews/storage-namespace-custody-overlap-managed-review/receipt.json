@@ -1,0 +1,27 @@
+{
+  "status": "BLOCKED_SOURCE_COMPOSITION_FINDING",
+  "scope": "Exact custody04 to combined overlap preservation only; no native/source changes",
+  "bindings": {
+    "target/installed-disk-validation/storage-namespace-custody-integration/manifest.json": "685c94e8e7b80349d9488c925de9347d02a4d9db2e27d4b78a91f7ad72f30209",
+    "target/installed-disk-validation/storage-namespace-custody-integration/composition.json": "ff4058f91e13736038c143ab4730f7245eaaa2e4ca29c0d40e09ca944c9e42e4",
+    "target/installed-disk-validation/storage-namespace-custody-integration/custody-to-combined-overlaps.patch": "568b71720f02c7392a7be208a64b07aa2d827c530827daddf3d0cad05ec5da95",
+    "target/installed-disk-validation/storage-namespace-custody-integration/proposed/crates/kasumi-store/src/node_disk/file.rs": "7cb89ab1d1bd5b2475f0331a49d0842f7d96606471ad0f16b6d931e3da5a434c",
+    "target/installed-disk-validation/storage-namespace-custody-integration/proposed/crates/kasumi-store/src/node_disk/tests.rs": "01dfb824dbae24a303e2b1085b1e6527ad86b75d7fc278a0bc309d49ca81f9f4"
+  },
+  "blocking_findings": [
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "line": 2055,
+      "finding": "publication_replaced_private_source_ancestor_fences_before_rename lost both complete early/late replacement branches and leaves an assertion using undefined disk/before_preparation variables.",
+      "required_correction": "Preserve this frozen composition, restore the entire custody04 function in a distinct successor, and retain integration lint/fixture changes outside it."
+    }
+  ],
+  "other_checks": [
+    "file.rs equivalent let-chain preserves create/AlreadyExists short-circuit, transition.take, resources.parent, disk/state failure and original rollback return.",
+    "Clean namespace.rs merge retains integration _names and checked claim logic plus custody file-only retained-parent protocol.",
+    "Clean node_disk.rs merge retains fixture owner lookup/census admission and new custody fields."
+  ],
+  "limits": [
+    "This does not re-review full cumulative75 files or qualify runtime/memory/physical drainage."
+  ]
+}

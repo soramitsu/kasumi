@@ -1,0 +1,69 @@
+{
+  "status": "PREPARED_NO_NATIVE_AUTHORIZATION_OR_DISPATCH",
+  "composition": "After root confirms the base and serial window, prefer actual master if qualified integration revision6 has been applied: verify every applied integration after hash and both backup before hashes, copy actual source into a fresh target-only assembly, and apply only this three-file patch. If unapplied, use the exact frozen revision6 assembly. Do not re-apply the cumulative integration patch over changed actual source. No Git checkout, branch or worktree is created.",
+  "serial_native_window": "Request/receive from root/opening before dispatch; current opening qualification owns it.",
+  "commands": [
+    [
+      "cargo",
+      "check",
+      "--offline",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "--message-format=json"
+    ],
+    [
+      "cargo",
+      "clippy",
+      "--offline",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "--message-format=json",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kasumi-store",
+      "--all-features",
+      "--lib",
+      "--no-run",
+      "--message-format=json"
+    ],
+    [
+      "EXACT_FRESH_STORE_BINARY",
+      "--list"
+    ],
+    [
+      "EXACT_FRESH_STORE_BINARY",
+      "--test-threads=1",
+      "--nocapture"
+    ]
+  ],
+  "cohort_bound_seconds": 1200,
+  "new_cargo_target_required": true,
+  "exact_binary_inventory": 345,
+  "expected_existing_ignored": 2,
+  "filtered": 0,
+  "must_pass": [
+    "All stages exit0 with timed_out=false and no cleanup signals.",
+    "All process groups actually absent before returning the native window.",
+    "Complete actual source, assembly, runner, compiler, dependencies and executable inventories identical before/after.",
+    "Binary from correct crate/source/current compilation; do not accept stale dependency output.",
+    "Exact 345 source-backed test names; preserve existing 338 tests and both inherited ignored tests."
+  ],
+  "remaining": [
+    "After successful store integration, root completes its established engine/server/release cohorts without reducing workload.",
+    "Opaque outcome/caller/worker/stack/cache/RSS, configured root/inherited directory native closure and supported-filesystem physical bounds remain separate unresolved prerequisites."
+  ],
+  "frozen_integration_manifest_sha256": "b2d6f9f980a55d0e1a688093cf2deb64269878005ff78e15f394af8341b336e5",
+  "adoption_manifest_sha256": "7b10428c0b5cea9eba7b03ac57ca3ba1e86eb32fbacbbf50b03d8123420c908a"
+}

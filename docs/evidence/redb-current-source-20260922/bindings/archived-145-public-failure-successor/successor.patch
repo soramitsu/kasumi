@@ -1,0 +1,37 @@
+--- a/vendor/redb-4.2.0/tests/canonical_format.rs
++++ b/vendor/redb-4.2.0/tests/canonical_format.rs
+@@ -164,10 +164,12 @@
+     // composite identity rejection is covered in both directions above and by
+     // table_tree_base::canonical_identity_tests for the actual stored old name.
+     let before = std::fs::read(file.path()).unwrap();
+-    assert!(matches!(
+-        redb::Database::open(file.path(), admission_support::admission()),
+-        Err(redb::DatabaseError::UnsupportedFileFormat(3))
+-    ));
++    let opened = redb::Database::open(file.path(), admission_support::admission());
++    assert!(
++        matches!(opened, Err(redb::DatabaseError::UnsupportedFileFormat(3))),
++        "unexpected upstream rejection result: {opened:?}; header={:?}",
++        &before[..32]
++    );
+     assert_eq!(std::fs::read(file.path()).unwrap(), before);
+     assert!(matches!(
+         redb::Database::builder(admission_support::admission()).open_read_only(file.path()),
+--- a/vendor/redb-4.2.0/tests/integration_tests.rs
++++ b/vendor/redb-4.2.0/tests/integration_tests.rs
+@@ -953,13 +953,13 @@
+         id
+     };
+ 
+-    // Find the serialized savepoint record: version 3, the savepoint id, a plausible
++    // Find the serialized savepoint record: version 4, the savepoint id, a plausible
+     // transaction id, and a non-null user root
+     let mut data = fs::read(path).unwrap();
+     let mut offsets = vec![];
+     for i in 0..data.len() - 18 {
+         let transaction_id = u64::from_le_bytes(data[i + 9..i + 17].try_into().unwrap());
+-        if data[i] == 3
++        if data[i] == 4
+             && u64::from_le_bytes(data[i + 1..i + 9].try_into().unwrap()) == savepoint_id
+             && transaction_id > 0
+             && transaction_id < 100

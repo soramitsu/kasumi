@@ -1,0 +1,22 @@
+{
+  "status": "APPLIED UNCOMMITTED",
+  "manifest": {
+    "status": "TARGET ONLY; gate145 still running; native pending",
+    "patch_sha256": "23a932f61fc08ea58028fa48b526831dd6b611dfc9bbe6b9f47b82d9d0547702",
+    "files": [
+      {
+        "path": "vendor/redb-4.2.0/tests/canonical_format.rs",
+        "before_sha256": "3dff3c34fa94586473ed41993795b28ea13859320865032947bd79bf1f92fdd0",
+        "proposed_sha256": "28469877aea8a9af67498ee08b2ad27777f7a8810b17878539aaca83545c5b53"
+      },
+      {
+        "path": "vendor/redb-4.2.0/tests/integration_tests.rs",
+        "before_sha256": "00e3a52833e78248fef1d142b021ee5c8b048d4319912af469d60dbe810d59c3",
+        "proposed_sha256": "0b9e1fce3a14498a9ebb5f5b9d8e622c48b0b74eced7685819c6c4a9dfbdbde2"
+      }
+    ],
+    "scope": "Canonical test retains exact UnsupportedFileFormat(3) assertion and adds actual original error/header diagnostic. Savepoint corruption test directly locates format4 instead of3, retaining exact same workload/corruption/one-record and failure assertions. No production source changes or relaxed expectations."
+  },
+  "previous145_actual_drain_checked": true,
+  "root_review": "Two test-only deltas: exact error diagnostic with same assertion; canonical savepoint locator version4 with all corruption/assertion workload preserved. No production source changes."
+}

@@ -1,0 +1,3232 @@
+--- a/vendor/redb-4.2.0/src/multimap_table.rs
++++ b/vendor/redb-4.2.0/src/multimap_table.rs
+@@ -193,7 +193,7 @@
+                 Self::new_inline(leaf_iter, guard)
+             }
+             SubtreeV2 => {
+-                let root = collection.value().as_subtree().root;
++                let root = collection.value().as_subtree()?.root;
+                 Self::new_subtree(
+                     BtreeCursorRange::new::<RangeFull, &V::SelfType<'_>>(
+                         &(..),
+@@ -201,7 +201,7 @@
+                         mem,
+                         PageHint::None,
+                     )?,
+-                    collection.value().get_num_values(),
++                    collection.value().get_num_values()?,
+                     guard,
+                 )
+             }
+@@ -216,7 +216,7 @@
+         guard: Arc<TransactionGuard>,
+         page_allocator: PageAllocator,
+     ) -> Result<Self> {
+-        let num_values = collection.value().get_num_values();
++        let num_values = collection.value().get_num_values()?;
+         Ok(match collection.value().collection_type() {
+             Inline => {
+                 let leaf_iter =
+@@ -224,7 +224,7 @@
+                 Self::new_inline(leaf_iter, guard)
+             }
+             SubtreeV2 => {
+-                let root = collection.value().as_subtree().root;
++                let root = collection.value().as_subtree()?.root;
+                 let inner = BtreeCursorRange::new::<RangeFull, &V::SelfType<'_>>(
+                     &(..),
+                     Some(root),
+@@ -659,7 +659,7 @@
+                 }
+                 SubtreeV2 => {
+                     let mut subtree: BtreeMut<V, ()> = BtreeMut::new(
+-                        Some(guard.value().as_subtree()),
++                        Some(guard.value().as_subtree()?),
+                         self.transaction.transaction_guard(),
+                         self.page_allocator.clone(),
+                         self.freed_pages.clone(),
+@@ -786,7 +786,7 @@
+             }
+             SubtreeV2 => {
+                 let mut subtree: BtreeMut<V, ()> = BtreeMut::new(
+-                    Some(v.as_subtree()),
++                    Some(v.as_subtree()?),
+                     self.transaction.transaction_guard(),
+                     self.page_allocator.clone(),
+                     self.freed_pages.clone(),
+@@ -873,25 +873,29 @@
+         &mut self,
+         key: impl Borrow<K::SelfType<'a>>,
+     ) -> Result<MultimapValue<'_, V>> {
+-        let iter = if let Some(collection) = self.tree.remove(key.borrow())? {
+-            let mut pages = vec![];
+-            if matches!(
++        if let Some(collection) = self.tree.get(key.borrow())? {
++            collection.value().get_num_values()?;
++        }
++        let mut pages = vec![];
++        if let Some(collection) = self.tree.get(key.borrow())?
++            && matches!(
+                 collection.value().collection_type(),
+                 DynamicCollectionType::SubtreeV2
+-            ) {
+-                let root = collection.value().as_subtree().root;
+-                let all_pages = AllPageNumbersBtreeIter::new(
+-                    root,
+-                    V::fixed_width(),
+-                    self.page_allocator.resolver(),
+-                    PageHint::None,
+-                );
+-                for page in all_pages {
+-                    pages.push(page?);
+-                }
++            )
++        {
++            let root = collection.value().as_subtree()?.root;
++            let all_pages = AllPageNumbersBtreeIter::new(
++                root,
++                V::fixed_width(),
++                self.page_allocator.resolver(),
++                PageHint::None,
++            );
++            for page in all_pages {
++                pages.push(page?);
+             }
+-
+-            self.num_values -= collection.value().get_num_values();
++        }
++        let iter = if let Some(collection) = self.tree.remove(key.borrow())? {
++            self.num_values -= collection.value().get_num_values()?;
+ 
+             MultimapValue::from_collection_free_on_drop(
+                 collection,
+--- a/vendor/redb-4.2.0/src/page_list_tests.rs
++++ b/vendor/redb-4.2.0/src/page_list_tests.rs
+@@ -54,76 +54,84 @@
+ 
+ #[test]
+ fn malformed_selected_data_record_is_rejected_before_any_pending_removal() {
+-    for invalid_first in [true, false] {
+-        let file = crate::create_tempfile();
+-        let mut database = Database::builder(crate::test_admission())
+-            .create(file.path())
+-            .unwrap()
+-            .retain();
+-        let mut tx = database.database().unwrap().begin_write().unwrap();
+-        let first = TransactionIdWithPagination {
+-            transaction_id: 10_000,
+-            pagination_id: 0,
+-        };
+-        let second = TransactionIdWithPagination {
+-            transaction_id: 10_000,
+-            pagination_id: 1,
+-        };
+-        let valid = record(1);
+-        let malformed = record(DATA_PAGE_LIST_CAPACITY + 1);
+-        let values = if invalid_first {
+-            [&malformed, &valid]
+-        } else {
+-            [&valid, &malformed]
+-        };
+-        {
+-            let mut namespace = tx.system_tables.lock().unwrap();
+-            let mut data = namespace
+-                .open_system_table(&tx.dirty, DATA_FREED_TABLE)
+-                .unwrap();
+-            data.insert(first, PageList { data: values[0] }).unwrap();
+-            data.insert(second, PageList { data: values[1] }).unwrap();
++    for alias_entry in [None, Some(0), Some(DATA_PAGE_LIST_CAPACITY - 1)] {
++        for invalid_first in [true, false] {
++            let file = crate::create_tempfile();
++            let mut database = Database::builder(crate::test_admission())
++                .create(file.path())
++                .unwrap()
++                .retain();
++            let mut tx = database.database().unwrap().begin_write().unwrap();
++            let first = TransactionIdWithPagination {
++                transaction_id: 10_000,
++                pagination_id: 0,
++            };
++            let second = TransactionIdWithPagination {
++                transaction_id: 10_000,
++                pagination_id: 1,
++            };
++            let valid = record(1);
++            let malformed = if let Some(index) = alias_entry {
++                let mut malformed = record(DATA_PAGE_LIST_CAPACITY);
++                malformed[2 + 8 * index + 5] |= 1;
++                malformed
++            } else {
++                record(DATA_PAGE_LIST_CAPACITY + 1)
++            };
++            let values = if invalid_first {
++                [&malformed, &valid]
++            } else {
++                [&valid, &malformed]
++            };
++            {
++                let mut namespace = tx.system_tables.lock().unwrap();
++                let mut data = namespace
++                    .open_system_table(&tx.dirty, DATA_FREED_TABLE)
++                    .unwrap();
++                data.insert(first, PageList { data: values[0] }).unwrap();
++                data.insert(second, PageList { data: values[1] }).unwrap();
++            }
++            assert!(matches!(
++                tx.process_pending_pages(TransactionId::new(10_001), u64::MAX),
++                Err(StorageError::InvalidPageList)
++            ));
++            assert!(tx.deferred_reclaim.is_empty());
++            assert!(tx.is_poisoned());
++            {
++                let mut namespace = tx.system_tables.lock().unwrap();
++                let data = namespace
++                    .open_system_table(&tx.dirty, DATA_FREED_TABLE)
++                    .unwrap();
++                assert_eq!(data.get(first).unwrap().unwrap().value().data, values[0]);
++                assert_eq!(data.get(second).unwrap().unwrap().value().data, values[1]);
++            }
++            let mut tx = tx.retain();
++            assert_eq!(tx.abort().settlement(), WriteTerminalSettlement::Settled);
++            assert!(tx.dispose_settled(&database).disposal_complete());
++            let check = database.database().unwrap().begin_write().unwrap();
++            assert!(
++                check
++                    .system_tables
++                    .lock()
++                    .unwrap()
++                    .get_system_table_root(DATA_FREED_TABLE)
++                    .unwrap()
++                    .is_none()
++            );
++            let mut check = check.retain();
++            assert_eq!(check.abort().settlement(), WriteTerminalSettlement::Settled);
++            assert!(check.dispose_settled(&database).disposal_complete());
++            let close = database.close();
++            assert_eq!(close.settlement(), DatabaseCloseSettlement::Settled);
++            assert!(matches!(
++                close.shutdown(),
++                TerminalObservation::Returned(Ok(()))
++            ));
++            assert!(matches!(
++                close.backend(),
++                TerminalObservation::Returned(Ok(()))
++            ));
+         }
+-        assert!(matches!(
+-            tx.process_pending_pages(TransactionId::new(10_001), u64::MAX),
+-            Err(StorageError::InvalidPageList)
+-        ));
+-        assert!(tx.deferred_reclaim.is_empty());
+-        assert!(tx.is_poisoned());
+-        {
+-            let mut namespace = tx.system_tables.lock().unwrap();
+-            let data = namespace
+-                .open_system_table(&tx.dirty, DATA_FREED_TABLE)
+-                .unwrap();
+-            assert_eq!(data.get(first).unwrap().unwrap().value().data, values[0]);
+-            assert_eq!(data.get(second).unwrap().unwrap().value().data, values[1]);
+-        }
+-        let mut tx = tx.retain();
+-        assert_eq!(tx.abort().settlement(), WriteTerminalSettlement::Settled);
+-        assert!(tx.dispose_settled(&database).disposal_complete());
+-        let check = database.database().unwrap().begin_write().unwrap();
+-        assert!(
+-            check
+-                .system_tables
+-                .lock()
+-                .unwrap()
+-                .get_system_table_root(DATA_FREED_TABLE)
+-                .unwrap()
+-                .is_none()
+-        );
+-        let mut check = check.retain();
+-        assert_eq!(check.abort().settlement(), WriteTerminalSettlement::Settled);
+-        assert!(check.dispose_settled(&database).disposal_complete());
+-        let close = database.close();
+-        assert_eq!(close.settlement(), DatabaseCloseSettlement::Settled);
+-        assert!(matches!(
+-            close.shutdown(),
+-            TerminalObservation::Returned(Ok(()))
+-        ));
+-        assert!(matches!(
+-            close.backend(),
+-            TerminalObservation::Returned(Ok(()))
+-        ));
+     }
+ }
+ 
+--- a/vendor/redb-4.2.0/src/transactions.rs
++++ b/vendor/redb-4.2.0/src/transactions.rs
+@@ -19,8 +19,8 @@
+ use crate::tree_store::{
+     AllocationPolicy, Btree, BtreeHeader, BtreeMut, InternalTableDefinition, MAX_PAIR_LENGTH,
+     MAX_VALUE_LENGTH, Page, PageAllocator, PageHint, PageListMut, PageNumber, PageNumberHashMap,
+-    PageResolver, PageTracker, SerializedSavepoint, ShrinkPolicy, TableTree, TableTreeMut,
+-    TableType, TransactionalMemory,
++    PageResolver, PageTracker, RawTableDefinition, SerializedSavepoint, ShrinkPolicy, TableTree,
++    TableTreeMut, TableType, TransactionalMemory,
+ };
+ use crate::types::{Key, Value};
+ use crate::{
+@@ -119,11 +119,7 @@
+ impl DeferredReclaim {
+     fn new() -> Self {
+         Self {
+-            pages: [PageNumber {
+-                region: 0,
+-                page_index: 0,
+-                page_order: 0,
+-            }; DATA_PAGE_LIST_CAPACITY],
++            pages: [PageNumber::new(0, 0, 0); DATA_PAGE_LIST_CAPACITY],
+             len: 0,
+         }
+     }
+@@ -165,6 +161,12 @@
+         if len == 0 || len > capacity {
+             return Err(StorageError::InvalidPageList);
+         }
++        for raw in
++            self.data[2..Self::required_bytes(len)].chunks_exact(PageNumber::serialized_size())
++        {
++            PageNumber::from_le_bytes(raw.try_into().unwrap())
++                .map_err(|_| StorageError::InvalidPageList)?;
++        }
+         // The writers reserve a complete fixed-size record but only initialize
+         // the used entries. Unused padding is not a second supported format.
+         Ok(CheckedPageList {
+@@ -186,6 +188,7 @@
+                 .try_into()
+                 .unwrap(),
+         )
++        .expect("immutable used entries validated by PageList::checked")
+     }
+ }
+ 
+@@ -2303,7 +2306,7 @@
+             .unwrap()
+         {
+             eprintln!("Master tree:");
+-            let master_tree: Btree<&str, InternalTableDefinition> = Btree::new(
++            let master_tree: Btree<&str, RawTableDefinition<'_>> = Btree::new(
+                 Some(page),
+                 PageHint::None,
+                 self.transaction_guard.clone(),
+@@ -2322,7 +2325,7 @@
+             .unwrap()
+         {
+             eprintln!("System tree:");
+-            let master_tree: Btree<&str, InternalTableDefinition> = Btree::new(
++            let master_tree: Btree<&str, RawTableDefinition<'_>> = Btree::new(
+                 Some(page),
+                 PageHint::None,
+                 self.transaction_guard.clone(),
+--- a/vendor/redb-4.2.0/src/tree_store/allocator_state.rs
++++ b/vendor/redb-4.2.0/src/tree_store/allocator_state.rs
+@@ -3,6 +3,7 @@
+ use super::btree_base::{BRANCH, LEAF, MAX_BTREE_DEPTH};
+ use super::{BtreeHeader, Page, PageHint, PageNumber, PageResolver};
+ use crate::transactions::AllocatorStateKey;
++use crate::tree_store::page_store::PageImpl;
+ use crate::{Result, StorageError};
+ use core::mem::size_of;
+ 
+@@ -65,7 +66,7 @@
+ 
+ fn validate_page(
+     page_number: PageNumber,
+-    resolver: &PageResolver,
++    resolve: &mut impl FnMut(PageNumber) -> Result<PageImpl>,
+     path: &mut [Option<PageNumber>; MAX_BTREE_DEPTH],
+     depth: usize,
+     previous: &mut Option<AllocatorStateKey>,
+@@ -76,7 +77,7 @@
+         return Err(malformed());
+     }
+     path[depth] = Some(page_number);
+-    let page = resolver.get_page(page_number, PageHint::None)?;
++    let page = resolve(page_number)?;
+     let bytes = page.memory();
+     let prefix = bytes.get(..4).ok_or_else(malformed)?;
+     let count = usize::from(u16::from_le_bytes([prefix[2], prefix[3]]));
+@@ -110,6 +111,10 @@
+             let raw_children = bytes
+                 .get(children_start..keys_start)
+                 .ok_or_else(malformed)?;
++            // Reject any noncanonical pointer before visiting the first child.
++            for raw in raw_children.chunks_exact(PageNumber::serialized_size()) {
++                PageNumber::from_le_bytes(raw.try_into().map_err(|_| malformed())?)?;
++            }
+             let mut lower = range.lower_exclusive;
+             for (index, raw) in raw_children
+                 .chunks_exact(PageNumber::serialized_size())
+@@ -120,10 +125,10 @@
+                 } else {
+                     range.upper_inclusive
+                 };
+-                let child = PageNumber::from_le_bytes(raw.try_into().map_err(|_| malformed())?);
++                let child = PageNumber::from_le_bytes(raw.try_into().map_err(|_| malformed())?)?;
+                 validate_page(
+                     child,
+-                    resolver,
++                    resolve,
+                     path,
+                     depth + 1,
+                     previous,
+@@ -151,7 +156,7 @@
+     if let Some(root) = root {
+         validate_page(
+             root.root,
+-            resolver,
++            &mut |page| resolver.get_page(page, PageHint::None),
+             &mut path,
+             0,
+             &mut previous,
+@@ -192,7 +197,7 @@
+         if let Some(root) = root {
+             validate_page(
+                 root.root,
+-                resolver,
++                &mut |page| resolver.get_page(page, PageHint::None),
+                 &mut path,
+                 0,
+                 &mut previous,
+@@ -301,4 +306,93 @@
+             Err(StorageError::Corrupted(_))
+         ));
+     }
+-}
++
++    #[test]
++    fn allocator_root_and_entire_child_vector_reject_aliases_before_target_read_or_record() {
++        let mem = Arc::new(
++            TransactionalMemory::new(
++                Box::new(InMemoryBackend::new()),
++                crate::test_admission(),
++                true,
++                4096,
++                None,
++                0,
++            )
++            .unwrap(),
++        );
++        mem.reset_allocator_state().unwrap();
++        let allocator = PageAllocator::new(mem.clone(), AllocationPolicy::Default);
++        let allocated = PageTracker::new_tracking();
++        let mut left = allocator.allocate(4096, &allocated).unwrap();
++        let bytes = leaf([3, 0, 0, 0, 0], &[]);
++        left.memory_mut()[..bytes.len()].copy_from_slice(&bytes);
++        let left_number = left.get_page_number();
++        drop(left);
++        let mut right = allocator.allocate(4096, &allocated).unwrap();
++        let bytes = leaf([5, 0, 0, 0, 0], &[0; 8]);
++        right.memory_mut()[..bytes.len()].copy_from_slice(&bytes);
++        let right_number = right.get_page_number();
++        drop(right);
++        let mut branch = allocator.allocate(4096, &allocated).unwrap();
++        branch.memory_mut().fill(0);
++        branch.memory_mut()[0] = BRANCH;
++        branch.memory_mut()[2..4].copy_from_slice(&1_u16.to_le_bytes());
++        branch.memory_mut()[40..48].copy_from_slice(&left_number.to_le_bytes());
++        branch.memory_mut()[48..56].copy_from_slice(&right_number.to_le_bytes());
++        branch.memory_mut()[56..61].copy_from_slice(&[3, 0, 0, 0, 0]);
++        let number = branch.get_page_number();
++        let original = branch.memory().to_vec();
++        drop(branch);
++        let resolver = allocator.resolver();
++        let before_allocated = mem.count_allocated_pages().unwrap();
++        let read = |root_bytes: [u8; 8]| {
++            let mut reads = Vec::new();
++            let mut records = 0;
++            let result = PageNumber::from_le_bytes(root_bytes).and_then(|root| {
++                validate_page(
++                    root,
++                    &mut |page| {
++                        reads.push(page);
++                        resolver.get_page(page, PageHint::None)
++                    },
++                    &mut [None; MAX_BTREE_DEPTH],
++                    0,
++                    &mut None,
++                    &mut |_, _| {
++                        records += 1;
++                        Ok(())
++                    },
++                    KeyRange::default(),
++                )
++            });
++            (result, reads, records)
++        };
++        let (result, reads, records) = read(number.to_le_bytes());
++        result.unwrap();
++        assert_eq!(reads, [number, left_number, right_number]);
++        assert_eq!(records, 2);
++        for bit in 40..59 {
++            let raw = u64::from_le_bytes(number.to_le_bytes()) | (1_u64 << bit);
++            let (result, reads, records) = read(raw.to_le_bytes());
++            assert!(matches!(result, Err(StorageError::Corrupted(_))));
++            assert!(reads.is_empty());
++            assert_eq!(records, 0);
++        }
++        for index in 0..2 {
++            let mut branch = allocator.get_page_mut(number).unwrap();
++            branch.memory_mut().copy_from_slice(&original);
++            branch.memory_mut()[40 + index * 8 + 5] |= 1;
++            let malformed = branch.memory().to_vec();
++            drop(branch);
++            let (result, reads, records) = read(number.to_le_bytes());
++            assert!(matches!(result, Err(StorageError::Corrupted(_))));
++            assert_eq!(reads, [number]);
++            assert_eq!(records, 0);
++            assert_eq!(mem.count_allocated_pages().unwrap(), before_allocated);
++            assert_eq!(
++                allocator.get_page(number, PageHint::None).unwrap().memory(),
++                malformed
++            );
++        }
++    }
++}
+--- a/vendor/redb-4.2.0/src/tree_store/btree.rs
++++ b/vendor/redb-4.2.0/src/tree_store/btree.rs
+@@ -122,15 +122,18 @@
+                 "Btree exceeded maximum depth".to_string(),
+             ));
+         }
++        let page = self.mem.get_page(path.page_number(), self.hint)?;
++        if page.memory()[0] == BRANCH {
++            BranchAccessor::new(&page, self.key_width)?;
++        }
+         visitor(&path)?;
+-        let page = self.mem.get_page(path.page_number(), self.hint)?;
+ 
+         match page.memory()[0] {
+             LEAF => {
+                 // No-op
+             }
+             BRANCH => {
+-                let accessor = BranchAccessor::new(&page, self.key_width);
++                let accessor = BranchAccessor::new(&page, self.key_width)?;
+                 for i in 0..accessor.count_children() {
+                     let child_page = accessor.child_page(i).unwrap();
+                     if path.parents().contains(&child_page) || path.page_number() == child_page {
+@@ -206,7 +209,7 @@
+         match page.memory()[0] {
+             LEAF => leaf_checksum(&page, self.key_width, self.value_width),
+             BRANCH => {
+-                let accessor = BranchAccessor::new(&page, self.key_width);
++                let accessor = BranchAccessor::new(&page, self.key_width)?;
+                 let mut new_children = vec![];
+                 for i in 0..accessor.count_children() {
+                     let child_page = accessor.child_page(i).unwrap();
+@@ -219,7 +222,7 @@
+                     }
+                 }
+ 
+-                let mut mutator = BranchMutator::new(page.memory_mut());
++                let mut mutator = BranchMutator::new(page.memory_mut())?;
+                 for (child_index, child_page, child_checksum) in new_children.into_iter().flatten()
+                 {
+                     mutator.write_child_page(child_index, child_page, child_checksum);
+@@ -270,7 +273,7 @@
+                 visitor(LeafPageMut::new(page, self.key_width, self.value_width))?;
+             }
+             BRANCH => {
+-                let accessor = BranchAccessor::new(&page, self.key_width);
++                let accessor = BranchAccessor::new(&page, self.key_width)?;
+                 for i in 0..accessor.count_children() {
+                     let child_page = accessor.child_page(i).unwrap();
+                     if self.page_allocator.uncommitted(child_page) {
+@@ -288,6 +291,9 @@
+         &mut self,
+         relocation_map: &PageNumberHashMap<PageNumber>,
+     ) -> Result<bool> {
++        if let Some(root) = self.get_root() {
++            self.preflight_relocation(root.root, relocation_map, &mut [None; MAX_BTREE_DEPTH], 0)?;
++        }
+         if let Some(root) = self.get_root()
+             && let Some((new_root, new_checksum)) =
+                 self.relocate_helper(root.root, relocation_map)?
+@@ -298,18 +304,51 @@
+         Ok(false)
+     }
+ 
++    pub(super) fn preflight_relocation(
++        &self,
++        page_number: PageNumber,
++        relocation_map: &PageNumberHashMap<PageNumber>,
++        path: &mut [Option<PageNumber>; MAX_BTREE_DEPTH],
++        depth: usize,
++    ) -> Result {
++        if !relocation_map.contains_key(&page_number) {
++            return Ok(());
++        }
++        if depth >= path.len() || path[..depth].contains(&Some(page_number)) {
++            return Err(StorageError::Corrupted(
++                "Invalid relocation path".to_string(),
++            ));
++        }
++        path[depth] = Some(page_number);
++        let page = self.page_allocator.get_page(page_number, PageHint::None)?;
++        if page.memory()[0] == BRANCH {
++            let accessor = BranchAccessor::new(&page, self.key_width)?;
++            for index in 0..accessor.count_children() {
++                self.preflight_relocation(
++                    accessor.child_page(index).unwrap(),
++                    relocation_map,
++                    path,
++                    depth + 1,
++                )?;
++            }
++        }
++        Ok(())
++    }
++
+     // Relocates the given subtree to the pages specified in relocation_map
+     fn relocate_helper(
+         &mut self,
+         page_number: PageNumber,
+         relocation_map: &PageNumberHashMap<PageNumber>,
+     ) -> Result<Option<(PageNumber, Checksum)>> {
+-        let old_page = self.page_allocator.get_page(page_number, PageHint::None)?;
+-        let mut new_page = if let Some(new_page_number) = relocation_map.get(&page_number) {
+-            self.page_allocator.get_page_mut(*new_page_number)?
+-        } else {
++        let Some(new_page_number) = relocation_map.get(&page_number) else {
+             return Ok(None);
+         };
++        let old_page = self.page_allocator.get_page(page_number, PageHint::None)?;
++        if old_page.memory()[0] == BRANCH {
++            BranchAccessor::new(&old_page, self.key_width)?;
++        }
++        let mut new_page = self.page_allocator.get_page_mut(*new_page_number)?;
+         new_page.memory_mut().copy_from_slice(old_page.memory());
+ 
+         let node_mem = old_page.memory();
+@@ -318,8 +357,8 @@
+                 // No-op
+             }
+             BRANCH => {
+-                let accessor = BranchAccessor::new(&old_page, self.key_width);
+-                let mut mutator = BranchMutator::new(new_page.memory_mut());
++                let accessor = BranchAccessor::new(&old_page, self.key_width)?;
++                let mut mutator = BranchMutator::new(new_page.memory_mut())?;
+                 for i in 0..accessor.count_children() {
+                     let child = accessor.child_page(i).unwrap();
+                     if let Some((new_child, new_checksum)) =
+@@ -573,6 +612,9 @@
+         &mut self,
+         key: &K::SelfType<'_>,
+     ) -> Result<Option<AccessGuardMut<'_, V>>> {
++        // Validate every branch on the selected path before copy-on-write can
++        // replace an ancestor or allocate a descendant buffer.
++        drop(self.get(key)?);
+         if let Some(ref mut root) = self.root {
+             let key_bytes = K::as_bytes(key);
+             let query = key_bytes.as_ref();
+@@ -633,7 +675,7 @@
+             }
+             BRANCH => {
+                 let (child_index, child_page) = {
+-                    let accessor = BranchAccessor::new(&page, K::fixed_width());
++                    let accessor = BranchAccessor::new(&page, K::fixed_width())?;
+                     accessor.child_for_key::<K>(query)
+                 };
+                 let child_page_mut = if self.page_allocator.uncommitted(child_page) {
+@@ -655,7 +697,7 @@
+                     drop(old_child_page);
+                     freed_pages.push(child_page);
+ 
+-                    let mut mutator = BranchMutator::new(page.memory_mut());
++                    let mut mutator = BranchMutator::new(page.memory_mut())?;
+                     mutator.write_child_page(child_index, new_page.get_page_number(), DEFERRED);
+                     new_page
+                 };
+@@ -958,6 +1000,7 @@
+                 }
+             }
+             BRANCH => {
++                BranchAccessor::new(&page, self.fixed_key_size)?;
+                 if let Ok(computed) = branch_checksum(&page, self.fixed_key_size) {
+                     if expected_checksum != computed {
+                         return Ok(false);
+@@ -965,7 +1008,7 @@
+                 } else {
+                     return Ok(false);
+                 }
+-                let accessor = BranchAccessor::new(&page, self.fixed_key_size);
++                let accessor = BranchAccessor::new(&page, self.fixed_key_size)?;
+                 for i in 0..accessor.count_children() {
+                     if !self.verify_checksum_helper(
+                         accessor.child_page(i).unwrap(),
+@@ -1086,7 +1129,7 @@
+                     }));
+                 }
+                 BRANCH => {
+-                    let accessor = BranchAccessor::new(page, K::fixed_width());
++                    let accessor = BranchAccessor::new(page, K::fixed_width())?;
+                     accessor.child_for_key::<K>(query).1
+                 }
+                 _ => unreachable!(),
+@@ -1131,7 +1174,7 @@
+                 Ok(Some((key_guard, value_guard)))
+             }
+             BRANCH => {
+-                let accessor = BranchAccessor::new(&page, K::fixed_width());
++                let accessor = BranchAccessor::new(&page, K::fixed_width())?;
+                 let child_page = accessor.child_page(0).unwrap();
+                 self.first_helper(self.mem.get_page(child_page, self.hint)?, depth + 1)
+             }
+@@ -1171,7 +1214,7 @@
+                 Ok(Some((key_guard, value_guard)))
+             }
+             BRANCH => {
+-                let accessor = BranchAccessor::new(&page, K::fixed_width());
++                let accessor = BranchAccessor::new(&page, K::fixed_width())?;
+                 let child_page = accessor.child_page(accessor.count_children() - 1).unwrap();
+                 self.last_helper(self.mem.get_page(child_page, self.hint)?, depth + 1)
+             }
+@@ -1236,7 +1279,7 @@
+                             eprint!("]");
+                         }
+                         BRANCH => {
+-                            let accessor = BranchAccessor::new(&page, K::fixed_width());
++                            let accessor = BranchAccessor::new(&page, K::fixed_width())?;
+                             for i in 0..accessor.count_children() {
+                                 let child = accessor.child_page(i).unwrap();
+                                 next_children.push(self.mem.get_page(child, self.hint)?);
+@@ -1310,7 +1353,7 @@
+             })
+         }
+         BRANCH => {
+-            let accessor = BranchAccessor::new(&page, fixed_key_size);
++            let accessor = BranchAccessor::new(&page, fixed_key_size)?;
+             let mut max_child_height = 0;
+             let mut leaf_pages = 0;
+             let mut branch_pages = 1;
+@@ -1348,21 +1391,9 @@
+ 
+     #[test]
+     fn test_page_path_cycle_detection() {
+-        let p1 = PageNumber {
+-            region: 0,
+-            page_index: 1,
+-            page_order: 0,
+-        };
+-        let p2 = PageNumber {
+-            region: 0,
+-            page_index: 2,
+-            page_order: 0,
+-        };
+-        let p3 = PageNumber {
+-            region: 0,
+-            page_index: 3,
+-            page_order: 0,
+-        };
++        let p1 = PageNumber::new(0, 1, 0);
++        let p2 = PageNumber::new(0, 2, 0);
++        let p3 = PageNumber::new(0, 3, 0);
+ 
+         let path = PagePath::new_root(p1);
+         // No cycle yet: children p2 and p3 are clean
+@@ -1380,16 +1411,8 @@
+ 
+     #[test]
+     fn test_verify_checksum_cycle_detection() {
+-        let p1 = PageNumber {
+-            region: 0,
+-            page_index: 1,
+-            page_order: 0,
+-        };
+-        let p2 = PageNumber {
+-            region: 0,
+-            page_index: 2,
+-            page_order: 0,
+-        };
++        let p1 = PageNumber::new(0, 1, 0);
++        let p2 = PageNumber::new(0, 2, 0);
+ 
+         let visited = [p1, p2];
+ 
+@@ -1398,11 +1421,7 @@
+         assert!(visited.contains(&p2));
+ 
+         // p3 is not in the active path, so no cycle
+-        let p3 = PageNumber {
+-            region: 0,
+-            page_index: 3,
+-            page_order: 0,
+-        };
++        let p3 = PageNumber::new(0, 3, 0);
+         assert!(!visited.contains(&p3));
+     }
+ 
+@@ -1493,3 +1512,65 @@
+         );
+     }
+ }
++
++#[cfg(test)]
++mod canonical_relocation_tests {
++    use super::*;
++    use crate::tree_store::{AllocationPolicy, InMemoryBackend, TransactionalMemory};
++    #[test]
++    fn alias_in_later_branch_pointer_precedes_relocation_copy_and_checksum_walk() {
++        let mem = Arc::new(
++            TransactionalMemory::new(
++                Box::new(InMemoryBackend::new()),
++                crate::test_admission(),
++                true,
++                4096,
++                None,
++                0,
++            )
++            .unwrap(),
++        );
++        mem.reset_allocator_state().unwrap();
++        let allocator = PageAllocator::new(mem.clone(), AllocationPolicy::Default);
++        let tracker = PageTracker::new_tracking();
++        let mut source = allocator.allocate(4096, &tracker).unwrap();
++        source.memory_mut().fill(0);
++        source.memory_mut()[0] = BRANCH;
++        source.memory_mut()[2..4].copy_from_slice(&1_u16.to_le_bytes());
++        source.memory_mut()[40..48].copy_from_slice(&PageNumber::new(0, 0, 0).to_le_bytes());
++        source.memory_mut()[48..56].copy_from_slice(&(1_u64 << 40).to_le_bytes());
++        let source_number = source.get_page_number();
++        drop(source);
++        let mut target = allocator.allocate(4096, &tracker).unwrap();
++        target.memory_mut().fill(0xa5);
++        let target_number = target.get_page_number();
++        let before = target.memory().to_vec();
++        drop(target);
++        let root = Some(BtreeHeader::new(source_number, 0, 2));
++        let freed = Arc::new(Mutex::new(vec![]));
++        let mut tree =
++            UntypedBtreeMut::new(root, allocator.clone(), freed.clone(), Some(8), Some(8));
++        let mut map = PageNumberHashMap::default();
++        map.insert(source_number, target_number);
++        let allocated = mem.count_allocated_pages().unwrap();
++        assert!(matches!(
++            tree.relocate(&map),
++            Err(StorageError::Corrupted(_))
++        ));
++        assert_eq!(tree.get_root(), root);
++        assert!(freed.lock().unwrap().is_empty());
++        assert_eq!(mem.count_allocated_pages().unwrap(), allocated);
++        assert_eq!(
++            allocator
++                .get_page(target_number, PageHint::None)
++                .unwrap()
++                .memory(),
++            before
++        );
++        let raw = RawBtree::new(root, Some(8), Some(8), allocator.resolver(), PageHint::None);
++        assert!(matches!(
++            raw.verify_checksum(),
++            Err(StorageError::Corrupted(_))
++        ));
++    }
++}
+--- a/vendor/redb-4.2.0/src/tree_store/btree_base.rs
++++ b/vendor/redb-4.2.0/src/tree_store/btree_base.rs
+@@ -62,7 +62,7 @@
+     page: &T,
+     fixed_key_size: Option<usize>,
+ ) -> Result<Checksum, StorageError> {
+-    let accessor = BranchAccessor::new(page, fixed_key_size);
++    let accessor = BranchAccessor::new(page, fixed_key_size)?;
+     let last_key = accessor.num_keys().checked_sub(1).ok_or_else(|| {
+         StorageError::Corrupted(format!(
+             "Branch page {:?} corrupted. Number of keys is zero",
+@@ -108,9 +108,9 @@
+         PageNumber::serialized_size() + size_of::<Checksum>() + size_of::<u64>()
+     }
+ 
+-    pub(crate) fn from_le_bytes(bytes: [u8; Self::serialized_size()]) -> Self {
++    pub(crate) fn from_le_bytes(bytes: [u8; Self::serialized_size()]) -> Result<Self> {
+         let root =
+-            PageNumber::from_le_bytes(bytes[..PageNumber::serialized_size()].try_into().unwrap());
++            PageNumber::from_le_bytes(bytes[..PageNumber::serialized_size()].try_into().unwrap())?;
+         let mut offset = PageNumber::serialized_size();
+         let checksum = Checksum::from_le_bytes(
+             bytes[offset..(offset + size_of::<Checksum>())]
+@@ -124,11 +124,11 @@
+                 .unwrap(),
+         );
+ 
+-        Self {
++        Ok(Self {
+             root,
+             checksum,
+             length,
+-        }
++        })
+     }
+ 
+     pub(crate) fn to_le_bytes(self) -> [u8; Self::serialized_size()] {
+@@ -324,6 +324,9 @@
+ 
+     /// Replace the stored value
+     pub fn insert<'v>(&mut self, value: impl Borrow<V::SelfType<'v>>) -> Result<()> {
++        if let Some((parent, _)) = &self.parent {
++            BranchAccessor::new(parent, self.key_width)?;
++        }
+         let value_bytes = V::as_bytes(value.borrow());
+ 
+         // Enforce the same size limits as the other write paths (Table::insert, the entry() API).
+@@ -373,7 +376,7 @@
+ 
+             // Update parent branch page if it exists, otherwise update root
+             if let Some((ref mut parent_page, parent_entry_index)) = self.parent {
+-                let mut mutator = BranchMutator::new(parent_page.memory_mut());
++                let mut mutator = BranchMutator::new(parent_page.memory_mut())?;
+                 mutator.write_child_page(parent_entry_index, new_page.get_page_number(), DEFERRED);
+             } else {
+                 self.root_ref.root = new_page.get_page_number();
+@@ -1290,7 +1293,7 @@
+             return false;
+         }
+         // If this is a large page, only allow in-place appending to avoid write amplification
+-        if page.get_page_number().page_order > 0 && position < accessor.num_pairs() {
++        if page.get_page_number().page_order() > 0 && position < accessor.num_pairs() {
+             return false;
+         }
+         let remaining = page.memory().len() - accessor.total_length();
+@@ -1777,6 +1780,27 @@
+ }
+ 
+ // Provides a simple zero-copy way to access a branch page
++// The complete borrowed child vector is checked before any child is accessed
++// or copied. The accessor's immutable page borrow retains this proof.
++fn validate_branch_children(bytes: &[u8]) -> Result<usize> {
++    let malformed = || StorageError::Corrupted("Noncanonical branch children".to_string());
++    if bytes.len() < 8 || bytes[0] != BRANCH {
++        return Err(malformed());
++    }
++    let keys = u16::from_le_bytes(bytes[2..4].try_into().unwrap()) as usize;
++    let children = keys + 1;
++    let start = 8 + size_of::<Checksum>() * children;
++    let end = start + PageNumber::serialized_size() * children;
++    for raw in bytes
++        .get(start..end)
++        .ok_or_else(malformed)?
++        .chunks_exact(PageNumber::serialized_size())
++    {
++        PageNumber::from_le_bytes(raw.try_into().unwrap())?;
++    }
++    Ok(keys)
++}
++
+ pub(super) struct BranchAccessor<'a: 'b, 'b, T: Page + 'a> {
+     page: &'b T,
+     num_keys: usize,
+@@ -1785,15 +1809,14 @@
+ }
+ 
+ impl<'a: 'b, 'b, T: Page + 'a> BranchAccessor<'a, 'b, T> {
+-    pub(crate) fn new(page: &'b T, fixed_key_size: Option<usize>) -> Self {
+-        debug_assert_eq!(page.memory()[0], BRANCH);
+-        let num_keys = u16::from_le_bytes(page.memory()[2..4].try_into().unwrap()) as usize;
+-        BranchAccessor {
++    pub(crate) fn new(page: &'b T, fixed_key_size: Option<usize>) -> Result<Self> {
++        let num_keys = validate_branch_children(page.memory())?;
++        Ok(BranchAccessor {
+             page,
+             num_keys,
+             fixed_key_size,
+             _page_lifetime: PhantomData,
+-        }
++        })
+     }
+ 
+     #[cfg(not(redb_no_std))]
+@@ -1906,11 +1929,14 @@
+ 
+         let offset =
+             8 + size_of::<Checksum>() * self.count_children() + PageNumber::serialized_size() * n;
+-        Some(PageNumber::from_le_bytes(
+-            self.page.memory()[offset..(offset + PageNumber::serialized_size())]
+-                .try_into()
+-                .unwrap(),
+-        ))
++        Some(
++            PageNumber::from_le_bytes(
++                self.page.memory()[offset..(offset + PageNumber::serialized_size())]
++                    .try_into()
++                    .unwrap(),
++            )
++            .expect("immutable child vector validated by BranchAccessor::new"),
++        )
+     }
+ 
+     fn num_keys(&self) -> usize {
+@@ -2222,9 +2248,9 @@
+ }
+ 
+ impl<'b> BranchMutator<'b> {
+-    pub(crate) fn new(page: &'b mut [u8]) -> Self {
+-        assert_eq!(page[0], BRANCH);
+-        Self { page }
++    pub(crate) fn new(page: &'b mut [u8]) -> Result<Self> {
++        validate_branch_children(page)?;
++        Ok(Self { page })
+     }
+ 
+     fn num_keys(&self) -> usize {
+@@ -2309,7 +2335,7 @@
+         assert_eq!(accessor.num_pairs(), MAX_PAIRS);
+         // The page must be a large (order > 0) page with free space remaining, so that
+         // only the pair count limit can cause the append to be rejected
+-        assert!(page.get_page_number().page_order > 0);
++        assert!(page.get_page_number().page_order() > 0);
+         assert!(page.memory().len() - accessor.total_length() > 100);
+ 
+         assert!(!LeafMutator::sufficient_insert_inplace_space(
+@@ -2329,7 +2355,7 @@
+         let allocated_pages = PageTracker::new_tracking();
+         let keys = ascending_keys(MAX_PAIRS - 1);
+         let mut page = build_leaf(&page_allocator, &allocated_pages, &keys);
+-        assert!(page.get_page_number().page_order > 0);
++        assert!(page.get_page_number().page_order() > 0);
+ 
+         let key = ((MAX_PAIRS - 1) as u64).to_le_bytes();
+         assert!(LeafMutator::sufficient_insert_inplace_space(
+@@ -2434,8 +2460,8 @@
+         assert!(builder.should_split());
+         let (page1, _, page2) = builder.build_split().unwrap();
+ 
+-        let accessor1 = BranchAccessor::new(&page1, u64::fixed_width());
+-        let accessor2 = BranchAccessor::new(&page2, u64::fixed_width());
++        let accessor1 = BranchAccessor::new(&page1, u64::fixed_width()).unwrap();
++        let accessor2 = BranchAccessor::new(&page2, u64::fixed_width()).unwrap();
+         assert_eq!(
+             accessor1.count_children() + accessor2.count_children(),
+             num_children
+@@ -2444,4 +2470,53 @@
+         assert!(accessor1.count_children() - 1 <= MAX_PAIRS);
+         assert!(accessor2.count_children() - 1 <= MAX_PAIRS);
+     }
+-}
++
++    #[test]
++    fn branch_proof_rejects_every_child_before_exposing_or_mutating_vector() {
++        struct RawPage(Vec<u8>);
++        impl Page for RawPage {
++            fn memory(&self) -> &[u8] {
++                &self.0
++            }
++            fn get_page_number(&self) -> PageNumber {
++                PageNumber::new(0, 7, 0)
++            }
++        }
++        let children = [
++            PageNumber::new(0, 1, 0),
++            PageNumber::new(1, 2, 1),
++            PageNumber::new(2, 0, 20),
++        ];
++        let mut bytes = vec![0; 8 + 24 * children.len() + 16];
++        bytes[0] = BRANCH;
++        bytes[2..4].copy_from_slice(&2_u16.to_le_bytes());
++        for (index, child) in children.iter().enumerate() {
++            bytes[56 + index * 8..64 + index * 8].copy_from_slice(&child.to_le_bytes());
++        }
++        let good = RawPage(bytes.clone());
++        let (accessor, allocations) =
++            crate::admission::observe_test_allocations(|| BranchAccessor::new(&good, Some(8)));
++        assert_eq!(allocations, 0);
++        let accessor = accessor.unwrap();
++        for (index, child) in children.iter().enumerate() {
++            assert_eq!(accessor.child_page(index), Some(*child));
++        }
++        for (index, child) in children.iter().enumerate() {
++            for bit in (40..59).chain((20 - u32::from(child.page_order()))..20) {
++                let mut bad = bytes.clone();
++                let alias = u64::from_le_bytes(child.to_le_bytes()) | (1_u64 << bit);
++                bad[56 + index * 8..64 + index * 8].copy_from_slice(&alias.to_le_bytes());
++                let page = RawPage(bad.clone());
++                assert!(matches!(
++                    BranchAccessor::new(&page, Some(8)),
++                    Err(StorageError::Corrupted(_))
++                ));
++                assert!(matches!(
++                    BranchMutator::new(&mut bad),
++                    Err(StorageError::Corrupted(_))
++                ));
++                assert_eq!(bad, page.0);
++            }
++        }
++    }
++}
+--- a/vendor/redb-4.2.0/src/tree_store/btree_cursor.rs
++++ b/vendor/redb-4.2.0/src/tree_store/btree_cursor.rs
+@@ -44,16 +44,25 @@
+         &self,
+         direction: Direction,
+         fixed_key_width: Option<usize>,
+-    ) -> Option<(usize, PageNumber)> {
+-        let accessor = BranchAccessor::new(&self.page, fixed_key_width);
++    ) -> Result<Option<(usize, PageNumber)>> {
++        let accessor = BranchAccessor::new(&self.page, fixed_key_width)?;
+         let child_index = match direction {
+             Direction::Next => {
+                 let next = self.child_index + 1;
+-                (next < accessor.count_children()).then_some(next)?
+-            }
+-            Direction::Previous => self.child_index.checked_sub(1)?,
++                if next >= accessor.count_children() {
++                    return Ok(None);
++                }
++                next
++            }
++            Direction::Previous => match self.child_index.checked_sub(1) {
++                Some(index) => index,
++                None => return Ok(None),
++            },
+         };
+-        Some((child_index, accessor.child_page(child_index).unwrap()))
++        Ok(Some((
++            child_index,
++            accessor.child_page(child_index).unwrap(),
++        )))
+     }
+ }
+ 
+@@ -161,7 +170,7 @@
+                 });
+             }
+             BRANCH => {
+-                let accessor = BranchAccessor::new(&page, K::fixed_width());
++                let accessor = BranchAccessor::new(&page, K::fixed_width())?;
+                 let child_index = child_to_visit::<K>(&accessor, position);
+                 (child_index, accessor.child_page(child_index).unwrap())
+             }
+@@ -187,7 +196,7 @@
+ {
+     for index in (0..path.len()).rev() {
+         if let Some((child_index, child_page)) =
+-            path[index].adjacent_child(direction, K::fixed_width())
++            path[index].adjacent_child(direction, K::fixed_width())?
+         {
+             path[index].child_index = child_index;
+             path.truncate(index + 1);
+@@ -867,10 +876,11 @@
+ 
+     // Whether the run's parent branch has another child to consume in the
+     // scan direction.
+-    fn run_parent_has_more_children(&self, direction: Direction) -> bool {
+-        self.run_parent_frame()
+-            .adjacent_child(direction, K::fixed_width())
+-            .is_some()
++    fn run_parent_has_more_children(&self, direction: Direction) -> Result<bool> {
++        Ok(self
++            .run_parent_frame()
++            .adjacent_child(direction, K::fixed_width())?
++            .is_some())
+     }
+ 
+     fn step_to_adjacent_leaf(&mut self, direction: Direction) -> Result<bool> {
+@@ -1299,7 +1309,7 @@
+                 let resume_key = self.flush_removed_entries(direction)?;
+                 return Ok(LeafCloseOutcome::Flushed { resume_key });
+             }
+-            let keeps_run_open = packs && self.run_parent_has_more_children(direction);
++            let keeps_run_open = packs && self.run_parent_has_more_children(direction)?;
+             let removed_indexes = self.take_removals_ascending();
+             self.append_leaf_to_run(direction, &removed_indexes);
+             if keeps_run_open {
+@@ -2996,3 +3006,47 @@
+         ));
+     }
+ }
++
++#[cfg(test)]
++mod canonical_cursor_tests {
++    use super::*;
++    use crate::tree_store::{AllocationPolicy, InMemoryBackend, TransactionalMemory};
++    #[test]
++    fn both_cursor_directions_preflight_last_child_before_any_child_resolution() {
++        let mem = Arc::new(
++            TransactionalMemory::new(
++                Box::new(InMemoryBackend::new()),
++                crate::test_admission(),
++                true,
++                4096,
++                None,
++                0,
++            )
++            .unwrap(),
++        );
++        mem.reset_allocator_state().unwrap();
++        let allocator = PageAllocator::new(mem, AllocationPolicy::Default);
++        let tracker = PageTracker::new_tracking();
++        let mut branch = allocator.allocate(4096, &tracker).unwrap();
++        branch.memory_mut().fill(0);
++        branch.memory_mut()[0] = BRANCH;
++        branch.memory_mut()[2..4].copy_from_slice(&1_u16.to_le_bytes());
++        branch.memory_mut()[40..48].copy_from_slice(&PageNumber::new(0, 0, 0).to_le_bytes());
++        branch.memory_mut()[48..56].copy_from_slice(&(1_u64 << 40).to_le_bytes());
++        let number = branch.get_page_number();
++        drop(branch);
++        for position in [Position::Start, Position::End] {
++            let page = allocator.get_page(number, PageHint::None).unwrap();
++            let mut children_read = 0;
++            let mut path = Vec::new();
++            let result =
++                descend_to_position::<u64, u64, _>(page, position, &mut path, &mut |number| {
++                    children_read += 1;
++                    allocator.get_page(number, PageHint::None)
++                });
++            assert!(matches!(result, Err(StorageError::Corrupted(_))));
++            assert_eq!(children_read, 0);
++            assert!(path.is_empty());
++        }
++    }
++}
+--- a/vendor/redb-4.2.0/src/tree_store/btree_iters.rs
++++ b/vendor/redb-4.2.0/src/tree_store/btree_iters.rs
+@@ -87,7 +87,13 @@
+         match page.memory()[0] {
+             LEAF => {}
+             BRANCH => {
+-                let accessor = BranchAccessor::new(&page, self.fixed_key_size);
++                let accessor = match BranchAccessor::new(&page, self.fixed_key_size) {
++                    Ok(accessor) => accessor,
++                    Err(error) => {
++                        self.pending.clear();
++                        return Some(Err(error));
++                    }
++                };
+                 // Push in reverse so children are popped left-to-right.
+                 for child in (0..accessor.count_children()).rev() {
+                     self.pending.push(accessor.child_page(child).unwrap());
+--- a/vendor/redb-4.2.0/src/tree_store/btree_mutator.rs
++++ b/vendor/redb-4.2.0/src/tree_store/btree_mutator.rs
+@@ -119,6 +119,29 @@
+             _value_type: PhantomData,
+             _lifetime: PhantomData,
+         }
++    }
++
++    // Deletion may merge the selected child into its immediate sibling. Check
++    // that sibling's complete pointer vector before changing the selected child.
++    fn preflight_delete_frame(&self, page: &PageImpl, child_index: usize) -> Result {
++        let accessor = BranchAccessor::new(page, K::fixed_width())?;
++        if accessor.count_children() > 1 {
++            let sibling = if child_index == 0 { 1 } else { child_index - 1 };
++            let sibling_page = self
++                .page_allocator
++                .get_page(accessor.child_page(sibling).unwrap(), PageHint::None)?;
++            if sibling_page.memory()[0] == BRANCH {
++                BranchAccessor::new(&sibling_page, K::fixed_width())?;
++            }
++        }
++        Ok(())
++    }
++
++    fn preflight_delete_path(&self, path: &[(PageImpl, usize)]) -> Result {
++        for (page, index) in path {
++            self.preflight_delete_frame(page, *index)?;
++        }
++        Ok(())
+     }
+ 
+     fn conditional_free(&mut self, page_number: PageNumber) {
+@@ -221,6 +244,7 @@
+         path: Vec<(PageImpl, usize)>,
+         position: usize,
+     ) -> Result<(AccessGuard<'a, K>, AccessGuard<'a, V>)> {
++        self.preflight_delete_path(&path)?;
+         let length = self.root.expect("pop requires a root").length;
+         let (mut result, key, value) = self.delete_leaf_at_position(leaf, position, true, true)?;
+         for (page, child_index) in path.into_iter().rev() {
+@@ -245,6 +269,7 @@
+         if indexes.is_empty() {
+             return Ok(());
+         }
++        self.preflight_delete_path(&path)?;
+         let length = self.root.expect("delete requires a root").length;
+         let mut result = self.delete_leaf_indexes(leaf, indexes, allow_in_place)?;
+         for (page, child_index) in path.into_iter().rev() {
+@@ -264,6 +289,7 @@
+         mut entries: OwnedEntryBuffer,
+         removed_pairs: u64,
+     ) -> Result {
++        self.preflight_delete_path(&path)?;
+         assert!(!replaced_children.is_empty());
+         let length = self.root.expect("replace requires a root").length;
+         let (parent_page, _) = path
+@@ -271,7 +297,7 @@
+             .expect("leaf child replacement requires a parent branch");
+         let parent_page_number = parent_page.get_page_number();
+         let (mut result, removed_leaf_pages) = {
+-            let accessor = BranchAccessor::new(&parent_page, K::fixed_width());
++            let accessor = BranchAccessor::new(&parent_page, K::fixed_width())?;
+             let old_children = accessor.count_children();
+             assert!(replaced_children.end <= old_children);
+ 
+@@ -481,6 +507,11 @@
+         entries: &OwnedEntryBuffer,
+         inserted_pairs: u64,
+     ) -> Result {
++        if let Some((path, _)) = &replaced {
++            for (page, _) in path {
++                BranchAccessor::new(page, K::fixed_width())?;
++            }
++        }
+         assert!(entries.num_pairs() > 0);
+         assert_eq!(replaced.is_some(), self.root.is_some());
+         let length = self.root.map_or(0, |header| header.length);
+@@ -502,7 +533,7 @@
+                 // uncommitted pages keeps repeated flushes from rebuilding
+                 // the whole spine.
+                 if nodes.len() == 1 {
+-                    let accessor = BranchAccessor::new(&page, K::fixed_width());
++                    let accessor = BranchAccessor::new(&page, K::fixed_width())?;
+                     let stored = accessor.key(child_index);
+                     let separator = nodes[0].2.as_deref();
+                     // Exact when the node kept its subtree's original bound
+@@ -554,7 +585,7 @@
+         child_index: usize,
+         mut replacement: Vec<SplicedNode>,
+     ) -> Result<Vec<SplicedNode>> {
+-        let accessor = BranchAccessor::new(parent, K::fixed_width());
++        let accessor = BranchAccessor::new(parent, K::fixed_width())?;
+         let count = accessor.count_children();
+         assert!(child_index < count);
+         // A replacement ending in None kept the replaced subtree's original
+@@ -1013,7 +1044,7 @@
+                 }
+             }
+             BRANCH => {
+-                let accessor = BranchAccessor::new(&page, K::fixed_width());
++                let accessor = BranchAccessor::new(&page, K::fixed_width())?;
+                 let (child_index, child_page) = accessor.child_for_key::<K>(key);
+                 let child_checksum = accessor.child_checksum(child_index).unwrap();
+                 let sub_result = self.insert_helper(
+@@ -1047,7 +1078,7 @@
+                     let page_number = page.get_page_number();
+                     drop(page);
+                     let mut mutpage = self.page_allocator.get_page_mut(page_number)?;
+-                    let mut mutator = BranchMutator::new(mutpage.memory_mut());
++                    let mut mutator = BranchMutator::new(mutpage.memory_mut())?;
+                     mutator.write_child_page(
+                         child_index,
+                         sub_result.new_root,
+@@ -1070,7 +1101,7 @@
+                         .page_allocator
+                         .allocate(page.memory().len(), self.allocated)?;
+                     new_page.memory_mut().copy_from_slice(page.memory());
+-                    BranchMutator::new(new_page.memory_mut()).write_child_page(
++                    BranchMutator::new(new_page.memory_mut())?.write_child_page(
+                         child_index,
+                         sub_result.new_root,
+                         sub_result.root_checksum,
+@@ -1195,14 +1226,14 @@
+                 mutator.replace(position, value);
+             }
+             BRANCH => {
+-                let accessor = BranchAccessor::new(&page, K::fixed_width());
++                let accessor = BranchAccessor::new(&page, K::fixed_width())?;
+                 let (child_index, child_page) = accessor.child_for_key::<K>(key);
+                 self.insert_inplace_helper(
+                     self.page_allocator.get_page_mut(child_page)?,
+                     key,
+                     value,
+                 )?;
+-                let mut mutator = BranchMutator::new(page.memory_mut());
++                let mut mutator = BranchMutator::new(page.memory_mut())?;
+                 mutator.write_child_page(child_index, child_page, DEFERRED);
+             }
+             _ => unreachable!(),
+@@ -1427,9 +1458,10 @@
+     ) -> Result<(DeletionResult, Option<AccessGuard<'a, V>>)> {
+         let original_page_number = page.get_page_number();
+         let (child_index, child_page_number) = {
+-            let accessor = BranchAccessor::new(&page, K::fixed_width());
++            let accessor = BranchAccessor::new(&page, K::fixed_width())?;
+             accessor.child_for_key::<K>(key)
+         };
++        self.preflight_delete_frame(&page, child_index)?;
+         let (result, found) = self.delete_helper(
+             self.page_allocator
+                 .get_page(child_page_number, PageHint::None)?,
+@@ -1456,7 +1488,7 @@
+         child_index: usize,
+         new_child: PageNumber,
+     ) -> Result<(PageNumber, bool)> {
+-        let accessor = BranchAccessor::new(&page, K::fixed_width());
++        let accessor = BranchAccessor::new(&page, K::fixed_width())?;
+         let original_page_number = page.get_page_number();
+         let child_page_number = accessor.child_page(child_index).unwrap();
+         let child_checksum = accessor.child_checksum(child_index).unwrap();
+@@ -1471,7 +1503,7 @@
+         if self.page_allocator.uncommitted(original_page_number) {
+             drop(page);
+             let mut mutpage = self.page_allocator.get_page_mut(original_page_number)?;
+-            let mut mutator = BranchMutator::new(mutpage.memory_mut());
++            let mut mutator = BranchMutator::new(mutpage.memory_mut())?;
+             mutator.write_child_page(child_index, new_child, DEFERRED);
+             Ok((original_page_number, false))
+         } else {
+@@ -1504,7 +1536,7 @@
+             return Ok(Subtree(result_page));
+         }
+ 
+-        let accessor = BranchAccessor::new(&page, K::fixed_width());
++        let accessor = BranchAccessor::new(&page, K::fixed_width())?;
+         // Child is requesting to be merged with a sibling
+         let mut builder = BranchBuilder::new(
+             self.page_allocator,
+@@ -1656,7 +1688,7 @@
+                 let merge_with_page = self
+                     .page_allocator
+                     .get_page(accessor.child_page(merge_with).unwrap(), PageHint::None)?;
+-                let merge_with_accessor = BranchAccessor::new(&merge_with_page, K::fixed_width());
++                let merge_with_accessor = BranchAccessor::new(&merge_with_page, K::fixed_width())?;
+                 assert!(merge_with < accessor.count_children());
+                 for i in 0..accessor.count_children() {
+                     if i == child_index {
+@@ -1719,7 +1751,7 @@
+                 let merge_with_page = self
+                     .page_allocator
+                     .get_page(accessor.child_page(merge_with).unwrap(), PageHint::None)?;
+-                let merge_with_accessor = BranchAccessor::new(&merge_with_page, K::fixed_width());
++                let merge_with_accessor = BranchAccessor::new(&merge_with_page, K::fixed_width())?;
+                 assert!(merge_with < accessor.count_children());
+                 for i in 0..accessor.count_children() {
+                     if i == child_index {
+@@ -1856,7 +1888,9 @@
+ 
+     fn count_children(page_allocator: &PageAllocator, node: &SplicedNode) -> usize {
+         let page = page_allocator.get_page(node.0, PageHint::None).unwrap();
+-        BranchAccessor::new(&page, u64::fixed_width()).count_children()
++        BranchAccessor::new(&page, u64::fixed_width())
++            .unwrap()
++            .count_children()
+     }
+ 
+     // num_keys is stored as a u16. With a page large enough that the byte
+@@ -1883,7 +1917,7 @@
+         // The second page holds the stolen child and the orphan, with the
+         // stolen child's separator between them.
+         let page = page_allocator.get_page(nodes[1].0, PageHint::None).unwrap();
+-        let accessor = BranchAccessor::new(&page, u64::fixed_width());
++        let accessor = BranchAccessor::new(&page, u64::fixed_width()).unwrap();
+         assert_eq!(accessor.child_page(0).unwrap(), children[first].0);
+         assert_eq!(accessor.child_page(1).unwrap(), children[first + 1].0);
+         assert_eq!(accessor.key(0), children[first].2.as_deref());
+@@ -1901,3 +1935,88 @@
+         assert!(nodes[0].2.is_none());
+     }
+ }
++
++#[cfg(test)]
++mod canonical_deletion_tests {
++    use super::*;
++    use crate::tree_store::{AllocationPolicy, InMemoryBackend, TransactionalMemory};
++    fn leaf(allocator: &PageAllocator, tracker: &PageTracker, key: u64) -> PageNumber {
++        let bytes = key.to_le_bytes();
++        let mut builder = LeafBuilder::new(allocator, tracker, 1, Some(8), Some(8));
++        builder.push(&bytes, &bytes);
++        builder.build().unwrap().get_page_number()
++    }
++    fn branch(
++        allocator: &PageAllocator,
++        tracker: &PageTracker,
++        children: [PageNumber; 2],
++        key: u64,
++    ) -> PageNumber {
++        let bytes = key.to_le_bytes();
++        let mut builder = BranchBuilder::new(allocator, tracker, 2, Some(8));
++        builder.push_child(children[0], DEFERRED);
++        builder.push_key(&bytes);
++        builder.push_child(children[1], DEFERRED);
++        builder.build().unwrap().get_page_number()
++    }
++    #[test]
++    fn deletion_rejects_later_pointer_in_merge_sibling_before_leaf_or_allocator_mutation() {
++        let mem = Arc::new(
++            TransactionalMemory::new(
++                Box::new(InMemoryBackend::new()),
++                crate::test_admission(),
++                true,
++                4096,
++                None,
++                0,
++            )
++            .unwrap(),
++        );
++        mem.reset_allocator_state().unwrap();
++        let allocator = PageAllocator::new(mem.clone(), AllocationPolicy::Default);
++        let tracker = Arc::new(PageTracker::new_tracking());
++        let leaves = [
++            leaf(&allocator, &tracker, 0),
++            leaf(&allocator, &tracker, 1),
++            leaf(&allocator, &tracker, 2),
++            leaf(&allocator, &tracker, 3),
++        ];
++        let left = branch(&allocator, &tracker, [leaves[0], leaves[1]], 0);
++        let right = branch(&allocator, &tracker, [leaves[2], leaves[3]], 2);
++        let root_page = branch(&allocator, &tracker, [left, right], 1);
++        let mut malformed = allocator.get_page_mut(right).unwrap();
++        malformed.memory_mut()[48 + 5] |= 1;
++        drop(malformed);
++        let pages = [
++            leaves[0], leaves[1], leaves[2], leaves[3], left, right, root_page,
++        ];
++        let before: Vec<_> = pages
++            .iter()
++            .map(|p| {
++                allocator
++                    .get_page(*p, PageHint::None)
++                    .unwrap()
++                    .memory()
++                    .to_vec()
++            })
++            .collect();
++        let count = mem.count_allocated_pages().unwrap();
++        let original_root = Some(BtreeHeader::new(root_page, DEFERRED, 4));
++        let mut root = original_root;
++        let mut freed = vec![];
++        let mut helper = MutateHelper::<u64, u64>::new(&mut root, &allocator, &mut freed, &tracker);
++        assert!(matches!(
++            helper.delete(&0),
++            Err(crate::StorageError::Corrupted(_))
++        ));
++        assert_eq!(root, original_root);
++        assert!(freed.is_empty());
++        assert_eq!(mem.count_allocated_pages().unwrap(), count);
++        for (index, page) in pages.iter().enumerate() {
++            assert_eq!(
++                allocator.get_page(*page, PageHint::None).unwrap().memory(),
++                before[index]
++            );
++        }
++    }
++}
+--- a/vendor/redb-4.2.0/src/tree_store/mod.rs
++++ b/vendor/redb-4.2.0/src/tree_store/mod.rs
+@@ -36,4 +36,4 @@
+ };
+ pub use page_store::{InMemoryBackend, Savepoint};
+ pub(crate) use table_tree::{PageListMut, TableTree, TableTreeMut};
+-pub(crate) use table_tree_base::{InternalTableDefinition, TableType};
++pub(crate) use table_tree_base::{InternalTableDefinition, RawTableDefinition, TableType};
+--- a/vendor/redb-4.2.0/src/tree_store/multimap_btree.rs
++++ b/vendor/redb-4.2.0/src/tree_store/multimap_btree.rs
+@@ -10,12 +10,12 @@
+     PageNumberHashMap, PageResolver, PageTracker, RawBtree,
+ };
+ use crate::types::{Key, TypeName, Value};
++use alloc::string::ToString;
+ use alloc::sync::Arc;
+ use alloc::vec;
+ use alloc::vec::Vec;
+ use core::cmp::max;
+ use core::marker::PhantomData;
+-use core::mem::size_of;
+ use core::ops::Range;
+ 
+ pub(crate) fn multimap_btree_stats(
+@@ -92,7 +92,7 @@
+                     SubtreeV2 => {
+                         // this is a sub-tree, so traverse it
+                         let stats = btree_stats(
+-                            Some(collection.as_subtree().root),
++                            Some(collection.as_subtree()?.root),
+                             mem,
+                             fixed_value_size,
+                             <() as Value>::fixed_width(),
+@@ -118,7 +118,7 @@
+             })
+         }
+         BRANCH => {
+-            let accessor = BranchAccessor::new(&page, fixed_key_size);
++            let accessor = BranchAccessor::new(&page, fixed_key_size)?;
+             let mut max_child_height = 0;
+             let mut leaf_pages = 0;
+             let mut branch_pages = 1;
+@@ -176,7 +176,7 @@
+             AllPageNumbersBtreeIter::new(header.root, key_size, mem.clone(), hint);
+         for table_page in table_pages_iter {
+             let page = mem.get_page(table_page?, hint)?;
+-            let subtree_roots = parse_subtree_roots(&page, key_size, value_size);
++            let subtree_roots = parse_subtree_roots(&page, key_size, value_size)?;
+             for header in subtree_roots {
+                 if !RawBtree::new(
+                     Some(header),
+@@ -196,7 +196,61 @@
+     Ok(true)
+ }
+ 
+-// Relocate all subtrees to lower index pages, if possible
++fn preflight_multimap_relocation(
++    number: PageNumber,
++    widths: (Option<usize>, Option<usize>),
++    allocator: &PageAllocator,
++    freed: &Arc<Mutex<Vec<PageNumber>>>,
++    map: &PageNumberHashMap<PageNumber>,
++    path: &mut [Option<PageNumber>; crate::tree_store::btree_base::MAX_BTREE_DEPTH],
++    depth: usize,
++) -> Result {
++    let (key_size, value_size) = widths;
++    if !map.contains_key(&number) {
++        return Ok(());
++    }
++    if depth >= path.len() || path[..depth].contains(&Some(number)) {
++        return Err(crate::StorageError::Corrupted(
++            "Invalid multimap relocation path".to_string(),
++        ));
++    }
++    path[depth] = Some(number);
++    let page = allocator.get_page(number, PageHint::None)?;
++    if page.memory()[0] == BRANCH {
++        let accessor = BranchAccessor::new(&page, key_size)?;
++        for index in 0..accessor.count_children() {
++            preflight_multimap_relocation(
++                accessor.child_page(index).unwrap(),
++                widths,
++                allocator,
++                freed,
++                map,
++                path,
++                depth + 1,
++            )?;
++        }
++    } else {
++        // Validate every stored subtree root before preflighting any subtree.
++        let roots = parse_subtree_roots(&page, key_size, value_size)?;
++        for header in roots {
++            let tree = UntypedBtreeMut::new(
++                Some(header),
++                allocator.clone(),
++                freed.clone(),
++                value_size,
++                <()>::fixed_width(),
++            );
++            tree.preflight_relocation(
++                header.root,
++                map,
++                &mut [None; crate::tree_store::btree_base::MAX_BTREE_DEPTH],
++                0,
++            )?;
++        }
++    }
++    Ok(())
++}
++
+ pub(super) fn relocate_subtrees(
+     root: (PageNumber, Checksum),
+     key_size: Option<usize>,
+@@ -205,12 +259,43 @@
+     freed_pages: Arc<Mutex<Vec<PageNumber>>>,
+     relocation_map: &PageNumberHashMap<PageNumber>,
+ ) -> Result<(PageNumber, Checksum)> {
+-    let old_page = page_allocator.get_page(root.0, PageHint::None)?;
+-    let mut new_page = if let Some(new_page_number) = relocation_map.get(&root.0) {
+-        page_allocator.get_page_mut(*new_page_number)?
+-    } else {
++    preflight_multimap_relocation(
++        root.0,
++        (key_size, value_size),
++        &page_allocator,
++        &freed_pages,
++        relocation_map,
++        &mut [None; crate::tree_store::btree_base::MAX_BTREE_DEPTH],
++        0,
++    )?;
++    relocate_subtrees_inner(
++        root,
++        key_size,
++        value_size,
++        page_allocator,
++        freed_pages,
++        relocation_map,
++    )
++}
++
++// Relocate all subtrees to lower index pages, if possible
++fn relocate_subtrees_inner(
++    root: (PageNumber, Checksum),
++    key_size: Option<usize>,
++    value_size: Option<usize>,
++    page_allocator: PageAllocator,
++    freed_pages: Arc<Mutex<Vec<PageNumber>>>,
++    relocation_map: &PageNumberHashMap<PageNumber>,
++) -> Result<(PageNumber, Checksum)> {
++    let Some(new_page_number) = relocation_map.get(&root.0) else {
+         return Ok(root);
+     };
++    let old_page = page_allocator.get_page(root.0, PageHint::None)?;
++    if old_page.memory()[0] == BRANCH {
++        BranchAccessor::new(&old_page, key_size)?;
++    }
++    parse_subtree_roots(&old_page, key_size, value_size)?;
++    let mut new_page = page_allocator.get_page_mut(*new_page_number)?;
+     let new_page_number = new_page.get_page_number();
+     new_page.memory_mut().copy_from_slice(old_page.memory());
+ 
+@@ -230,7 +315,7 @@
+                 let entry = accessor.entry(i).unwrap();
+                 let collection = UntypedDynamicCollection::from_bytes(entry.value());
+                 if matches!(collection.collection_type(), SubtreeV2) {
+-                    let sub_root = collection.as_subtree();
++                    let sub_root = collection.as_subtree()?;
+                     let mut tree = UntypedBtreeMut::new(
+                         Some(sub_root),
+                         page_allocator.clone(),
+@@ -248,12 +333,12 @@
+             }
+         }
+         BRANCH => {
+-            let accessor = BranchAccessor::new(&old_page, key_size);
+-            let mut mutator = BranchMutator::new(new_page.memory_mut());
++            let accessor = BranchAccessor::new(&old_page, key_size)?;
++            let mut mutator = BranchMutator::new(new_page.memory_mut())?;
+             for i in 0..accessor.count_children() {
+                 if let Some(child) = accessor.child_page(i) {
+                     let child_checksum = accessor.child_checksum(i).unwrap();
+-                    let (new_child, new_checksum) = relocate_subtrees(
++                    let (new_child, new_checksum) = relocate_subtrees_inner(
+                         (child, child_checksum),
+                         key_size,
+                         value_size,
+@@ -302,7 +387,14 @@
+             let entry = accessor.entry(i).unwrap();
+             let collection = <&DynamicCollection<()>>::from_bytes(entry.value());
+             if matches!(collection.collection_type(), SubtreeV2) {
+-                let sub_root = collection.as_subtree();
++                collection.as_subtree()?;
++            }
++        }
++        for i in 0..accessor.num_pairs() {
++            let entry = accessor.entry(i).unwrap();
++            let collection = <&DynamicCollection<()>>::from_bytes(entry.value());
++            if matches!(collection.collection_type(), SubtreeV2) {
++                let sub_root = collection.as_subtree()?;
+                 if page_allocator.uncommitted(sub_root.root) {
+                     let mut subtree = UntypedBtreeMut::new(
+                         Some(sub_root),
+@@ -334,8 +426,8 @@
+     page: &T,
+     fixed_key_size: Option<usize>,
+     fixed_value_size: Option<usize>,
+-) -> Vec<BtreeHeader> {
+-    match page.memory()[0] {
++) -> Result<Vec<BtreeHeader>> {
++    Ok(match page.memory()[0] {
+         BRANCH => {
+             vec![]
+         }
+@@ -350,14 +442,14 @@
+                 let entry = accessor.entry(i).unwrap();
+                 let collection = <&DynamicCollection<()>>::from_bytes(entry.value());
+                 if matches!(collection.collection_type(), SubtreeV2) {
+-                    result.push(collection.as_subtree());
++                    result.push(collection.as_subtree()?);
+                 }
+             }
+ 
+             result
+         }
+         _ => unreachable!(),
+-    }
++    })
+ }
+ 
+ pub(super) struct UntypedMultiBtree {
+@@ -402,7 +494,7 @@
+             let page = self.mem.get_page(path.page_number(), self.hint)?;
+             match page.memory()[0] {
+                 LEAF => {
+-                    for header in parse_subtree_roots(&page, self.key_width, self.value_width) {
++                    for header in parse_subtree_roots(&page, self.key_width, self.value_width)? {
+                         let subtree = UntypedBtree::new(
+                             Some(header),
+                             self.mem.clone(),
+@@ -541,32 +633,24 @@
+         (collection_range.start + 1)..collection_range.end
+     }
+ 
+-    pub(crate) fn as_subtree(&self) -> BtreeHeader {
+-        assert!(matches!(self.collection_type(), SubtreeV2));
+-        BtreeHeader::from_le_bytes(
+-            self.data[1..=BtreeHeader::serialized_size()]
+-                .try_into()
+-                .unwrap(),
+-        )
+-    }
+-
+-    pub(crate) fn get_num_values(&self) -> u64 {
+-        match self.collection_type() {
++    pub(crate) fn as_subtree(&self) -> Result<BtreeHeader> {
++        let malformed = || crate::StorageError::Corrupted("Corrupted multimap subtree".to_string());
++        if self.data.len() != 1 + BtreeHeader::serialized_size() || self.data[0] != 3 {
++            return Err(malformed());
++        }
++        BtreeHeader::from_le_bytes(self.data[1..].try_into().map_err(|_| malformed())?)
++    }
++
++    pub(crate) fn get_num_values(&self) -> Result<u64> {
++        Ok(match self.collection_type() {
+             Inline => {
+                 let leaf_data = self.as_inline();
+                 let accessor =
+                     LeafAccessor::new(leaf_data, V::fixed_width(), <() as Value>::fixed_width());
+                 accessor.num_pairs() as u64
+             }
+-            SubtreeV2 => {
+-                let offset = 1 + PageNumber::serialized_size() + size_of::<Checksum>();
+-                u64::from_le_bytes(
+-                    self.data[offset..(offset + size_of::<u64>())]
+-                        .try_into()
+-                        .unwrap(),
+-                )
+-            }
+-        }
++            SubtreeV2 => self.as_subtree()?.length,
++        })
+     }
+ 
+     pub(crate) fn make_inline_data(data: &[u8]) -> Vec<u8> {
+@@ -620,12 +704,60 @@
+         &self.data[1..]
+     }
+ 
+-    fn as_subtree(&self) -> BtreeHeader {
+-        assert!(matches!(self.collection_type(), SubtreeV2));
+-        BtreeHeader::from_le_bytes(
+-            self.data[1..=BtreeHeader::serialized_size()]
+-                .try_into()
+-                .unwrap(),
+-        )
+-    }
+-}
++    fn as_subtree(&self) -> Result<BtreeHeader> {
++        let malformed = || crate::StorageError::Corrupted("Corrupted multimap subtree".to_string());
++        if self.data.len() != 1 + BtreeHeader::serialized_size() || self.data[0] != 3 {
++            return Err(malformed());
++        }
++        BtreeHeader::from_le_bytes(self.data[1..].try_into().map_err(|_| malformed())?)
++    }
++}
++
++#[cfg(test)]
++mod canonical_root_tests {
++    use super::*;
++    #[test]
++    fn typed_and_untyped_subtrees_share_the_only_canonical_root_decoder() {
++        for order in 0..=20 {
++            let header = BtreeHeader::new(PageNumber::new(7, 0, order), 23, 31);
++            let bytes = DynamicCollection::<u64>::make_subtree_data(header);
++            assert_eq!(
++                DynamicCollection::<u64>::new(&bytes).as_subtree().unwrap(),
++                header
++            );
++            assert_eq!(
++                UntypedDynamicCollection::new(&bytes).as_subtree().unwrap(),
++                header
++            );
++            for bit in (40..59).chain((20 - u32::from(order))..20) {
++                let mut bad = bytes.clone();
++                bad[1 + bit as usize / 8] |= 1 << (bit % 8);
++                assert!(matches!(
++                    DynamicCollection::<u64>::new(&bad).as_subtree(),
++                    Err(crate::StorageError::Corrupted(_))
++                ));
++                assert!(matches!(
++                    UntypedDynamicCollection::new(&bad).as_subtree(),
++                    Err(crate::StorageError::Corrupted(_))
++                ));
++                assert!(
++                    DynamicCollection::<u64>::new(&bad)
++                        .get_num_values()
++                        .is_err()
++                );
++            }
++            for length in 0..bytes.len() {
++                assert!(
++                    DynamicCollection::<u64>::new(&bytes[..length])
++                        .as_subtree()
++                        .is_err()
++                );
++                assert!(
++                    UntypedDynamicCollection::new(&bytes[..length])
++                        .as_subtree()
++                        .is_err()
++                );
++            }
++        }
++    }
++}
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/base.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/base.rs
+@@ -1,10 +1,11 @@
+-use crate::Result;
+ use crate::sync::Mutex;
+ use crate::tree_store::page_store::cached_file::WritablePage;
+ #[cfg(debug_assertions)]
+ use crate::tree_store::page_store::fast_hash::PageNumberHashMap;
+ use crate::tree_store::page_store::fast_hash::PageNumberHashSet;
+ use crate::tree_store::page_store::page_manager::MAX_MAX_PAGE_ORDER;
++use crate::{Result, StorageError};
++use alloc::string::ToString;
+ use alloc::sync::Arc;
+ use core::cmp::Ordering;
+ use core::fmt::{Debug, Formatter};
+@@ -24,7 +25,7 @@
+ // are actually used, in these reserved bits, so that the reads to the PagedCachedFile layer can avoid
+ // reading all the zeros at the end of the page.
+ // lowest 20bits: page index within the region. Only the lowest `20 - order_exponent` bits may be read.
+-// The remaining bits are reserved for future use and must be ignored
++// The remaining bits and bits 40..59 are reserved and must be zero.
+ // second 20bits: region number
+ // 19bits: reserved
+ // highest 5bits: page order exponent
+@@ -32,16 +33,16 @@
+ // Assuming a reasonable page size, like 4kiB, this allows for 4kiB * 2^20 * 2^20 = 4PiB of usable space
+ #[derive(Copy, Clone, Eq, PartialEq)]
+ pub(crate) struct PageNumber {
+-    pub(crate) region: u32,
+-    pub(crate) page_index: u32,
+-    pub(crate) page_order: u8,
++    region: u32,
++    page_index: u32,
++    page_order: u8,
+ }
+ 
+ impl Hash for PageNumber {
+     fn hash<H: Hasher>(&self, state: &mut H) {
+-        let mut temp = 0x000F_FFFF & u64::from(self.page_index);
+-        temp |= (0x000F_FFFF & u64::from(self.region)) << 20;
+-        temp |= (0b0001_1111 & u64::from(self.page_order)) << 59;
++        let mut temp = u64::from(self.page_index);
++        temp |= u64::from(self.region) << 20;
++        temp |= u64::from(self.page_order) << 59;
+         state.write_u64(temp);
+     }
+ }
+@@ -76,10 +77,10 @@
+         8
+     }
+ 
+-    pub(crate) fn new(region: u32, page_index: u32, page_order: u8) -> Self {
+-        debug_assert!(region <= 0x000F_FFFF);
+-        debug_assert!(page_index <= MAX_PAGE_INDEX);
+-        debug_assert!(page_order <= MAX_MAX_PAGE_ORDER);
++    pub(crate) const fn new(region: u32, page_index: u32, page_order: u8) -> Self {
++        assert!(region < MAX_REGIONS);
++        assert!(page_order <= MAX_MAX_PAGE_ORDER);
++        assert!(page_index <= MAX_PAGE_INDEX >> page_order);
+         Self {
+             region,
+             page_index,
+@@ -88,23 +89,38 @@
+     }
+ 
+     pub(crate) fn to_le_bytes(self) -> [u8; 8] {
+-        let mut temp = 0x000F_FFFF & u64::from(self.page_index);
+-        temp |= (0x000F_FFFF & u64::from(self.region)) << 20;
+-        temp |= (0b0001_1111 & u64::from(self.page_order)) << 59;
++        let mut temp = u64::from(self.page_index);
++        temp |= u64::from(self.region) << 20;
++        temp |= u64::from(self.page_order) << 59;
+         temp.to_le_bytes()
+     }
+ 
+-    pub(crate) fn from_le_bytes(bytes: [u8; 8]) -> Self {
+-        let temp = u64::from_le_bytes(bytes);
+-        let order = (temp >> 59) as u8;
+-        let index = u32::try_from(temp & (0x000F_FFFF >> order)).unwrap();
+-        let region = ((temp >> 20) & 0x000F_FFFF) as u32;
+-
+-        Self {
+-            region,
+-            page_index: index,
+-            page_order: order,
+-        }
++    // This is the sole raw decoder. A PageNumber always carries the canonical
++    // representation proof, including when it reaches an infallible free path.
++    pub(crate) fn from_le_bytes(bytes: [u8; 8]) -> Result<Self> {
++        let raw = u64::from_le_bytes(bytes);
++        let order = (raw >> 59) as u8;
++        let index =
++            u32::try_from(raw & u64::from(MAX_PAGE_INDEX)).expect("masked page index fits in u32");
++        if order > MAX_MAX_PAGE_ORDER
++            || raw & (0x7_FFFF_u64 << 40) != 0
++            || index > MAX_PAGE_INDEX >> order
++        {
++            return Err(StorageError::Corrupted(
++                "Noncanonical page number".to_string(),
++            ));
++        }
++        Ok(Self::new(((raw >> 20) & 0xF_FFFF) as u32, index, order))
++    }
++
++    pub(crate) const fn region(self) -> u32 {
++        self.region
++    }
++    pub(crate) const fn page_index(self) -> u32 {
++        self.page_index
++    }
++    pub(crate) const fn page_order(self) -> u8 {
++        self.page_order
+     }
+ 
+     #[cfg(test)]
+@@ -454,6 +470,65 @@
+         let mut bytes = page_number.to_le_bytes();
+         bytes[1] = 0xFF;
+         let page_number2 = PageNumber::from_le_bytes(bytes);
+-        assert_eq!(page_number, page_number2);
+-    }
+-}
++        assert!(matches!(
++            page_number2,
++            Err(crate::StorageError::Corrupted(_))
++        ));
++    }
++
++    #[test]
++    fn canonical_page_number_preserves_all_orders_and_rejects_each_alias_bit() {
++        use super::{MAX_PAGE_INDEX, MAX_REGIONS};
++        use crate::tree_store::page_store::page_manager::MAX_MAX_PAGE_ORDER;
++        for order in 0..=MAX_MAX_PAGE_ORDER {
++            let max_index = MAX_PAGE_INDEX >> order;
++            for region in [0, 1, MAX_REGIONS - 1] {
++                for index in [0, max_index / 2, max_index] {
++                    let page = PageNumber::new(region, index, order);
++                    let bytes = page.to_le_bytes();
++                    let (decoded, allocations) = crate::admission::observe_test_allocations(|| {
++                        PageNumber::from_le_bytes(bytes)
++                    });
++                    assert_eq!(allocations, 0);
++                    let decoded = decoded.unwrap();
++                    assert_eq!(decoded, page);
++                    assert_eq!(decoded.to_le_bytes(), bytes);
++                    let raw = u64::from_le_bytes(bytes);
++                    let mut combined = raw;
++                    for bit in (40..59).chain((20 - u32::from(order))..20) {
++                        let alias = raw | (1_u64 << bit);
++                        assert!(matches!(
++                            PageNumber::from_le_bytes(alias.to_le_bytes()),
++                            Err(crate::StorageError::Corrupted(_))
++                        ));
++                        combined |= 1_u64 << bit;
++                    }
++                    assert!(PageNumber::from_le_bytes(combined.to_le_bytes()).is_err());
++                }
++            }
++        }
++        for order in 21_u64..32 {
++            assert!(PageNumber::from_le_bytes((order << 59).to_le_bytes()).is_err());
++        }
++    }
++
++    #[test]
++    fn canonical_page_number_accepts_actual_buddy_producers_after_resize_and_free() {
++        use super::{MAX_PAGE_INDEX, MAX_REGIONS};
++        use crate::tree_store::page_store::buddy_allocator::BuddyAllocator;
++        let capacity = MAX_PAGE_INDEX + 1;
++        let mut allocator = BuddyAllocator::new(capacity, capacity);
++        for size in [capacity, capacity / 2, capacity] {
++            allocator.resize(size);
++            let max_order = u8::try_from(size.ilog2()).unwrap();
++            for order in 0..=max_order {
++                let index = allocator.alloc(order).unwrap();
++                for region in [0, 1, MAX_REGIONS - 1] {
++                    let page = PageNumber::new(region, index, order);
++                    assert_eq!(PageNumber::from_le_bytes(page.to_le_bytes()).unwrap(), page);
++                }
++                allocator.free(index, order);
++            }
++        }
++    }
++}
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/header.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/header.rs
+@@ -106,6 +106,11 @@
+ impl UnrepairedDatabaseHeader {
+     // `expected_page_size` is the page size this database was opened with.
+     pub(super) fn from_bytes(data: &[u8], expected_page_size: u32) -> Result<Self, DatabaseError> {
++        if data.len() < DB_HEADER_SIZE {
++            return Err(
++                StorageError::Corrupted("Invalid database header length".to_string()).into(),
++            );
++        }
+         if data[..MAGICNUMBER.len()] != MAGICNUMBER {
+             return Err(StorageError::Corrupted("Invalid magic number".to_string()).into());
+         }
+@@ -446,6 +451,11 @@
+ 
+     // Returned bool indicates whether the checksum was corrupted
+     pub(super) fn from_bytes(data: &[u8]) -> Result<(Self, bool), DatabaseError> {
++        if data.len() != TRANSACTION_SIZE {
++            return Err(
++                StorageError::Corrupted("Invalid transaction slot length".to_string()).into(),
++            );
++        }
+         let version = data[VERSION_OFFSET];
+         if version != FILE_FORMAT_VERSION4 {
+             return Err(DatabaseError::UnsupportedFileFormat(version));
+@@ -456,13 +466,33 @@
+                 .unwrap(),
+         );
+         let corrupted = checksum != xxh3_checksum(&data[..SLOT_CHECKSUM_OFFSET]);
++        // A torn unused slot is opaque. Its roots must never be normalized,
++        // accessed or rewritten as valid; authoritative-primary validation
++        // rejects this quarantine marker before any root can be published.
++        if corrupted {
++            return Ok((
++                Self {
++                    version,
++                    user_root: None,
++                    system_root: None,
++                    transaction_id: TransactionId::new(get_u64(&data[TRANSACTION_ID_OFFSET..])),
++                    corrupt_bytes: Some(data.try_into().unwrap()),
++                },
++                true,
++            ));
++        }
++        if data[USER_ROOT_NON_NULL_OFFSET] > 1 || data[SYSTEM_ROOT_NON_NULL_OFFSET] > 1 {
++            return Err(
++                StorageError::Corrupted("Invalid transaction root presence".to_string()).into(),
++            );
++        }
+ 
+         let user_root = if data[USER_ROOT_NON_NULL_OFFSET] != 0 {
+             Some(BtreeHeader::from_le_bytes(
+                 data[USER_ROOT_OFFSET..(USER_ROOT_OFFSET + BtreeHeader::serialized_size())]
+                     .try_into()
+                     .unwrap(),
+-            ))
++            )?)
+         } else {
+             None
+         };
+@@ -471,7 +501,7 @@
+                 data[SYSTEM_ROOT_OFFSET..(SYSTEM_ROOT_OFFSET + BtreeHeader::serialized_size())]
+                     .try_into()
+                     .unwrap(),
+-            ))
++            )?)
+         } else {
+             None
+         };
+@@ -482,11 +512,7 @@
+             user_root,
+             system_root,
+             transaction_id,
+-            corrupt_bytes: if corrupted {
+-                Some(data[..TRANSACTION_SIZE].try_into().unwrap())
+-            } else {
+-                None
+-            },
++            corrupt_bytes: None,
+         };
+ 
+         Ok((result, corrupted))
+@@ -1001,8 +1027,7 @@
+         file.sync_all().unwrap();
+     }
+ 
+-    // A torn commit slot can carry an invalid page number. Repair must treat that as a bad primary
+-    // and fall back to the secondary, as it does for a checksum mismatch.
++    // An invalid winning root never permits rollback to an earlier secondary commit.
+     #[test]
+     fn repair_rejects_invalid_primary_root_without_legacy_rollback() {
+         let tmpfile = crate::create_tempfile();
+@@ -1456,4 +1481,241 @@
+             assert_eq!(std::fs::read(tmpfile.path()).unwrap(), bytes);
+         }
+     }
++
++    fn checksum_slot(slot: &mut [u8]) {
++        let checksum = super::xxh3_checksum(&slot[..super::SLOT_CHECKSUM_OFFSET]);
++        slot[super::SLOT_CHECKSUM_OFFSET..].copy_from_slice(&checksum.to_le_bytes());
++    }
++
++    #[test]
++    fn canonical_slot_roots_reject_every_reserved_bit_before_publication() {
++        use crate::transaction_tracker::TransactionId;
++        use crate::tree_store::btree_base::BtreeHeader;
++        use crate::tree_store::page_store::base::{MAX_PAGE_INDEX, PageNumber};
++        for order in 0..=20 {
++            let root = BtreeHeader::new(
++                PageNumber::new(MAX_REGIONS - 1, MAX_PAGE_INDEX >> order, order),
++                42,
++                3,
++            );
++            let mut slot = super::TransactionHeader::new(TransactionId::new(7));
++            slot.user_root = Some(root);
++            slot.system_root = Some(root);
++            let canonical = slot.to_bytes();
++            let (decoded, corrupted) = super::TransactionHeader::from_bytes(&canonical).unwrap();
++            assert!(!corrupted);
++            assert_eq!(decoded.user_root, Some(root));
++            assert_eq!(decoded.system_root, Some(root));
++            assert_eq!(decoded.to_bytes(), canonical);
++            for offset in [super::USER_ROOT_OFFSET, super::SYSTEM_ROOT_OFFSET] {
++                for bit in (40..59).chain((20 - u32::from(order))..20) {
++                    let mut bad = canonical;
++                    let raw = super::get_u64(&bad[offset..]) | (1_u64 << bit);
++                    bad[offset..offset + 8].copy_from_slice(&raw.to_le_bytes());
++                    checksum_slot(&mut bad);
++                    assert!(
++                        matches!(
++                            super::TransactionHeader::from_bytes(&bad),
++                            Err(DatabaseError::Storage(StorageError::Corrupted(_)))
++                        ),
++                        "order={order}, offset={offset}, bit={bit}"
++                    );
++                }
++            }
++            for offset in [
++                super::USER_ROOT_NON_NULL_OFFSET,
++                super::SYSTEM_ROOT_NON_NULL_OFFSET,
++            ] {
++                let mut bad = canonical;
++                bad[offset] = 2;
++                checksum_slot(&mut bad);
++                assert!(matches!(
++                    super::TransactionHeader::from_bytes(&bad),
++                    Err(DatabaseError::Storage(StorageError::Corrupted(_)))
++                ));
++            }
++            for length in [0, 1, super::TRANSACTION_SIZE - 1] {
++                assert!(super::TransactionHeader::from_bytes(&canonical[..length]).is_err());
++            }
++        }
++        for length in [0, MAGICNUMBER.len() - 1, DB_HEADER_SIZE - 1] {
++            assert!(super::UnrepairedDatabaseHeader::from_bytes(&vec![0; length], 4096).is_err());
++        }
++    }
++
++    #[derive(Debug)]
++    struct HeaderReadBackend {
++        inner: FileBackend,
++        reads_beyond_header: Arc<AtomicU64>,
++        mutations: Arc<AtomicU64>,
++    }
++    impl StorageBackend for HeaderReadBackend {
++        fn len(&self) -> std::io::Result<u64> {
++            self.inner.len()
++        }
++        fn read(&self, offset: u64, out: &mut [u8]) -> std::io::Result<()> {
++            if offset + out.len() as u64 > DB_HEADER_SIZE as u64 {
++                self.reads_beyond_header.fetch_add(1, Ordering::Relaxed);
++            }
++            self.inner.read(offset, out)
++        }
++        fn set_len(&self, length: u64) -> std::io::Result<()> {
++            self.mutations.fetch_add(1, Ordering::Relaxed);
++            self.inner.set_len(length)
++        }
++        fn write(&self, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
++            self.mutations.fetch_add(1, Ordering::Relaxed);
++            self.inner.write(offset, bytes)
++        }
++        fn sync_data(&self) -> std::io::Result<()> {
++            self.mutations.fetch_add(1, Ordering::Relaxed);
++            self.inner.sync_data()
++        }
++        fn close(&self) -> std::io::Result<()> {
++            self.inner.close()
++        }
++    }
++
++    #[test]
++    fn selected_root_alias_rejects_before_page_reads_repair_and_writes() {
++        use crate::{DatabaseOpenMode, DatabaseOpenSettlement, TerminalObservation};
++        for selected in [0, 1] {
++            for recovering in [false, true] {
++                for root_offset in [super::USER_ROOT_OFFSET, super::SYSTEM_ROOT_OFFSET] {
++                    let file = crate::create_tempfile();
++                    create_database_with_one_table(file.path());
++                    let mut bytes = std::fs::read(file.path()).unwrap();
++                    let original = primary_slot_offset(bytes[GOD_BYTE_OFFSET]);
++                    let slot: [u8; super::TRANSACTION_SIZE] = bytes
++                        [original..original + super::TRANSACTION_SIZE]
++                        .try_into()
++                        .unwrap();
++                    for offset in [TRANSACTION_0_OFFSET, TRANSACTION_1_OFFSET] {
++                        bytes[offset..offset + slot.len()].copy_from_slice(&slot);
++                    }
++                    bytes[GOD_BYTE_OFFSET] = TWO_PHASE_COMMIT
++                        | selected
++                        | if recovering { RECOVERY_REQUIRED } else { 0 };
++                    let selected_offset = primary_slot_offset(bytes[GOD_BYTE_OFFSET]);
++                    let offset = selected_offset + root_offset;
++                    let raw = super::get_u64(&bytes[offset..]) | (1_u64 << 40);
++                    bytes[offset..offset + 8].copy_from_slice(&raw.to_le_bytes());
++                    checksum_slot(
++                        &mut bytes[selected_offset..selected_offset + super::TRANSACTION_SIZE],
++                    );
++                    std::fs::write(file.path(), &bytes).unwrap();
++                    let reads = Arc::new(AtomicU64::new(0));
++                    let mutations = Arc::new(AtomicU64::new(0));
++                    let callbacks = Arc::new(AtomicU64::new(0));
++                    let backend = || HeaderReadBackend {
++                        inner: FileBackend::new(file.reopen().unwrap()).unwrap(),
++                        reads_beyond_header: reads.clone(),
++                        mutations: mutations.clone(),
++                    };
++                    let observed = callbacks.clone();
++                    assert!(matches!(
++                        Database::builder(crate::test_admission())
++                            .set_repair_callback(move |_| {
++                                observed.fetch_add(1, Ordering::Relaxed);
++                            })
++                            .create_with_backend(backend()),
++                        Err(DatabaseError::Storage(StorageError::Corrupted(_)))
++                    ));
++                    assert!(matches!(
++                        Database::builder(crate::test_admission()).open_read_only(file.path()),
++                        Err(DatabaseError::Storage(StorageError::Corrupted(_)))
++                    ));
++                    let observed = callbacks.clone();
++                    let mut builder = Database::builder(crate::test_admission());
++                    builder.set_repair_callback(move |_| {
++                        observed.fetch_add(1, Ordering::Relaxed);
++                    });
++                    let mut owner =
++                        builder.retain_backend(Box::new(backend()), DatabaseOpenMode::Existing);
++                    let report = owner.open();
++                    assert_eq!(report.settlement(), DatabaseOpenSettlement::Retained);
++                    assert!(matches!(
++                        report.opening(),
++                        TerminalObservation::Returned(Err(DatabaseError::Storage(
++                            StorageError::Corrupted(_)
++                        )))
++                    ));
++                    assert!(owner.database().is_none());
++                    assert_eq!(owner.close().settlement(), DatabaseOpenSettlement::Closed);
++                    assert_eq!(reads.load(Ordering::Relaxed), 0);
++                    assert_eq!(mutations.load(Ordering::Relaxed), 0);
++                    assert_eq!(callbacks.load(Ordering::Relaxed), 0);
++                    assert_eq!(std::fs::read(file.path()).unwrap(), bytes);
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn torn_unused_slot_quarantines_aliases_and_survives_both_primary_orders() {
++        for selected in [0, 1] {
++            let file = crate::create_tempfile();
++            create_database_with_one_table(file.path());
++            let mut bytes = std::fs::read(file.path()).unwrap();
++            let primary = primary_slot_offset(bytes[GOD_BYTE_OFFSET]);
++            let slot: [u8; super::TRANSACTION_SIZE] = bytes
++                [primary..primary + super::TRANSACTION_SIZE]
++                .try_into()
++                .unwrap();
++            for offset in [TRANSACTION_0_OFFSET, TRANSACTION_1_OFFSET] {
++                bytes[offset..offset + slot.len()].copy_from_slice(&slot);
++            }
++            bytes[GOD_BYTE_OFFSET] = TWO_PHASE_COMMIT | RECOVERY_REQUIRED | selected;
++            let secondary = primary_slot_offset(bytes[GOD_BYTE_OFFSET] ^ PRIMARY_BIT);
++            let torn = &mut bytes[secondary..secondary + super::TRANSACTION_SIZE];
++            for offset in [super::USER_ROOT_OFFSET, super::SYSTEM_ROOT_OFFSET] {
++                torn[offset..offset + 8].fill(0xff);
++            }
++            torn[super::USER_ROOT_NON_NULL_OFFSET] = 255;
++            torn[super::SYSTEM_ROOT_NON_NULL_OFFSET] = 255;
++            torn[super::TRANSACTION_ID_OFFSET..super::TRANSACTION_ID_OFFSET + 8]
++                .copy_from_slice(&u64::MAX.to_le_bytes());
++            checksum_slot(torn);
++            torn[super::SLOT_CHECKSUM_OFFSET] ^= 1;
++            let original: [u8; super::TRANSACTION_SIZE] = torn.try_into().unwrap();
++            let (quarantined, corrupted) = super::TransactionHeader::from_bytes(&original).unwrap();
++            assert!(corrupted);
++            assert!(quarantined.user_root.is_none() && quarantined.system_root.is_none());
++            assert_eq!(quarantined.to_bytes(), original);
++            std::fs::write(file.path(), &bytes).unwrap();
++            let database = Database::open(file.path(), crate::test_admission()).unwrap();
++            {
++                let read = database.begin_read().unwrap();
++                assert_eq!(
++                    read.open_table(X)
++                        .unwrap()
++                        .get_owned("k")
++                        .unwrap()
++                        .unwrap()
++                        .value(),
++                    "v"
++                );
++            }
++            let recovered = std::fs::read(file.path()).unwrap();
++            assert_eq!(
++                &recovered[secondary..secondary + super::TRANSACTION_SIZE],
++                &original
++            );
++            let transaction = database.begin_write().unwrap();
++            transaction
++                .open_table(X)
++                .unwrap()
++                .insert("k", "after")
++                .unwrap();
++            transaction.commit().unwrap();
++            let committed = std::fs::read(file.path()).unwrap();
++            let replacement = &committed[secondary..secondary + super::TRANSACTION_SIZE];
++            let (replacement, corrupted) =
++                super::TransactionHeader::from_bytes(replacement).unwrap();
++            assert!(!corrupted);
++            assert!(replacement.corrupt_bytes.is_none());
++            assert!(replacement.user_root.is_some());
++            database.close().unwrap();
++        }
++    }
+ }
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
+@@ -139,7 +139,7 @@
+     }
+ 
+     fn shard(&self, page: PageNumber) -> &Mutex<PageNumberHashSet> {
+-        &self.shards[page.page_index as usize % UNCOMMITTED_SHARDS].0
++        &self.shards[page.page_index() as usize % UNCOMMITTED_SHARDS].0
+     }
+ 
+     fn insert(&self, page: PageNumber) {
+@@ -582,7 +582,7 @@
+     // An order read from a corrupted file would otherwise size a multi-terabyte read buffer, whose
+     // failed allocation aborts the process instead of returning an error.
+     fn check_page_order(page: PageNumber) -> Result<()> {
+-        if page.page_order > MAX_MAX_PAGE_ORDER {
++        if page.page_order() > MAX_MAX_PAGE_ORDER {
+             return Err(StorageError::Corrupted(format!(
+                 "Page {page:?} has order greater than the maximum of {MAX_MAX_PAGE_ORDER}"
+             )));
+@@ -635,7 +635,7 @@
+         let allocators = state.allocators();
+         let mut region_pages = vec![vec![]; allocators.region_allocators.len()];
+         for p in self.allocated_pages.lock().unwrap().iter() {
+-            region_pages[p.region as usize].push(*p);
++            region_pages[p.region() as usize].push(*p);
+         }
+         for (i, allocator) in allocators.region_allocators.iter().enumerate() {
+             allocator.check_allocated_pages(i.try_into().unwrap(), &region_pages[i]);
+@@ -736,24 +736,24 @@
+         // Unlike the read path, this is only reached while rebuilding the allocator state, and the
+         // state lock is already held, so validating against the layout costs nothing here
+         let layout = state.header.layout();
+-        if page_number.region >= layout.num_regions() {
++        if page_number.region() >= layout.num_regions() {
+             return Err(StorageError::Corrupted(format!(
+                 "Page {page_number:?} is in region {}, but the database has {} region(s)",
+-                page_number.region,
++                page_number.region(),
+                 layout.num_regions()
+             )));
+         }
+-        let region_pages = u64::from(layout.region_layout(page_number.region).num_pages());
++        let region_pages = u64::from(layout.region_layout(page_number.region()).num_pages());
+         // Cannot overflow: page_index is at most 2^32, and the order was bounded above
+-        let end_page = (u64::from(page_number.page_index) + 1) << page_number.page_order;
++        let end_page = (u64::from(page_number.page_index()) + 1) << page_number.page_order();
+         if end_page > region_pages {
+             return Err(StorageError::Corrupted(format!(
+                 "Page {page_number:?} extends past the end of its region, which has {region_pages} pages"
+             )));
+         }
+ 
+-        let allocator = state.get_region_mut(page_number.region);
+-        if !allocator.record_alloc(page_number.page_index, page_number.page_order) {
++        let allocator = state.get_region_mut(page_number.region());
++        if !allocator.record_alloc(page_number.page_index(), page_number.page_order()) {
+             return Err(StorageError::Corrupted(format!(
+                 "Page {page_number:?} overlaps a page that is already allocated"
+             )));
+@@ -864,9 +864,9 @@
+         // therefore names this prepared allocator; failure preserves old-root
+         // ownership and the existing retained transaction collections.
+         for page in deferred_reclaim.iter().chain(current_system_reclaim) {
+-            let order = allocators.region_allocators[page.region as usize]
+-                .free(page.page_index, page.page_order);
+-            allocators.region_tracker.mark_free(order, page.region);
++            let order = allocators.region_allocators[page.region() as usize]
++                .free(page.page_index(), page.page_order());
++            allocators.region_tracker.mark_free(order, page.region());
+         }
+         for i in 0..num_regions {
+             let region_bytes = &allocators.region_allocators[i as usize].to_vec();
+@@ -1129,12 +1129,12 @@
+         }
+         allocated.remove(page);
+         let mut state = self.state.lock().unwrap();
+-        let region_index = page.region;
++        let region_index = page.region();
+         // Free in the regional allocator. free() returns the order of the resulting block, which is
+         // larger than page_order when buddies merged.
+         let freed_order = state
+             .get_region_mut(region_index)
+-            .free(page.page_index, page.page_order);
++            .free(page.page_index(), page.page_order());
+         // Mark the region free at the merged order, not just page_order: leaving the tracker's
+         // higher-order bits stale after a merge would hide the reclaimed space from find_free.
+         state
+@@ -1211,11 +1211,11 @@
+                     assert!(!self.open_dirty_pages.lock().unwrap().contains(&page_number));
+                 }
+                 let freed_order = state
+-                    .get_region_mut(page_number.region)
+-                    .free(page_number.page_index, page_number.page_order);
++                    .get_region_mut(page_number.region())
++                    .free(page_number.page_index(), page_number.page_order());
+                 state
+                     .get_region_tracker_mut()
+-                    .mark_free(freed_order, page_number.region);
++                    .mark_free(freed_order, page_number.region());
+                 return Err(StorageError::CacheCapacityDenied);
+             }
+             Err(error) => return Err(error),
+@@ -1552,8 +1552,6 @@
+             PageNumber::new(MAX_REGIONS - 1, 0, 0),
+             // Past the end of its region, which the bitmap asserts on
+             PageNumber::new(0, MAX_PAGE_INDEX, 0),
+-            // An order no region can have
+-            PageNumber::from_le_bytes((31u64 << 59).to_le_bytes()),
+         ];
+         for page in corrupt {
+             assert!(
+@@ -1600,16 +1598,18 @@
+         drop(valid);
+ 
+         // order = 31, which would be read as a 2^31 page (8TiB) allocation
+-        let bad_order = PageNumber::from_le_bytes((31u64 << 59).to_le_bytes());
+-
++        let bad_order = (31u64 << 59).to_le_bytes();
++        let before = mem.count_allocated_pages().unwrap();
+         assert!(matches!(
+-            mem.get_page(bad_order, PageHint::None),
++            PageNumber::from_le_bytes(bad_order)
++                .and_then(|page| mem.get_page(page, PageHint::None)),
+             Err(StorageError::Corrupted(_))
+         ));
+         assert!(matches!(
+-            mem.mark_page_allocated(bad_order),
++            PageNumber::from_le_bytes(bad_order).and_then(|page| mem.mark_page_allocated(page)),
+             Err(StorageError::Corrupted(_))
+         ));
++        assert_eq!(mem.count_allocated_pages().unwrap(), before);
+         mem.get_page(valid_page, PageHint::None).unwrap();
+ 
+         mem.free(valid_page, &PageTracker::ignore());
+@@ -1647,7 +1647,7 @@
+             let page = mem.allocate_helper(1, false).unwrap();
+             let number = page.get_page_number();
+             drop(page);
+-            if number.region == 0 {
++            if number.region() == 0 {
+                 region0_pages.push(number);
+             } else {
+                 // First page past region 0: it has done its job of forcing region 0 full. Give it
+@@ -1673,7 +1673,7 @@
+         // higher region.
+         let reused = mem.allocate_helper(2 * page_size, false).unwrap();
+         assert_eq!(
+-            reused.get_page_number().region,
++            reused.get_page_number().region(),
+             0,
+             "order-1 allocation should reuse the merged free block in region 0"
+         );
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/savepoint.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/savepoint.rs
+@@ -165,7 +165,7 @@
+                 data[offset..(offset + BtreeHeader::serialized_size())]
+                     .try_into()
+                     .unwrap(),
+-            ))
++            )?)
+         } else {
+             None
+         };
+@@ -259,4 +259,55 @@
+             Err(StorageError::Corrupted(_))
+         ));
+     }
+-}
++
++    #[test]
++    fn canonical_savepoint_roots_reject_aliases_before_tracker_publication() {
++        use crate::tree_store::page_store::base::{MAX_PAGE_INDEX, MAX_REGIONS, PageNumber};
++        let tracker = Arc::new(TransactionTracker::new(TransactionId::new(9)));
++        for order in 0..=20 {
++            let root = BtreeHeader::new(
++                PageNumber::new(MAX_REGIONS - 1, MAX_PAGE_INDEX >> order, order),
++                11,
++                13,
++            );
++            let savepoint = Savepoint {
++                version: FILE_FORMAT_VERSION4,
++                id: SavepointId(7),
++                transaction_id: TransactionId::new(8),
++                user_root: Some(root),
++                transaction_tracker: tracker.clone(),
++                ephemeral: false,
++            };
++            let record = SerializedSavepoint::from_savepoint(&savepoint);
++            let decoded = record.to_savepoint(tracker.clone()).unwrap();
++            assert_eq!(decoded.get_user_root(), Some(root));
++            assert_eq!(decoded.get_id(), SavepointId(7));
++            assert_eq!(decoded.get_transaction_id(), TransactionId::new(8));
++            assert_eq!(
++                SerializedSavepoint::from_savepoint(&decoded).data(),
++                record.data()
++            );
++            drop(decoded);
++            let owners = Arc::strong_count(&tracker);
++            for bit in (40..59).chain((20 - u32::from(order))..20) {
++                let mut bad = record.data().to_vec();
++                let offset = 2 * size_of::<u8>() + 2 * size_of::<u64>();
++                let raw = u64::from_le_bytes(bad[offset..offset + 8].try_into().unwrap())
++                    | (1_u64 << bit);
++                bad[offset..offset + 8].copy_from_slice(&raw.to_le_bytes());
++                let original = bad.clone();
++                assert!(
++                    matches!(
++                        SerializedSavepoint::Ref(&bad).to_savepoint(tracker.clone()),
++                        Err(StorageError::Corrupted(_))
++                    ),
++                    "order={order}, bit={bit}"
++                );
++                assert_eq!(bad, original);
++                assert_eq!(Arc::strong_count(&tracker), owners);
++                assert!(!tracker.any_savepoint_exists());
++                assert!(tracker.oldest_live_read_transaction().is_none());
++            }
++        }
++    }
++}
+--- a/vendor/redb-4.2.0/src/tree_store/table_tree.rs
++++ b/vendor/redb-4.2.0/src/tree_store/table_tree.rs
+@@ -9,7 +9,7 @@
+ use crate::tree_store::{
+     Btree, BtreeCursorRange, BtreeMut, InternalTableDefinition, PageAllocator, PageHint,
+     PageNumber, PageNumberHashMap, PageNumberHashSet, PageResolver, PageTracker, RawBtree,
+-    TableType, multimap_btree_stats,
++    RawTableDefinition, TableType, multimap_btree_stats,
+ };
+ use crate::types::{Key, Value};
+ use crate::{DatabaseStats, Result};
+@@ -46,7 +46,7 @@
+ }
+ 
+ pub struct TableNameIter {
+-    inner: BtreeCursorRange<&'static str, InternalTableDefinition>,
++    inner: BtreeCursorRange<&'static str, RawTableDefinition<'static>>,
+     table_type: TableType,
+ }
+ 
+@@ -57,7 +57,11 @@
+         for entry in self.inner.by_ref() {
+             match entry {
+                 Ok(entry) => {
+-                    if entry.value().get_type() == self.table_type {
++                    if match entry.value().checked() {
++                        Ok(definition) => definition.get_type(),
++                        Err(error) => return Some(Err(error)),
++                    } == self.table_type
++                    {
+                         return Some(Ok(entry.key().to_string()));
+                     }
+                 }
+@@ -71,7 +75,7 @@
+ }
+ 
+ pub(crate) struct TableTree {
+-    tree: Btree<&'static str, InternalTableDefinition>,
++    tree: Btree<&'static str, RawTableDefinition<'static>>,
+     mem: PageResolver,
+ }
+ 
+@@ -99,7 +103,7 @@
+ 
+         for entry in self.tree.range::<RangeFull, &str>(&(..))? {
+             let entry = entry?;
+-            let definition = entry.value();
++            let definition = entry.value().checked()?;
+             match definition {
+                 InternalTableDefinition::Normal {
+                     table_root,
+@@ -176,7 +180,7 @@
+         table_type: TableType,
+     ) -> Result<Option<InternalTableDefinition>, TableError> {
+         if let Some(guard) = self.tree.get(&name)? {
+-            let definition = guard.value();
++            let definition = guard.value().checked()?;
+             definition.check_match_untyped(table_type, name)?;
+             Ok(Some(definition))
+         } else {
+@@ -205,6 +209,10 @@
+     where
+         F: FnMut(&PagePath) -> Result,
+     {
++        // Metadata roots remain raw until every definition in this walk passes.
++        for entry in self.tree.range::<RangeFull, &str>(&(..))? {
++            entry?.value().checked()?;
++        }
+         // All the pages in the table tree itself
+         self.tree.visit_all_pages(&mut visitor)?;
+ 
+@@ -230,7 +238,7 @@
+ }
+ 
+ pub(crate) struct TableTreeMut {
+-    tree: BtreeMut<&'static str, InternalTableDefinition>,
++    tree: BtreeMut<&'static str, RawTableDefinition<'static>>,
+     guard: Arc<TransactionGuard>,
+     page_allocator: PageAllocator,
+     // Cached updates from tables that have been closed. These must be flushed to the btree.
+@@ -283,6 +291,10 @@
+     where
+         F: FnMut(&PagePath) -> Result,
+     {
++        // Validate every raw definition before the first visitor callback.
++        for entry in self.tree.range::<RangeFull, &str>(&(..))? {
++            entry?.value().checked()?;
++        }
+         // All the pages in the table tree itself
+         self.tree.visit_all_pages(&mut visitor)?;
+ 
+@@ -360,11 +372,14 @@
+     }
+ 
+     pub(crate) fn flush_table_root_updates(&mut self) -> Result<&mut Self> {
++        for name in self.pending_table_updates.keys() {
++            self.tree.get(&name.as_str())?.unwrap().value().checked()?;
++        }
+         for (name, (new_root, new_length, dirty)) in
+             core::mem::take(&mut self.pending_table_updates)
+         {
+             // Bypass .get_table() since the table types are dynamic
+-            let mut definition = self.tree.get(&name.as_str())?.unwrap().value();
++            let mut definition = self.tree.get(&name.as_str())?.unwrap().value().checked()?;
+             // No-op if the root has not changed and checksums are already finalized
+             if !dirty {
+                 match definition {
+@@ -411,7 +426,7 @@
+                     *table_length = new_length;
+                 }
+             }
+-            self.tree.insert(&name.as_str(), &definition)?;
++            self.tree.insert(&name.as_str(), &definition.as_raw())?;
+         }
+         Ok(self)
+     }
+@@ -430,7 +445,7 @@
+         // Reserve space in the table tree
+         self.tree.insert(
+             &name,
+-            &InternalTableDefinition::new::<K, V>(TableType::Normal, None, 0),
++            &InternalTableDefinition::new::<K, V>(TableType::Normal, None, 0).as_raw(),
+         )?;
+ 
+         // Create an empty table and call the provided closure on it
+@@ -450,7 +465,8 @@
+         // Flush the root to the table tree, without allocating
+         self.tree.insert_inplace(
+             &name,
+-            &InternalTableDefinition::new::<K, V>(TableType::Normal, table_root, table_length),
++            &InternalTableDefinition::new::<K, V>(TableType::Normal, table_root, table_length)
++                .as_raw(),
+         )?;
+ 
+         Ok(())
+@@ -529,7 +545,7 @@
+         // Move the definition as stored, not the pending update: staged roots must stay out
+         // of the master tree, since reopening the table can free their pages (see stats())
+         let stored_definition = if let Some(guard) = self.tree.get(&name)? {
+-            let definition = guard.value();
++            let definition = guard.value().checked()?;
+             definition.check_match_untyped(table_type, name)?;
+             Some(definition)
+         } else {
+@@ -544,7 +560,7 @@
+                     .insert(new_name.to_string(), update);
+             }
+             assert!(self.tree.remove(&name)?.is_some());
+-            assert!(self.tree.insert(&new_name, &definition)?.is_none());
++            assert!(self.tree.insert(&new_name, &definition.as_raw())?.is_none());
+         } else {
+             return Err(TableError::TableDoesNotExist(name.to_string()));
+         }
+@@ -600,7 +616,7 @@
+             found
+         } else {
+             let table = InternalTableDefinition::new::<K, V>(table_type, None, 0);
+-            self.tree.insert(&name, &table)?;
++            self.tree.insert(&name, &table.as_raw())?;
+             table
+         };
+ 
+@@ -625,9 +641,13 @@
+         n: usize,
+         output: &mut BTreeMap<PageNumber, PagePath>,
+     ) -> Result {
++        // A later invalid definition must not leave an earlier path in output.
++        for entry in self.tree.range::<RangeFull, &str>(&(..))? {
++            entry?.value().checked()?;
++        }
+         for entry in self.tree.range::<RangeFull, &str>(&(..))? {
+             let entry = entry?;
+-            let mut definition = entry.value();
++            let mut definition = entry.value().checked()?;
+             if let Some((updated_root, updated_length, _)) =
+                 self.pending_table_updates.get(entry.key())
+             {
+@@ -659,8 +679,11 @@
+         relocation_map: &PageNumberHashMap<PageNumber>,
+     ) -> Result {
+         for entry in self.tree.range::<RangeFull, &str>(&(..))? {
++            entry?.value().checked()?;
++        }
++        for entry in self.tree.range::<RangeFull, &str>(&(..))? {
+             let entry = entry?;
+-            let mut definition = entry.value();
++            let mut definition = entry.value().checked()?;
+             if let Some((updated_root, updated_length, _)) =
+                 self.pending_table_updates.get(entry.key())
+             {
+@@ -700,7 +723,7 @@
+         let resolver = self.page_allocator.resolver();
+         for entry in self.tree.range::<RangeFull, &str>(&(..))? {
+             let entry = entry?;
+-            let mut definition = entry.value();
++            let mut definition = entry.value().checked()?;
+             if let Some((updated_root, length, _)) = self.pending_table_updates.get(entry.key()) {
+                 definition.set_header(*updated_root, *length);
+             }
+@@ -771,7 +794,6 @@
+ 
+ #[cfg(test)]
+ mod test {
+-    use crate::Value;
+     use crate::tree_store::table_tree_base::InternalTableDefinition;
+     use crate::types::TypeName;
+ 
+@@ -787,7 +809,168 @@
+             key_type: TypeName::new("test::Key"),
+             value_type: TypeName::new("test::Value"),
+         };
+-        let y = InternalTableDefinition::from_bytes(InternalTableDefinition::as_bytes(&x).as_ref());
++        let y = InternalTableDefinition::checked(InternalTableDefinition::as_bytes(&x).as_ref())
++            .unwrap();
+         assert_eq!(x, y);
+     }
++
++    #[test]
++    fn every_master_table_entry_point_rejects_raw_root_before_visitation_or_mutation() {
++        use super::*;
++        use crate::tree_store::btree_base::{LeafBuilder, leaf_checksum};
++        use crate::tree_store::{AllocationPolicy, InMemoryBackend, Page, TransactionalMemory};
++        for table_type in [TableType::Normal, TableType::Multimap] {
++            for alias in [0, 1] {
++                let mem = Arc::new(
++                    TransactionalMemory::new(
++                        Box::new(InMemoryBackend::new()),
++                        crate::test_admission(),
++                        true,
++                        4096,
++                        None,
++                        0,
++                    )
++                    .unwrap(),
++                );
++                mem.reset_allocator_state().unwrap();
++                let allocator = PageAllocator::new(mem.clone(), AllocationPolicy::Default);
++                let tracker = Arc::new(PageTracker::ignore());
++                let freed = Arc::new(Mutex::new(vec![]));
++                let guard = Arc::new(TransactionGuard::untracked());
++                let pair = 1_u64.to_le_bytes();
++                let mut builder = LeafBuilder::new(&allocator, &tracker, 1, Some(8), Some(8));
++                builder.push(&pair, &pair);
++                let page = builder.build().unwrap();
++                let leaf = BtreeHeader::new(
++                    page.get_page_number(),
++                    leaf_checksum(&page, Some(8), Some(8)).unwrap(),
++                    1,
++                );
++                drop(page);
++                let good =
++                    InternalTableDefinition::new::<u64, u64>(TableType::Normal, Some(leaf), 1);
++                let mut bad =
++                    InternalTableDefinition::new::<u64, u64>(table_type, Some(leaf), 1).as_bytes();
++                let raw = u64::from_le_bytes(bad[10..18].try_into().unwrap());
++                let alias = if alias == 0 {
++                    raw | (1_u64 << 40)
++                } else {
++                    (raw & !(0x1f_u64 << 59)) | (4_u64 << 59) | (1_u64 << 19)
++                };
++                bad[10..18].copy_from_slice(&alias.to_le_bytes());
++                let mut tables = TableTreeMut::new(
++                    None,
++                    guard.clone(),
++                    allocator.clone(),
++                    freed.clone(),
++                    tracker.clone(),
++                );
++                tables.tree.insert(&"a", &good.as_raw()).unwrap();
++                tables
++                    .tree
++                    .insert(&"z", &RawTableDefinition::from_bytes(&bad))
++                    .unwrap();
++                let root = tables.tree.finalize_dirty_checksums().unwrap();
++                let readonly =
++                    TableTree::new(root, PageHint::None, guard.clone(), allocator.resolver())
++                        .unwrap();
++                let mut visits = 0;
++                assert!(matches!(
++                    readonly.visit_all_pages(|_| {
++                        visits += 1;
++                        Ok(())
++                    }),
++                    Err(crate::StorageError::Corrupted(_))
++                ));
++                assert_eq!(visits, 0);
++                let mut mutable_visits = 0;
++                assert!(matches!(
++                    tables.visit_all_pages(|_| {
++                        mutable_visits += 1;
++                        Ok(())
++                    }),
++                    Err(crate::StorageError::Corrupted(_))
++                ));
++                assert_eq!(mutable_visits, 0);
++                let mut highest = BTreeMap::new();
++                assert!(matches!(
++                    tables.highest_index_pages(2, &mut highest),
++                    Err(crate::StorageError::Corrupted(_))
++                ));
++                assert!(highest.is_empty());
++                assert!(matches!(
++                    readonly.get_table_untyped("z", table_type),
++                    Err(TableError::Storage(crate::StorageError::Corrupted(_)))
++                ));
++                assert!(matches!(
++                    readonly.list_tables(table_type),
++                    Err(crate::StorageError::Corrupted(_))
++                ));
++                assert!(matches!(
++                    readonly.verify_checksums(),
++                    Err(crate::StorageError::Corrupted(_))
++                ));
++                drop(readonly);
++                let mut target = allocator.allocate(4096, &tracker).unwrap();
++                target.memory_mut().fill(0xa5);
++                let target_number = target.get_page_number();
++                drop(target);
++                let pages = [root.unwrap().root, leaf.root, target_number];
++                let before: Vec<_> = pages
++                    .iter()
++                    .map(|number| {
++                        allocator
++                            .get_page(*number, PageHint::None)
++                            .unwrap()
++                            .memory()
++                            .to_vec()
++                    })
++                    .collect();
++                let allocated = mem.count_allocated_pages().unwrap();
++                let original_root = tables.tree.get_root();
++                assert!(matches!(
++                    tables.rename_table("z", "renamed", table_type),
++                    Err(TableError::Storage(crate::StorageError::Corrupted(_)))
++                ));
++                assert!(matches!(
++                    tables.delete_table("z", table_type),
++                    Err(TableError::Storage(crate::StorageError::Corrupted(_)))
++                ));
++                assert!(matches!(
++                    tables.get_or_create_table::<u64, u64>("z", table_type),
++                    Err(TableError::Storage(crate::StorageError::Corrupted(_)))
++                ));
++                let mut map = PageNumberHashMap::default();
++                map.insert(leaf.root, target_number);
++                assert!(matches!(
++                    tables.relocate_tables(&map),
++                    Err(crate::StorageError::Corrupted(_))
++                ));
++                tables
++                    .pending_table_updates
++                    .insert("a".to_string(), (Some(leaf), 1, true));
++                tables
++                    .pending_table_updates
++                    .insert("z".to_string(), (Some(leaf), 1, true));
++                assert!(matches!(
++                    tables.flush_table_root_updates(),
++                    Err(crate::StorageError::Corrupted(_))
++                ));
++                assert_eq!(tables.pending_table_updates.len(), 2);
++                assert_eq!(tables.tree.get_root(), original_root);
++                assert!(freed.lock().unwrap().is_empty());
++                assert_eq!(mem.count_allocated_pages().unwrap(), allocated);
++                assert_eq!(
++                    RawTableDefinition::as_bytes(&tables.tree.get(&"z").unwrap().unwrap().value()),
++                    bad
++                );
++                for (index, page) in pages.iter().enumerate() {
++                    assert_eq!(
++                        allocator.get_page(*page, PageHint::None).unwrap().memory(),
++                        before[index]
++                    );
++                }
++            }
++        }
++    }
+ }
+--- a/vendor/redb-4.2.0/src/tree_store/table_tree_base.rs
++++ b/vendor/redb-4.2.0/src/tree_store/table_tree_base.rs
+@@ -5,6 +5,7 @@
+     BtreeHeader, PageAllocator, PageHint, PageNumber, PageNumberHashMap, PageResolver,
+ };
+ use crate::{Key, Result, TableError, TypeName, Value};
++use alloc::borrow::Cow;
+ use alloc::string::ToString;
+ use alloc::sync::Arc;
+ use alloc::vec;
+@@ -19,12 +20,6 @@
+ pub(crate) enum TableType {
+     Normal,
+     Multimap,
+-}
+-
+-impl TableType {
+-    fn is_legacy(value: u8) -> bool {
+-        value == 1 || value == 2
+-    }
+ }
+ 
+ #[allow(clippy::from_over_into)]
+@@ -352,25 +347,92 @@
+     }
+ }
+ 
+-impl Value for InternalTableDefinition {
+-    type SelfType<'a> = InternalTableDefinition;
+-    type AsBytes<'a> = Vec<u8>;
+-
++/// Raw master-table bytes cannot expose a root until checked conversion.
++#[derive(Debug)]
++pub(crate) struct RawTableDefinition<'a> {
++    data: Cow<'a, [u8]>,
++}
++
++impl RawTableDefinition<'_> {
++    pub(crate) fn checked(&self) -> Result<InternalTableDefinition> {
++        InternalTableDefinition::checked(&self.data)
++    }
++}
++
++impl Value for RawTableDefinition<'_> {
++    type SelfType<'a>
++        = RawTableDefinition<'a>
++    where
++        Self: 'a;
++    type AsBytes<'a>
++        = &'a [u8]
++    where
++        Self: 'a;
+     fn fixed_width() -> Option<usize> {
+         None
+     }
+-
+-    fn from_bytes<'a>(data: &'a [u8]) -> Self
++    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+     where
+         Self: 'a,
+     {
+-        debug_assert!(data.len() > 22);
+-        let mut offset = 0;
+-        let legacy = TableType::is_legacy(data[offset]);
+-        assert!(!legacy);
+-        let table_type = TableType::from(data[offset]);
+-        offset += 1;
+-
++        RawTableDefinition {
++            data: Cow::Borrowed(data),
++        }
++    }
++    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> &'a [u8]
++    where
++        Self: 'b,
++    {
++        &value.data
++    }
++    fn type_name() -> TypeName {
++        TypeName::internal("redb::InternalTableDefinition")
++    }
++}
++
++impl InternalTableDefinition {
++    pub(crate) fn as_raw(&self) -> RawTableDefinition<'static> {
++        RawTableDefinition {
++            data: Cow::Owned(self.as_bytes()),
++        }
++    }
++
++    pub(crate) fn checked(data: &[u8]) -> Result<Self> {
++        const KEY_LENGTH_OFFSET: usize = 1 + 8 + 1 + BtreeHeader::serialized_size() + 5 + 5 + 4 + 4;
++        const TYPE_START: usize = KEY_LENGTH_OFFSET + 4;
++        let malformed =
++            || crate::StorageError::Corrupted("Corrupted internal table definition".to_string());
++        if data.len() < TYPE_START {
++            return Err(malformed());
++        }
++        let table_type = match data[0] {
++            3 => TableType::Normal,
++            4 => TableType::Multimap,
++            _ => return Err(malformed()),
++        };
++        for position in [
++            9,
++            10 + BtreeHeader::serialized_size(),
++            15 + BtreeHeader::serialized_size(),
++        ] {
++            if data[position] > 1 {
++                return Err(malformed());
++            }
++        }
++        let key_len =
++            u32::from_le_bytes(data[KEY_LENGTH_OFFSET..TYPE_START].try_into().unwrap()) as usize;
++        let value_start = TYPE_START.checked_add(key_len).ok_or_else(malformed)?;
++        let key = data.get(TYPE_START..value_start).ok_or_else(malformed)?;
++        let value = data.get(value_start..).ok_or_else(malformed)?;
++        for name in [key, value] {
++            if name.is_empty()
++                || !matches!(name[0], 1 | 2 | 4)
++                || core::str::from_utf8(&name[1..]).is_err()
++            {
++                return Err(malformed());
++            }
++        }
++        let mut offset = 1;
+         let table_length = u64::from_le_bytes(
+             data[offset..(offset + size_of::<u64>())]
+                 .try_into()
+@@ -385,7 +447,7 @@
+                 data[offset..(offset + BtreeHeader::serialized_size())]
+                     .try_into()
+                     .unwrap(),
+-            ))
++            )?)
+         } else {
+             None
+         };
+@@ -441,7 +503,7 @@
+         offset += key_type_len;
+         let value_type = TypeName::from_bytes(&data[offset..]);
+ 
+-        match table_type {
++        Ok(match table_type {
+             TableType::Normal => InternalTableDefinition::Normal {
+                 table_root,
+                 table_length,
+@@ -462,17 +524,15 @@
+                 key_type,
+                 value_type,
+             },
+-        }
++        })
+     }
+ 
+     // Be careful if you change this serialization format! The InternalTableDefinition for
+     // a given table needs to have a consistent serialized length, regardless of the table
+     // contents, so that create_table_and_flush_table_root() can update the allocator state
+     // table without causing more allocations
+-    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Vec<u8>
+-    where
+-        Self: 'b,
+-    {
++    pub(crate) fn as_bytes(&self) -> Vec<u8> {
++        let value = self;
+         let mut result = vec![value.get_type().into()];
+         result.extend_from_slice(&value.get_length().to_le_bytes());
+         if let Some(header) = value.private_get_root() {
+@@ -513,10 +573,6 @@
+ 
+         result
+     }
+-
+-    fn type_name() -> TypeName {
+-        TypeName::internal("redb::InternalTableDefinition")
+-    }
+ }
+ 
+ #[cfg(test)]
+@@ -551,4 +607,41 @@
+             Err(TableError::Storage(crate::StorageError::Corrupted(_)))
+         ));
+     }
+-}
++
++    #[test]
++    fn raw_table_metadata_rejects_aliased_roots_before_decoding_owned_types() {
++        for table_type in [TableType::Normal, TableType::Multimap] {
++            for order in 0..=20 {
++                let root = BtreeHeader::new(PageNumber::new(3, 0, order), 17, 99);
++                let definition =
++                    InternalTableDefinition::new::<u64, &[u8]>(table_type, Some(root), 99);
++                let bytes = definition.as_bytes();
++                let raw = RawTableDefinition::from_bytes(&bytes);
++                assert_eq!(raw.checked().unwrap(), definition);
++                assert_eq!(raw.checked().unwrap().as_bytes(), bytes);
++                for bit in (40..59).chain((20 - u32::from(order))..20) {
++                    let mut bad = bytes.clone();
++                    bad[10 + bit as usize / 8] |= 1 << (bit % 8);
++                    let (result, allocations) = crate::admission::observe_test_allocations(|| {
++                        RawTableDefinition::from_bytes(&bad).checked()
++                    });
++                    assert!(matches!(result, Err(crate::StorageError::Corrupted(_))));
++                    // Only the returned corruption string is allocated; neither
++                    // key nor value TypeName is allocated before root rejection.
++                    assert_eq!(allocations, 1);
++                }
++                for length in 0..bytes.len() {
++                    // Truncating a type's text can be a different valid identity;
++                    // fixed metadata/root and empty type shapes must reject.
++                    if length <= 64 {
++                        assert!(
++                            RawTableDefinition::from_bytes(&bytes[..length])
++                                .checked()
++                                .is_err()
++                        );
++                    }
++                }
++            }
++        }
++    }
++}
+--- a/vendor/redb-4.2.0/CHANGELOG.md
++++ b/vendor/redb-4.2.0/CHANGELOG.md
+@@ -1,6 +1,8 @@
+ # redb - Changelog
+ 
+ ## Kasumi admission prerequisite (unreleased)
++* Reject noncanonical page-number encodings in roots, branch children and used reclamation records before page access or mutation; preserve opaque unused torn transaction slots.
++* Validate every raw table definition before mutable page visitation or highest-page output changes.
+ * Require physical admission at construction and report recoverable capacity denial separately from owner failure.
+ * Use immediately durable commits with prepared allocator snapshots; remove durability selection and post-commit metadata publication.
+ * Add explicit fallible close, retained busy handles, and non-allocating destructor fallback.
+--- a/vendor/redb-4.2.0/KASUMI_PATCH.md
++++ b/vendor/redb-4.2.0/KASUMI_PATCH.md
+@@ -161,3 +161,19 @@
+ The first-release no-compatibility contract supersedes upstream's instruction to
+ preserve older file interpretations. Unsupported inputs are rejected; no migration
+ or fallback is provided.
++
++## Canonical page-number representation
++
++The sole raw page-number decoder rejects every reserved bit and unsupported order
++before creating a typed page number. Table definitions stay borrowed raw metadata
++until checked conversion; branch access validates the complete child vector;
++used reclamation entries and multimap/savepoint roots use the same decoder.
++Relocation and merge paths preflight pointer vectors before changing their output.
++An unused checksum-invalid transaction slot remains opaque and is serialized
++verbatim until a new commit replaces it; it never supplies a decoded root.
++Supported region/order geometry and canonical writer bytes are unchanged.
++
++This prerequisite does not establish complete reachable-root allocation ownership,
++maintenance extension reserves or total workspace admission. Its target-only
++validation package records the exact checks performed; prior checkpoint results
++do not qualify the changed source.

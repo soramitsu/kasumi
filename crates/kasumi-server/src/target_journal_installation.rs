@@ -5,8 +5,8 @@ use crate::{
     target_runtime_config::TargetRecoveryConfig,
 };
 use anyhow::{Context, Result};
-use kasumi_engine::{TargetJournal, TargetJournalInstallation, admission::NodeAdmission};
-use kasumi_store::{NodeStore, ScratchDisk, StorageAccess, TenantStore, node_store_ids};
+use kasumi_engine::{TargetJournal, TargetJournalInstallation};
+use kasumi_store::{NodeStore, StorageAccess, TenantStore, node_store_ids};
 use std::{path::Path, sync::Arc};
 
 pub async fn initialize_from_file(path: &Path) -> Result<()> {
@@ -17,9 +17,19 @@ pub async fn initialize_from_file(path: &Path) -> Result<()> {
 /// its caller is cancelled. Existing, partial or uncertain files are not reset.
 pub async fn initialize(config: RuntimeConfig) -> Result<()> {
     config.validate()?;
+    let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+    initialize_with_storage(config, storage).await
+}
+
+pub(crate) async fn initialize_with_storage(
+    config: RuntimeConfig,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<()> {
+    config.validate()?;
+    storage.require_policy(&config.admission)?;
     crate::startup_owner::open(
         crate::startup_owner::Kind::TargetJournal,
-        initialize_owned(config),
+        initialize_owned(config, storage),
     )
     .await?;
     Ok(())
@@ -41,23 +51,27 @@ impl crate::startup_owner::Runtime for Initialized {
     }
 }
 
-async fn initialize_owned(config: RuntimeConfig) -> Result<Initialized> {
+async fn initialize_owned(
+    config: RuntimeConfig,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<Initialized> {
     let installed: &TargetRecoveryConfig = config
         .target_recovery
         .as_ref()
         .context("target recovery is not configured")?;
-    let admission = NodeAdmission::new(config.admission.clone())?;
-    let scratch = ScratchDisk::open(config.scratch_disk.clone())?;
+    let admission = storage.facade(&config.admission)?;
+    let mut pending = crate::startup_resources::Resources::default();
+    pending.owned_admissions.push(admission.clone());
+    let scratch = storage.open_scratch(&config.scratch_disk)?;
     let id = node_store_ids::target_journal(
         installed.control_root.control_incarnation,
         &installed.node.verifier,
     )?;
-    let mut pending = crate::startup_resources::Resources::default();
     let prepared = crate::startup_preparation::capture("target journal installation", async {
         let node = NodeStore::create_new(
             &installed.journal_path,
             id,
-            crate::persistent_disk::open(&config.persistent_disk)?,
+            crate::persistent_disk::open(&config.persistent_disk, &storage)?,
             scratch,
         )?;
         pending.owned_nodes.push(node.clone());

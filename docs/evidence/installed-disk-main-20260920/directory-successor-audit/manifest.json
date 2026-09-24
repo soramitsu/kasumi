@@ -1,0 +1,25 @@
+{
+  "status": "proposed_unimplemented_read_only",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "source_mutations": false,
+  "builds_run": false,
+  "design_sha256": "f2bf8be6d68f44703ea0924fe350123583218fe31d1185f57ae8aed9f5430d1d",
+  "inspected_source_sha256": {
+    "docs/installed-storage-admission-plan.md": "4ae85810a8249a8d72f9cb0122182369b194b361ac6722eff46cf03f66f3e156",
+    "crates/kasumi-store/src/node_disk.rs": "5dc73974ebd7daa5e232f148423148a4b5bdfdac8ad404a35a028e51df316e7b",
+    "crates/kasumi-store/src/node_disk/census.rs": "66f063352501c5f4c29da812ffad306fb2204d2b7a5ae4c63d0f1d8f5fe616d7",
+    "crates/kasumi-store/src/node_disk/file.rs": "488a5b8182ff33ee20cfc1685749ff0e3887662cf7da0bf14c8224d5c0c2bdaa",
+    "crates/kasumi-store/src/node_disk/memory.rs": "a818170d52397a3ac5987ab4e93f55897de82c61e14c2708dbfb799383176d12",
+    "crates/kasumi-store/src/disk_memory.rs": "5ac1ff5b6139723f630a76aa03825b80e4e575201afda00c3ac6e6549fc3847c",
+    "crates/kasumi-store/src/audit_archive.rs": "6e90ea64cce58f1d1c526a68e047d621a4e69618874bbad7a58916819465ef38",
+    "crates/kasumi-store/src/backup.rs": "c5786a5fca4daad68af484c7e0448afb4d01d05676800eb00efc5009f2f9e37b",
+    "crates/kasumi-store/src/backup_sessions_fs.rs": "2441aacf98327bd4c97e11c841178edd9966e7baf890c29df0b2d6b9bb06910c",
+    "crates/kasumi-server/src/local_recovery.rs": "fed2760c1361d4b37b17eafb3b3e24e063d2a063e9654040d6a6d01a2872bcca",
+    "crates/kasumi-server/src/local_recovery_archives.rs": "ed23713a5323091f53668a3a125a3e48d8fb38c700d050b159bb98c369dcf2e4",
+    "crates/kasumi-server/src/target_runtime.rs": "76f0da855232ba20be426ad0d2ac99e2731c3a7e9d2aa9222e9cd4681633cc11",
+    "crates/kasumi-server/src/startup_resources.rs": "3d76d2547fd5e58afa6efc816fdcabaa17c7ddacfafb5b66b5ec18d0e3eaa1d8",
+    "crates/kasumi-types/src/drain.rs": "8e27fd014980265cdc0097e1b74421403f6d2d6a8d2d9c07463222fd8efa81aa"
+  },
+  "qualification": "Current gate80/81 outputs are owned by root. This audit does not claim their outcome or prove directory allocation bounds."
+}

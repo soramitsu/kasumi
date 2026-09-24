@@ -1,0 +1,11 @@
+{
+  "pgid": 26937,
+  "exit_code": 0,
+  "elapsed_seconds": 0.09374213218688965,
+  "files": [
+    "crates/kasumi-store/src/node_disk.rs",
+    "crates/kasumi-store/src/node_disk/native_file.rs",
+    "crates/kasumi-store/src/node_disk/tests.rs",
+    "crates/kasumi-store/src/node_disk/file.rs"
+  ]
+}

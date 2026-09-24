@@ -1,0 +1,18 @@
+{
+  "status": "APPLIED_UNCOMPILED_UNEXECUTED",
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "patch_sha256": "7e7a01f1f0de982da6754008a1fc3e82a45146ade60fcc17ef3c14c9ad594fc0",
+  "manifest_sha256": "5f5e58b7662368c52581fdf251d016e8d7ceaa374e2ec221b1e658411aa08a33",
+  "root_review_sha256": "7db97e16c996b44ca43518e83e6ce992697ccbccd7680d488cb3f4549f786d88",
+  "files": [
+    {
+      "path": "crates/kasumi-authority/src/issuer_tests.rs",
+      "before_sha256": "b916cc088a1c029d10302dcf5ba3276d939d815a2769cf2e337f2b3795e7c7d3",
+      "after_sha256": "cadcc75c5201075f1cbf285b9db21cd924be248bfac39d80d997d2cc0722aec4"
+    }
+  ],
+  "prior_gate_132_drained": true,
+  "applied_at_utc": "2026-09-20T16:41:44.260827+00:00"
+}

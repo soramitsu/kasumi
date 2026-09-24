@@ -1,0 +1,49 @@
+# Two fixed HashMap banks: independent source proof
+
+Scope: target-only design/proof for the selected NodeDisk successor. No actual source or Cargo changes. Assembly owns the implementation. This artifact proves a restricted algorithm against the pinned implementation; it is not a review of a completed candidate or evidence that new code compiled. A later exact-candidate review must verify every call site and the proposed type sizes.
+
+## Pinned facts
+
+Rust 1.97.1, commit 8bab26f4f68e0e26f0bb7960be334d5b520ea452, pins hashbrown 0.17.1 in library/Cargo.lock, checksum ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a. inputs.json records the already-frozen sources and the exact map.rs extracted here from that verified crate archive. No network or new native run was used.
+
+* std HashMap::capacity delegates to base.capacity (std map.rs 484–485). RawTable::capacity is items + growth_left (raw.rs 1324–1325); len is items. Thus `capacity() > len()` means growth_left >= 1, including after tombstone deletions.
+* RawTable::reserve(1) reaches rehash only if 1 > growth_left (raw.rs 909–932). HashMap::insert calls find_or_find_insert_index, which unconditionally invokes reserve(1) BEFORE lookup (extracted map.rs 1806–1818; raw.rs 1120–1126). Therefore an occupied insert can allocate too when growth is exhausted. Existing-value updates must use get_mut and assignment/mem::replace; absent insertion must have the fresh positive-capacity certificate.
+* RawTable::clear returns immediately for an empty table (raw.rs 833–836). Empty does not prove the deletion controls were reset. RawDrain::drop unconditionally calls clear_no_drop then restores the same allocation (raw.rs 4135–4149). clear_no_drop resets tags, items=0 and growth_left=full capacity (3184–3189). Use `drop(map.drain())`, including for empty banks; never mem::take/replace with HashMap::new as a reset.
+* Keys are the concrete two-u64 Identity; values are the concrete Copy AccountedInode. The production hasher remains std RandomState. No caller Hash/Eq/Drop callback is introduced. Avoid generic public container hooks or exposing a mutable HashMap, entry(), extend(), collect(), clone(), shrink, reserve or insert behind the guarded API.
+
+## Churn protocol
+
+Both inode banks are allocated once, after the mandatory resident charge and before installed heap/census publication, at physical capacity C = checked(2*N + R). The public policy remains N files plus retained census directories; the bank's larger actual hash capacity is not permission to exceed C. After constructor try_reserve(C), require capacity>=C. Subsequent bank operations never reserve or allocate.
+
+To prepare one absent insertion, hold the actual NodeDisk State guard and first enforce its logical quota. If active.capacity()>active.len(), reserve no table memory. Otherwise require active.len()<C and a reset spare with enough no-growth capacity. Copy all active Identity/AccountedInode pairs into spare using a capacity>len guard on every insert. Do not drain the authoritative ledger to transfer entries: copy-then-swap keeps the original intact if an injected panic/failure interrupts rebuilding. After complete equal contents/count validation, swap the two map objects and drain-reset the former active. Recheck capacity>len immediately before the eventual absent insert. Existing entries use get_mut only. Successful reconstruction uses the two already funded backings; no third map or rehash allocation exists.
+
+Rebuild occurs only in prepare_file before O_CREAT/open publication. The same State guard remains inside PreparedFile until execute/drop, so no other operation can spend the certificate. Physical create followed by registration must use an insertion API whose precondition was checked before the effect; a post-effect capacity error is a logic/fencing failure, not a permitted post-admission allocation. All record/parent updates after publication remain get_mut assignments. Remove does not grow; it can consume future growth credit through tombstones, which the next preparation detects.
+
+A live Weak<FileOwner> map needs the analogous fixed backing policy at H=max_open_files. If it uses two banks, both H-capacity tables must be funded. Weak clones during a pre-effect rebuild duplicate a reference count, not the FileOwner allocation, and both copies must be retired before unlocking State. Preserve the original final-owner/registration protocol; never drop registered owners while holding State. A non-Copy/externally supplied value must not be silently covered by the Copy inode proof.
+
+## Census and failure ordering
+
+The inactive C-capacity bank is also the replacement-census destination, enforcing the tighter logical N+R limit. Census returns scalar totals, not a third owned HashMap. The initial census likewise populates one preallocated bank. All physical banks survive success, failure and repeated rebuilds until their installed owner actually dies.
+
+Reconciliation already holds State, pauses admission, verifies no open files/directories/cursors, retains root locks, and performs all scans/syncs before replacing state. Reset spare before scanning, then populate only spare. On cancellation/malformed namespace/I/O/arithmetic failure, leave active entries and old bytes/pending/files/directory counts unchanged; retain both allocations, clear partial spare, and preserve existing owner-fence/error behavior. On success, validate complete totals and shared-device promise arithmetic before publishing. Only then update shared promises, swap active/spare, assign scalar totals, drain-reset old contents, and re-open admission. After promise publication there must be no fallible hash allocation or user destructor. No external table references survive State mutation; Rust borrowing and private map methods enforce this. The spare cannot concurrently serve a churn rebuild because the same State guard serializes both uses.
+
+## Exact requested layout
+
+For a fresh bank with capacity C>0, item type T=(Identity,AccountedInode), S=size_of<T>, A=align_of<T>, and pinned control width G, hashbrown chooses power-of-two buckets B from capacity_to_buckets. For C>=15, B=next_power_of_two(floor(8*C/7)); the small-capacity rules are copied exactly in geometry.py. Control alignment Q=max(A,G), control offset O=align_up(B*S,Q), and the requested allocation length is O+B+G. Reject all checked arithmetic/isize layout overflows before allocation. There is exactly one requested hash allocation per bank. G=8 for this aarch64 NEON target; x86_64 SSE2 uses16. Select supported-target geometry explicitly; do not reuse8 blindly on another target.
+
+Two inode banks cost 2*L(2N+R,T). Two live banks cost 2*L(H,(Identity,Weak<FileOwner>)). Both inactive capacities are physical retained charges, not temporary operation reservations. There is no old/new allocation overlap beyond these four already-counted backings, because later resize is prohibited. Extra inline HashMap/wrapper fields belong to actual type-derived NodeDisk base allocation. Native allocator metadata/rounding allowance is separate from requested bytes; neither this formula nor the previous4096 allowance proves RSS or arbitrary platform malloc overhead.
+
+geometry.py is checked arithmetic only. For unchanged N=1,000,000/R=1/H=4096 and CONDITIONAL current sizes inode pair112/align8, live pair24/align8, G8: each inode bank has4,194,304 buckets, requested473,956,360 bytes; both947,912,720. Both live banks request409,616. Four bank requests total948,322,336. The former estimated map components were1,536,009,216 +659,456 =1,536,668,672; conditional component reduction588,346,336. New wrapper sizes, exact native sizes and allocator allowance must be measured/qualified before using the total as a policy figure. This does not claim the unchanged2GiB configuration fits sampled RSS + all disk/core/audit/cache/work reservations.
+
+Compared with a new fixed chained table, std banks cost more backing because both inode banks support the retained2N+R peak; a bespoke retained2N+R plus replacementN+R slot table could be smaller. It would add index/free-list/chain corruption, collision-work and retirement proof. The selected std approach keeps existing hash semantics and gives a directly checked no-growth certificate. Neither strategy permits reducing N,4096 handle limits, parent physical allowances or existing workloads.
+
+## Required candidate checks/tests
+
+1. Actual native sizeof/alignof and requested allocation measurements match the pinned formula on each supported target; retained and constructor-failure backing stays charged until deallocation.
+2. Force tombstone depletion with an actual map; indefinite bounded-cardinality remove/insert cycles rebuild without allocator calls or changed capacity/backing count. Include the empty tombstone case and a full-cardinality get_mut replacement.
+3. Before-effect denial leaves physical paths/owner slots/charges unchanged. The post-O_CREAT map insert and established I/O/parent settlement remain allocation-free.
+4. A deliberately interrupted copy rebuild leaves authoritative entries/counters intact; partial spare resets without allocating or exposing a third bank. Preserve poison/fence handling on actual unwinding.
+5. Late failing/cancelled census retains exact active ledger and promises; successful drained census publishes the complete spare atomically and retains both capacities. Repeated reconcile/churn alternation never creates a replacement map.
+6. Live-map rebuild and final FileOwner retirement preserve exact registration Weak custody, descriptor drain, and allocation-before-slot-credit ordering under concurrent last-owner drops.
+
+Native/candidate validation is pending. The existing directory adoption/kernel-growth/native-stream/workspace/whole-server high-water gaps remain open.

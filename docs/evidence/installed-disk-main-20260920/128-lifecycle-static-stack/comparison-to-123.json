@@ -1,0 +1,47 @@
+{
+  "prepare_completion_poll": {
+    "run123_bytes": 623632,
+    "run128_bytes": 629232,
+    "delta_bytes": 5600
+  },
+  "complete_recovery_poll": {
+    "run123_bytes": 681136,
+    "run128_bytes": 681216,
+    "delta_bytes": 80
+  },
+  "exercise_completed_recovery_poll": {
+    "run123_bytes": 109760,
+    "run128_bytes": 110144,
+    "delta_bytes": 384
+  },
+  "resolve_expired_completion_poll": {
+    "run123_bytes": 312256,
+    "run128_bytes": 312256,
+    "delta_bytes": 0
+  },
+  "exercise_route_publication_poll": {
+    "run123_bytes": 390336,
+    "run128_bytes": 390368,
+    "delta_bytes": 32
+  },
+  "prepare_completion_box_poll": {
+    "run123_bytes": 64,
+    "run128_bytes": 64,
+    "delta_bytes": 0
+  },
+  "complete_recovery_box_poll": {
+    "run123_bytes": 64,
+    "run128_bytes": 64,
+    "delta_bytes": 0
+  },
+  "resolve_expired_completion_box_poll": {
+    "run123_bytes": 64,
+    "run128_bytes": 64,
+    "delta_bytes": 0
+  },
+  "exercise_route_publication_box_poll": {
+    "run123_bytes": 64,
+    "run128_bytes": 64,
+    "delta_bytes": 0
+  }
+}

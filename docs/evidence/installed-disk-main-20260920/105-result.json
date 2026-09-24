@@ -1,0 +1,31 @@
+{
+  "scope": "development three authority failures with original-cause diagnostics and two exact shutdown rejection classifiers; unchanged deadlines/workloads; no release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-authority",
+    "--all-features",
+    "--lib",
+    "--",
+    "--test-threads=1",
+    "--nocapture",
+    "--exact",
+    "service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain",
+    "service::tests::issuer_tests::target_materialization_tests::activated_target_keeps_operational_suspension_and_membership_across_restart",
+    "service::tests::issuer_tests::target_materialization_tests::exact_actual_completion_is_required_for_issuer_and_target_activation",
+    "service::tests::issuer_tests::target_materialization_tests::target_close_diagnostic_rejects_unrelated_storage_failures",
+    "service::tests::issuer_tests::target_materialization_tests::target_close_replication_diagnostic_preserves_child_failure_boundaries"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 13981,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 337.6859710216522,
+  "inventoried_source_unchanged": true
+}

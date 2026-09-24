@@ -1,0 +1,16 @@
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+error[E0716]: temporary value dropped while borrowed
+    --> crates/kasumi-engine/tests/common/recovery_control.rs:1781:23
+     |
+1781 |         let metrics = db.raft_group().raft().metrics().borrow();
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^         - temporary value is freed at the end of this statement
+     |                       |
+     |                       creates a temporary value which is freed while still in use
+1782 |         (
+1783 |             metrics.id,
+     |             ------- borrow later used here
+     |
+     = note: consider using a `let` binding to create a longer lived value
+
+For more information about this error, try `rustc --explain E0716`.
+error: could not compile `kasumi-engine` (test "lifecycle") due to 1 previous error

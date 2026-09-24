@@ -368,8 +368,8 @@ fn validate(
         .get(BINDING_NS, BINDING_KEY, MAX_KEY_CATALOG_BYTES)?
         .context("existing storage domain binding absent")?;
     ensure!(
-        serde_json::from_slice::<StorageBinding>(&bytes)? == binding,
-        "existing storage domain binding differs"
+        bytes == serde_json::to_vec(&binding)?,
+        "existing storage domain binding bytes differ"
     );
     if let Some(application) = application {
         ensure!(

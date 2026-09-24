@@ -120,6 +120,12 @@ impl NativeAdmin {
                                 stream_id: state.position.stream_id,
                                 next_index: 0,
                                 through_index: state.archive_segments,
+                                snapshot_head: state
+                                    .position
+                                    .archive_head
+                                    .as_ref()
+                                    .map(|archive| archive.object.clone()),
+                                previous: None,
                             });
                             anyhow::ensure!(
                                 cursor.stream_id == state.position.stream_id
@@ -127,6 +133,27 @@ impl NativeAdmin {
                                 kasumi_types::Error::new(
                                     ErrorCode::InvalidArgument,
                                     "archive cursor belongs to another stream or future range"
+                                )
+                            );
+                            let snapshot_head = if cursor.through_index == 0 {
+                                None
+                            } else {
+                                Some(
+                                    audit
+                                        .archive_page(cursor.through_index - 1, 1)?
+                                        .into_iter()
+                                        .next()
+                                        .ok_or_else(|| {
+                                            anyhow::anyhow!("audit snapshot head missing")
+                                        })?
+                                        .object,
+                                )
+                            };
+                            anyhow::ensure!(
+                                cursor.snapshot_head == snapshot_head,
+                                kasumi_types::Error::new(
+                                    ErrorCode::InvalidArgument,
+                                    "audit archive snapshot head changed"
                                 )
                             );
                             let limit = u64::from(request.limit)
@@ -137,13 +164,38 @@ impl NativeAdmin {
                             } else {
                                 audit.archive_page(cursor.next_index, limit)?
                             };
-                            Ok(SecurityAuditArchivePage {
-                                stream_id: cursor.stream_id,
-                                next_index: cursor
+                            anyhow::ensure!(
+                                archives
+                                    .first()
+                                    .is_none_or(|first| first.previous == cursor.previous),
+                                kasumi_types::Error::new(
+                                    ErrorCode::InvalidArgument,
+                                    "audit archive cursor chain changed"
+                                )
+                            );
+                            let next_index =
+                                cursor
                                     .next_index
                                     .checked_add(archives.len() as u64)
-                                    .ok_or_else(|| anyhow::anyhow!("archive index overflow"))?,
+                                    .ok_or_else(|| anyhow::anyhow!("archive index overflow"))?;
+                            if next_index == cursor.through_index {
+                                anyhow::ensure!(
+                                    archives
+                                        .last()
+                                        .map(|archive| &archive.object)
+                                        .or(cursor.previous.as_ref())
+                                        == cursor.snapshot_head.as_ref(),
+                                    kasumi_types::Error::new(
+                                        ErrorCode::InvalidArgument,
+                                        "audit archive page differs from its snapshot head"
+                                    )
+                                );
+                            }
+                            Ok(SecurityAuditArchivePage {
+                                stream_id: cursor.stream_id,
+                                next_index,
                                 through_index: cursor.through_index,
+                                snapshot_head: cursor.snapshot_head,
                                 archives,
                             })
                         },

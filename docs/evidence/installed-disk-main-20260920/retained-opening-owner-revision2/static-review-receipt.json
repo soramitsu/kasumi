@@ -1,0 +1,55 @@
+{
+  "status": "STATIC_SUCCESSOR_REVIEW_NATIVE_PENDING",
+  "patch_sha256": "154d2181bdbbb13926be4cad1fe4c2ae6f33a32f14978de93efdb9fdf2133dc7",
+  "manifest_sha256": "dc640ba6338a767827683473deccc25c27b76d94b6338ce0408dd5562d6e7ced",
+  "predecessor_patch_unchanged": true,
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/db.rs",
+      "live_base_exact": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/lib.rs",
+      "live_base_exact": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_opening.rs",
+      "live_base_exact": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_opening_tests.rs",
+      "live_base_exact": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_transaction.rs",
+      "live_base_exact": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "live_base_exact": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/mod.rs",
+      "live_base_exact": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+      "live_base_exact": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/mod.rs",
+      "live_base_exact": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "live_base_exact": true
+    }
+  ],
+  "transactions_delta_only_cfg_test_fixture_helper": true,
+  "matching_witness_gated_ready_or_waiting": true,
+  "original_panic_payload_mutex_guard_private": true,
+  "original_terminal_failure_phase_preserved_after_disposal": true,
+  "new_tests_uncompiled_unrun": true,
+  "target_formatter_only": true,
+  "actual_source_edits": false
+}

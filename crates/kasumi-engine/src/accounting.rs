@@ -1,6 +1,6 @@
 //! Exact canonical resident semantic-record sizes. Only changed document/stage
-//! records are remeasured during ordinary writes; permanent receipt rows have
-//! their own checked byte budget and only a fixed head is resident.
+//! records are remeasured during ordinary writes; permanent receipt and Control backup binding rows have
+//! their own checked byte budgets and only fixed heads are resident.
 use crate::snapshot_codec::{Record, metadata};
 use kasumi_types::*;
 use serde::Serialize;

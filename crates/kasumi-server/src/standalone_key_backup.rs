@@ -229,9 +229,12 @@ mod tests {
     #[tokio::test]
     async fn relocated_installed_keys_are_copied_and_inventory_detects_corruption() {
         let root = kasumi_store::test_utils::private_tempdir().unwrap();
-        let installed = crate::standalone::initialize(&root.path().join("kasumi"), "a/tenant")
-            .await
-            .unwrap();
+        let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+            &root.path().join("kasumi"),
+            "a/tenant",
+        )
+        .await
+        .unwrap();
         let mut config = RuntimeConfig::load(&installed.configuration).unwrap();
         let KeyProviderSettings::File { path: original } = &config.tenants[0].keys else {
             panic!()
@@ -260,9 +263,13 @@ mod tests {
             .join("operator/unrelated.txt");
         private_files::create(&unrelated, b"must not be copied").unwrap();
         let output = root.path().join("operator-backup");
-        crate::standalone::backup_operator_keys(&installed.configuration, &output)
-            .await
-            .unwrap();
+        crate::standalone::backup_operator_keys_with_storage(
+            &installed.configuration,
+            &output,
+            storage.clone(),
+        )
+        .await
+        .unwrap();
         assert!(!output.join("unrelated.txt").exists());
         let verified = verify(&output).unwrap();
         assert_eq!(verified.wrapping_keyrings, 5);
@@ -287,9 +294,13 @@ mod tests {
             verified.manifest_sha256
         );
         assert!(
-            crate::standalone::backup_operator_keys(&installed.configuration, &output)
-                .await
-                .is_err()
+            crate::standalone::backup_operator_keys_with_storage(
+                &installed.configuration,
+                &output,
+                storage.clone()
+            )
+            .await
+            .is_err()
         );
         assert_eq!(
             verify(&output).unwrap().manifest_sha256,

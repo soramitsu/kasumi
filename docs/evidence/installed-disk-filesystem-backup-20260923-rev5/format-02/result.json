@@ -1,0 +1,24 @@
+{
+  "pid": 5909,
+  "pgid": 5909,
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "fmt",
+    "--all",
+    "--",
+    "--check"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/assembly",
+  "bound_seconds": 120,
+  "exit_code": 0,
+  "timed_out": false,
+  "signals": [],
+  "remaining_processes": [],
+  "drained": true,
+  "source_count": 14966,
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "elapsed_seconds": 3.0617428340000004,
+  "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "passed": true
+}

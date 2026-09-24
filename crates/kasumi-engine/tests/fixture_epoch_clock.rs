@@ -1,5 +1,7 @@
 #![cfg(feature = "test-utils")]
 
+mod common;
+
 use kasumi_clock::{EpochClock, WallClock};
 use kasumi_engine::{
     Database, SecurityAudit, admission::NodeAdmission, open_fixture_with_epoch_clock,
@@ -88,13 +90,16 @@ fn query() -> QueryRequest {
 #[tokio::test]
 async fn one_epoch_expires_leases_and_credentials_but_preserves_permanent_command_identity() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let node = NodeStore::create_new_fixture(
-        directory.path().join("node.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    let admission = NodeAdmission::new(Default::default()).unwrap();
+    let physical =
+        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+    let node = physical
+        .storage
+        .create_new(
+            directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let admission = physical.storage.admission.clone();
     let audit = audit(node.clone(), admission.clone()).await;
     let elapsed = Arc::new(ManualClock::new());
     let epoch = Arc::new(EpochClock::new(elapsed.clone(), Arc::new(Wall)).unwrap());
@@ -267,13 +272,16 @@ async fn one_epoch_expires_leases_and_credentials_but_preserves_permanent_comman
 #[tokio::test]
 async fn fixture_epoch_rejects_production_storage_before_bootstrap() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let node = NodeStore::create_new_fixture(
-        directory.path().join("node.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    let admission = NodeAdmission::new(Default::default()).unwrap();
+    let physical =
+        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+    let node = physical
+        .storage
+        .create_new(
+            directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let admission = physical.storage.admission.clone();
     let audit = audit(node.clone(), admission.clone()).await;
     let epoch = Arc::new(EpochClock::new(Arc::new(ManualClock::new()), Arc::new(Wall)).unwrap());
     let store = TenantStore::initialize_catalog_fixture_with_access(
@@ -328,13 +336,16 @@ async fn fixture_epoch_rejects_production_storage_before_bootstrap() {
 #[tokio::test]
 async fn fixture_epoch_rejects_a_different_audit_facade_before_bootstrap() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let node = NodeStore::create_new_fixture(
-        directory.path().join("node.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    let admission = NodeAdmission::new(Default::default()).unwrap();
+    let physical =
+        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+    let node = physical
+        .storage
+        .create_new(
+            directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let admission = physical.storage.admission.clone();
     let audit = audit(node.clone(), admission).await;
     let store = TenantStore::initialize_catalog_fixture(
         node,
@@ -353,7 +364,7 @@ async fn fixture_epoch_rejects_a_different_audit_facade_before_bootstrap() {
         policy(),
         Limits::default(),
         audit.clone(),
-        NodeAdmission::new(Default::default()).unwrap(),
+        NodeAdmission::from_memory(physical.storage.admission.memory().clone()).unwrap(),
         epoch,
     )
     .await;

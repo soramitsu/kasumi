@@ -1,0 +1,9 @@
+{
+  "pid": 52452,
+  "pgid": 52452,
+  "argv": [
+    "target/installed-disk-validation/backup-namespace-admission/native-03/run.py"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp"
+}

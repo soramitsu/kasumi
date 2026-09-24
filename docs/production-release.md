@@ -14,6 +14,174 @@ request owners, and canonical planned recovery are integrated in source. Persist
 disk admission, native reservations, complete HA/local lifecycle, and final live,
 capacity, platform, endurance and artifact gates remain open.
 
+Latest master-only development evidence is recorded in the
+[integration bundle](evidence/installed-disk-integration-20260923/README.md).
+The later exact-byte storage, Raft and authority cutovers pass the full serial
+Raft library **81/81** and authority library **66/66** on their recorded source
+checkpoints. The applied node key-catalog, host-keyring, live signer trust,
+verifier installation and checkpoint binding-catalog cutovers pass their
+focused cases. The later full serial store library passes **408/408 runnable
+cases**, with two ignored. All-target/all-feature workspace checking, strict
+Clippy and formatting pass on the combined G01/G09 source. The later full
+engine library has one initial-leader fixture timeout among 273 runnable
+cases; that named test passes alone, so a clean later-source full engine pass
+remains pending.
+The installed protected three-node recovery-status test reads a real committed
+`Prepare` record, but the full recovery still fails before terminal status.
+G01 also retains target lifecycle, checkpoint point/ordinal rows and bootstrap
+manifest readers. The G09 Control TargetCommand marker prerequisite is applied
+with passing focused marker and 13-case receiver tests; its six-case synthetic
+Control fixture is being repaired. The mandatory receiver envelope, historical
+status and first committed Raft-membership proof remain absent. Every G01–G14
+gate remains open.
+The latest applied G01 snapshot readers pass 77/77 serial Raft cases with one
+historically long custody-capacity case filtered. Bounded encrypted scratch
+batching now passes that large case 1/1 in 403.88 seconds, including
+snapshot/reopen identity; the uninstrumented full Raft library suite then
+passes **78/78**. A
+test-only native administrative DTO regression, the local JWT
+missing-claim case, and the five-case same-process standalone staging fixture
+pass. The marker-codec source passes 398 runnable store library tests with two
+ignored. A later G06 archive-reference validation passes 25 types tests and
+nine affected store archive tests; its wider final-source suites remain open.
+The later G04 cursor-anchor client and protected-TLS server cases pass 1/1
+each. G10's protected recovery-status TLS case passes 1/1, but its positive
+replicated observation remains unqualified. The G11 functional-evidence
+export/transport tooling passes its 149-test Python checkpoint. Native
+workflow tar and independent producer-record uploads, exact Cargo executable
+and compiled-feature replay, and the local collector are applied. After
+correcting the synthetic package fixture and a feature-inventory false-pass,
+complete repository Python discovery passes **168/168** again on the later
+G05/G09 source under Python 3.12.14. A reviewed owned-assembly raw tar,
+producer and failure-snapshot transport prerequisite is now applied, with
+**15/15** focused tests and workflow syntax checks passing. Complete Python
+discovery passes **183/183** on that source. A reviewed post-download
+projection then passes **8/8** focused and **191/191** complete Python tests
+on the applied source, but its result is always `unqualified`: physical-host
+and permanent attempt-registry evidence are still missing. Native
+upload/download and semantic adapters remain open. A reviewed G10 assertion
+now checks the actual protected HTTPS membership epoch and all 129 complete,
+fresh groups; its focused installed rerun passes **1/1**. The serial G07 authority library rerun failed **3 of 64** cases:
+two fixture reopen waits incorrectly included a learner or removed voter, and
+target shutdown produced an exact sealed-serving error absent from its strict
+test classifier. The three cases and classifier regression pass focused, and
+the corrected full serial library passes **64/64 in 766.75 seconds** before
+the later G09 journal-format edit. The journal-format source's 13-case
+materialization rerun failed one strict shutdown classifier; its corrected
+named case passes focused and the complete serial authority library passes
+**65/65** on the format-2 source. The full
+engine library on that source failed one backup credential fixture among 267
+runnable cases. The corrected credential timing and strict serving-expiry
+classifier then pass their focused cases; the complete serial engine library
+passes **272/272 runnable cases**, with one ignored, on the later format-2
+target-journal source. The dormant G05 exact
+S3 destination index and G09 Start-owner format pass **5/5** and **2/2** focused
+cases respectively, but neither is wired to its production writer. Exact logs and
+hashes are preserved in the linked integration bundle. None of these
+development results closes G01–G14 or supplies final-source native
+acceptance. The paragraphs below preserve earlier source checkpoints.
+
+The earlier dirty combined source had passing focused canonical replay,
+authenticated HTTP/2 Raft transport, production-only server check, and a
+partial admitted redb direct-header slice (233 serial vendor library tests and
+strict vendor Clippy after a narrow lint correction). A reviewed semantic
+recovery digest now binds shared endpoints, parsed certificate pins and exact
+CA trust bytes while allowing Control-local credentials; its native mTLS test
+passes. The uninstrumented installed three-node runtime advances beyond the
+former `Prepare` stall but still fails at its original recovery deadline in
+`Materialize`. A bounded test-only probe traced the repeated unresolved
+outcome to a generation file path outside the installed NodeDisk accounting
+root: the runtime joined the file name to a canonicalized root while NodeDisk
+binds the configured root spelling. The path correction preserves the
+configured spelling after checking its canonical identity. The installed
+three-node rerun verified all three voter materializations, then failed at
+`Initialize`: a prior target initialization identity was durably bound but
+Control did not resolve its exact outcome before issuing a fresh phase.
+The registered redb Ready proof passes 20 focused store opening cases; its
+retained-reader prerequisite passes 215 vendored redb library tests. The
+retained-reader census prerequisite is applied and its full serial store
+library suite passes (388 cases, two ignored); later panic and output-credit
+tests pass the 24-case opening module. A dormant fixed catalog input-buffer
+plan now passes three focused tests and the full serial store suite (393 cases,
+two ignored), with strict types/store Clippy. Redb cache pages and transaction
+terminal allocations still lack complete admission, so no production writer
+cutover is claimed. The exact backup namespace binding,
+immutable Control binding value and historical-key resolver are applied as
+dormant prerequisites. The types library passes 24 cases, and strict all-target
+types/store Clippy passes. The focused StopLocal shutdown suite passes seven cases after replacing
+path-only absence with managed NodeDisk observation. A
+combined committed MCP mutation and credential-renewal response-fence test
+passes. Neither result completes G02 or G07. The full serial engine library
+run had 254 passes, one ignored and one serving-expiry quorum timeout; a
+fixture-only election correction passes three focused repeats.
+The full server/workspace cohort has not passed on this source; earlier
+sequential attempts, fixture failures and stack-overflow aborts remain in the
+linked evidence. Redb transaction-memory admission and production caller
+adoption, durable backup namespace binding, recovery exact outcomes and
+post-marker liveness, serving-route peer membership admission, remaining
+readiness scale/native acceptance, final native runs and release artifacts all
+remain open.
+The installed 129-group TLS fixture passes with an explicit 2 GiB work total
+and 129 snapshot-startup slots: all groups are healthy under complete fresh
+coverage, membership-change fencing works, and a failed group beyond the
+128-entry detail page revokes readiness. The protected archive-outage case also
+passes. Remaining G10 observations and final-source qualification are open.
+Every G01–G14 goal remains open; these development results are not release
+acceptance.
+The reviewed G11 dependency runner revision 2 is applied without registering
+an acceptance adapter; its focused Python tests pass 10/10 and full repository
+Python discovery passes 129/129. The later reviewed redb provenance rebind
+passes the official seven-package source and locked-Cargo checker, and a
+Git-free synthetic cargo-audit diagnostic detects its injected redb advisory.
+Native owned scanning with authenticated current advisory data, runner
+provenance and final acceptance remain open.
+
+The earlier combined-checkout native attempt is
+[preserved as failed and source-drift-invalidated](evidence/installed-disk-actual-master-20260923/README.md).
+The failed-opening/scratch-close recovery revision 8 and redb provenance passed
+the frozen native-09 cohort: 46 of 46 phases, including the complete store,
+vendor and official dependency checks, with unchanged inventoried source and
+drained process groups. All 56 proposed files were then applied and verified on
+`master`. This qualifies that exact recovery slice on macOS ARM64; it does not
+qualify the subsequent combined source. The eight-file service/G07 prerequisite,
+five-file G10 physical-capacity observation and six-file G07 correction were also
+applied with exact readback. The first integrated workspace check found two
+server compile errors in the serving runtime and owned management gate. The
+three-file repair is now applied; a pinned Rust 1.97.1 all-target/all-feature
+workspace check and strict workspace Clippy pass on that combined checkpoint.
+Focused G07 custody, deadline, gate and enrollment tests pass, after a
+separate test-frame repair preserved the first enrollment SIGABRT. The G07 API
+audit-failure fixture passes its exact all-features case; a managed-
+directory local-recovery repair and one-file fixture correction now pass three
+focused cases on the normal test harness stack. The earlier fixture failures
+remain preserved. Two unfiltered all-features server attempts are failed:
+the first stalled after local-recovery fixture failures, and the second exposed
+same-process local-recovery/RPC failures before an audit TLS test stack
+overflow. A two-test reproduction traced one failure to a cancelled startup
+task retained in the process-wide local-operator registry. Explicit test
+teardown now passes the whole local-recovery module **10/10 in one process**
+on the normal stack; the complete server cohort remains pending. Test-only
+audit TLS and runtime-lifecycle fixture stack repairs pass their named cases
+on the normal stack. The authority RPC retirement fixture now accounts for its
+deliberate post-activation delay and passes 1/1. Its first same-process pair
+exposed an intermittent lifecycle issuer-quorum readiness timeout; the revised
+test still requires a real barrier, and the corrected pair passes **2/2 in one
+process**. A sequential unfiltered diagnostic then passed all local-recovery
+cases and the authority RPC case, but failed on a lifecycle recovery
+`UNKNOWN_OUTCOME` and another runtime-lifecycle test stack overflow. The
+test-only stack repair and exact-status uncertainty fixture correction pass
+their focused cases; the authority→lifecycle pair passes 2/2. A complete
+same-process server cohort remains required. The six-file G11 owned assembly launcher and verifier
+bridge, its one-file test-path correction and two-file selected-primary adapter
+slice, a four-file owned dependency-review runner, and G02's two-file
+non-consuming registered-opening close are applied
+with exact readback. G02's isolated overlay passes 16 focused opening and 368
+runnable store cases with strict store Clippy; these are prerequisite results,
+not validation of the latest combined source.
+A fresh complete combined-source run remains pending. The
+[current integration evidence](evidence/installed-disk-integration-20260923/README.md)
+records the exact scopes and open gates. All release goals remain open.
+
 The [approved completion plan](first-release-plan.md) and
 [fourteen workstream goals](first-release-goals.md) define the remaining work
 and its dependency order. Backward compatibility is forbidden for this first
@@ -23,13 +191,397 @@ usable release artifacts or operating documentation.
 The [acceptance manifest verifier](release-acceptance-manifest.md) now validates
 the fixed native/domain/artifact roster, complete workload samples, process
 ownership and source identities. It deliberately rejects every domain whose
-semantic adapter remains unimplemented. The Python tooling suite passes 84
-tests, including counterexamples and remote-interpreter provenance. This is
-scoped tooling progress: G11, live runners, all final native gates and release
-acceptance remain open. Physical host observations in
-[Linux acceptance](linux-acceptance.md) are not resource reservations.
+semantic adapter remains unimplemented. The applied G11 revision 3 launcher
+tracks its outer runner and nested process groups. The selected-primary adapter
+slice binds the assembly's retained functional receipt to the manifest-selected
+native primary; its [exact application receipt](evidence/installed-disk-integration-20260923/README.md)
+has SHA256 `1b20595a8452a6c0afc3cb6bf869b51aa590b34f9ce3bffd85c4fa9c37556ddd`.
+Full repository Python discovery passes **122/122** on the applied source (log
+`target/installed-disk-validation/g11-dependency-review-runner-application/full-python-discovery.log`).
+The adapter registry remains empty. Complete semantic adapters and required
+native platform runs remain open, so G11 and final release acceptance remain
+open. Physical host observations in [Linux acceptance](linux-acceptance.md) are
+not resource reservations.
 
 ## Current development diagnostics on master
+
+The latest pending mandatory-memory stack, based on `600c0ca`, requires the
+installed core and runtime facade before production disk opening. It retains
+actual persistent/scratch/device metadata leases and rejects foreign memory
+owners before storage mutation or Database startup. Superseded constructors and
+their supported callers were replaced together without compatibility defaults.
+Attempt 77 preserves the compile failures and exact correction patches;
+78 passes all-target/all-feature workspace compilation and 79 passes formatting.
+Attempt 80 passes the full store library with **215 passed, zero failed and two
+ignored**. Attempt 81 passes **50** selected engine admission, startup, codec and
+clock tests; its filename-based construction selector did not select the new
+construction case, which remains required in the broader successor. Attempt 82
+passes **49** server memory-sharing, readiness, credential and cleanup cases.
+Attempt 83 passes **90** selected Raft library/integration cases, with the earlier
+custody-capacity failure still explicitly excluded and required. All seven
+receipts record unchanged inventoried source, drained process groups and no
+signals/timeouts. The [raw evidence](evidence/installed-disk-main-20260920/README.md)
+preserves the applied stack and previous failures. Directory accounting,
+retained blocking-worker outcomes, production startup-resource adapters, full
+caller/native qualification and all G01–G14 remain open. The following paragraphs
+retain the preceding diagnostic history and its original scopes.
+
+Subsequent review added early foreign-core rejection to snapshot work,
+target-journal construction and audit-maintenance installation. Attempt 89 passes
+the construction, snapshot and journal guards, but finishes with 210 passes and
+five fixture failures; the separately failed large restore case remains excluded
+and required. Attempt 84 times out during queued-activation shutdown after an
+earlier coverage failure. The exact binary passes that coverage case alone in
+attempt 90, leaving its cohort failure unexplained. Attempts 85 and 86 preserve
+the census lint failure and invalid Cargo invocation. Corrections now include
+explicit response-fence release, exact retained metadata assertions, valid
+administrator fixtures, the actual archive directory, and complete file-owner
+resource retirement before handle-credit reuse. Attempt 93 passes all **220**
+enabled store tests; attempts 92 and 95 pass strict workspace Clippy and formatting.
+Attempt 91 finishes with **53 passes and eight failures**: the queued-activation
+hang is fixed, while signer/restart/stop availability, target-close diagnostics
+and maintained membership remain unresolved. The separate packaging metadata
+ownership change passes **50** Python tests; complete repeatable assembly and
+its semantic adapter remain open. Attempt 94 passes **215** engine library tests,
+including all five corrected fixtures; the prior large restore failure remains
+excluded and required, and permanent-capacity testing remains unrun. Engine
+integration attempt 87 passes all **28** selected cases, including the complete
+12-case backup checkpoint target. Attempt 88 completes all remaining fourteen
+integration targets with **72 passes and 22 failures**; exact fixture corrections
+and unresolved restore/recovery causes remain under investigation. Attempt 99
+passes **34** admission/core/startup tests after cancellation backing retirement.
+The two-invocation assembly runner and mandatory native input contract are now
+applied; complete Python discovery passes **105 tests**. Native assembly and its
+acceptance adapter remain unqualified, with the registry disabled. None of these
+results qualifies the release.
+
+The next reviewed corrections directly replace the installed memory lease with
+an opaque allocation-before-credit owner and correct snapshot quota comparisons.
+Attempt 106 passes all **223** enabled store tests; attempt 104 passes **49**
+admission/codec cases, including canonical completion-history accounting. The
+new retained redb terminal prerequisite passes five tests and fails three in
+attempt 102: two fixture page-size mismatches and an original I/O diagnostic lost
+by the backend fence. Production terminal adoption, physical close, bounded
+batching and both unchanged restore deadlines remain open. Snapshot-worker
+revision 5 addresses the reviewed callback-panic output-custody defect and is
+now applied but uncompiled. Attempt 103 passes **40** integration cases with two
+lifecycle failures and the prior schema restore failure excluded and required.
+Attempt 105 passes four targeted authority cases and reports a generic route
+failure for the remaining stopped-epoch fixture. That branch also checks term
+and core state, so its message alone does not prove a leader change. The next applied corrections
+preserve original backend I/O objects, bound redb cache queue registrations and
+pin that fixture's current leader before its one mutation. These changes do not
+complete any release goal.
+
+Attempt 107 passes all **120** vendor redb library tests, including original I/O
+retention and borrowed database close with actual file-lock custody. Attempt 110
+passes **223** store cases; 111 and 112 pass strict workspace lint and formatting.
+Attempt 108 passes **232** engine cases, including all **17** snapshot ownership
+tests, and fails the backup serving-expiry fixture's ordinary cleanup assertion.
+Its prior large restore failure and ignored permanent-capacity case remain
+required. Attempt 109 passes **61** authority cases and fails stopped-epoch
+proposal resolution and a historical signer read. Attempt 113 passes one recovery
+lifecycle case and fails another at the original ten-second leader-selection
+deadline. Every process group drained with unchanged inventoried source, without
+outer timeout or signals. Original failures and exact source inventories remain
+in the evidence archive. Borrowed spool closure, precise expiry cleanup and
+original Raft-state diagnostics are the next applied, unvalidated prerequisites;
+production retained-close adoption and full resource bounds remain open.
+
+The borrowed spool prerequisite now passes all three actual-resource cases in
+attempt 114's complete **226-pass** store cohort. Attempt 115 passes all **three**
+serving-expiry/cleanup successors. Attempt 116 passes the signer-history read but
+fails stop verification earlier than the prior mutation failure; no current
+leader is available at that read. Attempt 117 aborts its native test process on
+stack overflow. Their owned process groups all drain with unchanged source;
+the native abort remains distinct from the runner's no-signal observation.
+Review rejected transaction disposal without a live database witness because it
+could invoke an unobserved deferred backend close. The applied successor requires
+the matching borrowed retained database through actual disposal and preserves
+original terminal/rollback outcomes. Attempt 121 passes all **131** vendor tests,
+including eleven retained transaction cases and eight new fixed-cache tests.
+Attempt 122 also passes all **226** enabled store cases; two remain ignored.
+Workspace formatting passes in 119, and the new lifecycle binary compiles in 123.
+The cache now checks actual room after bounded eligible-page selection; original
+I/O and rollback uncertainty remain distinct from capacity refusal. The checked
+cache collection metadata is only one component of the unfinished memory proof.
+
+Attempt 120 runs the exact overflowing binary under LLDB: the test passes, then
+the debugger exits 1 because no stopped process remains for a backtrace. All
+three descendant groups are absent in the terminal census; this is diagnostic
+evidence, not a passing successor or a reproduced crash. Static disassembly shows
+about 1.35 MB of recovery preparation poll stack directly enclosing another
+312 KB expiry-resolution poll. An applied phase handoff returns the first frame
+before polling the next while preserving actual owners, identities and original
+deadlines. The new binary confirms outer-plus-expiry-and-adapter frames total
+422,080 bytes, compared with 1,732,976 bytes for the old three named frames before
+adapters. This is a static phase comparison, not a whole-thread bound. Attempt
+124 completes all fourteen lifecycle cases: **12 pass and two fail**. The expired
+completion case passes; the failures are a fresh bootstrap election that never
+completes and a phase read sent to a healthy replica that has become a follower.
+No stack overflow occurs. Exact stopped-epoch witness/error assertions are then
+applied, and strict workspace Clippy passes in 118. These scoped results do not
+close any release workstream.
+
+Attempt 125 passes all six exact stop-drain observations, including the full
+post-restart interval, then fails the final rejection with `UnknownOutcome`.
+Its original diagnostic captures a healthy executing node changing term and role.
+The applied fixture successor resolves only the same signed request and original
+context, within one five-second caller budget, after observed route movement and
+healthy-owner checks. It requires the exact stopped-epoch `Conflict`; no unresolved
+result counts as success. Attempt 133 passes that original focused case, including
+an actual term/role transition followed by exact rejection and successful drain.
+It finishes in 85.802 seconds with unchanged source, no timeout and no signals.
+
+Checked redb page-list shapes and explicit extraction close are now applied.
+Attempt 126 preserves a compile failure caused by the copied key changing a
+closure's call trait; the correction makes that binding mutable and disambiguates
+a test panic macro. Attempt 132 passes all **134** vendor library cases, including
+malformed-record atomicity and original extraction-close failure custody. Its
+process drains with unchanged source and no timeout or signals. This does not
+bound historical reclaim workspace or complete production retained-owner adoption.
+Attempt 127 also passes all **226** enabled store cases; two remain ignored. Its
+88.756-second run records unchanged source and actual process drain without signals
+or timeout.
+The lifecycle successor also carries a bounded vote-response diagnostic and reads
+the original recovery phase from the current leader; attempt 128 compiles it in
+34.582 seconds. Attempt 129 then runs the complete fourteen-case lifecycle target
+against that exact unchanged binary: **12 pass and two fail**, with no stack
+overflow. One first-dispatch read reaches a healthy cached node after it becomes
+a follower; a later confirming-intent write in the other case reaches its original
+deadline with `UnknownOutcome`. The latter has no captured child-stage evidence
+and is not an established leadership failure or proof of an absent commit.
+The 402.974-second run drains without outer timeout or runner signals. Its earlier
+bootstrap failure does not recur, which is not proof of a cause-specific fix.
+Election settings and original deadlines remain unchanged. Attempts 130 and 131
+pass strict workspace Clippy and formatting, with unchanged source and actual
+process drain; these checks do not resolve the runtime failures.
+Attempt 134 completes all 63 authority library cases: **62 pass and one fails**.
+After confirming every other voter, the failed activation-maintenance case tries
+to publish a local journal using its earlier leader-bound proof. That proof's
+release recheck receives a forwarding error and returns `UnknownOutcome`. The
+770.377-second run records unchanged source and process drain, with no timeout or
+runner signals. The applied local-confirmation fixture successor verifies the
+same signed activation against the selected voter's persisted application before
+projection. Attempts 140 and 141 pass both original cases using that helper, in
+74.521 and 56.387 seconds, with unchanged source and actual process drain. The
+failed broader authority gate remains preserved and requires later qualification.
+
+Attempt 135 preserves a compile failure in the new lifecycle diagnostic's metrics
+receiver lifetime; 136 compiles the correction. Attempt 137 then fails both focused
+cases at their first reopen because the new route binding had left its predecessor
+Arc alive. Explicitly dropping that stale alias preserves actual lock enforcement
+and the original close/reopen assertions. Attempt 138 compiles it, and 139 passes
+both original lifecycle cases in 112.434 seconds against an unchanged exact binary.
+No deadline, election setting or file-lock retry is added. The original confirming
+write timeout does not recur, which does not establish its cause.
+
+The canonical format4/DATA400 reclamation successor is applied on master. It
+directly rejects prior slot/savepoint versions and the obsolete system-history
+table, removes its writer/decoder, and excludes current system frees only from the
+prepared winning allocator until commit succeeds. Historical DATA selection owns
+one fixed native-layout array; total COW, allocation-history and maintenance-at-cap
+resource bounds remain open. Attempt 142 fails compilation before any test: the
+internal dirty-marker change affected unrelated user-table methods, the adjacent
+public statistics method was accidentally removed, and a test trait import is
+missing. Attempt 143 passes all **142 vendor library tests** after restoring the
+original user-table block, statistics/debug methods and required import. The
+42.052-second run records unchanged source, actual process drain and no signals
+or outer timeout. Public integration/fault gates and finite maintenance resource
+bounds still require qualification. Attempt 144 passes all **148 vendor library
+cases** after bounding allocation-history purge and removing the two obsolete
+helpers. The run takes 42.612 seconds with unchanged source and actual drain. It
+checks cold reopen after every batch, savepoint release and restoration, both
+malformed namespaces and original physical I/O failure custody. Public integration
+targets run separately in attempt 145: **255 pass and two fail** across ten
+dispatched targets; cursor cases are feature-disabled in that run. The 235.203-second
+run drains without signals or timeout and keeps source unchanged. One corruption
+fixture still searches for a format3 savepoint. The other expects an exact version
+error for a real upstream file which, as diagnostic attempt 146 establishes,
+is rejected earlier for its 130 noncanonical region-header pages. The two fixture
+corrections preserve the original corruption/rejection checks and unchanged-file
+assertions; no production decoder or fallback is restored. Attempt147 passes
+both corrected cases with unchanged source and actual process drain. Attempt148
+passes all **296 public integration cases** with cursor/API5 paths enabled,
+including37cursor cases. The 277.981-second run keeps source unchanged and drains
+without signals or timeout. The next applied allocator-planning change computes
+checked encoded lengths without creating serialization temporaries solely to
+measure them. Attempt149 passes all 155 library cases, including seven new
+geometry and allocation tests, in 52.601 seconds with unchanged source and actual
+process drain. Attempt 150 passes strict workspace Clippy in 121.918 seconds with
+unchanged source and actual drain. Attempt 151 then passes all 162 vendor library
+cases in 50.900 seconds after replacing nested allocator serialization vectors with
+one exact output buffer. The seven new cases check byte identity, guarded output,
+untouched refusals and zero allocations for caller-buffer encoding. The final
+output, full prepared allocator copy, COW workspace and total resource bounds
+remain open. These results and their exact packages are preserved in the
+4,041-entry installed-storage evidence archive.
+Attempt 152 passes all 226 enabled store library cases in 171.622 seconds after
+these changes; two pre-existing cases remain ignored. The separate strict vendor
+all-target/all-feature check fails in attempts 153–154 on an API5 trait import,
+one checked-conversion requirement and test-only lints. Narrow corrections retain
+all identity/failure assertions, check fixture conversions and explicitly consume
+each history iterator result. Attempt 155 passes that same strict command in
+10.502 seconds. Attempt 156 applies retained database-opening custody and passes
+all 197 all-feature vendor library cases in 108.533 seconds, including eleven
+new actual-backend fault and close tests. Every run preserves inventoried source
+and records actual process drain without timeout or runner signals. Production
+owner registration, queued-writer admission, complete error/workspace accounting
+and managed directory caller adoption remain open.
+Attempt 157 then passes all 204 all-feature vendor library cases in 101.610
+seconds after removing obsolete allocator-key tags and their writer. Raw leaf
+keys, branch separators, record geometry and transaction-stamp lengths are
+checked before typed comparison or stale-snapshot repair. Tests preserve original
+files and show malformed keys cannot invoke repair. Attempt 158 passes strict
+vendor Clippy in 12.196 seconds; both runs retain unchanged source and actual
+drain. Full allocator payload/layout validation remains open.
+
+Attempt 159 passes strict all-target/all-feature workspace Clippy in 175.315
+seconds, with the same three existing rmcp dependency warnings. Attempt 160
+passes workspace and standalone vendor formatting in 2.229 seconds. Attempt 161
+passes all 296 public vendor integration cases across ten targets, with
+experimental cursor/API5 enabled, in 346.368 seconds. Groups 16859, 17763 and
+17971 drain; all three runs preserve inventoried source and have no timeout or
+runner signals. The immutable evidence append now verifies 4,941 raw entries,
+including failures 153/154 and unapplied namespace candidates; those candidates
+and complete production owner/workspace adoption remain unqualified.
+
+Attempt 162 applies the reviewed five-file allocator payload successor and passes
+all 211 all-feature vendor unit cases in 136.457 seconds (125.54 testing).
+Borrowed bitmap/buddy/tracker views reject malformed nested geometry, inconsistent
+summaries, overlapping/unmerged free blocks and missing/noncontiguous records
+before decoding or repair. They accept the current producer's retained capacity,
+shrink and extension states. A matching winner must prove a discarded suffix is
+free; stale valid snapshots remain repairable. Raw branch routing uses the
+comparator's actual lower-exclusive/upper-inclusive bounds. All seven added tests
+pass, including all-order producer mutations and 16 clean/unclean malformed native
+fixtures across consuming, read-only and retained opening. Attempt 163 passes
+strict vendor Clippy in 11.983 seconds; 164 passes all 296 original public vendor
+integration cases in 341.737 seconds. Groups 24263, 26707 and 27344 drain with
+unchanged source and no timeout or runner signals. Complete allocation ownership
+correspondence and resource bounds remain open. The payload evidence append
+preserves the earlier 4,941 entries and adds 39, for 4,980 verified raw entries.
+
+Attempt 165 deliberately updates the redb inventory to the reviewed 109-file
+[current source checkpoint](evidence/redb-current-source-20260922/README.md),
+preserving both original removals and 134 exact historical/gate bindings. Original
+provenance and the checker stay unchanged; other dependency inventories and
+support records stay exact apart from the reviewed vendor README text. All 18
+existing verifier tests and the actual seven-package source/Cargo selection check
+pass in 1.184 seconds with bundled Python 3.12.14. Group 38305 drains, no timeout
+or signals occur, and the expanded inventory (including vendor metadata and review
+inputs) remains unchanged. The archive now verifies 5,160 raw entries, preserving
+the prior 4,980 and adding 180. This source checkpoint does not complete G11 or
+the unpassed upstream, native, ownership and resource qualification gates.
+
+The separate storage-census candidate's first native run passes all eight census
+cases, then passes four and fails two physical-opening cases. It stops before its
+two later phases. Both failures concern already-disposed NodeTables requests
+remaining retained after the database is closed; groups 36453 and 37043 drain and
+inputs remain unchanged. Independent review also identifies a shared report-release
+latch that could discard errors produced by later close or queued execution.
+Revision2 corrects both issues. Its native02 reused the old shared-target test
+executable and is preserved as a qualification failure, with no successor test
+credit. Native03 uses a fresh candidate-specific Cargo target, verifies exact test
+names before dispatch, and passes 33 cases across census, opening, lease,
+device/scratch/node metadata and engine provider checks. All 14 stages drain;
+source and actual executable hashes stay unchanged. Independent review closes
+the future-outcome relinquishment finding. Revision3 only relocates a test import;
+strict combined workspace qualification and all twelve production caller
+migrations remain open.
+
+The separate managed-directory candidate passes 47 scoped native cases after a
+Darwin removal correction. Review then identifies a newly added generic-parent
+acquisition outside retained custody. Its four-file successor routes generic
+nonroot opens through the retained operation and passes the full prior cohort
+plus two new cases: 49 pass, five inherited device cases filtered. Both packages
+remain unapplied pending aggregate session and caller adoption. Their requested
+1,353,059,396-byte owner geometry does not establish full process fit or native
+descriptor memory. Original failures and both root reviews remain preserved.
+
+The aggregate namespace/session successor reserves both fixed terminal inodes
+before first session publication and uses the original reserve inode for each
+create-only terminal rename. Canonical framing rejects unframed/obsolete inputs;
+classification streams a charged 4 KiB buffer and reads reject the caller limit
+before allocating exact ciphertext. A shared physical claim covers classification
+through publication. Its first preparation failure and seven-error harness
+compile failure remain preserved; candidate03 passes 65 scoped cases. Root review
+then identifies owned path allocation before claim acquisition. Revision4 derives
+the claim from the retained directory and stack UUID first, and passes all prior
+cases plus two regressions: 67 passed, five inherited device tests filtered.
+Recorded source, executable hashes and all process groups remain unchanged/drained.
+The scoped harness excludes authenticated GC methods; its result does not qualify
+full store/server construction or GC integration. Their revised 73-file cumulative
+composition is now qualified as a target-only prerequisite: offline locked full
+workspace checking and strict Clippy pass, its exact 326-test store inventory
+finishes with 324 passed and the two pre-existing ignores, and all 17 Python
+smoke-script tests pass. The first combined compile failure, strict-lint failure,
+full-store inventory mismatch and later fixture failures remain preserved. The
+final qualification uses a conservative terminal recheck that rejects timeout or
+forced descendant cleanup. Actual source is unchanged by this composition.
+
+The separate retained file-custody successor passes 132 selected native tests
+with fixed H+1 failure storage, original operation/native close outcomes and
+explicit one-shot file retirement before credit. Its independent review verifies
+unchanged inputs, original failed attempts and drained process groups; it has
+not yet been composed with the 73-file prerequisite. Full production caller,
+worker, ciphertext, diagnostic and native stack admission, configured-root and
+inherited-directory custody, native descriptor memory and filesystem-specific
+physical bounds remain open.
+
+The cumulative storage, namespace and file-custody revision 6 is now applied to
+the exact `master` bases: 75 before/after hashes and modes were verified, and
+the [compact evidence bundle](evidence/installed-disk-storage-namespace-custody-20260923-rev6/README.md)
+passes live-proposed verification after application. Its source-bound native
+cohort passes all 19 stages in 482.655 seconds, including locked full-workspace
+all-target/all-feature check, strict Clippy, exact 338-name store inventory,
+all 14 focused regressions and unfiltered store results of 336 passed, zero
+failed and two pre-existing ignored. Separate workspace formatting passes;
+all 21 process groups drain without timeout or cleanup signals. Revision 4's
+four failures and revision 5's two failures remain retained. This qualifies
+only the prerequisite. Mandatory production caller adoption, failed-owner
+acknowledgement and verified recovery, complete memory/RSS bounds, configured
+root custody, canonical PageNumber migration and release-wide runtime gates
+remained open at that checkpoint.
+
+The reviewed [filesystem-backup admission revision 5](evidence/installed-disk-filesystem-backup-20260923-rev5/README.md)
+is now applied to `master`, with exact three-file before/after hashes and modes
+verified. Its native cohort passes locked full-workspace check, strict Clippy,
+343 unfiltered runnable store cases with zero failures and two inherited ignores,
+and a separate formatting check. The preserved `format-01` inventory-preparation
+failure dispatched no native child. This change admits pending inode and extent
+before publication; it does not qualify opaque worker, ciphertext, stack,
+configured-root or inherited-directory custody.
+
+The canonical redb `PageNumber` freeze 05 and reviewed provenance update are
+also applied to `master`. All 19 source/support paths and 144 policy/evidence
+paths match their recorded after hashes and modes. The official dependency
+checker passes on the combined source for all seven vendored packages, locked
+Cargo metadata and exact selected package versions; all 18 checker regressions
+pass. The earlier 225-case vendor and strict Clippy results remain component
+evidence. Full post-application workspace integration and release-wide gates
+remain open; no compatibility decoder, alias or fallback is authorized.
+
+The source-pinned PageNumber audit found that the pre-migration decoder discarded
+reserved bits and aliased malformed addresses before validation. The canonical
+successor now replaces that sole decoder across roots, table metadata, branches
+and used PageLists while preserving opaque checksum-invalid recovery slots.
+The audit's 5,133 arithmetic counterexamples remain diagnostic evidence only;
+combined native qualification, descendant reachability and memory bounds remain
+open.
+
+The census/session evidence append preserves all prior 5,160 raw entries and adds
+1,229, for 6,389 verified entries. It includes the frozen candidates, reviews,
+successful scoped runs, original failures, stale-executable diagnosis and page
+audit. Eight local executable/dependency files (355,202,784 bytes) are hashed and
+omitted; no Cargo build tree or outside dependency bytes are copied. The combined
+workspace candidate and newer custody/decoder work are outside this append. A
+subsequent append preserves the 6,389 entries and adds 2,804, for **9,193
+verified entries**. It freezes the original and five revised combined candidates,
+their failure/success transcripts, the separately qualified file-custody
+candidates and reviews. Eight native files (176,603,688 bytes) are inventoried
+and omitted, with no Cargo assembly or cache copied. The new 75-file composition,
+unfinished caller adoption and decoder migration are outside this append.
 
 The [installed-storage diagnostics](evidence/installed-disk-main-20260920/README.md)
 now pass the store library's enabled cases: 183 passed, zero failed, with the

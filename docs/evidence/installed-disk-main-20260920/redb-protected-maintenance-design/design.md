@@ -1,0 +1,55 @@
+# Protected allocator pages and exact maintenance extension
+
+This is a source-pinned implementation design, not an implemented reserve or qualified memory/physical bound. It follows canonical bounded allocation/DATA reclamation, checked encoded lengths and the separately frozen single-buffer serializer candidate. No source, limit, deadline or native runner is changed.
+
+## Concrete requirements from the current code
+
+`TransactionalMemory::allocate_helper` always tries the existing buddy allocator before `grow`. Foreground can therefore consume free pages already inside a charged extent without consulting `StorageAdmission::reserve_growth`. Protecting only extension admission cannot preserve maintenance progress.
+
+The allocator accepts power-of-two page blocks, not fungible bytes. For the supported 4 KiB / 2^20-pages-per-region geometry, a full buddy encoding is 266,960 bytes. An allocator-state leaf containing that one value needs 266,973 bytes (4-byte leaf header, 4-byte variable-value end, 5-byte fixed key), which requires an order-7 block of 524,288 bytes. Eight nonadjacent free order-0 blocks cannot satisfy one order-3 request despite equal total bytes. The accompanying geometry calculation is a source derivation, not a measured complete COW requirement.
+
+`grow` currently doubles a small layout or appends/fills whole regions. For a mature default region this can request roughly 4 GiB even for a smaller maintenance demand. A future restricted maintenance execution must use its exact preselected final layout instead of invoking this foreground growth heuristic.
+
+`durable_commit` deletes the complete allocator-state table, rewrites it, and retries if allocator geometry changes during those insertions. Table deletion first collects its entire page walk; snapshot preparation still decodes a full allocator copy. DATA_ALLOCATED and DATA prefixes are bounded, but those bounds do not bound the allocator-table reconstruction or master-tree COW images. Single-buffer encoding removes nested serialized copies only.
+
+`NodeFile::reserve_growth` selects Foreground unconditionally. The underlying `NodeDiskFile::Budget` and durable enrollment have one shared reserved_len/pending promise. `grow_reserved`, writes and `settle_growth` cannot distinguish a future maintenance allowance from ordinary reservation. Simply calling reserve_growth(Maintenance) early lets another operation consume or settle that shared allowance. NodeDisk's global reserve is shared by all files and audit maintenance; it is not a separate reserve available independently to each redb file.
+
+## First implement an actual bounded image plan
+
+A restricted empty-maintenance owner must hold the actual writer permit and freeze the system root, transaction ID, page geometry, DATA reader horizon and allocation/savepoint horizon. It may perform only the selected <=400 allocation-ID purge, the permitted <=400 DATA-ID reclaim, and the mandatory system metadata publication. It must expose no user table mutation, restore, savepoint creation, arbitrary callback or escaped page guard.
+
+Build a checked `MaintenanceImagePlan` before physical mutation. Its inputs must include the actual selected roots/records, exact allocator image lengths and final layout; its output must include every newly required page image's order and actual dependency edges, every retired current-system page, and every simultaneously live workspace owner. In particular, include the master-tree update path, coalescing/survivor/branch images for both extractions, the entire new allocator-state tree and checksum traversal. Reuse the actual builder sizing/splitting rules rather than a second approximate implementation. Allocator-state leaf sizes are 4 + 9*n + sum(value lengths); fixed-key branch sizes are 29*children + 3. Those formulas do not count transient replacement images or prove a total.
+
+Plan against a final admitted layout and forbid allocator growth during image execution. The allocator table's image size depends on this final layout. Resolve that dependency with checked source-derived upper bounds or a finite monotone layout solver bounded by the existing installed cap; record every iteration and its reason. An unbounded reserve/save/retry loop is not the plan. If the full layout/workspace cannot be funded, refuse before effects with the existing typed denial; do not invent a larger cap or assume omitted images fit.
+
+The planner itself needs admission before allocating its image/edge/page-ID inventories or copying payloads. A nonallocating scalar pass can measure allocator representations, but generic tree mutation still needs its own bounded read/plan arena. Root generation and the writer permit bind that arena to execution. Read-only cache population and borrowed guards remain accounted workspace. This missing concrete tree planner is the next implementation boundary; no numerical total is selected in this design.
+
+## Protect real blocks, not a byte watermark
+
+Use an owner-retained `ProtectedPagePool` whose prepaid inventory records exact PageNumber/order identities and their state. Acquire blocks using the real buddy allocator under the state lock, with rollback of the provisional selection on refusal. Keep those blocks marked allocated in the live allocator so the existing foreground allocator cannot return them. This is a logical restriction on already charged bytes; do not charge their physical extent a second time.
+
+Separate states are required: unused protected block; checked out to the exact maintenance transaction; consumed by the winning system tree; and an old-root block selected to replenish the pool after publication. Every checkout must match an image-plan order or a proven split of a larger retained block. A scalar count cannot authorize a fragmented allocation. The real transaction tracker and debug allocator must retain these page identities and origin classifications without growing an unadmitted side vector.
+
+Unused protected blocks are not reachable database data. The canonical winning allocator snapshot must mark them free while the live process keeps them unavailable to foreground. Therefore snapshot preparation must exclude precisely the unused pool slice, just as it excludes deferred/current-system reclamation, while preserving every checked-out block used by the new roots. Repair/open rebuilds ordinary authoritative free space, then reacquires the required pool before allowing foreground writers. Do not persist a guessed private allocation as if it were live data or add an old-format decoder.
+
+Before any winning header, simulate the post-publication allocator and prove an actual replacement pool can be assembled from unused old pool blocks, selected retired system blocks and eligible DATA frees. Those retired blocks remain physically allocated until publication. Preallocate replacement inventory and validate non-overlap, exact orders, root ownership and reader safety. Post-winning settlement performs only the already planned allocator transitions; it must neither allocate bookkeeping nor search indefinitely for replacement supply.
+
+Rollback must return a borrowed block to its original protected pool, not expose it through the ordinary free path. A panic, failed rollback or uncertain publication keeps the exact inventories and physical/memory charges inside the retained transaction/database owner. Close/drain must retire actual handles and inventory backing before returning their memory leases. Releasing logical pool custody alone never credits physical bytes.
+
+Every foreground operation that can increase the next maintenance demand must retain or enlarge a proved pool before it can publish that larger state. Otherwise one successful foreground commit can consume the future progress guarantee even if it never directly allocates a protected block. The exact next-state demand rule depends on the missing image planner; a fixed guessed reserve based solely on current file length is insufficient.
+
+## Bind extension to the same physical owner
+
+A distinct fixed-size capability must bind the retained NodeFile/NodeDiskFile identity, namespace enrollment, current physical length, planned final physical end (including the 4096-byte node envelope), original maintenance transaction identity and allowed growth execution. Allocate its registry/custody slot and reserve DeviceDisk/NodeDisk promises before set_len. The capability must be usable only by that restricted owner; ordinary reserve/grow/write/settle calls must not consume or release its future extension.
+
+Keep separate foreground and maintenance promise ownership in the per-file budget and retained enrollment; preserve the same aggregate physical accounting and installed cap. The global partition must count a promised interval once while preventing several files from promising the same remaining maintenance capacity. A precharge followed by subtracting the full reserve again from foreground would double-count that part of headroom. The final accounting transition needs an explicit checked invariant against all current files and shared-device promises, not a local boolean or enum addition.
+
+Execute only the exact planned growth and synchronize it before the new layout can enter a header. A backend error after possible extension retains the full original promise and fences the exact owner. Ordinary settlement must leave unrelated maintenance promises intact. Release unused allowance only after the actual operation is drained and its synchronized physical extent is established; errors retain custody. Shrink must exclude every protected live block and must not remove the capability's funded extension while it remains usable.
+
+ScratchDisk has no installed maintenance partition. Its encrypted-spool backend must supply an explicit matching contract or use an already protected in-extent pool; it cannot silently inherit the persistent NodeDisk reserve or bypass its original quota. All StorageAdmission/backend implementations and fixture writers must be changed together if the capability contract changes, with no default compatibility path.
+
+## Qualification required for implementation
+
+Use the actual buddy allocator to demonstrate fragmentation and exact-order protection; exhaust ordinary free space while proving foreground cannot consume pool blocks; run real cleanup at the unchanged installed cap; demonstrate replacement-pool sufficiency after every batch and cold reopen; exercise reader/savepoint retention and both history queues; and prove snapshot/repair never treats an unused reserved block as reachable data or a live root block as free.
+
+Fault every planned growth, preparation/winning header sync, rollback, post-winning settlement and close point. Assert actual original errors, exact descriptor/inventory custody and no early credit. Race ordinary settlement/foreground attempts against the owner-bound extension. Measure all arena/cache/page and full-allocator-copy peaks under original workloads and limits. The present encoding tests and geometry formulas provide no substitute for these gates.

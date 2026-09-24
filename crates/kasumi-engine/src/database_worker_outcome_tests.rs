@@ -1,5 +1,5 @@
 use super::*;
-use kasumi_store::{NodeStore, ScratchDisk, test_utils::LocalKeyProvider};
+use kasumi_store::{FilesystemBackupDestination, NodeStore, test_utils::LocalKeyProvider};
 use std::{future::Future, path::PathBuf, task::Poll};
 
 type BlockingHook = Box<dyn FnOnce() + Send>;
@@ -8,6 +8,7 @@ type BlockingHook = Box<dyn FnOnce() + Send>;
 pub(super) struct BlockingHooks {
     pub(super) monitor: Mutex<Option<BlockingHook>>,
     pub(super) audit: Mutex<Option<BlockingHook>>,
+    pub(super) backup_stream: Mutex<Option<BlockingHook>>,
     pub(super) waiting_preparation: tokio::sync::Notify,
 }
 
@@ -42,21 +43,29 @@ fn held_hook(
 }
 
 struct Fixture {
-    directory: tempfile::TempDir,
+    storage: crate::test_utils::FixtureStorage,
     path: PathBuf,
     node: Arc<NodeStore>,
     database: Arc<Database>,
     audit: Arc<SecurityAudit>,
+    directory: tempfile::TempDir,
 }
 impl Fixture {
-    async fn new(admission: Arc<NodeAdmission>, name: &str) -> anyhow::Result<Self> {
+    async fn new(name: &str) -> anyhow::Result<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
-        let path = directory.path().join("node.redb");
-        let node = NodeStore::create_new_fixture(
-            &path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            ScratchDisk::fixture(),
-        )?;
+        let (persistent, scratch) = crate::test_utils::fixture_disk_configs(directory.path())?;
+        let storage =
+            crate::test_utils::FixtureStorage::open(&persistent, &scratch, Default::default())?;
+        Self::on_disk(directory, storage, name).await
+    }
+    async fn on_disk(
+        directory: tempfile::TempDir,
+        storage: crate::test_utils::FixtureStorage,
+        name: &str,
+    ) -> anyhow::Result<Self> {
+        let admission = storage.admission.clone();
+        let path = directory.path().join("persistent/node.redb");
+        let node = storage.create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)?;
         let store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             name.into(),
@@ -96,15 +105,9 @@ impl Fixture {
             Arc::new(LocalKeyProvider::new([73; 32])),
         )
         .await?;
-        let group = RaftGroup::local(
-            1,
-            format!("{name}/{incarnation}"),
-            stores,
-            engine.clone(),
-            kasumi_raft::SnapshotBufferOwner::fixture(),
-        )
-        .await?;
-        let database = Database::new(engine, group, store, audit.clone());
+        let database = construction::DatabaseConstruction::new(stores, audit.clone())?
+            .start_local(engine, 1, format!("{name}/{incarnation}"))
+            .await?;
         database
             .group
             .raft()
@@ -113,6 +116,7 @@ impl Fixture {
             .await?;
         Ok(Self {
             directory,
+            storage,
             path,
             node,
             database,
@@ -122,12 +126,9 @@ impl Fixture {
 
     fn assert_exclusive(&self) {
         assert!(
-            NodeStore::open_existing_fixture(
-                &self.path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                ScratchDisk::fixture()
-            )
-            .is_err()
+            self.storage
+                .open_existing(&self.path, kasumi_store::test_utils::NODE_STORE_ID)
+                .is_err()
         );
     }
 
@@ -139,11 +140,9 @@ impl Fixture {
         assert!(weak.upgrade().is_none());
         drop(self.audit);
         drop(self.node);
-        let node = NodeStore::open_existing_fixture(
-            &self.path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            ScratchDisk::fixture(),
-        )?;
+        let node = self
+            .storage
+            .open_existing(&self.path, kasumi_store::test_utils::NODE_STORE_ID)?;
         let store = TenantStore::open_existing_fixture(
             node.clone(),
             name,
@@ -188,7 +187,7 @@ fn panic_issue(failure: &DrainFailure, component: &str) -> Arc<kasumi_types::dra
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelled_database_drain_keeps_monitor_panic_before_pending_audit_child()
 -> anyhow::Result<()> {
-    let fixture = Fixture::new(NodeAdmission::new(Default::default())?, "tenant").await?;
+    let fixture = Fixture::new("tenant").await?;
     let database = &fixture.database;
     let (hook, entered, mut release) = held_hook(false);
     *database.worker_test_hooks.audit.lock().unwrap() = Some(hook);
@@ -243,7 +242,7 @@ async fn cancelled_database_drain_keeps_monitor_panic_before_pending_audit_child
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn aborted_database_monitor_retains_its_blocking_child_and_distinct_panic()
 -> anyhow::Result<()> {
-    let fixture = Fixture::new(NodeAdmission::new(Default::default())?, "tenant").await?;
+    let fixture = Fixture::new("tenant").await?;
     let database = &fixture.database;
     let (hook, entered, mut release) = held_hook(true);
     *database.worker_test_hooks.monitor.lock().unwrap() = Some(hook);
@@ -304,7 +303,7 @@ async fn aborted_database_monitor_retains_its_blocking_child_and_distinct_panic(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn database_audit_blocking_panic_is_terminal_and_retained() -> anyhow::Result<()> {
-    let fixture = Fixture::new(NodeAdmission::new(Default::default())?, "tenant").await?;
+    let fixture = Fixture::new("tenant").await?;
     let database = &fixture.database;
     *database.worker_test_hooks.audit.lock().unwrap() =
         Some(Box::new(|| panic!("actual audit preparation panic")));
@@ -334,8 +333,35 @@ async fn database_audit_blocking_panic_is_terminal_and_retained() -> anyhow::Res
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn database_shutdown_cancels_undispatched_shared_permit_wait_before_other_tenant_drain()
 -> anyhow::Result<()> {
-    let admission = NodeAdmission::new(Default::default())?;
-    let blocked = Fixture::new(admission.clone(), "blocked").await?;
+    let blocked_directory = kasumi_store::test_utils::private_tempdir()?;
+    let waiting_directory = kasumi_store::test_utils::private_tempdir()?;
+    let (blocked_persistent, blocked_scratch) =
+        crate::test_utils::fixture_disk_configs(blocked_directory.path())?;
+    let (waiting_persistent, waiting_scratch) =
+        crate::test_utils::fixture_disk_configs(waiting_directory.path())?;
+    // One original operation allowance, plus both actual isolated installations.
+    let config = crate::test_utils::isolated_disk_config_with_metadata(
+        Default::default(),
+        &blocked_persistent,
+        &blocked_scratch,
+    )?;
+    let config = crate::test_utils::isolated_disk_config_with_metadata(
+        config,
+        &waiting_persistent,
+        &waiting_scratch,
+    )?;
+    let admission = NodeAdmission::new(config)?;
+    let blocked_storage = crate::test_utils::FixtureStorage::with_admission(
+        &blocked_persistent,
+        &blocked_scratch,
+        admission.clone(),
+    )?;
+    let waiting_storage = crate::test_utils::FixtureStorage::with_admission(
+        &waiting_persistent,
+        &waiting_scratch,
+        admission,
+    )?;
+    let blocked = Fixture::on_disk(blocked_directory, blocked_storage, "blocked").await?;
     let (hook, entered, mut release) = held_hook(false);
     *blocked.database.worker_test_hooks.audit.lock().unwrap() = Some(hook);
     blocked.database.audit_worker_wake.notify_one();
@@ -372,7 +398,7 @@ async fn database_shutdown_cancels_undispatched_shared_permit_wait_before_other_
         .clone()
         .unwrap();
     assert!(pool.preparation.try_acquire().is_err());
-    let waiting = Fixture::new(admission, "waiting").await?;
+    let waiting = Fixture::on_disk(waiting_directory, waiting_storage, "waiting").await?;
     let waiting_pool = waiting
         .database
         .engine
@@ -429,4 +455,139 @@ async fn database_shutdown_cancels_undispatched_shared_permit_wait_before_other_
     drop(pool);
     drop(waiting_pool);
     blocked.release().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_backup_producer_and_shutdown_waiter_keep_original_blocking_panic()
+-> anyhow::Result<()> {
+    let fixture = Fixture::new("tenant").await?;
+    let database = &fixture.database;
+    database.backup_producers.prepare(database.admission())?;
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (release, held) = std::sync::mpsc::channel();
+    let producer = database.backup_producers.start(
+        move || -> std::result::Result<(), super::backup_producer_jobs::Failure> {
+            let _ = entered.send(());
+            held.recv().unwrap();
+            panic!("original database backup producer panic");
+        },
+    )?;
+    tokio::time::timeout(Duration::from_secs(5), waiting).await??;
+    let worker = database.backup_producers.test_worker(0);
+    drop(producer);
+    assert!(!worker.is_closed());
+    let mut first = Box::pin(database.shutdown());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !worker.is_closed() {
+            std::future::poll_fn(|cx| {
+                assert!(first.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    std::future::poll_fn(|cx| {
+        assert!(first.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(first);
+    fixture.assert_exclusive();
+    release.send(()).unwrap();
+    let failure = tokio::time::timeout(Duration::from_secs(30), database.shutdown())
+        .await?
+        .unwrap_err();
+    assert_eq!(failure.completion(), DrainCompletion::Complete);
+    let original = panic_issue(&failure, "background worker");
+    let repeated = database.shutdown().await.unwrap_err();
+    assert!(Arc::ptr_eq(
+        &original,
+        &panic_issue(&repeated, "background worker")
+    ));
+    drop(worker);
+    fixture.release().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn admitted_full_backup_cancelled_caller_retains_exact_state_stream_producer_until_release()
+-> anyhow::Result<()> {
+    let fixture = Fixture::new("tenant").await?;
+    let database = &fixture.database;
+    let destination = Arc::new(FilesystemBackupDestination::new(
+        database
+            .store
+            .durable_directory()?
+            .join("backup-cancellation"),
+        32 << 20,
+        database.store.persistent_disk().clone(),
+    )?);
+    let context = RequestContext {
+        authorization: RequestAuthorization::service_identity(),
+        tenant: "tenant".into(),
+        principal: "owner".into(),
+        scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
+        request_id: "backup-state-stream-cancellation".into(),
+    };
+    let session_id = uuid::Uuid::new_v4();
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (release, held) = std::sync::mpsc::channel();
+    let mut release = Release(Some(release));
+    *database.worker_test_hooks.backup_stream.lock().unwrap() = Some(Box::new(move || {
+        let _ = entered.send(());
+        held.recv_timeout(Duration::from_secs(30))
+            .expect("state stream test release");
+    }));
+    let caller = tokio::spawn({
+        let database = Arc::clone(database);
+        let destination = Arc::clone(&destination);
+        let context = context.clone();
+        async move {
+            database
+                .backup_checkpoint(context, destination.as_ref(), session_id)
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(15), waiting).await??;
+    let pending = database
+        .backup_session(&context, destination.as_ref(), session_id)
+        .await?
+        .expect("producer starts only after authenticated intent readback");
+    assert_eq!(pending.intent().session_id, session_id);
+    assert!(pending.outcome().is_none());
+    let worker = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(worker) = database.backup_producers.test_worker_if_started(0) {
+                break worker;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert!(!worker.is_closed());
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    assert!(
+        worker.observed().is_none(),
+        "aborted caller lost original producer"
+    );
+    let mut first = Box::pin(database.shutdown());
+    std::future::poll_fn(|cx| {
+        assert!(first.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(first);
+    assert!(
+        worker.observed().is_none(),
+        "cancelled shutdown waiter lost original producer"
+    );
+    fixture.assert_exclusive();
+    release.release();
+    tokio::time::timeout(Duration::from_secs(30), database.shutdown()).await??;
+    assert!(worker.observed().is_some_and(|result| result.is_ok()));
+    drop(worker);
+    drop(destination);
+    fixture.release().await
 }

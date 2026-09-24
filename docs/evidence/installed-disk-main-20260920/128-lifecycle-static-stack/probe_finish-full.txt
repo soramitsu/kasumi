@@ -1,0 +1,172 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000e85f0 <<lifecycle::bootstrap_vote_probe::Guard>::finish>:
+1000e85f0: d10583ff    	sub	sp, sp, #0x160
+1000e85f4: a9146ffc    	stp	x28, x27, [sp, #0x140]
+1000e85f8: a9157bfd    	stp	x29, x30, [sp, #0x150]
+1000e85fc: 910543fd    	add	x29, sp, #0x150
+1000e8600: f90037e0    	str	x0, [sp, #0x68]
+1000e8604: f9002be1    	str	x1, [sp, #0x50]
+1000e8608: b90077e2    	str	w2, [sp, #0x74]
+1000e860c: aa0003e8    	mov	x8, x0
+1000e8610: f81703a8    	stur	x8, [x29, #-0x90]
+1000e8614: 3817f3a2    	sturb	w2, [x29, #-0x81]
+1000e8618: 91004000    	add	x0, x0, #0x10
+1000e861c: 9488783a    	bl	0x102306704 <<std::time::Instant>::elapsed>
+1000e8620: f94037e8    	ldr	x8, [sp, #0x68]
+1000e8624: f9002fe0    	str	x0, [sp, #0x58]
+1000e8628: b90067e1    	str	w1, [sp, #0x64]
+1000e862c: f81803a0    	stur	x0, [x29, #-0x80]
+1000e8630: b81883a1    	stur	w1, [x29, #-0x78]
+1000e8634: f9401100    	ldr	x0, [x8, #0x20]
+1000e8638: f9401501    	ldr	x1, [x8, #0x28]
+1000e863c: 9101e3e8    	add	x8, sp, #0x78
+1000e8640: 97ffff2a    	bl	0x1000e82e8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate>
+1000e8644: f94037e0    	ldr	x0, [sp, #0x68]
+1000e8648: f9401000    	ldr	x0, [x0, #0x20]
+1000e864c: 97fffe82    	bl	0x1000e8054 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::history>
+1000e8650: b94077e2    	ldr	w2, [sp, #0x74]
+1000e8654: f81603a0    	stur	x0, [x29, #-0xa0]
+1000e8658: 12000028    	and	w8, w1, #0x1
+1000e865c: 381683a8    	sturb	w8, [x29, #-0x98]
+1000e8660: 370000c2    	tbnz	w2, #0x0, 0x1000e8678 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x88>
+1000e8664: 14000001    	b	0x1000e8668 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x78>
+1000e8668: d10283a0    	sub	x0, x29, #0xa0
+1000e866c: 97ff6c5b    	bl	0x1000c37d8 <<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::deref::Deref>::deref>
+1000e8670: f90027e0    	str	x0, [sp, #0x48]
+1000e8674: 1400000c    	b	0x1000e86a4 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0xb4>
+1000e8678: d10283a0    	sub	x0, x29, #0xa0
+1000e867c: 97ff6c57    	bl	0x1000c37d8 <<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::deref::Deref>::deref>
+1000e8680: f90023e0    	str	x0, [sp, #0x40]
+1000e8684: 14000021    	b	0x1000e8708 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x118>
+1000e8688: d10283a0    	sub	x0, x29, #0xa0
+1000e868c: 97fed1b1    	bl	0x10009cd50 <core::ptr::drop_glue::<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History>>>
+1000e8690: 1400007c    	b	0x1000e8880 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x290>
+1000e8694: f81903a0    	stur	x0, [x29, #-0x70]
+1000e8698: aa0103e8    	mov	x8, x1
+1000e869c: b81983a8    	stur	w8, [x29, #-0x68]
+1000e86a0: 17fffffa    	b	0x1000e8688 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x98>
+1000e86a4: f94027e8    	ldr	x8, [sp, #0x48]
+1000e86a8: f9570d08    	ldr	x8, [x8, #0x2e18]
+1000e86ac: f81d83a8    	stur	x8, [x29, #-0x28]
+1000e86b0: 52800029    	mov	w9, #0x1                ; =1
+1000e86b4: f81e03a9    	stur	x9, [x29, #-0x20]
+1000e86b8: b1000508    	adds	x8, x8, #0x1
+1000e86bc: 1a9f37e9    	cset	w9, hs
+1000e86c0: 72000129    	ands	w9, w9, #0x1
+1000e86c4: da9f0108    	csinv	x8, x8, xzr, eq
+1000e86c8: f81e83a8    	stur	x8, [x29, #-0x18]
+1000e86cc: f85e83a8    	ldur	x8, [x29, #-0x18]
+1000e86d0: f9001fe8    	str	x8, [sp, #0x38]
+1000e86d4: 14000001    	b	0x1000e86d8 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0xe8>
+1000e86d8: d10283a0    	sub	x0, x29, #0xa0
+1000e86dc: 97ff6c54    	bl	0x1000c382c <<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::deref::DerefMut>::deref_mut>
+1000e86e0: f9001be0    	str	x0, [sp, #0x30]
+1000e86e4: 14000001    	b	0x1000e86e8 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0xf8>
+1000e86e8: f9401fe8    	ldr	x8, [sp, #0x38]
+1000e86ec: f9401be9    	ldr	x9, [sp, #0x30]
+1000e86f0: f9170d28    	str	x8, [x9, #0x2e18]
+1000e86f4: 14000001    	b	0x1000e86f8 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x108>
+1000e86f8: f94037e8    	ldr	x8, [sp, #0x68]
+1000e86fc: f9400108    	ldr	x8, [x8]
+1000e8700: 370002e8    	tbnz	w8, #0x0, 0x1000e875c <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x16c>
+1000e8704: 1400001e    	b	0x1000e877c <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x18c>
+1000e8708: f94023e8    	ldr	x8, [sp, #0x40]
+1000e870c: f9570908    	ldr	x8, [x8, #0x2e10]
+1000e8710: f81c03a8    	stur	x8, [x29, #-0x40]
+1000e8714: 52800029    	mov	w9, #0x1                ; =1
+1000e8718: f81c83a9    	stur	x9, [x29, #-0x38]
+1000e871c: b1000508    	adds	x8, x8, #0x1
+1000e8720: 1a9f37e9    	cset	w9, hs
+1000e8724: 72000129    	ands	w9, w9, #0x1
+1000e8728: da9f0108    	csinv	x8, x8, xzr, eq
+1000e872c: f81d03a8    	stur	x8, [x29, #-0x30]
+1000e8730: f85d03a8    	ldur	x8, [x29, #-0x30]
+1000e8734: f90017e8    	str	x8, [sp, #0x28]
+1000e8738: 14000001    	b	0x1000e873c <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x14c>
+1000e873c: d10283a0    	sub	x0, x29, #0xa0
+1000e8740: 97ff6c3b    	bl	0x1000c382c <<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::deref::DerefMut>::deref_mut>
+1000e8744: f90013e0    	str	x0, [sp, #0x20]
+1000e8748: 14000001    	b	0x1000e874c <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x15c>
+1000e874c: f94017e8    	ldr	x8, [sp, #0x28]
+1000e8750: f94013e9    	ldr	x9, [sp, #0x20]
+1000e8754: f9170928    	str	x8, [x9, #0x2e10]
+1000e8758: 17ffffe8    	b	0x1000e86f8 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x108>
+1000e875c: f94037e8    	ldr	x8, [sp, #0x68]
+1000e8760: f9400508    	ldr	x8, [x8, #0x8]
+1000e8764: f9000be8    	str	x8, [sp, #0x10]
+1000e8768: f81a03a8    	stur	x8, [x29, #-0x60]
+1000e876c: d10283a0    	sub	x0, x29, #0xa0
+1000e8770: 97ff6c2f    	bl	0x1000c382c <<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History> as core::ops::deref::DerefMut>::deref_mut>
+1000e8774: f9000fe0    	str	x0, [sp, #0x18]
+1000e8778: 1400000a    	b	0x1000e87a0 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x1b0>
+1000e877c: f94037e9    	ldr	x9, [sp, #0x68]
+1000e8780: 52800028    	mov	w8, #0x1                ; =1
+1000e8784: 3900c128    	strb	w8, [x9, #0x30]
+1000e8788: d10283a0    	sub	x0, x29, #0xa0
+1000e878c: 97fed171    	bl	0x10009cd50 <core::ptr::drop_glue::<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History>>>
+1000e8790: a9557bfd    	ldp	x29, x30, [sp, #0x150]
+1000e8794: a9546ffc    	ldp	x28, x27, [sp, #0x140]
+1000e8798: 910583ff    	add	sp, sp, #0x160
+1000e879c: d65f03c0    	ret
+1000e87a0: f9400be8    	ldr	x8, [sp, #0x10]
+1000e87a4: f1008108    	subs	x8, x8, #0x20
+1000e87a8: 54000142    	b.hs	0x1000e87d0 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x1e0>
+1000e87ac: 14000001    	b	0x1000e87b0 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x1c0>
+1000e87b0: f9400fe8    	ldr	x8, [sp, #0x18]
+1000e87b4: f9400be9    	ldr	x9, [sp, #0x10]
+1000e87b8: 52802e0a    	mov	w10, #0x170             ; =368
+1000e87bc: 9b0a7d29    	mul	x9, x9, x10
+1000e87c0: 8b090100    	add	x0, x8, x9
+1000e87c4: 9400953c    	bl	0x10010dcb4 <<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>::as_mut>
+1000e87c8: f90007e0    	str	x0, [sp, #0x8]
+1000e87cc: 14000009    	b	0x1000e87f0 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x200>
+1000e87d0: f9400be0    	ldr	x0, [sp, #0x10]
+1000e87d4: 52800408    	mov	w8, #0x20               ; =32
+1000e87d8: aa0803e1    	mov	x1, x8
+1000e87dc: 9002e4e2    	adrp	x2, 0x105d84000 <dyld_stub_binder+0x105d84000>
+1000e87e0: 91200042    	add	x2, x2, #0x800
+1000e87e4: 948a99aa    	bl	0x10238ee8c <core::panicking::panic_bounds_check>
+1000e87e8: 14000001    	b	0x1000e87ec <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x1fc>
+1000e87ec: d4200020    	brk	#0x1
+1000e87f0: f94007e8    	ldr	x8, [sp, #0x8]
+1000e87f4: f81b03a8    	stur	x8, [x29, #-0x50]
+1000e87f8: f85b03a8    	ldur	x8, [x29, #-0x50]
+1000e87fc: f1000108    	subs	x8, x8, #0x0
+1000e8800: 9a9f07e8    	cset	x8, ne
+1000e8804: 370000e8    	tbnz	w8, #0x0, 0x1000e8820 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x230>
+1000e8808: 14000001    	b	0x1000e880c <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x21c>
+1000e880c: 9002e4e0    	adrp	x0, 0x105d84000 <dyld_stub_binder+0x105d84000>
+1000e8810: 91206000    	add	x0, x0, #0x818
+1000e8814: 948a9977    	bl	0x10238edf0 <core::option::unwrap_failed>
+1000e8818: 14000001    	b	0x1000e881c <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x22c>
+1000e881c: d4200020    	brk	#0x1
+1000e8820: f85b03a8    	ldur	x8, [x29, #-0x50]
+1000e8824: f90003e8    	str	x8, [sp]
+1000e8828: f81b83a8    	stur	x8, [x29, #-0x48]
+1000e882c: 14000001    	b	0x1000e8830 <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x240>
+1000e8830: f94003e8    	ldr	x8, [sp]
+1000e8834: b94067e9    	ldr	w9, [sp, #0x64]
+1000e8838: f9402fea    	ldr	x10, [sp, #0x58]
+1000e883c: aa0803eb    	mov	x11, x8
+1000e8840: f81a83ab    	stur	x11, [x29, #-0x58]
+1000e8844: f9005d0a    	str	x10, [x8, #0xb8]
+1000e8848: b900c109    	str	w9, [x8, #0xc0]
+1000e884c: 9101c100    	add	x0, x8, #0x70
+1000e8850: 9101e3e1    	add	x1, sp, #0x78
+1000e8854: 52800708    	mov	w8, #0x38               ; =56
+1000e8858: aa0803e2    	mov	x2, x8
+1000e885c: 948a9baf    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e8860: f94003e8    	ldr	x8, [sp]
+1000e8864: f9402be1    	ldr	x1, [sp, #0x50]
+1000e8868: 91032100    	add	x0, x8, #0xc8
+1000e886c: 52801308    	mov	w8, #0x98               ; =152
+1000e8870: aa0803e2    	mov	x2, x8
+1000e8874: 948a9ba9    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e8878: 17ffffc1    	b	0x1000e877c <<lifecycle::bootstrap_vote_probe::Guard>::finish+0x18c>
+1000e887c: 948a997e    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+1000e8880: f85903a0    	ldur	x0, [x29, #-0x70]
+1000e8884: 948a9ae8    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>

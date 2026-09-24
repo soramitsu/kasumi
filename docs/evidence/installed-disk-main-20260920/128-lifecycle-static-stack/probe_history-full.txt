@@ -1,0 +1,22 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000e8054 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::history>:
+1000e8054: d10103ff    	sub	sp, sp, #0x40
+1000e8058: a9037bfd    	stp	x29, x30, [sp, #0x30]
+1000e805c: 9100c3fd    	add	x29, sp, #0x30
+1000e8060: f81f83a0    	stur	x0, [x29, #-0x8]
+1000e8064: 910043e8    	add	x8, sp, #0x10
+1000e8068: f90007e8    	str	x8, [sp, #0x8]
+1000e806c: 91010000    	add	x0, x0, #0x40
+1000e8070: 97ff6d47    	bl	0x1000c358c <<std::sync::poison::mutex::Mutex<lifecycle::bootstrap_vote_probe::History>>::lock>
+1000e8074: f94007e0    	ldr	x0, [sp, #0x8]
+1000e8078: 9002e4e1    	adrp	x1, 0x105d84000 <dyld_stub_binder+0x105d84000>
+1000e807c: 911e2021    	add	x1, x1, #0x788
+1000e8080: 94006e06    	bl	0x100103898 <<core::result::Result<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History>, std::sync::poison::PoisonError<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History>>>>::unwrap_or_else::<<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::history::{closure#0}>>
+1000e8084: 12000021    	and	w1, w1, #0x1
+1000e8088: a9437bfd    	ldp	x29, x30, [sp, #0x30]
+1000e808c: 910103ff    	add	sp, sp, #0x40
+1000e8090: d65f03c0    	ret

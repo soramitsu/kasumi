@@ -1,0 +1,351 @@
+--- a/vendor/redb-4.2.0/src/admission/tests.rs
++++ b/vendor/redb-4.2.0/src/admission/tests.rs
+@@ -3,7 +3,7 @@
+ use crate::ReadableTable;
+ use crate::{
+     CloseError, CommitError, Database, DatabaseError, ReadableDatabase, ReadableTableMetadata,
+-    StorageError, TableDefinition,
++    StorageError, TableDefinition, TransactionError,
+ };
+ use std::sync::{
+     Arc,
+@@ -295,10 +295,17 @@
+         faults.fail_sync.store(sync, Ordering::Relaxed);
+         assert!(matches!(
+             write.commit(),
+-            Err(CommitError::Storage(StorageError::OwnerFailed))
++            Err(CommitError::Storage(StorageError::Io(error)))
++                if error.kind() == std::io::ErrorKind::Other
+         ));
+-        assert!(db.begin_write().is_err());
+-        assert!(db.begin_read().is_err());
++        assert!(matches!(
++            db.begin_write(),
++            Err(TransactionError::Storage(StorageError::OwnerFailed))
++        ));
++        assert!(matches!(
++            db.begin_read(),
++            Err(TransactionError::Storage(StorageError::OwnerFailed))
++        ));
+         assert_eq!(owner.failures.load(Ordering::Relaxed), 1);
+         drop(db);
+         assert_eq!(faults.closes.load(Ordering::Relaxed), 1);
+@@ -324,7 +331,8 @@
+     faults.fail_close.store(true, Ordering::Relaxed);
+     assert!(matches!(
+         db.close(),
+-        Err(CloseError::Storage(StorageError::OwnerFailed))
++        Err(CloseError::Storage(StorageError::Io(error)))
++            if error.kind() == std::io::ErrorKind::Other
+     ));
+     assert_eq!(faults.closes.load(Ordering::Relaxed), 1);
+     assert_eq!(owner.failures.load(Ordering::Relaxed), 1);
+@@ -611,7 +619,8 @@
+     let allocations = end_allocation_observation();
+     assert!(matches!(
+         result,
+-        Err(CommitError::Storage(StorageError::OwnerFailed))
++        Err(CommitError::Storage(StorageError::Io(error)))
++            if error.kind() == std::io::ErrorKind::Other
+     ));
+     assert_eq!(allocations, 0);
+     assert_eq!(owner.failures.load(Ordering::Relaxed), 1);
+--- a/vendor/redb-4.2.0/src/db.rs
++++ b/vendor/redb-4.2.0/src/db.rs
+@@ -1602,7 +1602,7 @@
+         let result = tx.commit().err().unwrap();
+         assert!(matches!(
+             result,
+-            CommitError::Storage(StorageError::OwnerFailed)
++            CommitError::Storage(StorageError::Io(error)) if error.kind() == ErrorKind::Other
+         ));
+         let result = db.begin_write().err().unwrap();
+         assert!(matches!(
+--- a/vendor/redb-4.2.0/src/retained_transaction_tests.rs
++++ b/vendor/redb-4.2.0/src/retained_transaction_tests.rs
+@@ -3,7 +3,7 @@
+ use crate::ReadableTable;
+ use crate::{
+     AdmissionError, CloseError, Database, OwnerFailed, ReadableDatabase, StorageAdmission,
+-    StorageBackend, TableDefinition, backends::FileBackend,
++    StorageBackend, TableDefinition, TransactionError, backends::FileBackend,
+ };
+ use std::sync::{
+     Arc, Mutex,
+@@ -304,7 +304,11 @@
+     drop(aborted);
+     fixture.database.close().unwrap();
+     assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 1);
+-    let reopened = Database::open(fixture.file.path(), fixture.owner).unwrap();
++    let reopened = Database::builder(fixture.owner)
++        .set_page_size(512)
++        .set_region_size(16 << 10)
++        .open(fixture.file.path())
++        .unwrap();
+     assert_eq!(
+         reopened
+             .begin_read()
+@@ -429,7 +433,16 @@
+     assert!(matches!(report.rollback(), TerminalObservation::NotEntered));
+     assert_eq!(&write.transaction as *const WriteTransaction, transaction);
+     assert!(write.transaction().is_none());
+-    let counts = fixture.counts();
++    assert!(fixture.owner.failed.load(Ordering::Acquire));
++    let counts = fixture.counts();
++    assert!(matches!(
++        fixture.database.begin_read(),
++        Err(TransactionError::Storage(StorageError::OwnerFailed))
++    ));
++    assert!(matches!(
++        fixture.database.begin_write(),
++        Err(TransactionError::Storage(StorageError::OwnerFailed))
++    ));
+     assert_eq!(terminal_error(&write.abort()), original);
+     assert_eq!(terminal_error(&write.commit()), original);
+     assert_eq!(fixture.counts(), counts);
+@@ -508,7 +521,11 @@
+     // The uncertain original transaction/database remain retained throughout.
+     let image = crate::create_tempfile();
+     std::fs::copy(fixture.file.path(), image.path()).unwrap();
+-    let recovered = Database::open(image.path(), crate::test_admission()).unwrap();
++    let recovered = Database::builder(crate::test_admission())
++        .set_page_size(512)
++        .set_region_size(16 << 10)
++        .open(image.path())
++        .unwrap();
+     assert_eq!(
+         recovered
+             .begin_read()
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
+@@ -167,9 +167,11 @@
+     }
+ 
+     fn io<T>(&self, result: core::result::Result<T, crate::io::Error>) -> Result<T> {
+-        result.map_err(|_| {
++        result.map_err(|error| {
++            // Fence later access without replacing this operation's original
++            // I/O object. Its caller owns the actual cause of the uncertainty.
+             self.fail_owner();
+-            StorageError::OwnerFailed
++            StorageError::Io(error)
+         })
+     }
+ 
+@@ -1152,3 +1154,7 @@
+         }
+     }
+ }
++
++#[cfg(test)]
++#[path = "checked_backend_tests.rs"]
++mod checked_backend_tests;
+--- /dev/null
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/checked_backend_tests.rs
+@@ -0,0 +1,206 @@
++use super::CheckedBackend;
++use crate::{AdmissionError, OwnerFailed, StorageAdmission, StorageBackend, StorageError};
++use std::{
++    io,
++    sync::{
++        Arc, Mutex,
++        atomic::{AtomicBool, AtomicUsize, Ordering},
++    },
++};
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum Method {
++    Len,
++    Read,
++    SetLen,
++    Write,
++    Sync,
++    Close,
++}
++const METHODS: [Method; 6] = [
++    Method::Len,
++    Method::Read,
++    Method::SetLen,
++    Method::Write,
++    Method::Sync,
++    Method::Close,
++];
++
++#[derive(Debug)]
++struct OriginalIoFailure(u64);
++impl core::fmt::Display for OriginalIoFailure {
++    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
++        write!(f, "original checked backend failure {}", self.0)
++    }
++}
++impl std::error::Error for OriginalIoFailure {}
++
++#[derive(Debug)]
++struct Fault {
++    method: Method,
++    original: Mutex<Option<io::Error>>,
++    calls: [AtomicUsize; METHODS.len()],
++}
++impl Fault {
++    fn enter(&self, method: Method) -> io::Result<()> {
++        self.calls[method as usize].fetch_add(1, Ordering::SeqCst);
++        if method == self.method {
++            return Err(self
++                .original
++                .lock()
++                .unwrap()
++                .take()
++                .expect("failed physical operation must never be replayed"));
++        }
++        Ok(())
++    }
++    fn counts(&self) -> [usize; METHODS.len()] {
++        std::array::from_fn(|index| self.calls[index].load(Ordering::SeqCst))
++    }
++}
++
++#[derive(Debug, Default)]
++struct Owner {
++    failed: AtomicBool,
++    failures: AtomicUsize,
++}
++impl StorageAdmission for Owner {
++    fn check_owner(&self) -> Result<(), OwnerFailed> {
++        if self.failed.load(Ordering::Acquire) {
++            Err(OwnerFailed)
++        } else {
++            Ok(())
++        }
++    }
++    fn reserve_growth(&self, _: u64, _: u64) -> Result<(), AdmissionError> {
++        self.check_owner().map_err(|_| AdmissionError::OwnerFailed)
++    }
++    fn settle_growth(&self, _: u64) -> Result<(), OwnerFailed> {
++        self.check_owner()
++    }
++    fn owner_failed(&self) {
++        self.failed.store(true, Ordering::Release);
++        self.failures.fetch_add(1, Ordering::SeqCst);
++    }
++}
++
++#[derive(Debug)]
++struct Backend {
++    inner: crate::backends::InMemoryBackend,
++    fault: Arc<Fault>,
++}
++impl StorageBackend for Backend {
++    fn len(&self) -> io::Result<u64> {
++        self.fault.enter(Method::Len)?;
++        self.inner.len()
++    }
++    fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
++        self.fault.enter(Method::Read)?;
++        self.inner.read(offset, out)
++    }
++    fn set_len(&self, len: u64) -> io::Result<()> {
++        self.fault.enter(Method::SetLen)?;
++        self.inner.set_len(len)
++    }
++    fn write(&self, offset: u64, data: &[u8]) -> io::Result<()> {
++        self.fault.enter(Method::Write)?;
++        self.inner.write(offset, data)
++    }
++    fn sync_data(&self) -> io::Result<()> {
++        self.fault.enter(Method::Sync)?;
++        self.inner.sync_data()
++    }
++    fn close(&self) -> io::Result<()> {
++        self.fault.enter(Method::Close)?;
++        self.inner.close()
++    }
++}
++
++fn invoke(backend: &CheckedBackend, method: Method) -> crate::Result<()> {
++    match method {
++        Method::Len => backend.len().map(|_| ()),
++        Method::Read => backend.read(0, &mut [0]),
++        Method::SetLen => backend.set_len(128),
++        Method::Write => backend.write(0, &[1]),
++        Method::Sync => backend.sync_data(),
++        Method::Close => backend.close(),
++    }
++}
++
++#[test]
++fn every_backend_io_failure_preserves_original_object_and_fences_later_access() {
++    for method in METHODS {
++        let original = io::Error::new(
++            io::ErrorKind::BrokenPipe,
++            OriginalIoFailure(method as u64 + 1),
++        );
++        let identity = original
++            .get_ref()
++            .unwrap()
++            .downcast_ref::<OriginalIoFailure>()
++            .unwrap() as *const OriginalIoFailure;
++        let fault = Arc::new(Fault {
++            method,
++            original: Mutex::new(Some(original)),
++            calls: std::array::from_fn(|_| AtomicUsize::new(0)),
++        });
++        let owner = Arc::new(Owner::default());
++        let inner = crate::backends::InMemoryBackend::new();
++        inner.set_len(64).unwrap();
++        let backend = CheckedBackend::new(
++            Box::new(Backend {
++                inner,
++                fault: fault.clone(),
++            }),
++            owner.clone(),
++        );
++        let StorageError::Io(original) = invoke(&backend, method).unwrap_err() else {
++            panic!("{method:?} replaced its actual backend I/O error");
++        };
++        assert_eq!(original.kind(), io::ErrorKind::BrokenPipe);
++        assert_eq!(
++            original
++                .get_ref()
++                .unwrap()
++                .downcast_ref::<OriginalIoFailure>()
++                .unwrap() as *const OriginalIoFailure,
++            identity,
++        );
++        assert!(owner.failed.load(Ordering::Acquire));
++        assert_eq!(owner.failures.load(Ordering::SeqCst), 1);
++        let calls = fault.counts();
++        assert_eq!(calls[method as usize], 1);
++        for retry in &METHODS[..5] {
++            let error = invoke(&backend, *retry).unwrap_err();
++            assert!(match method {
++                Method::Close => matches!(error, StorageError::DatabaseClosed),
++                _ => matches!(error, StorageError::OwnerFailed),
++            });
++        }
++        assert_eq!(fault.counts(), calls, "fenced retries touched the backend");
++        // Explicit close must still drain the physical backend after a data I/O
++        // failure. An already attempted close is observed without replay.
++        backend.close().unwrap();
++        backend.close().unwrap();
++        assert_eq!(
++            fault.calls[Method::Close as usize].load(Ordering::SeqCst),
++            1
++        );
++        assert!(matches!(backend.len(), Err(StorageError::DatabaseClosed)));
++        drop(backend);
++        assert_eq!(
++            fault.calls[Method::Close as usize].load(Ordering::SeqCst),
++            1
++        );
++        assert_eq!(owner.failures.load(Ordering::SeqCst), 1);
++        assert_eq!(
++            original
++                .get_ref()
++                .unwrap()
++                .downcast_ref::<OriginalIoFailure>()
++                .unwrap() as *const OriginalIoFailure,
++            identity,
++            "later fencing/close replaced the original error object",
++        );
++    }
++}

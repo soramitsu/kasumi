@@ -11,6 +11,54 @@ async fn registered(authority: &IndependentAuthority, count: usize) {
     .unwrap();
 }
 
+async fn close_after_unclaimed_release_outcome(
+    fixture: Fixture,
+    authority: &Arc<IndependentAuthority>,
+) {
+    use kasumi_types::drain::DrainCompletion;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while authority.request_jobs.completed_unclaimed_errors() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(authority.request_jobs.registered(), 1);
+    assert_eq!(
+        authority.requests.available_permits(),
+        AUTHORITY_REQUEST_SLOTS
+    );
+    let failure = tokio::time::timeout(Duration::from_secs(10), authority.shutdown())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(failure.completion(), DrainCompletion::Complete);
+    let issue = failure
+        .issues()
+        .iter()
+        .find(|issue| issue.component() == "authority request outcome")
+        .unwrap();
+    let original = issue.error().downcast_ref::<Error>().unwrap();
+    assert_eq!(original.code, ErrorCode::UnknownOutcome);
+    assert_eq!(
+        original.message,
+        "authority acknowledgement unavailable; resolve the exact permanent command identity"
+    );
+    assert_eq!(authority.request_jobs.registered(), 0);
+    assert_eq!(
+        authority.requests.available_permits(),
+        AUTHORITY_REQUEST_SLOTS
+    );
+    for service in &fixture.services {
+        if !Arc::ptr_eq(service, authority) {
+            service.shutdown().await.unwrap();
+        }
+    }
+    for store in &fixture.stores {
+        store.shutdown().await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn cancelled_public_command_waiter_keeps_actual_child_until_its_receipt_commits() {
     let fixture = Fixture::new().await;
@@ -41,21 +89,10 @@ async fn cancelled_public_command_waiter_keeps_actual_child_until_its_receipt_co
         {
             tokio::task::yield_now().await;
         }
-        loop {
-            authority.request_jobs.observe(&authority.requests);
-            if authority.request_jobs.registered() == 0 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
     })
     .await
     .unwrap();
-    assert_eq!(
-        authority.requests.available_permits(),
-        AUTHORITY_REQUEST_SLOTS
-    );
-    fixture.close().await;
+    close_after_unclaimed_release_outcome(fixture, &authority).await;
 }
 
 #[tokio::test]
@@ -85,28 +122,65 @@ async fn acknowledgement_timeout_keeps_original_command_owner_and_actual_complet
     );
     drop(proposal);
     tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            authority.request_jobs.observe(&authority.requests);
-            if authority.request_jobs.registered() == 0 {
-                break;
-            }
+        while authority
+            .backend
+            .receipt(&retained_command.tenant, retained_command.command_id)
+            .unwrap()
+            .is_none()
+        {
             tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
+    close_after_unclaimed_release_outcome(fixture, &authority).await;
+}
+
+#[tokio::test]
+async fn timed_out_waiter_keeps_original_rejection_until_exact_shutdown_drain() {
+    use kasumi_types::drain::DrainCompletion;
+    let admission = kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
+    let jobs = RequestJobs::new(request_budget(&admission)).unwrap();
+    let requests = Arc::new(Semaphore::new(AUTHORITY_REQUEST_SLOTS));
+    let (release, waiting) = tokio::sync::oneshot::channel::<()>();
+    let (child, mut receive) = jobs
+        .submit::<()>(requests.clone(), async move {
+            waiting.await.unwrap();
+            Err(Error::new(
+                ErrorCode::Conflict,
+                "original accepted authority rejection",
+            ))
+        })
+        .unwrap();
     assert!(
-        authority
-            .backend
-            .receipt(&retained_command.tenant, retained_command.command_id)
-            .unwrap()
-            .is_some()
+        tokio::time::timeout(Duration::from_millis(10), &mut receive)
+            .await
+            .is_err()
     );
-    assert_eq!(
-        authority.requests.available_permits(),
-        AUTHORITY_REQUEST_SLOTS
+    drop(receive);
+    release.send(()).unwrap();
+    child.drain().await.unwrap();
+    jobs.observe(&requests);
+    assert_eq!(jobs.registered(), 1);
+    assert!(!requests.is_closed());
+    let failure = jobs.drain(&requests).await.unwrap_err();
+    assert_eq!(failure.completion(), DrainCompletion::Complete);
+    let issue = failure
+        .issues()
+        .iter()
+        .find(|issue| issue.component() == "authority request outcome")
+        .unwrap();
+    let original = issue.error().downcast_ref::<Error>().unwrap();
+    assert_eq!(original.code, ErrorCode::Conflict);
+    assert_eq!(original.message, "original accepted authority rejection");
+    assert_eq!(jobs.registered(), 0);
+    let again = jobs.drain(&requests).await.unwrap_err();
+    assert!(
+        again
+            .issues()
+            .iter()
+            .any(|candidate| Arc::ptr_eq(candidate, issue))
     );
-    fixture.close().await;
 }
 
 #[tokio::test]
@@ -207,8 +281,8 @@ async fn actual_child_panic_fences_admission_and_cancelled_drain_keeps_original_
 async fn request_registry_metadata_charge_outlives_cancelled_waiters_and_dropped_facade() {
     let admission = kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
     let bytes = authority_request_metadata_bytes().unwrap();
-    let mut charge = admission.reserve(bytes, None).unwrap();
-    charge.retain(bytes);
+    let baseline = admission.snapshot().reserved_bytes;
+    let charge = admission.memory().reserve_resident(bytes).unwrap();
     let jobs = RequestJobs::new(
         BackgroundWorkBudget::new(AUTHORITY_REQUEST_SLOTS, Arc::new(charge)).unwrap(),
     )
@@ -223,7 +297,7 @@ async fn request_registry_metadata_charge_outlives_cancelled_waiters_and_dropped
         .unwrap();
     drop(receive);
     drop(jobs);
-    assert_eq!(admission.snapshot().reserved_bytes, bytes);
+    assert_eq!(admission.snapshot().reserved_bytes, baseline + bytes);
     assert_eq!(admission.snapshot().inflight_operations, 0);
     let mut first = Box::pin(child.drain());
     std::future::poll_fn(|cx| {
@@ -232,16 +306,17 @@ async fn request_registry_metadata_charge_outlives_cancelled_waiters_and_dropped
     })
     .await;
     drop(first);
-    assert_eq!(admission.snapshot().reserved_bytes, bytes);
+    assert_eq!(admission.snapshot().reserved_bytes, baseline + bytes);
     release.send(()).unwrap();
     child.drain().await.unwrap();
     drop(child);
-    assert_eq!(admission.snapshot().reserved_bytes, 0);
+    assert_eq!(admission.snapshot().reserved_bytes, baseline);
 }
 
 #[tokio::test]
 async fn request_child_inventory_is_bounded_and_capacity_denial_does_not_fence_owner() {
-    let jobs = RequestJobs::new(request_budget()).unwrap();
+    let admission = kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
+    let jobs = RequestJobs::new(request_budget(&admission)).unwrap();
     let requests = Arc::new(tokio::sync::Semaphore::new(AUTHORITY_REQUEST_SLOTS));
     let mut releases = Vec::new();
     for _ in 0..AUTHORITY_REQUEST_SLOTS {

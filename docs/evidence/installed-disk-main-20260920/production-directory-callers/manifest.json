@@ -1,0 +1,26 @@
+{
+  "scope": "read-only current production directory caller audit; no Rust source changes or execution",
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "source_files": 499,
+  "sources_unchanged": true,
+  "inventory_groups": 28,
+  "production_call_sites": 44,
+  "line_assertions_passed": true,
+  "approved_policy_applied": false,
+  "caller_patch_prepared": false,
+  "files": {
+    "README.md": "3613bebf4f56ce5065beb37c790bd6d86e0260f94b1cbb1aea635b226754e6f5",
+    "all-rust-source-after.json": "fc9551da2160fdc9d8beefc9e260662d9320bcb6d714aac18ced900c542bd2d6",
+    "all-rust-source-before.json": "fc9551da2160fdc9d8beefc9e260662d9320bcb6d714aac18ced900c542bd2d6",
+    "census-restart-policy.md": "97fe11b34dc00741c115cacb574b45304d91b2e8348b16fe40221ffdd49311ae",
+    "classification-summary.json": "a30548ca22bb12beeecea119b80968c48be86a47959a2b0c0a04d09c8a6d58ee",
+    "classified-search.json": "bd9542dd3a4f4f6c0159d09dd127306f45ed16661abdd857c38b60d62cf9a683",
+    "inventory.json": "ef5595326c4f89fad3403146adef6b2fcd96e003def1d7b0f89c24c0afe3bb6f",
+    "migration-checklist.md": "3598164a30aa12eb64bfe9bc3a1200cc27520ddae90c2cd3d6a58852f501d6aa",
+    "raw-search.jsonl": "6c6b33e52058d22674849ab9b2b34267e1641e0bf02b22aca2a585ccc5078bbf",
+    "raw-search.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "search-receipt.json": "c76c116cfdfeee4ebebadc0d897a9303fa4dcb88fe002a1672d585ab7957a6c8",
+    "supplementary-searches.json": "af45955e0d30479970d4c505427bbe8809e054b712abb767b42457224d08ec4b"
+  }
+}

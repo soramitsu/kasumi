@@ -370,7 +370,10 @@ async fn stopped_control_epoch_and_queued_original_expiry_defeat_new_activation_
         drop(gate);
         let attempted = task.await.unwrap();
         let result = match attempted {
-            Ok((receipt, _)) => receipt.receipt,
+            Ok((receipt, response_fence)) => {
+                drop(response_fence);
+                receipt.receipt
+            }
             Err(error)
                 if matches!(
                     error.code,
@@ -464,12 +467,13 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
     )
     .unwrap();
     let captured = phase.capture().unwrap();
-    let node_store = NodeStore::create_new_fixture(
-        f._dir.path().join("actual-target.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
+    let storage = PhysicalFixture::new().unwrap();
+    let node_store = storage
+        .create_new(
+            storage.path("actual-target.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([91; 32]));
     let access = kasumi_store::StorageAccess::target_phase(serving.clone(), phase.clone()).unwrap();
     let store = kasumi_store::TenantStore::initialize_catalog_fixture_with_access(

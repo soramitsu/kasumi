@@ -1,0 +1,31 @@
+100150060: 9451090e    	bl	0x101592498 <<alloc::vec::Vec<u8>>::new>
+100150090: 9488df9e    	bl	0x102387f08 <dyld_stub_binder+0x102387f08>
+1001500a8: 942f2046    	bl	0x100d181c0 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+1001500b8: 94610870    	bl	0x101992278 <core::ptr::drop_glue::<alloc::vec::Vec<u8>>>
+1001500fc: 942bcc7e    	bl	0x100c432f4 <<kasumi_engine::service::Database>::engine>
+10015010c: 942f2026    	bl	0x100d181a4 <<alloc::sync::Arc<kasumi_engine::state::TenantEngine> as core::ops::deref::Deref>::deref>
+100150120: 9404c326    	bl	0x100280db8 <<kasumi_engine::state::TenantEngine as kasumi_raft::StateMachineBackend>::capture_snapshot>
+10015016c: 9488dde1    	bl	0x1023878f0 <core::result::unwrap_failed>
+100150184: 945066b9    	bl	0x101569c68 <core::ptr::drop_glue::<anyhow::Error>>
+100150190: 9488ddf2    	bl	0x102387958 <core::panicking::panic_in_cleanup>
+1001501b8: 9488e011    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+1001501d0: 9439f648    	bl	0x100fcdaf0 <<kasumi_raft::CapturedSnapshot>::write>
+1001501e0: 940b0f9f    	bl	0x10041405c <core::ptr::drop_glue::<kasumi_raft::CapturedSnapshot>>
+100150254: 9488dda7    	bl	0x1023878f0 <core::result::unwrap_failed>
+10015026c: 9450667f    	bl	0x101569c68 <core::ptr::drop_glue::<anyhow::Error>>
+100150278: 9488ddb8    	bl	0x102387958 <core::panicking::panic_in_cleanup>
+100150298: 940b0f71    	bl	0x10041405c <core::ptr::drop_glue::<kasumi_raft::CapturedSnapshot>>
+1001502a4: 942f1fc7    	bl	0x100d181c0 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+1001502b4: 942bcc10    	bl	0x100c432f4 <<kasumi_engine::service::Database>::engine>
+1001502c4: 942f1fb8    	bl	0x100d181a4 <<alloc::sync::Arc<kasumi_engine::state::TenantEngine> as core::ops::deref::Deref>::deref>
+1001502d4: 944f910c    	bl	0x101534704 <<alloc::vec::Vec<u8>>::as_slice>
+100150308: 9404c3ac    	bl	0x1002811b8 <<kasumi_engine::state::TenantEngine as kasumi_raft::StateMachineBackend>::validate_snapshot>
+100150354: 9488dd67    	bl	0x1023878f0 <core::result::unwrap_failed>
+10015036c: 9450663f    	bl	0x101569c68 <core::ptr::drop_glue::<anyhow::Error>>
+100150378: 9488dd78    	bl	0x102387958 <core::panicking::panic_in_cleanup>
+1001503a0: 9488df97    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+1001503ac: 9431e1cc    	bl	0x100dc8adc <core::ptr::drop_glue::<core::option::Option<kasumi_raft::snapshot_state::RetiredSnapshotState>>>
+1001503b8: 946107b0    	bl	0x101992278 <core::ptr::drop_glue::<alloc::vec::Vec<u8>>>
+1001503e4: 9488dd5d    	bl	0x102387958 <core::panicking::panic_in_cleanup>
+1001503f0: 9488de5c    	bl	0x102387d60 <core::panicking::panic_const::panic_const_async_fn_resumed>
+1001503fc: 9488de60    	bl	0x102387d7c <core::panicking::panic_const::panic_const_async_fn_resumed_panic>

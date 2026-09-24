@@ -1,0 +1,78 @@
+[
+  {
+    "name": "compiler",
+    "argv": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+      "-vV"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp",
+    "pid": 16773,
+    "pgid": 16773,
+    "exit_code": 0,
+    "process_group_drained": true,
+    "elapsed_seconds": 0.017554044723510742
+  },
+  {
+    "name": "compile-ledger-tests",
+    "argv": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+      "--edition=2024",
+      "--test",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-02/ledger_tests.rs",
+      "-o",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-02/ledger-tests"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp",
+    "pid": 16774,
+    "pgid": 16774,
+    "exit_code": 0,
+    "process_group_drained": true,
+    "elapsed_seconds": 0.17249679565429688
+  },
+  {
+    "name": "ledger-tests",
+    "argv": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-02/ledger-tests",
+      "--test-threads=1"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp",
+    "pid": 16781,
+    "pgid": 16781,
+    "exit_code": 0,
+    "process_group_drained": true,
+    "elapsed_seconds": 0.22201895713806152
+  },
+  {
+    "name": "compile-formula",
+    "argv": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+      "--edition=2024",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-02/metadata_formula.rs",
+      "-o",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-02/metadata-formula"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp",
+    "pid": 16782,
+    "pgid": 16782,
+    "exit_code": 0,
+    "process_group_drained": true,
+    "elapsed_seconds": 0.1880970001220703
+  },
+  {
+    "name": "formula",
+    "argv": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-02/metadata-formula"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi",
+    "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp",
+    "pid": 16791,
+    "pgid": 16791,
+    "exit_code": 0,
+    "process_group_drained": true,
+    "elapsed_seconds": 0.2317218780517578
+  }
+]

@@ -1,0 +1,101 @@
+--- a/crates/kasumi-authority/src/target_materialization_tests.rs
++++ b/crates/kasumi-authority/src/target_materialization_tests.rs
+@@ -31,6 +31,19 @@
+         );
+         error.to_string() == expected.to_string()
+     })
++}
++
++fn is_access_fenced_replication(
++    replication: &openraft::error::ReplicationShutdownError<u64, tokio::task::JoinError>,
++) -> bool {
++    replication.owner_id > 0
++        && (1..=4).contains(&replication.target)
++        && replication.snapshot.is_none()
++        && replication
++            .stream
++            .as_ref()
++            .and_then(|stream| stream.storage_error())
++            .is_some_and(|error| is_access_fenced_write(error))
+ }
+ 
+ fn assert_target_close_outcomes(
+@@ -59,14 +72,27 @@
+     assert!(runtime.core_join_error().is_none(), "{runtime:?}");
+     assert!(runtime.ticker().is_none(), "{runtime:?}");
+     assert!(runtime.snapshot_builder().is_none(), "{runtime:?}");
+-    assert!(runtime.replications().is_empty(), "{runtime:?}");
+     assert!(runtime.auxiliary().is_empty(), "{runtime:?}");
+     assert!(runtime.incoming_snapshot().is_none(), "{runtime:?}");
+-    let storage = runtime
+-        .state_machine()
+-        .and_then(|worker| worker.storage_error())
+-        .expect("actual access-fenced state-machine error missing");
+-    assert!(is_access_fenced_write(storage), "{storage:?}");
++    let mut observed = 0;
++    if let Some(worker) = runtime.state_machine() {
++        let storage = worker
++            .storage_error()
++            .expect("actual access-fenced state-machine error missing");
++        assert!(is_access_fenced_write(storage), "{storage:?}");
++        observed += 1;
++    }
++    // Immediate gate closure also fences an actual replication storage reader.
++    // Preserve its exact child identity and original storage cause; a join or
++    // snapshot failure cannot pass this classifier.
++    for replication in runtime.replications() {
++        assert!(is_access_fenced_replication(replication), "{replication:?}");
++        observed += 1;
++    }
++    assert!(
++        observed > 0,
++        "no original access-fenced child failure: {runtime:?}"
++    );
+     eprintln!("target owners drained with their original access-fenced outcome: {failure:?}");
+ }
+ 
+@@ -102,6 +128,44 @@
+         ErrorVerb::Write,
+         &format!("unrelated failure: {closed}"),
+     )));
++}
++
++#[test]
++fn target_close_replication_diagnostic_preserves_child_failure_boundaries() {
++    use openraft::error::{ReplicationShutdownError, ShutdownTaskError};
++    let error = || {
++        openraft::StorageError::<u64>::from_io_error(
++            openraft::ErrorSubject::Store,
++            openraft::ErrorVerb::Write,
++            std::io::Error::other("tenant is sealed: key-access lease unavailable or expired"),
++        )
++    };
++    let mut replication = ReplicationShutdownError::<u64, tokio::task::JoinError> {
++        owner_id: 1,
++        target: 3,
++        stream: Some(ShutdownTaskError::Storage(Arc::new(error()))),
++        snapshot: None,
++    };
++    assert!(is_access_fenced_replication(&replication));
++    replication.snapshot = Some(ShutdownTaskError::Storage(Arc::new(error())));
++    assert!(!is_access_fenced_replication(&replication));
++    replication.snapshot = None;
++    replication.owner_id = 0;
++    assert!(!is_access_fenced_replication(&replication));
++    replication.owner_id = 1;
++    replication.target = 5;
++    assert!(!is_access_fenced_replication(&replication));
++    replication.target = 3;
++    replication.stream = None;
++    assert!(!is_access_fenced_replication(&replication));
++    replication.stream = Some(ShutdownTaskError::Storage(Arc::new(
++        openraft::StorageError::<u64>::from_io_error(
++            openraft::ErrorSubject::Store,
++            openraft::ErrorVerb::Write,
++            std::io::Error::other("unrelated replication write failure"),
++        ),
++    )));
++    assert!(!is_access_fenced_replication(&replication));
+ }
+ 
+ async fn audit(

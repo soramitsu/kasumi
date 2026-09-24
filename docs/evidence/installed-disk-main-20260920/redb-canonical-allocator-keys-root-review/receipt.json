@@ -1,0 +1,8 @@
+{
+  "status": "SCOPED_APPROVAL_PENDING_COMPOSITION_AND_NATIVE",
+  "patch_sha256": "a61e1c3d9ac6bfef19a4f33b669d9355c59fca38af02234817244a8ad02551d4",
+  "manifest_sha256": "dfb57d416da63f2c9caf3d42b84bc96c6759686f14934ae60f22f113f0022930",
+  "review_sha256": "455489eaeb14fa9b496510cd3741e07e116ae8113fbe6289ee71e9221af0e2e8",
+  "actual_source_changes": false,
+  "native_execution": false
+}

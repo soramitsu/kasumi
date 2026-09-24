@@ -169,6 +169,7 @@ pub enum Action {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Grant {
     pub principal: String,
     pub collection: Option<String>,
@@ -176,6 +177,7 @@ pub struct Grant {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Policy {
     pub grants: Vec<Grant>,
     pub strict_read_audit: bool,
@@ -215,6 +217,7 @@ pub struct Limits {
     pub max_schema_activation_bytes: u64,
     pub max_retirement_bytes: u64,
     pub max_target_resolution_bytes: u64,
+    pub max_backup_binding_bytes: u64,
     pub max_policy_grants: usize,
     pub max_logical_bytes: u64,
     pub max_snapshot_bytes: u64,
@@ -242,6 +245,7 @@ impl Default for Limits {
             max_schema_activation_bytes: 64 << 20,
             max_retirement_bytes: 64 << 20,
             max_target_resolution_bytes: 64 << 20,
+            max_backup_binding_bytes: 128 << 20,
             max_policy_grants: 4096,
             max_logical_bytes: 1 << 30,
             max_snapshot_bytes: default_snapshot_bytes(),
@@ -267,6 +271,7 @@ pub struct Document {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct CollectionDefinition {
     pub name: String,
     pub write_mode: CollectionWriteMode,
@@ -303,6 +308,7 @@ pub struct CollectionState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct IndexDefinition {
     pub name: String,
     pub fields: Vec<IndexField>,
@@ -312,6 +318,7 @@ pub struct IndexDefinition {
     pub text: Option<TextIndex>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct IndexField {
     pub path: String,
     pub kind: ScalarType,
@@ -327,6 +334,7 @@ pub enum ScalarType {
     NumberArray,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct TextIndex {
     pub analyzer: Analyzer,
 }
@@ -484,8 +492,30 @@ pub struct MutationReceiptScope {
     pub incarnation: String,
     pub principal: String,
 }
-/// Exact immutable ordinary mutation history selected by one applied generation.
-/// Later physical rows are invisible until their original command is replayed.
+/// Authenticated Control point-table prefix. Only this fixed head is resident.
+/// Rows persisted ahead of the selected generation remain invisible.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BackupBindingHead {
+    pub origin_incarnation: String,
+    pub count: u64,
+    pub encoded_bytes: u64,
+    pub last_applied_revision: u64,
+    pub sha256: String,
+}
+impl BackupBindingHead {
+    pub fn empty(incarnation: &str) -> crate::Result<Self> {
+        crate::validate_name(incarnation)?;
+        Ok(Self {
+            origin_incarnation: incarnation.into(),
+            count: 0,
+            encoded_bytes: 0,
+            last_applied_revision: 0,
+            sha256: crate::staged_digest(&("kasumi.backup-binding-root.v1", incarnation))?.0,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct MutationReceiptHead {
@@ -587,6 +617,7 @@ pub struct TenantState {
     pub limits: Limits,
     pub collections: BTreeMap<String, CollectionState>,
     pub mutation_receipt_head: MutationReceiptHead,
+    pub backup_binding_head: BackupBindingHead,
     #[serde(serialize_with = "serialize_resident_map")]
     pub staged_transactions: imbl::OrdMap<String, StagedTransaction>,
     pub active_staged_transactions: BTreeSet<String>,
@@ -673,6 +704,7 @@ pub enum Comparison {
     Gte,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Sort {
     pub field: String,
     pub direction: Direction,
@@ -684,6 +716,7 @@ pub enum Direction {
     Desc,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Aggregation {
     pub alias: String,
     pub function: AggregateFunction,
@@ -700,6 +733,7 @@ pub enum AggregateFunction {
     Avg,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct TextSearch {
     pub index: String,
     pub query: String,
@@ -898,5 +932,68 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn first_release_admin_nested_fields_reject_unknown_keys() {
+        let definition = serde_json::json!({
+            "name":"docs",
+            "write_mode":"mutable",
+            "retention_class":"operational",
+            "schema":{"type":"object"},
+            "indexes":[{"name":"amount","fields":[{"path":"/amount","kind":"number"}]}],
+            "strict_read_audit":false
+        });
+        assert!(serde_json::from_value::<CollectionDefinition>(definition.clone()).is_ok());
+        let mut changed = definition.clone();
+        changed["legacy_definition"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<CollectionDefinition>(changed).is_err());
+        let mut changed = definition.clone();
+        changed["indexes"][0]["uniqe"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<CollectionDefinition>(changed).is_err());
+        let mut changed = definition;
+        changed["indexes"][0]["fields"][0]["legacy_kind"] = serde_json::json!("number");
+        assert!(serde_json::from_value::<CollectionDefinition>(changed).is_err());
+
+        let text_index = serde_json::json!({"analyzer":"unicode_v1"});
+        assert!(serde_json::from_value::<TextIndex>(text_index.clone()).is_ok());
+        let mut changed = text_index;
+        changed["legacy_analyzer"] = serde_json::json!("unicode_v1");
+        assert!(serde_json::from_value::<TextIndex>(changed).is_err());
+
+        let policy = serde_json::json!({
+            "grants":[{"principal":"owner","collection":null,"actions":["admin"]}],
+            "strict_read_audit":false
+        });
+        assert!(serde_json::from_value::<Policy>(policy.clone()).is_ok());
+        let mut changed = policy.clone();
+        changed["legacy_policy"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<Policy>(changed).is_err());
+        let mut changed = policy;
+        changed["grants"][0]["legacy_grant"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<Policy>(changed).is_err());
+    }
+
+    #[test]
+    fn first_release_nested_query_fields_reject_unknown_keys() {
+        let query = serde_json::json!({
+            "collection":"docs",
+            "sort":[{"field":"/amount","direction":"asc"}],
+            "aggregates":[{"alias":"count","function":"count","field":null,"scale":null}],
+            "text":{"index":"body","query":"foo","mode":"terms","distance":1}
+        });
+        assert!(serde_json::from_value::<QueryRequest>(query.clone()).is_ok());
+        for path in ["sort", "aggregates", "text"] {
+            let mut changed = query.clone();
+            if path == "text" {
+                changed[path]["legacy_text"] = serde_json::json!(true);
+            } else {
+                changed[path][0]["legacy_field"] = serde_json::json!(true);
+            }
+            assert!(
+                serde_json::from_value::<QueryRequest>(changed).is_err(),
+                "{path}"
+            );
+        }
     }
 }

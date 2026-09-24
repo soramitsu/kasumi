@@ -1,0 +1,25 @@
+{
+  "scope": "development actual-backend retained redb terminal prerequisite tests; no production caller adoption or release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--manifest-path",
+    "vendor/redb-4.2.0/Cargo.toml",
+    "--offline",
+    "--locked",
+    "--lib",
+    "retained_transaction",
+    "--",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 13976,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 17.57526993751526,
+  "inventoried_source_unchanged": true
+}

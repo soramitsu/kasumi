@@ -1,0 +1,8 @@
+{
+  "kind": "original-cause diagnostic; run errors are preserved, not desired release behavior",
+  "source_snapshot": "target/installed-disk-validation/directory-fixed-maps/native-03",
+  "current_fixed_map_candidate_manifest_sha256": "94fff8eebbe627625191023a1ffdea49d9ee0d875450581ab7fb180ac7f2759a",
+  "N": 8,
+  "managed_files": 7,
+  "policy": "unchanged bounded fixture memory/handles; only explicit tiny traversal/file cardinality for counterexample"
+}

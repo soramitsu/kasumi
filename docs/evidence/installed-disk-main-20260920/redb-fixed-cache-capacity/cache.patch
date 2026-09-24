@@ -1,0 +1,738 @@
+--- a/vendor/redb-4.2.0/src/admission/tests.rs
++++ b/vendor/redb-4.2.0/src/admission/tests.rs
+@@ -405,11 +405,11 @@
+         }
+     });
+ }
+-fn begin_allocation_observation() {
++pub(super) fn begin_allocation_observation() {
+     ALLOCATIONS.with(|count| count.set(0));
+     ALLOCATION_GUARD.with(|guard| guard.set(true));
+ }
+-fn end_allocation_observation() -> usize {
++pub(super) fn end_allocation_observation() -> usize {
+     ALLOCATION_GUARD.with(|guard| guard.set(false));
+     ALLOCATIONS.with(std::cell::Cell::get)
+ }
+--- a/vendor/redb-4.2.0/src/admission.rs
++++ b/vendor/redb-4.2.0/src/admission.rs
+@@ -52,3 +52,14 @@
+ 
+ #[cfg(test)]
+ mod tests;
++
++#[cfg(all(test, not(redb_no_std), panic = "unwind"))]
++#[path = "cache_admission_tests.rs"]
++mod cache_admission_tests;
++
++#[cfg(test)]
++pub(crate) fn observe_test_allocations<T>(operation: impl FnOnce() -> T) -> (T, usize) {
++    tests::begin_allocation_observation();
++    let result = operation();
++    (result, tests::end_allocation_observation())
++}
+--- /dev/null
++++ b/vendor/redb-4.2.0/src/cache_admission_tests.rs
+@@ -0,0 +1,211 @@
++#[cfg(feature = "experimental-api-5")]
++use crate::ReadableTable;
++use crate::{
++    AdmissionError, CloseError, CommitError, Database, OwnerFailed, ReadableDatabase,
++    RetainedWriteTransaction, StorageAdmission, StorageError, TableDefinition, TerminalObservation,
++    WriteTerminalError, WriteTerminalSettlement,
++};
++use std::sync::{
++    Arc, Mutex,
++    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
++};
++
++const TABLE: TableDefinition<u64, &[u8]> = TableDefinition::new("cache-admission");
++#[derive(Debug)]
++struct Marker;
++#[derive(Debug)]
++struct Owner {
++    failed: AtomicBool,
++    growths: AtomicU64,
++    settled: AtomicU64,
++    settle_mode: AtomicU8,
++    marker: Arc<Marker>,
++}
++impl StorageAdmission for Owner {
++    fn check_owner(&self) -> Result<(), OwnerFailed> {
++        if self.failed.load(Ordering::Acquire) {
++            Err(OwnerFailed)
++        } else {
++            Ok(())
++        }
++    }
++    fn reserve_growth(&self, current: u64, requested: u64) -> Result<(), AdmissionError> {
++        assert!(requested > current);
++        self.growths.fetch_add(1, Ordering::Relaxed);
++        Ok(())
++    }
++    fn settle_growth(&self, actual: u64) -> Result<(), OwnerFailed> {
++        self.settled.store(actual, Ordering::Release);
++        match self.settle_mode.load(Ordering::Acquire) {
++            1 => Err(OwnerFailed),
++            2 => std::panic::panic_any(self.marker.clone()),
++            _ => Ok(()),
++        }
++    }
++    fn owner_failed(&self) {
++        self.failed.store(true, Ordering::Release);
++    }
++}
++struct Fixture {
++    db: Database,
++    owner: Arc<Owner>,
++    file: tempfile::NamedTempFile,
++}
++fn fixture() -> Fixture {
++    let file = crate::create_tempfile();
++    let owner = Arc::new(Owner {
++        failed: AtomicBool::new(false),
++        growths: AtomicU64::new(0),
++        settled: AtomicU64::new(0),
++        settle_mode: AtomicU8::new(0),
++        marker: Arc::new(Marker),
++    });
++    let db = Database::builder(owner.clone())
++        .set_page_size(512)
++        .create(file.path())
++        .unwrap();
++    let tx = db.begin_write().unwrap();
++    tx.open_table(TABLE)
++        .unwrap()
++        .insert(0, b"committed".as_slice())
++        .unwrap();
++    tx.commit().unwrap();
++    Fixture { db, owner, file }
++}
++
++fn deny_after_admitted_growth(f: &Fixture) -> crate::WriteTransaction {
++    let tx = f.db.begin_write().unwrap();
++    let mut table = tx.open_table(TABLE).unwrap();
++    table.insert(1, b"must abort".as_slice()).unwrap();
++    let memory = f.db.get_memory();
++    let allocated_before = memory.count_allocated_pages().unwrap();
++    let growths_before = f.owner.growths.load(Ordering::Acquire);
++    let length_before = f.file.as_file().metadata().unwrap().len();
++    memory.set_write_entry_capacity_for_test(0);
++    // This large leaf requires a real admitted layout expansion before the
++    // cache refuses its new buffer. No candidate may remain allocated.
++    let value = vec![7u8; usize::try_from(length_before * 2).unwrap()];
++    assert!(matches!(
++        table.insert(2, value.as_slice()),
++        Err(StorageError::CacheCapacityDenied)
++    ));
++    assert!(f.owner.growths.load(Ordering::Acquire) > growths_before);
++    assert!(f.file.as_file().metadata().unwrap().len() > length_before);
++    assert_eq!(memory.count_allocated_pages().unwrap(), allocated_before);
++    assert!(!f.owner.failed.load(Ordering::Acquire));
++    // Clearing the fixture's capacity limit does not clear the transaction's
++    // original refusal. Later allocating inserts stop before allocator/cache effects.
++    memory.set_write_entry_capacity_for_test(usize::MAX);
++    assert!(matches!(
++        table.insert(3, value.as_slice()),
++        Err(StorageError::CacheCapacityDenied)
++    ));
++    drop(table);
++    tx
++}
++
++fn assert_cache_error(report: &crate::WriteTerminalReport<'_>) -> *const WriteTerminalError {
++    let TerminalObservation::Returned(Err(error)) = report.terminal() else {
++        panic!("missing original cache error")
++    };
++    assert!(matches!(
++        error,
++        WriteTerminalError::Commit(CommitError::Storage(StorageError::CacheCapacityDenied))
++    ));
++    error as *const _
++}
++
++#[test]
++fn selected_page_is_rolled_back_and_admitted_growth_settles_on_abort() {
++    let f = fixture();
++    let mut tx = deny_after_admitted_growth(&f).retain();
++    let report = tx.commit();
++    assert_cache_error(&report);
++    assert_eq!(report.settlement(), WriteTerminalSettlement::Settled);
++    assert!(matches!(
++        report.rollback(),
++        TerminalObservation::Returned(Ok(()))
++    ));
++    drop(tx);
++    assert_eq!(
++        f.owner.settled.load(Ordering::Acquire),
++        f.file.as_file().metadata().unwrap().len()
++    );
++    let read = f.db.begin_read().unwrap();
++    let table = read.open_table(TABLE).unwrap();
++    assert_eq!(table.get(0).unwrap().unwrap().value(), b"committed");
++    assert!(table.get(1).unwrap().is_none());
++    assert!(table.get(2).unwrap().is_none());
++    drop(table);
++    drop(read);
++    let tx = f.db.begin_write().unwrap();
++    tx.open_table(TABLE)
++        .unwrap()
++        .insert(1, b"retry".as_slice())
++        .unwrap();
++    tx.commit().unwrap();
++    f.db.close().unwrap();
++}
++
++struct Custody {
++    _transaction: RetainedWriteTransaction,
++    _database: Database,
++    _file: tempfile::NamedTempFile,
++}
++static RETAINED: Mutex<[Option<Custody>; 2]> = Mutex::new([const { None }; 2]);
++#[test]
++fn cache_denial_keeps_original_error_and_failed_or_panicked_abort() {
++    for mode in [1u8, 2] {
++        let f = fixture();
++        let mut tx = deny_after_admitted_growth(&f).retain();
++        f.owner.settle_mode.store(mode, Ordering::Release);
++        let report = tx.commit();
++        let original = assert_cache_error(&report);
++        assert_eq!(report.settlement(), WriteTerminalSettlement::Retained);
++        if mode == 1 {
++            assert!(matches!(
++                report.rollback(),
++                TerminalObservation::Returned(Err(StorageError::OwnerFailed))
++            ));
++        } else {
++            let TerminalObservation::Panicked(payload) = report.rollback() else {
++                panic!("missing original abort panic")
++            };
++            assert!(Arc::ptr_eq(
++                payload.downcast_ref::<Arc<Marker>>().unwrap(),
++                &f.owner.marker
++            ));
++        }
++        assert_eq!(assert_cache_error(&tx.abort()), original);
++        let database = match f.db.close() {
++            Err(CloseError::Busy(db)) => db,
++            _ => panic!("actual retained tx must keep DB busy"),
++        };
++        let mut custody = RETAINED.lock().unwrap();
++        assert!(custody[usize::from(mode - 1)].is_none());
++        custody[usize::from(mode - 1)] = Some(Custody {
++            _transaction: tx,
++            _database: database,
++            _file: f.file,
++        });
++    }
++}
++
++#[test]
++fn consuming_commit_also_aborts_a_latched_cache_denial() {
++    let f = fixture();
++    let tx = deny_after_admitted_growth(&f);
++    assert!(matches!(
++        tx.commit(),
++        Err(CommitError::Storage(StorageError::CacheCapacityDenied))
++    ));
++    let read = f.db.begin_read().unwrap();
++    let table = read.open_table(TABLE).unwrap();
++    assert!(table.get(1).unwrap().is_none());
++    assert!(table.get(2).unwrap().is_none());
++    drop(table);
++    drop(read);
++    let next = f.db.begin_write().unwrap();
++    next.abort().unwrap();
++    f.db.close().unwrap();
++}
+--- a/vendor/redb-4.2.0/src/error.rs
++++ b/vendor/redb-4.2.0/src/error.rs
+@@ -14,6 +14,8 @@
+ pub enum StorageError {
+     /// The installed owner denied growth before any physical mutation.
+     CapacityDenied,
++    /// Cache entry capacity was exhausted before creating a new cached page.
++    CacheCapacityDenied,
+     /// Physical ownership or I/O is uncertain; drain and census before reopening.
+     OwnerFailed,
+     /// The Database is corrupted
+@@ -45,6 +47,7 @@
+     fn from(err: StorageError) -> Error {
+         match err {
+             StorageError::CapacityDenied => Error::CapacityDenied,
++            StorageError::CacheCapacityDenied => Error::CacheCapacityDenied,
+             StorageError::OwnerFailed => Error::OwnerFailed,
+             StorageError::Corrupted(msg) => Error::Corrupted(msg),
+             StorageError::ValueTooLarge(x) => Error::ValueTooLarge(x),
+@@ -62,6 +65,7 @@
+     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+         match self {
+             StorageError::CapacityDenied => write!(f, "installed storage capacity denied"),
++            StorageError::CacheCapacityDenied => write!(f, "cache entry capacity denied"),
+             StorageError::OwnerFailed => write!(f, "installed storage owner failed"),
+             StorageError::Corrupted(msg) => {
+                 write!(f, "DB corrupted: {msg}")
+@@ -494,6 +498,8 @@
+ #[non_exhaustive]
+ pub enum Error {
+     CapacityDenied,
++    /// Cache entry capacity was exhausted before creating a new cached page.
++    CacheCapacityDenied,
+     OwnerFailed,
+     /// The Database is already open. Cannot acquire lock.
+     DatabaseAlreadyOpen,
+@@ -568,6 +574,7 @@
+     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+         match self {
+             Error::CapacityDenied => write!(f, "installed storage capacity denied"),
++            Error::CacheCapacityDenied => write!(f, "cache entry capacity denied"),
+             Error::OwnerFailed => write!(f, "installed storage owner failed"),
+             Error::Corrupted(msg) => {
+                 write!(f, "DB corrupted: {msg}")
+--- a/vendor/redb-4.2.0/src/retained_transaction.rs
++++ b/vendor/redb-4.2.0/src/retained_transaction.rs
+@@ -149,10 +149,8 @@
+             self.transaction.completed = true;
+             let latch = AllocatorStateLatch::arm(self.transaction.mem.clone());
+             self.terminal.observe(|| {
+-                if self.transaction.mem.capacity_denied() {
+-                    return Err(WriteTerminalError::Commit(
+-                        StorageError::CapacityDenied.into(),
+-                    ));
++                if let Some(error) = self.transaction.mem.capacity_error() {
++                    return Err(WriteTerminalError::Commit(error.into()));
+                 }
+                 if self.transaction.is_poisoned() {
+                     return Err(WriteTerminalError::Commit(CommitError::TransactionPoisoned));
+@@ -167,8 +165,9 @@
+             if matches!(
+                 self.terminal,
+                 Observation::Returned(Err(WriteTerminalError::Commit(
+-                    CommitError::Storage(StorageError::CapacityDenied)
+-                        | CommitError::TransactionPoisoned
++                    CommitError::Storage(
++                        StorageError::CapacityDenied | StorageError::CacheCapacityDenied
++                    ) | CommitError::TransactionPoisoned
+                 )))
+             ) {
+                 self.rollback.observe(|| self.transaction.abort_inner());
+--- a/vendor/redb-4.2.0/src/transactions.rs
++++ b/vendor/redb-4.2.0/src/transactions.rs
+@@ -1511,9 +1511,9 @@
+     pub fn commit(mut self) -> Result<(), CommitError> {
+         // Set completed flag first, so that we don't go through the abort() path on drop, if this fails
+         self.completed = true;
+-        if self.mem.capacity_denied() {
++        if let Some(error) = self.mem.capacity_error() {
+             self.abort_inner()?;
+-            return Err(StorageError::CapacityDenied.into());
++            return Err(error.into());
+         }
+         if self.is_poisoned() {
+             self.abort_inner()?;
+@@ -1529,7 +1529,9 @@
+         let result = self.commit_inner_helper();
+         if matches!(
+             result,
+-            Err(CommitError::Storage(StorageError::CapacityDenied))
++            Err(CommitError::Storage(
++                StorageError::CapacityDenied | StorageError::CacheCapacityDenied
++            ))
+         ) {
+             // Preparation never releases committed pages, and has not published
+             // a winner. All newly allocated user/system pages still belong to
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
+@@ -260,6 +260,13 @@
+     #[cfg(test)]
+     committed_pages_buffered: AtomicBool,
+     max_cache_size: usize,
++    // Fixed metadata capacities, independent of the lifetime's visited offsets.
++    // Payload remains subject to the existing soft byte target.
++    read_entry_capacity: usize,
++    write_entry_capacity: usize,
++    cache_capacity_denied: AtomicBool,
++    #[cfg(test)]
++    write_entry_capacity_override: AtomicUsize,
+     // Rotates the starting stripe for read-cache eviction
+     next_eviction_stripe: AtomicUsize,
+     #[cfg(feature = "cache_metrics")]
+@@ -287,11 +294,35 @@
+         page_size: u64,
+         max_cache_size: usize,
+     ) -> Result<Self, DatabaseError> {
++        let page_size_usize = usize::try_from(page_size)
++            .map_err(|_| DatabaseError::Storage(StorageError::CacheCapacityDenied))?;
++        if page_size_usize == 0 {
++            return Err(StorageError::CacheCapacityDenied.into());
++        }
++        let read_entry_capacity = max_cache_size
++            .div_ceil(page_size_usize)
++            .div_ceil(Self::lock_stripes() as usize)
++            .max(1);
++        // A depth-bounded internal mutation can retain ancestor PageMut values
++        // plus a leaf, split siblings and direct-header preparation. This is a
++        // capacity policy, not a proof that arbitrary external table guards fit.
++        let write_entry_capacity = read_entry_capacity
++            .checked_add(crate::tree_store::btree_base::MAX_BTREE_DEPTH)
++            .and_then(|n| n.checked_add(4))
++            .ok_or(StorageError::CacheCapacityDenied)?;
+         let read_cache = (0..Self::lock_stripes())
+-            .map(|_| RwLock::new(LRUCache::new()))
++            .map(|_| {
++                let stripe = RwLock::new(LRUCache::new());
++                drop(stripe.write().unwrap());
++                stripe
++            })
+             .collect();
+         let write_buffer = (0..Self::lock_stripes())
+-            .map(|_| Arc::new(Mutex::new(LRUWriteCache::new())))
++            .map(|_| {
++                let stripe = Mutex::new(LRUWriteCache::new());
++                drop(stripe.lock().unwrap());
++                Arc::new(stripe)
++            })
+             .collect();
+ 
+         Ok(Self {
+@@ -302,6 +333,11 @@
+             #[cfg(test)]
+             committed_pages_buffered: AtomicBool::new(false),
+             max_cache_size,
++            read_entry_capacity,
++            write_entry_capacity,
++            cache_capacity_denied: AtomicBool::new(false),
++            #[cfg(test)]
++            write_entry_capacity_override: AtomicUsize::new(usize::MAX),
+             next_eviction_stripe: AtomicUsize::new(0),
+             #[cfg(feature = "cache_metrics")]
+             reads_total: AtomicU64::default(),
+@@ -364,12 +400,66 @@
+         self.file.settle_growth()
+     }
+ 
+-    pub(crate) fn capacity_denied(&self) -> bool {
+-        self.file.capacity_denied.load(Ordering::Acquire)
++    pub(crate) fn capacity_error(&self) -> Option<StorageError> {
++        if self.file.capacity_denied.load(Ordering::Acquire) {
++            Some(StorageError::CapacityDenied)
++        } else if self.cache_capacity_denied.load(Ordering::Acquire) {
++            Some(StorageError::CacheCapacityDenied)
++        } else {
++            None
++        }
++    }
++
++    #[cfg(test)]
++    pub(crate) fn set_write_entry_capacity_for_test(&self, capacity: usize) {
++        self.write_entry_capacity_override
++            .store(capacity, Ordering::Release);
++    }
++
++    fn write_entry_capacity(&self) -> usize {
++        #[cfg(test)]
++        {
++            return self
++                .write_entry_capacity_override
++                .load(Ordering::Acquire)
++                .min(self.write_entry_capacity);
++        }
++        #[cfg(not(test))]
++        {
++            self.write_entry_capacity
++        }
++    }
++
++    fn prepare_read_entry(&self, cache: &mut LRUCache<Arc<[u8]>>, offset: u64) {
++        if !cache.contains_key(offset) && cache.len() >= self.read_entry_capacity {
++            let (_, removed) = cache.pop_lowest_priority().unwrap();
++            self.read_cache_bytes
++                .fetch_sub(removed.len(), Ordering::AcqRel);
++            #[cfg(feature = "cache_metrics")]
++            self.evictions.fetch_add(1, Ordering::Relaxed);
++        }
++    }
++
++    fn prepare_write_entry(&self, cache: &mut LRUWriteCache, offset: u64) -> Result {
++        if cache.cache.contains_key(offset) || cache.cache.len() < self.write_entry_capacity() {
++            return Ok(());
++        }
++        // Inspect without changing LRU priority/counters. A denied all-borrowed
++        // stripe leaves every cached Arc, queue registration and byte intact.
++        if self.write_entry_capacity() == 0 || !cache.cache.iter().any(|(_, value)| value.is_some())
++        {
++            self.cache_capacity_denied.store(true, Ordering::Release);
++            return Err(StorageError::CacheCapacityDenied);
++        }
++        // One successful flush creates the required slot. An I/O failure keeps
++        // its original error and owner fence; it is never a capacity outcome.
++        self.flush_lowest_priority(cache, 1)?;
++        Ok(())
+     }
+ 
+     pub(crate) fn begin_transaction(&self) {
+         self.file.capacity_denied.store(false, Ordering::Release);
++        self.cache_capacity_denied.store(false, Ordering::Release);
+     }
+ 
+     pub(super) fn prepare_publication(&self) {
+@@ -454,6 +544,7 @@
+                 if cache_size + len <= self.max_cache_size {
+                     let cache_slot: usize = (offset % Self::lock_stripes()).try_into().unwrap();
+                     let mut lock = self.read_cache[cache_slot].write().unwrap();
++                    self.prepare_read_entry(&mut lock, *offset);
+                     if let Some(replaced) = lock.insert(*offset, buffer) {
+                         // A race could cause us to replace an existing buffer
+                         self.read_cache_bytes
+@@ -609,6 +700,7 @@
+                 let cache_size = self.read_cache_bytes.fetch_add(len, Ordering::AcqRel);
+                 if cache_size + len <= self.max_cache_size {
+                     let mut write_lock = self.read_cache[cache_slot].write().unwrap();
++                    self.prepare_read_entry(&mut write_lock, offset);
+                     if let Some(replaced) = write_lock.insert(offset, result.clone()) {
+                         // A race could cause us to replace an existing buffer
+                         self.read_cache_bytes
+@@ -634,8 +726,9 @@
+             }
+         }
+ 
++        let mut write_lock = self.read_cache[cache_slot].write().unwrap();
++        self.prepare_read_entry(&mut write_lock, offset);
+         let cache_size = self.read_cache_bytes.fetch_add(len, Ordering::AcqRel);
+-        let mut write_lock = self.read_cache[cache_slot].write().unwrap();
+         let cache_size = if let Some(replaced) = write_lock.insert(offset, buffer.clone()) {
+             // A race could cause us to replace an existing buffer
+             self.read_cache_bytes
+@@ -767,6 +860,7 @@
+         assert_eq!(0, offset % self.page_size);
+         let stripe = self.write_buffer_stripe(offset);
+         let mut lock = stripe.lock().unwrap();
++        self.prepare_write_entry(&mut lock, offset)?;
+ 
+         let cache_slot: usize = (offset % Self::lock_stripes()).try_into().unwrap();
+         let existing = {
+@@ -1153,6 +1247,155 @@
+             );
+         }
+     }
++    #[test]
++    fn all_borrowed_entry_denial_is_nonallocating_and_leaves_caches_unchanged() {
++        let (backend, writes) = CountingBackend::new(128 * 132);
++        let cache =
++            PagedCachedFile::new(Box::new(backend), crate::test_admission(), 128, 4096).unwrap();
++        cache.set_write_entry_capacity_for_test(1);
++        let first = cache.write(0, 128, true).unwrap();
++        let target = 128 * 131;
++        let retained = cache.read(target, 128, PageHint::Clean).unwrap();
++        let read_before = cache.read_cache_bytes.load(Ordering::Acquire);
++        let write_before = cache.write_buffer_bytes.load(Ordering::Acquire);
++        let calls = writes.load(Ordering::Acquire);
++        let (result, allocations) =
++            crate::admission::observe_test_allocations(|| cache.write(target, 128, true));
++        assert!(matches!(
++            result,
++            Err(crate::StorageError::CacheCapacityDenied)
++        ));
++        assert_eq!(allocations, 0);
++        assert_eq!(writes.load(Ordering::Acquire), calls);
++        assert_eq!(cache.read_cache_bytes.load(Ordering::Acquire), read_before);
++        assert_eq!(
++            cache.write_buffer_bytes.load(Ordering::Acquire),
++            write_before
++        );
++        assert!(Arc::ptr_eq(
++            &retained,
++            &cache.read(target, 128, PageHint::Clean).unwrap()
++        ));
++        assert_eq!(cache.write_buffer_stripe(0).lock().unwrap().cache.len(), 1);
++        drop(first);
++        drop(retained);
++        cache.begin_transaction();
++        let second = cache.write(target, 128, true).unwrap();
++        assert_eq!(writes.load(Ordering::Acquire), calls + 1);
++        assert_eq!(cache.write_buffer_stripe(0).lock().unwrap().cache.len(), 1);
++        drop(second);
++    }
++
++    #[test]
++    fn long_same_stripe_traversal_preserves_entry_caps_and_payload() {
++        let page_size = 128u64;
++        let stride = page_size * PagedCachedFile::lock_stripes();
++        let (backend, _) = CountingBackend::new(stride * 128 + page_size);
++        let cache =
++            PagedCachedFile::new(Box::new(backend), crate::test_admission(), page_size, 4096)
++                .unwrap();
++        cache.set_write_entry_capacity_for_test(1);
++        for index in 0..128u64 {
++            let mut page = cache
++                .write(index * stride, page_size as usize, true)
++                .unwrap();
++            page.mem_mut().fill(index as u8);
++            drop(page);
++            assert!(cache.write_buffer_stripe(0).lock().unwrap().cache.len() <= 1);
++        }
++        cache.flush().unwrap();
++        for index in 0..128u64 {
++            let value = cache
++                .read(index * stride, page_size as usize, PageHint::Clean)
++                .unwrap();
++            assert!(value.iter().all(|byte| *byte == index as u8));
++            assert!(cache.read_cache[0].read().unwrap().len() <= cache.read_entry_capacity);
++        }
++        assert_eq!(cache.write_buffer_bytes.load(Ordering::Acquire), 0);
++        assert!(cache.read_cache_bytes.load(Ordering::Acquire) <= cache.max_cache_size);
++    }
++
++    #[test]
++    fn entry_eviction_io_keeps_original_failure_and_never_becomes_capacity() {
++        #[derive(Debug)]
++        struct Original(Arc<()>);
++        impl core::fmt::Display for Original {
++            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
++                f.write_str("original eviction failure")
++            }
++        }
++        impl std::error::Error for Original {}
++        #[derive(Debug)]
++        struct Failing {
++            inner: CountingBackend,
++            fail: Arc<core::sync::atomic::AtomicBool>,
++            marker: Arc<()>,
++        }
++        impl StorageBackend for Failing {
++            fn len(&self) -> std::io::Result<u64> {
++                self.inner.len()
++            }
++            fn read(&self, o: u64, b: &mut [u8]) -> std::io::Result<()> {
++                self.inner.read(o, b)
++            }
++            fn set_len(&self, n: u64) -> std::io::Result<()> {
++                self.inner.set_len(n)
++            }
++            fn sync_data(&self) -> std::io::Result<()> {
++                self.inner.sync_data()
++            }
++            fn write(&self, o: u64, b: &[u8]) -> std::io::Result<()> {
++                self.inner.write(o, b)?;
++                if self.fail.load(Ordering::Acquire) {
++                    Err(std::io::Error::other(Original(self.marker.clone())))
++                } else {
++                    Ok(())
++                }
++            }
++        }
++        let (inner, writes) = CountingBackend::new(128 * 132);
++        let fail = Arc::new(core::sync::atomic::AtomicBool::new(false));
++        let marker = Arc::new(());
++        let cache = PagedCachedFile::new(
++            Box::new(Failing {
++                inner,
++                fail: fail.clone(),
++                marker: marker.clone(),
++            }),
++            crate::test_admission(),
++            128,
++            4096,
++        )
++        .unwrap();
++        cache.set_write_entry_capacity_for_test(1);
++        drop(cache.write(0, 128, true).unwrap());
++        let bytes = cache.write_buffer_bytes.load(Ordering::Acquire);
++        fail.store(true, Ordering::Release);
++        let error = match cache.write(128 * 131, 128, true) {
++            Err(error) => error,
++            Ok(_) => panic!("eviction should fail"),
++        };
++        let crate::StorageError::Io(error) = error else {
++            panic!("original I/O became capacity")
++        };
++        assert!(Arc::ptr_eq(
++            &error
++                .get_ref()
++                .unwrap()
++                .downcast_ref::<Original>()
++                .unwrap()
++                .0,
++            &marker
++        ));
++        assert_eq!(writes.load(Ordering::Acquire), 1);
++        assert_eq!(cache.write_buffer_bytes.load(Ordering::Acquire), bytes);
++        assert_eq!(cache.write_buffer_stripe(0).lock().unwrap().cache.len(), 1);
++        assert!(cache.capacity_error().is_none());
++        assert!(matches!(
++            cache.read(0, 128, PageHint::None),
++            Err(crate::StorageError::OwnerFailed)
++        ));
++    }
+ }
+ 
+ #[cfg(test)]
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/lru_cache.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/lru_cache.rs
+@@ -15,6 +15,10 @@
+             cache: FastHashMapU64::default(),
+             lru_queue: VecDeque::default(),
+         }
++    }
++
++    pub(crate) fn contains_key(&self, key: u64) -> bool {
++        self.cache.contains_key(&key)
+     }
+ 
+     pub(crate) fn len(&self) -> usize {
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
+@@ -347,16 +347,16 @@
+     pub(crate) fn begin_transaction(&self) {
+         self.storage.begin_transaction();
+     }
+-    pub(crate) fn capacity_denied(&self) -> bool {
+-        self.storage.capacity_denied()
++    pub(crate) fn capacity_error(&self) -> Option<StorageError> {
++        self.storage.capacity_error()
++    }
++    #[cfg(test)]
++    pub(crate) fn set_write_entry_capacity_for_test(&self, capacity: usize) {
++        self.storage.set_write_entry_capacity_for_test(capacity);
+     }
+     pub(crate) fn check_transaction_admission(&self) -> Result {
+         self.check_io_errors()?;
+-        if self.capacity_denied() {
+-            Err(StorageError::CapacityDenied)
+-        } else {
+-            Ok(())
+-        }
++        self.capacity_error().map_or(Ok(()), Err)
+     }
+     pub(crate) fn settle_growth(&self) -> Result {
+         self.storage.settle_growth()
+@@ -1110,7 +1110,28 @@
+             .unwrap();
+ 
+         #[allow(unused_mut)]
+-        let mut mem = self.storage.write(address_range.start, len, true)?;
++        let mut mem = match self.storage.write(address_range.start, len, true) {
++            Ok(page) => page,
++            Err(StorageError::CacheCapacityDenied) => {
++                // The cache has not created a buffer or changed this candidate's
++                // cache state. It is not yet in PageTracker/UncommittedPages.
++                // Undo exactly its allocation while retaining any independently
++                // admitted file growth and layout until the real abort settles.
++                #[cfg(debug_assertions)]
++                {
++                    assert!(self.allocated_pages.lock().unwrap().remove(&page_number));
++                    assert!(!self.open_dirty_pages.lock().unwrap().contains(&page_number));
++                }
++                let freed_order = state
++                    .get_region_mut(page_number.region)
++                    .free(page_number.page_index, page_number.page_order);
++                state
++                    .get_region_tracker_mut()
++                    .mark_free(freed_order, page_number.region);
++                return Err(StorageError::CacheCapacityDenied);
++            }
++            Err(error) => return Err(error),
++        };
+         debug_assert!(mem.mem().len() >= allocation_size);
+ 
+         #[cfg(debug_assertions)]

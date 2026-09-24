@@ -436,7 +436,7 @@ mod tests {
     use crate::auth::{
         AuthConfig, AuthKeySource, Authenticator, RequestAuditEvent, RequestAuditSink,
     };
-    use kasumi_store::{FileKeyProvider, NodeStore, StorageAccess};
+    use kasumi_store::{FileKeyProvider, StorageAccess};
     use std::collections::BTreeSet;
     struct Audit;
     #[async_trait::async_trait]
@@ -455,13 +455,16 @@ mod tests {
         let keys = Arc::new(
             FileKeyProvider::initialize(&private.join("security.json"), "security").unwrap(),
         );
-        let store = TenantStore::initialize_catalog(
-            NodeStore::create_new_fixture(
-                root.path().join("database"),
+        let physical =
+            crate::runtime_storage_fixtures::physical(root.path(), Default::default()).unwrap();
+        let node = physical
+            .create_new(
+                root.path().join("persistent/database"),
                 kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
             )
-            .unwrap(),
+            .unwrap();
+        let store = TenantStore::initialize_catalog(
+            node.clone(),
             kasumi_engine::SECURITY_TENANT.into(),
             keys,
             StorageAccess::security_audit(),
@@ -511,6 +514,29 @@ mod tests {
             .authenticate(&format!("Bearer {}", issued.token))
             .await
             .unwrap();
+        let payload = issued.token.split('.').nth(1).unwrap();
+        let mut without_use: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+        without_use.as_object_mut().unwrap().remove("token_use");
+        let signers = Signers::read(&signer).unwrap();
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some(signers.kid(signers.active));
+        header.typ = Some("at+jwt".into());
+        let without_use = encode(
+            &header,
+            &without_use,
+            &EncodingKey::from_ed_pem(signers.keys.get(&signers.active).unwrap().as_bytes())
+                .unwrap(),
+        )
+        .unwrap();
+        drop(signers);
+        assert_eq!(
+            auth.authenticate(&format!("Bearer {without_use}"))
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Unauthorized
+        );
         let captured_deadline = context.authorization.expires_at_ms();
         assert_eq!(
             context.authorization.credential_family(),
@@ -566,5 +592,6 @@ mod tests {
             LocalCredentials::open(store, signer, config.issuer, config.audience).unwrap();
         assert_eq!(reopened.status(issued.family_id).unwrap(), revoked);
         assert!(reopened.create(specification, "initializer").is_err());
+        node.shutdown().await.unwrap();
     }
 }

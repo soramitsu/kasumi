@@ -1,8 +1,8 @@
-use crate::StorageBackend;
 use crate::io;
 #[cfg(not(redb_no_std))]
 use crate::io::Error;
 use crate::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use crate::{BackendCloseOutcome, StorageBackend};
 #[cfg(not(redb_no_std))]
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -42,7 +42,7 @@ impl StorageBackend for ReadOnlyBackend {
         unreachable!()
     }
 
-    fn close(&self) -> Result<(), Error> {
+    fn close(&self) -> BackendCloseOutcome {
         self.inner.close()
     }
 }
@@ -110,5 +110,9 @@ impl StorageBackend for InMemoryBackend {
         } else {
             Err(Self::out_of_range())
         }
+    }
+
+    fn close(&self) -> BackendCloseOutcome {
+        BackendCloseOutcome::drained(Ok(()))
     }
 }

@@ -1,0 +1,16 @@
+{
+  "status": "STATIC_REVIEW_APPROVED_FOR_SCOPED_INTEGRATION_PENDING_NATIVE_GATES",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "subject_manifest_sha256": "723f3a172c4a1af9fae04225f287899d5beb6024844a2d7256b7b08102223d32",
+  "subject_patch_sha256": "f2103f19fa5223101a83c8c6cdf230a658f1d26fcfb54be56ab2ea5660cb85f8",
+  "source_baselines_verified": true,
+  "source_unchanged": true,
+  "overlay_old_api_scan_clear": true,
+  "apply_check_exit_code": 0,
+  "cargo_or_tests_run": false,
+  "files": {
+    "overlay-old-api-scan.json": "fbc393f9465a6a5b8c5cf837ce378f72580d7daa4006816f1ab1328200d7e3d6",
+    "review.md": "a078a5fe9888e19323bee1083a74d2feb6803e231d0278c8186b01ae1037716c"
+  }
+}

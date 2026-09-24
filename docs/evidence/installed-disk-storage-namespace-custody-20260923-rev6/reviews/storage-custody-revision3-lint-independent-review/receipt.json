@@ -1,0 +1,20 @@
+{
+  "status": "SCOPED_STATIC_APPROVAL; no native qualification by this review",
+  "at_utc": "2026-09-22T23:17:04.297724+00:00",
+  "manifest_sha256": "09b411af5662c5e14a7a93b1ab2dd476ef2e4925c3f42cbbd21f95a3019828c7",
+  "patch_sha256": "af5b3c4d351ee3fc4e584a37088a5836a2cc4b3664e72df7e3a96a731b03491d",
+  "all_proposed_manifest_hashes_verified": 75,
+  "changed_files": [
+    "crates/kasumi-store/src/node_disk/census.rs",
+    "crates/kasumi-store/src/node_disk/file.rs",
+    "crates/kasumi-store/src/node_disk/namespace.rs"
+  ],
+  "findings": [
+    "Removed census::parent has no remaining assembly call sites; its Component import was used only there.",
+    "Removed RetainedParent::verify has no remaining assembly caller; file verification still uses verify_file and DirectoryOwner calls its own distinct verify method.",
+    "Removing && reference coercions at the two FileOwner::verify calls changes neither the referenced File nor evaluation order.",
+    "The let-chain retains the original short circuit: lookup/mutation occurs only when !settled.",
+    "No test scopes or test names changed; runtime result is not asserted by this source review."
+  ],
+  "source_or_native_mutation": false
+}

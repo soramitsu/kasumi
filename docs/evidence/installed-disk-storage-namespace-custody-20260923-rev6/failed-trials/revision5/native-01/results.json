@@ -1,0 +1,597 @@
+[
+  {
+    "name": "compile-store",
+    "pid": 84230,
+    "pgid": 84230,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kasumi-store",
+      "--all-features",
+      "--lib",
+      "--no-run",
+      "--message-format=json"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/compile-store.log",
+    "remaining_bound_seconds": 1199.9744439170001,
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 90.831993958,
+    "log_sha256": "8923227aeea0e442f1fd7c3db409fa5e85cae4593c4643d92aa73dcb4d2666a2"
+  },
+  {
+    "name": "store-inventory",
+    "pid": 86537,
+    "pgid": 86537,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "--list"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-inventory.log",
+    "remaining_bound_seconds": 1108.7136521670002,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.8030042080000044,
+    "log_sha256": "75a962adde9ecfdf1dca83d557bba73dd8220faf0f83e09858055dd4e96ed8d4",
+    "inventory_passed": true
+  },
+  {
+    "name": "focused-01",
+    "pid": 86543,
+    "pgid": 86543,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "--exact",
+      "node_disk::namespace::tests::file_custody_rejects_a_replaced_intermediate_ancestor_even_when_final_inode_survives",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-01.log",
+    "remaining_bound_seconds": 1107.912177209,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.46614870799999153,
+    "log_sha256": "602cb62a0b1e18ae5b9c91d7ef75b4ef65b10fa2e0d90fdc8e8bbde29a9f02f0",
+    "focused_test_name": "node_disk::namespace::tests::file_custody_rejects_a_replaced_intermediate_ancestor_even_when_final_inode_survives",
+    "focus_passed": true
+  },
+  {
+    "name": "focused-02",
+    "pid": 86547,
+    "pgid": 86547,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "--exact",
+      "node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-02.log",
+    "remaining_bound_seconds": 1107.437654084,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.4734201250000041,
+    "log_sha256": "f9d5a48a4aec0adc1a55ae57341a60db51240293e4f6cb875fcc3a14f73f98a6",
+    "focused_test_name": "node_disk::tests::explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages",
+    "focus_passed": true
+  },
+  {
+    "name": "focused-03",
+    "pid": 86552,
+    "pgid": 86552,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "--exact",
+      "node_disk::tests::explicit_file_close_drains_original_resources_before_credit_and_closed_calls",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-03.log",
+    "remaining_bound_seconds": 1106.964947917,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.27314737500000774,
+    "log_sha256": "c2c2fc56c9aeb1e0f5e4f0ee64a3ba6a7b0d6ac4e9a8c0b2edcda7e7d4e0b78b",
+    "focused_test_name": "node_disk::tests::explicit_file_close_drains_original_resources_before_credit_and_closed_calls",
+    "focus_passed": true
+  },
+  {
+    "name": "focused-04",
+    "pid": 86556,
+    "pgid": 86556,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "--exact",
+      "node_disk::tests::explicit_owner_failure_or_unsettled_extent_cannot_report_positive_close",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-04.log",
+    "remaining_bound_seconds": 1106.684618625,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.346860250000006,
+    "log_sha256": "79b89d6e227f6b6840c75f0cf2f91a60b8057486d1b938c8636c07c55e7ba4bd",
+    "focused_test_name": "node_disk::tests::explicit_owner_failure_or_unsettled_extent_cannot_report_positive_close",
+    "focus_passed": true
+  },
+  {
+    "name": "focused-05",
+    "pid": 86563,
+    "pgid": 86563,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "--exact",
+      "node_disk::tests::explicit_unknown_data_close_keeps_exact_owner_error_and_never_retries_integer",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-05.log",
+    "remaining_bound_seconds": 1106.343674292,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.2744662919999996,
+    "log_sha256": "fd444ad48d61103d5af1d28d1378d6c6dd5bbc729fafe19061d6b3bfefb0ea71",
+    "focused_test_name": "node_disk::tests::explicit_unknown_data_close_keeps_exact_owner_error_and_never_retries_integer",
+    "focus_passed": true
+  },
+  {
+    "name": "focused-06",
+    "pid": 86570,
+    "pgid": 86570,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "--exact",
+      "node_disk::tests::explicit_unknown_parent_close_keeps_registration_and_original_diagnostic",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-06.log",
+    "remaining_bound_seconds": 1106.0661742920001,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.2752164580000027,
+    "log_sha256": "5f4a836e42c384d111b9ebe2a2c4ccc16e923bbdd334e5a7ed6aa7d051a044f6",
+    "focused_test_name": "node_disk::tests::explicit_unknown_parent_close_keeps_registration_and_original_diagnostic",
+    "focus_passed": true
+  },
+  {
+    "name": "focused-07",
+    "pid": 86579,
+    "pgid": 86579,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "--exact",
+      "node_disk::tests::live_shrink_failure_retains_charges_through_drop_and_fences_shared_device",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-07.log",
+    "remaining_bound_seconds": 1105.783616917,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.7933713750000067,
+    "log_sha256": "606663fc84f6444e111fa4b06d329d4f1d6eb2f11a40dcbcb7cf328597bc686b",
+    "focused_test_name": "node_disk::tests::live_shrink_failure_retains_charges_through_drop_and_fences_shared_device",
+    "focus_passed": true
+  },
+  {
+    "name": "focused-08",
+    "pid": 86588,
+    "pgid": 86588,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "--exact",
+      "node_disk::tests::unknown_filesystem_observation_fences_scratch_until_a_drained_census",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-08.log",
+    "remaining_bound_seconds": 1104.9810246670002,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.35242608299999745,
+    "log_sha256": "ae10ac90d287e8714fd4e4e3ae924a2b428cc99be628c36c33a544d4bca5d1af",
+    "focused_test_name": "node_disk::tests::unknown_filesystem_observation_fences_scratch_until_a_drained_census",
+    "focus_passed": true
+  },
+  {
+    "name": "focused-09",
+    "pid": 86591,
+    "pgid": 86591,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "--exact",
+      "node_file::tests::backend_close_preserves_busy_owner_then_retires_before_positive_idempotent_close",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-09.log",
+    "remaining_bound_seconds": 1104.6216241250002,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.3354017500000026,
+    "log_sha256": "e50b8e91a4f43b64e7daeee8993996f38910781606034f7f6f771a34a6600315",
+    "focused_test_name": "node_file::tests::backend_close_preserves_busy_owner_then_retires_before_positive_idempotent_close",
+    "focus_passed": true
+  },
+  {
+    "name": "focused-10",
+    "pid": 86594,
+    "pgid": 86594,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "--exact",
+      "node_file::tests::backend_close_reports_native_error_and_keeps_exact_file_and_original_outcome",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-10.log",
+    "remaining_bound_seconds": 1104.27697325,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.2941213750000031,
+    "log_sha256": "286816c124190d7ad4b0812995649f75897ab367006291710895bc4dcd22fd0c",
+    "focused_test_name": "node_file::tests::backend_close_reports_native_error_and_keeps_exact_file_and_original_outcome",
+    "focus_passed": true
+  },
+  {
+    "name": "focused-11",
+    "pid": 86598,
+    "pgid": 86598,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "--exact",
+      "node_file::tests::offset_io_preserves_header_and_retained_backend_cannot_outlive_close",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-11.log",
+    "remaining_bound_seconds": 1103.987234459,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.3308625419999913,
+    "log_sha256": "8af84e410bfaeee5a853d24aa9dfb8cebde3a7b3615044666b273170bf556f64",
+    "focused_test_name": "node_file::tests::offset_io_preserves_header_and_retained_backend_cannot_outlive_close",
+    "focus_passed": true
+  },
+  {
+    "name": "focused-12",
+    "pid": 86603,
+    "pgid": 86603,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "--exact",
+      "node_file::tests::validated_descriptor_handoff_never_reopens_a_substituted_path",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/focused-12.log",
+    "remaining_bound_seconds": 1103.654559625,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.8426901249999901,
+    "log_sha256": "315f103ab471a17a524d78ecfed14c514816b86bc03d4af9ba3331e2290e827c",
+    "focused_test_name": "node_file::tests::validated_descriptor_handoff_never_reopens_a_substituted_path",
+    "focus_passed": true
+  },
+  {
+    "name": "workspace-clippy",
+    "pid": 86611,
+    "pgid": 86611,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "clippy",
+      "--offline",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "--message-format=json",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/workspace-clippy.log",
+    "remaining_bound_seconds": 1102.816532084,
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 209.63631316699997,
+    "log_sha256": "16b9a062c08acbcd679a1c78f3fa327d44ccc1f8dbc1185c017842bb9f961d45"
+  },
+  {
+    "name": "workspace-check",
+    "pid": 89519,
+    "pgid": 89519,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "check",
+      "--offline",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "--message-format=json"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/workspace-check.log",
+    "remaining_bound_seconds": 892.6610886670001,
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 99.60099320800003,
+    "log_sha256": "0c32e77dc3abf1f7c4b93a47318eba1ac254858f8d166b5cbdffcc2aa071649f"
+  },
+  {
+    "name": "store-full",
+    "pid": 90032,
+    "pgid": 90032,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-full.log",
+    "remaining_bound_seconds": 792.473176834,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision5/native-01/store-test-binary",
+      "sha256": "dee5613edd6961716ec57a65d109d811eb69bf8ba3f09dc0532938392c20b741",
+      "bytes": 54696720
+    },
+    "exit_code": 101,
+    "timeout": false,
+    "signals": [],
+    "cleanup_grace_seconds": 0.0,
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 403.503519042,
+    "log_sha256": "edf4a3a842d7feb2f5e78c05e1b6c614f18036abddb8adbadc8e67d242df2fbf"
+  }
+]

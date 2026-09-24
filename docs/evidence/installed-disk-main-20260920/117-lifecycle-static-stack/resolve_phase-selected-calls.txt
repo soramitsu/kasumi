@@ -1,0 +1,6 @@
+10011e478: 97fee29a    	bl	0x1000d6ee0 <<lifecycle::Fixture>::context>
+10011e558: 97ff77c3    	bl	0x1000fc464 <tokio::time::timeout::timeout::<lifecycle::recovery_control::resolve_phase::{closure#0}::{closure#0}>>
+10011e56c: 97ff7c53    	bl	0x1000fd6b8 <<tokio::time::timeout::Timeout<lifecycle::recovery_control::resolve_phase::{closure#0}::{closure#0}> as core::future::into_future::IntoFuture>::into_future>
+10011e5c4: 97fdf10c    	bl	0x10009a9f4 <core::ptr::drop_glue::<tokio::time::timeout::Timeout<lifecycle::recovery_control::resolve_phase::{closure#0}::{closure#0}>>>
+10011e5f0: 97ff7e19    	bl	0x1000fde54 <<tokio::time::timeout::Timeout<lifecycle::recovery_control::resolve_phase::{closure#0}::{closure#0}> as core::future::future::Future>::poll>
+10011e668: 97fdf0e3    	bl	0x10009a9f4 <core::ptr::drop_glue::<tokio::time::timeout::Timeout<lifecycle::recovery_control::resolve_phase::{closure#0}::{closure#0}>>>

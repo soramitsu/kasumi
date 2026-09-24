@@ -1,0 +1,10 @@
+--- a/crates/kasumi-engine/tests/common/recovery_control.rs
++++ b/crates/kasumi-engine/tests/common/recovery_control.rs
+@@ -250,6 +250,7 @@
+     // The earlier control calls may outlive this node's leadership. Keep the
+     // original finite observation context while selecting the current route.
+     let context = f.context("owner");
++    drop(db);
+     let db = f.leader().await;
+     let input = db
+         .next_recovery_dispatch(&context, id, phase_id)

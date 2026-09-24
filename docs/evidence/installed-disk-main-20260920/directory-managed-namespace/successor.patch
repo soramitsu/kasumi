@@ -1,0 +1,2106 @@
+--- a/crates/kasumi-store/src/lib.rs
++++ b/crates/kasumi-store/src/lib.rs
+@@ -37,7 +37,9 @@
+ pub use node_disk::{
+     CensusCancellation, DirectoryPolicy, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskDirectory,
+     NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor, NodeDiskDirectoryEntry,
+-    NodeDiskEntryKind, NodeDiskFile, NodeDiskPhase, NodeDiskSnapshot,
++    NodeDiskDirectoryFailure, NodeDiskDirectoryOperation, NodeDiskDirectoryOperationKind,
++    NodeDiskDirectoryOperationStep, NodeDiskEntryKind, NodeDiskFile, NodeDiskPhase,
++    NodeDiskSnapshot,
+ };
+ mod scratch_disk;
+ mod scratch_table;
+--- a/crates/kasumi-store/src/node_disk/census.rs
++++ b/crates/kasumi-store/src/node_disk/census.rs
+@@ -26,21 +26,16 @@
+ 
+ impl Root {
+     pub(super) fn verify_nonallocating(&self) -> io::Result<()> {
+-        // SAFETY: the prepared NUL-terminated path remains live; ownership of a
+-        // successful descriptor transfers immediately into File.
+-        let fd = unsafe {
+-            libc::open(
+-                self.path_c.as_ptr(),
+-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+-            )
+-        };
+-        if fd < 0 {
++        // lstat observes the preallocated rooted name without acquiring a
++        // temporary descriptor whose close could become an untracked outcome.
++        let mut observed: libc::stat = unsafe { std::mem::zeroed() };
++        if unsafe { libc::lstat(self.path_c.as_ptr(), &mut observed) } != 0 {
+             return Err(io::Error::last_os_error());
+         }
+-        let observed = unsafe { File::from_raw_fd(fd) };
+-        let metadata = observed.metadata()?;
+-        directory_nonallocating(&metadata)?;
+-        if Identity::of(&metadata) != self.identity
++        if observed.st_mode & libc::S_IFMT != libc::S_IFDIR
++            || observed.st_mode & 0o077 != 0
++            || observed.st_uid != unsafe { libc::geteuid() }
++            || Identity(observed.st_dev as u64, observed.st_ino as u64) != self.identity
+             || Identity::of(&self.file.metadata()?) != self.identity
+         {
+             return Err(io::ErrorKind::InvalidData.into());
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/directory/managed/tests.rs
+@@ -0,0 +1,407 @@
++use super::*;
++use crate::test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry};
++use crate::{CensusCancellation, NodeDiskConfig};
++use std::{os::unix::fs::MetadataExt, path::Path};
++
++fn fixture() -> (tempfile::TempDir, NodeDiskConfig, Arc<TestDiskMemory>) {
++    let directory = private_tempdir().unwrap();
++    let config = NodeDisk::fixture_config(directory.path().join("unused")).unwrap();
++    (directory, config, TestDiskMemory::new(256 << 20, 4096))
++}
++fn open(config: &NodeDiskConfig, memory: &Arc<TestDiskMemory>) -> Arc<NodeDisk> {
++    retry_disk_registry(|| {
++        NodeDisk::open_fixture(config, memory.clone(), &CensusCancellation::default())
++    })
++    .unwrap()
++}
++fn root(disk: &Arc<NodeDisk>) -> NodeDiskDirectory {
++    disk.open_directory("fixture", Path::new("")).unwrap()
++}
++
++#[test]
++fn managed_child_creation_open_and_removal_preserve_exact_enrollment_and_charge() {
++    let (directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let parent = root(&disk);
++    let before = disk.snapshot();
++    let child = parent.create_child(c"child", DiskWork::Foreground).unwrap();
++    let identity = Identity::of(&directory.path().join("child").metadata().unwrap());
++    assert_eq!(child.owner().identity, identity);
++    let child_entry = *disk.lock_state().accounted[&identity].directory().unwrap();
++    assert_eq!(child_entry.bytes, config.directory_policy.extent_bytes);
++    assert_eq!(child_entry.children, 0);
++    assert_eq!(child_entry.live_handles, 1);
++    assert!(child_entry.settled);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        before.charged_bytes + child_entry.bytes
++    );
++    assert_eq!(
++        disk.snapshot().persistent_directories,
++        before.persistent_directories + 1
++    );
++    assert_eq!(disk.snapshot().open_directories, 2);
++    let second = parent.open_child(c"child").unwrap();
++    assert_eq!(second.owner().identity, identity);
++    assert_eq!(
++        disk.lock_state().accounted[&identity]
++            .directory()
++            .unwrap()
++            .live_handles,
++        2
++    );
++    assert_eq!(
++        second.remove_if_empty().unwrap_err().kind(),
++        io::ErrorKind::WouldBlock
++    );
++    assert!(directory.path().join("child").exists());
++    child.remove_if_empty().unwrap();
++    assert!(!directory.path().join("child").exists());
++    assert!(!disk.lock_state().accounted.contains_key(&identity));
++    assert_eq!(
++        disk.snapshot().persistent_directories,
++        before.persistent_directories
++    );
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(disk.snapshot().open_directories, 1);
++    assert!(disk.pending_directory_operation().is_none());
++    parent.sync_all().unwrap();
++    drop(parent);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++}
++
++#[test]
++fn managed_directory_cardinality_and_owner_capacity_deny_before_allocations_or_effects() {
++    for owner_limit in [false, true] {
++        let (directory, mut config, memory) = fixture();
++        if owner_limit {
++            config.max_open_directories = 1;
++        } else {
++            config.max_persistent_subdirectories = 0;
++        }
++        let disk = open(&config, &memory);
++        let parent = root(&disk);
++        let before = disk.snapshot();
++        let (result, allocations) = crate::allocation_tests::measure(|| {
++            parent.create_child(c"denied", DiskWork::Foreground)
++        });
++        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::StorageFull);
++        assert_eq!(allocations, 0);
++        assert!(!directory.path().join("denied").exists());
++        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++        assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
++        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++        assert!(disk.pending_directory_operation().is_none());
++    }
++}
++
++#[test]
++fn managed_child_names_depth_existing_identity_and_root_removal_are_exact() {
++    let (directory, mut config, memory) = fixture();
++    config.max_depth = u32::try_from(directory.path().components().count()).unwrap();
++    let disk = open(&config, &memory);
++    let parent = root(&disk);
++    for name in [c"", c".", c"..", c"a/b"] {
++        assert_eq!(
++            parent
++                .create_child(name, DiskWork::Foreground)
++                .unwrap_err()
++                .kind(),
++            io::ErrorKind::InvalidInput
++        );
++    }
++    let child = parent.create_child(c"child", DiskWork::Foreground).unwrap();
++    let inode = directory.path().join("child").metadata().unwrap().ino();
++    assert_eq!(
++        parent
++            .create_child(c"child", DiskWork::Foreground)
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::AlreadyExists
++    );
++    let mut chain = vec![child];
++    for _ in 2..config.max_depth {
++        let next = chain
++            .last()
++            .unwrap()
++            .create_child(c"level", DiskWork::Foreground)
++            .unwrap();
++        chain.push(next);
++    }
++    assert_eq!(
++        chain
++            .last()
++            .unwrap()
++            .create_child(c"too-deep", DiskWork::Foreground)
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::InvalidInput
++    );
++    assert_eq!(
++        parent.remove_if_empty().unwrap_err().kind(),
++        io::ErrorKind::InvalidInput
++    );
++    assert_eq!(
++        directory.path().join("child").metadata().unwrap().ino(),
++        inode
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    while let Some(child) = chain.pop() {
++        child.remove_if_empty().unwrap();
++    }
++}
++
++#[test]
++fn retained_child_parent_prevents_removal_with_live_descendant_custody() {
++    let (directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let parent = root(&disk);
++    let child = parent.create_child(c"child", DiskWork::Foreground).unwrap();
++    let grandchild = child
++        .create_child(c"grandchild", DiskWork::Foreground)
++        .unwrap();
++    assert_eq!(
++        child.remove_if_empty().unwrap_err().kind(),
++        io::ErrorKind::DirectoryNotEmpty
++    );
++    grandchild.remove_if_empty().unwrap();
++    let child = parent.open_child(c"child").unwrap();
++    let alias = child.clone();
++    assert_eq!(
++        child.remove_if_empty().unwrap_err().kind(),
++        io::ErrorKind::WouldBlock
++    );
++    assert!(directory.path().join("child").exists());
++    alias.remove_if_empty().unwrap();
++}
++
++#[test]
++fn post_mkdir_error_retains_original_failure_and_allows_only_complete_census_resolution() {
++    let (directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let parent = root(&disk);
++    let before = disk.snapshot();
++    FAILURE.with(|failure| failure.set(Some(NodeDiskDirectoryOperationStep::OpenChild)));
++    assert_eq!(
++        parent
++            .create_child(c"uncertain", DiskWork::Foreground)
++            .unwrap_err()
++            .raw_os_error(),
++        Some(libc::EIO)
++    );
++    assert!(directory.path().join("uncertain").is_dir());
++    let observed = disk.pending_directory_operation().unwrap();
++    assert_eq!(observed.kind, NodeDiskDirectoryOperationKind::Create);
++    assert_eq!(
++        observed.failure.unwrap().step,
++        NodeDiskDirectoryOperationStep::OpenChild
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        before.charged_bytes + config.directory_policy.extent_bytes
++    );
++    assert_eq!(disk.snapshot().open_directories, 2);
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    drop(parent);
++    let cancelled = CensusCancellation::default();
++    cancelled.cancel();
++    assert!(disk.reconcile(&cancelled).is_err());
++    assert_eq!(disk.pending_directory_operation().unwrap(), observed);
++    assert_eq!(disk.snapshot().open_directories, 1);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        before.charged_bytes + config.directory_policy.extent_bytes
++    );
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    assert!(disk.pending_directory_operation().is_none());
++    assert_eq!(disk.snapshot().open_directories, 0);
++    assert_eq!(
++        disk.snapshot().persistent_directories,
++        before.persistent_directories + 1
++    );
++    root(&disk)
++        .open_child(c"uncertain")
++        .unwrap()
++        .sync_all()
++        .unwrap();
++}
++
++#[test]
++fn post_unlink_error_holds_actual_child_descriptor_and_extent_until_census() {
++    let (directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let parent = root(&disk);
++    let child = parent.create_child(c"child", DiskWork::Foreground).unwrap();
++    let fd = child.owner().file.as_ref().unwrap().as_raw_fd();
++    let charged = disk.snapshot().charged_bytes;
++    FAILURE.with(|failure| failure.set(Some(NodeDiskDirectoryOperationStep::SyncParent)));
++    assert_eq!(
++        child.remove_if_empty().unwrap_err().raw_os_error(),
++        Some(libc::EIO)
++    );
++    assert!(!directory.path().join("child").exists());
++    assert_ne!(
++        unsafe { libc::fcntl(fd, libc::F_GETFD) },
++        -1,
++        "unlinked FD still actually retained"
++    );
++    assert_eq!(disk.snapshot().charged_bytes, charged);
++    assert_eq!(disk.snapshot().open_directories, 2);
++    let diagnostic = disk.pending_directory_operation().unwrap();
++    assert_eq!(diagnostic.kind, NodeDiskDirectoryOperationKind::Remove);
++    assert_eq!(
++        diagnostic.failure.unwrap().step,
++        NodeDiskDirectoryOperationStep::SyncParent
++    );
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    drop(parent);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    assert_eq!(disk.snapshot().persistent_directories, 1);
++    assert_eq!(disk.snapshot().open_directories, 0);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        config.directory_policy.extent_bytes
++    );
++    assert!(disk.pending_directory_operation().is_none());
++}
++
++#[test]
++fn uncertain_native_close_is_sticky_and_preserves_primary_error_and_custody() {
++    let (_directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let parent = root(&disk);
++    let child = parent.create_child(c"child", DiskWork::Foreground).unwrap();
++    FAILURE.with(|failure| failure.set(Some(NodeDiskDirectoryOperationStep::SyncParent)));
++    child.remove_if_empty().unwrap_err();
++    drop(parent);
++    let first = disk.pending_directory_operation().unwrap().failure;
++    FAILURE.with(|failure| failure.set(Some(NodeDiskDirectoryOperationStep::CloseChild)));
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    let both = disk.pending_directory_operation().unwrap();
++    assert_eq!(both.failure, first);
++    assert_eq!(
++        both.close_failure.unwrap().step,
++        NodeDiskDirectoryOperationStep::CloseChild
++    );
++    assert!(both.uncertain_close_descriptor.is_some());
++    let charged = disk.snapshot().charged_bytes;
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    assert_eq!(disk.pending_directory_operation().unwrap(), both);
++    assert_eq!(disk.snapshot().open_directories, 1);
++    assert_eq!(disk.snapshot().charged_bytes, charged);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++}
++
++#[test]
++fn unknown_child_absence_retires_prepared_backing_and_descriptors_before_slot_reuse() {
++    let (_directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let parent = root(&disk);
++    let before = disk.snapshot();
++    assert_eq!(
++        parent.open_child(c"missing").unwrap_err().kind(),
++        io::ErrorKind::NotFound
++    );
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    assert_eq!(disk.snapshot().open_directories, before.open_directories);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert!(disk.pending_directory_operation().is_none());
++    parent
++        .create_child(c"after-missing", DiskWork::Foreground)
++        .unwrap()
++        .remove_if_empty()
++        .unwrap();
++}
++
++#[test]
++fn preflight_ancestry_close_failure_keeps_new_descriptor_custody_before_mkdir() {
++    let (directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let parent = root(&disk);
++    let child = parent.create_child(c"child", DiskWork::Foreground).unwrap();
++    // The child parent walk must close its real temporary descriptor. Inject
++    // an uncertain result after that one actual close; no mkdir may occur.
++    FAILURE.with(|failure| failure.set(Some(NodeDiskDirectoryOperationStep::Verify)));
++    assert_eq!(
++        child
++            .create_child(c"uncreated", DiskWork::Foreground)
++            .unwrap_err()
++            .raw_os_error(),
++        Some(libc::EIO)
++    );
++    assert!(!directory.path().join("child/uncreated").exists());
++    let observed = disk.pending_directory_operation().unwrap();
++    assert_eq!(observed.step, NodeDiskDirectoryOperationStep::Prepared);
++    assert_eq!(
++        observed.close_failure.unwrap().step,
++        NodeDiskDirectoryOperationStep::Verify
++    );
++    assert_eq!(disk.snapshot().open_directories, 3);
++    drop(child);
++    drop(parent);
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    assert_eq!(disk.snapshot().open_directories, 1);
++    assert_eq!(disk.pending_directory_operation().unwrap(), observed);
++}
++
++#[test]
++fn census_retires_actual_prepared_arc_backing_before_reopening_slot_admission() {
++    use crate::allocation_tests::{DeallocationObservation, observe_deallocation};
++    let (_directory, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let parent = root(&disk);
++    FAILURE.with(|failure| failure.set(Some(NodeDiskDirectoryOperationStep::OpenChild)));
++    parent
++        .create_child(c"pending", DiskWork::Foreground)
++        .unwrap_err();
++    drop(parent);
++    let (layout, offset) = std::alloc::Layout::new::<[usize; 2]>()
++        .extend(std::alloc::Layout::new::<MaybeUninit<DirectoryOwner>>())
++        .unwrap();
++    let address = {
++        let state = disk.lock_state();
++        let owner = state
++            .pending_directory
++            .as_ref()
++            .unwrap()
++            .allocation
++            .as_ref()
++            .unwrap();
++        // Pinned std ArcInner has the same repr(C) header validated by census.
++        (unsafe { Arc::as_ptr(owner).cast::<u8>().sub(offset) }) as usize
++    };
++    let observed = Arc::new(DeallocationObservation::new(true));
++    let runner = {
++        let disk = disk.clone();
++        let observed = observed.clone();
++        std::thread::spawn(move || {
++            observe_deallocation(address as *const (), &observed, || {
++                disk.reconcile(&CensusCancellation::default())
++            })
++        })
++    };
++    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
++    while !observed.entered() {
++        assert!(
++            std::time::Instant::now() < deadline,
++            "actual prepared Arc never reached deallocation"
++        );
++        std::thread::yield_now();
++    }
++    assert!(!observed.finished());
++    assert!(
++        matches!(
++            disk.state.try_lock(),
++            Err(std::sync::TryLockError::WouldBlock)
++        ),
++        "admission cannot inspect or reuse the slot before actual backing retires"
++    );
++    observed.release();
++    runner.join().unwrap().unwrap();
++    assert!(observed.finished());
++    assert_eq!(observed.count(), 1);
++    assert_eq!(observed.bytes(), layout.pad_to_align().size());
++    assert_eq!(disk.snapshot().open_directories, 0);
++    assert!(disk.pending_directory_operation().is_none());
++}
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/directory/managed.rs
+@@ -0,0 +1,1004 @@
++//! One admitted, State-retained directory namespace effect.
++use super::{DirectoryOwner, NodeDiskDirectory};
++use crate::node_disk::{
++    AccountedDirectory, AccountedInode, DiskWork, Identity, NamespaceBinding, NodeDisk,
++    NodeDiskPhase, State, census,
++    namespace::{self, ParentTransition, RetainedParent},
++};
++use std::{
++    ffi::{CStr, CString},
++    fs::File,
++    io,
++    mem::MaybeUninit,
++    os::{
++        fd::{AsRawFd, IntoRawFd},
++        unix::fs::MetadataExt,
++    },
++    sync::Arc,
++};
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NodeDiskDirectoryOperationKind {
++    Open,
++    Create,
++    Remove,
++}
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NodeDiskDirectoryOperationStep {
++    Prepared,
++    Mkdir,
++    OpenChild,
++    ObserveChild,
++    SyncChild,
++    SyncParent,
++    Verify,
++    Settle,
++    Unlink,
++    CloseChild,
++    CloseParent,
++}
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct NodeDiskDirectoryFailure {
++    pub step: NodeDiskDirectoryOperationStep,
++    pub kind: io::ErrorKind,
++    pub errno: Option<i32>,
++}
++impl NodeDiskDirectoryFailure {
++    fn new(step: NodeDiskDirectoryOperationStep, error: &io::Error) -> Self {
++        Self {
++            step,
++            kind: error.kind(),
++            errno: error.raw_os_error(),
++        }
++    }
++    fn error(self) -> io::Error {
++        self.errno
++            .map_or_else(|| self.kind.into(), io::Error::from_raw_os_error)
++    }
++}
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct NodeDiskDirectoryOperation {
++    pub kind: NodeDiskDirectoryOperationKind,
++    pub step: NodeDiskDirectoryOperationStep,
++    pub failure: Option<NodeDiskDirectoryFailure>,
++    pub close_failure: Option<NodeDiskDirectoryFailure>,
++    /// Diagnostic only. An uncertain close is never retried using this number.
++    pub uncertain_close_descriptor: Option<i32>,
++}
++
++// This is inline in State. Its dynamic resources fit the one extra admitted
++// directory-owner envelope; no Arc<NodeDisk> cycle or failure-time allocation.
++pub(in crate::node_disk) struct PendingDirectory {
++    observation: NodeDiskDirectoryOperation,
++    root: String,
++    names: Box<[CString]>,
++    binding: NamespaceBinding,
++    parent: RetainedParent,
++    child: Option<File>,
++    walk_current: Option<File>,
++    walk_next: Option<File>,
++    identity: Option<Identity>,
++    allocation: Option<Arc<MaybeUninit<DirectoryOwner>>>,
++    plan: Option<ParentTransition>,
++}
++impl PendingDirectory {
++    pub(in crate::node_disk) fn observed(&self) -> NodeDiskDirectoryOperation {
++        self.observation
++    }
++    fn step(&mut self, step: NodeDiskDirectoryOperationStep) {
++        self.observation.step = step;
++    }
++    fn name(&self) -> &CStr {
++        self.names.last().expect("prepared child component")
++    }
++    fn verify_parent(
++        &mut self,
++        disk: &NodeDisk,
++        ledger: Option<&crate::node_disk::fixed_map::Banks<AccountedInode>>,
++    ) -> io::Result<()> {
++        let root = &disk.roots[&self.root];
++        root.verify_nonallocating()?;
++        if let Some(ledger) = ledger {
++            verify_enrolled(ledger, root.identity, &root.file.metadata()?)?;
++        }
++        if self.parent.ancestors().len() != self.names.len()
++            || self.parent.ancestors()[0] != root.identity
++        {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        for index in 0..self.names.len() - 1 {
++            let current = self.walk_current.as_ref().unwrap_or(&root.file);
++            self.walk_next = Some(census::open_at(
++                current,
++                &self.names[index],
++                libc::O_RDONLY | libc::O_DIRECTORY,
++            )?);
++            let metadata = self
++                .walk_next
++                .as_ref()
++                .expect("retained walk descriptor")
++                .metadata()?;
++            census::directory_nonallocating(&metadata)?;
++            if let Some(ledger) = ledger {
++                verify_enrolled(ledger, Identity::of(&metadata), &metadata)?;
++            }
++            if Identity::of(&metadata) != self.parent.ancestors()[index + 1] {
++                return Err(io::ErrorKind::InvalidData.into());
++            }
++            Self::close_owned(
++                self.walk_current.take(),
++                NodeDiskDirectoryOperationStep::Verify,
++                &mut self.observation,
++            )?;
++            self.walk_current = self.walk_next.take();
++        }
++        let current = self.walk_current.as_ref().unwrap_or(&root.file);
++        let retained = self.parent.file().metadata()?;
++        census::directory_nonallocating(&retained)?;
++        if let Some(ledger) = ledger {
++            verify_enrolled(ledger, self.parent.identity(), &retained)?;
++        }
++        if Identity::of(&current.metadata()?) != self.parent.identity()
++            || Identity::of(&retained) != self.parent.identity()
++        {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        Self::close_owned(
++            self.walk_current.take(),
++            NodeDiskDirectoryOperationStep::Verify,
++            &mut self.observation,
++        )
++    }
++    fn verify_child(&mut self, disk: &NodeDisk) -> io::Result<()> {
++        self.verify_parent(disk, None)?;
++        let mut observed: libc::stat = unsafe { std::mem::zeroed() };
++        // No temporary child FD: inspect the one exact component without
++        // following a replacement symlink, then compare the retained owner.
++        if unsafe {
++            libc::fstatat(
++                self.parent.file().as_raw_fd(),
++                self.name().as_ptr(),
++                &mut observed,
++                libc::AT_SYMLINK_NOFOLLOW,
++            )
++        } != 0
++        {
++            return Err(io::Error::last_os_error());
++        }
++        let metadata = self.child.as_ref().expect("retained child").metadata()?;
++        census::directory_nonallocating(&metadata)?;
++        if observed.st_mode & libc::S_IFMT != libc::S_IFDIR
++            || observed.st_mode & 0o077 != 0
++            || observed.st_uid != unsafe { libc::geteuid() }
++            || Some(Identity(observed.st_dev as u64, observed.st_ino as u64)) != self.identity
++            || Some(Identity::of(&metadata)) != self.identity
++        {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        Ok(())
++    }
++    pub(in crate::node_disk) fn close_resources(&mut self) -> io::Result<()> {
++        if let Some(error) = self.observation.close_failure {
++            return Err(error.error());
++        }
++        Self::close_owned(
++            self.walk_next.take(),
++            NodeDiskDirectoryOperationStep::Verify,
++            &mut self.observation,
++        )?;
++        Self::close_owned(
++            self.walk_current.take(),
++            NodeDiskDirectoryOperationStep::Verify,
++            &mut self.observation,
++        )?;
++        self.close_one(true)?;
++        self.close_one(false)
++    }
++    fn close_one(&mut self, child: bool) -> io::Result<()> {
++        let (file, step) = if child {
++            (
++                self.child.take(),
++                NodeDiskDirectoryOperationStep::CloseChild,
++            )
++        } else {
++            (
++                self.parent.take_descriptor(),
++                NodeDiskDirectoryOperationStep::CloseParent,
++            )
++        };
++        Self::close_owned(file, step, &mut self.observation)
++    }
++    fn close_owned(
++        file: Option<File>,
++        step: NodeDiskDirectoryOperationStep,
++        observation: &mut NodeDiskDirectoryOperation,
++    ) -> io::Result<()> {
++        let Some(file) = file else { return Ok(()) };
++        let fd = file.into_raw_fd();
++        // Exactly one close consumes the descriptor. A nonzero result is not
++        // permission to retry a possibly recycled descriptor or release credit.
++        let result = unsafe { libc::close(fd) };
++        let result = if result == 0 {
++            Ok(())
++        } else {
++            Err(io::Error::last_os_error())
++        };
++        #[cfg(test)]
++        let result = result.and_then(|()| injected(step));
++        if let Err(error) = result {
++            observation.close_failure = Some(NodeDiskDirectoryFailure::new(step, &error));
++            observation.uncertain_close_descriptor = Some(fd);
++            return Err(error);
++        }
++        Ok(())
++    }
++}
++
++struct Effect<'a> {
++    disk: &'a NodeDisk,
++    state: &'a mut State,
++}
++impl std::ops::Deref for Effect<'_> {
++    type Target = State;
++    fn deref(&self) -> &State {
++        self.state
++    }
++}
++impl std::ops::DerefMut for Effect<'_> {
++    fn deref_mut(&mut self) -> &mut State {
++        self.state
++    }
++}
++impl Drop for Effect<'_> {
++    fn drop(&mut self) {
++        // Also runs on unwind while the operation remains under State custody.
++        if self.state.pending_directory.is_some() {
++            self.disk.fail_locked(self.state);
++        }
++    }
++}
++fn step(state: &mut State, step: NodeDiskDirectoryOperationStep) -> io::Result<()> {
++    state
++        .pending_directory
++        .as_mut()
++        .expect("retained operation")
++        .step(step);
++    #[cfg(test)]
++    injected(step)?;
++    Ok(())
++}
++fn record_failure(disk: &NodeDisk, state: &mut State, error: &io::Error) {
++    let operation = state
++        .pending_directory
++        .as_mut()
++        .expect("retained operation");
++    if operation.observation.failure.is_none() {
++        operation.observation.failure = Some(NodeDiskDirectoryFailure::new(
++            operation.observation.step,
++            error,
++        ));
++    }
++    disk.fail_locked(state);
++}
++fn ready(disk: &NodeDisk, state: &State) -> io::Result<()> {
++    if state.phase != NodeDiskPhase::Open
++        || state.pending_directory.is_some()
++        || !disk.device.lock().admission_ready()
++    {
++        return Err(io::ErrorKind::Other.into());
++    }
++    Ok(())
++}
++fn child_names(owner: &DirectoryOwner, name: &CStr) -> io::Result<Box<[CString]>> {
++    let bytes = name.to_bytes();
++    if bytes.is_empty()
++        || bytes == b"."
++        || bytes == b".."
++        || bytes.contains(&b'/')
++        || bytes.len() > owner.disk.config.max_name_bytes as usize
++        || owner.names.len() + 2 > owner.disk.config.max_depth as usize
++    {
++        return Err(io::ErrorKind::InvalidInput.into());
++    }
++    let mut names = Vec::new();
++    names
++        .try_reserve_exact(owner.names.len() + 1)
++        .map_err(|_| io::ErrorKind::OutOfMemory)?;
++    names.extend(owner.names.iter().cloned());
++    names.push(name.to_owned());
++    Ok(names.into_boxed_slice())
++}
++
++impl NodeDiskDirectory {
++    /// Open an exact enrolled child. An unknown final absence is healthy; an
++    /// unaccounted existing object or changed ancestry fences this owner.
++    pub fn open_child(&self, name: &CStr) -> io::Result<Self> {
++        let owner = self.owner();
++        let disk = &owner.disk;
++        let mut state = disk.lock_state();
++        prepare_child(owner, name, &mut state, None)?;
++        let mut effect = Effect {
++            disk,
++            state: &mut state,
++        };
++        let result: io::Result<Self> = (|| {
++            acquire_parent(owner, &mut effect)?;
++            step(&mut effect, NodeDiskDirectoryOperationStep::OpenChild)?;
++            let operation = effect
++                .pending_directory
++                .as_mut()
++                .expect("retained operation");
++            operation.child = Some(census::open_at(
++                operation.parent.file(),
++                operation.name(),
++                libc::O_RDONLY | libc::O_DIRECTORY,
++            )?);
++            let metadata = operation
++                .child
++                .as_ref()
++                .expect("retained child")
++                .metadata()?;
++            let identity = Identity::of(&metadata);
++            let binding = operation.binding;
++            let parent = operation.parent.identity();
++            verify_enrolled(&effect.accounted, identity, &metadata)?;
++            let entry = effect
++                .accounted
++                .get_mut(&identity)
++                .and_then(AccountedInode::directory_mut)
++                .expect("verified child");
++            if entry.binding != binding || entry.parent != Some(parent) {
++                return Err(io::ErrorKind::InvalidData.into());
++            }
++            let handles = entry
++                .live_handles
++                .checked_add(1)
++                .ok_or(io::ErrorKind::InvalidData)?;
++            entry.live_handles = handles;
++            effect
++                .pending_directory
++                .as_mut()
++                .expect("retained operation")
++                .identity = Some(identity);
++            Ok(publish_child(disk, &mut effect))
++        })();
++        if let Err(error) = &result {
++            // A verified parent's unknown final absence is the only healthy
++            // failed acquisition. Close every actual descriptor and backing
++            // before returning its prepared slot; close uncertainty stays owned.
++            let operation = effect
++                .pending_directory
++                .as_ref()
++                .expect("retained operation");
++            let absent = error.kind() == io::ErrorKind::NotFound
++                && operation.observation.step == NodeDiskDirectoryOperationStep::OpenChild
++                && !effect
++                    .accounted
++                    .values()
++                    .any(|entry| entry.binding() == operation.binding);
++            if absent {
++                let operation = effect.pending_directory.as_mut().expect("retained absence");
++                operation.observation.failure = Some(NodeDiskDirectoryFailure::new(
++                    operation.observation.step,
++                    error,
++                ));
++                operation_absent(&mut effect)
++                    .inspect_err(|close| record_failure(disk, &mut effect, close))?;
++            } else {
++                record_failure(disk, &mut effect, error);
++            }
++        }
++        result
++    }
++
++    /// Create exactly one absent child with its full policy allowance prepared
++    /// before the first descriptor acquisition. This does not admit a multipart
++    /// caller operation.
++    pub fn create_child(&self, name: &CStr, work: DiskWork) -> io::Result<Self> {
++        let owner = self.owner();
++        let disk = &owner.disk;
++        let mut state = disk.lock_state();
++        prepare_child(owner, name, &mut state, Some(work))?;
++        let mut effect = Effect {
++            disk,
++            state: &mut state,
++        };
++        let result = (|| {
++            acquire_parent(owner, &mut effect)?;
++            effect
++                .pending_directory
++                .as_ref()
++                .expect("retained operation")
++                .plan
++                .expect("create plan")
++                .activate(&mut effect);
++            create_effect(disk, &mut effect)
++        })();
++        if let Err(error) = &result {
++            record_failure(disk, &mut effect, error);
++        }
++        result
++    }
++
++    /// Remove an empty non-root directory, consuming the sole handle. Other
++    /// independent owners, child owners and cloned handles reject before unlink.
++    pub fn remove_if_empty(mut self) -> io::Result<()> {
++        use NodeDiskDirectoryOperationStep as Step;
++        let disk = self.owner().disk.clone();
++        let mut state = disk.lock_state();
++        ready(&disk, &state)?;
++        if self.owner().names.is_empty() {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        if Arc::strong_count(self.0.as_ref().expect("live directory")) != 1 {
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
++        let entry = *state
++            .accounted
++            .get(&self.owner().identity)
++            .and_then(AccountedInode::directory)
++            .ok_or(io::ErrorKind::InvalidData)?;
++        if !entry.settled {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        if entry.children != 0 {
++            return Err(io::ErrorKind::DirectoryNotEmpty.into());
++        }
++        if entry.live_handles != 1 {
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
++        let parent_identity = self
++            .owner()
++            .parent
++            .as_ref()
++            .expect("nonroot parent")
++            .identity();
++        let plan =
++            ParentTransition::preflight(&disk, &mut state, (parent_identity, -1), None, None)?;
++        // No Arc or Weak can be acquired after this private sole-owner check.
++        // into_inner deallocates control backing before moving actual custody.
++        let mut owner =
++            Arc::into_inner(self.0.take().expect("live directory")).expect("sole directory owner");
++        owner.registered = false;
++        let identity = owner.identity;
++        state.pending_directory = Some(PendingDirectory {
++            observation: NodeDiskDirectoryOperation {
++                kind: NodeDiskDirectoryOperationKind::Remove,
++                step: Step::Prepared,
++                failure: None,
++                close_failure: None,
++                uncertain_close_descriptor: None,
++            },
++            root: std::mem::take(&mut owner.root),
++            names: std::mem::replace(&mut owner.names, Box::new([])),
++            binding: entry.binding,
++            parent: owner.parent.take().expect("nonroot parent"),
++            child: owner.file.take(),
++            walk_current: None,
++            walk_next: None,
++            identity: Some(identity),
++            allocation: None,
++            plan: Some(plan),
++        });
++        drop(owner);
++        let mut effect = Effect {
++            disk: &disk,
++            state: &mut state,
++        };
++        let result = (|| {
++            verify_preflight(&disk, &mut effect)?;
++            effect
++                .pending_directory
++                .as_mut()
++                .expect("retained operation")
++                .verify_child(&disk)?;
++            let metadata = effect
++                .pending_directory
++                .as_ref()
++                .expect("retained operation")
++                .child
++                .as_ref()
++                .expect("retained child")
++                .metadata()?;
++            verify_enrolled(&effect.accounted, identity, &metadata)?;
++            plan.activate(&mut effect);
++            effect
++                .accounted
++                .get_mut(&identity)
++                .and_then(AccountedInode::directory_mut)
++                .expect("retained child")
++                .settled = false;
++            remove_effect(&disk, &mut effect, entry)
++        })();
++        if let Err(error) = &result {
++            record_failure(&disk, &mut effect, error);
++        }
++        result
++    }
++}
++
++fn verify_enrolled(
++    ledger: &crate::node_disk::fixed_map::Banks<AccountedInode>,
++    identity: Identity,
++    metadata: &std::fs::Metadata,
++) -> io::Result<()> {
++    census::directory_nonallocating(metadata)?;
++    let entry = ledger
++        .get(&identity)
++        .and_then(AccountedInode::directory)
++        .ok_or(io::ErrorKind::InvalidData)?;
++    if !entry.settled
++        || entry.len != metadata.len()
++        || entry.bytes.checked_sub(entry.pending) != Some(census::directory_extent(metadata)?)
++    {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    Ok(())
++}
++fn verify_preflight(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
++    let State {
++        pending_directory,
++        accounted,
++        ..
++    } = state;
++    pending_directory
++        .as_mut()
++        .expect("retained operation")
++        .verify_parent(disk, Some(accounted))
++}
++fn acquire_parent(owner: &DirectoryOwner, state: &mut State) -> io::Result<()> {
++    let operation = state
++        .pending_directory
++        .as_mut()
++        .expect("retained operation");
++    operation
++        .parent
++        .set_descriptor(owner.file.as_ref().expect("live directory").try_clone()?);
++    verify_preflight(&owner.disk, state)
++}
++fn prepare_child(
++    owner: &DirectoryOwner,
++    name: &CStr,
++    state: &mut State,
++    work: Option<DiskWork>,
++) -> io::Result<()> {
++    let disk = &owner.disk;
++    ready(disk, state)?;
++    if state.open_directories >= disk.config.max_open_directories {
++        return Err(io::ErrorKind::StorageFull.into());
++    }
++    let roots = u64::try_from(disk.roots.len()).map_err(|_| io::ErrorKind::InvalidData)?;
++    if work.is_some()
++        && state
++            .directories
++            .checked_sub(roots)
++            .is_none_or(|n| n >= disk.config.max_persistent_subdirectories)
++    {
++        return Err(io::ErrorKind::StorageFull.into());
++    }
++    if work.is_some() {
++        state.accounted.try_reserve(1)?;
++    }
++    let names = child_names(owner, name)?;
++    let parent_entry = *state
++        .accounted
++        .get(&owner.identity)
++        .and_then(AccountedInode::directory)
++        .ok_or(io::ErrorKind::InvalidData)?;
++    let binding = parent_entry.binding.child(name);
++    if work.is_some()
++        && state
++            .accounted
++            .values()
++            .any(|entry| entry.binding() == binding)
++    {
++        return Err(io::ErrorKind::AlreadyExists.into());
++    }
++    parent_entry
++        .live_handles
++        .checked_add(1)
++        .ok_or(io::ErrorKind::InvalidData)?;
++    let directories = if work.is_some() {
++        state
++            .directories
++            .checked_add(1)
++            .ok_or(io::ErrorKind::StorageFull)?
++    } else {
++        state.directories
++    };
++    let plan = if let Some(work) = work {
++        Some(ParentTransition::preflight(
++            disk,
++            state,
++            (owner.identity, 1),
++            None,
++            Some(work),
++        )?)
++    } else {
++        None
++    };
++    let mut ancestors = Vec::new();
++    ancestors
++        .try_reserve_exact(owner.names.len() + 1)
++        .map_err(|_| io::ErrorKind::OutOfMemory)?;
++    if let Some(parent) = &owner.parent {
++        ancestors.extend_from_slice(parent.ancestors());
++    }
++    ancestors.push(owner.identity);
++    if ancestors.len() != owner.names.len() + 1 {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    let mut parent = RetainedParent::prepared(owner.identity, ancestors.into_boxed_slice());
++    let allocation = Arc::<DirectoryOwner>::new_uninit();
++    let root = owner.root.clone();
++    if let Some(work) = work {
++        disk.reserve(state, disk.config.directory_policy.extent_bytes, work)?;
++    }
++    parent
++        .register(disk, state)
++        .expect("preflighted parent registration");
++    state.open_directories += 1;
++    state.directories = directories;
++    state.pending_directory = Some(PendingDirectory {
++        observation: NodeDiskDirectoryOperation {
++            kind: if work.is_some() {
++                NodeDiskDirectoryOperationKind::Create
++            } else {
++                NodeDiskDirectoryOperationKind::Open
++            },
++            step: NodeDiskDirectoryOperationStep::Prepared,
++            failure: None,
++            close_failure: None,
++            uncertain_close_descriptor: None,
++        },
++        root,
++        names,
++        binding,
++        parent,
++        child: None,
++        walk_current: None,
++        walk_next: None,
++        identity: None,
++        allocation: Some(allocation),
++        plan,
++    });
++    Ok(())
++}
++fn operation_absent(state: &mut State) -> io::Result<()> {
++    let operation = state.pending_directory.as_mut().expect("retained absence");
++    let parent = operation.parent.identity();
++    operation.close_resources()?;
++    if !namespace::can_retire_parent(state, parent) {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    let owners = state
++        .open_directories
++        .checked_sub(1)
++        .ok_or(io::ErrorKind::InvalidData)?;
++    drop(state.pending_directory.take());
++    namespace::retire_parent(state, parent);
++    state.open_directories = owners;
++    Ok(())
++}
++
++fn create_effect(disk: &Arc<NodeDisk>, state: &mut State) -> io::Result<NodeDiskDirectory> {
++    use NodeDiskDirectoryOperationStep as Step;
++    step(state, Step::Mkdir)?;
++    let operation = state
++        .pending_directory
++        .as_ref()
++        .expect("retained operation");
++    // SAFETY: both the retained parent FD and one-component C name are live.
++    if unsafe {
++        libc::mkdirat(
++            operation.parent.file().as_raw_fd(),
++            operation.name().as_ptr(),
++            0o700,
++        )
++    } != 0
++    {
++        return Err(io::Error::last_os_error());
++    }
++    step(state, Step::OpenChild)?;
++    let operation = state
++        .pending_directory
++        .as_mut()
++        .expect("retained operation");
++    operation.child = Some(census::open_at(
++        operation.parent.file(),
++        operation.name(),
++        libc::O_RDONLY | libc::O_DIRECTORY,
++    )?);
++    step(state, Step::ObserveChild)?;
++    record_child(disk, state)?;
++    step(state, Step::SyncChild)?;
++    state
++        .pending_directory
++        .as_ref()
++        .expect("retained operation")
++        .child
++        .as_ref()
++        .expect("opened child")
++        .sync_all()?;
++    step(state, Step::SyncParent)?;
++    state
++        .pending_directory
++        .as_ref()
++        .expect("retained operation")
++        .parent
++        .file()
++        .sync_all()?;
++    step(state, Step::Verify)?;
++    state
++        .pending_directory
++        .as_mut()
++        .expect("retained operation")
++        .verify_child(disk)?;
++    let operation = state
++        .pending_directory
++        .as_ref()
++        .expect("retained operation");
++    let metadata = operation
++        .child
++        .as_ref()
++        .expect("retained child")
++        .metadata()?;
++    let entry = state.accounted[&operation.identity.expect("recorded child")]
++        .directory()
++        .expect("recorded child");
++    if metadata.len() != entry.len
++        || census::directory_extent(&metadata)? != entry.bytes - entry.pending
++    {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    settle_parent(disk, state)?;
++    let identity = state
++        .pending_directory
++        .as_ref()
++        .expect("retained operation")
++        .identity
++        .expect("observed child");
++    state
++        .accounted
++        .get_mut(&identity)
++        .and_then(AccountedInode::directory_mut)
++        .expect("observed child")
++        .settled = true;
++    Ok(publish_child(disk, state))
++}
++fn publish_child(disk: &Arc<NodeDisk>, state: &mut State) -> NodeDiskDirectory {
++    let mut operation = state.pending_directory.take().expect("settled operation");
++    assert!(operation.walk_current.is_none() && operation.walk_next.is_none());
++    let mut allocation = operation.allocation.take().expect("preallocated owner");
++    Arc::get_mut(&mut allocation)
++        .expect("private owner allocation")
++        .write(DirectoryOwner {
++            disk: disk.clone(),
++            root: operation.root,
++            names: operation.names,
++            identity: operation.identity.expect("observed child"),
++            file: operation.child,
++            parent: Some(operation.parent),
++            registered: true,
++            #[cfg(test)]
++            after_close: None,
++        });
++    // SAFETY: the sole admitted allocation is fully initialized above.
++    NodeDiskDirectory(Some(unsafe { allocation.assume_init() }))
++}
++
++fn record_child(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
++    let operation = state
++        .pending_directory
++        .as_ref()
++        .expect("retained operation");
++    let metadata = operation.child.as_ref().expect("opened child").metadata()?;
++    census::directory_nonallocating(&metadata)?;
++    let identity = Identity::of(&metadata);
++    if identity.0 != disk.roots[&operation.root].identity.0
++        || state.accounted.contains_key(&identity)
++    {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    let observed = census::directory_extent(&metadata)?;
++    let reserved = disk.config.directory_policy.extent_bytes;
++    let charged = reserved.max(observed);
++    let pending = charged - observed;
++    let bytes = state
++        .bytes
++        .checked_sub(reserved)
++        .and_then(|v| v.checked_add(charged))
++        .ok_or(io::ErrorKind::InvalidData)?;
++    let next_pending = state
++        .pending
++        .checked_sub(reserved)
++        .and_then(|v| v.checked_add(pending))
++        .ok_or(io::ErrorKind::InvalidData)?;
++    let directory_bytes = state
++        .directory_bytes
++        .checked_add(observed)
++        .ok_or(io::ErrorKind::InvalidData)?;
++    let mut promises = disk.device.lock();
++    let shared = promises
++        .checked_sub(reserved)
++        .and_then(|v| v.checked_add(pending))
++        .ok_or(io::ErrorKind::InvalidData)?;
++    promises.set_pending(shared)?;
++    state.bytes = bytes;
++    state.pending = next_pending;
++    state.directory_bytes = directory_bytes;
++    let entry = AccountedDirectory {
++        binding: operation.binding,
++        parent: Some(operation.parent.identity()),
++        bytes: charged,
++        pending,
++        settled: false,
++        len: metadata.len(),
++        children: 0,
++        live_handles: 1,
++    };
++    assert!(
++        state
++            .accounted
++            .insert(identity, AccountedInode::Directory(entry))
++            .is_none()
++    );
++    state
++        .pending_directory
++        .as_mut()
++        .expect("retained operation")
++        .identity = Some(identity);
++    if observed > reserved {
++        state.phase = NodeDiskPhase::Failed;
++        promises.fail_owner();
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    Ok(())
++}
++fn settle_parent(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
++    step(state, NodeDiskDirectoryOperationStep::Settle)?;
++    let operation = state
++        .pending_directory
++        .as_ref()
++        .expect("retained operation");
++    let observation = (
++        operation.parent.identity(),
++        operation.parent.file().metadata()?,
++    );
++    operation
++        .plan
++        .expect("mutation plan")
++        .settle_observed(disk, state, [Some(observation), None])
++}
++fn remove_effect(disk: &NodeDisk, state: &mut State, entry: AccountedDirectory) -> io::Result<()> {
++    use NodeDiskDirectoryOperationStep as Step;
++    step(state, Step::Unlink)?;
++    let operation = state
++        .pending_directory
++        .as_ref()
++        .expect("retained operation");
++    // SAFETY: exact verified empty child and retained parent remain owned.
++    if unsafe {
++        libc::unlinkat(
++            operation.parent.file().as_raw_fd(),
++            operation.name().as_ptr(),
++            libc::AT_REMOVEDIR,
++        )
++    } != 0
++    {
++        return Err(io::Error::last_os_error());
++    }
++    step(state, Step::SyncParent)?;
++    state
++        .pending_directory
++        .as_ref()
++        .expect("retained operation")
++        .parent
++        .file()
++        .sync_all()?;
++    step(state, Step::Verify)?;
++    let operation = state
++        .pending_directory
++        .as_mut()
++        .expect("retained operation");
++    operation.verify_parent(disk, None)?;
++    let metadata = operation
++        .child
++        .as_ref()
++        .expect("retained child")
++        .metadata()?;
++    if Some(Identity::of(&metadata)) != operation.identity {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    // Darwin may retain the original directory nlink value after rmdir. Verify
++    // the exact bound name is absent; the actual old inode remains in custody
++    // until its explicit close below, before any physical credit is returned.
++    let mut absent: libc::stat = unsafe { std::mem::zeroed() };
++    if unsafe {
++        libc::fstatat(
++            operation.parent.file().as_raw_fd(),
++            operation.name().as_ptr(),
++            &mut absent,
++            libc::AT_SYMLINK_NOFOLLOW,
++        )
++    } == 0
++    {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    let absence = io::Error::last_os_error();
++    if absence.kind() != io::ErrorKind::NotFound {
++        return Err(absence);
++    }
++    settle_parent(disk, state)?;
++    let bytes = state
++        .bytes
++        .checked_sub(entry.bytes)
++        .ok_or(io::ErrorKind::InvalidData)?;
++    let pending = state
++        .pending
++        .checked_sub(entry.pending)
++        .ok_or(io::ErrorKind::InvalidData)?;
++    let directory_bytes = state
++        .directory_bytes
++        .checked_sub(entry.bytes - entry.pending)
++        .ok_or(io::ErrorKind::InvalidData)?;
++    let directories = state
++        .directories
++        .checked_sub(1)
++        .ok_or(io::ErrorKind::InvalidData)?;
++    let open_directories = state
++        .open_directories
++        .checked_sub(1)
++        .ok_or(io::ErrorKind::InvalidData)?;
++    let operation = state
++        .pending_directory
++        .as_mut()
++        .expect("retained operation");
++    let parent_identity = operation.parent.identity();
++    let identity = operation.identity.expect("retained identity");
++    operation.close_resources()?;
++    if !namespace::can_retire_parent(state, parent_identity) {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    let mut promises = disk.device.lock();
++    let shared = promises
++        .checked_sub(entry.pending)
++        .ok_or(io::ErrorKind::InvalidData)?;
++    // Close and all fallible checks precede credit. Names, ancestor backing and
++    // the prepared control allocation die before the slot becomes reusable.
++    promises.set_pending(shared)?;
++    drop(state.pending_directory.take());
++    state
++        .accounted
++        .remove(&identity)
++        .expect("retained child entry");
++    namespace::retire_parent(state, parent_identity);
++    state.bytes = bytes;
++    state.pending = pending;
++    state.directory_bytes = directory_bytes;
++    state.directories = directories;
++    state.open_directories = open_directories;
++    Ok(())
++}
++
++#[cfg(test)]
++thread_local! {
++    static FAILURE: std::cell::Cell<Option<NodeDiskDirectoryOperationStep>> = const { std::cell::Cell::new(None) };
++}
++#[cfg(test)]
++fn injected(step: NodeDiskDirectoryOperationStep) -> io::Result<()> {
++    if FAILURE.with(|failure| {
++        if failure.get() == Some(step) {
++            failure.set(None);
++            true
++        } else {
++            false
++        }
++    }) {
++        Err(io::Error::from_raw_os_error(libc::EIO))
++    } else {
++        Ok(())
++    }
++}
++#[cfg(test)]
++mod tests;
+--- a/crates/kasumi-store/src/node_disk/directory.rs
++++ b/crates/kasumi-store/src/node_disk/directory.rs
+@@ -1,12 +1,10 @@
+ //! Enrolled, counted read/sync custody for installed directories.
+ //!
+-//! This primitive does not authorize namespace mutation. Census establishes the
+-//! exact identities/extents. Managed file effects settle their affected parents
+-//! under the same state guard; other namespace changes require actual drain and
+-//! fresh census until their explicit mutation protocol is implemented.
++//! Census establishes exact identities/extents. Prepared child mutations retain
++//! affected-parent and unresolved-operation custody under the same State guard.
+ use super::{
+     AccountedDirectory, AccountedInode, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase, State,
+-    census,
++    census, namespace,
+ };
+ use std::{
+     ffi::CString,
+@@ -22,6 +20,8 @@
+     names: Box<[CString]>,
+     identity: Identity,
+     file: Option<File>,
++    parent: Option<namespace::RetainedParent>,
++    registered: bool,
+     #[cfg(test)]
+     after_close: Option<std::sync::Mutex<Option<ClosePause>>>,
+ }
+@@ -169,7 +169,7 @@
+         let Component::Normal(name) = component else {
+             return Err(io::ErrorKind::InvalidInput.into());
+         };
+-        if names.len() >= depth as usize || name.len() > maximum as usize {
++        if names.len() + 1 >= depth as usize || name.len() > maximum as usize {
+             return Err(io::ErrorKind::InvalidInput.into());
+         }
+         names
+@@ -201,7 +201,17 @@
+         // The installed envelope funds all these allocations and the temporary
+         // walk descriptors. No registered destructor exists before publication.
+         let names = names(relative, self.config.max_depth, self.config.max_name_bytes)?;
+-        let root = root.to_owned();
++        self.open_directory_names(&mut state, root.to_owned(), names)
++    }
++
++    // Caller holds State and has checked the owner quota before any path/Arc
++    // allocation. Both rooted and child opens share the same publication path.
++    fn open_directory_names(
++        self: &Arc<Self>,
++        state: &mut State,
++        root: String,
++        names: Box<[CString]>,
++    ) -> io::Result<NodeDiskDirectory> {
+         let mut allocation = Arc::<DirectoryOwner>::new_uninit();
+         #[cfg(test)]
+         let after_close = {
+@@ -209,11 +219,11 @@
+             drop(mutex.lock().expect("unpublished directory close hook"));
+             mutex
+         };
+-        let file = match walk(self, &state, &root, &names, true) {
++        let file = match walk(self, state, &root, &names, true) {
+             Ok(file) => file,
+             Err(error) => {
+                 if error.fence {
+-                    self.fail_locked(&mut state);
++                    self.fail_locked(state);
+                 }
+                 return Err(error.error);
+             }
+@@ -221,20 +231,37 @@
+         let identity = match file.metadata() {
+             Ok(metadata) => Identity::of(&metadata),
+             Err(error) => {
+-                self.fail_locked(&mut state);
++                self.fail_locked(state);
+                 return Err(error);
+             }
+         };
+-        let entry = state
++        let mut parent = if names.is_empty() {
++            None
++        } else {
++            Some(
++                namespace::RetainedParent::prepare(self, state, &root, &names[..names.len() - 1])
++                    .inspect_err(|_| self.fail_locked(state))?,
++            )
++        };
++        let next = state
++            .accounted
++            .get(&identity)
++            .and_then(AccountedInode::directory)
++            .expect("verified directory enrollment")
++            .live_handles
++            .checked_add(1)
++            .ok_or(io::ErrorKind::InvalidData)?;
++        if let Some(parent) = &mut parent {
++            parent
++                .register(self, state)
++                .inspect_err(|_| self.fail_locked(state))?;
++        }
++        state
+             .accounted
+             .get_mut(&identity)
+             .and_then(AccountedInode::directory_mut)
+-            .expect("verified directory enrollment");
+-        let Some(next) = entry.live_handles.checked_add(1) else {
+-            self.fail_locked(&mut state);
+-            return Err(io::ErrorKind::InvalidData.into());
+-        };
+-        entry.live_handles = next;
++            .expect("verified directory enrollment")
++            .live_handles = next;
+         state.open_directories += 1;
+         Arc::get_mut(&mut allocation)
+             .expect("unpublished directory owner")
+@@ -244,13 +271,14 @@
+                 names,
+                 identity,
+                 file: Some(file),
++                parent,
++                registered: true,
+                 #[cfg(test)]
+                 after_close: Some(after_close),
+             });
+         // SAFETY: the sole allocation has just been fully initialized. It is
+         // published only after actual FD acquisition and all ledger checks.
+         let owner = unsafe { allocation.assume_init() };
+-        drop(state);
+         Ok(NodeDiskDirectory(Some(owner)))
+     }
+ }
+@@ -278,6 +306,12 @@
+         {
+             return Err(io::ErrorKind::InvalidData.into());
+         }
++        if let Some(parent) = &self.owner().parent {
++            parent.verify(
++                &self.owner().disk.roots[&self.owner().root],
++                &self.owner().names[..self.owner().names.len() - 1],
++            )?;
++        }
+         Ok(())
+     }
+ 
+@@ -326,7 +360,7 @@
+ // before its allocation was released. No inner Arc or Weak escapes this module.
+ impl Drop for NodeDiskDirectory {
+     fn drop(&mut self) {
+-        if let Some(owner) = Arc::into_inner(self.0.take().expect("live directory custody")) {
++        if let Some(owner) = self.0.take().and_then(Arc::into_inner) {
+             drop(owner);
+         }
+     }
+@@ -337,6 +371,10 @@
+         // Actual close precedes the drain counters. Nothing in this destructor
+         // enrolls namespace changes or returns disk extent credit.
+         drop(self.file.take());
++        let parent = self
++            .parent
++            .take()
++            .and_then(namespace::RetainedParent::retire);
+         #[cfg(test)]
+         if let Some(mut hook) = self.after_close.take() {
+             if let Some(pause) = hook.get_mut().unwrap().take() {
+@@ -352,7 +390,14 @@
+         // this slot. The Arc backing already died in Arc::into_inner above.
+         drop(std::mem::take(&mut self.root));
+         drop(std::mem::replace(&mut self.names, Box::new([])));
++        if !self.registered {
++            return;
++        }
+         let mut state = self.disk.lock_state();
++        if parent.is_some_and(|identity| !namespace::can_retire_parent(&state, identity)) {
++            self.disk.fail_locked(&mut state);
++            return;
++        }
+         let Some(entry) = state
+             .accounted
+             .get_mut(&self.identity)
+@@ -371,6 +416,10 @@
+             return;
+         };
+         state.open_directories = next;
++        if let Some(parent) = parent {
++            namespace::retire_parent(&mut state, parent);
++        }
++        self.registered = false;
+     }
+ }
+ 
+@@ -381,3 +430,10 @@
+ pub use cursor::{
+     NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor, NodeDiskDirectoryEntry, NodeDiskEntryKind,
+ };
++
++mod managed;
++pub(super) use managed::PendingDirectory;
++pub use managed::{
++    NodeDiskDirectoryFailure, NodeDiskDirectoryOperation, NodeDiskDirectoryOperationKind,
++    NodeDiskDirectoryOperationStep,
++};
+--- a/crates/kasumi-store/src/node_disk/file.rs
++++ b/crates/kasumi-store/src/node_disk/file.rs
+@@ -1,7 +1,7 @@
+ use super::{
+     AccountedFile, AccountedInode, DiskWork, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase,
+     State, census, extent,
+-    namespace::{self, FileParent, ParentTransition},
++    namespace::{self, ParentTransition, RetainedParent},
+     rounded,
+ };
+ use std::{
+@@ -45,10 +45,10 @@
+     // Parent path names are validated and allocated once during acquisition.
+     // I/O verifies every current ancestor using these original names.
+     parent_names: Box<[CString]>,
+-    parent: Option<FileParent>,
++    parent: Option<RetainedParent>,
+     // Publication keeps both real descriptors until durability settles. Only
+     // one registration is active, transferred after the old FD actually closes.
+-    retiring_parent: Option<FileParent>,
++    retiring_parent: Option<RetainedParent>,
+     retired_parent: Option<Identity>,
+     name: Option<CString>,
+     identity: Identity,
+@@ -135,7 +135,7 @@
+     root: String,
+     relative: PathBuf,
+     parent_names: Box<[CString]>,
+-    parent: FileParent,
++    parent: RetainedParent,
+     name: CString,
+     device: u64,
+     binding: NamespaceBinding,
+@@ -387,7 +387,7 @@
+ pub(super) struct PreparedPublication<'a> {
+     disk: &'a Arc<NodeDisk>,
+     allocation: Arc<std::mem::MaybeUninit<FileOwner>>,
+-    parent: FileParent,
++    parent: RetainedParent,
+     name: CString,
+     root: String,
+     relative: PathBuf,
+@@ -681,7 +681,7 @@
+                 io::Error::other(error)
+             })?;
+         let raw_parent = parent;
+-        let parent = FileParent::prepare(self, &state, root, &parent_names)
++        let parent = RetainedParent::prepare(self, &state, root, &parent_names)
+             .inspect_err(|_| self.fail_locked(&mut state))?;
+         if Identity::of(&raw_parent.metadata()?) != parent.identity() {
+             self.fail_locked(&mut state);
+@@ -762,7 +762,7 @@
+                 io::Error::other(error)
+             })?;
+         let raw_parent = parent;
+-        let parent = FileParent::prepare(self, &state, root, &parent_names)
++        let parent = RetainedParent::prepare(self, &state, root, &parent_names)
+             .inspect_err(|_| self.fail_locked(&mut state))?;
+         if Identity::of(&raw_parent.metadata()?) != parent.identity() {
+             self.fail_locked(&mut state);
+@@ -997,27 +997,12 @@
+     Err(io::ErrorKind::AlreadyExists.into())
+ }
+ 
+-fn verify_parent(root: &census::Root, names: &[CString], retained: &FileParent) -> io::Result<()> {
+-    root.verify_nonallocating()?;
+-    if retained.ancestors().len() != names.len() + 1 || retained.ancestors()[0] != root.identity {
+-        return Err(io::ErrorKind::InvalidData.into());
+-    }
+-    let mut current = root.file.try_clone()?;
+-    for (index, name) in names.iter().enumerate() {
+-        let child = census::open_at(&current, name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+-        let metadata = child.metadata()?;
+-        census::directory_nonallocating(&metadata)?;
+-        if metadata.dev() != root.identity.0
+-            || Identity::of(&metadata) != retained.ancestors()[index + 1]
+-        {
+-            return Err(io::ErrorKind::InvalidData.into());
+-        }
+-        current = child;
+-    }
+-    if Identity::of(&current.metadata()?) != Identity::of(&retained.file().metadata()?) {
+-        return Err(io::ErrorKind::InvalidData.into());
+-    }
+-    Ok(())
++fn verify_parent(
++    root: &census::Root,
++    names: &[CString],
++    retained: &RetainedParent,
++) -> io::Result<()> {
++    retained.verify(root, names)
+ }
+ 
+ fn prepare_parent_names(
+@@ -1052,7 +1037,7 @@
+     fn parent(&self) -> &File {
+         self.parent_custody().file()
+     }
+-    fn parent_custody(&self) -> &FileParent {
++    fn parent_custody(&self) -> &RetainedParent {
+         self.parent.as_ref().expect("live parent custody")
+     }
+     fn budget(&self) -> &Mutex<Budget> {
+--- a/crates/kasumi-store/src/node_disk/memory.rs
++++ b/crates/kasumi-store/src/node_disk/memory.rs
+@@ -47,7 +47,10 @@
+         let owners = mul(add(handles, 1)?, handle)?;
+         let directory_owner = add(
+             add(size::<directory::DirectoryOwner>()?, 16)?,
+-            add(NATIVE_HANDLE_WORKSPACE, add(paths, components)?)?,
++            add(
++                NATIVE_HANDLE_WORKSPACE,
++                add(parent_ancestry, add(paths, components)?)?,
++            )?,
+         )?;
+         let directory_owners = mul(
+             add(u64::from(config.max_open_directories), 1)?,
+--- a/crates/kasumi-store/src/node_disk/namespace.rs
++++ b/crates/kasumi-store/src/node_disk/namespace.rs
+@@ -1,22 +1,22 @@
+ //! Prepared directory custody and affected-parent namespace accounting.
+-//! Only file namespace transitions use this module; no directory creation or
+-//! externally adopted namespace is authorized by these private primitives.
++//! File and directory owners share actual retained parent custody. Every
++//! namespace effect still requires its own prepared, admitted transition.
+ use super::{
+     AccountedDirectory, AccountedInode, DiskWork, Identity, NodeDisk, NodeDiskPhase, State, census,
+     directory,
+ };
+-use std::{ffi::CString, fs::File, io};
+-
+-/// Embedded in the admitted FileOwner. A prepared replacement is unregistered;
++use std::{ffi::CString, fs::File, io, os::unix::fs::MetadataExt};
++
++/// Embedded in an admitted file or non-root directory owner. Preparation is unregistered;
+ /// its original parent's registration funds the transfer until actual close.
+ /// No destructor here locks State: FileOwner retires resources before credit.
+-pub(super) struct FileParent {
++pub(super) struct RetainedParent {
+     file: Option<File>,
+     identity: Identity,
+     ancestors: Box<[Identity]>,
+     registered: bool,
+ }
+-impl FileParent {
++impl RetainedParent {
+     pub(super) fn prepare(
+         disk: &NodeDisk,
+         state: &State,
+@@ -32,6 +32,50 @@
+             registered: false,
+         })
+     }
++    pub(super) fn prepared(identity: Identity, ancestors: Box<[Identity]>) -> Self {
++        Self {
++            file: None,
++            identity,
++            ancestors,
++            registered: false,
++        }
++    }
++    pub(super) fn set_descriptor(&mut self, file: File) {
++        assert!(
++            self.file.is_none(),
++            "prepared parent descriptor is installed once"
++        );
++        self.file = Some(file);
++    }
++    /// Compare every retained ancestor and the actual parent descriptor. This
++    /// deliberately does not require the affected parent's pre-effect extent:
++    /// the prepared transition owns that snapshot until explicit settlement.
++    pub(super) fn verify(&self, root: &census::Root, names: &[CString]) -> io::Result<()> {
++        root.verify_nonallocating()?;
++        if self.ancestors.len() != names.len() + 1 || self.ancestors[0] != root.identity {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        let mut current = root.file.try_clone()?;
++        for (index, name) in names.iter().enumerate() {
++            let child = census::open_at(&current, name, libc::O_RDONLY | libc::O_DIRECTORY)?;
++            let metadata = child.metadata()?;
++            census::directory_nonallocating(&metadata)?;
++            if metadata.dev() != root.identity.0
++                || Identity::of(&metadata) != self.ancestors[index + 1]
++            {
++                return Err(io::ErrorKind::InvalidData.into());
++            }
++            current = child;
++        }
++        let retained = self.file().metadata()?;
++        census::directory_nonallocating(&retained)?;
++        if Identity::of(&current.metadata()?) != self.identity
++            || Identity::of(&retained) != self.identity
++        {
++            return Err(io::ErrorKind::InvalidData.into());
++        }
++        Ok(())
++    }
+     pub(super) fn file(&self) -> &File {
+         self.file.as_ref().expect("retained parent descriptor")
+     }
+@@ -42,8 +86,8 @@
+         &self.ancestors
+     }
+     pub(super) fn register(&mut self, _disk: &NodeDisk, state: &mut State) -> io::Result<()> {
+-        // The file-owner quota and envelope fund this retained parent. Counting
+-        // it again as an independent directory owner would reduce both quotas.
++        // The concrete file/directory-owner quota and envelope fund this parent.
++        // Counting it again as an independent owner would reduce those quotas.
+         if self.registered {
+             return Err(io::ErrorKind::InvalidData.into());
+         }
+@@ -60,6 +104,9 @@
+         self.registered = true;
+         Ok(())
+     }
++    pub(super) fn take_descriptor(&mut self) -> Option<File> {
++        self.file.take()
++    }
+     /// Move the scalar registration across the resources' scope boundary.
+     /// Actual FD and ancestor allocation destruction precede returned credit.
+     pub(super) fn retire(self) -> Option<Identity> {
+@@ -99,12 +146,28 @@
+ }
+ /// Inline plan: preparation and all fallible arithmetic precede the effect.
+ /// The caller owns State serialization and actual descriptors until settlement.
++#[derive(Clone, Copy)]
+ pub(super) struct ParentTransition {
+     generation: u64,
+     changes: [Option<Change>; 2],
+ }
+ impl ParentTransition {
+     pub(super) fn prepare(
++        disk: &NodeDisk,
++        state: &mut State,
++        first: (Identity, i8),
++        second: Option<(Identity, i8)>,
++        growth_work: Option<DiskWork>,
++    ) -> io::Result<Self> {
++        let prepared = Self::preflight(disk, state, first, second, growth_work)?;
++        prepared.activate(state);
++        Ok(prepared)
++    }
++
++    /// Validate without invalidating the old ledger. Directory creation reserves
++    /// its complete child allowance after this preflight, then activates both
++    /// the parent plan and its already-owned pending operation without a gap.
++    pub(super) fn preflight(
+         disk: &NodeDisk,
+         state: &mut State,
+         first: (Identity, i8),
+@@ -177,9 +240,14 @@
+                 children,
+             });
+         }
+-        // Validation has finished for both distinct parents. From this point,
+-        // uncertainty keeps every existing byte promise and seals the owner.
+-        for change in changes.iter().flatten() {
++        Ok(Self {
++            generation,
++            changes,
++        })
++    }
++
++    pub(super) fn activate(&self, state: &mut State) {
++        for change in self.changes.iter().flatten() {
+             state
+                 .accounted
+                 .get_mut(&change.identity)
+@@ -187,10 +255,6 @@
+                 .expect("prepared parent")
+                 .settled = false;
+         }
+-        Ok(Self {
+-            generation,
+-            changes,
+-        })
+     }
+ 
+     /// Only a definite no-effect result may restore the original snapshots.
+@@ -199,7 +263,7 @@
+         self,
+         disk: &NodeDisk,
+         state: &mut State,
+-        parents: &[&FileParent],
++        parents: &[&RetainedParent],
+     ) -> io::Result<()> {
+         for change in self.changes.iter().flatten() {
+             let parent = parents
+@@ -221,11 +285,15 @@
+             }
+         }
+         for change in self.changes.iter().flatten() {
+-            *state
++            let entry = state
+                 .accounted
+                 .get_mut(&change.identity)
+                 .and_then(AccountedInode::directory_mut)
+-                .expect("prepared parent") = change.before;
++                .expect("prepared parent");
++            *entry = AccountedDirectory {
++                live_handles: entry.live_handles,
++                ..change.before
++            };
+         }
+         Ok(())
+     }
+@@ -237,7 +305,28 @@
+         self,
+         disk: &NodeDisk,
+         state: &mut State,
+-        parents: &[&FileParent],
++        parents: &[&RetainedParent],
++    ) -> io::Result<()> {
++        let mut observations = [None, None];
++        for (slot, change) in observations.iter_mut().zip(self.changes.iter()) {
++            let Some(change) = change else { continue };
++            let parent = parents
++                .iter()
++                .find(|parent| parent.identity == change.identity)
++                .ok_or(io::ErrorKind::InvalidData)?;
++            *slot = Some((change.identity, parent.file().metadata()?));
++        }
++        self.settle_observed(disk, state, observations)
++    }
++
++    /// The observations are taken from the operation's retained descriptors
++    /// under the same State guard. This separates borrows without taking the
++    /// unresolved operation out of its custody slot during fallible work.
++    pub(super) fn settle_observed(
++        self,
++        disk: &NodeDisk,
++        state: &mut State,
++        observations: [Option<(Identity, std::fs::Metadata)>; 2],
+     ) -> io::Result<()> {
+         let mut updated = [None, None];
+         let mut bytes = state.bytes;
+@@ -248,11 +337,11 @@
+         let mut exceeded = false;
+         for (slot, change) in updated.iter_mut().zip(self.changes.iter()) {
+             let Some(change) = change else { continue };
+-            let parent = parents
++            let (_, metadata) = observations
+                 .iter()
+-                .find(|parent| parent.identity == change.identity)
+-                .ok_or(io::ErrorKind::InvalidData)?;
+-            let metadata = parent.file().metadata()?;
++                .flatten()
++                .find(|(identity, _)| *identity == change.identity)
++                .ok_or(io::ErrorKind::InvalidData)?;
+             census::directory_nonallocating(&metadata)?;
+             if Identity::of(&metadata) != change.identity {
+                 return Err(io::ErrorKind::InvalidData.into());
+@@ -302,11 +391,15 @@
+         state.pending = pending;
+         state.directory_bytes = directory_bytes;
+         for (identity, entry) in updated.into_iter().flatten() {
+-            *state
++            let current = state
+                 .accounted
+                 .get_mut(&identity)
+                 .and_then(AccountedInode::directory_mut)
+-                .expect("prepared parent") = entry;
++                .expect("prepared parent");
++            *current = AccountedDirectory {
++                live_handles: current.live_handles,
++                ..entry
++            };
+         }
+         if exceeded {
+             state.phase = NodeDiskPhase::Failed;
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -31,7 +31,8 @@
+ use census::{Root, census, open_roots};
+ pub use directory::{
+     NodeDiskDirectory, NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor,
+-    NodeDiskDirectoryEntry, NodeDiskEntryKind,
++    NodeDiskDirectoryEntry, NodeDiskDirectoryFailure, NodeDiskDirectoryOperation,
++    NodeDiskDirectoryOperationKind, NodeDiskDirectoryOperationStep, NodeDiskEntryKind,
+ };
+ pub use file::NodeDiskFile;
+ use ledger::AccountedInode;
+@@ -340,6 +341,7 @@
+     open_directory_cursors: u32,
+     census_streams: census::Streams,
+     namespace_generation: u64,
++    pending_directory: Option<directory::PendingDirectory>,
+     directory_bytes: u64,
+     directories: u64,
+     live: fixed_map::Banks<Weak<file::FileOwner>>,
+@@ -694,6 +696,7 @@
+                 open_directory_cursors: 0,
+                 census_streams: census::Streams::default(),
+                 namespace_generation: 0,
++                pending_directory: None,
+                 directory_bytes: totals.directory_bytes,
+                 directories: totals.directories,
+                 live,
+@@ -850,13 +853,20 @@
+         if state.phase != NodeDiskPhase::Failed {
+             state.phase = NodeDiskPhase::Paused;
+         }
++        let internal_directories = u32::from(state.pending_directory.is_some());
+         ensure!(
+             state.open_files == 0
+-                && state.open_directories == 0
++                && state.open_directories == internal_directories
+                 && state.open_directory_cursors == 0
+                 && state.census_streams.outstanding() == 0,
+             "persistent file or directory owners are still live"
+         );
++        if let Some(operation) = &mut state.pending_directory {
++            if let Err(error) = operation.close_resources() {
++                self.fail_locked(&mut state);
++                return Err(error.into());
++            }
++        }
+         let (_, census_limit) = ledger::map_limits(&self.config)?;
+         let result = {
+             // Disjoint borrows keep the actual streams and spare bank under the
+@@ -914,9 +924,22 @@
+         state.directory_bytes = totals.directory_bytes;
+         state.directories = totals.directories;
+         state.live.clear();
++        // The candidate has accepted physical absence/presence after every
++        // internal FD closed. Retire retained names, ancestry and Arc backing
++        // before publishing the operational slot as available again.
++        drop(state.pending_directory.take());
++        state.open_directories = 0;
+         state.phase = NodeDiskPhase::Open;
+         promises.reconcile_owner();
+         Ok(())
++    }
++
++    /// Original namespace failure and any independent native close failure.
++    pub fn pending_directory_operation(&self) -> Option<NodeDiskDirectoryOperation> {
++        self.lock_state()
++            .pending_directory
++            .as_ref()
++            .map(|operation| operation.observed())
+     }
+ 
+     pub(crate) fn fail(&self) {

@@ -55,7 +55,12 @@ async fn captured_and_historical_backup_verification_fit_fixed_production_worksp
             .await
             .unwrap();
     }
-    let resident = fixture.db.engine().fixture_snapshot().unwrap().len();
+    let resident = fixture
+        .db
+        .engine()
+        .fixture_snapshot(fixture.store.scratch_disk())
+        .unwrap()
+        .len();
     // Both production archival lanes and the service ledger are installed.
     // The former proportional verifier cannot fit alongside those same reserves.
     assert!(fixture.db.audit_maintenance_status().is_some());
@@ -73,10 +78,7 @@ async fn captured_and_historical_backup_verification_fit_fixed_production_worksp
         .await
         .unwrap();
     assert_eq!(independently_verified.checkpoint(), proof.checkpoint());
-    assert_eq!(
-        reserved_payload_bytes(fixture.audit.admission()),
-        production_payload
-    );
+    assert_eq!(fixture.reserved_payload(), production_payload);
     fixture.close().await;
 }
 
@@ -111,12 +113,14 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         "the previous additive materialization strategy must not fit"
     );
     drop(previous_verification);
-    let node = NodeStore::create_new_fixture(
-        fixture.directory.path().join("restore-budget.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        fixture.store.scratch_disk().clone(),
-    )
-    .unwrap();
+    let node = fixture
+        .physical
+        .storage
+        .create_new(
+            fixture.directory.path().join("restore-budget.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
     let target = TenantStore::initialize_catalog_fixture(
         node,
         "checkpoint".into(),
@@ -150,7 +154,7 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         1
     );
     assert_eq!(
-        reserved_payload_bytes(&admission),
+        fixture.reserved_payload(),
         production_payload
             + (128 << 20)
             + snapshot_owner_bytes()
@@ -160,18 +164,20 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
     // successful drain releases that registry while the group facade stays live.
     restored.shutdown().await.unwrap();
     assert_eq!(
-        reserved_payload_bytes(&admission),
+        fixture.reserved_payload(),
         production_payload + (128 << 20) + snapshot_owner_bytes()
     );
     drop(restored);
     drop(domains);
     drop(target);
-    let node = NodeStore::open_existing_fixture(
-        fixture.directory.path().join("restore-budget.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        fixture.store.scratch_disk().clone(),
-    )
-    .unwrap();
+    let node = fixture
+        .physical
+        .storage
+        .open_existing(
+            fixture.directory.path().join("restore-budget.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
     let target = TenantStore::open_existing_fixture(
         node,
         "checkpoint".into(),
@@ -194,13 +200,13 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         1
     );
     assert_eq!(
-        reserved_payload_bytes(&admission),
+        fixture.reserved_payload(),
         production_payload + (128 << 20) + snapshot_owner_bytes()
     );
     reopened.shutdown().await.unwrap();
     drop(reopened);
     drop(destination_workspace);
-    assert_eq!(reserved_payload_bytes(&admission), production_payload);
+    assert_eq!(fixture.reserved_payload(), production_payload);
     fixture.close().await;
 }
 
@@ -246,6 +252,10 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
             }
             self.inner.write(offset, bytes)
         }
+
+        fn close(&self) -> redb::BackendCloseOutcome {
+            self.inner.close()
+        }
     }
     let fixture = Fixture::with_admission(Limits::default(), Default::default(), true).await;
     fixture.write("retained").await;
@@ -263,9 +273,10 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
         pause: Arc::new(Mutex::new(None)),
         blocked: Arc::new(AtomicBool::new(false)),
     };
-    let node = NodeStore::open_with_backend(
+    let node = NodeStore::open_fixture_backend_on_disk(
         backend.clone(),
         kasumi_store::test_utils::storage_admission(),
+        fixture.physical.storage.persistent.clone(),
         fixture.store.scratch_disk().clone(),
     )
     .unwrap();
@@ -310,19 +321,20 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
     task.abort();
     assert!(matches!(task.await, Err(error) if error.is_cancelled()));
     assert!(weak.upgrade().is_some());
-    assert!(reserved_payload_bytes(&admission) > production_payload);
+    assert!(fixture.reserved_payload() > production_payload);
     release_tx.send(()).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while weak.upgrade().is_some() || reserved_payload_bytes(&admission) != production_payload {
+        while weak.upgrade().is_some() || fixture.reserved_payload() != production_payload {
             tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
     // Cancellation before the final manifest cannot publish a partial genesis.
-    let node = NodeStore::open_with_backend(
+    let node = NodeStore::open_fixture_backend_on_disk(
         backend,
         kasumi_store::test_utils::storage_admission(),
+        fixture.physical.storage.persistent.clone(),
         fixture.store.scratch_disk().clone(),
     )
     .unwrap();
@@ -359,14 +371,20 @@ fn snapshot_owner_bytes() -> u64 {
 
 struct Fixture {
     directory: tempfile::TempDir,
+    physical: common::PhysicalFixture,
     db: Arc<Database>,
     audit: Arc<SecurityAudit>,
     store: Arc<TenantStore>,
     destination: Arc<FilesystemBackupDestination>,
 }
 impl Fixture {
+    fn reserved_payload(&self) -> u64 {
+        reserved_payload_bytes(self.audit.admission())
+            .checked_sub(self.physical.initial_disk_metadata_bytes)
+            .expect("actual installed disk metadata remains charged")
+    }
     fn production_payload_baseline(&self) -> u64 {
-        let bytes = reserved_payload_bytes(self.audit.admission());
+        let bytes = self.reserved_payload();
         assert!(
             bytes >= 3 * AuditRetentionBudget::MAINTENANCE_BYTES + snapshot_owner_bytes(),
             "production maintenance lanes and the serving snapshot inventory stay charged"
@@ -385,17 +403,17 @@ impl Fixture {
         production: bool,
     ) -> Self {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-        let node = NodeStore::create_new_fixture(
-            directory.path().join("node.redb"),
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap();
-        let admission = kasumi_engine::admission::NodeAdmission::new(
-            kasumi_engine::test_utils::admission_config_with_bookkeeping(config).unwrap(),
-        )
-        .unwrap();
-        let audit = common::security_audit_with_admission(node.clone(), admission.clone()).await;
+        let config = kasumi_engine::test_utils::admission_config_with_bookkeeping(config).unwrap();
+        let physical = common::PhysicalFixture::new(&directory.path().join("node.redb"), config);
+        let admission = physical.storage.admission.clone();
+        let node = physical
+            .storage
+            .create_new(
+                directory.path().join("node.redb"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
+        let audit = common::security_audit(node.clone(), admission.clone()).await;
         let store = TenantStore::initialize_catalog_fixture(
             node,
             "checkpoint".into(),
@@ -432,13 +450,18 @@ impl Fixture {
         .await
         .unwrap();
         let destination = Arc::new(
-            FilesystemBackupDestination::new_fixture(directory.path().join("backups"), 16 << 20)
-                .unwrap(),
+            FilesystemBackupDestination::new(
+                directory.path().join("backups"),
+                16 << 20,
+                physical.storage.persistent.clone(),
+            )
+            .unwrap(),
         );
         db.install_archive_destination("approved".into(), destination.clone())
             .unwrap();
         Self {
             directory,
+            physical,
             db,
             audit,
             store,
@@ -500,7 +523,11 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
         .unwrap();
     fixture.store.rotate_data_key().await.unwrap();
     let second = fixture.write("second").await;
-    let snapshot = fixture.db.engine().fixture_snapshot().unwrap();
+    let snapshot = fixture
+        .db
+        .engine()
+        .fixture_snapshot(fixture.store.scratch_disk())
+        .unwrap();
     let state = fixture.db.engine().generation().unwrap();
     let revision = state.state.revision;
     let incarnation = state.state.incarnation.clone();
@@ -556,6 +583,7 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
     fixture.close().await;
     let Fixture {
         directory,
+        physical,
         db,
         audit,
         store,
@@ -564,13 +592,12 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
     drop(db);
     drop(audit);
     drop(store);
-    let node = NodeStore::open_existing_fixture(
-        &path,
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    let audit = common::existing_security_audit(node.clone()).await;
+    let node = physical
+        .storage
+        .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+        .unwrap();
+    let audit =
+        common::existing_security_audit(node.clone(), physical.storage.admission.clone()).await;
     let store = TenantStore::open_existing_fixture(
         node,
         "checkpoint".into(),
@@ -1230,12 +1257,14 @@ async fn local_restore_binds_exact_source_purpose_even_without_cold_archives() {
         .backup_checkpoint_named(context(), "approved", uuid::Uuid::new_v4())
         .await
         .unwrap();
-    let node = NodeStore::create_new_fixture(
-        fixture.directory.path().join("restore.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
+    let node = fixture
+        .physical
+        .storage
+        .create_new(
+            fixture.directory.path().join("restore.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
     let target = TenantStore::initialize_catalog_fixture(
         node,
         "checkpoint".into(),
@@ -1384,15 +1413,21 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     // Restore must neither consult a live source quorum nor its local cache.
     fixture.close().await;
     let target_directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let node = NodeStore::create_new_fixture(
-        target_directory.path().join("target.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    let target_audit = common::security_audit(node.clone()).await;
+    let target_physical = common::PhysicalFixture::new(
+        &target_directory.path().join("target.redb"),
+        Default::default(),
+    );
+    let node = target_physical
+        .storage
+        .create_new(
+            target_directory.path().join("target.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let target_audit =
+        common::security_audit(node.clone(), target_physical.storage.admission.clone()).await;
     let target = TenantStore::initialize_catalog_fixture(
-        node,
+        node.clone(),
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
     )
@@ -1456,13 +1491,19 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     // Source verification alone is insufficient: an independently installed
     // target provider must also retain every original historical archive key.
     let wrong_directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let wrong_node = NodeStore::create_new_fixture(
-        wrong_directory.path().join("wrong.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    let wrong_audit = common::security_audit(wrong_node.clone()).await;
+    let wrong_physical = common::PhysicalFixture::new(
+        &wrong_directory.path().join("wrong.redb"),
+        Default::default(),
+    );
+    let wrong_node = wrong_physical
+        .storage
+        .create_new(
+            wrong_directory.path().join("wrong.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let wrong_audit =
+        common::security_audit(wrong_node.clone(), wrong_physical.storage.admission.clone()).await;
     let wrong_store = TenantStore::initialize_catalog_fixture(
         wrong_node,
         "checkpoint".into(),
@@ -1530,18 +1571,30 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     drop(restored);
     drop(target);
     drop(target_audit);
+    node.shutdown().await.unwrap();
+    drop(node);
+    assert_eq!(target_physical.storage.persistent.snapshot().open_files, 0);
+    target_physical.storage.persistent.pause().unwrap();
     let cache_path = target_directory
         .path()
         .join("tenant-audit-archives")
         .join(format!("{}.audit", head.object.object_id));
     std::fs::remove_file(&cache_path).unwrap();
-    let node = NodeStore::open_existing_fixture(
-        target_directory.path().join("target.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    let reopened_audit = common::existing_security_audit(node.clone()).await;
+    target_physical
+        .storage
+        .persistent
+        .reconcile(&kasumi_store::CensusCancellation::default())
+        .unwrap();
+    let node = target_physical
+        .storage
+        .open_existing(
+            target_directory.path().join("target.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let reopened_audit =
+        common::existing_security_audit(node.clone(), target_physical.storage.admission.clone())
+            .await;
     let reopened_store = TenantStore::open_existing_fixture(
         node,
         "checkpoint".into(),
@@ -1595,19 +1648,12 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     );
     let portable = reopened
         .engine()
-        .snapshot(
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
-            60_000,
-        )
+        .snapshot(target_physical.storage.admission.clone(), 60_000)
         .await
         .unwrap();
     let prepared = reopened
         .engine()
-        .prepare_snapshot_restore(
-            portable,
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
-            60_000,
-        )
+        .prepare_snapshot_restore(portable, target_physical.storage.admission.clone(), 60_000)
         .await
         .unwrap();
     assert_eq!(prepared.incarnation(), target_incarnation.to_string());

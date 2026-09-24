@@ -1,0 +1,11 @@
+{
+  "status": "frozen target-only, uncompiled",
+  "artifacts": {
+    "reclaim.patch": "f2103f19fa5223101a83c8c6cdf230a658f1d26fcfb54be56ab2ea5660cb85f8",
+    "manifest.json": "723f3a172c4a1af9fae04225f287899d5beb6024844a2d7256b7b08102223d32",
+    "README.md": "9c7e66d0a379fa9e76cf4272a68ade07a82a19692f1729dc2aec281be61809b9",
+    "rustfmt-final-command.json": "b2fe946cceed442f61e7aded80c2dc69905f35e12087a4ec77abf81403b54f1c",
+    "apply-check.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "apply-check.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

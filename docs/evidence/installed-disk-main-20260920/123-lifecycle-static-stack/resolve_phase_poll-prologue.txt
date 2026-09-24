@@ -1,0 +1,32 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010011ebdc <lifecycle::recovery_control::resolve_phase::{closure#0}>:
+10011ebdc: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+10011ebe0: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10011ebe4: 910043fd    	add	x29, sp, #0x10
+10011ebe8: d14017e9    	sub	x9, sp, #0x5, lsl #12   ; =0x5000
+10011ebec: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+10011ebf0: f90003ff    	str	xzr, [sp]
+10011ebf4: eb2963ff    	cmp	sp, x9
+10011ebf8: 54ffffa1    	b.ne	0x10011ebec <lifecycle::recovery_control::resolve_phase::{closure#0}+0x10>
+10011ebfc: d13883ff    	sub	sp, sp, #0xe20
+10011ec00: f90003ff    	str	xzr, [sp]
+10011ec04: 91400fe9    	add	x9, sp, #0x3, lsl #12   ; =0x3000
+10011ec08: 910bc129    	add	x9, x9, #0x2f0
+10011ec0c: f90017e9    	str	x9, [sp, #0x28]
+10011ec10: f9001be8    	str	x8, [sp, #0x30]
+10011ec14: f9001fe0    	str	x0, [sp, #0x38]
+10011ec18: f90027e1    	str	x1, [sp, #0x48]
+10011ec1c: aa0003e8    	mov	x8, x0
+10011ec20: f92cb7e8    	str	x8, [sp, #0x5968]
+10011ec24: aa0003e8    	mov	x8, x0
+10011ec28: f92cbbe8    	str	x8, [sp, #0x5970]
+10011ec2c: 52834a08    	mov	w8, #0x1a50             ; =6736
+10011ec30: 38686808    	ldrb	w8, [x0, x8]
+10011ec34: b90047e8    	str	w8, [sp, #0x44]
+10011ec38: 34000168    	cbz	w8, 0x10011ec64 <lifecycle::recovery_control::resolve_phase::{closure#0}+0x88>
+10011ec3c: 14000001    	b	0x10011ec40 <lifecycle::recovery_control::resolve_phase::{closure#0}+0x64>
+10011ec40: b94047e8    	ldr	w8, [sp, #0x44]

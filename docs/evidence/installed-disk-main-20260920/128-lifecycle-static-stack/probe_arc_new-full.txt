@@ -1,0 +1,66 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000719a0 <<alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>>::new>:
+1000719a0: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1000719a4: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1000719a8: 910043fd    	add	x29, sp, #0x10
+1000719ac: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+1000719b0: f90003ff    	str	xzr, [sp]
+1000719b4: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+1000719b8: f90003ff    	str	xzr, [sp]
+1000719bc: d13c03ff    	sub	sp, sp, #0xf00
+1000719c0: f90003ff    	str	xzr, [sp]
+1000719c4: aa0003e1    	mov	x1, x0
+1000719c8: 52800028    	mov	w8, #0x1                ; =1
+1000719cc: f9000be8    	str	x8, [sp, #0x10]
+1000719d0: f9000fe8    	str	x8, [sp, #0x18]
+1000719d4: f90007e8    	str	x8, [sp, #0x8]
+1000719d8: f94007e9    	ldr	x9, [sp, #0x8]
+1000719dc: 910143e8    	add	x8, sp, #0x50
+1000719e0: f9002be9    	str	x9, [sp, #0x50]
+1000719e4: f94007e9    	ldr	x9, [sp, #0x8]
+1000719e8: f9002fe9    	str	x9, [sp, #0x58]
+1000719ec: 91004100    	add	x0, x8, #0x10
+1000719f0: 5285d308    	mov	w8, #0x2e98             ; =11928
+1000719f4: aa0803e2    	mov	x2, x8
+1000719f8: 948c7748    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000719fc: 52800108    	mov	w8, #0x8                ; =8
+100071a00: aa0803e0    	mov	x0, x8
+100071a04: 5285d508    	mov	w8, #0x2ea8             ; =11944
+100071a08: aa0803e1    	mov	x1, x8
+100071a0c: 97fe858b    	bl	0x100013038 <alloc::boxed::box_new_uninit>
+100071a10: f90003e0    	str	x0, [sp]
+100071a14: 1400000a    	b	0x100071a3c <<alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>>::new+0x9c>
+100071a18: f90023e0    	str	x0, [sp, #0x40]
+100071a1c: aa0103e8    	mov	x8, x1
+100071a20: b9004be8    	str	w8, [sp, #0x48]
+100071a24: 910143e0    	add	x0, sp, #0x50
+100071a28: 9400a516    	bl	0x10009ae80 <core::ptr::drop_glue::<alloc::sync::ArcInner<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>>>
+100071a2c: 14000002    	b	0x100071a34 <<alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>>::new+0x94>
+100071a30: 948c7511    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+100071a34: f94023e0    	ldr	x0, [sp, #0x40]
+100071a38: 948c767b    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>
+100071a3c: f94003e0    	ldr	x0, [sp]
+100071a40: aa0003e8    	mov	x8, x0
+100071a44: f81e83a8    	stur	x8, [x29, #-0x18]
+100071a48: 910143e1    	add	x1, sp, #0x50
+100071a4c: 5285d508    	mov	w8, #0x2ea8             ; =11944
+100071a50: aa0803e2    	mov	x2, x8
+100071a54: 948c7731    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100071a58: f94003e0    	ldr	x0, [sp]
+100071a5c: aa0003e8    	mov	x8, x0
+100071a60: f90013e8    	str	x8, [sp, #0x20]
+100071a64: aa0003e8    	mov	x8, x0
+100071a68: f90017e8    	str	x8, [sp, #0x28]
+100071a6c: aa0003e8    	mov	x8, x0
+100071a70: f9001be8    	str	x8, [sp, #0x30]
+100071a74: aa0003e8    	mov	x8, x0
+100071a78: f9001fe8    	str	x8, [sp, #0x38]
+100071a7c: 91400bff    	add	sp, sp, #0x2, lsl #12   ; =0x2000
+100071a80: 913c03ff    	add	sp, sp, #0xf00
+100071a84: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+100071a88: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+100071a8c: d65f03c0    	ret

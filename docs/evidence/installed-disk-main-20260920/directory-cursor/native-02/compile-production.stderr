@@ -1,0 +1,24 @@
+error[E0277]: the trait bound `ErrorKind: Into<anyhow::Error>` is not satisfied
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/memory.rs:64:51
+   |
+64 |             return Err(io::ErrorKind::InvalidData.into());
+   |                                                   ^^^^ the trait `StdError` is not implemented for `ErrorKind`
+   |
+   = note: required for `anyhow::Error` to implement `From<ErrorKind>`
+   = note: required for `ErrorKind` to implement `Into<anyhow::Error>`
+
+error[E0502]: cannot borrow `state` as mutable because it is also borrowed as immutable
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/native-02/node_disk/directory/cursor.rs:167:26
+    |
+166 |         checked_entry(&state, &file, entry.binding, entry.parent)
+    |                       ------ immutable borrow occurs here
+167 |             .inspect_err(|_| disk.fail_locked(&mut state))?;
+    |              ----------- ^^^                       ----- second borrow occurs due to use of `state` in closure
+    |              |           |
+    |              |           mutable borrow occurs here
+    |              immutable borrow later used by call
+
+error: aborting due to 2 previous errors
+
+Some errors have detailed explanations: E0277, E0502.
+For more information about an error, try `rustc --explain E0277`.

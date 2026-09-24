@@ -1,0 +1,51 @@
+   Compiling serde_json v1.0.151 (/Users/mtakemiya/dev/kasumi/vendor/serde_json-1.0.151)
+   Compiling ureq v3.4.0
+   Compiling lindera-dictionary v5.3.0
+   Compiling axum v0.8.9
+   Compiling lindera-ipadic v5.3.0
+   Compiling kasumi-types v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-types)
+   Compiling tonic v0.14.6
+   Compiling kasumi-serving v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-serving)
+   Compiling prost-build v0.14.4
+   Compiling tantivy-query-grammar v0.26.0
+   Compiling hyper-rustls v0.27.9
+   Compiling lindera v5.3.0
+   Compiling kasumi-transport v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-transport)
+   Compiling jsonschema-value v0.52.1
+   Compiling tantivy v0.26.1
+   Compiling referencing v0.52.1
+   Compiling lindera-analysis v5.3.0
+   Compiling reqwest v0.12.28
+   Compiling tonic-prost-build v0.14.6
+   Compiling jsonschema v0.52.1
+   Compiling lindera-tantivy v5.0.1
+   Compiling kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-client v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-client)
+   Compiling tonic-prost v0.14.6
+   Compiling kasumi-query v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-query)
+   Compiling kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 19s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_authority-8a653d8f0b295bfb)
+
+running 61 tests
+test service::tests::actual_authority_quorum_loss_rejects_lease_and_activation_without_source_fallback ... ok
+test service::tests::actual_encrypted_source_materialization_is_fenced_but_independent_custody_stays_available ... ok
+test service::tests::authority_signer_cannot_substitute_another_physical_verifier_with_the_same_node_id ... ok
+test service::tests::bootstrap_open_tests::strict_authority_binds_immutable_installation_and_physical_verifier ... ok
+test service::tests::bootstrap_open_tests::strict_authority_rejects_corrupt_and_unsupported_genesis_without_replacement ... ok
+test service::tests::bootstrap_open_tests::strict_authority_reopens_original_genesis_after_complete_owner_drain ... ok
+test service::tests::bootstrap_open_tests::strict_authority_requires_every_published_head_without_recreating_it ... ok
+test service::tests::completed_drain_witness_eviction_preserves_active_waits_and_restarts_evicted_identity ... ok
+test service::tests::coverage_dispatch_precedes_permission_and_survives_exact_encrypted_restart ... FAILED
+test service::tests::current_admin_self_revocation_yields_unknown_and_new_custodian_recovers_exact_identity ... ok
+test service::tests::encrypted_restart_restarts_full_drain_and_never_reuses_an_old_incarnation ... ok
+test service::tests::exact_stop_defeats_delayed_activation_and_committed_activation_wins_resolution ... ok
+test service::tests::exact_target_preparation_cannot_serve_and_needs_a_fresh_active_lease_after_drain ... ok
+test service::tests::frozen_signer_roster_cannot_be_bypassed_by_source_unavailable_activation ... ok
+test service::tests::independent_quorum_fence_drains_original_lease_and_competing_activations_cannot_overlap ... ok
+test service::tests::issuer_permission_retains_original_policy_while_current_admin_can_read_its_receipt ... ok
+test service::tests::issuer_tests::activation_gate_tests::committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encrypted_recovery ... ok
+test service::tests::issuer_tests::activation_gate_tests::resolved_completion_activates_only_with_its_distinct_positive_inspection_signature ... ok
+test service::tests::issuer_tests::activation_gate_tests::stopped_control_epoch_and_queued_original_expiry_defeat_new_activation_effects ... 

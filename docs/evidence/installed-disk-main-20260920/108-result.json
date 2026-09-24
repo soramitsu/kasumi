@@ -1,0 +1,27 @@
+{
+  "scope": "development complete engine library with snapshot-work foundation; original512-by256 public restore remains failed/excluded and100000capacity ignored; no final qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-engine",
+    "--all-features",
+    "--lib",
+    "--",
+    "--test-threads=1",
+    "--nocapture",
+    "--skip",
+    "public_restore_admits_resident_state_without_charging_permanent_stream_as_ram"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 18629,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 683.5231547355652,
+  "inventoried_source_unchanged": true
+}

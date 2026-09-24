@@ -316,7 +316,7 @@ impl Administration {
         invocation: ManagementInvocation,
         reservation: kasumi_engine::admission::Reservation,
     ) -> Result<PreparedTenant> {
-        let gate = self.gate.clone().lock_owned().await;
+        let gate = self.gate.enter().await?;
         self.check_enrollment(&invocation)?;
         let proposal = invocation
             .provisioning

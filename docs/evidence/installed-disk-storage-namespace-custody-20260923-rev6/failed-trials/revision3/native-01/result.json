@@ -1,0 +1,12 @@
+{
+  "source_unchanged": true,
+  "changed_inputs": [],
+  "source_count": 3453,
+  "dispatch_denied": null,
+  "completed_stages": 2,
+  "expected_stages": 5,
+  "all_passed": false,
+  "cohort_elapsed_seconds": 238.8010075,
+  "cohort_bound_seconds": 1200,
+  "results_sha256": "0bd11cfa4ecafb9e720f340ccea703b87ee92955aec14746da62ed0d2ddd2b43"
+}

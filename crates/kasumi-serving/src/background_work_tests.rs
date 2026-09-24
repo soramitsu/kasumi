@@ -7,6 +7,83 @@ fn budget(slots: usize) -> BackgroundWorkBudget {
 }
 
 #[tokio::test]
+async fn direct_blocking_child_retains_original_result_and_join_after_cancelled_drain() {
+    #[derive(Debug)]
+    struct OriginalFailure(Arc<()>);
+    impl std::fmt::Display for OriginalFailure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("original blocking failure")
+        }
+    }
+    impl std::error::Error for OriginalFailure {}
+
+    let identity = Arc::new(());
+    let worker = Arc::new(BackgroundWork::default());
+    let charge = Arc::new(());
+    let weak_charge = Arc::downgrade(&charge);
+    let budget = BackgroundWorkBudget::new(1, charge).unwrap();
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (release, held) = std::sync::mpsc::channel();
+    let original = identity.clone();
+    worker
+        .start_blocking_result(
+            move || {
+                let _ = entered.send(());
+                held.recv().unwrap();
+                Err(OriginalFailure(original).into())
+            },
+            &budget,
+        )
+        .unwrap();
+    waiting.await.unwrap();
+    let id = worker.state.lock().unwrap().custody.unwrap();
+    let mut first = Box::pin(worker.drain());
+    std::future::poll_fn(|cx| {
+        assert!(first.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(first);
+    drop(worker);
+    drop(budget);
+    assert!(weak_charge.upgrade().is_some());
+    let recovered = custody().lock().unwrap().get(&id).unwrap().cell.clone();
+    release.send(()).unwrap();
+    let failure = recovered.drain().await.unwrap_err();
+    assert_eq!(failure.completion(), DrainCompletion::Complete);
+    let actual = failure.issues()[0]
+        .error()
+        .downcast_ref::<OriginalFailure>()
+        .unwrap();
+    assert!(Arc::ptr_eq(&identity, &actual.0));
+    let repeated = recovered.drain().await.unwrap_err();
+    assert!(Arc::ptr_eq(&failure.issues()[0], &repeated.issues()[0]));
+    drop(recovered);
+    assert!(weak_charge.upgrade().is_none());
+}
+
+#[tokio::test]
+async fn direct_blocking_panic_preserves_original_join_error() {
+    let worker = Arc::new(BackgroundWork::default());
+    worker
+        .start_blocking_result(
+            || -> Result<()> { panic!("original direct blocking panic") },
+            &budget(1),
+        )
+        .unwrap();
+    let failure = worker.drain().await.unwrap_err();
+    assert!(
+        failure.issues()[0]
+            .error()
+            .downcast_ref::<tokio::task::JoinError>()
+            .unwrap()
+            .is_panic()
+    );
+    let repeated = worker.drain().await.unwrap_err();
+    assert!(Arc::ptr_eq(&failure.issues()[0], &repeated.issues()[0]));
+}
+
+#[tokio::test]
 async fn fallible_child_retains_original_error_after_cancelled_drain_and_facade_drop() {
     #[derive(Debug)]
     struct OriginalFailure(Arc<()>);

@@ -1,0 +1,159 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+     Running tests/lifecycle.rs (target/debug/deps/lifecycle-377b80b89ca111b0)
+
+running 14 tests
+test control_administration::current_control_administration_cannot_release_through_a_cached_leader_after_quorum_loss ... kasumi-engine read quorum unavailable: cause=read quorum deadline exceeded: deadline has elapsed; metrics=Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok(()), id: 1, current_term: 1, vote: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, last_log_index: Some(3), last_applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 3 }), snapshot: None, purged: None, state: Leader, current_leader: Some(1), millis_since_quorum_ack: Some(5008), membership_config: StoredMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "https://node-1.example" }, 2: BasicNode { addr: "https://node-2.example" }, 3: BasicNode { addr: "https://node-3.example" }} } }, replication: Some({1: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 3 }), 2: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 3 }), 3: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 3 })}) }), has_changed: true }
+ok
+test control_administration::current_control_administration_pins_actual_membership_and_pending_policy_across_restart ... ok
+test control_administration::current_control_administration_retains_exact_resource_revocation_and_original_lifetime ... 
+thread 'control_administration::current_control_administration_retains_exact_resource_revocation_and_original_lifetime' (4362900) panicked at crates/kasumi-engine/tests/lifecycle.rs:301:13:
+control leader wait failed: deadline has elapsed; states: [(1, "Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok(()), id: 1, current_term: 50, vote: Vote { leader_id: LeaderId { term: 50, node_id: 1 }, committed: false }, last_log_index: Some(0), last_applied: None, snapshot: None, purged: None, state: Candidate, current_leader: None, millis_since_quorum_ack: None, membership_config: StoredMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: \"https://node-1.example\" }, 2: BasicNode { addr: \"https://node-2.example\" }, 3: BasicNode { addr: \"https://node-3.example\" }} } }, replication: None }), has_changed: true }"), (2, "Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok(()), id: 2, current_term: 50, vote: Vote { leader_id: LeaderId { term: 50, node_id: 1 }, committed: false }, last_log_index: None, last_applied: None, snapshot: None, purged: None, state: Learner, current_leader: None, millis_since_quorum_ack: None, membership_config: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, replication: None }), has_changed: true }"), (3, "Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok(()), id: 3, current_term: 50, vote: Vote { leader_id: LeaderId { term: 50, node_id: 1 }, committed: false }, last_log_index: None, last_applied: None, snapshot: None, purged: None, state: Learner, current_leader: None, millis_since_quorum_ack: None, membership_config: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, replication: None }), has_changed: true }")]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: <lifecycle::Fixture>::leader::{closure#0}::{closure#1}
+             at ./tests/lifecycle.rs:301:13
+   3: <core::result::Result<alloc::sync::Arc<kasumi_engine::service::Database>, tokio::time::error::Elapsed>>::unwrap_or_else::<<lifecycle::Fixture>::leader::{closure#0}::{closure#1}>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1622:23
+   4: <lifecycle::Fixture>::leader::{closure#0}
+             at ./tests/lifecycle.rs:300:10
+   5: <lifecycle::Fixture>::open::{closure#0}
+             at ./tests/lifecycle.rs:284:23
+   6: <lifecycle::Fixture>::configured::{closure#0}
+             at ./tests/lifecycle.rs:167:27
+   7: <lifecycle::Fixture>::limits::{closure#0}
+             at ./tests/lifecycle.rs:43:51
+   8: <lifecycle::Fixture>::new::{closure#0}
+             at ./tests/lifecycle.rs:40:50
+   9: lifecycle::control_administration::current_control_administration_retains_exact_resource_revocation_and_original_lifetime::{closure#0}
+             at ./tests/common/control_administration.rs:20:38
+  10: <core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>> as core::future::future::Future>::poll
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/future/future.rs:133:9
+  11: <core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>> as core::future::future::Future>::poll
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/future/future.rs:133:9
+  12: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:830:70
+  13: tokio::task::coop::with_budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:167:5
+  14: tokio::task::coop::budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:133:5
+  15: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:830:25
+  16: <tokio::runtime::scheduler::current_thread::Context>::enter::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:488:19
+  17: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:829:44
+  18: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:68
+  19: <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<<tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/scoped.rs:40:9
+  20: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:38
+  21: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::try_with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/thread/local.rs:462:12
+  22: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/thread/local.rs:426:20
+  23: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:17
+  24: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:27
+  25: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:817:24
+  26: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:218:33
+  27: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, ()>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/runtime.rs:65:16
+  28: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:206:9
+  29: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:374:52
+  30: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:343:18
+  31: lifecycle::control_administration::current_control_administration_retains_exact_resource_revocation_and_original_lifetime
+             at ./tests/common/control_administration.rs:129:26
+  32: lifecycle::control_administration::current_control_administration_retains_exact_resource_revocation_and_original_lifetime::{closure#0}
+             at ./tests/common/control_administration.rs:19:98
+  33: <lifecycle::control_administration::current_control_administration_retains_exact_resource_revocation_and_original_lifetime::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  34: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+test control_completion_audit_reservation_survives_denials_and_current_admin_status_recovery ... ok
+test control_rejects_unfinishable_byte_budget_and_substituted_authenticated_history ... kasumi-engine read quorum unavailable: cause=read quorum deadline exceeded: deadline has elapsed; metrics=Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok(()), id: 1, current_term: 2, vote: Vote { leader_id: LeaderId { term: 2, node_id: 1 }, committed: true }, last_log_index: Some(5), last_applied: Some(LogId { leader_id: LeaderId { term: 2, node_id: 1 }, index: 5 }), snapshot: None, purged: None, state: Leader, current_leader: Some(1), millis_since_quorum_ack: Some(5024), membership_config: StoredMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "https://node-1.example" }, 2: BasicNode { addr: "https://node-2.example" }, 3: BasicNode { addr: "https://node-3.example" }} } }, replication: Some({1: Some(LogId { leader_id: LeaderId { term: 2, node_id: 1 }, index: 5 }), 2: Some(LogId { leader_id: LeaderId { term: 2, node_id: 1 }, index: 5 }), 3: Some(LogId { leader_id: LeaderId { term: 2, node_id: 1 }, index: 5 })}) }), has_changed: true }
+ok
+test fresh_control_materialization_requires_exact_retained_original_after_expiry_and_reopen ... ok
+test recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation ... ok
+test recovery_control::recovery_expired_target_requires_fresh_control_admission_and_fences_revoked_observations ... ok
+test recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit ... ok
+test recovery_control::recovery_planned_retirement_freezes_its_exact_request_only_after_target_completion ... ok
+test recovery_control::recovery_uncertain_activation_requires_permanent_stop_before_target_cleanup ... ok
+test recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward ... kasumi-engine read quorum unavailable: cause=has to forward request to: None, None; metrics=Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok(()), id: 1, current_term: 2, vote: Vote { leader_id: LeaderId { term: 2, node_id: 3 }, committed: false }, last_log_index: Some(42), last_applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 42 }), snapshot: None, purged: None, state: Follower, current_leader: None, millis_since_quorum_ack: None, membership_config: StoredMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "https://node-1.example" }, 2: BasicNode { addr: "https://node-2.example" }, 3: BasicNode { addr: "https://node-3.example" }} } }, replication: None }), has_changed: true }
+kasumi-engine recovery unknown: stage=release after recovery proposal; cause=Unavailable: read quorum unavailable
+kasumi-engine read quorum unavailable: cause=has to forward request to: Some(3), Some(BasicNode { addr: "https://node-3.example" }); metrics=Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok(()), id: 1, current_term: 3, vote: Vote { leader_id: LeaderId { term: 3, node_id: 3 }, committed: true }, last_log_index: Some(47), last_applied: Some(LogId { leader_id: LeaderId { term: 3, node_id: 3 }, index: 47 }), snapshot: None, purged: None, state: Follower, current_leader: Some(3), millis_since_quorum_ack: None, membership_config: StoredMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "https://node-1.example" }, 2: BasicNode { addr: "https://node-2.example" }, 3: BasicNode { addr: "https://node-3.example" }} } }, replication: None }), has_changed: true }
+
+thread 'recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward' (4376024) panicked at crates/kasumi-engine/tests/common/recovery_control.rs:655:14:
+called `Result::unwrap()` on an `Err` value: Error { code: Unavailable, message: "read quorum unavailable" }
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: core::result::unwrap_failed
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1867:5
+   3: <core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase, kasumi_types::Error>>::unwrap
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1233:23
+   4: lifecycle::recovery_control::prepare_completion::{closure#0}
+             at ./tests/common/recovery_control.rs:655:14
+   5: <core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>> as core::future::future::Future>::poll
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/future/future.rs:133:9
+   6: lifecycle::recovery_control::exercise_completed_recovery::{closure#0}
+             at ./tests/common/recovery_control.rs:137:18
+   7: lifecycle::recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward::{closure#0}
+             at ./tests/common/recovery_control.rs:101:59
+   8: <core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>> as core::future::future::Future>::poll
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/future/future.rs:133:9
+   9: <tokio::runtime::park::CachedParkThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/park.rs:284:71
+  10: tokio::task::coop::with_budget::<core::task::poll::Poll<()>, <tokio::runtime::park::CachedParkThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:167:5
+  11: tokio::task::coop::budget::<core::task::poll::Poll<()>, <tokio::runtime::park::CachedParkThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:133:5
+  12: <tokio::runtime::park::CachedParkThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/park.rs:284:31
+  13: <tokio::runtime::context::blocking::BlockingRegionGuard>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/blocking.rs:66:14
+  14: <tokio::runtime::scheduler::multi_thread::MultiThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/multi_thread/mod.rs:92:22
+  15: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::multi_thread::MultiThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, ()>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/runtime.rs:65:16
+  16: <tokio::runtime::scheduler::multi_thread::MultiThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/multi_thread/mod.rs:91:9
+  17: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:376:50
+  18: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:343:18
+  19: lifecycle::recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward
+             at ./tests/common/recovery_control.rs:101:64
+  20: lifecycle::recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward::{closure#0}
+             at ./tests/common/recovery_control.rs:100:99
+  21: <lifecycle::recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  22: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+test replicated_control_change_pins_all_partitions_freezes_issuance_and_recovers_self_revocation ... ok
+test replicated_control_intent_is_exact_original_expiry_bound_current_quorum_and_permanent_after_reopen ... ok
+
+failures:
+
+failures:
+    control_administration::current_control_administration_retains_exact_resource_revocation_and_original_lifetime
+    recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward
+
+test result: FAILED. 12 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 363.51s
+
+error: test failed, to rerun pass `-p kasumi-engine --test lifecycle`

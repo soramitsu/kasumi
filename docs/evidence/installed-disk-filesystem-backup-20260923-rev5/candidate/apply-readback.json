@@ -1,0 +1,20 @@
+{
+  "dry_run_exit": 0,
+  "apply_exit": 0,
+  "readbacks": [
+    {
+      "path": "crates/kasumi-store/src/backup.rs",
+      "sha256": "3ff9104e7db3b4dffcc3df285fff2ba57d7d7e25c4b87d49689d3a9baa294cf5"
+    },
+    {
+      "path": "crates/kasumi-store/src/backup_file_admission_tests.rs",
+      "sha256": "873553967acb20153a2aac89bbc8758db5c11b7a7511ca444d8f2d7ba68303bb"
+    },
+    {
+      "path": "crates/kasumi-store/src/backup_sessions_fs.rs",
+      "sha256": "5dc5b3dad089839638a1a3c8a0a167ccc3a50b6a28cdf45b206bd2dbd29802c2"
+    }
+  ],
+  "all_three_proposals_identical_to_tested_revision1": true,
+  "exact_revision6_overlap_bases": true
+}

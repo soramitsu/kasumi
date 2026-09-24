@@ -1,0 +1,2 @@
+1000e8070: 97ff6d47    	bl	0x1000c358c <<std::sync::poison::mutex::Mutex<lifecycle::bootstrap_vote_probe::History>>::lock>
+1000e8080: 94006e06    	bl	0x100103898 <<core::result::Result<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History>, std::sync::poison::PoisonError<std::sync::poison::mutex::MutexGuard<lifecycle::bootstrap_vote_probe::History>>>>::unwrap_or_else::<<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::history::{closure#0}>>

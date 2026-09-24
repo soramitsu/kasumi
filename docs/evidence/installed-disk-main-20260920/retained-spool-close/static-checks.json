@@ -1,0 +1,44 @@
+[
+  {
+    "command": [
+      "git",
+      "apply",
+      "--check",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/retained-spool-close/spool.patch"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "git",
+      "apply",
+      "--numstat",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/retained-spool-close/spool.patch"
+    ],
+    "exit_code": 0,
+    "stdout": "1\t1\tcrates/kasumi-store/src/lib.rs\n116\t0\tcrates/kasumi-store/src/retained_spool.rs\n395\t0\tcrates/kasumi-store/src/retained_spool_tests.rs\n7\t2\tcrates/kasumi-store/src/spool.rs\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt",
+      "--edition",
+      "2024",
+      "--config",
+      "skip_children=true",
+      "--check",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/retained-spool-close/proposed/crates/kasumi-store/src/lib.rs",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/retained-spool-close/proposed/crates/kasumi-store/src/retained_spool.rs",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/retained-spool-close/proposed/crates/kasumi-store/src/retained_spool_tests.rs",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/retained-spool-close/proposed/crates/kasumi-store/src/spool.rs"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "actual_source_matches_base": true
+  }
+]

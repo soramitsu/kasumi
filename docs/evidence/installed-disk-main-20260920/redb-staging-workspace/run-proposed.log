@@ -1,0 +1,9 @@
+
+running 3 tests
+test exact_removal_path_performs_no_heap_allocation ... ok
+test tree_store::page_store::lru_cache::tests::invalidation_preserves_other_pages_priority_and_second_chance ... ok
+test tree_store::page_store::lru_cache::tests::repeated_same_key_invalidation_keeps_one_queue_registration_per_live_page ... live_pages=3 queue_entries=3 queue_capacity=4
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

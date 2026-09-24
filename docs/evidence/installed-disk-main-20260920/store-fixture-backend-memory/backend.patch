@@ -1,0 +1,118 @@
+--- a/crates/kasumi-store/src/test_utils.rs
++++ b/crates/kasumi-store/src/test_utils.rs
+@@ -120,6 +120,24 @@
+ }
+ 
+ impl crate::NodeStore {
++    /// Synthetic redb I/O with an explicit admitted physical owner for engine
++    /// fixtures. This does not claim the backend itself is a physical file.
++    /// The exact persistent/scratch core is checked before redb can touch it.
++    pub fn open_fixture_backend_on_disk(
++        backend: impl redb::StorageBackend,
++        redb_admission: std::sync::Arc<dyn redb::StorageAdmission>,
++        persistent: std::sync::Arc<crate::NodeDisk>,
++        scratch: std::sync::Arc<crate::ScratchDisk>,
++    ) -> Result<std::sync::Arc<Self>> {
++        ensure!(
++            std::sync::Arc::ptr_eq(persistent.memory(), scratch.memory()),
++            "persistent and scratch disks require the same installed memory admission"
++        );
++        let db = redb::Database::builder(redb_admission).create_with_backend(backend)?;
++        Self::initialize_tables(&db)?;
++        Ok(Self::installed(db, None, Some(persistent), scratch))
++    }
++
+     pub fn create_new_fixture(
+         path: impl AsRef<std::path::Path>,
+         id: uuid::Uuid,
+@@ -564,3 +582,90 @@
+         assert_eq!(attempts, 1);
+     }
+ }
++
++#[cfg(test)]
++mod admitted_backend_tests {
++    use super::*;
++    use std::sync::Arc;
++
++    #[derive(Debug)]
++    struct UntouchedBackend;
++    impl redb::StorageBackend for UntouchedBackend {
++        fn len(&self) -> std::io::Result<u64> {
++            panic!("foreign-core backend was queried")
++        }
++        fn read(&self, _: u64, _: &mut [u8]) -> std::io::Result<()> {
++            panic!("foreign-core backend was read")
++        }
++        fn set_len(&self, _: u64) -> std::io::Result<()> {
++            panic!("foreign-core backend was resized")
++        }
++        fn sync_data(&self) -> std::io::Result<()> {
++            panic!("foreign-core backend was synchronized")
++        }
++        fn write(&self, _: u64, _: &[u8]) -> std::io::Result<()> {
++            panic!("foreign-core backend was written")
++        }
++        fn close(&self) -> std::io::Result<()> {
++            panic!("foreign-core backend was acquired")
++        }
++    }
++
++    #[tokio::test]
++    async fn admitted_backend_rejects_foreign_memory_before_io_and_retains_exact_owner() {
++        let persistent_directory = private_tempdir().unwrap();
++        let scratch_directory = private_tempdir().unwrap();
++        let foreign_directory = private_tempdir().unwrap();
++        let memory = TestDiskMemory::new(256 << 20, 4096);
++        let foreign_memory = TestDiskMemory::new(256 << 20, 4096);
++        let persistent = retry_disk_registry(|| {
++            crate::NodeDisk::fixture_for_path(
++                persistent_directory.path().join("node.redb"),
++                memory.clone(),
++            )
++        })
++        .unwrap();
++        let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
++        let foreign = crate::ScratchDisk::fixture(foreign_directory.path(), foreign_memory.clone());
++        let before = memory.snapshot();
++        let foreign_before = foreign_memory.snapshot();
++        let error = crate::NodeStore::open_fixture_backend_on_disk(
++            UntouchedBackend,
++            storage_admission(),
++            persistent.clone(),
++            foreign,
++        )
++        .err()
++        .expect("foreign core must be rejected before backend I/O");
++        assert!(
++            error
++                .to_string()
++                .contains("same installed memory admission")
++        );
++        assert_eq!(memory.snapshot(), before);
++        assert_eq!(foreign_memory.snapshot(), foreign_before);
++        assert!(!persistent_directory.path().join("node.redb").exists());
++
++        let backend = FaultBackend::new();
++        let node = crate::NodeStore::open_fixture_backend_on_disk(
++            backend.clone(),
++            storage_admission(),
++            persistent.clone(),
++            scratch.clone(),
++        )
++        .unwrap();
++        assert!(
++            backend.operations() > 0,
++            "accepted backend was not initialized"
++        );
++        assert!(Arc::ptr_eq(node.persistent_disk(), &persistent));
++        assert!(Arc::ptr_eq(node.scratch_disk(), &scratch));
++        assert_eq!(
++            memory.snapshot(),
++            before,
++            "opening a synthetic backend invented a second disk owner"
++        );
++        node.shutdown().await.unwrap();
++        assert!(!persistent_directory.path().join("node.redb").exists());
++    }
++}

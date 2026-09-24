@@ -1,0 +1,32 @@
+{
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "scope": "target-only source proposal; no Cargo/builds",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/tests/common/recovery_control.rs",
+      "base_sha256": "a1c54c397791fd20fe0ac803f22c145b174a07ca9bcab8cbf775bfb2f11438be",
+      "proposed_sha256": "385db3954c23cd9b22a9bac87d29113685f2744a1957635305469bf48e29eb87"
+    },
+    {
+      "path": "crates/kasumi-engine/tests/history.rs",
+      "base_sha256": "c0396b11b7a18ab581421fc37b9b9d741c41bddec6d5837e99cb1386b1f5261a",
+      "proposed_sha256": "68d40f8c095975ebec5d87a8866896d053b587c7fa58ef5d7f25628d6030ad48"
+    },
+    {
+      "path": "crates/kasumi-engine/tests/lifecycle.rs",
+      "base_sha256": "e443d720e697aa8b51bd6655a5148011b31c006df3905f476fb01dfc5082c014",
+      "proposed_sha256": "3b6e06580a1835154bce5fefe3a16358788ea336dab82d96e789584f735f16fb"
+    },
+    {
+      "path": "crates/kasumi-engine/tests/schema_activation.rs",
+      "base_sha256": "828234affb6215e38b59b47f330a7965f4abdcf44f32e9c024109620d8d4a0cf",
+      "proposed_sha256": "19e95f834fc144d24a5e3398bafe5f80edc79fe6adc2fe2e264eb2645fc4a811"
+    }
+  ],
+  "patches": {
+    "corrections.patch": "5448758b017fdb86d38dae1930e8f0b678262ab3edd8023ea95b3b20748f6a6a",
+    "history-lifecycle-recovery.patch": "c4077a503844ab20832fcf85660757a0e1bfa5e9730c399f09ac1ba6c383b189",
+    "schema-generation-release.patch": "aead1ad795c9aa6317557d673829ff4a345938cf19d5510814da0b23b6482695"
+  }
+}

@@ -1,11 +1,17 @@
 # redb - Changelog
 
 ## Kasumi admission prerequisite (unreleased)
+* Reject noncanonical page-number encodings in roots, branch children and used reclamation records before page access or mutation; preserve opaque unused torn transaction slots.
+* Validate every raw table definition before mutable page visitation or highest-page output changes.
+* Require explicit backend native-close outcomes and retain failed-close diagnostics through separately acknowledged operational disposal.
 * Require physical admission at construction and report recoverable capacity denial separately from owner failure.
 * Use immediately durable commits with prepared allocator snapshots; remove durability selection and post-commit metadata publication.
 * Add explicit fallible close, retained busy handles, and non-allocating destructor fallback.
 * Require a relocation byte allowance for bounded compaction batches.
 * Reject legacy type-name aliases and one-phase headers; use only exact current type identities and the authoritative winning root.
+* Require canonical file format 4 and allocator records; reject malformed allocator metadata before decoding or repair without rewriting the rejected file.
+* Retain original opening, write, rollback and close outcomes across borrowed observation and disposal calls.
+* Bound deferred allocation and data reclamation prefixes and encode nested allocator metadata into one output buffer.
 
 ## 5.0.0 - 2026-XX-XX
 * Under the `experimental-api-5` feature flag, turning off the `std` feature now builds redb as a

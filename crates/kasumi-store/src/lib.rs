@@ -14,6 +14,9 @@ pub use audit_archive::{
     PreparedAuditSegment, S3AuditArchive, TenantAuditPlacement, VerifiedAuditSegment,
 };
 mod backup;
+mod backup_destination_index;
+pub use backup_destination_index::{ExactBackupDestinationIndex, MAX_EXACT_BACKUP_DESTINATIONS};
+mod backup_marker;
 mod backup_sessions;
 pub use backup_sessions::{
     BackupSessionObject, BackupSessionObjectPage, BackupSessionObjects, BackupSessionSlot,
@@ -23,6 +26,22 @@ pub use backup_sessions::{
 #[cfg(test)]
 mod allocation_tests;
 mod device_disk;
+mod disk_memory;
+mod storage_census;
+mod storage_opening;
+pub use disk_memory::{
+    DiskMemoryLease, DiskMemoryRequirements, DiskOpenError, NodeDiskMemoryAdmission,
+};
+pub use storage_census::{
+    StorageCensus, StorageCensusDisposition, StorageCensusObservation, StorageCensusPanicPhase,
+    StorageCensusSnapshot, StorageOwnerId, StorageOwnerKind,
+};
+pub use storage_opening::{
+    AdmittedReadBytes, FailedOpeningAcknowledgement, FailedOpeningRecovery, NodeOpeningMode,
+    NodeOpeningPhase, NodeOpeningReport, NodeReadAccessError, NodeReadPhase, NodeReadReport,
+    NodeReadTablesError, NodeTablesBodyError, NodeTablesReport, NodeWriterPhase, OwnedEncryptedRow,
+    RegisteredNodeOpening, RegisteredNodeRead, RegisteredNodeTables,
+};
 mod keys;
 mod node_database;
 mod node_disk;
@@ -31,7 +50,10 @@ pub use node_file::NodeFileCleanup;
 pub mod node_store_ids;
 mod read_view;
 pub use node_disk::{
-    CensusCancellation, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeDiskPhase,
+    CensusCancellation, DirectoryPolicy, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskDirectory,
+    NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor, NodeDiskDirectoryEntry,
+    NodeDiskDirectoryFailure, NodeDiskDirectoryOperation, NodeDiskDirectoryOperationKind,
+    NodeDiskDirectoryOperationStep, NodeDiskEntryKind, NodeDiskFile, NodeDiskPhase,
     NodeDiskSnapshot,
 };
 mod scratch_disk;
@@ -40,14 +62,14 @@ pub use scratch_disk::{ScratchDisk, ScratchDiskConfig, ScratchDiskSnapshot};
 mod serving_access;
 mod spool;
 pub use read_view::TenantReadView;
-pub use scratch_table::EncryptedTable;
+pub use scratch_table::{EncryptedTable, EncryptedTableBatch};
 mod storage_domains;
 pub use serving_access::{StorageAccess, StoragePurpose};
 mod file_keys;
 mod live_trust;
 pub mod private_files;
 pub use file_keys::FileKeyProvider;
-pub use spool::{EncryptedSpool, SnapshotImage, SnapshotReader};
+pub use spool::{EncryptedSpool, RetainedSpool, SnapshotImage, SnapshotReader, SpoolClosePhase};
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
 
@@ -59,7 +81,8 @@ pub use backup::{MAX_BACKUP_BUNDLE_BYTES, MAX_BACKUP_OBJECT_BYTES};
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
 use kasumi_types::drain::{DrainReport, DrainResult};
 pub use keys::{
-    GeneratedKey, KeyProvider, SecretKey, TransitConfig, TransitKeyProvider, WrappedKey,
+    GeneratedKey, HistoricalKeyResolver, HistoricalKeySource, HistoricalSourceSecurityDescriptor,
+    KeyProvider, SecretKey, TransitConfig, TransitKeyProvider, WrappedKey, WrappingIdentity,
 };
 pub use storage_domains::{CustodyStore, StorageBinding, TenantStorageSet};
 
@@ -196,6 +219,10 @@ impl NodeStore {
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
+        ensure!(
+            Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
+            "persistent and scratch disks require the same installed memory admission"
+        );
         Self::initialize(
             node_file::NodeFile::create_new(path.as_ref(), node_store_id, persistent_disk)?,
             scratch_disk,
@@ -211,6 +238,10 @@ impl NodeStore {
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
+        ensure!(
+            Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
+            "persistent and scratch disks require the same installed memory admission"
+        );
         Self::initialize(
             node_file::NodeFile::initialize_owned_empty(
                 path.as_ref(),
@@ -247,6 +278,10 @@ impl NodeStore {
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
+        ensure!(
+            Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
+            "persistent and scratch disks require the same installed memory admission"
+        );
         let file = node_file::NodeFile::open_existing(path.as_ref(), expected_id, persistent_disk)?;
         let db = Database::builder(file.clone()).create_with_backend(file.backend())?;
         {
@@ -351,6 +386,34 @@ impl NodeStore {
                 let catalog: KeyCatalog =
                     serde_json::from_slice(v.value()).context("invalid key catalog")?;
                 catalog.validate(tenant)?;
+                // Compare the current writer's exact bytes without retaining
+                // a second, potentially 2 MiB copy of wrapped-key metadata.
+                struct Exact<'a> {
+                    original: &'a [u8],
+                    offset: usize,
+                }
+                impl std::io::Write for Exact<'_> {
+                    fn write(&mut self, encoded: &[u8]) -> std::io::Result<usize> {
+                        let end = self
+                            .offset
+                            .checked_add(encoded.len())
+                            .ok_or_else(|| std::io::Error::other("noncanonical key catalog"))?;
+                        if self.original.get(self.offset..end) != Some(encoded) {
+                            return Err(std::io::Error::other("noncanonical key catalog"));
+                        }
+                        self.offset = end;
+                        Ok(encoded.len())
+                    }
+                    fn flush(&mut self) -> std::io::Result<()> {
+                        Ok(())
+                    }
+                }
+                let mut exact = Exact {
+                    original: v.value(),
+                    offset: 0,
+                };
+                serde_json::to_writer(&mut exact, &catalog).context("noncanonical key catalog")?;
+                ensure!(exact.offset == v.value().len(), "noncanonical key catalog");
                 Ok(catalog)
             })
             .transpose()

@@ -1,0 +1,43 @@
+{
+  "status": "APPLIED_UNCOMMITTED_UNCOMPILED",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "manifest_sha256": "723f3a172c4a1af9fae04225f287899d5beb6024844a2d7256b7b08102223d32",
+  "patch_sha256": "f2103f19fa5223101a83c8c6cdf230a658f1d26fcfb54be56ab2ea5660cb85f8",
+  "independent_root_review_sha256": "d826d30e1015f122bf68bd02c7bfec5088a7322b97523d283d43ca6857a64873",
+  "allocation_inventory_followup_sha256": "3e1a3e2377b59cf3ea183bfb0e8d1e492379625ed75e8be42770cad92dbd368b",
+  "before": {
+    "vendor/redb-4.2.0/src/transactions.rs": "b6b3dc77f8d1a97fca8bcee0059ad2614b286e4636bece81266413ad32697c78",
+    "vendor/redb-4.2.0/src/db.rs": "3cd6bdbdb33b14583b08410e8dbb3586057b22b10467f13655a17359d671795c",
+    "vendor/redb-4.2.0/src/error.rs": "fb674ef84f4a605be75362451789d891fbb2fc841ddd080ee7cc0f8a9c62578f",
+    "vendor/redb-4.2.0/src/page_list_tests.rs": "312382407366d3e653211330b55efb40f006393520074200d87cb6fdd9a80b08",
+    "vendor/redb-4.2.0/src/tree_store/mod.rs": "b8d1fd29ad6ec673ef00bfe9544586736fcc66e5048fb4fa5a11e075a5137a2a",
+    "vendor/redb-4.2.0/src/tree_store/page_store/mod.rs": "d8b37c9f5edfd92b8ad0f7ddd47e402b9e5a093a93c62767d97812c5d97e5a87",
+    "vendor/redb-4.2.0/src/tree_store/page_store/header.rs": "e0d967f8dfc9d238f0099159809163dc982094d0bb13ba9acd81558b4816ab93",
+    "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs": "bafa9256bdf1cc0a46dc5721aca3226a7f4da05a190a2bf18c484592561c4614",
+    "vendor/redb-4.2.0/src/tree_store/page_store/savepoint.rs": "6f5732fd47215e3c4964b09932315042a6e56d2c21160465bbbe228088883569",
+    "vendor/redb-4.2.0/src/tree_store/table_tree.rs": "e4e53fcc516bf69c4f4918335be169d26b0abfc6d6976dbfbfd68c15904f12db",
+    "vendor/redb-4.2.0/src/tree_store/btree_base.rs": "313bdd7fa068257d1ffae6f13ba56dd26fa105d00e2fdc571263d50c764b2e4a",
+    "vendor/redb-4.2.0/src/tree_store/btree.rs": "25840b63faad3ba554331fd3a859e1f73f19f527bacf2067078e3cdfe6f33459",
+    "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs": "b6350a85c1b7a152eb4a173402607756178a62f29ad0db87d6460d0e74e14661",
+    "vendor/redb-4.2.0/src/tree_store/btree_cursor.rs": "126dcde10a971f6fa9917b34ae19d361b33fb2a812c3314fbd9fefde2a4ce8d7"
+  },
+  "after": {
+    "vendor/redb-4.2.0/src/transactions.rs": "1209c02021691458e421e34c1baa8f00896a924bf3508f47ec8ea75b73d0ce58",
+    "vendor/redb-4.2.0/src/db.rs": "76f3c101c143a8314cad64fee3bb6ea6ef5563f5fcc7ebc911f1b7c19bbe8bf7",
+    "vendor/redb-4.2.0/src/error.rs": "d06dd7441556729c086ccda470f4057e262fec40d46f533799834548e4868881",
+    "vendor/redb-4.2.0/src/page_list_tests.rs": "b68adbe9a837904d1fb6dabc10d89eb6695a857877402704eaa1125d4e00507c",
+    "vendor/redb-4.2.0/src/tree_store/mod.rs": "d1b8c13d009219f5bc10e598e6c07523cfdf18eb17bb78a757f38d7b42c72b0d",
+    "vendor/redb-4.2.0/src/tree_store/page_store/mod.rs": "d91c85b7a1fec6e8cf17cd0560e1c515bdf4dd848e9c548a96ceb7d2d3f0c210",
+    "vendor/redb-4.2.0/src/tree_store/page_store/header.rs": "d2db298c18d107d8c371a6f4025fefe12e499a9b39ee9f74572bb34c6e1043a7",
+    "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs": "09912e97be739f0766bfe9d806904b984ab1cfdcaa9e7bac1fd5ec6d8c9fdf3f",
+    "vendor/redb-4.2.0/src/tree_store/page_store/savepoint.rs": "7babc5a9cff6861da26bbdbc28103f034e12ac319d19e3da2a51b89d1dd77df7",
+    "vendor/redb-4.2.0/src/tree_store/table_tree.rs": "6c34bc2c6ea096f12bd0c087e2c90b341963fb397b164cd0dea6ec90091de152",
+    "vendor/redb-4.2.0/src/tree_store/btree_base.rs": "6bf0407250bcae126a6a04f5dbad1bf23aeb5b0a3098a0bc37b19544a9386a78",
+    "vendor/redb-4.2.0/src/tree_store/btree.rs": "9b74190495ba1c8d2b2efdacbdbb3e67310e96d99881117ac812c0016047cd4e",
+    "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs": "6e8b4f5aaa8b359832309c3680db70afa6cabaa7d17e03039182e380fe6799a3",
+    "vendor/redb-4.2.0/src/tree_store/btree_cursor.rs": "347061bf7feda16f835cedd3eb4246bae22bc25c00bcc1b113c1ba37eff0320d"
+  },
+  "prior_native02_result_sha256": "0ee2a604af58bc0d495f647c5d973424287e831cffa93fab0e8b7ea81f611970",
+  "native02_process_groups_absent": true
+}

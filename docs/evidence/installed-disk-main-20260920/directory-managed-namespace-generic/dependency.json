@@ -1,0 +1,6 @@
+{
+  "status": "TARGET_ONLY_GENERIC_OPEN_CORRECTION_WIP",
+  "prior_manifest_sha256": "cf483e49f0dc971f01f53327bdde33696cd85b69dc971986ebea86dbedc06aa0",
+  "prior_successor_sha256": "e8067e1a5cd6621762ae01bb9c9be5f675002ce1fc6313083f3640508a6f1dd4",
+  "reason": "Root review: newly introduced generic nonroot descriptor acquisitions must use retained preflight custody; original frozen package remains unchanged."
+}

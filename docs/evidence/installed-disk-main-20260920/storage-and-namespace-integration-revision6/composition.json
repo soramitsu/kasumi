@@ -1,0 +1,26 @@
+{
+  "overlaps": [
+    {
+      "path": "crates/kasumi-store/src/lib.rs",
+      "method": "git merge-file -p namespace actual-base census",
+      "exit_code": 0,
+      "base_sha256": "88f45bae174564f5496dff8bba211ca46ff28597c7e97501fac0a7dbe3c19225",
+      "namespace_sha256": "efafe5e511f4bdefbd9330c2229d5911bfa03eed383aa84ad09a112050f031aa",
+      "census_sha256": "f532ad0ea1918de7f0ac7058e00f4e54aeb67f4b233530993092e8c50f411d69",
+      "combined_sha256": "b495ec2f8f34e5861a7b7cbc558204bd133724f9ba1452d17cdaf8be3515875c"
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "method": "git merge-file -p namespace actual-base census",
+      "exit_code": 0,
+      "base_sha256": "9825a52cea3a3392bf16a5dd5f7f737370c64b833bc8a50026a073071c8cf1f4",
+      "namespace_sha256": "fb16dae6a29c87d8b2ba5fb200740e9e7fcd6cfd2aa15236c494af3803f447ad",
+      "census_sha256": "0ad50f09806aa6880afd1117674055461dbeb4e7ac6cfa0feed6c6639f4f4ff8",
+      "combined_sha256": "48665cefb2570502e64f2dae6e4ad5ed5746aa6c03ecbe780b173358c40053b6"
+    }
+  ],
+  "all_other_inputs_byte_identical": true,
+  "actual_base_apply_check_exit": 0,
+  "target_apply_exit": 0,
+  "target_readback_matches": true
+}

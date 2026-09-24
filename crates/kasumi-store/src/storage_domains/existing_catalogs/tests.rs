@@ -6,14 +6,20 @@ use std::{future::Future, task::Poll};
 struct Fixture {
     directory: tempfile::TempDir,
     node: Arc<NodeStore>,
+    scratch_directory: tempfile::TempDir,
 }
 impl Fixture {
     async fn new() -> Result<Self> {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
         let directory = crate::test_utils::private_tempdir()?;
         let node = NodeStore::create_new_fixture(
             directory.path().join("existing.redb"),
             crate::test_utils::NODE_STORE_ID,
-            ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )?;
         let stores = TenantStorageSet::initialize_catalogs(
             node.clone(),
@@ -28,7 +34,11 @@ impl Fixture {
             .write_batch(&[WriteOp::put("data", b"kept", b"original".to_vec())])?;
         stores.shutdown().await.unwrap();
         node.drain_initializers().await?;
-        Ok(Self { directory, node })
+        Ok(Self {
+            directory,
+            node,
+            scratch_directory,
+        })
     }
     fn contents(&self) -> Result<Vec<u8>> {
         let tx = self.node.db.begin_read()?;
@@ -54,13 +64,20 @@ impl Fixture {
         .await
     }
     async fn reopened_after_release(self) -> Result<()> {
-        let Fixture { directory, node } = self;
+        let Fixture {
+            directory,
+            node,
+            scratch_directory: _scratch_directory,
+        } = self;
+        let fixture_scratch = node.scratch_disk().clone();
+        let fixture_memory = fixture_scratch.memory().clone();
         node.drain_initializers().await?;
         drop(node);
         let node = NodeStore::open_existing_fixture(
             directory.path().join("existing.redb"),
             crate::test_utils::NODE_STORE_ID,
-            ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )?;
         let stores = TenantStorageSet::open_existing_fixture(
             node.clone(),
@@ -263,12 +280,19 @@ async fn missing_binding_rejects_new_custody_and_leaves_every_existing_byte_unch
         tokio::time::timeout(Duration::from_secs(5), fixture.node.drain_initializers()).await??;
         assert_eq!(fixture.contents()?, before);
     }
-    let Fixture { directory, node } = fixture;
+    let Fixture {
+        directory,
+        node,
+        scratch_directory: _scratch_directory,
+    } = fixture;
+    let fixture_scratch = node.scratch_disk().clone();
+    let fixture_memory = fixture_scratch.memory().clone();
     drop(node);
     let _node = NodeStore::open_existing_fixture(
         directory.path().join("existing.redb"),
         crate::test_utils::NODE_STORE_ID,
-        ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )?;
     Ok(())
 }

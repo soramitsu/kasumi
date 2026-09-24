@@ -1,0 +1,676 @@
+--- a/vendor/redb-4.2.0/src/retained_transaction.rs
++++ b/vendor/redb-4.2.0/src/retained_transaction.rs
+@@ -2,8 +2,8 @@
+ //! This is a transaction boundary, not proof of database/backend close or a
+ //! bound on transaction, diagnostic, or opaque panic backing.
+ use super::{AllocatorStateLatch, WriteTransaction};
+-use crate::{CommitError, StorageError};
+-use core::any::Any;
++use crate::{CommitError, RetainedDatabase, StorageError};
++use core::{any::Any, convert::Infallible};
+ use std::panic::{AssertUnwindSafe, catch_unwind};
+ 
+ /// The first terminal operation accepted by a retained write transaction.
+@@ -61,8 +61,8 @@
+     fn observe(&mut self, operation: impl FnOnce() -> Result<(), E>) {
+         debug_assert!(matches!(self, Self::NotEntered));
+         *self = Self::Entered;
+-        // No potentially partial transaction state is reused after unwind. Its
+-        // exact owner and original payload remain in separate permanent cells.
++        // Preserve this phase's first result or original unwind payload. Each
++        // phase separately establishes which actual backing must stay owned.
+         *self = match catch_unwind(AssertUnwindSafe(operation)) {
+             Ok(result) => Self::Returned(result),
+             Err(payload) => Self::Panicked(payload),
+@@ -83,20 +83,21 @@
+ /// Keep this owner while settlement is [`WriteTerminalSettlement::Retained`].
+ /// Dropping it is not cleanup evidence; it may destroy unproved transaction
+ /// state and cannot replace an explicit caller-owned cleanup/drain protocol.
+-/// Even `Settled` requires separate transaction disposal and database/backend
++/// Even `Settled` requires `dispose_settled` and separate database/backend
+ /// close before the caller can release their charges or report complete drain.
+ /// This type does not establish a transaction-memory or panic-payload bound.
+ #[must_use = "retain this exact transaction owner until its cleanup is independently established"]
+ pub struct RetainedWriteTransaction {
+-    transaction: WriteTransaction,
++    transaction: Option<WriteTransaction>,
+     operation: Option<WriteTerminalOperation>,
+     terminal: Observation<WriteTerminalError>,
+     rollback: Observation<StorageError>,
++    disposal: Observation<Infallible>,
+     settlement: WriteTerminalSettlement,
+ }
+ 
+ /// Borrowed original outcomes; only the actual owner can construct this view.
+-#[must_use = "inspect settlement and the original terminal and rollback outcomes"]
++#[must_use = "inspect settlement, disposal, and the original terminal and rollback outcomes"]
+ pub struct WriteTerminalReport<'a> {
+     owner: &'a RetainedWriteTransaction,
+ }
+@@ -109,6 +110,14 @@
+     }
+     pub fn terminal(&self) -> TerminalObservation<'_, WriteTerminalError> {
+         self.owner.terminal.borrow()
++    }
++    /// Actual disposal is separate from commit/abort settlement. A panic keeps
++    /// its original payload here and can never become a successful disposal.
++    pub fn disposal(&self) -> TerminalObservation<'_, Infallible> {
++        self.owner.disposal.borrow()
++    }
++    pub fn disposal_complete(&self) -> bool {
++        self.owner.disposal.succeeded()
+     }
+     pub fn rollback(&self) -> TerminalObservation<'_, StorageError> {
+         self.owner.rollback.borrow()
+@@ -121,10 +130,11 @@
+     /// the owner's backing before dispatch. The API requires std unwinding.
+     pub fn retain(self) -> RetainedWriteTransaction {
+         RetainedWriteTransaction {
+-            transaction: self,
++            transaction: Some(self),
+             operation: None,
+             terminal: Observation::NotEntered,
+             rollback: Observation::NotEntered,
++            disposal: Observation::NotEntered,
+             settlement: WriteTerminalSettlement::Unstarted,
+         }
+     }
+@@ -133,10 +143,41 @@
+     /// Borrow the original transaction only before terminal entry. Table guards
+     /// borrow this owner and therefore must close before a mutable terminal call.
+     pub fn transaction(&self) -> Option<&WriteTransaction> {
+-        self.operation.is_none().then_some(&self.transaction)
++        self.transaction
++            .as_ref()
++            .filter(|_| self.operation.is_none())
+     }
+     pub fn report(&self) -> WriteTerminalReport<'_> {
+         WriteTerminalReport { owner: self }
++    }
++    /// Dispose of an actually settled transaction without discarding its original
++    /// terminal and rollback observations. Unstarted/uncertain transactions are
++    /// untouched. This never replays commit, abort or an interrupted disposal.
++    ///
++    /// A matching actual database owner must remain borrowed for this entire
++    /// operation. Open and waiting-for-transactions owners qualify; a different
++    /// database leaves this transaction and its observations untouched. This
++    /// prevents a deferred backend close from running inside transaction Drop.
++    /// Physical close belongs to the separately observed database owner.
++    ///
++    /// The transaction owner remains in its admitted census until these retained
++    /// diagnostic allocations are independently retired. Successful disposal
++    /// releases the actual writer slot; it is not database/backend close or
++    /// census retirement. A caught internal destructor panic does not establish
++    /// complete disposal and cannot be retried.
++    pub fn dispose_settled(&mut self, database: &RetainedDatabase) -> WriteTerminalReport<'_> {
++        if self.settlement == WriteTerminalSettlement::Settled
++            && matches!(self.disposal, Observation::NotEntered)
++            && self.transaction.as_ref().is_some_and(|transaction| {
++                database.owns_transaction(&transaction.transaction_tracker, &transaction.mem)
++            })
++        {
++            self.disposal.observe(|| {
++                drop(self.transaction.take());
++                Ok(())
++            });
++        }
++        self.report()
+     }
+     /// Enter one immediate-durable commit. Any later call only observes its
+     /// original outcome, even if that later call requests abort instead.
+@@ -146,21 +187,25 @@
+             self.settlement = WriteTerminalSettlement::Retained;
+             // Prevent WriteTransaction::drop from replaying terminal work. This
+             // flag alone is never interpreted as evidence of settled ownership.
+-            self.transaction.completed = true;
+-            let latch = AllocatorStateLatch::arm(self.transaction.mem.clone());
++            let transaction = self
++                .transaction
++                .as_mut()
++                .expect("unstarted transaction retained");
++            transaction.completed = true;
++            let latch = AllocatorStateLatch::arm(transaction.mem.clone());
+             self.terminal.observe(|| {
+-                if self.transaction.mem.capacity_denied() {
++                if transaction.mem.capacity_denied() {
+                     return Err(WriteTerminalError::Commit(
+                         StorageError::CapacityDenied.into(),
+                     ));
+                 }
+-                if self.transaction.is_poisoned() {
++                if transaction.is_poisoned() {
+                     return Err(WriteTerminalError::Commit(CommitError::TransactionPoisoned));
+                 }
+                 // The helper performs the original durable protocol. Its parent
+                 // consuming API combines rollback errors; this owner must keep
+                 // the primary refusal and actual rollback outcome separately.
+-                self.transaction
++                transaction
+                     .commit_inner_helper()
+                     .map_err(WriteTerminalError::Commit)
+             });
+@@ -171,7 +216,7 @@
+                         | CommitError::TransactionPoisoned
+                 )))
+             ) {
+-                self.rollback.observe(|| self.transaction.abort_inner());
++                self.rollback.observe(|| transaction.abort_inner());
+                 if self.rollback.succeeded() {
+                     self.settlement = WriteTerminalSettlement::Settled;
+                     latch.disarm();
+@@ -190,13 +235,14 @@
+         if self.operation.is_none() {
+             self.operation = Some(WriteTerminalOperation::Abort);
+             self.settlement = WriteTerminalSettlement::Retained;
+-            self.transaction.completed = true;
+-            let latch = AllocatorStateLatch::arm(self.transaction.mem.clone());
+-            self.terminal.observe(|| {
+-                self.transaction
+-                    .abort_inner()
+-                    .map_err(WriteTerminalError::Abort)
+-            });
++            let transaction = self
++                .transaction
++                .as_mut()
++                .expect("unstarted transaction retained");
++            transaction.completed = true;
++            let latch = AllocatorStateLatch::arm(transaction.mem.clone());
++            self.terminal
++                .observe(|| transaction.abort_inner().map_err(WriteTerminalError::Abort));
+             if self.terminal.succeeded() {
+                 self.settlement = WriteTerminalSettlement::Settled;
+                 latch.disarm();
+--- a/vendor/redb-4.2.0/src/retained_transaction_tests.rs
++++ b/vendor/redb-4.2.0/src/retained_transaction_tests.rs
+@@ -2,8 +2,8 @@
+ #[cfg(feature = "experimental-api-5")]
+ use crate::ReadableTable;
+ use crate::{
+-    AdmissionError, CloseError, Database, OwnerFailed, ReadableDatabase, StorageAdmission,
+-    StorageBackend, TableDefinition, TransactionError, backends::FileBackend,
++    AdmissionError, Database, DatabaseCloseSettlement, OwnerFailed, ReadableDatabase,
++    StorageAdmission, StorageBackend, TableDefinition, TransactionError, backends::FileBackend,
+ };
+ use std::sync::{
+     Arc, Mutex,
+@@ -107,12 +107,16 @@
+     }
+     fn close(&self) -> std::io::Result<()> {
+         self.control.closes.fetch_add(1, Ordering::SeqCst);
+-        self.file.close()
++        self.file.close()?;
++        if self.control.mode.load(Ordering::SeqCst) == 3 {
++            std::panic::panic_any(self.control.marker.clone());
++        }
++        Ok(())
+     }
+ }
+ 
+ struct Fixture {
+-    database: Database,
++    database: RetainedDatabase,
+     owner: Arc<Owner>,
+     control: Arc<Control>,
+     file: tempfile::NamedTempFile,
+@@ -151,14 +155,31 @@
+             .unwrap();
+         transaction.commit().unwrap();
+         Self {
+-            database,
++            database: database.retain(),
+             owner,
+             control,
+             file,
+         }
+     }
++    fn database(&self) -> &Database {
++        self.database
++            .database()
++            .expect("fixture database is still open")
++    }
++    fn close_database(&mut self) {
++        let report = self.database.close();
++        assert_eq!(report.settlement(), DatabaseCloseSettlement::Settled);
++        assert!(matches!(
++            report.shutdown(),
++            TerminalObservation::Returned(Ok(()))
++        ));
++        assert!(matches!(
++            report.backend(),
++            TerminalObservation::Returned(Ok(()))
++        ));
++    }
+     fn write(&self) -> RetainedWriteTransaction {
+-        let write = self.database.begin_write().unwrap().retain();
++        let write = self.database().begin_write().unwrap().retain();
+         write
+             .transaction()
+             .unwrap()
+@@ -173,7 +194,7 @@
+             self.file.as_file().metadata().unwrap().len(),
+             Ordering::Relaxed,
+         );
+-        let write = self.database.begin_write().unwrap().retain();
++        let write = self.database().begin_write().unwrap().retain();
+         let mut denied = false;
+         {
+             let mut table = write.transaction().unwrap().open_table(TABLE).unwrap();
+@@ -207,26 +228,51 @@
+ // not a production census, memory bound, or successful cleanup observation.
+ struct FailureCustody {
+     write: RetainedWriteTransaction,
+-    _database: Database,
++    _database: RetainedDatabase,
+     _file: tempfile::NamedTempFile,
+ }
+ static FAILURES: Mutex<[Option<FailureCustody>; 5]> = Mutex::new([const { None }; 5]);
+ 
+-fn retain_failure(slot: usize, fixture: Fixture, write: RetainedWriteTransaction) {
++fn retain_failure(slot: usize, mut fixture: Fixture, mut write: RetainedWriteTransaction) {
+     assert_eq!(
+         write.report().settlement(),
+         WriteTerminalSettlement::Retained
+     );
+-    let database = match fixture.database.close() {
+-        Err(CloseError::Busy(database)) => database,
+-        _ => panic!("the exact retained transaction must keep database close busy"),
+-    };
++    let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
++    let counts = fixture.counts();
++    assert!(matches!(
++        write.dispose_settled(&fixture.database).disposal(),
++        TerminalObservation::NotEntered
++    ));
++    assert_eq!(
++        write.transaction.as_ref().unwrap() as *const WriteTransaction,
++        transaction
++    );
++    assert_eq!(fixture.counts(), counts);
++    let report = fixture.database.close();
++    assert_eq!(
++        report.settlement(),
++        DatabaseCloseSettlement::WaitingForTransactions
++    );
++    assert!(matches!(report.shutdown(), TerminalObservation::NotEntered));
++    assert!(matches!(report.backend(), TerminalObservation::NotEntered));
++    // A matching database already waiting for this uncertain writer still must
++    // not authorize disposal of that writer or replay its terminal attempt.
++    assert!(matches!(
++        write.dispose_settled(&fixture.database).disposal(),
++        TerminalObservation::NotEntered
++    ));
++    assert_eq!(
++        write.transaction.as_ref().unwrap() as *const WriteTransaction,
++        transaction
++    );
++    assert_eq!(fixture.counts(), counts);
+     assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 0);
+     let mut failures = FAILURES.lock().unwrap();
+     assert!(failures[slot].is_none());
+     failures[slot] = Some(FailureCustody {
+         write,
+-        _database: database,
++        _database: fixture.database,
+         _file: fixture.file,
+     });
+     assert_eq!(
+@@ -252,7 +298,7 @@
+ 
+ #[test]
+ fn successful_terminal_calls_are_never_replayed_and_disposal_precedes_close() {
+-    let fixture = Fixture::new();
++    let mut fixture = Fixture::new();
+     let mut write = fixture.write();
+     assert_eq!(
+         write.report().settlement(),
+@@ -262,7 +308,7 @@
+         write.report().terminal(),
+         TerminalObservation::NotEntered
+     ));
+-    let transaction = &write.transaction as *const WriteTransaction;
++    let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
+     let report = write.commit();
+     assert_eq!(report.operation(), Some(WriteTerminalOperation::Commit));
+     assert_eq!(report.settlement(), WriteTerminalSettlement::Settled);
+@@ -270,7 +316,10 @@
+         report.terminal(),
+         TerminalObservation::Returned(Ok(()))
+     ));
+-    assert_eq!(&write.transaction as *const WriteTransaction, transaction);
++    assert_eq!(
++        write.transaction.as_ref().unwrap() as *const WriteTransaction,
++        transaction
++    );
+     assert!(write.transaction().is_none());
+     let counts = fixture.counts();
+     assert_eq!(
+@@ -282,7 +331,14 @@
+         WriteTerminalSettlement::Settled
+     );
+     assert_eq!(fixture.counts(), counts);
+-    drop(write);
++    assert!(write.dispose_settled(&fixture.database).disposal_complete());
++    assert!(write.transaction.is_none());
++    assert!(matches!(
++        write.report().terminal(),
++        TerminalObservation::Returned(Ok(()))
++    ));
++    assert_eq!(fixture.counts(), counts);
++    assert!(write.dispose_settled(&fixture.database).disposal_complete());
+     let mut aborted = fixture.write();
+     aborted
+         .transaction()
+@@ -301,8 +357,15 @@
+         Some(WriteTerminalOperation::Abort)
+     );
+     assert_eq!(fixture.counts(), counts);
+-    drop(aborted);
+-    fixture.database.close().unwrap();
++    assert!(
++        aborted
++            .dispose_settled(&fixture.database)
++            .disposal_complete()
++    );
++    assert!(aborted.transaction.is_none());
++    fixture.close_database();
++    assert!(write.report().disposal_complete());
++    assert!(aborted.report().disposal_complete());
+     assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 1);
+     let reopened = Database::builder(fixture.owner)
+         .set_page_size(512)
+@@ -336,7 +399,7 @@
+ 
+ #[test]
+ fn poisoned_transaction_keeps_refusal_after_actual_callback_panic_and_rollback() {
+-    let fixture = Fixture::new();
++    let mut fixture = Fixture::new();
+     let mut write = fixture.write();
+     let callback = catch_unwind(AssertUnwindSafe(|| {
+         write
+@@ -368,10 +431,18 @@
+     let counts = fixture.counts();
+     assert_eq!(terminal_error(&write.commit()), original);
+     assert_eq!(fixture.counts(), counts);
+-    drop(write);
++    assert!(write.dispose_settled(&fixture.database).disposal_complete());
++    assert_eq!(terminal_error(&write.report()), original);
++    assert_eq!(fixture.counts(), counts);
++    fixture.database().begin_write().unwrap().abort().unwrap();
++    assert_eq!(terminal_error(&write.report()), original);
++    assert!(Arc::ptr_eq(
++        callback.downcast_ref::<Arc<Marker>>().unwrap(),
++        &fixture.owner.marker
++    ));
+     assert!(
+         fixture
+-            .database
++            .database()
+             .begin_read()
+             .unwrap()
+             .open_table(TABLE)
+@@ -380,12 +451,12 @@
+             .unwrap()
+             .is_none()
+     );
+-    fixture.database.close().unwrap();
++    fixture.close_database();
+ }
+ 
+ #[test]
+ fn actual_capacity_refusal_keeps_primary_error_and_successful_rollback() {
+-    let fixture = Fixture::new();
++    let mut fixture = Fixture::new();
+     let mut write = fixture.denied_write();
+     let report = write.commit();
+     assert_capacity(&report);
+@@ -399,14 +470,25 @@
+     assert_eq!(terminal_error(&write.abort()), original);
+     assert_eq!(fixture.counts(), counts);
+     assert!(!fixture.owner.failed.load(Ordering::Acquire));
+-    drop(write);
++    assert!(write.dispose_settled(&fixture.database).disposal_complete());
++    assert_eq!(terminal_error(&write.report()), original);
++    assert!(matches!(
++        write.report().rollback(),
++        TerminalObservation::Returned(Ok(()))
++    ));
++    assert!(write.transaction.is_none());
++    assert_eq!(fixture.counts(), counts);
++    // The original error remains alive while a new actual transaction acquires
++    // and releases the same writer slot. Neither original terminal is replayed.
++    fixture.database().begin_write().unwrap().abort().unwrap();
++    assert_eq!(terminal_error(&write.report()), original);
+     {
+-        let read = fixture.database.begin_read().unwrap();
++        let read = fixture.database().begin_read().unwrap();
+         let table = read.open_table(TABLE).unwrap();
+         assert_eq!(table.get(0).unwrap().unwrap().value(), b"original");
+         assert!(table.get(1).unwrap().is_none());
+     }
+-    fixture.database.close().unwrap();
++    fixture.close_database();
+ }
+ 
+ #[test]
+@@ -414,7 +496,7 @@
+     let fixture = Fixture::new();
+     let mut write = fixture.write();
+     fixture.control.mode.store(1, Ordering::SeqCst);
+-    let transaction = &write.transaction as *const WriteTransaction;
++    let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
+     let report = write.commit();
+     let original = terminal_error(&report);
+     let TerminalObservation::Returned(Err(WriteTerminalError::Commit(CommitError::Storage(
+@@ -431,16 +513,19 @@
+         .0;
+     assert!(Arc::ptr_eq(marker, &fixture.control.marker));
+     assert!(matches!(report.rollback(), TerminalObservation::NotEntered));
+-    assert_eq!(&write.transaction as *const WriteTransaction, transaction);
++    assert_eq!(
++        write.transaction.as_ref().unwrap() as *const WriteTransaction,
++        transaction
++    );
+     assert!(write.transaction().is_none());
+     assert!(fixture.owner.failed.load(Ordering::Acquire));
+     let counts = fixture.counts();
+     assert!(matches!(
+-        fixture.database.begin_read(),
++        fixture.database().begin_read(),
+         Err(TransactionError::Storage(StorageError::OwnerFailed))
+     ));
+     assert!(matches!(
+-        fixture.database.begin_write(),
++        fixture.database().begin_write(),
+         Err(TransactionError::Storage(StorageError::OwnerFailed))
+     ));
+     assert_eq!(terminal_error(&write.abort()), original);
+@@ -496,7 +581,7 @@
+     let fixture = Fixture::new();
+     let mut write = fixture.write();
+     fixture.control.mode.store(2, Ordering::SeqCst);
+-    let transaction = &write.transaction as *const WriteTransaction;
++    let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
+     let report = write.commit();
+     assert_eq!(report.settlement(), WriteTerminalSettlement::Retained);
+     let TerminalObservation::Panicked(payload) = report.terminal() else {
+@@ -508,7 +593,10 @@
+     ));
+     let original = payload as *const (dyn Any + Send);
+     assert_eq!(fixture.control.header_writes.load(Ordering::SeqCst), 2);
+-    assert_eq!(&write.transaction as *const WriteTransaction, transaction);
++    assert_eq!(
++        write.transaction.as_ref().unwrap() as *const WriteTransaction,
++        transaction
++    );
+     let counts = fixture.counts();
+     let repeated = write.abort();
+     let TerminalObservation::Panicked(payload) = repeated.terminal() else {
+@@ -568,3 +656,119 @@
+     assert_eq!(fixture.counts(), counts);
+     retain_failure(4, fixture, write);
+ }
++
++#[test]
++fn unstarted_disposal_keeps_actual_transaction_usable_until_positive_abort() {
++    let mut fixture = Fixture::new();
++    let mut write = fixture.write();
++    let identity = write.transaction().unwrap() as *const WriteTransaction;
++    let counts = fixture.counts();
++    assert!(matches!(
++        write.dispose_settled(&fixture.database).disposal(),
++        TerminalObservation::NotEntered
++    ));
++    assert_eq!(
++        write.transaction().unwrap() as *const WriteTransaction,
++        identity
++    );
++    assert_eq!(fixture.counts(), counts);
++    write
++        .transaction()
++        .unwrap()
++        .open_table(TABLE)
++        .unwrap()
++        .insert(2, b"abort me".as_slice())
++        .unwrap();
++    assert_eq!(write.abort().settlement(), WriteTerminalSettlement::Settled);
++    assert!(write.dispose_settled(&fixture.database).disposal_complete());
++    fixture.database().begin_write().unwrap().abort().unwrap();
++    assert!(matches!(
++        write.commit().terminal(),
++        TerminalObservation::Returned(Ok(()))
++    ));
++    assert_eq!(
++        write.report().operation(),
++        Some(WriteTerminalOperation::Abort)
++    );
++    fixture.close_database();
++}
++
++#[test]
++fn settled_disposal_refuses_a_different_database_without_releasing_the_writer() {
++    let mut fixture = Fixture::new();
++    let mut other = Fixture::new();
++    let mut write = fixture.write();
++    assert_eq!(
++        write.commit().settlement(),
++        WriteTerminalSettlement::Settled
++    );
++    let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
++    let counts = fixture.counts();
++    let other_counts = other.counts();
++    // The backing would panic if disposal incorrectly invoked backend close.
++    fixture.control.mode.store(3, Ordering::SeqCst);
++    assert!(matches!(
++        write.dispose_settled(&other.database).disposal(),
++        TerminalObservation::NotEntered
++    ));
++    assert_eq!(
++        write.transaction.as_ref().unwrap() as *const WriteTransaction,
++        transaction
++    );
++    assert_eq!(fixture.counts(), counts);
++    assert_eq!(other.counts(), other_counts);
++    assert!(matches!(
++        write.report().terminal(),
++        TerminalObservation::Returned(Ok(()))
++    ));
++    assert!(write.dispose_settled(&fixture.database).disposal_complete());
++    assert!(write.transaction.is_none());
++    assert_eq!(fixture.counts(), counts);
++    assert_eq!(other.counts(), other_counts);
++    assert_eq!(
++        write.commit().operation(),
++        Some(WriteTerminalOperation::Commit)
++    );
++    fixture.control.mode.store(0, Ordering::SeqCst);
++    fixture.database().begin_write().unwrap().abort().unwrap();
++    assert!(write.report().disposal_complete());
++    fixture.close_database();
++    other.close_database();
++}
++
++#[test]
++fn matching_waiting_database_witness_allows_actual_disposal_before_physical_close() {
++    let mut fixture = Fixture::new();
++    let mut write = fixture.write();
++    assert_eq!(
++        write.commit().settlement(),
++        WriteTerminalSettlement::Settled
++    );
++    let counts = fixture.counts();
++    let report = fixture.database.close();
++    assert_eq!(
++        report.settlement(),
++        DatabaseCloseSettlement::WaitingForTransactions
++    );
++    assert!(matches!(report.shutdown(), TerminalObservation::NotEntered));
++    assert!(matches!(report.backend(), TerminalObservation::NotEntered));
++    assert!(fixture.database.database().is_none());
++    fixture.control.mode.store(3, Ordering::SeqCst);
++    assert!(write.dispose_settled(&fixture.database).disposal_complete());
++    assert!(write.transaction.is_none());
++    assert_eq!(fixture.counts(), counts);
++    assert!(matches!(
++        write.report().terminal(),
++        TerminalObservation::Returned(Ok(()))
++    ));
++    assert_eq!(
++        write.abort().operation(),
++        Some(WriteTerminalOperation::Commit)
++    );
++    assert!(write.dispose_settled(&fixture.database).disposal_complete());
++    assert_eq!(fixture.counts(), counts);
++    fixture.control.mode.store(0, Ordering::SeqCst);
++    fixture.close_database();
++    assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 1);
++    assert!(write.report().disposal_complete());
++}
+--- a/vendor/redb-4.2.0/src/transactions.rs
++++ b/vendor/redb-4.2.0/src/transactions.rs
+@@ -883,7 +883,6 @@
+ pub struct WriteTransaction {
+     transaction_tracker: Arc<TransactionTracker>,
+     mem: Arc<TransactionalMemory>,
+-    transaction_guard: Arc<TransactionGuard>,
+     transaction_id: TransactionId,
+     tables: Mutex<TableNamespace>,
+     system_tables: Mutex<SystemNamespace>,
+@@ -896,6 +895,8 @@
+     // All transaction-local savepoint lifecycle state. See
+     // `SavepointTransactionState` for the commit/abort contract.
+     savepoint_state: Mutex<SavepointTransactionState>,
++    // Release the writer only after table/savepoint and deferred-page backing.
++    transaction_guard: Arc<TransactionGuard>,
+ }
+ 
+ impl WriteTransaction {
+--- a/vendor/redb-4.2.0/src/retained_database.rs
++++ b/vendor/redb-4.2.0/src/retained_database.rs
+@@ -1,5 +1,5 @@
+ //! A non-consuming close attempt retaining the exact database and both phases.
+-use super::Database;
++use super::{Database, TransactionTracker, TransactionalMemory};
+ use crate::{StorageError, TerminalObservation};
+ use std::{
+     any::Any,
+@@ -99,6 +99,20 @@
+     pub fn report(&self) -> DatabaseCloseReport<'_> {
+         DatabaseCloseReport { owner: self }
+     }
++    // A shared borrow keeps the actual Database alive throughout transaction
++    // disposal, including while close waits for that transaction. This exposes
++    // neither a fresh transaction borrow nor a count-based liveness assumption.
++    pub(crate) fn owns_transaction(
++        &self,
++        tracker: &Arc<TransactionTracker>,
++        mem: &Arc<TransactionalMemory>,
++    ) -> bool {
++        matches!(
++            self.settlement,
++            DatabaseCloseSettlement::Open | DatabaseCloseSettlement::WaitingForTransactions
++        ) && Arc::ptr_eq(&self.database.transaction_tracker, tracker)
++            && Arc::ptr_eq(&self.database.mem, mem)
++    }
+     pub fn close(&mut self) -> DatabaseCloseReport<'_> {
+         if matches!(
+             self.settlement,

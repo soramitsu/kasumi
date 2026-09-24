@@ -1,0 +1,4 @@
+
+thread 'disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind' (4185398) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/proposed/crates/kasumi-store/src/disk_memory_tests.rs:109:9:
+original token destructor panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

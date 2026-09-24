@@ -178,6 +178,9 @@ fn save(owner: &OperatorState, record: &Record) -> Result<()> {
         )])
 }
 fn installation(owner: &OperatorState) -> Result<Uuid> {
+    let identity = owner
+        .installed_owner
+        .identity_for(owner.node.persistent_disk())?;
     let installed: Installation = serde_json::from_slice(&private_files::read(
         &owner
             .config
@@ -188,10 +191,13 @@ fn installation(owner: &OperatorState) -> Result<Uuid> {
         16 << 10,
     )?)?;
     ensure!(
-        installed.format == 3 && installed.database_id == owner.config.database_id,
+        installed.format == 4
+            && installed.database_id == owner.config.database_id
+            && installed.installation_id == identity.installation_id
+            && installed.origin_node_id == identity.node_id,
         "installed staging scope differs"
     );
-    Ok(installed.installation_id)
+    Ok(identity.installation_id)
 }
 fn verify_files(record: &Record, application: &str, custody: &str) -> Result<()> {
     private_files::check_directory(&record.directory)?;
@@ -224,6 +230,17 @@ pub async fn stage_tenant(
     request: StageTenantRequest,
 ) -> Result<StagedTenant> {
     request.validate()?;
+    let config = RuntimeConfig::load(configuration)?;
+    let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+    stage_tenant_with_storage(configuration, request, storage).await
+}
+
+pub(crate) async fn stage_tenant_with_storage(
+    configuration: &Path,
+    request: StageTenantRequest,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<StagedTenant> {
+    request.validate()?;
     let configuration = configuration.to_owned();
     let observed = kasumi_clock::EpochClock::system()?.observe()?;
     let deadline = observed.until(
@@ -234,7 +251,7 @@ pub async fn stage_tenant(
     )?;
     operator::run(async move {
         let config = RuntimeConfig::load(&configuration)?;
-        let mut owner = OperatorState::open(&config).await?;
+        let mut owner = OperatorState::open(&config, storage).await?;
         let request_id = request.operation_id.to_string();
         let outcome = stage_owned(&owner, &configuration, request, &deadline).await;
         if outcome.is_err() {
@@ -252,10 +269,21 @@ pub async fn stage_tenant(
 }
 pub async fn tenant_stage_status(configuration: &Path, operation: Uuid) -> Result<StagedTenant> {
     ensure!(!operation.is_nil(), "nil staging operation");
+    let config = RuntimeConfig::load(configuration)?;
+    let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+    tenant_stage_status_with_storage(configuration, operation, storage).await
+}
+
+pub(crate) async fn tenant_stage_status_with_storage(
+    configuration: &Path,
+    operation: Uuid,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<StagedTenant> {
+    ensure!(!operation.is_nil(), "nil staging operation");
     let configuration = configuration.to_owned();
     operator::run(async move {
         let config = RuntimeConfig::load(&configuration)?;
-        let mut owner = OperatorState::open(&config).await?;
+        let mut owner = OperatorState::open(&config, storage).await?;
         let outcome = (|| {
             let _reservation = owner
                 .audit

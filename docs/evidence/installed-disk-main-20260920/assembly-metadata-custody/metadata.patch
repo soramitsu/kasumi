@@ -1,0 +1,459 @@
+--- a/scripts/gate_process.py
++++ b/scripts/gate_process.py
+@@ -115,7 +115,7 @@
+     return record
+ 
+ 
+-def run(command, source, environment, stream, timeout_seconds, observe):
++def run(command, source, environment, stream, timeout_seconds, observe, *, stderr):
+     """Record original command ownership before waiting; never raise in a handler.
+ 
+     Commands in release_gate are local trusted builds/tests. This owns their
+@@ -125,6 +125,8 @@
+     """
+     if not 0 < timeout_seconds <= 86400:
+         raise ValueError("gate timeout must be in (0, 86400] seconds")
++    if stderr != subprocess.STDOUT and (not hasattr(stderr, "fileno") or not hasattr(stderr, "flush")):
++        raise ValueError("gate stderr requires an explicit owned file or STDOUT")
+     received = []
+ 
+     def interrupted(number, _frame):
+@@ -134,6 +136,7 @@
+     process = None
+     started = time.monotonic()
+     record = {"status": "running", "command": command, "timeout_seconds": timeout_seconds,
++              "working_directory": str(Path(source).resolve(strict=True)),
+               "executable": None,
+               "process_group": None, "process_exit_code": None, "exit_code": None,
+               "timed_out": False, "received_signals": received, "error": None, "cleanup": None}
+@@ -146,7 +149,7 @@
+             observe(record)
+             process = subprocess.Popen(command, cwd=source, env=environment,
+                                        executable=record["executable"]["path"],
+-                                       stdout=stream, stderr=subprocess.STDOUT,
++                                       stdout=stream, stderr=stderr,
+                                        start_new_session=True)
+             record["process_group"] = process.pid
+             observe(record)
+@@ -190,6 +193,9 @@
+             record["duration_seconds"] = round(time.monotonic() - started, 3)
+             stream.flush()
+             os.fsync(stream.fileno())
++            if stderr != subprocess.STDOUT:
++                stderr.flush()
++                os.fsync(stderr.fileno())
+             observe(record)
+         finally:
+             for number, handler in previous.items():
+--- a/scripts/release_gate.py
++++ b/scripts/release_gate.py
+@@ -150,7 +150,8 @@
+     try:
+         with log.open("wb") as stream:
+             process = gate_process.run(command, source, environment, stream, timeout_seconds,
+-                                       lambda value: write_json(process_path, value))
++                                       lambda value: write_json(process_path, value),
++                                       stderr=subprocess.STDOUT)
+         process["outputs_stable"] = process["cleanup"]["drained"] and not process["cleanup"]["errors"]
+         write_json(process_path, process)
+         if not process["outputs_stable"]:
+--- a/scripts/test_release_gate.py
++++ b/scripts/test_release_gate.py
+@@ -5,6 +5,7 @@
+ import os
+ from pathlib import Path
+ import sys
++import subprocess
+ import tarfile
+ import tempfile
+ import unittest
+@@ -301,7 +302,8 @@
+ 
+             with (root / "delayed.log").open("wb") as stream:
+                 result = release_gate.gate_process.run([sys.executable, "-c", "pass"], root,
+-                                                       os.environ.copy(), stream, .05, observe)
++                                                       os.environ.copy(), stream, .05, observe,
++                                                       stderr=subprocess.STDOUT)
+             self.assertEqual(result["exit_code"], 124)
+             self.assertTrue(result["timed_out"])
+             self.assertTrue(result["cleanup"]["drained"])
+--- a/scripts/package_release.py
++++ b/scripts/package_release.py
+@@ -16,10 +16,11 @@
+ import re
+ import shutil
+ import struct
+-import subprocess
+ import sys
+ import tarfile
+ import tomllib
++
++import gate_process
+ 
+ from release_gate import TOOLCHAIN, functional_gates, inventory, sha256, write_json
+ 
+@@ -250,11 +251,198 @@
+                 raise ValueError("cached dependency notice differs from locked crate")
+ 
+ 
++METADATA_SCHEMA = "kasumi-package-metadata-v1"
++METADATA_TIMEOUT_SECONDS = 600
++MAX_METADATA_BYTES = 64 << 20
++
++
++def metadata_command(executable, target):
++    if target not in TARGETS or not Path(executable).is_absolute():
++        raise ValueError("metadata requires a native target and absolute executable")
++    return [str(executable), "+" + TOOLCHAIN, "metadata", "--locked", "--offline",
++            "--format-version", "1", "--no-default-features", "--filter-platform", target]
++
++
++def _metadata_bytes(path):
++    with Path(path).open("rb") as stream:
++        data = stream.read(MAX_METADATA_BYTES + 1)
++    if len(data) > MAX_METADATA_BYTES:
++        raise ValueError("metadata JSON exceeds work limit")
++    return data
++
++
++def _metadata_json(data):
++    if len(data) > MAX_METADATA_BYTES:
++        raise ValueError("metadata JSON exceeds work limit")
++    def pairs(items):
++        result = {}
++        for key, value in items:
++            if key in result:
++                raise ValueError("duplicate metadata JSON key")
++            result[key] = value
++        return result
++    return json.loads(data, object_pairs_hook=pairs,
++                      parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite metadata JSON")))
++
++
++def _metadata_ref(directory, name):
++    path = owned_file(directory, name)
++    return {"path": name, "sha256": sha256(path), "bytes": path.stat().st_size}
++
++
++def _metadata_reference(directory, value):
++    if (not isinstance(value, dict) or set(value) != {"path", "sha256", "bytes"}
++            or not isinstance(value["path"], str) or not isinstance(value["sha256"], str)
++            or re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is None
++            or type(value["bytes"]) is not int or value["bytes"] < 0):
++        raise ValueError("invalid metadata file reference")
++    path = verify_file(directory, value["path"], value["sha256"])
++    if path.stat().st_size != value["bytes"]:
++        raise ValueError("metadata file length changed")
++    return path
++
++
++def verify_metadata_capture(directory, target, expected_source_files):
++    """Consume only the exact successfully drained metadata invocation.
++
++    This verifies the runner's observed transcript, not an authenticated remote
++    producer or a complete repeatable-assembly domain. It never executes Cargo.
++    """
++    directory = Path(directory).resolve(strict=True)
++    attempt_path = owned_file(directory, "attempt.json")
++    attempt_bytes = _metadata_bytes(attempt_path)
++    record = _metadata_json(attempt_bytes)
++    fields = {"schema", "status", "target", "source_root", "source_before", "source_after",
++              "command", "timeout_seconds", "executable", "process", "stdout", "stderr", "error"}
++    if not isinstance(record, dict) or set(record) != fields:
++        raise ValueError("metadata attempt fields differ")
++    if (record["schema"] != METADATA_SCHEMA or record["status"] != "passed"
++            or record["target"] != target or record["error"] is not None
++            or record["timeout_seconds"] != METADATA_TIMEOUT_SECONDS
++            or not isinstance(record["source_root"], str)
++            or not Path(record["source_root"]).is_absolute()):
++        raise ValueError("metadata attempt did not pass exact contract")
++    refs = {name: record[name] for name in
++            ("source_before", "source_after", "executable", "process", "stdout", "stderr")}
++    paths = {name: _metadata_reference(directory, ref) for name, ref in refs.items()}
++    expected_paths = {"source_before": "source-before.json", "source_after": "source-after.json",
++                      "executable": "executable", "process": "process.json",
++                      "stdout": "stdout.json", "stderr": "stderr.log"}
++    if any(refs[name]["path"] != path for name, path in expected_paths.items()):
++        raise ValueError("metadata custody paths differ")
++    for name in ("source_before", "source_after"):
++        if _metadata_json(_metadata_bytes(paths[name])) != expected_source_files:
++            raise ValueError("metadata source differs from frozen input")
++    process = _metadata_json(_metadata_bytes(paths["process"]))
++    executed = process.get("executable")
++    if (not isinstance(executed, dict) or set(executed) != {"path", "sha256"}
++            or executed["sha256"] != refs["executable"]["sha256"]):
++        raise ValueError("metadata process executable differs from retained bytes")
++    command = metadata_command(executed["path"], target)
++    if record["command"] != command or process.get("command") != command:
++        raise ValueError("metadata command differs from frozen contract")
++    if process.get("working_directory") != record["source_root"]:
++        raise ValueError("metadata process working directory differs from frozen source")
++    gate = {"command": command, "process": refs["process"]["path"],
++            "process_sha256": refs["process"]["sha256"],
++            "process_cleanup": process.get("cleanup"), "timeout_seconds": METADATA_TIMEOUT_SECONDS,
++            "timed_out": process.get("timed_out"), "received_signals": process.get("received_signals"),
++            "process_error": process.get("error")}
++    verify_process_receipt(directory, gate, METADATA_TIMEOUT_SECONDS)
++    if process.get("stdout") != refs["stdout"] or process.get("stderr") != refs["stderr"]:
++        raise ValueError("metadata outputs do not belong to the drained process")
++    raw = _metadata_bytes(paths["stdout"])
++    if hashlib.sha256(raw).hexdigest() != refs["stdout"]["sha256"]:
++        raise ValueError("metadata changed before parsing")
++    metadata = _metadata_json(raw)
++    if (not isinstance(metadata, dict) or metadata.get("version") != 1
++            or type(metadata.get("version")) is not int
++            or not isinstance(metadata.get("packages"), list)
++            or not isinstance(metadata.get("workspace_members"), list)
++            or not isinstance(metadata.get("resolve"), dict)):
++        raise ValueError("Cargo metadata document is incomplete")
++    for ref in refs.values():
++        _metadata_reference(directory, ref)
++    if _metadata_bytes(attempt_path) != attempt_bytes:
++        raise ValueError("metadata attempt changed during verification")
++    return metadata
++
++
++def capture_metadata(source, directory, target, expected_source_files):
++    """Own the original input-producing process and preserve every failed attempt.
++
++    The directory is exclusive and never reused. SIGKILL cannot run cleanup;
++    the persisted running receipt retains the actual process group for explicit
++    recovery and can never pass verify_metadata_capture.
++    """
++    source = Path(source).resolve(strict=True)
++    directory = Path(directory)
++    if not directory.is_absolute() or directory.resolve().is_relative_to(source):
++        raise ValueError("metadata custody requires an absolute directory outside source")
++    directory.mkdir(exist_ok=False)
++    record = {"schema": METADATA_SCHEMA, "status": "running", "target": target,
++              "source_root": str(source), "source_before": None, "source_after": None,
++              "command": None, "timeout_seconds": METADATA_TIMEOUT_SECONDS,
++              "executable": None, "process": None, "stdout": None, "stderr": None, "error": None}
++    attempt_path = directory / "attempt.json"
++    write_json(attempt_path, record)
++    try:
++        before = inventory(source)
++        write_json(directory / "source-before.json", before)
++        record["source_before"] = _metadata_ref(directory, "source-before.json")
++        if before != expected_source_files:
++            raise ValueError("metadata source differs before dispatch")
++        environment = os.environ.copy()
++        environment["PYTHONDONTWRITEBYTECODE"] = "1"
++        executable = gate_process.executable_identity(["cargo"], source, environment)
++        command = metadata_command(executable["path"], target)
++        record["command"] = command
++        with Path(executable["path"]).open("rb") as original, (directory / "executable").open("xb") as retained:
++            shutil.copyfileobj(original, retained)
++            retained.flush()
++            os.fsync(retained.fileno())
++        record["executable"] = _metadata_ref(directory, "executable")
++        if record["executable"]["sha256"] != executable["sha256"]:
++            raise ValueError("metadata executable changed before dispatch")
++        write_json(attempt_path, record)
++        with (directory / "stdout.json").open("xb") as stdout, (directory / "stderr.log").open("xb") as stderr:
++            process = gate_process.run(command, source, environment, stdout, METADATA_TIMEOUT_SECONDS,
++                                       lambda value: write_json(directory / "process.json", value),
++                                       stderr=stderr)
++        stable = process["cleanup"]["drained"] and not process["cleanup"]["errors"]
++        process["outputs_stable"] = stable
++        # Bind exact drained files into the original process receipt. An
++        # unresolved process keeps its raw files but gets no terminal hashes.
++        if stable:
++            record["stdout"] = _metadata_ref(directory, "stdout.json")
++            record["stderr"] = _metadata_ref(directory, "stderr.log")
++            process["stdout"] = record["stdout"]
++            process["stderr"] = record["stderr"]
++        write_json(directory / "process.json", process)
++        record["process"] = _metadata_ref(directory, "process.json")
++        if not stable or process["status"] != "passed":
++            raise ValueError("metadata process failed or retained uncertain ownership")
++        if process["executable"] != executable:
++            raise ValueError("metadata dispatched executable identity changed")
++        after = inventory(source)
++        write_json(directory / "source-after.json", after)
++        record["source_after"] = _metadata_ref(directory, "source-after.json")
++        if after != before:
++            raise ValueError("metadata changed frozen source inputs")
++        record["status"] = "passed"
++        write_json(attempt_path, record)
++        return verify_metadata_capture(directory, target, expected_source_files)
++    except BaseException as error:
++        record["status"] = "failed"
++        record["error"] = repr(error)
++        write_json(attempt_path, record)
++        raise
++
++
+ def build_inventory(source, output, record, production, target, epoch):
+     """Map Cargo-reported compiled packages to exact locked crate sources."""
+-    command = ["cargo", "+" + TOOLCHAIN, "metadata", "--locked", "--format-version", "1",
+-               "--no-default-features", "--filter-platform", target]
+-    metadata = json.loads(subprocess.check_output(command, cwd=source))
++    metadata = capture_metadata(source, output.parent / "metadata-custody", target,
++                                json.loads((source.parent / "source-files.json").read_text()))
+     packages = {p["id"]: p for p in metadata["packages"]}
+     compiled = production["compiled_packages"]
+     if not set(compiled).issubset(packages):
+--- /dev/null
++++ b/scripts/test_package_metadata.py
+@@ -0,0 +1,160 @@
++"""Actual-process counterexamples for packaging's metadata custody prerequisite."""
++import json
++import os
++from pathlib import Path
++import sys
++import tempfile
++import unittest
++from unittest.mock import patch
++
++import package_release as package
++from release_gate import inventory, sha256, write_json
++
++
++class MetadataCustodyTests(unittest.TestCase):
++    def setUp(self):
++        base = Path(__file__).resolve().parents[1] / "target" / "package-metadata-tests"
++        base.mkdir(parents=True, exist_ok=True)
++        self.temporary = tempfile.TemporaryDirectory(dir=base)
++        self.addCleanup(self.temporary.cleanup)
++        self.root = Path(self.temporary.name)
++        self.source = self.root / "source"
++        self.source.mkdir()
++        (self.source / "Cargo.lock").write_text("frozen fixture input\n")
++        self.inputs = inventory(self.source)
++        self.tools = self.root / "tools"
++        self.tools.mkdir()
++        self.executable = self.tools / "cargo"
++        self.target = "aarch64-unknown-linux-gnu"
++        self.document = {"version": 1, "packages": [], "workspace_members": [], "resolve": {"nodes": []}}
++        self.install_program("import json, sys\nprint(json.dumps(" + repr(self.document) + "))\n"
++                             "print('retained diagnostic', file=sys.stderr)\n")
++        self.environment = patch.dict(os.environ, {"PATH": str(self.tools) + os.pathsep + os.environ.get("PATH", "")})
++        self.environment.start()
++        self.addCleanup(self.environment.stop)
++
++    def install_program(self, code):
++        # A deliberately synthetic Cargo implementation, executed as a real
++        # process. It tests the ownership/receipt primitive, never native Cargo
++        # semantics or final release acceptance.
++        self.executable.write_text("#!" + sys.executable + "\n" + code)
++        self.executable.chmod(0o755)
++
++    def capture(self, name="metadata"):
++        destination = self.root / name
++        result = package.capture_metadata(self.source, destination, self.target, self.inputs)
++        return destination, result
++
++    def record(self, directory):
++        return json.loads((directory / "attempt.json").read_text())
++
++    def rewrite_process(self, directory, change):
++        record = self.record(directory)
++        process = json.loads((directory / "process.json").read_text())
++        change(process)
++        write_json(directory / "process.json", process)
++        record["process"] = package._metadata_ref(directory, "process.json")
++        write_json(directory / "attempt.json", record)
++
++    def test_real_command_retains_separate_outputs_executable_inputs_and_drained_group(self):
++        directory, result = self.capture()
++        self.assertEqual(result, self.document)
++        record = self.record(directory)
++        process = json.loads((directory / "process.json").read_text())
++        self.assertEqual(record["command"], package.metadata_command(str(self.executable), self.target))
++        self.assertEqual(process["working_directory"], str(self.source.resolve()))
++        self.assertEqual(process["executable"]["sha256"], sha256(self.executable))
++        self.assertEqual((directory / "executable").read_bytes(), self.executable.read_bytes())
++        self.assertTrue(process["cleanup"]["drained"])
++        self.assertEqual(process["cleanup"]["after"], [])
++        self.assertEqual(process["cleanup"]["signals"], [])
++        self.assertIn(b"retained diagnostic", (directory / "stderr.log").read_bytes())
++        self.assertNotIn(b"retained diagnostic", (directory / "stdout.json").read_bytes())
++        self.assertEqual(process["stdout"], record["stdout"])
++        self.assertEqual(process["stderr"], record["stderr"])
++        self.assertEqual(package.verify_metadata_capture(directory, self.target, self.inputs), self.document)
++
++    def test_copied_json_and_asserted_status_without_process_custody_are_rejected(self):
++        directory = self.root / "copied"
++        directory.mkdir()
++        write_json(directory / "stdout.json", self.document)
++        write_json(directory / "attempt.json", {"schema": package.METADATA_SCHEMA, "status": "passed"})
++        with self.assertRaises(ValueError):
++            package.verify_metadata_capture(directory, self.target, self.inputs)
++        actual, _ = self.capture()
++        (actual / "process.json").unlink()
++        with self.assertRaises(ValueError):
++            package.verify_metadata_capture(actual, self.target, self.inputs)
++
++    def test_rehashed_substituted_output_is_not_the_original_process_output(self):
++        directory, _ = self.capture()
++        record = self.record(directory)
++        write_json(directory / "stdout.json", {**self.document, "packages": [{"id": "substituted"}]})
++        record["stdout"] = package._metadata_ref(directory, "stdout.json")
++        write_json(directory / "attempt.json", record)
++        with self.assertRaisesRegex(ValueError, "do not belong"):
++            package.verify_metadata_capture(directory, self.target, self.inputs)
++
++    def test_wrong_command_cwd_executable_or_missing_drain_never_consumes_metadata(self):
++        cases = {
++            "command": lambda value: value.update(command=[str(self.executable), "--version"]),
++            "cwd": lambda value: value.update(working_directory=str(self.root)),
++            "executable": lambda value: value["executable"].update(sha256="0" * 64),
++            "custody": lambda value: value["cleanup"].update(drained=False, after=[{"pid": 1}]),
++            "signal": lambda value: value.update(received_signals=[15]),
++            "deadline": lambda value: value.update(timeout_seconds=1),
++        }
++        for name, change in cases.items():
++            with self.subTest(name=name):
++                directory, _ = self.capture(name)
++                self.rewrite_process(directory, change)
++                with self.assertRaises(ValueError):
++                    package.verify_metadata_capture(directory, self.target, self.inputs)
++
++    def test_failed_actual_child_and_partial_files_are_preserved_without_retry_overwrite(self):
++        self.install_program("import sys\nprint('partial output')\nprint('original failure', file=sys.stderr)\nsys.exit(7)\n")
++        directory = self.root / "failed"
++        with self.assertRaises(ValueError):
++            self.capture("failed")
++        record = self.record(directory)
++        self.assertEqual(record["status"], "failed")
++        process = json.loads((directory / "process.json").read_text())
++        self.assertEqual(process["process_exit_code"], 7)
++        self.assertTrue(process["cleanup"]["drained"])
++        self.assertIn(b"original failure", (directory / "stderr.log").read_bytes())
++        before = inventory(directory)
++        with self.assertRaises(FileExistsError):
++            self.capture("failed")
++        self.assertEqual(inventory(directory), before)
++        with self.assertRaises(ValueError):
++            package.verify_metadata_capture(directory, self.target, self.inputs)
++
++    def test_changed_frozen_input_and_diagnostic_fallback_are_rejected(self):
++        self.install_program("from pathlib import Path\nimport json\nPath('Cargo.lock').write_text('changed')\n"
++                             "print(json.dumps(" + repr(self.document) + "))\n")
++        with self.assertRaisesRegex(ValueError, "changed frozen"):
++            self.capture("changed")
++        self.assertEqual(self.record(self.root / "changed")["status"], "failed")
++        (self.source / "Cargo.lock").write_text("frozen fixture input\n")
++        self.install_program("import json\nprint('warning incorrectly on stdout')\nprint(json.dumps(" + repr(self.document) + "))\n")
++        with self.assertRaises(ValueError):
++            self.capture("mixed")
++        self.assertEqual(self.record(self.root / "mixed")["status"], "failed")
++
++    def test_symlink_substitution_of_equal_bytes_is_rejected(self):
++        directory, _ = self.capture()
++        raw = (directory / "stdout.json").read_bytes()
++        outside = self.root / "same-output.json"
++        outside.write_bytes(raw)
++        (directory / "stdout.json").unlink()
++        (directory / "stdout.json").symlink_to(outside)
++        with self.assertRaisesRegex(ValueError, "symbolic link"):
++            package.verify_metadata_capture(directory, self.target, self.inputs)
++
++    def test_metadata_primitive_does_not_register_a_final_acceptance_domain(self):
++        import verify_release_acceptance as acceptance
++        self.assertNotIn("repeatable-assembly", acceptance.DOMAIN_ADAPTERS)
++
++
++if __name__ == "__main__":
++    unittest.main()

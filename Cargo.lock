@@ -1730,6 +1730,7 @@ dependencies = [
  "kasumi-serving",
  "kasumi-store",
  "kasumi-types",
+ "openraft",
  "ring",
  "serde",
  "serde_json",
@@ -2006,6 +2007,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.20",
+ "url",
  "uuid",
 ]
 

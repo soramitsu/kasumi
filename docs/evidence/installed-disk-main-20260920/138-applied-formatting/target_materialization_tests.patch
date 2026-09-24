@@ -1,0 +1,28 @@
+--- a/crates/kasumi-authority/src/target_materialization_tests.rs
++++ b/crates/kasumi-authority/src/target_materialization_tests.rs
+@@ -1330,7 +1330,11 @@
+     assert_eq!(local_completed.fact(), completed.fact());
+     assert_eq!(local_completed.observation().observer_node_id, selected.id);
+     let projected = journal
+-        .record_activation(&selected.operation, &local_completed, &f.signers[&selected.id])
++        .record_activation(
++            &selected.operation,
++            &local_completed,
++            &f.signers[&selected.id],
++        )
+         .await
+         .unwrap();
+     let exact_execution = projected.execution().unwrap();
+@@ -1344,7 +1348,11 @@
+         .clone();
+     projected.check(&serving_gate).unwrap();
+     let replayed = journal
+-        .record_activation(&selected.operation, &local_completed, &f.signers[&selected.id])
++        .record_activation(
++            &selected.operation,
++            &local_completed,
++            &f.signers[&selected.id],
++        )
+         .await
+         .unwrap();
+     assert_eq!(replayed.execution().unwrap(), exact_execution);

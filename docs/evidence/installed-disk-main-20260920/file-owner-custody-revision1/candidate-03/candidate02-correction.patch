@@ -1,0 +1,19 @@
+diff --git a/crates/kasumi-store/src/node_disk/census/tests.rs b/crates/kasumi-store/src/node_disk/census/tests.rs
+--- a/crates/kasumi-store/src/node_disk/census/tests.rs
++++ b/crates/kasumi-store/src/node_disk/census/tests.rs
+@@ -363,6 +363,7 @@
+         .clone()
+         .reserve_installed(requirements.registry_bytes)
+         .unwrap();
++    let file_custody = super::super::file::CustodySlots::new(config.max_open_files).unwrap();
+     let (roots, ancestor_locks, unit) = root_set(config);
+     let identity = roots.values().next().unwrap().identity;
+     let (limit, _) = super::super::ledger::map_limits(config).unwrap();
+@@ -377,6 +378,7 @@
+             ancestor_locks,
+             accounted,
+             live,
++            file_custody,
+             streams: Streams::default(),
+             charge,
+         }),

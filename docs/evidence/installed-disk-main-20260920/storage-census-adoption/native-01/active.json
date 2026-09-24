@@ -1,0 +1,20 @@
+{
+  "name": "opening",
+  "pid": 37043,
+  "pgid": 37043,
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-store",
+    "--lib",
+    "storage_opening::",
+    "--",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption/native-01/assembly",
+  "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption/native-01/opening.log"
+}

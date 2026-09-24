@@ -1,9 +1,7 @@
 //! Exclusive first enrollment of a node file and its service audit. The caller
 //! retains this same physical owner through application/Control/authority genesis.
 use anyhow::{Context, Result};
-use kasumi_store::{
-    NodeStore, ScratchDisk, ScratchDiskConfig, StorageAccess, TenantStore, private_files,
-};
+use kasumi_store::{NodeStore, ScratchDiskConfig, StorageAccess, TenantStore, private_files};
 use std::{path::Path, sync::Arc};
 use uuid::Uuid;
 
@@ -14,7 +12,9 @@ pub(crate) async fn create(
     scratch: &ScratchDiskConfig,
     security: &crate::runtime::SecurityAuditConfig,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
+    storage: &crate::runtime_memory::RuntimeStorage,
 ) -> Result<(Arc<NodeStore>, Arc<kasumi_engine::SecurityAudit>)> {
+    storage.require_admission(&admission)?;
     let mut pending = crate::startup_resources::Resources::default();
     let outcome = crate::startup_preparation::capture("node provisioning", async {
         private_files::check_directory(
@@ -24,12 +24,12 @@ pub(crate) async fn create(
         let provider = security
             .keys
             .provider(Arc::new(crate::runtime::file_secret))?;
-        let disk = ScratchDisk::open(scratch.clone())?;
+        let disk = storage.open_scratch(scratch)?;
         crate::persistent_disk::validate(persistent, scratch, [path])?;
         let node = NodeStore::create_new(
             path,
             database_id,
-            crate::persistent_disk::open(persistent)?,
+            crate::persistent_disk::open(persistent, storage)?,
             disk,
         )?;
         pending.owned_nodes.push(node.clone());
@@ -87,7 +87,12 @@ mod tests {
         let persistent = crate::persistent_disk::fixture_config(&directory.path().join("data"));
         let path = directory.path().join("data/node.redb");
         let database_id = Uuid::new_v4();
-        let admission = kasumi_engine::admission::NodeAdmission::new(Default::default())?;
+        let storage = crate::runtime_memory::RuntimeStorage::isolated_fixture(
+            Default::default(),
+            &persistent,
+            &scratch,
+        )?;
+        let admission = storage.facade(storage.policy())?;
         let (node, audit) = create(
             &path,
             database_id,
@@ -95,6 +100,7 @@ mod tests {
             &scratch,
             &security,
             admission.clone(),
+            &storage,
         )
         .await?;
         audit.store().write_batch(&[kasumi_store::WriteOp::put(
@@ -103,10 +109,11 @@ mod tests {
             b"original owner".to_vec(),
         )])?;
         assert!(
-            NodeStore::open_existing_fixture(
+            NodeStore::open_existing(
                 &path,
                 database_id,
-                ScratchDisk::open(scratch.clone())?
+                storage.open_persistent(&persistent)?,
+                storage.open_scratch(&scratch)?
             )
             .is_err()
         );
@@ -117,7 +124,8 @@ mod tests {
                 &persistent,
                 &scratch,
                 &security,
-                admission.clone()
+                admission.clone(),
+                &storage,
             )
             .await
             .is_err()
@@ -126,20 +134,25 @@ mod tests {
         drop(audit);
         // Audit shutdown cannot release the independently retained physical node.
         assert!(
-            NodeStore::open_existing_fixture(
+            NodeStore::open_existing(
                 &path,
                 database_id,
-                ScratchDisk::open(scratch.clone())?
+                storage.open_persistent(&persistent)?,
+                storage.open_scratch(&scratch)?
             )
             .is_err()
         );
         node.shutdown().await?;
         node.shutdown().await?;
         drop(node);
-        let node =
-            NodeStore::open_existing_fixture(&path, database_id, ScratchDisk::open(scratch)?)?;
+        let node = NodeStore::open_existing(
+            &path,
+            database_id,
+            storage.open_persistent(&persistent)?,
+            storage.open_scratch(&scratch)?,
+        )?;
         let store = TenantStore::open_existing(
-            node,
+            node.clone(),
             kasumi_engine::SECURITY_TENANT.into(),
             security
                 .keys
@@ -153,6 +166,7 @@ mod tests {
             Some(b"original owner".to_vec())
         );
         audit.shutdown().await.unwrap();
+        node.shutdown().await?;
         Ok(())
     }
 }

@@ -1,0 +1,7 @@
+{
+  "path": "crates/kasumi-store/src/backup_sessions_fs.rs",
+  "prior_base_sha256": "e8bcc483c5abe4253c9d0ae82ae4bc13aff01539cb9cbe1b521096f1081fe12f",
+  "current_base_sha256": "dcb298143d5b91c47a037ddab55634d814238b5d83ee1ef2b595d34945041c5a",
+  "reason": "Parent source lint correction preserves original io error and fencing, map_err to inspect_err.",
+  "actual_source_edited": false
+}

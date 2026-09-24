@@ -1,0 +1,24 @@
+{
+  "status": "PASS full workspace check and strict Clippy; runtime tests pending",
+  "manifest_sha256": "0e0ceb1d2fcaa3293183af8e65f1c333909996b953c7ad415f2fc27b3759d709",
+  "cumulative_patch_sha256": "8a0258da5a91d7a0daaf5c2a62c6a37fb1d5f91a718685abacd85c4d473f6c2f",
+  "correction_patch_sha256": "966cf6fadff1e352321b3337bcaa113b6053e015c64a2155f2e4d4611a2ffaf0",
+  "native_result": {
+    "source_unchanged": true,
+    "changed_inputs": [],
+    "source_count": 3360,
+    "completed_stages": 2,
+    "expected_stages": 2,
+    "all_passed": true,
+    "cohort_elapsed_seconds": 298.538233875,
+    "cohort_bound_seconds": 1200,
+    "results_sha256": "3c5d9690ad41b16e8f4aa46385b3b0cd14f3af508f49f24c5f5e6ae3ba0ae6dc",
+    "native_runtime_tests": false,
+    "artifact_scope": "Exact check/Clippy compiler artifacts and tool binaries; no runnable test execution."
+  },
+  "local_source_binding_sha256": "c3588144247388be1e6dd5914c6b67adb2d3abf95ffe3ca1a9523c3e93165531",
+  "three_inherited_dependency_warnings": "rmcp package dead-code warnings; no workspace -D warnings failures",
+  "actual_source_applied": false,
+  "complete_workspace_or_rss_bound": false,
+  "all_production_storage_callers_migrated": false
+}

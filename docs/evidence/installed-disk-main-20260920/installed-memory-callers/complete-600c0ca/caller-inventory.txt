@@ -1,0 +1,115 @@
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_retired_source_tests.rs:180:        let destination = Arc::new(kasumi_store::FilesystemBackupDestination::new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/api_resource_lineage_tests.rs:50:        kasumi_store::FilesystemBackupDestination::new(fixture._dir.path().join("persistent/lineage-backup"), 16 << 20, fixture.physical.persistent.clone())
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:12:    fixture.initialize().await.unwrap();
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:263:        f.initialize().await.unwrap();
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:299:        f.initialize().await.unwrap();
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:369:    f.initialize().await.unwrap();
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:370:    assert!(f.initialize().await.is_err(), "installation cannot repeat");
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:447:        f.initialize().await.is_err(),
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:476:    f.initialize().await.unwrap();
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:502:    assert!(f.initialize().await.is_err());
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:535:    assert!(f.initialize().await.is_err());
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:538:    assert!(f.initialize().await.is_err());
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:541:    f.initialize().await.unwrap();
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:616:    f.initialize().await.unwrap();
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:682:        let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:716:        assert!(fixture.initialize().await.is_err());
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:751:                    .initialize_owned(fixture.storage.clone()),
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime_tests.rs:762:            NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_custody_tests.rs:92:        kasumi_store::FilesystemBackupDestination::new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_startup_tests.rs:42:        let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_startup_tests.rs:92:    let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_startup_tests.rs:128:        let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_startup_tests.rs:263:            NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_startup_tests.rs:321:        let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime.rs:62:                NodeStore::create_new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime.rs:69:                NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime.rs:416:            self.clone().initialize_owned(storage),
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime.rs:426:    async fn initialize_owned(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/signer_runtime.rs:541:    input.initialize().await
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/authority_maintenance_tls_tests.rs:300:    services[0].initialize().await.unwrap();
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/administration.rs:96:            } => Arc::new(FilesystemBackupDestination::new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/rpc_authority_tests.rs:374:    services[0].initialize().await.unwrap();
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/standalone.rs:342:                    NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/standalone.rs:940:        initialize_owned(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/standalone.rs:955:async fn initialize_owned(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/standalone.rs:1107:        let node = NodeStore::create_new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/local_recovery_archives.rs:168:            FilesystemAuditArchive::open(&directory, self.audit.store().persistent_disk().clone())?
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/authority_node_enrollment.rs:36:        initialize_owned(config, storage),
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/authority_node_enrollment.rs:54:async fn initialize_owned(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/local_recovery.rs:951:            let node = kasumi_store::NodeStore::create_new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/local_recovery.rs:1044:            None => kasumi_store::NodeStore::open_existing(&path, local_node_id(journal)?, self.store().persistent_disk().clone(), self.store().scratch_disk().clone())?,
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/local_recovery.rs:1329:                let ownership = kasumi_store::NodeStore::claim_cleanup(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/rpc_lifecycle_tests.rs:185:    issuers[0].initialize().await.unwrap();
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime.rs:189:            None => Arc::new(kasumi_store::FilesystemAuditArchive::open(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime.rs:1203:        let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime.rs:1351:                        NodeStore::open_existing(active.directory.join("node.redb"), active.database_id(&config, &tenant.tenant)?, persistent_disk.clone(), scratch_disk.clone())?
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime.rs:2474:    let node = NodeStore::create_new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/control_genesis_tests.rs:121:    let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/control_genesis_tests.rs:161:        NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/control_genesis_tests.rs:177:        NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/control_genesis_tests.rs:310:        let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/api_backup_checkpoint_tests.rs:7:        kasumi_store::FilesystemBackupDestination::new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/target_runtime.rs:437:        let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/target_runtime.rs:994:                g.node = Some(NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/target_runtime.rs:1376:            let node = NodeStore::claim_cleanup(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/audit_destination.rs:60:                Arc::new(FilesystemAuditArchive::open(directory, persistent_disk)?)
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/audit_destination.rs:102:            None => Arc::new(FilesystemAuditArchive::open(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/audit_destination.rs:148:            FilesystemAuditArchive::open(directory.path().join("persistent/owned-cache"), physical.persistent.clone()).unwrap(),
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/readiness_tests.rs:13:    NodeAdmission::new(config).unwrap()
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/data_node_enrollment.rs:37:        initialize_owned(config, storage),
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/data_node_enrollment.rs:55:async fn initialize_owned(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/node_enrollment_tests.rs:19:    let node = NodeStore::create_new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_memory.rs:66:            NodeDisk::memory_requirements(persistent)?,
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_memory.rs:96:            DiskFactory::Installed => NodeDisk::open(config, self.memory.clone(), &cancel),
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_memory.rs:99:                NodeDisk::open_fixture(config, self.memory.clone(), &cancel)
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_memory.rs:105:            DiskFactory::Installed => ScratchDisk::open(config, self.memory.clone()),
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_memory.rs:108:                ScratchDisk::open_fixture(config, self.memory.clone())
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/bin/kasumid.rs:60:            let runtime = NodeRuntime::open(config)
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/local_recovery_tests.rs:476:    let shared = kasumi_store::FilesystemAuditArchive::open(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/local_recovery_tests.rs:796:    let node = kasumi_store::NodeStore::create_new_fixture(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/local_recovery_tests.rs:814:    let other = kasumi_store::NodeStore::create_new_fixture(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/local_recovery_tests.rs:817:        kasumi_store::ScratchDisk::fixture(),
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/local_recovery_tests.rs:1062:        NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/local_recovery_tests.rs:1071:        NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/local_recovery_tests.rs:1088:        NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/local_recovery_tests.rs:1114:    let target = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/standalone_operator.rs:33:            let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_recovery_tests.rs:401:                let audit_node = NodeStore::create_new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_recovery_tests.rs:427:                let node = NodeStore::create_new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_recovery_tests.rs:528:            issuers[0].initialize().await.unwrap();
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/readiness_probe_tests.rs:18:    NodeAdmission::new(config).unwrap()
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/standalone_operator_tests.rs:81:    let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/standalone_operator_tests.rs:98:        NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/standalone_operator_tests.rs:299:    let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/target_journal_installation.rs:32:        initialize_owned(config, storage),
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/target_journal_installation.rs:54:async fn initialize_owned(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/target_journal_installation.rs:71:        let node = NodeStore::create_new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/target_runtime_shutdown_tests.rs:330:        assert!(NodeStore::claim_cleanup(&path, id, physical.persistent.clone()).is_err());
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/target_runtime_shutdown_tests.rs:336:        let ownership = NodeStore::claim_cleanup(&path, id, physical.persistent.clone()).unwrap();
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/node_provision.rs:29:        let node = NodeStore::create_new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/node_provision.rs:108:            NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/node_provision.rs:133:            NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/node_provision.rs:145:            NodeStore::open_existing(&path, database_id, storage.open_persistent(&persistent)?, storage.open_scratch(&scratch)?)?;
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/target_serving_runtime.rs:165:        g.node = Some(NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/api_history_tests.rs:9:                kasumi_store::FilesystemBackupDestination::new(fixture._dir.path().join("persistent/history-backup"), 16 << 20, fixture.physical.persistent.clone())
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_cluster_storage_tests.rs:138:    let a = NodeStore::create_new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_cluster_storage_tests.rs:145:    let b = NodeStore::create_new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_cluster_storage_tests.rs:200:    let reopened = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/serving_owner_tests.rs:99:    let node = NodeStore::create_new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/serving_owner_tests.rs:148:            NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/serving_owner_tests.rs:166:        let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/serving_owner_tests.rs:407:    let node = NodeStore::create_new(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/serving_owner_tests.rs:460:    let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/serving_owner_tests.rs:473:        kasumi_engine::admission::NodeAdmission::new(kasumi_engine::admission::AdmissionConfig {
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/authority_node_enrollment_tests.rs:222:        NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/authority_node_enrollment_tests.rs:408:    let mut enrolling = Box::pin(registry.open(initialize_owned(fixture.config.clone(), fixture.storage.clone())));
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_cluster_storage.rs:87:        NodeDisk::memory_requirements(persistent)?,
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_cluster_storage.rs:100:            kasumi_engine::test_utils::isolated_metadata_bytes(ScratchDisk::memory_requirements(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/runtime_cluster_storage.rs:144:                    // Preserve the original two separate ScratchDisk::fixture quotas.
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/standalone_provision_tests.rs:106:    let result = initialize_owned(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/standalone_provision_tests.rs:133:    let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/authority_runtime.rs:325:            let node = NodeStore::open_existing(
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/authority_runtime.rs:509:                    self.authority.initialize().await?;
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/configured_tenant_enrollment_tests.rs:39:    let runtime = crate::runtime::NodeRuntime::open(config).await.unwrap();
+target/installed-disk-validation/installed-memory-callers/complete-600c0ca/proposed/crates/kasumi-server/src/configured_tenant_enrollment_tests.rs:181:    let mut runtime = crate::runtime::NodeRuntime::open(config).await?;

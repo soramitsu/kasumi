@@ -1,0 +1,13 @@
+{
+  "status": "FROZEN_TARGET_ONLY_UNCOMPILED_UNEXECUTED",
+  "prerequisite_patch_sha256": "3f2548f12aad8c27f72a8645162296ec85079d9cdc9a2adf6363f5c9a1e4bcdc",
+  "patch_sha256": "b71cc8d16ed8fef78a14426e41cfdc8ffc2582894d0d17c67b5b5e37a6879dc2",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/cache_admission_tests.rs",
+      "before_sha256": "716fb3a3c08b1a7f08974d5eeceb7f759c13cce57a239dc8036bbc56d2f2e6de",
+      "proposed_sha256": "9bb050880beed4bd74b7dbe89843b0926ab15844edc7337ba1676b5b83be782e"
+    }
+  ],
+  "reason": "Preserve original clean-close assertion: Settled alone allows shutdown Err with backend Ok. Assert both exact phases Returned(Ok(())) and preserve original cache-refusal identity."
+}

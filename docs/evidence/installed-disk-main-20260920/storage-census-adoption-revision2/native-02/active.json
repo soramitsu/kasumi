@@ -1,0 +1,13 @@
+{
+  "name": "opening",
+  "pid": 43104,
+  "pgid": 43104,
+  "command": [
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/store-test-binary",
+    "storage_opening::",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/assembly",
+  "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption-revision2/native-02/opening.log"
+}

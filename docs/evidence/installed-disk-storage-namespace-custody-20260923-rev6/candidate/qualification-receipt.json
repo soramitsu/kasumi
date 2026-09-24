@@ -1,0 +1,241 @@
+{
+  "schema": "kasumi-composed-storage-namespace-custody-qualification-v1",
+  "status": "QUALIFIED_PREREQUISITE_READY_FOR_ROOT_APPLICATION",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "source_file_count": 75,
+  "patch": {
+    "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/combined.patch",
+    "sha256": "791f80c362c9ee0c317e0a46a4fedb26054e50a274aad0e735641e339737f2c9",
+    "bytes": 710028
+  },
+  "manifest": {
+    "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/manifest.json",
+    "sha256": "b2d6f9f980a55d0e1a688093cf2deb64269878005ff78e15f394af8341b336e5",
+    "bytes": 35703
+  },
+  "apply_readback": {
+    "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/apply-readback.json",
+    "sha256": "e5f2e740a4bbf7ccd5eda1cca1273437f067fba0409d2ef9752aa62989132403",
+    "bytes": 8796
+  },
+  "changed_paths": {
+    "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/changed-paths.json",
+    "sha256": "4eba79c9cac535885cd95a154729061e1effb0c5aed2f3fcf5d23ca3d7aaad9c",
+    "bytes": 694
+  },
+  "native": {
+    "source_unchanged": true,
+    "changed_inputs": [],
+    "source_count": 3697,
+    "dispatch_denied": null,
+    "completed_stages": 19,
+    "expected_stages": 19,
+    "all_passed": true,
+    "cohort_elapsed_seconds": 482.654771167,
+    "cohort_bound_seconds": 1200,
+    "results_sha256": "9c5bddb773db5ba29bbf140b541af7b63a7584778ea4af86446296d567ebddf0"
+  },
+  "format": {
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/assembly",
+    "pid": 98317,
+    "pgid": 98317,
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/format-01/format.log",
+    "bound_seconds": 120,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "source_unchanged": true,
+    "source_count": 3700,
+    "native_source_after_sha256": "d06c0e06117acd8e538e01b5caf6c30b5dfd2f310d97fc159874ec7220c48572",
+    "binary_sha256": "5f19f351c612e52e67036db0609ae434eac767f61098848251721bdb04de1e80",
+    "source_before_sha256": "ac10190296121847fdc44cc2410bd705e79f46757e0e75a3b770e161b82d21be",
+    "source_after_sha256": "ac10190296121847fdc44cc2410bd705e79f46757e0e75a3b770e161b82d21be",
+    "elapsed_seconds": 2.362039708,
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "all_passed": true
+  },
+  "store_tests": {
+    "inventory": 338,
+    "passed": 336,
+    "failed": 0,
+    "existing_ignored": 2,
+    "filtered": 0,
+    "focused_exact_cases_passed": 14
+  },
+  "binary": {
+    "selected": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/assembly/crates/kasumi-store#0.1.0",
+      "manifest_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/assembly/crates/kasumi-store/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "kasumi_store",
+        "src_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/assembly/crates/kasumi-store/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [
+        "test-utils"
+      ],
+      "filenames": [
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/cargo-target/debug/deps/kasumi_store-da802ca493244251"
+      ],
+      "executable": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/cargo-target/debug/deps/kasumi_store-da802ca493244251",
+      "fresh": false
+    },
+    "retained_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/store-test-binary",
+    "sha256": "5f19f351c612e52e67036db0609ae434eac767f61098848251721bdb04de1e80",
+    "bytes": 54718560
+  },
+  "native_results": {
+    "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/native-01/results.json",
+    "sha256": "9c5bddb773db5ba29bbf140b541af7b63a7584778ea4af86446296d567ebddf0",
+    "bytes": 31799
+  },
+  "terminal_drain": {
+    "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/terminal-drain.json",
+    "sha256": "91737ff1b5519fb82c1a7ef46f902439ee28a226ab1d218451981ac0b1703e9b",
+    "bytes": 1354
+  },
+  "reviews": [
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-rev6-root-review/receipt.json",
+      "sha256": "ed0f18fdae5a72a2c6db09a92da0b3a79247240042e623fcbe7df8d044d87f91",
+      "bytes": 756
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-rev5-root-review/receipt.json",
+      "sha256": "fdb65adf8935b1f6b5d2636a68505900af7dafc1e1bb5bf1c3de54d44aa4d521",
+      "bytes": 977
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-rev4-root-review/receipt.json",
+      "sha256": "cb735b9a2cd07964f8c8ad1ba6a3ba574fcf1d0aaccb07cea2e196417e7e7ec4",
+      "bytes": 687
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-rev3-root-review/receipt.json",
+      "sha256": "82b15093d7d75fc44246ed3bdac360c0f75ac0c11db1b9da9d2d77b04caa23fa",
+      "bytes": 733
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-root-review/receipt.json",
+      "sha256": "e08880cfcff816c74c594f57c1eed5b3b385ef65356e3affb50c108f3d8e5f95",
+      "bytes": 1232
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-overlap-managed-review/receipt.json",
+      "sha256": "a49db1f997883b50bb85e92367ff7f44556d07db7309a920d4752b68564cfd91",
+      "bytes": 2126
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-overlap-managed-review/revision2-receipt.json",
+      "sha256": "6eb91d888f021809c164b35a82bdb2a88f7fff62280643cbc3e6ef04db9cf5d9",
+      "bytes": 1822
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-custody-revision3-lint-independent-review/receipt.json",
+      "sha256": "5a9238165db0bbbfdec3c904792f1035543373fdb6915ae42152ef438204616d",
+      "bytes": 1199
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-explicit-close-managed-review/receipt.json",
+      "sha256": "b9aed47cbab188321e9527d1b3551a8a5ef5e13b3984555c4934713ce4e67e82",
+      "bytes": 3724
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-explicit-close-revision5-composition-review/receipt.json",
+      "sha256": "38a3c5f7fc412d5d384481244397697b3cfcfa6bda142828c531c190251f98e2",
+      "bytes": 6227
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-explicit-close-revision5-composition-review/inventory-readback.json",
+      "sha256": "6d2e7d464d256f2df181df0f273c07f6142db4f4c966777b8cba3b4e3aa40f11",
+      "bytes": 398
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/audit-archive-custody-fixture-opening-review/receipt.json",
+      "sha256": "fe37c224ee265fe27073d0243a7140f76c6186bedb983922bc29f8052bbba8f5",
+      "bytes": 1564
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/combined-store-runner-and-revision6-independent-review/initial-review.json",
+      "sha256": "180891ddceaff3e84b36f4d186fcb83cb3e2c0caa689a000179ecbecd973e5e3",
+      "bytes": 3986
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/combined-store-runner-and-revision6-independent-review/revision3-review.json",
+      "sha256": "c80a68c020c4b368148e78d96da8268cdd2324726455a37b901421e8c81d00de",
+      "bytes": 1632
+    }
+  ],
+  "prior_python_validation": {
+    "status": "INHERITED_SOURCE_IDENTICAL_NOT_RERUN",
+    "qualified_package": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6",
+    "smoke_tests_log": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/smoke-script-tests.log",
+      "sha256": "11dab31fa64bebeaf85eafeea38c3e3b6270f45212213e4c308f044239285327",
+      "bytes": 3086
+    },
+    "bindings": [
+      {
+        "path": "scripts/small_native_smoke.py",
+        "prior_qualified_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/assembly/scripts/small_native_smoke.py",
+        "sha256": "a4058a62da455dcbabcbe8d02c0d66bf82a39c645496119893fe7ca038bb2c4c",
+        "current_candidate": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/assembly/scripts/small_native_smoke.py"
+      },
+      {
+        "path": "scripts/test_small_native_smoke.py",
+        "prior_qualified_path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/assembly/scripts/test_small_native_smoke.py",
+        "sha256": "3adbd52da83f6476ee9eb83b7ce753bef52807475a8d73c17e46dd1649babd14",
+        "current_candidate": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/assembly/scripts/test_small_native_smoke.py"
+      }
+    ]
+  },
+  "application": {
+    "actual_Rust_Cargo_source_modified": false,
+    "authorized_next_actor": "root",
+    "patch_apply_check_exit": 0,
+    "requires_exact_before_hashes": true
+  },
+  "remaining_gaps": [
+    {
+      "issue": "Mandatory production StorageCensus/retained opening caller migrations, original outcome allocation backing and complete memory/RSS admission remain open."
+    },
+    {
+      "issue": "Configured-root acquisition, DirectoryOwner destructor/verification custody and supported-filesystem pre-effect physical bounds remain outside the custody primitive qualification."
+    },
+    {
+      "issue": "Legacy consuming NodeDatabase close can report DrainCompletion::Complete with a Storage close issue while physical FileOwner custody remains retained; mandatory caller migration is not complete."
+    },
+    {
+      "issue": "RegisteredNodeOpening deliberately retains failed live backend, original shutdown/backend/FileOwner errors, charge and admission fence when no positive release witness exists. A verified disposal and original-outcome acknowledgement/recovery protocol is still required; indefinite retention is not release acceptance."
+    }
+  ],
+  "scope": "Workspace check/lint, store unit cohort and formatting qualify this 75-file prerequisite. No claim that G02 caller migration, failed-owner recovery, release contract, full workspace runtime or memory/RSS bounds are complete. Frozen manifests retain pre-run pending text; this receipt records subsequent qualification without rewriting them."
+}

@@ -1,0 +1,15 @@
+
+thread 'node_disk::census::tests::provisional_arc_allocation_retires_before_lease_on_error_and_unwind' (6000622) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/backup-namespace-admission-revision4/native-01/node_disk/census/tests.rs:580:21:
+original provisional publication panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'node_disk::census::tests::uncertain_initial_close_retains_registered_outcome_and_resources_through_error_or_unwind' (6000623) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/backup-namespace-admission-revision4/native-01/node_disk/census/tests.rs:429:17:
+injected initial census unwind
+
+thread 'node_disk::census::tests::unfinished_or_unwound_session_cannot_publish_partial_candidate' (6000625) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/backup-namespace-admission-revision4/native-01/node_disk/census/tests.rs:281:21:
+injected census unwind
+
+thread 'node_disk::fixed_map::tests::panic_during_spare_copy_preserves_complete_published_active_map' (6000667) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/backup-namespace-admission-revision4/native-01/node_disk/fixed_map/tests.rs:102:13:
+assertion `left != right` failed: injected third-copy failure
+  left: 2
+ right: 2

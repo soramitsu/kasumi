@@ -1,0 +1,72 @@
+--- a/crates/kasumi-authority/src/issuer_tests.rs
++++ b/crates/kasumi-authority/src/issuer_tests.rs
+@@ -385,21 +385,55 @@
+         retained.receipt.accepted_revision,
+         accepted.receipt.accepted_revision
+     );
+-    let late = control.intent(&f, &t, 1_050_000);
+-    // Raft elections use real elapsed time, independently of the fixture clock.
+-    // Select the current leader for this new mutation; the stopped-epoch
+-    // rejection must come from the reducer.
++    let late = request(&control.intent(&f, &t, 1_050_000));
+     let context = f.context("operator");
+-    let service = f.leader().await;
+-    assert_eq!(
+-        service
+-            .execute_lifecycle(context, request(&late))
+-            .await
+-            .err()
+-            .unwrap()
+-            .code,
+-        ErrorCode::Conflict
+-    );
++    let mut service = f.leader().await;
++    // Raft elections use real time, independently of the fixture clock. Resolve
++    // only this original intent after observed route movement, within the same
++    // five-second wait and without replacing its verified authorization.
++    tokio::time::timeout(Duration::from_secs(5), async {
++        loop {
++            for member in &f.services {
++                member
++                    .group
++                    .check_access()
++                    .expect("late-intent resolution requires healthy actual Raft owners");
++            }
++            let before = service.group.raft().metrics().borrow().clone();
++            let result = service
++                .execute_lifecycle(context.clone(), late.clone())
++                .await;
++            for member in &f.services {
++                member
++                    .group
++                    .check_access()
++                    .expect("late-intent resolution must not mask a failed Raft owner");
++            }
++            match result {
++                Ok(_) => panic!("stopped control epoch accepted a new intent"),
++                Err(error) if error.code == ErrorCode::Conflict => {
++                    assert_eq!(error.message, "control epoch permanently stopped");
++                    break;
++                }
++                Err(error) => {
++                    let after = service.group.raft().metrics().borrow().clone();
++                    assert!(
++                        matches!(
++                            error.code,
++                            ErrorCode::Unavailable | ErrorCode::UnknownOutcome
++                        ) && (after.current_term != before.current_term
++                            || after.current_leader != before.current_leader
++                            || after.state != before.state),
++                        "late-intent failure without observed route movement: \
++                         error={error:?}; before={before:?}; after={after:?}"
++                    );
++                }
++            }
++            service = f.leader().await;
++        }
++    })
++    .await
++    .expect("exact stopped-epoch rejection was not resolved within five seconds");
+     f.close().await;
+ }
+ #[tokio::test]

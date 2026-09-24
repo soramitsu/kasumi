@@ -1,0 +1,33 @@
+{
+  "scope": "development four full integration targets after exact contract/private-installation and resident snapshot/terminal point fixture migration; no changed workload or deadline; not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--no-fail-fast",
+    "-p",
+    "kasumi-engine",
+    "--all-features",
+    "--test",
+    "contracts",
+    "--test",
+    "guarded_staging",
+    "--test",
+    "schema_activation",
+    "--test",
+    "staged_transactions",
+    "--",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 1099,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 498.537868976593,
+  "inventoried_source_unchanged": true
+}

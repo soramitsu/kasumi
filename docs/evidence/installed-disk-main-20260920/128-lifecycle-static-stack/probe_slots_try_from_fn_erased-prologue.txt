@@ -1,0 +1,35 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000d06e8 <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>>:
+1000d06e8: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1000d06ec: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1000d06f0: 910043fd    	add	x29, sp, #0x10
+1000d06f4: d13203ff    	sub	sp, sp, #0xc80
+1000d06f8: f90003ff    	str	xzr, [sp]
+1000d06fc: d10203a9    	sub	x9, x29, #0x80
+1000d0700: f90033e9    	str	x9, [sp, #0x60]
+1000d0704: aa0003e8    	mov	x8, x0
+1000d0708: f9000128    	str	x8, [x9]
+1000d070c: f9000521    	str	x1, [x9, #0x8]
+1000d0710: 52800028    	mov	w8, #0x1                ; =1
+1000d0714: f9000d28    	str	x8, [x9, #0x18]
+1000d0718: f9003be0    	str	x0, [sp, #0x70]
+1000d071c: f9003fe1    	str	x1, [sp, #0x78]
+1000d0720: f90043ff    	str	xzr, [sp, #0x80]
+1000d0724: 14000001    	b	0x1000d0728 <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x40>
+1000d0728: f94043e8    	ldr	x8, [sp, #0x80]
+1000d072c: f9403fe9    	ldr	x9, [sp, #0x78]
+1000d0730: eb090108    	subs	x8, x8, x9
+1000d0734: 54000143    	b.lo	0x1000d075c <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x74>
+1000d0738: 14000001    	b	0x1000d073c <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x54>
+1000d073c: f94033e9    	ldr	x9, [sp, #0x60]
+1000d0740: f9403bea    	ldr	x10, [sp, #0x70]
+1000d0744: f9403fe8    	ldr	x8, [sp, #0x78]
+1000d0748: f900112a    	str	x10, [x9, #0x20]
+1000d074c: f9001528    	str	x8, [x9, #0x28]
+1000d0750: f94043e8    	ldr	x8, [sp, #0x80]
+1000d0754: f9001928    	str	x8, [x9, #0x30]
+1000d0758: 14000006    	b	0x1000d0770 <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x88>

@@ -1,0 +1,4 @@
+Exact proposed NodeDisk/census/directory/file/namespace/ledger/memory implementation with frozen existing disk_memory/device_disk. Fixture-only memory provider, no RSS or filesystem-growth qualification.
+PASS managed create, same-parent rename, cross-parent rename, unlink, retained directory reads and independent quotas
+PASS surviving final parent inode does not hide an exchanged ancestor; actual file custody drains and fresh census repairs
+metadata owner=1920246108 registry=4128 device=8304 registration=4160 max_bytes_2GiB=2147483648 RSS_plus_existing_reservations_headroom=227237540

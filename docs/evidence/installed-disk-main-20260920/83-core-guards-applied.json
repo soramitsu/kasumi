@@ -1,0 +1,49 @@
+{
+  "status": "APPLIED_UNTESTED",
+  "time": 1789909921.704638,
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "packages": [
+    {
+      "patch": "snapshot-memory-guard/guard.patch",
+      "sha256": "b2ba0b3cd834c993d81be1e582552988a780e254968a28732d7034ab17eae589",
+      "files": [
+        {
+          "path": "crates/kasumi-engine/src/snapshot_api.rs",
+          "before_sha256": "1d164c778ce089b0e15904dcab2afbdd7d524399365b34bd07ccd7e678a9fcf0",
+          "proposed_sha256": "c0130b939ee268e896f6995eae6100d1793ee79c866cd43fdc24d47b8c284240"
+        },
+        {
+          "path": "crates/kasumi-engine/src/snapshot_bundle.rs",
+          "before_sha256": "c504cddd66678f97ace4c70e6c4a387a200c10e18197db729b68546b27dfdf30",
+          "proposed_sha256": "6b2e0d170bd1cb2d932ca68d34db55b4eea690bd60c28bafb5f5a98adb43a54e"
+        }
+      ]
+    },
+    {
+      "patch": "journal-maintenance-memory-guards/guards.patch",
+      "sha256": "6372349411401e7550b1f9e3e314198aea8551106813f7b965db58dbdc6173b3",
+      "files": [
+        {
+          "path": "crates/kasumi-engine/src/target_journal.rs",
+          "before_sha256": "855bc87c06b800d29b99488d3411ef979d8250fc79e238df91a365de441648ad",
+          "proposed_sha256": "3367970dfb18bc321e1bfa54d70931e4313491accd1b9474ff706bfb646a934c"
+        },
+        {
+          "path": "crates/kasumi-engine/src/target_journal_open_tests.rs",
+          "before_sha256": "12f28cba79bdaa061c9bde33a560a9946d919470be4958179dffa95f267e0d64",
+          "proposed_sha256": "e90cc9a34f738e8f56df8b1387568d112b2a2f190347d270d534459835b0c094"
+        },
+        {
+          "path": "crates/kasumi-engine/src/tenant_audit.rs",
+          "before_sha256": "1d8d8427db802378f616eff7b4fac446136a91a3e63d2eac1f343ddcee996072",
+          "proposed_sha256": "2059cbf360f55b6e9c1e589706ba924d7421bf145411f88c78ac443e36ceb27c"
+        },
+        {
+          "path": "crates/kasumi-engine/src/tenant_audit_memory_tests.rs",
+          "before_sha256": null,
+          "proposed_sha256": "bfc4e7370fba8461253d12abe392784e8e31cbf1a9c2693dcff60bfab0071470"
+        }
+      ]
+    }
+  ]
+}

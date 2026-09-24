@@ -1,0 +1,46 @@
+{
+  "status": "APPROVED_SCOPED_STATIC_PENDING_RUNTIME",
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "subject_manifest_sha256": "785269f80c8030962721109554629a1032bf7193db361b6775fb22bcec2926cf",
+  "subject_patch_sha256": "65f37c09ad3266aa26a60412812e083d2e5afc6d7f39a6a876dfae5466435887",
+  "readme_sha256": "0dbd939a7eea0c90e0362ebd6eea8806263e673574d6542f2ec544c7a67a387c",
+  "reviewed_delta_sha256": "6339241a5686e3c202d220389fc9600c2962b831e3e4f43cc63a229cead76ffb",
+  "prior_review_receipt_sha256": "f9606777a78996f7bdf89ac2117fe7d0189266b25e70718d72543029c7a983f1",
+  "closed_findings": [
+    "P1-future-outcome-relinquishment"
+  ],
+  "new_blockers": [],
+  "changed_from_original": [
+    "crates/kasumi-store/src/storage_opening.rs",
+    "crates/kasumi-store/src/storage_opening_tests.rs"
+  ],
+  "unchanged_proposal_files": 12,
+  "actual_base_hashes": {
+    "crates/kasumi-engine/src/admission/disk_memory.rs": "79b0a02f65b6915a15a2ba2677601f6b5c7cdda5030dbff04e7a6498cb6c5add",
+    "crates/kasumi-engine/src/admission.rs": "6892f831a432b75a92da7457cde6d2094890e9b8e544c37a6c53e7f85264c227",
+    "crates/kasumi-store/src/device_disk.rs": "64ad6aa02bff422877c71185f3f84bd3614b001d1fdae9a6427c65b515737da9",
+    "crates/kasumi-store/src/disk_memory.rs": "7795b70e22e97faff5d7e7448a6e743606fcb038d465602cb8a616873d642ea3",
+    "crates/kasumi-store/src/disk_memory_tests.rs": "4d20d4e8ebaa076bf31c2834d15787ee1727a6e5902e99eaa313999cfa92480d",
+    "crates/kasumi-store/src/lib.rs": "88f45bae174564f5496dff8bba211ca46ff28597c7e97501fac0a7dbe3c19225",
+    "crates/kasumi-store/src/node_disk/tests.rs": "9825a52cea3a3392bf16a5dd5f7f737370c64b833bc8a50026a073071c8cf1f4",
+    "crates/kasumi-store/src/node_file.rs": "67e5f88753eaf38c1a2b83ffc5b6cba7c8165a55ed0c86caaca93a924d35d1ca",
+    "crates/kasumi-store/src/scratch_disk.rs": "c8a7dd96cdc960c7138290a315d67efacc2452af67e3552ca94b3dfeffa46882",
+    "crates/kasumi-store/src/storage_census.rs": null,
+    "crates/kasumi-store/src/storage_census_tests.rs": null,
+    "crates/kasumi-store/src/storage_opening.rs": null,
+    "crates/kasumi-store/src/storage_opening_tests.rs": null,
+    "crates/kasumi-store/src/test_utils.rs": "f926d9cf9b2f467cec941e46bd185ef4c88c85b427c620f500c6717c5522c4e9"
+  },
+  "supporting_vendor_hashes": {
+    "vendor/redb-4.2.0/src/retained_database.rs": "fb005b0b87c4c7ee26c8418e19eeeca2eb928ea521324c4adffbabded25db263",
+    "vendor/redb-4.2.0/src/retained_opening.rs": "7a496f7d3355a377d40f8e7a7bff7f80608bc9c729de807b52d58fa5ef941f8b",
+    "vendor/redb-4.2.0/src/retained_transaction.rs": "7dcc471bacab91d6ca1e0119e46b664cf194a87adbfc33deca6e1d6906ee7ee3"
+  },
+  "actual_source_edits": false,
+  "frozen_proposal_edits": false,
+  "cargo_native_or_formatter_execution": false,
+  "runtime_validation_claimed": false,
+  "production_migration_approved": false,
+  "total_memory_bound_approved": false
+}

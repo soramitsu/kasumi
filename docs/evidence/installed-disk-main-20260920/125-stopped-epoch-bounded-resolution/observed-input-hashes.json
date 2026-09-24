@@ -1,0 +1,11 @@
+{
+  "crates/kasumi-authority/src/issuer_tests.rs": "b916cc088a1c029d10302dcf5ba3276d939d815a2769cf2e337f2b3795e7c7d3",
+  "crates/kasumi-authority/src/service.rs": "63ef4071a2f63b4eb556e28a3756d37d613f5cee1e4313a96285fba05f5d6a08",
+  "crates/kasumi-authority/src/lifecycle_service.rs": "0d3862e444c235c43b86806a0af7247a1568b9a3c7be47c41bcea52b3ea911c7",
+  "crates/kasumi-authority/src/lifecycle_state.rs": "0b874688b755978bb4a560120c4ce14165564189ec0b4b5c816752a1cc49be60",
+  "crates/kasumi-authority/src/request_jobs.rs": "7b3a63d1313639f4ea8a361e64788c10bf65dcfadc010329d050ae1d8af0faca",
+  "crates/kasumi-authority/src/tests.rs": "412e79f0a141689312e8bf36616290c568d208915f5dbb159b001394315fd744",
+  "crates/kasumi-raft/src/lib.rs": "c4e9fbff404df3fa9ec93810b8f8bfff8e07b1cc3dac0b4070f32f6172e879a2",
+  "target/installed-disk-validation/125-stopped-epoch-exact-drain.log": "d1e5aae165eefdbbfc02a800a543d3aba38d368d7484cee14fdffbfab6ad05c8",
+  "target/installed-disk-validation/125-result.json": "72aee9550aac403d7382de08f82c9fc8df2d27142472a2ec2c12866e19e03672"
+}

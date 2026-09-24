@@ -1,0 +1,8 @@
+
+running 3 tests
+test disk_memory::tests::installed_lease_cannot_return_bytes_or_slot_before_actual_box_deallocation ... ok
+test disk_memory::tests::mandatory_opaque_lease_preserves_inline_layout_and_provider_denial_accounting ... ok
+test disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

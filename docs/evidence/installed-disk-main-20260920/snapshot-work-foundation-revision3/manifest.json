@@ -1,0 +1,52 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED_FOUNDATION_NO_PRODUCTION_ADAPTER",
+  "revision": 3,
+  "patch_sha256": "3c9c8ed4acd39f9e2d8a9572baa3898f4c3fa34cef44335737d41e5a87d0e520",
+  "review_delta_sha256": "7f0ae5726522f7c30e051cbeb5299c8546abab1cc764b91883e3cc32c96c3d11",
+  "dependencies": [
+    {
+      "path": "target/installed-disk-validation/reservation-cancellation-retirement/retirement.patch",
+      "sha256": "c9c6d4ffd79170509130bb8a284db6888e0b2ed262b0dc6acf69a8618934ee8d"
+    }
+  ],
+  "replaces_reviewed_patch_sha256": "047dcc8abcff53eff8eee12d663ac9be41a66cedaa1902c7a6fb35e116a90f80",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/admission/snapshot_work.rs",
+      "actual_before_dependency_sha256": null,
+      "before_sha256": null,
+      "proposed_sha256": "e8690124237465465d8e23c910f3e811cbd93ea0e7e28cc57b6356aa8980806f",
+      "lines": 810
+    },
+    {
+      "path": "crates/kasumi-engine/src/admission/snapshot_work_tests.rs",
+      "actual_before_dependency_sha256": null,
+      "before_sha256": null,
+      "proposed_sha256": "45312f2d550a44cdd064cd3d0553244a5481d31a41c34a0e9d725da8129c4309",
+      "lines": 826
+    },
+    {
+      "path": "crates/kasumi-engine/src/admission.rs",
+      "actual_before_dependency_sha256": "6327994976bec667151519dce58980ed9f955478487f809c51d32a0c82a2d3ff",
+      "before_sha256": "521c90cf40c29899f95aaa02509b65e62af3827928236dff817deb309d8449da",
+      "proposed_sha256": "6892f831a432b75a92da7457cde6d2094890e9b8e544c37a6c53e7f85264c227",
+      "lines": 1864
+    },
+    {
+      "path": "crates/kasumi-query/src/cancellation.rs",
+      "actual_before_dependency_sha256": "2e4ef1e7ea85d0be49494ce51f397e14abed62d2ac3f2de80da9ae60e5a79d08",
+      "before_sha256": "2e4ef1e7ea85d0be49494ce51f397e14abed62d2ac3f2de80da9ae60e5a79d08",
+      "proposed_sha256": "c062ea749011fcc5d02c3b999053084f503d820cb4d59e227b349e83f0a03eee",
+      "lines": 138
+    }
+  ],
+  "readme_sha256": "968f7076486ac0a575aafa306db982fd7253fa4f658516aabdc7ce771882c5fa",
+  "rustfmt_stdin": "passed for changed snapshot module and tests",
+  "apply_check": {
+    "exit_code": 0,
+    "stderr": ""
+  },
+  "tests_prepared": 12,
+  "tests_or_builds_run": false,
+  "actual_source_modified": false
+}

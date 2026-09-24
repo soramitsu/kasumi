@@ -1,0 +1,50 @@
+{
+  "after_sha256": "3bb42d9aa05480762a19e1eb35d406ac7df990739c539aac53b8b820780a3506",
+  "before_after_equal": true,
+  "before_sha256": "3bb42d9aa05480762a19e1eb35d406ac7df990739c539aac53b8b820780a3506",
+  "commands_terminal_success": 5,
+  "external_input_bytes_reread": false,
+  "final_copied_native_artifacts_verified": 38,
+  "input_inventory_entries": 1727,
+  "limit": "Before/after inventory equality is supplied run evidence; no external toolchain or dependency bytes reopened. Native driver omits recorded outer test modules and integrated server serde.",
+  "recorded_test_omissions": [
+    {
+      "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/native-02/node_disk/tests.rs",
+      "omitted_unrelated_test_source_sha256": "fb16dae6a29c87d8b2ba5fb200740e9e7fcd6cfd2aa15236c494af3803f447ad"
+    },
+    {
+      "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/native-02/node_disk/namespace/tests.rs",
+      "omitted_unrelated_test_source_sha256": "b463c38aae9a9ee80b676f72447bd5007778510eaf4626852f90d54ca452b783"
+    },
+    {
+      "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/native-02/node_disk/directory/tests.rs",
+      "omitted_unrelated_test_source_sha256": "8d59487c7a3ec6fb46240f8639219ea531ad8d48acb4bbb2e351a13460060fd1"
+    },
+    {
+      "destination": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/native-02/disk_memory_tests.rs",
+      "omitted_unrelated_test_source_sha256": null
+    }
+  ],
+  "results_sha256": "0ee2a604af58bc0d495f647c5d973424287e831cffa93fab0e8b7ea81f611970",
+  "reviewed_native_proposal_files_verified": [
+    "crates/kasumi-server/src/persistent_disk.rs",
+    "crates/kasumi-server/src/runtime_memory.rs",
+    "crates/kasumi-store/src/node_disk/census/tests.rs",
+    "crates/kasumi-store/src/node_disk/census.rs",
+    "crates/kasumi-store/src/node_disk/directory/cursor.rs",
+    "crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "crates/kasumi-store/src/node_disk/file.rs",
+    "crates/kasumi-store/src/node_disk/fixed_map/tests.rs",
+    "crates/kasumi-store/src/node_disk/fixed_map.rs",
+    "crates/kasumi-store/src/node_disk/ledger/tests.rs",
+    "crates/kasumi-store/src/node_disk/ledger.rs",
+    "crates/kasumi-store/src/node_disk/memory.rs",
+    "crates/kasumi-store/src/node_disk/tests.rs",
+    "crates/kasumi-store/src/node_disk.rs",
+    "docs/standalone.md"
+  ],
+  "run_stdout_sha256": "38a459698017d8c501a046e34fa2658a84969e328dc0a50a43e535a4a3f84501",
+  "rust_or_native_executed_by_reviewer": false,
+  "tests_filtered": 5,
+  "tests_passed": 37
+}

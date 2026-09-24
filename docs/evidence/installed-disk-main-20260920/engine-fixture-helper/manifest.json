@@ -1,0 +1,16 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "requires": [
+    "node-disk-memory revision2",
+    "installed-disk-core-adapter90015017"
+  ],
+  "patch_sha256": "e3bebad935c1fe5ddbe9a53a46fb8bbe68afe0a5b3cf99fe0439edd80535f844",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/test_utils.rs",
+      "baseline_sha256": "1907c61783cfd9efff180216f7ddbad74247e55229a41b0edbad33a77497dd9b",
+      "proposed_sha256": "fcd689a1833e65087856172f6f9e70f1950b604ec0bc64876da02a212ca86446"
+    }
+  ]
+}

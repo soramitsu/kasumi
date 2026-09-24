@@ -1,0 +1,14 @@
+{
+  "/Users/mtakemiya/dev/kasumi/scripts/gate_process.py": "ba7437cc9c68d189d37b679e6e067da0e8dbb98928959b5d27cdf78b4361cf08",
+  "/Users/mtakemiya/dev/kasumi/scripts/release_gate.py": "57a31477598d441b6f0e0deb00918ef2299fadaddb4ae5e343518eafad2ffa16",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/box-order-probe.rs": "677da2d5beebcbbc1af13151d1af01bfe3646e5bfd2dc5899338f9ef0787c67b",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/proposed/crates/kasumi-store/src/allocation_tests.rs": "2c5d9a7df0ad3642dc71143d139578ed26e40cf7a2d5f90c45da4ca06494e036",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/proposed/crates/kasumi-store/src/disk_memory.rs": "7795b70e22e97faff5d7e7448a6e743606fcb038d465602cb8a616873d642ea3",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/proposed/crates/kasumi-store/src/disk_memory_tests.rs": "4d20d4e8ebaa076bf31c2834d15787ee1727a6e5902e99eaa313999cfa92480d",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/proposed/crates/kasumi-store/src/lib.rs": "3ee6938cc529be570c351e85b7a16b03c165ea268461cf582c2462b194512d2e",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/proposed/crates/kasumi-store/src/test_utils.rs": "f926d9cf9b2f467cec941e46bd185ef4c88c85b427c620f500c6717c5522c4e9",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-02/harness.rs": "679c873b2b83112febcc7c5ad36ccf87f81c67168f5322740c8cd5d958e7deb4",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-02/lease-extracted.rs": "277987377db66cae30b09d1cfe3da009a279bfc1374104ef77f7d8c89c213cb2",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-02/provider-extracted.rs": "d257dcf697f7b23c273d86a48f7bfed591ea6d380f2717015e8406127c5d9e3e",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/standalone-check-02.py": "d59ff86908783c51da0f908d8eebf97161dab52e102349bf97c3ec35281fe14e"
+}

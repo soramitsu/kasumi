@@ -1,0 +1,121 @@
+error[E0583]: file not found for module `census`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk.rs:22:1
+   |
+22 | mod census;
+   | ^^^^^^^^^^^
+   |
+   = help: to create the module `census`, create file "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/census.rs" or "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/census/mod.rs"
+   = note: if there is a `mod census` elsewhere in the crate already, import it with `use crate::...` instead
+
+error[E0583]: file not found for module `directory`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk.rs:23:1
+   |
+23 | mod directory;
+   | ^^^^^^^^^^^^^^
+   |
+   = help: to create the module `directory`, create file "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/directory.rs" or "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/directory/mod.rs"
+   = note: if there is a `mod directory` elsewhere in the crate already, import it with `use crate::...` instead
+
+error[E0583]: file not found for module `file`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk.rs:24:1
+   |
+24 | mod file;
+   | ^^^^^^^^^
+   |
+   = help: to create the module `file`, create file "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/file.rs" or "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/file/mod.rs"
+   = note: if there is a `mod file` elsewhere in the crate already, import it with `use crate::...` instead
+
+error[E0583]: file not found for module `ledger`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk.rs:25:1
+   |
+25 | mod ledger;
+   | ^^^^^^^^^^^
+   |
+   = help: to create the module `ledger`, create file "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/ledger.rs" or "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/ledger/mod.rs"
+   = note: if there is a `mod ledger` elsewhere in the crate already, import it with `use crate::...` instead
+
+error[E0583]: file not found for module `memory`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk.rs:26:1
+   |
+26 | mod memory;
+   | ^^^^^^^^^^^
+   |
+   = help: to create the module `memory`, create file "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/memory.rs" or "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/memory/mod.rs"
+   = note: if there is a `mod memory` elsewhere in the crate already, import it with `use crate::...` instead
+
+error[E0583]: file not found for module `namespace`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk.rs:27:1
+   |
+27 | mod namespace;
+   | ^^^^^^^^^^^^^^
+   |
+   = help: to create the module `namespace`, create file "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/namespace.rs" or "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/namespace/mod.rs"
+   = note: if there is a `mod namespace` elsewhere in the crate already, import it with `use crate::...` instead
+
+error[E0463]: can't find crate for `sha2`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk.rs:243:13
+    |
+243 |         use sha2::{Digest, Sha256};
+    |             ^^^^ can't find crate
+
+error[E0599]: no associated function or constant named `required_metadata_bytes` found for struct `NodeDisk` in the current scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk.rs:378:32
+    |
+318 | pub struct NodeDisk {
+    | ------------------- associated function or constant `required_metadata_bytes` not found for this struct
+...
+378 |             owner_bytes: Self::required_metadata_bytes(config)?,
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `NodeDisk`
+
+error[E0599]: no method named `open_directory` found for struct `Arc<NodeDisk>` in the current scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-01/driver.rs:22:18
+   |
+22 |     let dir=disk.open_directory("data",Path::new("")).unwrap();
+   |                  ^^^^^^^^^^^^^^ method not found in `Arc<NodeDisk>`
+
+error[E0599]: no method named `create_file` found for struct `Arc<NodeDisk>` in the current scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-01/driver.rs:23:19
+   |
+23 |     let file=disk.create_file("data",Path::new("first"),DiskWork::Foreground).unwrap();dir.sync_all().unwrap();
+   |                   ^^^^^^^^^^^ method not found in `Arc<NodeDisk>`
+
+error[E0599]: no method named `publish_file` found for struct `Arc<NodeDisk>` in the current scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-01/driver.rs:25:19
+   |
+25 |     let file=disk.publish_file(file,"data",Path::new("second")).unwrap();dir.sync_all().unwrap();
+   |                   ^^^^^^^^^^^^ method not found in `Arc<NodeDisk>`
+
+error[E0599]: no method named `publish_file` found for struct `Arc<NodeDisk>` in the current scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-01/driver.rs:26:19
+   |
+26 |     let file=disk.publish_file(file,"data",Path::new("child/last")).unwrap();dir.sync_all().unwrap();
+   |                   ^^^^^^^^^^^^ method not found in `Arc<NodeDisk>`
+
+error[E0599]: no method named `delete_file` found for struct `Arc<NodeDisk>` in the current scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-01/driver.rs:27:10
+   |
+27 |     disk.delete_file(file).unwrap();dir.sync_all().unwrap();assert_eq!(disk.snapshot().persistent_files,0);
+   |          ^^^^^^^^^^^ method not found in `Arc<NodeDisk>`
+
+error[E0599]: no method named `create_file` found for struct `Arc<NodeDisk>` in the current scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-01/driver.rs:30:19
+   |
+30 |     let file=disk.create_file("data",Path::new("a/b/file"),DiskWork::Foreground).unwrap();
+   |                   ^^^^^^^^^^^ method not found in `Arc<NodeDisk>`
+
+error[E0599]: no method named `open_file` found for struct `Arc<NodeDisk>` in the current scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-01/driver.rs:39:19
+   |
+39 |     let file=disk.open_file("data",Path::new("a/b/file")).unwrap();disk.delete_file(file).unwrap();disk.pause().unwrap();
+   |                   ^^^^^^^^^ method not found in `Arc<NodeDisk>`
+
+error[E0599]: no method named `delete_file` found for struct `Arc<NodeDisk>` in the current scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-01/driver.rs:39:73
+   |
+39 |     let file=disk.open_file("data",Path::new("a/b/file")).unwrap();disk.delete_file(file).unwrap();disk.pause().unwrap();
+   |                                                                         ^^^^^^^^^^^ method not found in `Arc<NodeDisk>`
+
+error: aborting due to 16 previous errors
+
+Some errors have detailed explanations: E0463, E0583, E0599.
+For more information about an error, try `rustc --explain E0463`.

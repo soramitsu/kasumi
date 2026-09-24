@@ -1,0 +1,19 @@
+{
+  "actual_master_source_unchanged": true,
+  "all_proposals_match_tested_rev1": true,
+  "all_readbacks_match": true,
+  "base_manifest_sha256": "83ab0cf18c5ee3d5b4b00309c4073200faa1d753254b9f871da2837018b4faec",
+  "branch": "master",
+  "current_actual_master_apply_check": "not yet applicable until revision4 integrated",
+  "exact_revision4_bases_match": true,
+  "independent_patch_dry_run_and_apply_on_revision4_bases": "passed",
+  "manifest_sha256": "3bcd8e35676f2954ffa126891c143b81414650ecd9f388513b50e04986ddebc0",
+  "patch_sha256": "85b9d536668569b8e2f1d7bd984b0975eac180696ec9f1562b35681a60f2f58d",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "status": "PASS target-only source review; full composed native qualification pending",
+  "three_paths": [
+    "crates/kasumi-store/src/backup.rs",
+    "crates/kasumi-store/src/backup_file_admission_tests.rs",
+    "crates/kasumi-store/src/backup_sessions_fs.rs"
+  ]
+}

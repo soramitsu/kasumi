@@ -121,6 +121,29 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
         }
     }
 
+    // Deletion may merge the selected child into its immediate sibling. Check
+    // that sibling's complete pointer vector before changing the selected child.
+    fn preflight_delete_frame(&self, page: &PageImpl, child_index: usize) -> Result {
+        let accessor = BranchAccessor::new(page, K::fixed_width())?;
+        if accessor.count_children() > 1 {
+            let sibling = if child_index == 0 { 1 } else { child_index - 1 };
+            let sibling_page = self
+                .page_allocator
+                .get_page(accessor.child_page(sibling).unwrap(), PageHint::None)?;
+            if sibling_page.memory()[0] == BRANCH {
+                BranchAccessor::new(&sibling_page, K::fixed_width())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn preflight_delete_path(&self, path: &[(PageImpl, usize)]) -> Result {
+        for (page, index) in path {
+            self.preflight_delete_frame(page, *index)?;
+        }
+        Ok(())
+    }
+
     fn conditional_free(&mut self, page_number: PageNumber) {
         self.page_allocator
             .conditional_free(page_number, self.allocated, self.freed);
@@ -221,6 +244,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
         path: Vec<(PageImpl, usize)>,
         position: usize,
     ) -> Result<(AccessGuard<'a, K>, AccessGuard<'a, V>)> {
+        self.preflight_delete_path(&path)?;
         let length = self.root.expect("pop requires a root").length;
         let (mut result, key, value) = self.delete_leaf_at_position(leaf, position, true, true)?;
         for (page, child_index) in path.into_iter().rev() {
@@ -245,6 +269,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
         if indexes.is_empty() {
             return Ok(());
         }
+        self.preflight_delete_path(&path)?;
         let length = self.root.expect("delete requires a root").length;
         let mut result = self.delete_leaf_indexes(leaf, indexes, allow_in_place)?;
         for (page, child_index) in path.into_iter().rev() {
@@ -264,6 +289,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
         mut entries: OwnedEntryBuffer,
         removed_pairs: u64,
     ) -> Result {
+        self.preflight_delete_path(&path)?;
         assert!(!replaced_children.is_empty());
         let length = self.root.expect("replace requires a root").length;
         let (parent_page, _) = path
@@ -271,7 +297,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
             .expect("leaf child replacement requires a parent branch");
         let parent_page_number = parent_page.get_page_number();
         let (mut result, removed_leaf_pages) = {
-            let accessor = BranchAccessor::new(&parent_page, K::fixed_width());
+            let accessor = BranchAccessor::new(&parent_page, K::fixed_width())?;
             let old_children = accessor.count_children();
             assert!(replaced_children.end <= old_children);
 
@@ -481,6 +507,11 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
         entries: &OwnedEntryBuffer,
         inserted_pairs: u64,
     ) -> Result {
+        if let Some((path, _)) = &replaced {
+            for (page, _) in path {
+                BranchAccessor::new(page, K::fixed_width())?;
+            }
+        }
         assert!(entries.num_pairs() > 0);
         assert_eq!(replaced.is_some(), self.root.is_some());
         let length = self.root.map_or(0, |header| header.length);
@@ -502,7 +533,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
                 // uncommitted pages keeps repeated flushes from rebuilding
                 // the whole spine.
                 if nodes.len() == 1 {
-                    let accessor = BranchAccessor::new(&page, K::fixed_width());
+                    let accessor = BranchAccessor::new(&page, K::fixed_width())?;
                     let stored = accessor.key(child_index);
                     let separator = nodes[0].2.as_deref();
                     // Exact when the node kept its subtree's original bound
@@ -554,7 +585,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
         child_index: usize,
         mut replacement: Vec<SplicedNode>,
     ) -> Result<Vec<SplicedNode>> {
-        let accessor = BranchAccessor::new(parent, K::fixed_width());
+        let accessor = BranchAccessor::new(parent, K::fixed_width())?;
         let count = accessor.count_children();
         assert!(child_index < count);
         // A replacement ending in None kept the replaced subtree's original
@@ -1013,7 +1044,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
                 }
             }
             BRANCH => {
-                let accessor = BranchAccessor::new(&page, K::fixed_width());
+                let accessor = BranchAccessor::new(&page, K::fixed_width())?;
                 let (child_index, child_page) = accessor.child_for_key::<K>(key);
                 let child_checksum = accessor.child_checksum(child_index).unwrap();
                 let sub_result = self.insert_helper(
@@ -1047,7 +1078,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
                     let page_number = page.get_page_number();
                     drop(page);
                     let mut mutpage = self.page_allocator.get_page_mut(page_number)?;
-                    let mut mutator = BranchMutator::new(mutpage.memory_mut());
+                    let mut mutator = BranchMutator::new(mutpage.memory_mut())?;
                     mutator.write_child_page(
                         child_index,
                         sub_result.new_root,
@@ -1070,7 +1101,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
                         .page_allocator
                         .allocate(page.memory().len(), self.allocated)?;
                     new_page.memory_mut().copy_from_slice(page.memory());
-                    BranchMutator::new(new_page.memory_mut()).write_child_page(
+                    BranchMutator::new(new_page.memory_mut())?.write_child_page(
                         child_index,
                         sub_result.new_root,
                         sub_result.root_checksum,
@@ -1195,14 +1226,14 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
                 mutator.replace(position, value);
             }
             BRANCH => {
-                let accessor = BranchAccessor::new(&page, K::fixed_width());
+                let accessor = BranchAccessor::new(&page, K::fixed_width())?;
                 let (child_index, child_page) = accessor.child_for_key::<K>(key);
                 self.insert_inplace_helper(
                     self.page_allocator.get_page_mut(child_page)?,
                     key,
                     value,
                 )?;
-                let mut mutator = BranchMutator::new(page.memory_mut());
+                let mut mutator = BranchMutator::new(page.memory_mut())?;
                 mutator.write_child_page(child_index, child_page, DEFERRED);
             }
             _ => unreachable!(),
@@ -1427,9 +1458,10 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
     ) -> Result<(DeletionResult, Option<AccessGuard<'a, V>>)> {
         let original_page_number = page.get_page_number();
         let (child_index, child_page_number) = {
-            let accessor = BranchAccessor::new(&page, K::fixed_width());
+            let accessor = BranchAccessor::new(&page, K::fixed_width())?;
             accessor.child_for_key::<K>(key)
         };
+        self.preflight_delete_frame(&page, child_index)?;
         let (result, found) = self.delete_helper(
             self.page_allocator
                 .get_page(child_page_number, PageHint::None)?,
@@ -1456,7 +1488,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
         child_index: usize,
         new_child: PageNumber,
     ) -> Result<(PageNumber, bool)> {
-        let accessor = BranchAccessor::new(&page, K::fixed_width());
+        let accessor = BranchAccessor::new(&page, K::fixed_width())?;
         let original_page_number = page.get_page_number();
         let child_page_number = accessor.child_page(child_index).unwrap();
         let child_checksum = accessor.child_checksum(child_index).unwrap();
@@ -1471,7 +1503,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
         if self.page_allocator.uncommitted(original_page_number) {
             drop(page);
             let mut mutpage = self.page_allocator.get_page_mut(original_page_number)?;
-            let mut mutator = BranchMutator::new(mutpage.memory_mut());
+            let mut mutator = BranchMutator::new(mutpage.memory_mut())?;
             mutator.write_child_page(child_index, new_child, DEFERRED);
             Ok((original_page_number, false))
         } else {
@@ -1504,7 +1536,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
             return Ok(Subtree(result_page));
         }
 
-        let accessor = BranchAccessor::new(&page, K::fixed_width());
+        let accessor = BranchAccessor::new(&page, K::fixed_width())?;
         // Child is requesting to be merged with a sibling
         let mut builder = BranchBuilder::new(
             self.page_allocator,
@@ -1656,7 +1688,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
                 let merge_with_page = self
                     .page_allocator
                     .get_page(accessor.child_page(merge_with).unwrap(), PageHint::None)?;
-                let merge_with_accessor = BranchAccessor::new(&merge_with_page, K::fixed_width());
+                let merge_with_accessor = BranchAccessor::new(&merge_with_page, K::fixed_width())?;
                 assert!(merge_with < accessor.count_children());
                 for i in 0..accessor.count_children() {
                     if i == child_index {
@@ -1719,7 +1751,7 @@ impl<'a, 'b, K: Key + 'static, V: Value + 'static> MutateHelper<'a, 'b, K, V> {
                 let merge_with_page = self
                     .page_allocator
                     .get_page(accessor.child_page(merge_with).unwrap(), PageHint::None)?;
-                let merge_with_accessor = BranchAccessor::new(&merge_with_page, K::fixed_width());
+                let merge_with_accessor = BranchAccessor::new(&merge_with_page, K::fixed_width())?;
                 assert!(merge_with < accessor.count_children());
                 for i in 0..accessor.count_children() {
                     if i == child_index {
@@ -1828,7 +1860,6 @@ mod tests {
             page_size,
             None,
             0,
-            false,
         )
         .unwrap();
         mem.reset_allocator_state().unwrap();
@@ -1857,7 +1888,9 @@ mod tests {
 
     fn count_children(page_allocator: &PageAllocator, node: &SplicedNode) -> usize {
         let page = page_allocator.get_page(node.0, PageHint::None).unwrap();
-        BranchAccessor::new(&page, u64::fixed_width()).count_children()
+        BranchAccessor::new(&page, u64::fixed_width())
+            .unwrap()
+            .count_children()
     }
 
     // num_keys is stored as a u16. With a page large enough that the byte
@@ -1884,7 +1917,7 @@ mod tests {
         // The second page holds the stolen child and the orphan, with the
         // stolen child's separator between them.
         let page = page_allocator.get_page(nodes[1].0, PageHint::None).unwrap();
-        let accessor = BranchAccessor::new(&page, u64::fixed_width());
+        let accessor = BranchAccessor::new(&page, u64::fixed_width()).unwrap();
         assert_eq!(accessor.child_page(0).unwrap(), children[first].0);
         assert_eq!(accessor.child_page(1).unwrap(), children[first + 1].0);
         assert_eq!(accessor.key(0), children[first].2.as_deref());
@@ -1900,5 +1933,90 @@ mod tests {
         assert_eq!(nodes.len(), 1);
         assert_eq!(count_children(&page_allocator, &nodes[0]), children.len());
         assert!(nodes[0].2.is_none());
+    }
+}
+
+#[cfg(test)]
+mod canonical_deletion_tests {
+    use super::*;
+    use crate::tree_store::{AllocationPolicy, InMemoryBackend, TransactionalMemory};
+    fn leaf(allocator: &PageAllocator, tracker: &PageTracker, key: u64) -> PageNumber {
+        let bytes = key.to_le_bytes();
+        let mut builder = LeafBuilder::new(allocator, tracker, 1, Some(8), Some(8));
+        builder.push(&bytes, &bytes);
+        builder.build().unwrap().get_page_number()
+    }
+    fn branch(
+        allocator: &PageAllocator,
+        tracker: &PageTracker,
+        children: [PageNumber; 2],
+        key: u64,
+    ) -> PageNumber {
+        let bytes = key.to_le_bytes();
+        let mut builder = BranchBuilder::new(allocator, tracker, 2, Some(8));
+        builder.push_child(children[0], DEFERRED);
+        builder.push_key(&bytes);
+        builder.push_child(children[1], DEFERRED);
+        builder.build().unwrap().get_page_number()
+    }
+    #[test]
+    fn deletion_rejects_later_pointer_in_merge_sibling_before_leaf_or_allocator_mutation() {
+        let mem = Arc::new(
+            TransactionalMemory::new(
+                Box::new(InMemoryBackend::new()),
+                crate::test_admission(),
+                true,
+                4096,
+                None,
+                0,
+            )
+            .unwrap(),
+        );
+        mem.reset_allocator_state().unwrap();
+        let allocator = PageAllocator::new(mem.clone(), AllocationPolicy::Default);
+        let tracker = Arc::new(PageTracker::new_tracking());
+        let leaves = [
+            leaf(&allocator, &tracker, 0),
+            leaf(&allocator, &tracker, 1),
+            leaf(&allocator, &tracker, 2),
+            leaf(&allocator, &tracker, 3),
+        ];
+        let left = branch(&allocator, &tracker, [leaves[0], leaves[1]], 0);
+        let right = branch(&allocator, &tracker, [leaves[2], leaves[3]], 2);
+        let root_page = branch(&allocator, &tracker, [left, right], 1);
+        let mut malformed = allocator.get_page_mut(right).unwrap();
+        malformed.memory_mut()[48 + 5] |= 1;
+        drop(malformed);
+        let pages = [
+            leaves[0], leaves[1], leaves[2], leaves[3], left, right, root_page,
+        ];
+        let before: Vec<_> = pages
+            .iter()
+            .map(|p| {
+                allocator
+                    .get_page(*p, PageHint::None)
+                    .unwrap()
+                    .memory()
+                    .to_vec()
+            })
+            .collect();
+        let count = mem.count_allocated_pages().unwrap();
+        let original_root = Some(BtreeHeader::new(root_page, DEFERRED, 4));
+        let mut root = original_root;
+        let mut freed = vec![];
+        let mut helper = MutateHelper::<u64, u64>::new(&mut root, &allocator, &mut freed, &tracker);
+        assert!(matches!(
+            helper.delete(&0),
+            Err(crate::StorageError::Corrupted(_))
+        ));
+        assert_eq!(root, original_root);
+        assert!(freed.is_empty());
+        assert_eq!(mem.count_allocated_pages().unwrap(), count);
+        for (index, page) in pages.iter().enumerate() {
+            assert_eq!(
+                allocator.get_page(*page, PageHint::None).unwrap().memory(),
+                before[index]
+            );
+        }
     }
 }

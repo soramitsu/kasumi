@@ -1,0 +1,24 @@
+test control_administration::current_control_administration_retains_exact_resource_revocation_and_original_lifetime ... 
+thread 'control_administration::current_control_administration_retains_exact_resource_revocation_and_original_lifetime' (4362900) panicked at crates/kasumi-engine/tests/lifecycle.rs:301:13:
+control leader wait failed: deadline has elapsed; states: [(1, "Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok(()), id: 1, current_term: 50, vote: Vote { leader_id: LeaderId { term: 50, node_id: 1 }, committed: false }, last_log_index: Some(0), last_applied: None, snapshot: None, purged: None, state: Candidate, current_leader: None, millis_since_quorum_ack: None, membership_config: StoredMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: \"https://node-1.example\" }, 2: BasicNode { addr: \"https://node-2.example\" }, 3: BasicNode { addr: \"https://node-3.example\" }} } }, replication: None }), has_changed: true }"), (2, "Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok(()), id: 2, current_term: 50, vote: Vote { leader_id: LeaderId { term: 50, node_id: 1 }, committed: false }, last_log_index: None, last_applied: None, snapshot: None, purged: None, state: Learner, current_leader: None, millis_since_quorum_ack: None, membership_config: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, replication: None }), has_changed: true }"), (3, "Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok(()), id: 3, current_term: 50, vote: Vote { leader_id: LeaderId { term: 50, node_id: 1 }, committed: false }, last_log_index: None, last_applied: None, snapshot: None, purged: None, state: Learner, current_leader: None, millis_since_quorum_ack: None, membership_config: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, replication: None }), has_changed: true }")]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: <lifecycle::Fixture>::leader::{closure#0}::{closure#1}
+             at ./tests/lifecycle.rs:301:13
+   3: <core::result::Result<alloc::sync::Arc<kasumi_engine::service::Database>, tokio::time::error::Elapsed>>::unwrap_or_else::<<lifecycle::Fixture>::leader::{closure#0}::{closure#1}>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1622:23
+   4: <lifecycle::Fixture>::leader::{closure#0}
+             at ./tests/lifecycle.rs:300:10
+   5: <lifecycle::Fixture>::open::{closure#0}
+             at ./tests/lifecycle.rs:284:23
+   6: <lifecycle::Fixture>::configured::{closure#0}
+             at ./tests/lifecycle.rs:167:27
+   7: <lifecycle::Fixture>::limits::{closure#0}
+             at ./tests/lifecycle.rs:43:51
+   8: <lifecycle::Fixture>::new::{closure#0}
+             at ./tests/lifecycle.rs:40:50
+   9: lifecycle::control_administration::current_control_administration_retains_exact_resource_revocation_and_original_lifetime::{closure#0}
+             at ./tests/common/control_administration.rs:20:38

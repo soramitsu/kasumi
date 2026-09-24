@@ -1,0 +1,29 @@
+--- actual-master/crates/kasumi-store/src/node_disk/tests.rs
++++ candidate/crates/kasumi-store/src/node_disk/tests.rs
+@@ -1,4 +1,4 @@
+-fn cancelled_or_work_exhausted_census_publishes_no_partial_owner() {
++fn cancelled_or_cardinality_exhausted_census_publishes_no_partial_owner() {
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     let (_directory, config) = installation();
+     for name in ["one", "two", "three"] {
+@@ -15,7 +15,7 @@
+         .is_err()
+     );
+     let mut bounded = config.clone();
+-    bounded.max_census_entries = 2;
++    bounded.max_persistent_files = 2;
+     assert!(
+         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+             &bounded,
+@@ -25,7 +25,10 @@
+         .is_err()
+     );
+     let disk = open(config, fixture_memory.clone());
+-    assert_eq!(disk.snapshot().charged_bytes, 96 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (96 << 10)
++    );
+     assert_eq!(disk.snapshot().persistent_files, 3);
+     clean(&disk, &["one", "two", "three"]);
+ }

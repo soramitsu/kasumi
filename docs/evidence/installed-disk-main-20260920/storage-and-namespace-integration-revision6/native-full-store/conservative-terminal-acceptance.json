@@ -1,0 +1,18 @@
+{
+  "status": "PASS under conservative independent terminal audit",
+  "executed_runner_revision2_sha256": "93b321d96f9998075856f3b8db99240ba72da7a519d79f98a2ef40d9aaa850c7",
+  "reviewed_successor_runner_revision3_sha256": "a66fdce777db0d0ed9130649755a9a1dc26ec2b807859d2e19743f07a8f5a70a",
+  "successor_runner_was_not_used_to_execute_this_frozen_trial": true,
+  "untriggered_predecessor_runner_findings": [
+    "All seven workspace/full-cohort command results have timeout=false and empty cleanup signals",
+    "Every dispatch had positive remaining budget; each stage ended within its remaining allowance",
+    "Both complete cohorts ended below the original1200-second bound",
+    "All listed process groups drained without forced cleanup, all executable and source inventories unchanged"
+  ],
+  "workspace_result_sha256": "35e3c049cccbd7d30ae4804fd7dfb60a672d583304172f2fe1a12c80b76676d2",
+  "runtime_result_sha256": "5ada5a2f06c160c48c6fca90e64d58b11d74c5ce145833fc3f9b63d845f0e565",
+  "runner_gate_regression_sha256": "8b4abdf9a039f150a18877ff5d3b04ec415a8dd3304af52757546275bdee1f8c",
+  "initial_peer_review_sha256": "180891ddceaff3e84b36f4d186fcb83cb3e2c0caa689a000179ecbecd973e5e3",
+  "successor_peer_review_sha256": "c80a68c020c4b368148e78d96da8268cdd2324726455a37b901421e8c81d00de",
+  "accepted_without_replaying_untimed_successful_work": true
+}

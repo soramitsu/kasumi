@@ -1,0 +1,135 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+0000000100150800 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}>:
+100150800: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+100150804: a9017bfd    	stp	x29, x30, [sp, #0x10]
+100150808: 910043fd    	add	x29, sp, #0x10
+10015080c: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+100150810: f90003ff    	str	xzr, [sp]
+100150814: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+100150818: f90003ff    	str	xzr, [sp]
+10015081c: d12b83ff    	sub	sp, sp, #0xae0
+100150820: f90003ff    	str	xzr, [sp]
+100150824: d10107a8    	sub	x8, x29, #0x41
+100150828: f9000be8    	str	x8, [sp, #0x10]
+10015082c: f9000fe0    	str	x0, [sp, #0x18]
+100150830: f90017e1    	str	x1, [sp, #0x28]
+100150834: aa0003e8    	mov	x8, x0
+100150838: f81c03a8    	stur	x8, [x29, #-0x40]
+10015083c: aa0003e8    	mov	x8, x0
+100150840: f81d03a8    	stur	x8, [x29, #-0x30]
+100150844: 5282a708    	mov	w8, #0x1538             ; =5432
+100150848: 38686808    	ldrb	w8, [x0, x8]
+10015084c: b90027e8    	str	w8, [sp, #0x24]
+100150850: 34000168    	cbz	w8, 0x10015087c <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x7c>
+100150854: 14000001    	b	0x100150858 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x58>
+100150858: b94027e8    	ldr	w8, [sp, #0x24]
+10015085c: 71000508    	subs	w8, w8, #0x1
+100150860: 54000200    	b.eq	0x1001508a0 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0xa0>
+100150864: 14000001    	b	0x100150868 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x68>
+100150868: b94027e8    	ldr	w8, [sp, #0x24]
+10015086c: 71000908    	subs	w8, w8, #0x2
+100150870: 540001e0    	b.eq	0x1001508ac <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0xac>
+100150874: 14000001    	b	0x100150878 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x78>
+100150878: 14000010    	b	0x1001508b8 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0xb8>
+10015087c: 914007e8    	add	x8, sp, #0x1, lsl #12   ; =0x1000
+100150880: 9115c108    	add	x8, x8, #0x570
+100150884: 5280000a    	mov	w10, #0x0               ; =0
+100150888: 52800029    	mov	w9, #0x1                ; =1
+10015088c: 12000140    	and	w0, w10, #0x1
+100150890: aa0903e1    	mov	x1, x9
+100150894: 12000122    	and	w2, w9, #0x1
+100150898: 97fdeb73    	bl	0x1000cb664 <lifecycle::recovery_control::exercise_completed_recovery>
+10015089c: 14000015    	b	0x1001508f0 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0xf0>
+1001508a0: 52800008    	mov	w8, #0x0                ; =0
+1001508a4: 3707ffe8    	tbnz	w8, #0x0, 0x1001508a0 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0xa0>
+1001508a8: 14000020    	b	0x100150928 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x128>
+1001508ac: 52800008    	mov	w8, #0x0                ; =0
+1001508b0: 3707ffe8    	tbnz	w8, #0x0, 0x1001508ac <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0xac>
+1001508b4: 14000020    	b	0x100150934 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x134>
+1001508b8: f94017e8    	ldr	x8, [sp, #0x28]
+1001508bc: f90017e8    	str	x8, [sp, #0x28]
+1001508c0: 14000017    	b	0x10015091c <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x11c>
+1001508c4: f9400fe8    	ldr	x8, [sp, #0x18]
+1001508c8: 5282a709    	mov	w9, #0x1538             ; =5432
+1001508cc: 8b090109    	add	x9, x8, x9
+1001508d0: 52800048    	mov	w8, #0x2                ; =2
+1001508d4: 39000128    	strb	w8, [x9]
+1001508d8: f85d83a0    	ldur	x0, [x29, #-0x28]
+1001508dc: 9488dd8b    	bl	0x102387f08 <dyld_stub_binder+0x102387f08>
+1001508e0: f81d83a0    	stur	x0, [x29, #-0x28]
+1001508e4: aa0103e8    	mov	x8, x1
+1001508e8: b81e03a8    	stur	w8, [x29, #-0x20]
+1001508ec: 17fffff6    	b	0x1001508c4 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0xc4>
+1001508f0: 9100e3e8    	add	x8, sp, #0x38
+1001508f4: 914007e0    	add	x0, sp, #0x1, lsl #12   ; =0x1000
+1001508f8: 9115c000    	add	x0, x0, #0x570
+1001508fc: 9400219c    	bl	0x100158f6c <<lifecycle::recovery_control::exercise_completed_recovery::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100150900: 14000001    	b	0x100150904 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x104>
+100150904: f9400fe0    	ldr	x0, [sp, #0x18]
+100150908: 9100e3e1    	add	x1, sp, #0x38
+10015090c: 5282a708    	mov	w8, #0x1538             ; =5432
+100150910: aa0803e2    	mov	x2, x8
+100150914: 9488de3a    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+100150918: 14000001    	b	0x10015091c <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x11c>
+10015091c: f9400fe8    	ldr	x8, [sp, #0x18]
+100150920: f81e83a8    	stur	x8, [x29, #-0x18]
+100150924: 1400000e    	b	0x10015095c <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x15c>
+100150928: b002e180    	adrp	x0, 0x105d81000 <dyld_stub_binder+0x105d81000>
+10015092c: 91124000    	add	x0, x0, #0x490
+100150930: 9488dd0c    	bl	0x102387d60 <core::panicking::panic_const::panic_const_async_fn_resumed>
+100150934: b002e180    	adrp	x0, 0x105d81000 <dyld_stub_binder+0x105d81000>
+100150938: 91124000    	add	x0, x0, #0x490
+10015093c: 9488dd10    	bl	0x102387d7c <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+100150940: f9400fe0    	ldr	x0, [sp, #0x18]
+100150944: 97fd7248    	bl	0x1000ad264 <core::ptr::drop_glue::<lifecycle::recovery_control::exercise_completed_recovery::{closure#0}>>
+100150948: 17ffffdf    	b	0x1001508c4 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0xc4>
+10015094c: f81d83a0    	stur	x0, [x29, #-0x28]
+100150950: aa0103e8    	mov	x8, x1
+100150954: b81e03a8    	stur	w8, [x29, #-0x20]
+100150958: 17fffffa    	b	0x100150940 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x140>
+10015095c: f9400fe0    	ldr	x0, [sp, #0x18]
+100150960: f94017e1    	ldr	x1, [sp, #0x28]
+100150964: 97fff43a    	bl	0x10014da4c <lifecycle::recovery_control::exercise_completed_recovery::{closure#0}>
+100150968: b9000fe0    	str	w0, [sp, #0xc]
+10015096c: 14000001    	b	0x100150970 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x170>
+100150970: f9400be8    	ldr	x8, [sp, #0x10]
+100150974: b9400fe9    	ldr	w9, [sp, #0xc]
+100150978: 39000109    	strb	w9, [x8]
+10015097c: 39400108    	ldrb	w8, [x8]
+100150980: 36000208    	tbz	w8, #0x0, 0x1001509c0 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x1c0>
+100150984: 14000001    	b	0x100150988 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x188>
+100150988: f9400fe8    	ldr	x8, [sp, #0x18]
+10015098c: 52800029    	mov	w9, #0x1                ; =1
+100150990: 3900dfe9    	strb	w9, [sp, #0x37]
+100150994: 5282a709    	mov	w9, #0x1538             ; =5432
+100150998: 8b090109    	add	x9, x8, x9
+10015099c: 52800068    	mov	w8, #0x3                ; =3
+1001509a0: 39000128    	strb	w8, [x9]
+1001509a4: 3940dfe8    	ldrb	w8, [sp, #0x37]
+1001509a8: 12000100    	and	w0, w8, #0x1
+1001509ac: 91400bff    	add	sp, sp, #0x2, lsl #12   ; =0x2000
+1001509b0: 912b83ff    	add	sp, sp, #0xae0
+1001509b4: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+1001509b8: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+1001509bc: d65f03c0    	ret
+1001509c0: f9400fe0    	ldr	x0, [sp, #0x18]
+1001509c4: 97fd7228    	bl	0x1000ad264 <core::ptr::drop_glue::<lifecycle::recovery_control::exercise_completed_recovery::{closure#0}>>
+1001509c8: 14000001    	b	0x1001509cc <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}+0x1cc>
+1001509cc: f9400fe8    	ldr	x8, [sp, #0x18]
+1001509d0: 3900dfff    	strb	wzr, [sp, #0x37]
+1001509d4: 5282a709    	mov	w9, #0x1538             ; =5432
+1001509d8: 8b090109    	add	x9, x8, x9
+1001509dc: 52800028    	mov	w8, #0x1                ; =1
+1001509e0: 39000128    	strb	w8, [x9]
+1001509e4: 3940dfe8    	ldrb	w8, [sp, #0x37]
+1001509e8: 12000100    	and	w0, w8, #0x1
+1001509ec: 91400bff    	add	sp, sp, #0x2, lsl #12   ; =0x2000
+1001509f0: 912b83ff    	add	sp, sp, #0xae0
+1001509f4: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+1001509f8: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+1001509fc: d65f03c0    	ret
+100150a00: 9488dbd6    	bl	0x102387958 <core::panicking::panic_in_cleanup>

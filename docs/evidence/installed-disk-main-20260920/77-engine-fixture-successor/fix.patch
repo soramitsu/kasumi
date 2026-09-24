@@ -1,0 +1,140 @@
+diff --git a/crates/kasumi-engine/src/service_retirement_tests.rs b/crates/kasumi-engine/src/service_retirement_tests.rs
+--- a/crates/kasumi-engine/src/service_retirement_tests.rs
++++ b/crates/kasumi-engine/src/service_retirement_tests.rs
+@@ -5,8 +5,9 @@
+ ) -> PreparedRetirement {
+     let destination = Arc::new(
+         kasumi_store::FilesystemBackupDestination::new(
+-            fixture._directory.path().join(id),
++            fixture._directory.path().join("persistent").join(id),
+             16 << 20,
++            fixture.storage.persistent.clone(),
+         )
+         .unwrap(),
+     );
+diff --git a/crates/kasumi-engine/src/snapshot_codec.rs b/crates/kasumi-engine/src/snapshot_codec.rs
+--- a/crates/kasumi-engine/src/snapshot_codec.rs
++++ b/crates/kasumi-engine/src/snapshot_codec.rs
+@@ -1116,12 +1116,10 @@
+             writer,
+         )
+     }
+-    fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
+-        let scratch = crate::codec_fixture::ScratchScope::new(
+-            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+-        )
+-        .unwrap();
+-        let disk = &scratch.disk;
++    fn read(
++        disk: &Arc<kasumi_store::ScratchDisk>,
++        reader: &mut dyn Read,
++    ) -> anyhow::Result<TenantState> {
+         Ok(super::read(disk, reader)?.state)
+     }
+     pub(super) fn state() -> TenantState {
+@@ -1146,10 +1144,15 @@
+     }
+     #[test]
+     fn canonical_stream_requires_terminal_counts_digest_and_exact_eof() {
++        let scratch = crate::codec_fixture::ScratchScope::new(
++            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
++        )
++        .unwrap();
++        let disk = &scratch.disk;
+         let state = state();
+         let mut bytes = Vec::new();
+         write(&state, &mut bytes).unwrap();
+-        let decoded = read(&mut bytes.as_slice()).unwrap();
++        let decoded = read(disk, &mut bytes.as_slice()).unwrap();
+         assert_eq!(
+             serde_json::to_vec(&state).unwrap(),
+             serde_json::to_vec(&decoded).unwrap()
+@@ -1165,34 +1168,44 @@
+             bytes.len() - 1,
+         ] {
+             assert!(
+-                read(&mut &bytes[..index]).is_err(),
++                read(disk, &mut &bytes[..index]).is_err(),
+                 "accepted truncation at {index}"
+             );
+             let mut corrupt = bytes.clone();
+             corrupt[index] ^= 1;
+             assert!(
+-                read(&mut corrupt.as_slice()).is_err(),
++                read(disk, &mut corrupt.as_slice()).is_err(),
+                 "accepted corruption at {index}"
+             );
+         }
+         let mut trailing = bytes.clone();
+         trailing.push(0);
+-        assert!(read(&mut trailing.as_slice()).is_err());
++        assert!(read(disk, &mut trailing.as_slice()).is_err());
+         assert!(
+-            read(&mut serde_json::to_vec(&state).unwrap().as_slice()).is_err(),
++            read(disk, &mut serde_json::to_vec(&state).unwrap().as_slice()).is_err(),
+             "legacy JSON snapshots are forbidden"
+         );
+     }
+     #[test]
+     fn oversized_record_is_rejected_before_payload_read_or_allocation() {
++        let scratch = crate::codec_fixture::ScratchScope::new(
++            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
++        )
++        .unwrap();
++        let disk = &scratch.disk;
+         let mut bytes = MAGIC.to_vec();
+         bytes.extend_from_slice(&((MAX_RECORD as u64) + 1).to_be_bytes());
+         bytes.push(0);
+-        let error = read(&mut bytes.as_slice()).unwrap_err().to_string();
++        let error = read(disk, &mut bytes.as_slice()).unwrap_err().to_string();
+         assert!(error.contains("record exceeds"));
+     }
+     #[test]
+     fn authenticated_duplicate_header_is_rejected() {
++        let scratch = crate::codec_fixture::ScratchScope::new(
++            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
++        )
++        .unwrap();
++        let disk = &scratch.disk;
+         let state = state();
+         let record = serde_json::to_vec(&Record::Header(Box::new(state))).unwrap();
+         let mut bytes = MAGIC.to_vec();
+@@ -1208,7 +1221,7 @@
+         bytes.extend_from_slice(&total.to_be_bytes());
+         bytes.extend_from_slice(&digest);
+         assert!(
+-            read(&mut bytes.as_slice())
++            read(disk, &mut bytes.as_slice())
+                 .unwrap_err()
+                 .to_string()
+                 .contains("unordered")
+@@ -1216,6 +1229,11 @@
+     }
+     #[test]
+     fn archived_audit_prefix_preserves_absolute_sequences_and_head() {
++        let scratch = crate::codec_fixture::ScratchScope::new(
++            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
++        )
++        .unwrap();
++        let disk = &scratch.disk;
+         let mut state = state();
+         let stream_id = state.audit_retention.stream_id;
+         let head = AuditArchiveReference {
+@@ -1265,7 +1283,7 @@
+                 .unwrap(),
+             bytes.len()
+         );
+-        let restored = read(&mut bytes.as_slice()).unwrap();
++        let restored = read(disk, &mut bytes.as_slice()).unwrap();
+         assert_eq!(restored.audit_retention.next_sequence, 24);
+         assert_eq!(restored.audit_retention.pruned_before, 23);
+         assert_eq!(restored.audit_retention.archive_head, Some(head));
+@@ -1273,7 +1291,7 @@
+         state.audit_retention.next_sequence = 25;
+         bytes.clear();
+         write(&state, &mut bytes).unwrap();
+-        assert!(read(&mut bytes.as_slice()).is_err());
++        assert!(read(disk, &mut bytes.as_slice()).is_err());
+     }
+ }
+ 

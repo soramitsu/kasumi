@@ -79,7 +79,11 @@ fn replicated_genesis_requires_explicit_tag_payload_and_lifecycle_kind() -> anyh
 fn control_genesis_is_deterministic_bounded_and_part_of_bootstrap_identity() -> anyhow::Result<()> {
     let original = installed();
     original.validate()?;
-    let disk = kasumi_store::ScratchDisk::fixture();
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+    )
+    .unwrap();
+    let disk = scratch.disk.clone();
     let first = original
         .genesis
         .engine(CONTROL_TENANT, &original)?
@@ -173,7 +177,10 @@ async fn stores(
     )
     .await
 }
-async fn audit(node: Arc<NodeStore>) -> anyhow::Result<Arc<SecurityAudit>> {
+async fn audit(
+    node: Arc<NodeStore>,
+    admission: Arc<crate::admission::NodeAdmission>,
+) -> anyhow::Result<Arc<SecurityAudit>> {
     let store = TenantStore::initialize_catalog(
         node,
         crate::SECURITY_TENANT.into(),
@@ -181,11 +188,7 @@ async fn audit(node: Arc<NodeStore>) -> anyhow::Result<Arc<SecurityAudit>> {
         StorageAccess::security_audit(),
     )
     .await?;
-    SecurityAudit::initialize(
-        store,
-        Default::default(),
-        crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?,
-    )
+    SecurityAudit::initialize(store, Default::default(), admission)
 }
 fn retained(stores: &TenantStorageSet) -> anyhow::Result<String> {
     let mut digest = Sha256::new();
@@ -207,10 +210,26 @@ fn retained(stores: &TenantStorageSet) -> anyhow::Result<String> {
 async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publication()
 -> anyhow::Result<()> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
-    let node = NodeStore::create_new_fixture(
-        directory.path().join("node.redb"),
+    let (persistent, scratch) = crate::test_utils::fixture_disk_configs(directory.path())?;
+    // The original fixed 2 GiB source resolves Default to a 256 MiB total.
+    // Add only the new physical metadata; do not resolve against host RAM.
+    let config = crate::admission::AdmissionConfig {
+        max_inflight_bytes: Some(
+            (256_u64 << 20)
+                .checked_add(crate::test_utils::isolated_disk_metadata_bytes(
+                    &persistent,
+                    &scratch,
+                )?)
+                .ok_or_else(|| anyhow::anyhow!("fixture metadata budget overflow"))?,
+        ),
+        ..Default::default()
+    };
+    let admission = crate::admission::NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
+    let storage =
+        crate::test_utils::FixtureStorage::with_admission(&persistent, &scratch, admission)?;
+    let node = storage.create_new(
+        directory.path().join("persistent/node.redb"),
         uuid::Uuid::new_v4(),
-        kasumi_store::ScratchDisk::fixture(),
     )?;
     // The tenant-aware fixture helper deliberately assigns NodeControl to this
     // reserved tenant. Install the wrong purpose explicitly for this rejection.
@@ -221,7 +240,7 @@ async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publica
             .purpose()
             .is_local_fixture()
     );
-    let first_audit = audit(node.clone()).await?;
+    let first_audit = audit(node.clone(), storage.admission.clone()).await?;
     let before = retained(&pair)?;
     assert!(
         open_replicated(
@@ -242,17 +261,16 @@ async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publica
     drop(first_audit);
     drop(pair);
     drop(node);
-    let node = NodeStore::create_new_fixture(
-        directory.path().join("control.redb"),
+    let node = storage.create_new(
+        directory.path().join("persistent/control.redb"),
         uuid::Uuid::new_v4(),
-        kasumi_store::ScratchDisk::fixture(),
     )?;
     let pair = stores(node.clone(), StorageAccess::node_control()).await?;
     assert_eq!(
         pair.application().storage_access().purpose(),
         &kasumi_store::StoragePurpose::NodeControl
     );
-    let second_audit = audit(node.clone()).await?;
+    let second_audit = audit(node.clone(), storage.admission.clone()).await?;
     let before = retained(&pair)?;
     let mut wrong = installed();
     wrong.genesis = ReplicatedGenesis::Application;
@@ -279,13 +297,29 @@ async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publica
 async fn strict_control_reopen_rejects_partial_genesis_without_catalog_or_raft_mutation()
 -> anyhow::Result<()> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
-    let node = NodeStore::create_new_fixture(
-        directory.path().join("node.redb"),
+    let (persistent, scratch) = crate::test_utils::fixture_disk_configs(directory.path())?;
+    // The original fixed 2 GiB source resolves Default to a 256 MiB total.
+    // Add only the new physical metadata; do not resolve against host RAM.
+    let config = crate::admission::AdmissionConfig {
+        max_inflight_bytes: Some(
+            (256_u64 << 20)
+                .checked_add(crate::test_utils::isolated_disk_metadata_bytes(
+                    &persistent,
+                    &scratch,
+                )?)
+                .ok_or_else(|| anyhow::anyhow!("fixture metadata budget overflow"))?,
+        ),
+        ..Default::default()
+    };
+    let admission = crate::admission::NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
+    let storage =
+        crate::test_utils::FixtureStorage::with_admission(&persistent, &scratch, admission)?;
+    let node = storage.create_new(
+        directory.path().join("persistent/node.redb"),
         uuid::Uuid::new_v4(),
-        kasumi_store::ScratchDisk::fixture(),
     )?;
     let pair = stores(node.clone(), StorageAccess::node_control()).await?;
-    let audit = audit(node.clone()).await?;
+    let audit = audit(node.clone(), storage.admission.clone()).await?;
     let installed = installed();
     bind_deployment(&pair, &serde_json::to_vec(&("replicated", &installed))?)?;
     let partial = TenantEngine::new(

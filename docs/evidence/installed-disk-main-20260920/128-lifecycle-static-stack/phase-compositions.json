@@ -1,0 +1,26 @@
+{
+  "outer_plus_one_adapter_plus_phase": {
+    "prepare_completion": 739440,
+    "complete_recovery": 791424,
+    "resolve_expired_completion": 422464,
+    "exercise_route_publication": 500576
+  },
+  "selected_array_constructor_chain": {
+    "functions": [
+      "probe_new",
+      "probe_slots_from_fn",
+      "probe_slots_try_from_fn",
+      "probe_slots_try_from_fn_erased"
+    ],
+    "bytes": 86144
+  },
+  "selected_fixture_parent_chain": {
+    "functions": [
+      "fixture_new_poll",
+      "fixture_limits_poll",
+      "fixture_configured_poll"
+    ],
+    "bytes": 113408
+  },
+  "scope": "Only named simultaneously active frames; excludes other helper/runtime/storage/destructor frames. Not a whole-thread bound."
+}

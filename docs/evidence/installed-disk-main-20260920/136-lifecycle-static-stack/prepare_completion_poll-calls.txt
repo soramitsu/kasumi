@@ -1,0 +1,1096 @@
+100137b2c: 97fe873b    	bl	0x1000d9818 <<lifecycle::Fixture>::new>
+100137de0: 94896491    	bl	0x102391024 <dyld_stub_binder+0x102391024>
+100137e08: 97fc1c6f    	bl	0x10003efc4 <<<lifecycle::Fixture>::new::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100137e2c: 9489653b    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100137e58: 94896409    	bl	0x102390e7c <core::panicking::panic_const::panic_const_async_fn_resumed>
+100137e64: 9489640d    	bl	0x102390e98 <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+100137e74: 97fda7ba    	bl	0x1000a1d5c <core::ptr::drop_glue::<<lifecycle::Fixture>::new::{closure#0}>>
+100137ea0: 97fc1036    	bl	0x10003bf78 <<lifecycle::Fixture>::new::{closure#0}>
+100137f14: 94896501    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100137f40: 948964f6    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100137f50: 97fda783    	bl	0x1000a1d5c <core::ptr::drop_glue::<<lifecycle::Fixture>::new::{closure#0}>>
+100137f64: 97fe5585    	bl	0x1000cd578 <lifecycle::recovery_control::request>
+100137ff8: 97ff0490    	bl	0x1000f9238 <<alloc::collections::btree::map::BTreeMap<u64, ring::ec::curve25519::ed25519::signing::Ed25519KeyPair>>::new>
+100138070: 97ff040c    	bl	0x1000f90a0 <<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::lifecycle::LifecycleNode>>::values_mut>
+1001380b4: 97ff0b83    	bl	0x1000faec0 <<alloc::collections::btree::map::ValuesMut<u64, kasumi_types::lifecycle::LifecycleNode> as core::iter::traits::collect::IntoIterator>::into_iter>
+1001380d4: 94896491    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001380e4: 97ff0b83    	bl	0x1000faef0 <<alloc::collections::btree::map::ValuesMut<u64, kasumi_types::lifecycle::LifecycleNode> as core::iter::traits::iterator::Iterator>::next>
+100138124: 97fe8086    	bl	0x1000d833c <lifecycle::key>
+100138160: 97fe874a    	bl	0x1000d9e88 <<lifecycle::Fixture>::leader>
+100138184: 94824357    	bl	0x1021c8ee0 <<core::fmt::rt::Argument>::new_display::<uuid::Uuid>>
+1001381a8: 946cf0f2    	bl	0x101c74570 <<core::fmt::Arguments>::new::<14, 1>>
+1001381c8: 97fe9d80    	bl	0x1000df7c8 <alloc::fmt::format>
+100138210: 947d6496    	bl	0x102091468 <<&str as core::convert::Into<alloc::string::String>>::into>
+100138220: 9461843e    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100138274: 940b954a    	bl	0x10041d79c <core::ptr::drop_glue::<kasumi_types::recovery::RecoverySourceMode>>
+1001382b0: 9489641a    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100138300: 94896406    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100138318: 97fc1b4f    	bl	0x10003f054 <<<lifecycle::Fixture>::leader::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013833c: 948963f7    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100138360: 948961c5    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013836c: 947d897c    	bl	0x10209a95c <<ring::ec::curve25519::ed25519::signing::Ed25519KeyPair as ring::signature::KeyPair>::public_key>
+10013837c: 947d8948    	bl	0x10209a89c <<ring::ec::curve25519::ed25519::signing::PublicKey as core::convert::AsRef<[u8]>>::as_ref>
+10013839c: 94771d61    	bl	0x101eff920 <hex::encode::<&[u8]>>
+1001383ac: 946183db    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100138430: 948963ba    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100138448: 97ff0921    	bl	0x1000fa8cc <<alloc::collections::btree::map::BTreeMap<u64, ring::ec::curve25519::ed25519::signing::Ed25519KeyPair>>::insert>
+100138460: 97fda73c    	bl	0x1000a2150 <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+100138484: 97fc1940    	bl	0x10003e984 <<lifecycle::Fixture>::leader::{closure#0}>
+100138500: 97fda714    	bl	0x1000a2150 <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+10013853c: 97fe8671    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+100138580: 97fe6c10    	bl	0x1000d35c0 <<kasumi_types::recovery::RecoveryStart as core::clone::Clone>::clone>
+1001385d0: 97fb6a95    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+1001385f4: 940b9394    	bl	0x10041d444 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryStart>>
+1001385fc: 9489611e    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100138638: 94896338    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100138678: 942c3f8e    	bl	0x100c484b0 <<kasumi_engine::service::Database>::recovery_control>
+100138698: 97fd2116    	bl	0x100080af0 <<<kasumi_engine::service::Database>::recovery_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001386ac: 940ab6b8    	bl	0x1003e618c <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+1001386e4: 9489630d    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100138710: 9477da68    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+100138724: 97fdab06    	bl	0x1000a333c <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+100138750: 97fcff84    	bl	0x100078560 <<kasumi_engine::service::Database>::recovery_control::{closure#0}>
+1001387c8: 948962d4    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001387dc: 948962cf    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001387ec: 97fdaad4    	bl	0x1000a333c <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+1001387fc: 97ff3622    	bl	0x100106084 <<core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus, kasumi_types::Error>>::is_err>
+100138810: 97fd8835    	bl	0x10009a8e4 <core::ptr::drop_glue::<core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus, kasumi_types::Error>>>
+100138840: 97fd8829    	bl	0x10009a8e4 <core::ptr::drop_glue::<core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus, kasumi_types::Error>>>
+100138850: 97fd8825    	bl	0x10009a8e4 <core::ptr::drop_glue::<core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus, kasumi_types::Error>>>
+100138870: 94896101    	bl	0x102390c74 <core::panicking::panic>
+1001388b0: 97fe8594    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+1001388f4: 97fe6b33    	bl	0x1000d35c0 <<kasumi_types::recovery::RecoveryStart as core::clone::Clone>::clone>
+100138944: 97fb69b8    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+100138968: 940b92b7    	bl	0x10041d444 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryStart>>
+100138970: 94896041    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+1001389ac: 9489625b    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001389ec: 942c3eb1    	bl	0x100c484b0 <<kasumi_engine::service::Database>::recovery_control>
+100138a0c: 97fd2039    	bl	0x100080af0 <<<kasumi_engine::service::Database>::recovery_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100138a6c: 9489622b    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100138a98: 9477d986    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+100138aac: 97fdaa24    	bl	0x1000a333c <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+100138ad8: 97fcfea2    	bl	0x100078560 <<kasumi_engine::service::Database>::recovery_control::{closure#0}>
+100138b48: 948961f4    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100138b58: 97fda9f9    	bl	0x1000a333c <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+100138b88: 948961e4    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100138bec: 94895f88    	bl	0x102390a0c <core::result::unwrap_failed>
+100138c0c: 94846014    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+100138c18: 94895f97    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100138c48: 948961b4    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100138c74: 941759d2    	bl	0x10070f3bc <<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>::record>
+100138ce8: 97fe6beb    	bl	0x1000d3c94 <<kasumi_types::recovery::RecoveryPhase as core::cmp::PartialEq>::eq>
+100138d28: 94882cd1    	bl	0x10234406c <core::panicking::assert_failed::<kasumi_types::recovery::RecoveryPhase, kasumi_types::recovery::RecoveryPhase>>
+100138d3c: 941759a0    	bl	0x10070f3bc <<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>::record>
+100138d88: 94896164    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100138d90: 97fce522    	bl	0x100072218 <core::mem::drop::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+100138dcc: 97fe844d    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+100138e10: 97fe69ec    	bl	0x1000d35c0 <<kasumi_types::recovery::RecoveryStart as core::clone::Clone>::clone>
+100138e60: 97fb6871    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+100138e84: 940b9170    	bl	0x10041d444 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryStart>>
+100138e8c: 94895efa    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100138ec8: 94896114    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100138f08: 942c3d6a    	bl	0x100c484b0 <<kasumi_engine::service::Database>::recovery_control>
+100138f28: 97fd1ef2    	bl	0x100080af0 <<<kasumi_engine::service::Database>::recovery_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100138f4c: 948960f3    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100138f78: 9477d84e    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+100138f8c: 97fda8ec    	bl	0x1000a333c <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+100138fb8: 97fcfd6a    	bl	0x100078560 <<kasumi_engine::service::Database>::recovery_control::{closure#0}>
+100139028: 948960bc    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100139038: 97fda8c1    	bl	0x1000a333c <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+100139058: 948960b0    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001390bc: 94895e54    	bl	0x102390a0c <core::result::unwrap_failed>
+1001390dc: 94845ee0    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+1001390e8: 94895e63    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013911c: 9489607f    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013912c: 941758a4    	bl	0x10070f3bc <<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>::record>
+100139140: 97fde549    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+1001391c4: 94895dcd    	bl	0x1023908f8 <core::panicking::assert_failed::<u64, u64>>
+1001391d4: 97fde524    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+1001391ec: 97fe68f5    	bl	0x1000d35c0 <<kasumi_types::recovery::RecoveryStart as core::clone::Clone>::clone>
+100139260: 9485e7e7    	bl	0x1022b31fc <<uuid::Uuid>::new_v4>
+1001392c8: 97feb96e    	bl	0x1000e7880 <<str>::repeat>
+1001392dc: 9461800f    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+10013938c: 97fe82dd    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+100139408: 94895fc4    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100139418: 97fb6703    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+10013943c: 940b9002    	bl	0x10041d444 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryStart>>
+100139444: 94895d8c    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100139480: 94895fa6    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001394f8: 942c3bee    	bl	0x100c484b0 <<kasumi_engine::service::Database>::recovery_control>
+100139518: 97fd1d76    	bl	0x100080af0 <<<kasumi_engine::service::Database>::recovery_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013953c: 94895f77    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100139568: 9477d6d2    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10013957c: 97fda770    	bl	0x1000a333c <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+1001395a8: 97fcfbee    	bl	0x100078560 <<kasumi_engine::service::Database>::recovery_control::{closure#0}>
+100139618: 94895f40    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100139628: 97fda745    	bl	0x1000a333c <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_control::{closure#0}>>
+10013964c: 94895f33    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013965c: 97ff3263    	bl	0x100105fe8 <<core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus, kasumi_types::Error>>::err>
+100139684: 94895cdb    	bl	0x1023909f0 <core::option::unwrap_failed>
+1001396d4: 97fe585d    	bl	0x1000cf848 <<kasumi_types::ErrorCode as core::cmp::PartialEq>::eq>
+1001396e8: 94845d5d    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+100139738: 948829ba    	bl	0x102343e20 <core::panicking::assert_failed::<kasumi_types::ErrorCode, kasumi_types::ErrorCode>>
+100139748: 94845d45    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+100139758: 9485e6a9    	bl	0x1022b31fc <<uuid::Uuid>::new_v4>
+100139780: 97fe81e0    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+100139798: 97fe81bc    	bl	0x1000d9e88 <<lifecycle::Fixture>::leader>
+1001397c0: 9477d63c    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+1001397ec: 97fc161a    	bl	0x10003f054 <<<lifecycle::Fixture>::leader::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100139810: 94895ec2    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100139840: 97fda244    	bl	0x1000a2150 <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+100139864: 97fc1448    	bl	0x10003e984 <<lifecycle::Fixture>::leader::{closure#0}>
+100139900: 97fda214    	bl	0x1000a2150 <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+100139958: 942c3afc    	bl	0x100c48548 <<kasumi_engine::service::Database>::next_recovery_dispatch>
+1001399b0: 97fd1c68    	bl	0x100080b50 <<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001399d4: 94895e51    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100139a04: 97fda6e1    	bl	0x1000a3588 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+100139a30: 97fcfd95    	bl	0x100079084 <<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>
+100139aa0: 94895e1e    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100139ab0: 97fda6b6    	bl	0x1000a3588 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+100139ad0: 94895e12    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100139b34: 94895bb6    	bl	0x102390a0c <core::result::unwrap_failed>
+100139b54: 94845c42    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+100139b60: 94895bc5    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100139b94: 94895de1    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100139bcc: 94895b89    	bl	0x1023909f0 <core::option::unwrap_failed>
+100139bec: 94895dcb    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100139c28: 97fe80b6    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+100139c90: 97fe61a0    	bl	0x1000d2310 <<kasumi_types::recovery::RecoveryDispatch as core::clone::Clone>::clone>
+100139d00: 942c3a39    	bl	0x100c485e4 <<kasumi_engine::service::Database>::prepare_recovery_dispatch>
+100139d20: 97fd1ba4    	bl	0x100080bb0 <<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100139d48: 940b8e5b    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+100139d94: 94895d61    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100139dc0: 9477d4bc    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+100139dd4: 97fda671    	bl	0x1000a3798 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+100139e00: 97fd1117    	bl	0x10007e25c <<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>
+100139e70: 94895d2a    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100139e80: 97fda646    	bl	0x1000a3798 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+100139ea0: 94895d1e    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100139f04: 94895ac2    	bl	0x102390a0c <core::result::unwrap_failed>
+100139f24: 94845b4e    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+100139f30: 94895ad1    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100139f60: 94895cee    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100139f84: 94175691    	bl	0x10070f9c8 <<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::record>
+100139fd8: 94182b59    	bl	0x100744d3c <<core::option::Option<kasumi_types::recovery::RecoveryDispatchOutcome>>::is_none>
+10013a008: 94895b1b    	bl	0x102390c74 <core::panicking::panic>
+10013a01c: 9417565d    	bl	0x10070f990 <<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::admit_dispatch>
+10013a034: 97fd1af7    	bl	0x100080c10 <<<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::admit_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013a058: 94895cb0    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013a088: 97fdaf15    	bl	0x1000a5cdc <core::ptr::drop_glue::<<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::admit_dispatch::{closure#0}>>
+10013a0b4: 97fd1651    	bl	0x10007f9f8 <<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::admit_dispatch::{closure#0}>
+10013a12c: 97fdaeec    	bl	0x1000a5cdc <core::ptr::drop_glue::<<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::admit_dispatch::{closure#0}>>
+10013a1a0: 94895a1b    	bl	0x102390a0c <core::result::unwrap_failed>
+10013a1c0: 94845aa7    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013a1cc: 94895a2a    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013a1f0: 941755f6    	bl	0x10070f9c8 <<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::record>
+10013a234: 94895c39    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013a23c: 97fcdff2    	bl	0x100072204 <core::mem::drop::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+10013a260: 97fe602c    	bl	0x1000d2310 <<kasumi_types::recovery::RecoveryDispatch as core::clone::Clone>::clone>
+10013a31c: 94895a56    	bl	0x102390c74 <core::panicking::panic>
+10013a34c: 94895a3b    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+10013a374: 94895a1d    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+10013a39c: 94895a80    	bl	0x102390d9c <core::panicking::panic_const::panic_const_add_overflow>
+10013a40c: 94895a0b    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+10013a450: 97fe7eac    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+10013a460: 948959e2    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+10013a4d4: 94895b91    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013a504: 942c3838    	bl	0x100c485e4 <<kasumi_engine::service::Database>::prepare_recovery_dispatch>
+10013a51c: 97fd19a5    	bl	0x100080bb0 <<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013a540: 94895b76    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013a570: 97fda48a    	bl	0x1000a3798 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+10013a59c: 97fd0f30    	bl	0x10007e25c <<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>
+10013a60c: 94895b43    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013a61c: 97fda45f    	bl	0x1000a3798 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+10013a640: 94895b36    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013a650: 97ff2e34    	bl	0x100105f20 <<core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase, kasumi_types::Error>>::err>
+10013a678: 948958de    	bl	0x1023909f0 <core::option::unwrap_failed>
+10013a6cc: 97fe545f    	bl	0x1000cf848 <<kasumi_types::ErrorCode as core::cmp::PartialEq>::eq>
+10013a6e0: 9484595f    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013a730: 948825bc    	bl	0x102343e20 <core::panicking::assert_failed::<kasumi_types::ErrorCode, kasumi_types::ErrorCode>>
+10013a740: 94845947    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013a77c: 97fe7de1    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+10013a7e4: 97fe5ecb    	bl	0x1000d2310 <<kasumi_types::recovery::RecoveryDispatch as core::clone::Clone>::clone>
+10013a854: 942c3764    	bl	0x100c485e4 <<kasumi_engine::service::Database>::prepare_recovery_dispatch>
+10013a874: 97fd18cf    	bl	0x100080bb0 <<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013a898: 94895aa0    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013a8c4: 9477d1fb    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10013a8d8: 97fda3b0    	bl	0x1000a3798 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+10013a904: 97fd0e56    	bl	0x10007e25c <<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>
+10013a974: 94895a69    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013a984: 97fda385    	bl	0x1000a3798 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+10013a9a4: 94895a5d    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013aa08: 94895801    	bl	0x102390a0c <core::result::unwrap_failed>
+10013aa28: 9484588d    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013aa34: 94895810    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013aa68: 94895a2c    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013aa78: 941753d4    	bl	0x10070f9c8 <<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::record>
+10013aa8c: 97fddec7    	bl	0x1000b25a8 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+10013ab10: 9489577a    	bl	0x1023908f8 <core::panicking::assert_failed::<u64, u64>>
+10013ab20: 97fddea2    	bl	0x1000b25a8 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+10013ab44: 97fe4841    	bl	0x1000ccc48 <lifecycle::recovery_control::prepare_receipt>
+10013ab9c: 97fe6e5b    	bl	0x1000d6508 <<kasumi_types::authority_protocol::SignedAuthorityReceipt as core::clone::Clone>::clone>
+10013ac50: 9485e16b    	bl	0x1022b31fc <<uuid::Uuid>::new_v4>
+10013acc8: 97fe7c8e    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+10013ad64: 9489596d    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013ad74: 97fb60ac    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+10013ad98: 9477d741    	bl	0x101f30a9c <core::ptr::drop_glue::<kasumi_types::authority_protocol::SignedAuthorityReceipt>>
+10013ada0: 94895735    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013addc: 9489594f    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013ae64: 942c360c    	bl	0x100c48694 <<kasumi_engine::service::Database>::resolve_recovery_dispatch>
+10013ae84: 97fd1757    	bl	0x100080be0 <<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013aea8: 9489591c    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013aed4: 9477d077    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10013aee8: 97fda290    	bl	0x1000a3928 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+10013af14: 97fd0eb4    	bl	0x10007e9e4 <<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>
+10013af8c: 948958e3    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013afa0: 948958de    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013afb0: 97fda25e    	bl	0x1000a3928 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::resolve_recovery_dispatch::{closure#0}>>
+10013afc0: 97ff2c31    	bl	0x100106084 <<core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus, kasumi_types::Error>>::is_err>
+10013afd4: 97fd7e44    	bl	0x10009a8e4 <core::ptr::drop_glue::<core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus, kasumi_types::Error>>>
+10013b004: 97fd7e38    	bl	0x10009a8e4 <core::ptr::drop_glue::<core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus, kasumi_types::Error>>>
+10013b014: 97fd7e34    	bl	0x10009a8e4 <core::ptr::drop_glue::<core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus, kasumi_types::Error>>>
+10013b034: 94895710    	bl	0x102390c74 <core::panicking::panic>
+10013b088: 948958a4    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013b098: 97fb5fe3    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+10013b0bc: 9477d678    	bl	0x101f30a9c <core::ptr::drop_glue::<kasumi_types::authority_protocol::SignedAuthorityReceipt>>
+10013b0c4: 9489566c    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013b100: 94895886    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013b178: 97fe46a3    	bl	0x1000ccc04 <lifecycle::recovery_control::resolve_phase>
+10013b190: 94009300    	bl	0x10015fd90 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013b1b4: 94895859    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013b1e4: 97fdad16    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10013b210: 97ffa8a5    	bl	0x1001254a4 <lifecycle::recovery_control::resolve_phase::{closure#0}>
+10013b288: 94895824    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013b2b8: 94895818    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013b2c8: 97fdacdd    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10013b2dc: 94175038    	bl	0x10070f3bc <<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>::record>
+10013b33c: 97fe6256    	bl	0x1000d3c94 <<kasumi_types::recovery::RecoveryPhase as core::cmp::PartialEq>::eq>
+10013b37c: 9488233c    	bl	0x10234406c <core::panicking::assert_failed::<kasumi_types::recovery::RecoveryPhase, kasumi_types::recovery::RecoveryPhase>>
+10013b390: 9417500b    	bl	0x10070f3bc <<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>::record>
+10013b3dc: 948957cf    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013b3e4: 97fcdb8d    	bl	0x100072218 <core::mem::drop::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+10013b3f4: 9485df82    	bl	0x1022b31fc <<uuid::Uuid>::new_v4>
+10013b430: 97fe7ab4    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+10013b47c: 942c3433    	bl	0x100c48548 <<kasumi_engine::service::Database>::next_recovery_dispatch>
+10013b490: 9477cf08    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10013b4d0: 97fd15a0    	bl	0x100080b50 <<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013b4f4: 94895789    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013b524: 97fda019    	bl	0x1000a3588 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+10013b550: 97fcf6cd    	bl	0x100079084 <<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>
+10013b5c0: 94895756    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013b5d0: 97fd9fee    	bl	0x1000a3588 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+10013b5f0: 9489574a    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013b654: 948954ee    	bl	0x102390a0c <core::result::unwrap_failed>
+10013b674: 9484557a    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013b680: 948954fd    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013b6b4: 94895719    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013b6ec: 948954c1    	bl	0x1023909f0 <core::option::unwrap_failed>
+10013b70c: 94895703    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013b720: 9477ce64    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10013b734: 940b87e0    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+10013b7b0: 97fe79d4    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+10013b7c8: 97fb6c44    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+10013b840: 97fe500f    	bl	0x1000cf87c <<kasumi_types::RequestContext as core::clone::Clone>::clone>
+10013b8b0: 97fe5a98    	bl	0x1000d2310 <<kasumi_types::recovery::RecoveryDispatch as core::clone::Clone>::clone>
+10013b91c: 942c3332    	bl	0x100c485e4 <<kasumi_engine::service::Database>::prepare_recovery_dispatch>
+10013b93c: 97fd149d    	bl	0x100080bb0 <<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013b9b4: 94895659    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013b9e0: 9477cdb4    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10013b9f8: 948954a4    	bl	0x102390c88 <core::panicking::panic_fmt>
+10013ba0c: 97fd9f63    	bl	0x1000a3798 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+10013ba38: 97fd0a09    	bl	0x10007e25c <<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>
+10013baa8: 9489561c    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013bab8: 97fd9f38    	bl	0x1000a3798 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+10013bad8: 94895610    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013bb3c: 948953b4    	bl	0x102390a0c <core::result::unwrap_failed>
+10013bb5c: 94845440    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013bb68: 948953c3    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013bb9c: 948955df    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013bbac: 97fdda7f    	bl	0x1000b25a8 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+10013bbc0: 942f8d39    	bl	0x100d1f0a4 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+10013bc08: 948955c4    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013bc14: 94301cc7    	bl	0x100d42f30 <<alloc::boxed::Box<kasumi_types::lifecycle::CommitLifecycleIntent> as core::clone::Clone>::clone>
+10013bc7c: 942c3317    	bl	0x100c488d8 <<kasumi_engine::service::Database>::lifecycle_control>
+10013bc9c: 97fd3700    	bl	0x10008989c <<<kasumi_engine::service::Database>::lifecycle_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013bcc0: 94895596    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013bcf8: 9477ccee    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10013bd0c: 97fda10c    	bl	0x1000a413c <core::ptr::drop_glue::<<kasumi_engine::service::Database>::lifecycle_control::{closure#0}>>
+10013bd38: 97fd2097    	bl	0x100083f94 <<kasumi_engine::service::Database>::lifecycle_control::{closure#0}>
+10013bda8: 9489555c    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013bdb8: 97fda0e1    	bl	0x1000a413c <core::ptr::drop_glue::<<kasumi_engine::service::Database>::lifecycle_control::{closure#0}>>
+10013bdd8: 94895550    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013be30: 948952f7    	bl	0x102390a0c <core::result::unwrap_failed>
+10013be50: 94845383    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013be5c: 94895306    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013bea0: 940b7dd2    	bl	0x10041b5e8 <core::ptr::drop_glue::<kasumi_types::WriteReceipt>>
+10013bebc: 97fe4752    	bl	0x1000cdc04 <lifecycle::recovery_control::snapshot>
+10013bed4: 94008ff7    	bl	0x10015feb0 <<lifecycle::recovery_control::snapshot::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013bf1c: 97fdcbe1    	bl	0x1000aeea0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+10013bf40: 94006be8    	bl	0x100156ee0 <lifecycle::recovery_control::snapshot::{closure#0}>
+10013bfa4: 97fdcbbf    	bl	0x1000aeea0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+10013bfc8: 97fcd821    	bl	0x10007204c <core::mem::drop::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+10013bfe0: 97fe761b    	bl	0x1000d984c <<lifecycle::Fixture>::close>
+10013bff8: 97fc0c0b    	bl	0x10003f024 <<<lifecycle::Fixture>::close::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013c01c: 948954bf    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013c04c: 97fd9810    	bl	0x1000a208c <core::ptr::drop_glue::<<lifecycle::Fixture>::close::{closure#0}>>
+10013c070: 97fc0804    	bl	0x10003e080 <<lifecycle::Fixture>::close::{closure#0}>
+10013c0d4: 97fd97ee    	bl	0x1000a208c <core::ptr::drop_glue::<<lifecycle::Fixture>::close::{closure#0}>>
+10013c0f4: 97fe75cd    	bl	0x1000d9828 <<lifecycle::Fixture>::open>
+10013c10c: 97fc0bba    	bl	0x10003eff4 <<<lifecycle::Fixture>::open::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013c130: 9489547a    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013c160: 97fd9720    	bl	0x1000a1de0 <core::ptr::drop_glue::<<lifecycle::Fixture>::open::{closure#0}>>
+10013c184: 97fc000f    	bl	0x10003c1c0 <<lifecycle::Fixture>::open::{closure#0}>
+10013c1e8: 97fd96fe    	bl	0x1000a1de0 <core::ptr::drop_glue::<<lifecycle::Fixture>::open::{closure#0}>>
+10013c200: 97fe7722    	bl	0x1000d9e88 <<lifecycle::Fixture>::leader>
+10013c218: 97fc0b8f    	bl	0x10003f054 <<<lifecycle::Fixture>::leader::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013c23c: 94895437    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013c26c: 97fd97b9    	bl	0x1000a2150 <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+10013c290: 97fc09bd    	bl	0x10003e984 <<lifecycle::Fixture>::leader::{closure#0}>
+10013c314: 97fd978f    	bl	0x1000a2150 <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+10013c350: 97fe76ec    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+10013c378: 940aa785    	bl	0x1003e618c <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+10013c3d4: 942c3022    	bl	0x100c4845c <<kasumi_engine::service::Database>::recovery_status>
+10013c3ec: 97fd11b5    	bl	0x100080ac0 <<<kasumi_engine::service::Database>::recovery_status::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013c410: 948953c2    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013c440: 97fd9b15    	bl	0x1000a3094 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10013c46c: 97fceca4    	bl	0x1000776fc <<kasumi_engine::service::Database>::recovery_status::{closure#0}>
+10013c4dc: 9489538f    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013c4ec: 97fd9aea    	bl	0x1000a3094 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10013c51c: 9489537f    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013c580: 94895123    	bl	0x102390a0c <core::result::unwrap_failed>
+10013c5a0: 948451af    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013c5ac: 94895132    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013c5dc: 9489534f    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013c608: 94174b6d    	bl	0x10070f3bc <<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>::record>
+10013c69c: 94774122    	bl	0x101f0cb24 <<core::option::Option<uuid::Uuid> as core::cmp::PartialEq>::eq>
+10013c6dc: 94881d3e    	bl	0x102343bd4 <core::panicking::assert_failed::<core::option::Option<uuid::Uuid>, core::option::Option<uuid::Uuid>>>
+10013c718: 94895300    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013c720: 97fcd6be    	bl	0x100072218 <core::mem::drop::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+10013c734: 942f8a5c    	bl	0x100d1f0a4 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+10013c744: 942c36a5    	bl	0x100c4a1d8 <<kasumi_engine::service::Database>::engine>
+10013c754: 942f8a4d    	bl	0x100d1f088 <<alloc::sync::Arc<kasumi_engine::state::TenantEngine> as core::ops::deref::Deref>::deref>
+10013c76c: 9404b6d0    	bl	0x10026a2ac <<kasumi_engine::state::TenantEngine>::generation>
+10013c7cc: 94895090    	bl	0x102390a0c <core::result::unwrap_failed>
+10013c7ec: 9484511c    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013c7f8: 9489509f    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013c840: 942f8a0b    	bl	0x100d1f06c <<alloc::sync::Arc<kasumi_engine::state::Generation> as core::ops::deref::Deref>::deref>
+10013c854: 940aa63c    	bl	0x1003e6144 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::state::Generation>>>
+10013c878: 94182161    	bl	0x100744dfc <<core::option::Option<kasumi_types::lifecycle::LifecycleControlState>>::as_ref>
+10013c8ac: 94895051    	bl	0x1023909f0 <core::option::unwrap_failed>
+10013c8e4: 97fefd26    	bl	0x1000fbd7c <<alloc::collections::btree::map::BTreeMap<uuid::Uuid, kasumi_types::lifecycle::LifecycleIntent> as core::ops::index::Index<&uuid::Uuid>>::index>
+10013c900: 97ff08dc    	bl	0x1000fec70 <<kasumi_types::lifecycle::LifecycleIntent as core::clone::Clone>::clone>
+10013c910: 940aa60d    	bl	0x1003e6144 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::state::Generation>>>
+10013c924: 94845498    	bl	0x102251b84 <core::ptr::drop_glue::<kasumi_types::lifecycle::LifecycleIntent>>
+10013c970: 97ff08c0    	bl	0x1000fec70 <<kasumi_types::lifecycle::LifecycleIntent as core::clone::Clone>::clone>
+10013c9c4: 97fb5998    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+10013c9e8: 94845467    	bl	0x102251b84 <core::ptr::drop_glue::<kasumi_types::lifecycle::LifecycleIntent>>
+10013c9f0: 94895021    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013ca2c: 9489523b    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013ca6c: 97fe4066    	bl	0x1000ccc04 <lifecycle::recovery_control::resolve_phase>
+10013ca84: 94008cc3    	bl	0x10015fd90 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013caa8: 9489521c    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013cad8: 97fda6d9    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10013cb04: 97ffa268    	bl	0x1001254a4 <lifecycle::recovery_control::resolve_phase::{closure#0}>
+10013cb7c: 948951e7    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013cbac: 948951db    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013cbbc: 97fda6a0    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10013cbd0: 941749fb    	bl	0x10070f3bc <<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>::record>
+10013cc50: 94773fb5    	bl	0x101f0cb24 <<core::option::Option<uuid::Uuid> as core::cmp::PartialEq>::eq>
+10013cc90: 94881bd1    	bl	0x102343bd4 <core::panicking::assert_failed::<core::option::Option<uuid::Uuid>, core::option::Option<uuid::Uuid>>>
+10013cccc: 94895193    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013ccd4: 97fcd551    	bl	0x100072218 <core::mem::drop::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+10013ccf4: 94632f30    	bl	0x101a089b4 <<core::ops::range::RangeInclusive<u64>>::new>
+10013cd0c: 94633671    	bl	0x101a0a6d0 <<core::ops::range::RangeInclusive<u64> as core::iter::traits::collect::IntoIterator>::into_iter>
+10013cd40: 946349a9    	bl	0x101a0f3e4 <<core::ops::range::RangeInclusive<u64> as core::iter::traits::iterator::Iterator>::next>
+10013cde8: 97fda615    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10013ce14: 97ffa1a4    	bl	0x1001254a4 <lifecycle::recovery_control::resolve_phase::{closure#0}>
+10013ce8c: 94895123    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013cea0: 9489511e    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013ceb0: 97fda5e3    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10013cf14: 97fdd5d4    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+10013cff4: 97fe73c3    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+10013d030: 97fe73b4    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+10013d0a0: 942c2cef    	bl	0x100c4845c <<kasumi_engine::service::Database>::recovery_status>
+10013d0b8: 97fd0e82    	bl	0x100080ac0 <<<kasumi_engine::service::Database>::recovery_status::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013d0dc: 9489508f    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013d168: 942c2cbd    	bl	0x100c4845c <<kasumi_engine::service::Database>::recovery_status>
+10013d180: 97fd0e50    	bl	0x100080ac0 <<<kasumi_engine::service::Database>::recovery_status::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013d1a4: 9489505d    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013d1b8: 97fd97b7    	bl	0x1000a3094 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10013d1e4: 97fce946    	bl	0x1000776fc <<kasumi_engine::service::Database>::recovery_status::{closure#0}>
+10013d254: 94895031    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013d264: 97fd978c    	bl	0x1000a3094 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10013d294: 94895021    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013d2f8: 94894dc5    	bl	0x102390a0c <core::result::unwrap_failed>
+10013d318: 94844e51    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013d324: 94894dd4    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013d354: 94894ff1    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013d380: 9417480f    	bl	0x10070f3bc <<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>::record>
+10013d3f8: 94894fc8    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013d400: 97fcd386    	bl	0x100072218 <core::mem::drop::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+10013d410: 9485d77b    	bl	0x1022b31fc <<uuid::Uuid>::new_v4>
+10013d44c: 97fe72ad    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+10013d4c0: 942c2c22    	bl	0x100c48548 <<kasumi_engine::service::Database>::next_recovery_dispatch>
+10013d4d4: 9477c6f7    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10013d514: 97fd0d8f    	bl	0x100080b50 <<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013d538: 94894f78    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013d54c: 97fd980f    	bl	0x1000a3588 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+10013d578: 97fceec3    	bl	0x100079084 <<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>
+10013d5e8: 94894f4c    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013d5f8: 97fd97e4    	bl	0x1000a3588 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+10013d618: 94894f40    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013d67c: 94894ce4    	bl	0x102390a0c <core::result::unwrap_failed>
+10013d69c: 94844d70    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013d6a8: 94894cf3    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013d6dc: 94894f0f    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013d714: 94894cb7    	bl	0x1023909f0 <core::option::unwrap_failed>
+10013d734: 94894ef9    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013d760: 9477c654    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10013d834: 97fb6429    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+10013d868: 94894c24    	bl	0x1023908f8 <core::panicking::assert_failed::<u64, u64>>
+10013d8b4: 94894ce1    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+10013d8f8: 97fe7182    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+10013d908: 94894cb8    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+10013d9c8: 94894e54    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013d9f4: 942c2afc    	bl	0x100c485e4 <<kasumi_engine::service::Database>::prepare_recovery_dispatch>
+10013da0c: 97fd0c69    	bl	0x100080bb0 <<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013da30: 94894e3a    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013da44: 97fd9755    	bl	0x1000a3798 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+10013da70: 97fd01fb    	bl	0x10007e25c <<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>
+10013dae0: 94894e0e    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013daf0: 97fd972a    	bl	0x1000a3798 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+10013db1c: 94894dff    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013db80: 94894ba3    	bl	0x102390a0c <core::result::unwrap_failed>
+10013dba0: 94844c2f    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013dbac: 94894bb2    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013dbdc: 94894dcf    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013dc10: 97fef8b9    	bl	0x1000fbef4 <<alloc::collections::btree::map::BTreeMap<alloc::string::String, kasumi_types::lifecycle::ControlAuthorityPartition> as core::ops::index::Index<&alloc::string::String>>::index>
+10013dc54: 9487d064    	bl	0x102331de4 <<alloc::string::String as core::clone::Clone>::clone>
+10013dc70: 97ff0400    	bl	0x1000fec70 <<kasumi_types::lifecycle::LifecycleIntent as core::clone::Clone>::clone>
+10013dc80: 94616da6    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+10013dcac: 97ff5ba9    	bl	0x100114b50 <<kasumi_types::target::TargetMaterializationInput as core::clone::Clone>::clone>
+10013dcbc: 94844fb2    	bl	0x102251b84 <core::ptr::drop_glue::<kasumi_types::lifecycle::LifecycleIntent>>
+10013dd10: 94894d82    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013dd2c: 94894d7b    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013dd44: 94894d75    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013dd74: 97fea6c3    	bl	0x1000e7880 <<str>::repeat>
+10013dd84: 94844e33    	bl	0x102251650 <core::ptr::drop_glue::<kasumi_types::target::TargetOrigin>>
+10013ddec: 94894d4b    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013de3c: 97fef8e9    	bl	0x1000fc1e0 <<alloc::collections::btree::map::BTreeMap<u64, ring::ec::curve25519::ed25519::signing::Ed25519KeyPair> as core::ops::index::Index<&u64>>::index>
+10013de50: 94894bd3    	bl	0x102390d9c <core::panicking::panic_const::panic_const_add_overflow>
+10013de60: 94616d2e    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+10013df04: 947756c6    	bl	0x101f13a1c <serde_json::ser::to_vec::<(&str, &kasumi_types::target::TargetMaterializationFact)>>
+10013df60: 94894aab    	bl	0x102390a0c <core::result::unwrap_failed>
+10013df80: 9485efef    	bl	0x1022b9f3c <core::ptr::drop_glue::<serde_json::error::Error>>
+10013df8c: 94894aba    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013dfc8: 94516f75    	bl	0x101599d9c <<alloc::vec::Vec<u8> as core::ops::deref::Deref>::deref>
+10013dfe0: 94616cae    	bl	0x101999298 <core::ptr::drop_glue::<alloc::vec::Vec<u8>>>
+10013e010: 947d702f    	bl	0x10209a0cc <<ring::ec::curve25519::ed25519::signing::Ed25519KeyPair>::sign>
+10013e020: 947d723a    	bl	0x10209a908 <<ring::signature::Signature as core::convert::AsRef<[u8]>>::as_ref>
+10013e040: 94770638    	bl	0x101eff920 <hex::encode::<&[u8]>>
+10013e064: 94616c8d    	bl	0x101999298 <core::ptr::drop_glue::<alloc::vec::Vec<u8>>>
+10013e0e0: 94894c8e    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013e118: 94894c80    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013e144: 97fb53b8    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+10013e168: 94844e4b    	bl	0x102251a94 <core::ptr::drop_glue::<kasumi_types::target::SignedTargetMaterialization>>
+10013e170: 94894a41    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013e1ac: 94894c5b    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013e24c: 941745d1    	bl	0x10070f990 <<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::admit_dispatch>
+10013e264: 97fd0a6b    	bl	0x100080c10 <<<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::admit_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013e288: 94894c24    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013e29c: 97fd9e90    	bl	0x1000a5cdc <core::ptr::drop_glue::<<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::admit_dispatch::{closure#0}>>
+10013e2c8: 97fd05cc    	bl	0x10007f9f8 <<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::admit_dispatch::{closure#0}>
+10013e340: 97fd9e67    	bl	0x1000a5cdc <core::ptr::drop_glue::<<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::admit_dispatch::{closure#0}>>
+10013e3b0: 94894997    	bl	0x102390a0c <core::result::unwrap_failed>
+10013e3d0: 94844a23    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013e3dc: 948949a6    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013e42c: 94894bbb    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013e434: 97fccf74    	bl	0x100072204 <core::mem::drop::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+10013e48c: 94894ba3    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013e49c: 97fb52e2    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+10013e4c0: 940b7969    	bl	0x10041ca64 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeResponse>>
+10013e4c8: 9489496b    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013e504: 94894b85    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013e548: 97fe39af    	bl	0x1000ccc04 <lifecycle::recovery_control::resolve_phase>
+10013e560: 9400860c    	bl	0x10015fd90 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013e584: 94894b65    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013e5b0: 948949b6    	bl	0x102390c88 <core::panicking::panic_fmt>
+10013e5c4: 940b7928    	bl	0x10041ca64 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeResponse>>
+10013e5d4: 94616b51    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+10013e5e4: 94844cf0    	bl	0x1022519a4 <core::ptr::drop_glue::<kasumi_types::target::TargetMaterializationFact>>
+10013e5f4: 97fdcfed    	bl	0x1000b25a8 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+10013e608: 940b7c2b    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+10013e61c: 97fdd012    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+10013e630: 97fd9299    	bl	0x1000a3094 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10013e65c: 97fce428    	bl	0x1000776fc <<kasumi_engine::service::Database>::recovery_status::{closure#0}>
+10013e6cc: 94894b13    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013e6dc: 97fd926e    	bl	0x1000a3094 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10013e70c: 94894b03    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013e770: 948948a7    	bl	0x102390a0c <core::result::unwrap_failed>
+10013e790: 94844933    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013e79c: 948948b6    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013e7cc: 94894ad3    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013e7f8: 941742f1    	bl	0x10070f3bc <<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>::record>
+10013e858: 97fe550f    	bl	0x1000d3c94 <<kasumi_types::recovery::RecoveryPhase as core::cmp::PartialEq>::eq>
+10013e898: 948815f5    	bl	0x10234406c <core::panicking::assert_failed::<kasumi_types::recovery::RecoveryPhase, kasumi_types::recovery::RecoveryPhase>>
+10013e8ac: 941742c4    	bl	0x10070f3bc <<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>::record>
+10013e8c8: 9484bc9f    	bl	0x10226db44 <<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::recovery::RecoveryVoterProgress>>::values>
+10013e8d8: 97fee79b    	bl	0x1000f8744 <<alloc::collections::btree::map::Values<u64, kasumi_types::recovery::RecoveryVoterProgress> as core::iter::traits::iterator::Iterator>::all::<lifecycle::recovery_control::prepare_completion::{closure#0}::{closure#0}>>
+10013e908: 948948db    	bl	0x102390c74 <core::panicking::panic>
+10013e944: 94894a75    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013e94c: 97fcce33    	bl	0x100072218 <core::mem::drop::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+10013e968: 97fe3ca7    	bl	0x1000cdc04 <lifecycle::recovery_control::snapshot>
+10013e980: 9400854c    	bl	0x10015feb0 <<lifecycle::recovery_control::snapshot::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013e9c8: 97fdc136    	bl	0x1000aeea0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+10013e9ec: 9400613d    	bl	0x100156ee0 <lifecycle::recovery_control::snapshot::{closure#0}>
+10013ea50: 97fdc114    	bl	0x1000aeea0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+10013ea8c: 97fe3a5d    	bl	0x1000cd400 <lifecycle::recovery_control::commit_next_control>
+10013eaa4: 940084d3    	bl	0x10015fdf0 <<lifecycle::recovery_control::commit_next_control::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013eac8: 94894a14    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013eaf8: 97fdb370    	bl	0x1000ab8b8 <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_control::{closure#0}>>
+10013eb24: 94001aaa    	bl	0x1001455cc <lifecycle::recovery_control::commit_next_control::{closure#0}>
+10013eb9c: 948949df    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013ebb4: 948949d9    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013ebc4: 97fdb33d    	bl	0x1000ab8b8 <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_control::{closure#0}>>
+10013ebf4: 97ff02e9    	bl	0x1000ff798 <<kasumi_types::lifecycle::LifecyclePhase as core::cmp::PartialEq>::eq>
+10013ec0c: 94844bde    	bl	0x102251b84 <core::ptr::drop_glue::<kasumi_types::lifecycle::LifecycleIntent>>
+10013ec5c: 94881558    	bl	0x1023441bc <core::panicking::assert_failed::<kasumi_types::lifecycle::LifecyclePhase, kasumi_types::lifecycle::LifecyclePhase>>
+10013ec6c: 9485d164    	bl	0x1022b31fc <<uuid::Uuid>::new_v4>
+10013eca8: 97fe6c96    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+10013ed1c: 942c260b    	bl	0x100c48548 <<kasumi_engine::service::Database>::next_recovery_dispatch>
+10013ed30: 9477c0e0    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10013ed70: 97fd0778    	bl	0x100080b50 <<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013ed94: 94894961    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013edc4: 97fd91f1    	bl	0x1000a3588 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+10013edf0: 97fce8a5    	bl	0x100079084 <<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>
+10013ee60: 9489492e    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013ee70: 97fd91c6    	bl	0x1000a3588 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::next_recovery_dispatch::{closure#0}>>
+10013ee90: 94894922    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013eef4: 948946c6    	bl	0x102390a0c <core::result::unwrap_failed>
+10013ef14: 94844752    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013ef20: 948946d5    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013ef54: 948948f1    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013ef8c: 94894699    	bl	0x1023909f0 <core::option::unwrap_failed>
+10013efac: 948948db    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013efd8: 9477c036    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10013f07c: 97fb5e17    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+10013f0b4: 948946e1    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+10013f0d4: 948946c5    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+10013f10c: 97fb5df3    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+10013f138: 97ff54bd    	bl	0x10011442c <<kasumi_types::target::TargetQuorumInput as core::clone::Clone>::clone>
+10013f15c: 9489486f    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013f17c: 940b7579    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+10013f1f0: 94894692    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+10013f20c: 94894843    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013f244: 97fe6b2f    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+10013f254: 94894665    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+10013f2c0: 942c2467    	bl	0x100c4845c <<kasumi_engine::service::Database>::recovery_status>
+10013f2d8: 97fd05fa    	bl	0x100080ac0 <<<kasumi_engine::service::Database>::recovery_status::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013f2fc: 94894807    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013f348: 9489463c    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+10013f364: 948947ed    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013f374: 9489461d    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+10013f388: 94894640    	bl	0x102390c88 <core::panicking::panic_fmt>
+10013f3a0: 9489463a    	bl	0x102390c88 <core::panicking::panic_fmt>
+10013f3b4: 97fd8f38    	bl	0x1000a3094 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10013f3e0: 97fce0c7    	bl	0x1000776fc <<kasumi_engine::service::Database>::recovery_status::{closure#0}>
+10013f450: 948947b2    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013f460: 97fd8f0d    	bl	0x1000a3094 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_status::{closure#0}>>
+10013f490: 948947a2    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013f4f4: 94894546    	bl	0x102390a0c <core::result::unwrap_failed>
+10013f514: 948445d2    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+10013f520: 94894555    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10013f550: 94894772    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013f5a4: 97fe6a57    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+10013f5f8: 94173f71    	bl	0x10070f3bc <<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>::record>
+10013f680: 94894726    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013f6bc: 942c23ca    	bl	0x100c485e4 <<kasumi_engine::service::Database>::prepare_recovery_dispatch>
+10013f6dc: 97fd0535    	bl	0x100080bb0 <<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013f72c: 948946fb    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013f764: 9477be53    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+10013f778: 97fd9008    	bl	0x1000a3798 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+10013f7a4: 97fcfaae    	bl	0x10007e25c <<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>
+10013f81c: 948946bf    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013f830: 948946ba    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013f840: 97fd8fd6    	bl	0x1000a3798 <core::ptr::drop_glue::<<kasumi_engine::service::Database>::prepare_recovery_dispatch::{closure#0}>>
+10013f850: 97ff19db    	bl	0x100105fbc <<core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase, kasumi_types::Error>>::is_err>
+10013f864: 97fd6c0a    	bl	0x10009a88c <core::ptr::drop_glue::<core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase, kasumi_types::Error>>>
+10013f894: 97fd6bfe    	bl	0x10009a88c <core::ptr::drop_glue::<core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase, kasumi_types::Error>>>
+10013f8a4: 97fd6bfa    	bl	0x10009a88c <core::ptr::drop_glue::<core::result::Result<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase, kasumi_types::Error>>>
+10013f8c4: 948944ec    	bl	0x102390c74 <core::panicking::panic>
+10013f900: 94894686    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013f908: 97fcca44    	bl	0x100072218 <core::mem::drop::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+10013f928: 94632423    	bl	0x101a089b4 <<core::ops::range::RangeInclusive<u64>>::new>
+10013f940: 94632b64    	bl	0x101a0a6d0 <<core::ops::range::RangeInclusive<u64> as core::iter::traits::collect::IntoIterator>::into_iter>
+10013f974: 94633e9c    	bl	0x101a0f3e4 <<core::ops::range::RangeInclusive<u64> as core::iter::traits::iterator::Iterator>::next>
+10013f9c8: 97fd9b1d    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10013f9f4: 97ff96ac    	bl	0x1001254a4 <lifecycle::recovery_control::resolve_phase::{closure#0}>
+10013fa6c: 9489462b    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013fa80: 94894626    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013fa90: 97fd9aeb    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+10013faa4: 948442ae    	bl	0x10225055c <core::ptr::drop_glue::<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::target::SignedTargetMaterialization>>>
+10013fadc: 97fdcae2    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+10013faf0: 9484429b    	bl	0x10225055c <core::ptr::drop_glue::<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::target::SignedTargetMaterialization>>>
+10013fb04: 94616605    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+10013fb2c: 946165fb    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+10013fb9c: 940b72f1    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+10013fbc0: 940b7523    	bl	0x10041d04c <core::ptr::drop_glue::<kasumi_types::target::TargetReplicaInput>>
+10013fbd4: 940c04d7    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+10013fbfc: 940c04cd    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+10013fcb4: 940b7680    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+10013fd40: 97fe338f    	bl	0x1000ccb7c <lifecycle::recovery_control::prepare_next>
+10013fd7c: 97fe3380    	bl	0x1000ccb7c <lifecycle::recovery_control::prepare_next>
+10013fd94: 94007fdb    	bl	0x10015fd00 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013fdb8: 94894558    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013fdec: 94007fc5    	bl	0x10015fd00 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013fe10: 94894542    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013fe24: 97fd995e    	bl	0x1000a639c <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10013fe50: 97ff9288    	bl	0x100124870 <lifecycle::recovery_control::prepare_next::{closure#0}>
+10013fec0: 94894516    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013fed0: 97fd9933    	bl	0x1000a639c <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+10013ff1c: 948944ff    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10013fff8: 97fb5a38    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+10014002c: 94894233    	bl	0x1023908f8 <core::panicking::assert_failed::<u64, u64>>
+100140084: 97fb5a15    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+1001400e8: 948942d4    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+100140108: 94894484    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100140144: 948942a9    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+100140170: 948942b2    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+1001401f0: 97fb4b8d    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+100140214: 940b7214    	bl	0x10041ca64 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeResponse>>
+10014021c: 94894216    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100140258: 94894430    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100140268: 94894260    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+1001402b4: 97fe3254    	bl	0x1000ccc04 <lifecycle::recovery_control::resolve_phase>
+1001402cc: 94007eb1    	bl	0x10015fd90 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001402f0: 9489440a    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100140308: 94894260    	bl	0x102390c88 <core::panicking::panic_fmt>
+100140360: 9489424a    	bl	0x102390c88 <core::panicking::panic_fmt>
+100140394: 940b70f3    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+1001403a4: 940b732a    	bl	0x10041d04c <core::ptr::drop_glue::<kasumi_types::target::TargetReplicaInput>>
+1001403e4: 940b70df    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+1001403f8: 940c02ce    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+100140444: 940b7302    	bl	0x10041d04c <core::ptr::drop_glue::<kasumi_types::target::TargetReplicaInput>>
+100140454: 948444a3    	bl	0x1022516e0 <core::ptr::drop_glue::<kasumi_types::target::TargetQuorumInput>>
+100140484: 940b748c    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+100140498: 940ab592    	bl	0x1003edae0 <core::ptr::drop_glue::<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest>>>
+1001404ac: 97fd97bc    	bl	0x1000a639c <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+1001404d8: 97ff90e6    	bl	0x100124870 <lifecycle::recovery_control::prepare_next::{closure#0}>
+100140548: 94894374    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100140558: 97fd9791    	bl	0x1000a639c <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+1001405a4: 9489435d    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100140664: 97fb589d    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+10014069c: 94894097    	bl	0x1023908f8 <core::panicking::assert_failed::<u64, u64>>
+1001406c8: 94616314    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100140720: 97fb586e    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+100140758: 94894138    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+100140774: 948942e9    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001407b0: 9489410e    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+1001407dc: 94894117    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+100140858: 97fb49f3    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+10014087c: 940b707a    	bl	0x10041ca64 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeResponse>>
+100140884: 9489407c    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+1001408c0: 94894296    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001408d0: 948940c6    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+1001408dc: 94843f20    	bl	0x10225055c <core::ptr::drop_glue::<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::target::SignedTargetMaterialization>>>
+100140954: 97fe30ac    	bl	0x1000ccc04 <lifecycle::recovery_control::resolve_phase>
+10014096c: 94007d09    	bl	0x10015fd90 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100140990: 94894262    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001409c4: 948940b1    	bl	0x102390c88 <core::panicking::panic_fmt>
+100140a1c: 9489409b    	bl	0x102390c88 <core::panicking::panic_fmt>
+100140a30: 97fd9703    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100140a5c: 97ff9292    	bl	0x1001254a4 <lifecycle::recovery_control::resolve_phase::{closure#0}>
+100140ad4: 94894211    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100140ae8: 9489420c    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100140af8: 97fd96d1    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100140b08: 97fdc6d7    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+100140b24: 97fe3438    	bl	0x1000cdc04 <lifecycle::recovery_control::snapshot>
+100140b3c: 94007cdd    	bl	0x10015feb0 <<lifecycle::recovery_control::snapshot::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100140b84: 97fdb8c7    	bl	0x1000aeea0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+100140ba8: 940058ce    	bl	0x100156ee0 <lifecycle::recovery_control::snapshot::{closure#0}>
+100140c0c: 97fdb8a5    	bl	0x1000aeea0 <core::ptr::drop_glue::<lifecycle::recovery_control::snapshot::{closure#0}>>
+100140c94: 97fe31e9    	bl	0x1000cd438 <lifecycle::recovery_control::commit_next_control_for>
+100140cac: 94007c5d    	bl	0x10015fe20 <<lifecycle::recovery_control::commit_next_control_for::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100140cd0: 94894192    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100140d00: 97fdab10    	bl	0x1000ab940 <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_control_for::{closure#0}>>
+100140d2c: 940012c7    	bl	0x100145848 <lifecycle::recovery_control::commit_next_control_for::{closure#0}>
+100140da4: 9489415d    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100140dbc: 94894157    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100140dcc: 97fdaadd    	bl	0x1000ab940 <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_control_for::{closure#0}>>
+100140dfc: 97fefa67    	bl	0x1000ff798 <<kasumi_types::lifecycle::LifecyclePhase as core::cmp::PartialEq>::eq>
+100140e14: 9484435c    	bl	0x102251b84 <core::ptr::drop_glue::<kasumi_types::lifecycle::LifecycleIntent>>
+100140e64: 94880cd6    	bl	0x1023441bc <core::panicking::assert_failed::<kasumi_types::lifecycle::LifecyclePhase, kasumi_types::lifecycle::LifecyclePhase>>
+100140ea0: 97fe2f37    	bl	0x1000ccb7c <lifecycle::recovery_control::prepare_next>
+100140eb8: 94007b92    	bl	0x10015fd00 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100140edc: 9489410f    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100140f0c: 97fd9524    	bl	0x1000a639c <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100140f38: 97ff8e4e    	bl	0x100124870 <lifecycle::recovery_control::prepare_next::{closure#0}>
+100140fa8: 948940dc    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100140fb8: 97fd94f9    	bl	0x1000a639c <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100140fec: 948940cb    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10014110c: 94893eda    	bl	0x102390c74 <core::panicking::panic>
+10014112c: 94631e22    	bl	0x101a089b4 <<core::ops::range::RangeInclusive<u64>>::new>
+100141140: 940b715d    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+100141180: 94632554    	bl	0x101a0a6d0 <<core::ops::range::RangeInclusive<u64> as core::iter::traits::collect::IntoIterator>::into_iter>
+1001411b4: 9463388c    	bl	0x101a0f3e4 <<core::ops::range::RangeInclusive<u64> as core::iter::traits::iterator::Iterator>::next>
+100141208: 97fd950d    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100141234: 97ff909c    	bl	0x1001254a4 <lifecycle::recovery_control::resolve_phase::{closure#0}>
+1001412ac: 9489401b    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001412c0: 94894016    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001412d0: 97fd94db    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100141320: 97fdc4d1    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+100141334: 94843c8a    	bl	0x10225055c <core::ptr::drop_glue::<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::target::SignedTargetMaterialization>>>
+10014135c: 948438c0    	bl	0x10224f65c <core::ptr::drop_glue::<core::option::Option<kasumi_types::target_completion::TargetCompletionResolutionReference>>>
+100141398: 948438b1    	bl	0x10224f65c <core::ptr::drop_glue::<core::option::Option<kasumi_types::target_completion::TargetCompletionResolutionReference>>>
+1001413ac: 94615fdb    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+1001413d4: 94615fd1    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100141448: 940b6cc6    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+10014146c: 940b6ef8    	bl	0x10041d04c <core::ptr::drop_glue::<kasumi_types::target::TargetReplicaInput>>
+100141480: 940bfeac    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+1001414a8: 940bfea2    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+100141560: 940b7055    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+1001415f0: 97fe2d63    	bl	0x1000ccb7c <lifecycle::recovery_control::prepare_next>
+10014162c: 97fe6235    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+100141670: 942c1b4a    	bl	0x100c48398 <<kasumi_engine::service::Database>::recovery_phase>
+100141688: 97fcfcf6    	bl	0x100080a60 <<<kasumi_engine::service::Database>::recovery_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001416ac: 94893f1b    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001416e0: 94007988    	bl	0x10015fd00 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100141704: 94893f05    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100141718: 97fd9321    	bl	0x1000a639c <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100141744: 97ff8c4b    	bl	0x100124870 <lifecycle::recovery_control::prepare_next::{closure#0}>
+1001417b4: 94893ed9    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001417c4: 97fd92f6    	bl	0x1000a639c <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100141814: 94893ec1    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001418f0: 97fb53fa    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+100141924: 94893bf5    	bl	0x1023908f8 <core::panicking::assert_failed::<u64, u64>>
+100141980: 97fb53d6    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+1001419e4: 94893c95    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+100141a08: 94893e44    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100141a48: 94893e34    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100141a70: 94893c5e    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+100141a9c: 94893c67    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+100141acc: 97fe3b13    	bl	0x1000d0718 <<uuid::Uuid as core::cmp::PartialEq>::eq>
+100141ae0: 94893c42    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+100141b14: 948808ae    	bl	0x102343dcc <core::panicking::assert_failed::<uuid::Uuid, uuid::Uuid>>
+100141b74: 94893c31    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+100141c04: 97fb4508    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+100141c28: 940b6b8f    	bl	0x10041ca64 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeResponse>>
+100141c30: 94893b91    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100141c6c: 94893dab    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100141c7c: 94893bdb    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+100141ccc: 97fe2bce    	bl	0x1000ccc04 <lifecycle::recovery_control::resolve_phase>
+100141ce4: 9400782b    	bl	0x10015fd90 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100141d08: 94893d84    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100141d20: 94893bda    	bl	0x102390c88 <core::panicking::panic_fmt>
+100141d78: 94893bc4    	bl	0x102390c88 <core::panicking::panic_fmt>
+100141db0: 940b6a6c    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+100141dc0: 940b6ca3    	bl	0x10041d04c <core::ptr::drop_glue::<kasumi_types::target::TargetReplicaInput>>
+100141dd8: 948439e1    	bl	0x10225055c <core::ptr::drop_glue::<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::target::SignedTargetMaterialization>>>
+100141dec: 94615d4b    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100141e28: 940b6a4e    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+100141e3c: 940bfc3d    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+100141e8c: 940b6c70    	bl	0x10041d04c <core::ptr::drop_glue::<kasumi_types::target::TargetReplicaInput>>
+100141e9c: 94843cac    	bl	0x10225114c <core::ptr::drop_glue::<kasumi_types::target_completion::TargetCompletionInput>>
+100141ecc: 940b6dfa    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+100141ee0: 940aaf00    	bl	0x1003edae0 <core::ptr::drop_glue::<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest>>>
+100141ef4: 97fd8326    	bl	0x1000a2b8c <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+100141f20: 97fccc6d    	bl	0x1000750d4 <<kasumi_engine::service::Database>::recovery_phase::{closure#0}>
+100141f90: 94893ce2    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100141fa0: 97fd82fb    	bl	0x1000a2b8c <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+100141fc0: 94893cd6    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142024: 94893a7a    	bl	0x102390a0c <core::result::unwrap_failed>
+100142044: 94843b06    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+100142050: 94893a89    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100142084: 94893ca5    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142094: 9417364d    	bl	0x10070f9c8 <<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::record>
+1001420a8: 97fdc140    	bl	0x1000b25a8 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+1001420cc: 94180b1c    	bl	0x100744d3c <<core::option::Option<kasumi_types::recovery::RecoveryDispatchOutcome>>::is_none>
+1001420ec: 97fdc12f    	bl	0x1000b25a8 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+1001420fc: 97fdc12b    	bl	0x1000b25a8 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+10014211c: 94893ad6    	bl	0x102390c74 <core::panicking::panic>
+100142158: 97fe2a89    	bl	0x1000ccb7c <lifecycle::recovery_control::prepare_next>
+100142170: 940076e4    	bl	0x10015fd00 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100142194: 94893c61    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001421c4: 97fd9076    	bl	0x1000a639c <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+1001421f0: 97ff89a0    	bl	0x100124870 <lifecycle::recovery_control::prepare_next::{closure#0}>
+100142260: 94893c2e    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142270: 97fd904b    	bl	0x1000a639c <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+1001422bc: 94893c17    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142338: 97fb5168    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+100142388: 97fb5154    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+1001423c0: 94893a1e    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+1001423e0: 94893bce    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142400: 97fee73a    	bl	0x1000fc0e8 <<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::target::SignedTargetMaterialization> as core::ops::index::Index<&u64>>::index>
+100142414: 948939f5    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+100142450: 97ff4a5c    	bl	0x100114dc0 <<kasumi_types::target::TargetOrigin as core::clone::Clone>::clone>
+100142488: 94893ba4    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001424a0: 97fef1f4    	bl	0x1000fec70 <<kasumi_types::lifecycle::LifecycleIntent as core::clone::Clone>::clone>
+1001424b0: 94843b27    	bl	0x10225114c <core::ptr::drop_glue::<kasumi_types::target_completion::TargetCompletionInput>>
+100142510: 948939ca    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+100142544: 948939a9    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+10014256c: 94893a0c    	bl	0x102390d9c <core::panicking::panic_const::panic_const_add_overflow>
+10014257c: 94843d82    	bl	0x102251b84 <core::ptr::drop_glue::<kasumi_types::lifecycle::LifecycleIntent>>
+1001425c4: 97fe94af    	bl	0x1000e7880 <<str>::repeat>
+1001425d4: 948939f2    	bl	0x102390d9c <core::panicking::panic_const::panic_const_add_overflow>
+1001425e4: 94843d68    	bl	0x102251b84 <core::ptr::drop_glue::<kasumi_types::lifecycle::LifecycleIntent>>
+100142658: 94893b30    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142674: 94893b29    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142690: 94893b22    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001426c4: 94893b15    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001426f0: 94893b0a    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10014274c: 94893af3    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10014278c: 97fee695    	bl	0x1000fc1e0 <<alloc::collections::btree::map::BTreeMap<u64, ring::ec::curve25519::ed25519::signing::Ed25519KeyPair> as core::ops::index::Index<&u64>>::index>
+1001427a0: 9489397f    	bl	0x102390d9c <core::panicking::panic_const::panic_const_add_overflow>
+1001427b0: 94843a7f    	bl	0x1022511ac <core::ptr::drop_glue::<kasumi_types::target_completion::TargetCompletionAttempt>>
+100142858: 9477435e    	bl	0x101f135d0 <serde_json::ser::to_vec::<(&str, &kasumi_types::target_completion::TargetCompletionAttemptObservation)>>
+1001428b4: 94893856    	bl	0x102390a0c <core::result::unwrap_failed>
+1001428d4: 9485dd9a    	bl	0x1022b9f3c <core::ptr::drop_glue::<serde_json::error::Error>>
+1001428e0: 94893865    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+10014291c: 94515d20    	bl	0x101599d9c <<alloc::vec::Vec<u8> as core::ops::deref::Deref>::deref>
+100142934: 94615a59    	bl	0x101999298 <core::ptr::drop_glue::<alloc::vec::Vec<u8>>>
+100142964: 947d5dda    	bl	0x10209a0cc <<ring::ec::curve25519::ed25519::signing::Ed25519KeyPair>::sign>
+100142974: 947d5fe5    	bl	0x10209a908 <<ring::signature::Signature as core::convert::AsRef<[u8]>>::as_ref>
+100142994: 9476f3e3    	bl	0x101eff920 <hex::encode::<&[u8]>>
+1001429b8: 94615a38    	bl	0x101999298 <core::ptr::drop_glue::<alloc::vec::Vec<u8>>>
+100142a6c: 94893873    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+100142ac0: 94893a16    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142b00: 94893a06    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142b34: 97fb413c    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+100142b58: 940b6696    	bl	0x10041c5b0 <core::ptr::drop_glue::<kasumi_types::target_completion::SignedTargetCompletionAttempt>>
+100142b60: 948937c5    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100142b9c: 948939df    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142bac: 9489380f    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+100142bf8: 97fb410b    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+100142c1c: 940b6792    	bl	0x10041ca64 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeResponse>>
+100142c24: 94893794    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100142c60: 948939ae    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142cb4: 97fe27d4    	bl	0x1000ccc04 <lifecycle::recovery_control::resolve_phase>
+100142ccc: 94007431    	bl	0x10015fd90 <<lifecycle::recovery_control::resolve_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100142cf0: 9489398a    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142d30: 94843907    	bl	0x10225114c <core::ptr::drop_glue::<kasumi_types::target_completion::TargetCompletionInput>>
+100142d40: 94843a44    	bl	0x102251650 <core::ptr::drop_glue::<kasumi_types::target::TargetOrigin>>
+100142d50: 94843a40    	bl	0x102251650 <core::ptr::drop_glue::<kasumi_types::target::TargetOrigin>>
+100142d64: 9461596d    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100142d90: 948937be    	bl	0x102390c88 <core::panicking::panic_fmt>
+100142de8: 948937a8    	bl	0x102390c88 <core::panicking::panic_fmt>
+100142dfc: 97fd8e10    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100142e28: 97ff899f    	bl	0x1001254a4 <lifecycle::recovery_control::resolve_phase::{closure#0}>
+100142ea0: 9489391e    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142eb4: 94893919    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142ec4: 97fd8dde    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100142ed4: 97fdbde4    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+100142f00: 97fe2995    	bl	0x1000cd554 <lifecycle::recovery_control::reject_changed_completion_caps>
+100142f18: 940073da    	bl	0x10015fe80 <<lifecycle::recovery_control::reject_changed_completion_caps::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100142f3c: 948938f7    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100142f6c: 97fdaef1    	bl	0x1000aeb30 <core::ptr::drop_glue::<lifecycle::recovery_control::reject_changed_completion_caps::{closure#0}>>
+100142f90: 94004a08    	bl	0x1001557b0 <lifecycle::recovery_control::reject_changed_completion_caps::{closure#0}>
+100142ff4: 97fdaecf    	bl	0x1000aeb30 <core::ptr::drop_glue::<lifecycle::recovery_control::reject_changed_completion_caps::{closure#0}>>
+100143030: 97fe26d3    	bl	0x1000ccb7c <lifecycle::recovery_control::prepare_next>
+100143048: 9400732e    	bl	0x10015fd00 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10014306c: 948938ab    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10014309c: 97fd8cc0    	bl	0x1000a639c <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+1001430c8: 97ff85ea    	bl	0x100124870 <lifecycle::recovery_control::prepare_next::{closure#0}>
+100143138: 94893878    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100143148: 97fd8c95    	bl	0x1000a639c <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100143198: 94893860    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001431d0: 97fe266b    	bl	0x1000ccb7c <lifecycle::recovery_control::prepare_next>
+100143228: 940072b6    	bl	0x10015fd00 <<lifecycle::recovery_control::prepare_next::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10014324c: 94893833    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10014327c: 97fd8c48    	bl	0x1000a639c <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+1001432a8: 97ff8572    	bl	0x100124870 <lifecycle::recovery_control::prepare_next::{closure#0}>
+100143318: 94893800    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100143328: 97fd8c1d    	bl	0x1000a639c <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_next::{closure#0}>>
+100143374: 948937e9    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10014340c: 97fb4d33    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+100143494: 947285cc    	bl	0x101de4bc4 <<(u64, u64) as core::cmp::PartialEq>::eq>
+1001434b0: 97fb4d0a    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+1001434cc: 94615793    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100143520: 948803d0    	bl	0x102344460 <core::panicking::assert_failed::<(u64, u64), (u64, u64)>>
+100143558: 942fff79    	bl	0x100d4333c <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::cmp::PartialEq>::eq>
+100143588: 97fb4cd4    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+1001435b8: 97fe5a52    	bl	0x1000d9f00 <<lifecycle::Fixture>::context>
+1001435dc: 948801d2    	bl	0x102343d24 <core::panicking::assert_failed::<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest>, alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest>>>
+100143634: 97fe5a15    	bl	0x1000d9e88 <<lifecycle::Fixture>::leader>
+10014368c: 97fbee72    	bl	0x10003f054 <<<lifecycle::Fixture>::leader::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+1001436b0: 9489371a    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001436e0: 940aa900    	bl	0x1003edae0 <core::ptr::drop_glue::<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest>>>
+10014370c: 9489355f    	bl	0x102390c88 <core::panicking::panic_fmt>
+100143764: 94893549    	bl	0x102390c88 <core::panicking::panic_fmt>
+100143778: 97fd7a76    	bl	0x1000a2150 <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+10014379c: 97fbec7a    	bl	0x10003e984 <<lifecycle::Fixture>::leader::{closure#0}>
+100143838: 97fd7a46    	bl	0x1000a2150 <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+100143888: 948936a4    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001438c4: 942c12b5    	bl	0x100c48398 <<kasumi_engine::service::Database>::recovery_phase>
+10014391c: 97fcf451    	bl	0x100080a60 <<<kasumi_engine::service::Database>::recovery_phase::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100143940: 94893676    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100143970: 97fd7c87    	bl	0x1000a2b8c <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+10014399c: 97fcc5ce    	bl	0x1000750d4 <<kasumi_engine::service::Database>::recovery_phase::{closure#0}>
+100143a0c: 94893643    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100143a1c: 97fd7c5c    	bl	0x1000a2b8c <core::ptr::drop_glue::<<kasumi_engine::service::Database>::recovery_phase::{closure#0}>>
+100143a3c: 94893637    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100143aa0: 948933db    	bl	0x102390a0c <core::result::unwrap_failed>
+100143ac0: 94843467    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+100143acc: 948933ea    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100143b00: 94893606    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100143b10: 94172fae    	bl	0x10070f9c8 <<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>::record>
+100143b24: 97fdbaa1    	bl	0x1000b25a8 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+100143b48: 9418047d    	bl	0x100744d3c <<core::option::Option<kasumi_types::recovery::RecoveryDispatchOutcome>>::is_none>
+100143b68: 97fdba90    	bl	0x1000b25a8 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+100143b78: 97fdba8c    	bl	0x1000b25a8 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+100143b98: 94893437    	bl	0x102390c74 <core::panicking::panic>
+100143c00: 97fb4b36    	bl	0x1000168d8 <<core::fmt::Arguments>::from_str>
+100143c38: 94893400    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+100143c58: 948935b0    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100143c80: 948935a6    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100143c9c: 97fee113    	bl	0x1000fc0e8 <<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::target::SignedTargetMaterialization> as core::ops::index::Index<&u64>>::index>
+100143cb0: 948933ce    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+100143cbc: 94615597    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100143ce4: 97ff4437    	bl	0x100114dc0 <<kasumi_types::target::TargetOrigin as core::clone::Clone>::clone>
+100143d24: 97feebd3    	bl	0x1000fec70 <<kasumi_types::lifecycle::LifecycleIntent as core::clone::Clone>::clone>
+100143d34: 9484320a    	bl	0x10225055c <core::ptr::drop_glue::<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::target::SignedTargetMaterialization>>>
+100143d74: 94893569    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100143db8: 948933f9    	bl	0x102390d9c <core::panicking::panic_const::panic_const_add_overflow>
+100143dc8: 94842e25    	bl	0x10224f65c <core::ptr::drop_glue::<core::option::Option<kasumi_types::target_completion::TargetCompletionResolutionReference>>>
+100143e10: 97fe8e9c    	bl	0x1000e7880 <<str>::repeat>
+100143e20: 948933df    	bl	0x102390d9c <core::panicking::panic_const::panic_const_add_overflow>
+100143e30: 94842e0b    	bl	0x10224f65c <core::ptr::drop_glue::<core::option::Option<kasumi_types::target_completion::TargetCompletionResolutionReference>>>
+100143e68: 9489352c    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100143e98: 94893520    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100143eb4: 94893519    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100143efc: 97ff41bc    	bl	0x1001145ec <<kasumi_types::target::TargetCompletionFact as core::clone::Clone>::clone>
+100143f14: 94843644    	bl	0x102251824 <core::ptr::drop_glue::<kasumi_types::target::TargetCompletionFact>>
+100143f78: 948934e8    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100143fbc: 97fee089    	bl	0x1000fc1e0 <<alloc::collections::btree::map::BTreeMap<u64, ring::ec::curve25519::ed25519::signing::Ed25519KeyPair> as core::ops::index::Index<&u64>>::index>
+100143fd0: 94893373    	bl	0x102390d9c <core::panicking::panic_const::panic_const_add_overflow>
+100143fe0: 94843611    	bl	0x102251824 <core::ptr::drop_glue::<kasumi_types::target::TargetCompletionFact>>
+10014406c: 94773eda    	bl	0x101f13bd4 <serde_json::ser::to_vec::<(&str, &kasumi_types::target::TargetCompletionObservation)>>
+1001440c8: 94893251    	bl	0x102390a0c <core::result::unwrap_failed>
+1001440e8: 9485d795    	bl	0x1022b9f3c <core::ptr::drop_glue::<serde_json::error::Error>>
+1001440f4: 94893260    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100144130: 9451571b    	bl	0x101599d9c <<alloc::vec::Vec<u8> as core::ops::deref::Deref>::deref>
+100144148: 94615454    	bl	0x101999298 <core::ptr::drop_glue::<alloc::vec::Vec<u8>>>
+100144178: 947d57d5    	bl	0x10209a0cc <<ring::ec::curve25519::ed25519::signing::Ed25519KeyPair>::sign>
+100144188: 947d59e0    	bl	0x10209a908 <<ring::signature::Signature as core::convert::AsRef<[u8]>>::as_ref>
+1001441a8: 9476edde    	bl	0x101eff920 <hex::encode::<&[u8]>>
+1001441d8: 94893450    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001441f8: 94893448    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10014421c: 9461541f    	bl	0x101999298 <core::ptr::drop_glue::<alloc::vec::Vec<u8>>>
+1001442b4: 94893261    	bl	0x102390c38 <core::panicking::panic_misaligned_pointer_dereference>
+1001442f8: 94893408    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100144308: 97fb3b47    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+10014432c: 9477b2c4    	bl	0x101f30e3c <core::ptr::drop_glue::<kasumi_types::target::SignedTargetCompletion>>
+100144334: 948931d0    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100144370: 948933ea    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100144380: 9489321a    	bl	0x102390be8 <core::panicking::panic_null_pointer_dereference>
+1001443cc: 97fb3b16    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+1001443f0: 940b619d    	bl	0x10041ca64 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeResponse>>
+1001443f8: 9489319f    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100144434: 948933b9    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100144484: 948933a5    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001444ec: 9489338b    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100144504: 94893385    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100144524: 9489337d    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10014457c: 94893367    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100144598: 94893360    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001445cc: 94893353    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001445f8: 94615348    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100144668: 9461532c    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+1001446b8: 940bf21e    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+1001446c8: 940b6026    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+1001446dc: 940bf215    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+100144740: 940aa4e8    	bl	0x1003edae0 <core::ptr::drop_glue::<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest>>>
+1001447c0: 940b63bd    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+10014484c: 946152b3    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100144860: 940b6395    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+1001448d8: 940bf196    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+1001448e8: 940b5f9e    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+1001448fc: 940bf18d    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+100144964: 940b6354    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+100144978: 940b634f    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+1001449b4: 94843474    	bl	0x102251b84 <core::ptr::drop_glue::<kasumi_types::lifecycle::LifecycleIntent>>
+1001449c4: 94842ee6    	bl	0x10225055c <core::ptr::drop_glue::<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::target::SignedTargetMaterialization>>>
+1001449d8: 94615250    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100144a28: 940bf142    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+100144a38: 940b5f4a    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+100144a4c: 940bf139    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+100144b18: 9484341b    	bl	0x102251b84 <core::ptr::drop_glue::<kasumi_types::lifecycle::LifecycleIntent>>
+100144b2c: 940b62e2    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+100144b90: 948433fd    	bl	0x102251b84 <core::ptr::drop_glue::<kasumi_types::lifecycle::LifecycleIntent>>
+100144bb8: 940a8575    	bl	0x1003e618c <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+100144be0: 940b62b5    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+100144c80: 940b628d    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+100144ca8: 9477a902    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+100144cf8: 940a8525    	bl	0x1003e618c <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+100144d60: 9489316e    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100144d94: 940b5e73    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+100144da8: 940b5e6e    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+100144dbc: 940b5e69    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+100144dd0: 9477b01b    	bl	0x101f30e3c <core::ptr::drop_glue::<kasumi_types::target::SignedTargetCompletion>>
+100144de0: 9477b05f    	bl	0x101f30f5c <core::ptr::drop_glue::<kasumi_types::target::TargetCompletionObservation>>
+100144df0: 94843365    	bl	0x102251b84 <core::ptr::drop_glue::<kasumi_types::lifecycle::LifecycleIntent>>
+100144e00: 94842dd7    	bl	0x10225055c <core::ptr::drop_glue::<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::target::SignedTargetMaterialization>>>
+100144e10: 94843210    	bl	0x102251650 <core::ptr::drop_glue::<kasumi_types::target::TargetOrigin>>
+100144e20: 94843359    	bl	0x102251b84 <core::ptr::drop_glue::<kasumi_types::lifecycle::LifecycleIntent>>
+100144e30: 94843208    	bl	0x102251650 <core::ptr::drop_glue::<kasumi_types::target::TargetOrigin>>
+100144e54: 94842dc2    	bl	0x10225055c <core::ptr::drop_glue::<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::target::SignedTargetMaterialization>>>
+100144e74: 948429fa    	bl	0x10224f65c <core::ptr::drop_glue::<core::option::Option<kasumi_types::target_completion::TargetCompletionResolutionReference>>>
+100144e8c: 94892f7f    	bl	0x102390c88 <core::panicking::panic_fmt>
+100144ea0: 940a84bb    	bl	0x1003e618c <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+100144eb4: 9477a87f    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+100144ef0: 940b5e1c    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+100144f04: 940bf00b    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+100144f14: 9484308e    	bl	0x10225114c <core::ptr::drop_glue::<kasumi_types::target_completion::TargetCompletionInput>>
+100144f44: 940b61dc    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+100144f58: 940aa2e2    	bl	0x1003edae0 <core::ptr::drop_glue::<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest>>>
+100144f84: 940b61cc    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+100144f98: 940aa2d2    	bl	0x1003edae0 <core::ptr::drop_glue::<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest>>>
+100144fa8: 946150dc    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100144fbc: 9477ad14    	bl	0x101f3040c <core::ptr::drop_glue::<kasumi_types::target_completion::TargetCompletionAttemptObservation>>
+100144fe4: 9484305a    	bl	0x10225114c <core::ptr::drop_glue::<kasumi_types::target_completion::TargetCompletionInput>>
+10014500c: 940befc9    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+10014501c: 940b5dd1    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+10014504c: 940b619a    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+100145060: 940aa2a0    	bl	0x1003edae0 <core::ptr::drop_glue::<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest>>>
+10014509c: 940b5db1    	bl	0x10041c760 <core::ptr::drop_glue::<kasumi_types::target_runtime_protocol::TargetRuntimeStep>>
+1001450b0: 940befa0    	bl	0x100440f30 <<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest> as core::ops::drop::Drop>::drop>
+1001450c0: 94843188    	bl	0x1022516e0 <core::ptr::drop_glue::<kasumi_types::target::TargetQuorumInput>>
+1001450f0: 940b6171    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+100145104: 940aa277    	bl	0x1003edae0 <core::ptr::drop_glue::<alloc::boxed::Box<kasumi_types::target_runtime_protocol::TargetRuntimeRequest>>>
+100145118: 97fdb553    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+10014512c: 940b6162    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+100145140: 97fdb549    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+100145154: 97fdb544    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+100145168: 97fdb53f    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+10014517c: 9477a7cd    	bl	0x101f2f0b0 <core::ptr::drop_glue::<kasumi_types::RequestContext>>
+100145190: 97fdb535    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+1001451b8: 94615058    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+1001451e4: 9477ad2f    	bl	0x101f306a0 <core::ptr::drop_glue::<kasumi_types::authority_protocol::AuthorityCommand>>
+100145210: 94615042    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+10014523c: 94615037    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100145268: 9477ad26    	bl	0x101f30700 <core::ptr::drop_glue::<kasumi_types::authority_protocol::AuthorityOutcome>>
+10014527c: 9477afd1    	bl	0x101f311c0 <core::ptr::drop_glue::<kasumi_types::signing::GenerationSignature>>
+10014528c: 9477ae04    	bl	0x101f30a9c <core::ptr::drop_glue::<kasumi_types::authority_protocol::SignedAuthorityReceipt>>
+1001452a0: 940b6105    	bl	0x10041d6b4 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatch>>
+1001452ac: 97fdb4bf    	bl	0x1000b25a8 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryPhase>>
+1001452c0: 940a83b3    	bl	0x1003e618c <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+1001452ec: 9461500b    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100145318: 9484307a    	bl	0x102251500 <core::ptr::drop_glue::<kasumi_types::backup::FullBackupCheckpoint>>
+100145344: 94614ff5    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100145370: 940b610b    	bl	0x10041d79c <core::ptr::drop_glue::<kasumi_types::recovery::RecoverySourceMode>>
+10014539c: 94614fdf    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+1001453c8: 94614fd4    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+1001453f4: 94614fc9    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100145420: 94842c58    	bl	0x102250580 <core::ptr::drop_glue::<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::lifecycle::LifecycleNode>>>
+100145434: 94843174    	bl	0x102251a04 <core::ptr::drop_glue::<kasumi_types::target::TargetMaterializationInput>>
+100145448: 97fdb487    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+10014545c: 97fd5f01    	bl	0x10009d060 <core::ptr::drop_glue::<alloc::collections::btree::map::BTreeMap<u64, ring::ec::curve25519::ed25519::signing::Ed25519KeyPair>>>
+100145484: 94614fa5    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+1001454ac: 94843015    	bl	0x102251500 <core::ptr::drop_glue::<kasumi_types::backup::FullBackupCheckpoint>>
+1001454d4: 94614f91    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100145500: 940b60a7    	bl	0x10041d79c <core::ptr::drop_glue::<kasumi_types::recovery::RecoverySourceMode>>
+100145528: 94614f7c    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100145550: 94614f72    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+100145578: 94614f68    	bl	0x101999318 <core::ptr::drop_glue::<alloc::string::String>>
+1001455a4: 94842bf7    	bl	0x102250580 <core::ptr::drop_glue::<alloc::collections::btree::map::BTreeMap<u64, kasumi_types::lifecycle::LifecycleNode>>>
+1001455b4: 94843114    	bl	0x102251a04 <core::ptr::drop_glue::<kasumi_types::target::TargetMaterializationInput>>
+1001455c4: 97fdb1e4    	bl	0x1000b1d54 <core::ptr::drop_glue::<lifecycle::Fixture>>

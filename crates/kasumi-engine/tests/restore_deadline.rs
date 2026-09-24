@@ -1,7 +1,7 @@
 mod common;
 use kasumi_engine::RestoreSource;
 use kasumi_engine::test_utils::open_fixture;
-use kasumi_store::{BackupDestination, NodeStore, TenantStore, test_utils::LocalKeyProvider};
+use kasumi_store::{BackupDestination, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use std::{
     collections::BTreeSet,
@@ -51,13 +51,15 @@ fn context(tenant: &str) -> RequestContext {
 #[tokio::test]
 async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_another_tenant() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
-    let node = NodeStore::create_new_fixture(
-        root.path().join("node.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    let audit = common::security_audit(node.clone()).await;
+    let physical = common::PhysicalFixture::new(&root.path().join("node.redb"), Default::default());
+    let node = physical
+        .storage
+        .create_new(
+            root.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let audit = common::security_audit(node.clone(), physical.storage.admission.clone()).await;
     let keys = Arc::new(LocalKeyProvider::new([0xA6; 32]));
     let first = TenantStore::initialize_catalog_fixture(node.clone(), "first".into(), keys.clone())
         .await

@@ -1,0 +1,29 @@
+{
+  "scope": "development two exact lifecycle failures with original-cause diagnostics and one current-leader phase read; no release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-engine",
+    "--all-features",
+    "--test",
+    "lifecycle",
+    "--",
+    "--test-threads=1",
+    "--nocapture",
+    "--exact",
+    "recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation",
+    "recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 18640,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 210.51723885536194,
+  "inventoried_source_unchanged": true
+}

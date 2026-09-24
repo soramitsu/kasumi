@@ -1,0 +1,27 @@
+{
+  "scope": "Canonical public upstream two-phase format assertion with original error diagnostic; no final acceptance",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--manifest-path",
+    "vendor/redb-4.2.0/Cargo.toml",
+    "--test",
+    "canonical_format",
+    "upstream_two_phase_format_three_is_rejected_before_table_decoding",
+    "--",
+    "--exact",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 395,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 7.704807996749878,
+  "inventoried_source_unchanged": true
+}

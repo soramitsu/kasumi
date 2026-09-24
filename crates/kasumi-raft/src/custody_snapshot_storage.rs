@@ -1,6 +1,6 @@
 //! Closed snapshot chunks publish in the same encrypted transaction as permanent
 //! custody tables, the projection and the exact applied cursor.
-use crate::control::{META, load};
+use crate::control::META;
 use crate::custody_machine::CLOSED_SNAPSHOT;
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{CustodyStore, EncryptedSpool, EncryptedTable, SnapshotImage, WriteOp};
@@ -16,14 +16,25 @@ struct Manifest {
     chunks: u64,
     sha256: String,
 }
+fn decode_manifest(bytes: &[u8]) -> Result<Manifest> {
+    let manifest: Manifest = serde_json::from_slice(bytes)?;
+    ensure!(
+        serde_json::to_vec(&manifest)? == bytes,
+        "noncanonical closed snapshot manifest"
+    );
+    ensure!(
+        manifest.version == 1
+            && manifest.bytes > 0
+            && manifest.chunks == manifest.bytes.div_ceil(CHUNK as u64),
+        "invalid closed snapshot manifest"
+    );
+    kasumi_types::validate_sha256(&manifest.sha256)?;
+    Ok(manifest)
+}
 pub(crate) fn check_format(custody: &CustodyStore) -> Result<()> {
     let view = custody.store().read_view()?;
     if let Some(bytes) = view.get(META, MANIFEST, 4096)? {
-        let manifest: Manifest = serde_json::from_slice(&bytes)?;
-        ensure!(
-            manifest.version == 1,
-            "unsupported closed snapshot storage format"
-        );
+        decode_manifest(&bytes)?;
     } else {
         view.visit(CLOSED_SNAPSHOT, 1, |_, _| {
             anyhow::bail!("unsupported closed snapshot storage format")
@@ -73,14 +84,11 @@ pub(crate) fn load_image(custody: &CustodyStore, limit: u64) -> Result<Option<Sn
         check_format(custody)?;
         return Ok(None);
     };
-    let manifest: Manifest = serde_json::from_slice(&bytes)?;
+    let manifest = decode_manifest(&bytes)?;
     ensure!(
-        manifest.version == 1
-            && manifest.bytes <= limit
-            && manifest.chunks == manifest.bytes.div_ceil(CHUNK as u64),
-        "invalid closed snapshot manifest"
+        manifest.bytes <= limit,
+        "closed snapshot exceeds byte limit"
     );
-    kasumi_types::validate_sha256(&manifest.sha256)?;
     let mut spool = EncryptedSpool::new(store.scratch_disk(), limit)?;
     for index in 0..manifest.chunks {
         let bytes = view
@@ -116,11 +124,60 @@ pub(crate) fn load_image(custody: &CustodyStore, limit: u64) -> Result<Option<Sn
     );
     // The caller's publication lock prevents a second generation from changing
     // coverage between this pinned image and its independently keyed metadata.
-    let coverage: crate::storage::SnapshotCoverage =
-        load(store, META, b"snapshot_coverage")?.context("closed snapshot coverage absent")?;
+    let coverage = crate::storage::load_snapshot_coverage(store)?
+        .context("closed snapshot coverage absent")?;
     ensure!(
         coverage.snapshot_sha256 == manifest.sha256,
         "closed snapshot manifest coverage differs"
     );
     Ok(Some(image))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::tests::fixture;
+    use kasumi_store::test_utils::FaultBackend;
+
+    #[tokio::test]
+    async fn closed_manifest_requires_exact_writer_json_and_valid_metadata() -> Result<()> {
+        let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+        let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+        let (domains, _, _, _) = fixture(FaultBackend::new(), true, scratch).await?;
+        let store = domains.custody().store();
+        let manifest = Manifest {
+            version: 1,
+            bytes: 73,
+            chunks: 1,
+            sha256: "a".repeat(64),
+        };
+        let canonical = serde_json::to_vec(&manifest)?;
+        store.write_batch(&[WriteOp::put(META, MANIFEST, canonical.clone())])?;
+        check_format(domains.custody())?;
+        let mut whitespace = vec![b' '];
+        whitespace.extend_from_slice(&canonical);
+        let mut unknown = canonical.clone();
+        assert_eq!(unknown.pop(), Some(b'}'));
+        unknown.extend_from_slice(b",\"legacy\":true}");
+        let reordered = format!(
+            "{{\"sha256\":\"{}\",\"chunks\":1,\"bytes\":73,\"version\":1}}",
+            manifest.sha256
+        )
+        .into_bytes();
+        for bytes in [whitespace, unknown, reordered] {
+            store.write_batch(&[WriteOp::put(META, MANIFEST, bytes)])?;
+            assert!(check_format(domains.custody()).is_err());
+            assert!(load_image(domains.custody(), 1024).is_err());
+        }
+        let mut invalid = manifest;
+        invalid.sha256 = "AA".repeat(32);
+        store.write_batch(&[WriteOp::put(META, MANIFEST, serde_json::to_vec(&invalid)?)])?;
+        assert!(check_format(domains.custody()).is_err());
+        invalid.sha256 = "a".repeat(64);
+        invalid.chunks = 2;
+        store.write_batch(&[WriteOp::put(META, MANIFEST, serde_json::to_vec(&invalid)?)])?;
+        assert!(check_format(domains.custody()).is_err());
+        Ok(())
+    }
 }

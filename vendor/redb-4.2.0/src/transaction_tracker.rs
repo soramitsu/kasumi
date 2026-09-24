@@ -206,6 +206,24 @@ impl TransactionTracker {
         }
     }
 
+    /// The retained reader releases its tracker registration before allowing
+    /// physical transaction disposal. A poisoned lock or missing count returns
+    /// without consuming the caller's exact `ReadTransaction`.
+    pub(crate) fn try_deallocate_read_transaction(&self, id: TransactionId) -> Result {
+        let mut state = self.state.lock()?;
+        let Some(ref_count) = state.live_read_transactions.get_mut(&id) else {
+            return Err(crate::StorageError::OwnerFailed);
+        };
+        if *ref_count == 0 {
+            return Err(crate::StorageError::OwnerFailed);
+        }
+        *ref_count -= 1;
+        if *ref_count == 0 {
+            state.live_read_transactions.remove(&id);
+        }
+        Ok(())
+    }
+
     pub(crate) fn any_savepoint_exists(&self) -> bool {
         !self.state.lock().unwrap().valid_savepoints.is_empty()
     }

@@ -1,0 +1,7 @@
+{
+  "mode": "STATIC_ONLY",
+  "patch_sha256": "fdba3ab745f6262bc8998b8d3adcc50db3ab135af4028dfd84f6402239174b96",
+  "manifest_sha256": "0e30b8a5982afe30c7f63313ae22c9da7a78285f1fb87e8225744c39f8a5d2c4",
+  "actual_source_edits": false,
+  "test_run": false
+}

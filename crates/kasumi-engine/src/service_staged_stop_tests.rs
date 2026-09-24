@@ -184,6 +184,7 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
     );
     let CredentialFixture {
         _directory: directory,
+        storage,
         db,
         audit,
         context,
@@ -191,12 +192,12 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
     audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
-    let node = NodeStore::open_existing_fixture(
-        directory.path().join("node.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
+    let node = storage
+        .open_existing(
+            directory.path().join("persistent/node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([0x97; 32]));
     let audit = SecurityAudit::open(
         TenantStore::open_existing_fixture(
@@ -207,7 +208,7 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
         .await
         .unwrap(),
         kasumi_types::AuditRetentionBudget::default(),
-        crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+        storage.admission.clone(),
     )
     .unwrap();
     let application = TenantStore::open_existing_fixture(node, context.tenant.clone(), provider)

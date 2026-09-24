@@ -1,0 +1,37 @@
+{
+  "status": "CHECKED_ARITHMETIC_ONLY_NOT_NATIVE_LAYOUT_OR_ALLOCATOR_QUALIFICATION",
+  "conditional_type_inputs": {
+    "inode_pair_size": 112,
+    "inode_pair_align": 8,
+    "live_pair_size": 24,
+    "live_pair_align": 8,
+    "group_width": 8
+  },
+  "policy": {
+    "N": 1000000,
+    "R": 1,
+    "H": 4096,
+    "inode_physical_capacity_each": 2000001,
+    "census_logical_capacity": 1000001
+  },
+  "inode_each_bank": {
+    "buckets": 4194304,
+    "usable": 3670016,
+    "bytes": 473956360,
+    "allocations": 1
+  },
+  "inode_two_banks_requested": 947912720,
+  "live_each_bank": {
+    "buckets": 8192,
+    "usable": 7168,
+    "bytes": 204808,
+    "allocations": 1
+  },
+  "live_two_banks_requested": 409616,
+  "four_banks_requested": 948322336,
+  "old_estimated_ledger_component": 1536009216,
+  "old_estimated_live_component": 659456,
+  "component_reduction_conditional": 588346336,
+  "new_inline_objects_and_native_allocator_allowance_excluded": true,
+  "assertions": "PASS"
+}

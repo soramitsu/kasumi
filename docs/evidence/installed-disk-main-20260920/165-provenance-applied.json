@@ -1,0 +1,18 @@
+{
+  "status": "approved-current-source-inventory-checkpoint-not-release-acceptance",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "candidate_manifest_sha256": "eb2b072c7b173833e4444aa03793da260926d1be747090edfae36e94853ebb35",
+  "policy_patch_sha256": "f082f5d163b546d963b417c4fdb6d6b994c3cf1255ac0a857d4173f582743ba9",
+  "old_policy_sha256": "7b196bbfde98b9c0e84aca1cafd010d3757aa4a50c03fc0bb7bfcd91da39a6fc",
+  "new_policy_sha256": "390a5dc4fe90d800fb4255d9f77eaf5f816a2671635a1f68c2445f1f68e87fbd",
+  "provenance_sha256": "2dace2b24932576a9c6a7ee061041ba836ec4aeaff1fc000b24a8e808ef65ed7",
+  "review_sha256": "9cb77bbb49d36f06003666f02c32ae90eae8bb1552264f923b4637208fee6aab",
+  "current_files_verified": 109,
+  "evidence_bindings_verified": 134,
+  "checker_changed": false,
+  "cargo_selection_validation": "run165 pending",
+  "review_receipt_sha256": "2b2ef521b74a9e26c6a617d159766fee47a55af4ea0efb3fa0930dae2f507523",
+  "installed_evidence_files": 141,
+  "actual_source_unchanged": true
+}

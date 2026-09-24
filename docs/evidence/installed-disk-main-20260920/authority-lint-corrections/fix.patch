@@ -1,0 +1,25 @@
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -367,7 +367,7 @@
+         let ancestor_locks = census::lock_roots(&roots, config.max_depth)?;
+         let root = roots.values().next().expect("validated roots");
+         let (_, unit) = filesystem(&root.file)?;
+-        let totals = census(&roots, &config, unit, cancel)?;
++        let totals = census(&roots, config, unit, cancel)?;
+         cancel.check()?;
+         let device = selection.open(root.identity.0, config.min_free_bytes, memory.clone())?;
+         let disk = Arc::new(Self {
+--- a/crates/kasumi-authority/src/activation_gate_tests.rs
++++ b/crates/kasumi-authority/src/activation_gate_tests.rs
+@@ -370,7 +370,10 @@
+         drop(gate);
+         let attempted = task.await.unwrap();
+         let result = match attempted {
+-            Ok((receipt, _)) => receipt.receipt,
++            Ok((receipt, response_fence)) => {
++                drop(response_fence);
++                receipt.receipt
++            }
+             Err(error)
+                 if matches!(
+                     error.code,

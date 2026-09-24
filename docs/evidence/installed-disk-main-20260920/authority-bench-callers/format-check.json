@@ -1,0 +1,47 @@
+[
+  {
+    "file": "crates/kasumi-bench/src/main.rs",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "file": "crates/kasumi-bench/src/bin/loopback.rs",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "file": "crates/kasumi-authority/src/maintenance_tests.rs",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "file": "crates/kasumi-authority/src/target_serving_tests.rs",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "file": "crates/kasumi-authority/src/activation_gate_tests.rs",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "file": "crates/kasumi-authority/src/request_drain_tests.rs",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "file": "crates/kasumi-authority/src/bootstrap_open_tests.rs",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "file": "crates/kasumi-authority/src/tests.rs",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "file": "crates/kasumi-authority/src/target_materialization_tests.rs",
+    "exit_code": 0,
+    "stderr": ""
+  }
+]

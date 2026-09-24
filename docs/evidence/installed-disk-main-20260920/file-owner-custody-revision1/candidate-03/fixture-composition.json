@@ -1,0 +1,23 @@
+{
+  "source": "target/installed-disk-validation/namespace-fixture-integration-correction/proposed/crates/kasumi-store/src/node_disk/tests.rs",
+  "sha256": "abf250671cc70e373f1a34ed5bef9a74c55b3c074ecda11ca0234761ba0c8098",
+  "functions": [
+    {
+      "function": "disappeared_censused_and_closed_created_names_fence_without_credit",
+      "source_sha256": "f2ab07f2cefada06b286016e273f7dd6dba41344624d4a349b357cda0986bb05"
+    },
+    {
+      "function": "missing_enrolled_target_cannot_be_recreated_or_published_over",
+      "source_sha256": "94cb8b456ece3da4cd8d5d96be9ee6901827114315bb58c2e50795f165b06e4c"
+    },
+    {
+      "function": "publication_replaced_private_source_ancestor_fences_before_rename",
+      "source_sha256": "befd77b09ea372b98b6dec3cc27aa88928d3a7e326cc695a15b9147f77c8c3ea"
+    },
+    {
+      "function": "replaced_parent_cannot_hide_enrolled_missing_leaf",
+      "source_sha256": "228c6b2706d1b494b41e6ffca60b5e27d2a3c5856ae2d0004258df0c19e463b2"
+    }
+  ],
+  "custody_change": "Only the post-preparation publication failure retains the source registration until accepted census."
+}

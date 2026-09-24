@@ -1,0 +1,99 @@
+[
+  {
+    "name": "compile-store",
+    "pid": 6836,
+    "pgid": 6836,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kasumi-store",
+      "--all-features",
+      "--lib",
+      "--no-run",
+      "--message-format=json"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision5/native-full-store/compile-store.log",
+    "remaining_bound_seconds": 1199.974765292,
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 80.009452833,
+    "log_sha256": "39be4be211ff2be052f093623f12b7bdcf76e2432bf1d6294e43c61e4cb55f79"
+  },
+  {
+    "name": "store-inventory",
+    "pid": 8654,
+    "pgid": 8654,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision5/native-full-store/store-test-binary",
+      "--list"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision5/native-full-store/store-inventory.log",
+    "remaining_bound_seconds": 1119.4731328340001,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision5/native-full-store/store-test-binary",
+      "sha256": "361fcc682bc25cdcda400ea82e8c8026ef7c2e0d66cf5c286eb4c06396f50854",
+      "bytes": 54285408
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision5/native-full-store/store-test-binary",
+      "sha256": "361fcc682bc25cdcda400ea82e8c8026ef7c2e0d66cf5c286eb4c06396f50854",
+      "bytes": 54285408
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.838800207999995,
+    "log_sha256": "aab23d97890374ccd63d7a1dc49f4a12bd6d0fcd68552153163c5cd89fb33276",
+    "inventory_passed": true
+  },
+  {
+    "name": "store-full",
+    "pid": 8669,
+    "pgid": 8669,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision5/native-full-store/store-test-binary",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision5/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision5/native-full-store/store-full.log",
+    "remaining_bound_seconds": 1118.634363417,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision5/native-full-store/store-test-binary",
+      "sha256": "361fcc682bc25cdcda400ea82e8c8026ef7c2e0d66cf5c286eb4c06396f50854",
+      "bytes": 54285408
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision5/native-full-store/store-test-binary",
+      "sha256": "361fcc682bc25cdcda400ea82e8c8026ef7c2e0d66cf5c286eb4c06396f50854",
+      "bytes": 54285408
+    },
+    "exit_code": 101,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 222.22018812500002,
+    "log_sha256": "28505d6bcc6e509f697458c93bc403ef3010fc2901dd793e2b2d1ef5aecf502d"
+  }
+]

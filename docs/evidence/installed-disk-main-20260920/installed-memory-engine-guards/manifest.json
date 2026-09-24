@@ -1,0 +1,44 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED_PARTIAL_GUARDS_REQUIRES_CONSTRUCTOR_OWNERSHIP_INTEGRATION",
+  "stack_after": "installed-disk-core-adapter/adapter.patch",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/admission/disk_memory.rs",
+      "before_sha256": "f9b1a40b7f93d6b77bdf727fc9e3267da453fbc56f81cd5a8aebd1e82368df2e",
+      "proposed_sha256": "462a948c80c74d5fb453926b903e152b9b3f771097ed34d73aaa232cc3272a82",
+      "baseline": "pending adapter"
+    },
+    {
+      "path": "crates/kasumi-engine/src/security_audit.rs",
+      "before_sha256": "04157a8994354f13d5d602a2c4f5bd20cbe58103734ef0e082ba650ebaea0ebf",
+      "proposed_sha256": "03e847ff512709b009a5e18d07ad354be9006f4d47fbfae5568a40ea5e0d0ad9",
+      "baseline": "actual source"
+    },
+    {
+      "path": "crates/kasumi-engine/src/bootstrap_target_quorum.rs",
+      "before_sha256": "4a5aa970287a0f3438409ac4fc8f79e4d66673e43debf0ea3e8dfff3eb4cc50a",
+      "proposed_sha256": "7c92b847c8d86cc225ee7f7ef9667af7338189bb3f2353fd57f1b12cef23be4e",
+      "baseline": "actual source"
+    },
+    {
+      "path": "crates/kasumi-engine/src/bootstrap_target_serving.rs",
+      "before_sha256": "efcacb2b1aebedf1787cf4929a59fe962b3b303d73fba191d352546bdfac50f9",
+      "proposed_sha256": "28a260e1267d3f6acf0c34dc296e26ff10be3bbf1dd12c570eebc1ffdfe7fedb",
+      "baseline": "actual source"
+    },
+    {
+      "path": "crates/kasumi-engine/src/custody_service.rs",
+      "before_sha256": "6a1cf2da7d7c7daabe41604502f827f16d040801f22e9928c1328166e013d9ef",
+      "proposed_sha256": "374beae34824e2d389a8000ac83987572a403be34db20bfe2c0871c533760845",
+      "baseline": "actual source"
+    },
+    {
+      "path": "crates/kasumi-engine/src/bootstrap.rs",
+      "before_sha256": "31e7a553c70900d234978d5bf9d2ccb5cbe16b795cc3fb91dd23d34c65ba374c",
+      "proposed_sha256": "0627538be45c2703c07869e8defc960c7ed29ed8e4c4e0e5c11ac745727b8a9d",
+      "baseline": "actual source"
+    }
+  ],
+  "patch_sha256": "efeca43aa014510d6b078c5562bc7271cb85683d5b0b158e8ccf295c5695ed86",
+  "supersedes_reviewed_compile_defect": "9ccd9cec1c2e991ea2e52c71c05e22976f66b33e0edc4021a56472410dbeaa71"
+}

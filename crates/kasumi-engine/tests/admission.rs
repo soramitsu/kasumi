@@ -1,11 +1,7 @@
 mod common;
 
-use kasumi_engine::{
-    Database, TenantEngine,
-    admission::{AdmissionConfig, NodeAdmission},
-};
-use kasumi_raft::RaftGroup;
-use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
+use kasumi_engine::admission::AdmissionConfig;
+use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
 use std::{collections::BTreeSet, sync::Arc};
@@ -13,22 +9,24 @@ use std::{collections::BTreeSet, sync::Arc};
 #[tokio::test]
 async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work_still_applies() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let node = NodeStore::create_new_fixture(
-        directory.path().join("node.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
     const MAX_BYTES: u64 = 256 << 20;
-    let admission = NodeAdmission::new(
+    let physical = common::PhysicalFixture::new(
+        &directory.path().join("node.redb"),
         kasumi_engine::test_utils::admission_config_with_bookkeeping(AdmissionConfig {
             max_inflight_bytes: Some(MAX_BYTES),
             ..Default::default()
         })
         .unwrap(),
-    )
-    .unwrap();
-    let audit = common::security_audit_with_admission(node.clone(), admission.clone()).await;
+    );
+    let node = physical
+        .storage
+        .create_new(
+            directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let admission = physical.storage.admission.clone();
+    let audit = common::security_audit(node.clone(), admission.clone()).await;
     let store = TenantStore::initialize_catalog_fixture(
         node,
         "tenant".into(),
@@ -51,39 +49,28 @@ async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work
         }],
         strict_read_audit: false,
     };
-    let engine = Arc::new(
-        TenantEngine::new(
-            "tenant".into(),
-            "incarnation".into(),
-            policy,
-            Limits::default(),
-        )
-        .unwrap(),
-    );
-    let group = RaftGroup::local(
-        1,
-        "tenant/incarnation".into(),
-        kasumi_store::test_utils::initialize_custody_fixture(
-            store.clone(),
-            Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
-        )
-        .await
-        .unwrap(),
-        engine.clone(),
-        admission.snapshot_buffer_owner().unwrap(),
+    let stores = kasumi_store::test_utils::initialize_custody_fixture(
+        store,
+        Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
     )
     .await
     .unwrap();
-    let database = Database::new(engine, group.clone(), store, audit.clone());
+    let database =
+        kasumi_engine::test_utils::open_fixture(stores, policy, Limits::default(), audit.clone())
+            .await
+            .unwrap();
+    let group = database.raft_group().clone();
     // Startup and audit use the same healthy facade. A real retained reservation
     // exhausts capacity after startup; no governor is replaced or reconfigured.
-    let occupied = kasumi_engine::test_utils::reserved_payload_bytes(&admission);
+    let occupied = kasumi_engine::test_utils::reserved_payload_bytes(&admission)
+        .checked_sub(physical.initial_disk_metadata_bytes)
+        .unwrap();
     let held_capacity = admission
         .reserve(MAX_BYTES.checked_sub(occupied).unwrap(), None)
         .unwrap();
     assert_eq!(
         kasumi_engine::test_utils::reserved_payload_bytes(&admission),
-        MAX_BYTES
+        MAX_BYTES + physical.initial_disk_metadata_bytes
     );
     let operation = Operation::CreateCollection(CollectionDefinition {
         retention_class: kasumi_types::CollectionRetentionClass::Operational,
@@ -156,13 +143,16 @@ async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work
 #[tokio::test]
 async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let node = NodeStore::create_new_fixture(
-        directory.path().join("local.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    let audit = common::security_audit(node.clone()).await;
+    let physical =
+        common::PhysicalFixture::new(&directory.path().join("local.redb"), Default::default());
+    let node = physical
+        .storage
+        .create_new(
+            directory.path().join("local.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let audit = common::security_audit(node.clone(), physical.storage.admission.clone()).await;
     let store = TenantStore::initialize_catalog_fixture(
         node,
         "local".into(),

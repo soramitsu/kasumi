@@ -37,6 +37,10 @@ impl Drop for Container {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires explicit KASUMI_MINIO_DOCKER_HOST, KASUMI_MINIO_DOCKER_CONFIG and KASUMI_MINIO_WORKDIR; official pinned image must be pre-pulled"]
 async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denial() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let host =
         std::env::var("KASUMI_MINIO_DOCKER_HOST").context("set explicit local Docker socket")?;
     ensure!(
@@ -200,7 +204,8 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
         crate::NodeStore::create_new_fixture(
             root.path().join("source.redb"),
             crate::test_utils::NODE_STORE_ID,
-            crate::ScratchDisk::fixture(),
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
         )?,
         "customer".into(),
         provider.clone(),

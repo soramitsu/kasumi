@@ -1,0 +1,50 @@
+--- a/vendor/redb-4.2.0/tests/canonical_format.rs
++++ b/vendor/redb-4.2.0/tests/canonical_format.rs
+@@ -142,7 +142,7 @@
+ }
+ 
+ #[test]
+-fn upstream_two_phase_format_three_is_rejected_before_table_decoding() {
++fn upstream_two_phase_layout_is_rejected_before_table_decoding() {
+     let file = create_tempfile();
+     {
+         let db = redb2_6::Database::builder()
+@@ -159,21 +159,29 @@
+             .unwrap();
+         write.commit().unwrap();
+     }
+-    // A clean upstream two-phase close is still format three. Reject it before
+-    // selecting either a built-in or user composite decoder. Current-format
++    // This upstream producer writes region headers unsupported by format four.
++    // Reject that layout before selecting any table decoder. Current-format
+     // composite identity rejection is covered in both directions above and by
+     // table_tree_base::canonical_identity_tests for the actual stored old name.
+     let before = std::fs::read(file.path()).unwrap();
++    assert_ne!(before[9] & 4, 0, "fixture must exercise a two-phase header");
++    let region_header_pages = u32::from_le_bytes(before[16..20].try_into().unwrap());
++    assert_ne!(
++        region_header_pages, 0,
++        "fixture must contain old region headers"
++    );
++    let expected = format!("Noncanonical region header page count: {region_header_pages}");
+     let opened = redb::Database::open(file.path(), admission_support::admission());
+     assert!(
+-        matches!(opened, Err(redb::DatabaseError::UnsupportedFileFormat(3))),
+-        "unexpected upstream rejection result: {opened:?}; header={:?}",
+-        &before[..32]
++        matches!(&opened, Err(redb::DatabaseError::Storage(redb::StorageError::Corrupted(message))) if message == &expected),
++        "unexpected upstream rejection result: {opened:?}"
+     );
+     assert_eq!(std::fs::read(file.path()).unwrap(), before);
+-    assert!(matches!(
+-        redb::Database::builder(admission_support::admission()).open_read_only(file.path()),
+-        Err(redb::DatabaseError::UnsupportedFileFormat(3))
+-    ));
++    let opened =
++        redb::Database::builder(admission_support::admission()).open_read_only(file.path());
++    assert!(
++        matches!(&opened, Err(redb::DatabaseError::Storage(redb::StorageError::Corrupted(message))) if message == &expected),
++        "unexpected read-only upstream rejection result: {opened:?}"
++    );
+     assert_eq!(std::fs::read(file.path()).unwrap(), before);
+ }

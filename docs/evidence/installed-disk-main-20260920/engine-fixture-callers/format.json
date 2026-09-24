@@ -1,0 +1,197 @@
+[
+  {
+    "path": "crates/kasumi-engine/src/snapshot_recovery_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/snapshot_literal_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/audit_maintenance_service.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/snapshot_codec.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/service_staging_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/security_audit.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/target_resolution_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/snapshot_bundle.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/mutation_receipt_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/lib.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/mutation_apply.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/staged_terminal_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/service.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/staging_capacity_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/codec_fixture.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/service_credential_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/mutation_apply_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/service_retirement_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/mutation_receipt.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/state.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/service_serving_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/service_schema_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/database_worker_outcome_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/service_custody_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/security_audit_retention.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/recovery_receiver_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/bootstrap_control_genesis_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/bootstrap_existing_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/bootstrap_existing_replicated_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/tenant_audit.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/bootstrap_fixtures.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/lease_retention_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/snapshot_validation.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/staged_terminal.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/service_staged_stop_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/security_audit_jobs.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/security_audit_existing_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/target_journal_open_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "path": "crates/kasumi-engine/src/admission_startup_tests.rs",
+    "exit_code": 0,
+    "error": ""
+  }
+]

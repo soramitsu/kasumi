@@ -1,0 +1,54 @@
+warning: unused imports: `PageNumberHashMap` and `PageNumberHashSet`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-staging-workspace/native-input/vendor/redb-4.2.0/src/tree_store/page_store/fast_hash.rs:53:39
+   |
+53 | pub(crate) use hash::{FastHashMapU64, PageNumberHashMap, PageNumberHashSet};
+   |                                       ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `PageNumber` is never constructed
+ --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-staging-workspace/native-input/before/main.rs:3:42
+  |
+3 |  #[derive(Hash,Eq,PartialEq)] pub struct PageNumber(u64);
+  |                                          ^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: trait `Shrink` is never used
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-staging-workspace/native-input/vendor/redb-4.2.0/src/tree_store/page_store/fast_hash.rs:57:18
+   |
+57 | pub(crate) trait Shrink {
+   |                  ^^^^^^
+
+warning: type alias `PageNumberHashMap` is never used
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-staging-workspace/native-input/vendor/redb-4.2.0/src/tree_store/page_store/fast_hash.rs:14:21
+   |
+14 |     pub(crate) type PageNumberHashMap<V> = HashMap<PageNumber, V, BuildHasherDefault<FastHasher64>>;
+   |                     ^^^^^^^^^^^^^^^^^
+
+warning: type alias `PageNumberHashSet` is never used
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-staging-workspace/native-input/vendor/redb-4.2.0/src/tree_store/page_store/fast_hash.rs:15:21
+   |
+15 |     pub(crate) type PageNumberHashSet = HashSet<PageNumber, BuildHasherDefault<FastHasher64>>;
+   |                     ^^^^^^^^^^^^^^^^^
+
+warning: methods `get_mut`, `iter`, `iter_mut`, and `clear` are never used
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-staging-workspace/native-input/before/lru_cache.rs:63:19
+   |
+12 | impl<T> LRUCache<T> {
+   | ------------------- methods in this implementation
+...
+63 |     pub(crate) fn get_mut(&mut self, key: u64) -> Option<&mut T> {
+   |                   ^^^^^^^
+...
+72 |     pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = (&u64, &T)> {
+   |                   ^^^^
+...
+76 |     pub(crate) fn iter_mut(&mut self) -> impl ExactSizeIterator<Item = (&u64, &mut T)> {
+   |                   ^^^^^^^^
+...
+97 |     pub(crate) fn clear(&mut self) {
+   |                   ^^^^^
+
+warning: 6 warnings emitted
+

@@ -1,0 +1,11 @@
+
+running 1 test
+test disk_memory::tests::installed_lease_cannot_return_bytes_or_slot_before_actual_box_deallocation ... FAILED
+
+failures:
+
+failures:
+    disk_memory::tests::installed_lease_cannot_return_bytes_or_slot_before_actual_box_deallocation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

@@ -1,0 +1,11 @@
+# Independent review corrections and limits
+
+Reviewer: sibling agent /root/redb_canonical_continuation; bounded static ownership, error and retirement review. Final independent receipt is separate from this author's record.
+
+1. Initial File entry validation checked only known EOF and identity. Review identified same-length sparse extent materialization as a counterexample. The final cursor uses the exact existing settled/unsettled extent predicate and a real sparse-file materialization regression. No file enrollment, allocation or credit release occurs in the reader.
+2. Initial stop discarded an independent close failure; initial backup listing relied on Drop after collecting a partial page. The final cursor stores exact native close kind/errno inline, offers explicit close, and preserves primary failure precedence. The caller closes regardless of its listing Result, returns the close error before publishing success, and retains a simultaneous primary error and original close io::Error in anyhow context.
+3. Review found explicit close failure could still leave finished=true and later return false EOF. The final next checks primary failure, then retained close error, before finished. The explicit failed partial-page-close regression covers this branch.
+4. Review confirmed the installed registry already strongly retains NodeDisk. The explicit uncertain-close Arc is redundant to that current registry ownership and remains conservative. No test claims a weak registry or proves that this extra Arc is the sole source of retained memory.
+5. Successful descriptor retirement precedes cursor count credit, and counted directory ownership outlives actual stream close. No public raw inner Arc/FD, callback-under-state-lock or borrowed-name lifetime defect was found in this bounded review. Native allocation observation covers Rust allocator activity, not libc's internal allocation. Full filesystem, memory-bound and integrated caller qualification remains open.
+
+The pre-correction prepared native-01 source snapshot is preserved and was never executed. All failed runs, changed-at-run proposal snapshots and subsequent receipts remain separate. Final code/patch hashes are in manifest.json; exact native-06 argv, groups, results, input inventories and executable custody are retained in that folder.

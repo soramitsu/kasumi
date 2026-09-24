@@ -101,7 +101,7 @@ def main():
                                     text=True, timeout=10, check=False)
             versions[name] = {"executable": executable, "exit_code": result.returncode,
                               "stdout": result.stdout, "stderr": result.stderr}
-    record = {"schema": 1, "system": platform.platform(), "machine": machine,
+    record = {"schema": 2, "os": system, "system": platform.platform(), "machine": machine,
               "requested_target": args.target, "cpu_count": os.cpu_count(),
               "free_disk_bytes": free, "memory_bytes": memory, "python": sys.version,
               "effective_memory_bytes": effective_memory, "cgroup_limits": cgroup_limits,

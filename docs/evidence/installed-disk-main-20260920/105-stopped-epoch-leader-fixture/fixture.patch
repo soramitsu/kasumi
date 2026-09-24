@@ -1,0 +1,18 @@
+--- a/crates/kasumi-authority/src/issuer_tests.rs
++++ b/crates/kasumi-authority/src/issuer_tests.rs
+@@ -293,9 +293,14 @@
+         accepted.receipt.accepted_revision
+     );
+     let late = control.intent(&f, &t, 1_050_000);
++    // Reopening and advancing the fixture clock can change the elected leader.
++    // Pin the current leader for this new mutation; the stopped-epoch rejection
++    // must come from the reducer, not an unrelated stale proposal route.
++    let context = f.context("operator");
++    let service = f.leader().await;
+     assert_eq!(
+         service
+-            .execute_lifecycle(f.context("operator"), request(&late))
++            .execute_lifecycle(context, request(&late))
+             .await
+             .err()
+             .unwrap()

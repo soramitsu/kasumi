@@ -1,0 +1,11 @@
+--- a/vendor/redb-4.2.0/src/transactions.rs
++++ b/vendor/redb-4.2.0/src/transactions.rs
+@@ -192,7 +192,7 @@
+     }
+ }
+ 
+-#[derive(Debug)]
++#[derive(Clone, Copy, Debug)]
+ pub(crate) struct TransactionIdWithPagination {
+     pub(crate) transaction_id: u64,
+     pub(crate) pagination_id: u64,

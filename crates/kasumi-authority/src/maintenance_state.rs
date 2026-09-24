@@ -75,7 +75,7 @@ impl Backend {
         let previous = self
             .store
             .get_bounded("authority.installation", b"resource-floor", 32)?
-            .map(|bytes| serde_json::from_slice::<u64>(&bytes))
+            .map(|bytes| crate::bootstrap::decode_resource_floor(&bytes))
             .transpose()?
             .context("authority resource floor absent")?;
         if required > previous {

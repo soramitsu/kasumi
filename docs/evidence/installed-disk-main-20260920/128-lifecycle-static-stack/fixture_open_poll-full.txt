@@ -1,0 +1,1974 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010003c224 <<lifecycle::Fixture>::open::{closure#0}>:
+10003c224: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+10003c228: a9017bfd    	stp	x29, x30, [sp, #0x10]
+10003c22c: 910043fd    	add	x29, sp, #0x10
+10003c230: d1401fe9    	sub	x9, sp, #0x7, lsl #12   ; =0x7000
+10003c234: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+10003c238: f90003ff    	str	xzr, [sp]
+10003c23c: eb2963ff    	cmp	sp, x9
+10003c240: 54ffffa1    	b.ne	0x10003c234 <<lifecycle::Fixture>::open::{closure#0}+0x10>
+10003c244: d10343ff    	sub	sp, sp, #0xd0
+10003c248: 91401be8    	add	x8, sp, #0x6, lsl #12   ; =0x6000
+10003c24c: 913f2108    	add	x8, x8, #0xfc8
+10003c250: f90173e8    	str	x8, [sp, #0x2e0]
+10003c254: 91401be8    	add	x8, sp, #0x6, lsl #12   ; =0x6000
+10003c258: 913b2508    	add	x8, x8, #0xec9
+10003c25c: f90177e8    	str	x8, [sp, #0x2e8]
+10003c260: 914013e8    	add	x8, sp, #0x4, lsl #12   ; =0x4000
+10003c264: 912ca108    	add	x8, x8, #0xb28
+10003c268: f9017be8    	str	x8, [sp, #0x2f0]
+10003c26c: 914013e8    	add	x8, sp, #0x4, lsl #12   ; =0x4000
+10003c270: 91278108    	add	x8, x8, #0x9e0
+10003c274: f9017fe8    	str	x8, [sp, #0x2f8]
+10003c278: f90183e0    	str	x0, [sp, #0x300]
+10003c27c: f9018be1    	str	x1, [sp, #0x310]
+10003c280: aa0003e8    	mov	x8, x0
+10003c284: f9376fe8    	str	x8, [sp, #0x6ed8]
+10003c288: aa0003e8    	mov	x8, x0
+10003c28c: f93773e8    	str	x8, [sp, #0x6ee0]
+10003c290: 39410c08    	ldrb	w8, [x0, #0x43]
+10003c294: 11000108    	add	w8, w8, #0x0
+10003c298: 2a0803e8    	mov	w8, w8
+10003c29c: f90187e8    	str	x8, [sp, #0x308]
+10003c2a0: f94187eb    	ldr	x11, [sp, #0x308]
+10003c2a4: 90011aaa    	adrp	x10, 0x102390000 <dyld_stub_binder+0x102390000>
+10003c2a8: 913ca14a    	add	x10, x10, #0xf28
+10003c2ac: 10000008    	adr	x8, 0x10003c2ac <<lifecycle::Fixture>::open::{closure#0}+0x88>
+10003c2b0: b8ab7949    	ldrsw	x9, [x10, x11, lsl #2]
+10003c2b4: 8b090108    	add	x8, x8, x9
+10003c2b8: d61f0100    	br	x8
+10003c2bc: f94183e9    	ldr	x9, [sp, #0x300]
+10003c2c0: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003c2c4: 3901053f    	strb	wzr, [x9, #0x41]
+10003c2c8: 3901093f    	strb	wzr, [x9, #0x42]
+10003c2cc: 3900391f    	strb	wzr, [x8, #0xe]
+10003c2d0: 3900351f    	strb	wzr, [x8, #0xd]
+10003c2d4: 3900311f    	strb	wzr, [x8, #0xc]
+10003c2d8: 39002d1f    	strb	wzr, [x8, #0xb]
+10003c2dc: 3900291f    	strb	wzr, [x8, #0xa]
+10003c2e0: 3900251f    	strb	wzr, [x8, #0x9]
+10003c2e4: 3900211f    	strb	wzr, [x8, #0x8]
+10003c2e8: 39001d1f    	strb	wzr, [x8, #0x7]
+10003c2ec: 3900191f    	strb	wzr, [x8, #0x6]
+10003c2f0: 3900151f    	strb	wzr, [x8, #0x5]
+10003c2f4: 3900051f    	strb	wzr, [x8, #0x1]
+10003c2f8: 3900111f    	strb	wzr, [x8, #0x4]
+10003c2fc: 39000d1f    	strb	wzr, [x8, #0x3]
+10003c300: 3900091f    	strb	wzr, [x8, #0x2]
+10003c304: 3900011f    	strb	wzr, [x8]
+10003c308: f9401d28    	ldr	x8, [x9, #0x38]
+10003c30c: f9000128    	str	x8, [x9]
+10003c310: 39411128    	ldrb	w8, [x9, #0x44]
+10003c314: 12000108    	and	w8, w8, #0x1
+10003c318: 39010128    	strb	w8, [x9, #0x40]
+10003c31c: 910ce3e8    	add	x8, sp, #0x338
+10003c320: 52800029    	mov	w9, #0x1                ; =1
+10003c324: aa0903e0    	mov	x0, x9
+10003c328: 52800069    	mov	w9, #0x3                ; =3
+10003c32c: aa0903e1    	mov	x1, x9
+10003c330: 94672b2a    	bl	0x101a06fd8 <<core::ops::range::RangeInclusive<u64>>::new>
+10003c334: 14000031    	b	0x10003c3f8 <<lifecycle::Fixture>::open::{closure#0}+0x1d4>
+10003c338: 52800008    	mov	w8, #0x0                ; =0
+10003c33c: 3707ffe8    	tbnz	w8, #0x0, 0x10003c338 <<lifecycle::Fixture>::open::{closure#0}+0x114>
+10003c340: 1400003e    	b	0x10003c438 <<lifecycle::Fixture>::open::{closure#0}+0x214>
+10003c344: 52800008    	mov	w8, #0x0                ; =0
+10003c348: 3707ffe8    	tbnz	w8, #0x0, 0x10003c344 <<lifecycle::Fixture>::open::{closure#0}+0x120>
+10003c34c: 1400003e    	b	0x10003c444 <<lifecycle::Fixture>::open::{closure#0}+0x220>
+10003c350: f9418be8    	ldr	x8, [sp, #0x310]
+10003c354: f9018be8    	str	x8, [sp, #0x310]
+10003c358: 1400003e    	b	0x10003c450 <<lifecycle::Fixture>::open::{closure#0}+0x22c>
+10003c35c: f9418be8    	ldr	x8, [sp, #0x310]
+10003c360: f9018be8    	str	x8, [sp, #0x310]
+10003c364: 14000040    	b	0x10003c464 <<lifecycle::Fixture>::open::{closure#0}+0x240>
+10003c368: f9418be8    	ldr	x8, [sp, #0x310]
+10003c36c: f9018be8    	str	x8, [sp, #0x310]
+10003c370: 14000042    	b	0x10003c478 <<lifecycle::Fixture>::open::{closure#0}+0x254>
+10003c374: f9418be8    	ldr	x8, [sp, #0x310]
+10003c378: f9018be8    	str	x8, [sp, #0x310]
+10003c37c: 14000044    	b	0x10003c48c <<lifecycle::Fixture>::open::{closure#0}+0x268>
+10003c380: f9418be8    	ldr	x8, [sp, #0x310]
+10003c384: f9018be8    	str	x8, [sp, #0x310]
+10003c388: 14000046    	b	0x10003c4a0 <<lifecycle::Fixture>::open::{closure#0}+0x27c>
+10003c38c: f9418be8    	ldr	x8, [sp, #0x310]
+10003c390: f9018be8    	str	x8, [sp, #0x310]
+10003c394: 14000048    	b	0x10003c4b4 <<lifecycle::Fixture>::open::{closure#0}+0x290>
+10003c398: f9418be8    	ldr	x8, [sp, #0x310]
+10003c39c: f9018be8    	str	x8, [sp, #0x310]
+10003c3a0: 1400004a    	b	0x10003c4c8 <<lifecycle::Fixture>::open::{closure#0}+0x2a4>
+10003c3a4: f9418be8    	ldr	x8, [sp, #0x310]
+10003c3a8: f9018be8    	str	x8, [sp, #0x310]
+10003c3ac: 1400018a    	b	0x10003c9d4 <<lifecycle::Fixture>::open::{closure#0}+0x7b0>
+10003c3b0: f9418be8    	ldr	x8, [sp, #0x310]
+10003c3b4: f9018be8    	str	x8, [sp, #0x310]
+10003c3b8: 1400070e    	b	0x10003dff0 <<lifecycle::Fixture>::open::{closure#0}+0x1dcc>
+10003c3bc: f94183e9    	ldr	x9, [sp, #0x300]
+10003c3c0: 52800048    	mov	w8, #0x2                ; =2
+10003c3c4: 39010d28    	strb	w8, [x9, #0x43]
+10003c3c8: f97777e0    	ldr	x0, [sp, #0x6ee8]
+10003c3cc: 948d4c16    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>
+10003c3d0: aa0103e8    	mov	x8, x1
+10003c3d4: f9016be0    	str	x0, [sp, #0x2d0]
+10003c3d8: b902dfe8    	str	w8, [sp, #0x2dc]
+10003c3dc: 14000001    	b	0x10003c3e0 <<lifecycle::Fixture>::open::{closure#0}+0x1bc>
+10003c3e0: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003c3e4: f9416bea    	ldr	x10, [sp, #0x2d0]
+10003c3e8: b942dfe8    	ldr	w8, [sp, #0x2dc]
+10003c3ec: f93777ea    	str	x10, [sp, #0x6ee8]
+10003c3f0: b8027128    	stur	w8, [x9, #0x27]
+10003c3f4: 17fffff2    	b	0x10003c3bc <<lifecycle::Fixture>::open::{closure#0}+0x198>
+10003c3f8: 910c83e8    	add	x8, sp, #0x320
+10003c3fc: 910ce3e0    	add	x0, sp, #0x338
+10003c400: 9467323d    	bl	0x101a08cf4 <<core::ops::range::RangeInclusive<u64> as core::iter::traits::collect::IntoIterator>::into_iter>
+10003c404: 14000001    	b	0x10003c408 <<lifecycle::Fixture>::open::{closure#0}+0x1e4>
+10003c408: f94183e9    	ldr	x9, [sp, #0x300]
+10003c40c: 3dc0cbe0    	ldr	q0, [sp, #0x320]
+10003c410: 3c808120    	stur	q0, [x9, #0x8]
+10003c414: f9419be8    	ldr	x8, [sp, #0x330]
+10003c418: f9000d28    	str	x8, [x9, #0x18]
+10003c41c: 14000001    	b	0x10003c420 <<lifecycle::Fixture>::open::{closure#0}+0x1fc>
+10003c420: f94183e8    	ldr	x8, [sp, #0x300]
+10003c424: 91002100    	add	x0, x8, #0x8
+10003c428: 94674578    	bl	0x101a0da08 <<core::ops::range::RangeInclusive<u64> as core::iter::traits::iterator::Iterator>::next>
+10003c42c: f90163e0    	str	x0, [sp, #0x2c0]
+10003c430: f90167e1    	str	x1, [sp, #0x2c8]
+10003c434: 14000138    	b	0x10003c914 <<lifecycle::Fixture>::open::{closure#0}+0x6f0>
+10003c438: d002ea00    	adrp	x0, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003c43c: 910de000    	add	x0, x0, #0x378
+10003c440: 948d4b8f    	bl	0x10238f27c <core::panicking::panic_const::panic_const_async_fn_resumed>
+10003c444: d002ea00    	adrp	x0, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003c448: 910de000    	add	x0, x0, #0x378
+10003c44c: 948d4b93    	bl	0x10238f298 <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+10003c450: f94183e8    	ldr	x8, [sp, #0x300]
+10003c454: 91012108    	add	x8, x8, #0x48
+10003c458: f9015fe8    	str	x8, [sp, #0x2b8]
+10003c45c: f81d83a8    	stur	x8, [x29, #-0x28]
+10003c460: 140002f2    	b	0x10003d028 <<lifecycle::Fixture>::open::{closure#0}+0xe04>
+10003c464: f94183e8    	ldr	x8, [sp, #0x300]
+10003c468: 91012108    	add	x8, x8, #0x48
+10003c46c: f9015be8    	str	x8, [sp, #0x2b0]
+10003c470: f81e03a8    	stur	x8, [x29, #-0x20]
+10003c474: 1400027f    	b	0x10003ce70 <<lifecycle::Fixture>::open::{closure#0}+0xc4c>
+10003c478: f94183e8    	ldr	x8, [sp, #0x300]
+10003c47c: 91012108    	add	x8, x8, #0x48
+10003c480: f90157e8    	str	x8, [sp, #0x2a8]
+10003c484: f81b83a8    	stur	x8, [x29, #-0x48]
+10003c488: 1400046b    	b	0x10003d634 <<lifecycle::Fixture>::open::{closure#0}+0x1410>
+10003c48c: f94183e8    	ldr	x8, [sp, #0x300]
+10003c490: 91012108    	add	x8, x8, #0x48
+10003c494: f90153e8    	str	x8, [sp, #0x2a0]
+10003c498: f81b03a8    	stur	x8, [x29, #-0x50]
+10003c49c: 140003a1    	b	0x10003d320 <<lifecycle::Fixture>::open::{closure#0}+0x10fc>
+10003c4a0: f94183e8    	ldr	x8, [sp, #0x300]
+10003c4a4: 91012108    	add	x8, x8, #0x48
+10003c4a8: f9014fe8    	str	x8, [sp, #0x298]
+10003c4ac: f81c03a8    	stur	x8, [x29, #-0x40]
+10003c4b0: 14000565    	b	0x10003da44 <<lifecycle::Fixture>::open::{closure#0}+0x1820>
+10003c4b4: f94183e8    	ldr	x8, [sp, #0x300]
+10003c4b8: 91012108    	add	x8, x8, #0x48
+10003c4bc: f9014be8    	str	x8, [sp, #0x290]
+10003c4c0: f81c83a8    	stur	x8, [x29, #-0x38]
+10003c4c4: 140004db    	b	0x10003d830 <<lifecycle::Fixture>::open::{closure#0}+0x160c>
+10003c4c8: f94183e8    	ldr	x8, [sp, #0x300]
+10003c4cc: 91012108    	add	x8, x8, #0x48
+10003c4d0: f90147e8    	str	x8, [sp, #0x288]
+10003c4d4: f81e83a8    	stur	x8, [x29, #-0x18]
+10003c4d8: 1400000a    	b	0x10003c500 <<lifecycle::Fixture>::open::{closure#0}+0x2dc>
+10003c4dc: f94183e8    	ldr	x8, [sp, #0x300]
+10003c4e0: 91012100    	add	x0, x8, #0x48
+10003c4e4: 9401d50c    	bl	0x1000b1914 <core::ptr::drop_glue::<kasumi_engine::bootstrap::fixtures::open_fixture_replicated::{closure#0}>>
+10003c4e8: 1400002c    	b	0x10003c598 <<lifecycle::Fixture>::open::{closure#0}+0x374>
+10003c4ec: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003c4f0: f93777e0    	str	x0, [sp, #0x6ee8]
+10003c4f4: aa0103e8    	mov	x8, x1
+10003c4f8: b8027128    	stur	w8, [x9, #0x27]
+10003c4fc: 17fffff8    	b	0x10003c4dc <<lifecycle::Fixture>::open::{closure#0}+0x2b8>
+10003c500: f94147e0    	ldr	x0, [sp, #0x288]
+10003c504: f9418be1    	ldr	x1, [sp, #0x310]
+10003c508: 94200452    	bl	0x10083d650 <kasumi_engine::bootstrap::fixtures::open_fixture_replicated::{closure#0}>
+10003c50c: f9013fe0    	str	x0, [sp, #0x278]
+10003c510: f90143e1    	str	x1, [sp, #0x280]
+10003c514: 14000001    	b	0x10003c518 <<lifecycle::Fixture>::open::{closure#0}+0x2f4>
+10003c518: f94143e8    	ldr	x8, [sp, #0x280]
+10003c51c: f9413fe9    	ldr	x9, [sp, #0x278]
+10003c520: f92583e9    	str	x9, [sp, #0x4b00]
+10003c524: f92587e8    	str	x8, [sp, #0x4b08]
+10003c528: f96583e9    	ldr	x9, [sp, #0x4b00]
+10003c52c: d2800008    	mov	x8, #0x0                ; =0
+10003c530: f1000929    	subs	x9, x9, #0x2
+10003c534: 9a9f1508    	csinc	x8, x8, xzr, ne
+10003c538: 360001c8    	tbz	w8, #0x0, 0x10003c570 <<lifecycle::Fixture>::open::{closure#0}+0x34c>
+10003c53c: 14000001    	b	0x10003c540 <<lifecycle::Fixture>::open::{closure#0}+0x31c>
+10003c540: f94183e9    	ldr	x9, [sp, #0x300]
+10003c544: 52800028    	mov	w8, #0x1                ; =1
+10003c548: 390c7fe8    	strb	w8, [sp, #0x31f]
+10003c54c: 52800128    	mov	w8, #0x9                ; =9
+10003c550: 39010d28    	strb	w8, [x9, #0x43]
+10003c554: 394c7fe8    	ldrb	w8, [sp, #0x31f]
+10003c558: 12000100    	and	w0, w8, #0x1
+10003c55c: 91401fff    	add	sp, sp, #0x7, lsl #12   ; =0x7000
+10003c560: 910343ff    	add	sp, sp, #0xd0
+10003c564: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10003c568: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10003c56c: d65f03c0    	ret
+10003c570: f94183e8    	ldr	x8, [sp, #0x300]
+10003c574: f96583ea    	ldr	x10, [sp, #0x4b00]
+10003c578: f90137ea    	str	x10, [sp, #0x268]
+10003c57c: f96587e9    	ldr	x9, [sp, #0x4b08]
+10003c580: f9013be9    	str	x9, [sp, #0x270]
+10003c584: f9377fea    	str	x10, [sp, #0x6ef8]
+10003c588: f93783e9    	str	x9, [sp, #0x6f00]
+10003c58c: 91012100    	add	x0, x8, #0x48
+10003c590: 9401d4e1    	bl	0x1000b1914 <core::ptr::drop_glue::<kasumi_engine::bootstrap::fixtures::open_fixture_replicated::{closure#0}>>
+10003c594: 1400000e    	b	0x10003c5cc <<lifecycle::Fixture>::open::{closure#0}+0x3a8>
+10003c598: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003c59c: 3900051f    	strb	wzr, [x8, #0x1]
+10003c5a0: 1400033c    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003c5a4: aa0103e8    	mov	x8, x1
+10003c5a8: f9012fe0    	str	x0, [sp, #0x258]
+10003c5ac: b90267e8    	str	w8, [sp, #0x264]
+10003c5b0: 14000001    	b	0x10003c5b4 <<lifecycle::Fixture>::open::{closure#0}+0x390>
+10003c5b4: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003c5b8: f9412fea    	ldr	x10, [sp, #0x258]
+10003c5bc: b94267e8    	ldr	w8, [sp, #0x264]
+10003c5c0: f93777ea    	str	x10, [sp, #0x6ee8]
+10003c5c4: b8027128    	stur	w8, [x9, #0x27]
+10003c5c8: 17fffff4    	b	0x10003c598 <<lifecycle::Fixture>::open::{closure#0}+0x374>
+10003c5cc: f9413be8    	ldr	x8, [sp, #0x270]
+10003c5d0: f94137e9    	ldr	x9, [sp, #0x268]
+10003c5d4: f81583a9    	stur	x9, [x29, #-0xa8]
+10003c5d8: f81603a8    	stur	x8, [x29, #-0xa0]
+10003c5dc: f85583a8    	ldur	x8, [x29, #-0xa8]
+10003c5e0: 360003c8    	tbz	w8, #0x0, 0x10003c658 <<lifecycle::Fixture>::open::{closure#0}+0x434>
+10003c5e4: 14000001    	b	0x10003c5e8 <<lifecycle::Fixture>::open::{closure#0}+0x3c4>
+10003c5e8: f85603a8    	ldur	x8, [x29, #-0xa0]
+10003c5ec: d10263a2    	sub	x2, x29, #0x98
+10003c5f0: f81683a8    	stur	x8, [x29, #-0x98]
+10003c5f4: b0011aa0    	adrp	x0, 0x102391000 <dyld_stub_binder+0x102391000>
+10003c5f8: 9124ac00    	add	x0, x0, #0x92b
+10003c5fc: 52800568    	mov	w8, #0x2b               ; =43
+10003c600: aa0803e1    	mov	x1, x8
+10003c604: d002ea03    	adrp	x3, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003c608: 91178063    	add	x3, x3, #0x5e0
+10003c60c: d002ea04    	adrp	x4, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003c610: 910e4084    	add	x4, x4, #0x390
+10003c614: 948d49fe    	bl	0x10238ee0c <core::result::unwrap_failed>
+10003c618: 14000008    	b	0x10003c638 <<lifecycle::Fixture>::open::{closure#0}+0x414>
+10003c61c: f94173e9    	ldr	x9, [sp, #0x2e0]
+10003c620: f81783a0    	stur	x0, [x29, #-0x88]
+10003c624: aa0103e8    	mov	x8, x1
+10003c628: b9009928    	str	w8, [x9, #0x98]
+10003c62c: d10263a0    	sub	x0, x29, #0x98
+10003c630: 9454cad0    	bl	0x10156f170 <core::ptr::drop_glue::<anyhow::Error>>
+10003c634: 14000003    	b	0x10003c640 <<lifecycle::Fixture>::open::{closure#0}+0x41c>
+10003c638: d4200020    	brk	#0x1
+10003c63c: 948d4a0e    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+10003c640: f94173e8    	ldr	x8, [sp, #0x2e0]
+10003c644: f85783a9    	ldur	x9, [x29, #-0x88]
+10003c648: b9409908    	ldr	w8, [x8, #0x98]
+10003c64c: f9012fe9    	str	x9, [sp, #0x258]
+10003c650: b90267e8    	str	w8, [sp, #0x264]
+10003c654: 17ffffd8    	b	0x10003c5b4 <<lifecycle::Fixture>::open::{closure#0}+0x390>
+10003c658: f85603a8    	ldur	x8, [x29, #-0xa0]
+10003c65c: f9012be8    	str	x8, [sp, #0x250]
+10003c660: f81703a8    	stur	x8, [x29, #-0x90]
+10003c664: 14000001    	b	0x10003c668 <<lifecycle::Fixture>::open::{closure#0}+0x444>
+10003c668: f94183e8    	ldr	x8, [sp, #0x300]
+10003c66c: f94177ea    	ldr	x10, [sp, #0x2e8]
+10003c670: f9412be9    	ldr	x9, [sp, #0x250]
+10003c674: f91d1be9    	str	x9, [sp, #0x3a30]
+10003c678: 52800029    	mov	w9, #0x1                ; =1
+10003c67c: 39000549    	strb	w9, [x10, #0x1]
+10003c680: f9400108    	ldr	x8, [x8]
+10003c684: 910be100    	add	x0, x8, #0x2f8
+10003c688: 943383b5    	bl	0x100d1d55c <<alloc::sync::Arc<kasumi_raft::network::InProcessRouter> as core::ops::deref::Deref>::deref>
+10003c68c: f90127e0    	str	x0, [sp, #0x248]
+10003c690: 1400000a    	b	0x10003c6b8 <<lifecycle::Fixture>::open::{closure#0}+0x494>
+10003c694: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003c698: 39400508    	ldrb	w8, [x8, #0x1]
+10003c69c: 3700bd08    	tbnz	w8, #0x0, 0x10003de3c <<lifecycle::Fixture>::open::{closure#0}+0x1c18>
+10003c6a0: 17ffffbe    	b	0x10003c598 <<lifecycle::Fixture>::open::{closure#0}+0x374>
+10003c6a4: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003c6a8: f93777e0    	str	x0, [sp, #0x6ee8]
+10003c6ac: aa0103e8    	mov	x8, x1
+10003c6b0: b8027128    	stur	w8, [x9, #0x27]
+10003c6b4: 17fffff8    	b	0x10003c694 <<lifecycle::Fixture>::open::{closure#0}+0x470>
+10003c6b8: f94183e8    	ldr	x8, [sp, #0x300]
+10003c6bc: f9400100    	ldr	x0, [x8]
+10003c6c0: f93787e0    	str	x0, [sp, #0x6f08]
+10003c6c4: 914013e8    	add	x8, sp, #0x4, lsl #12   ; =0x4000
+10003c6c8: 912d6108    	add	x8, x8, #0xb58
+10003c6cc: 9445acab    	bl	0x1011a7978 <<core::fmt::rt::Argument>::new_display::<alloc::string::String>>
+10003c6d0: 14000009    	b	0x10003c6f4 <<lifecycle::Fixture>::open::{closure#0}+0x4d0>
+10003c6d4: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003c6d8: 3900011f    	strb	wzr, [x8]
+10003c6dc: 17ffffee    	b	0x10003c694 <<lifecycle::Fixture>::open::{closure#0}+0x470>
+10003c6e0: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003c6e4: f93777e0    	str	x0, [sp, #0x6ee8]
+10003c6e8: aa0103e8    	mov	x8, x1
+10003c6ec: b8027128    	stur	w8, [x9, #0x27]
+10003c6f0: 17fffff9    	b	0x10003c6d4 <<lifecycle::Fixture>::open::{closure#0}+0x4b0>
+10003c6f4: f9417be8    	ldr	x8, [sp, #0x2f0]
+10003c6f8: 3dc00d00    	ldr	q0, [x8, #0x30]
+10003c6fc: 914013e1    	add	x1, sp, #0x4, lsl #12   ; =0x4000
+10003c700: 912d0021    	add	x1, x1, #0xb40
+10003c704: 3d92d3e0    	str	q0, [sp, #0x4b40]
+10003c708: d0029060    	adrp	x0, 0x10524a000 <dyld_stub_binder+0x10524a000>
+10003c70c: 911a0800    	add	x0, x0, #0x682
+10003c710: 94558a0e    	bl	0x10159ef48 <<core::fmt::Arguments>::new::<20, 1>>
+10003c714: f9011fe0    	str	x0, [sp, #0x238]
+10003c718: f90123e1    	str	x1, [sp, #0x240]
+10003c71c: 14000001    	b	0x10003c720 <<lifecycle::Fixture>::open::{closure#0}+0x4fc>
+10003c720: f94123e1    	ldr	x1, [sp, #0x240]
+10003c724: f9411fe0    	ldr	x0, [sp, #0x238]
+10003c728: 914013e8    	add	x8, sp, #0x4, lsl #12   ; =0x4000
+10003c72c: 912ca108    	add	x8, x8, #0xb28
+10003c730: 94028a6a    	bl	0x1000df0d8 <alloc::fmt::format>
+10003c734: 14000001    	b	0x10003c738 <<lifecycle::Fixture>::open::{closure#0}+0x514>
+10003c738: f9417be8    	ldr	x8, [sp, #0x2f0]
+10003c73c: 3dc00100    	ldr	q0, [x8]
+10003c740: 3d92c7e0    	str	q0, [sp, #0x4b10]
+10003c744: f9659fe8    	ldr	x8, [sp, #0x4b38]
+10003c748: f92593e8    	str	x8, [sp, #0x4b20]
+10003c74c: 14000001    	b	0x10003c750 <<lifecycle::Fixture>::open::{closure#0}+0x52c>
+10003c750: f94183e8    	ldr	x8, [sp, #0x300]
+10003c754: f94177ea    	ldr	x10, [sp, #0x2e8]
+10003c758: 52800029    	mov	w9, #0x1                ; =1
+10003c75c: 39000149    	strb	w9, [x10]
+10003c760: f9401108    	ldr	x8, [x8, #0x20]
+10003c764: f90117e8    	str	x8, [sp, #0x228]
+10003c768: 91400fe0    	add	x0, sp, #0x3, lsl #12   ; =0x3000
+10003c76c: 9128c000    	add	x0, x0, #0xa30
+10003c770: 943383d6    	bl	0x100d1d6c8 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+10003c774: f9011be0    	str	x0, [sp, #0x230]
+10003c778: 1400000a    	b	0x10003c7a0 <<lifecycle::Fixture>::open::{closure#0}+0x57c>
+10003c77c: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003c780: 39400108    	ldrb	w8, [x8]
+10003c784: 3700b548    	tbnz	w8, #0x0, 0x10003de2c <<lifecycle::Fixture>::open::{closure#0}+0x1c08>
+10003c788: 140005a6    	b	0x10003de20 <<lifecycle::Fixture>::open::{closure#0}+0x1bfc>
+10003c78c: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003c790: f93777e0    	str	x0, [sp, #0x6ee8]
+10003c794: aa0103e8    	mov	x8, x1
+10003c798: b8027128    	stur	w8, [x9, #0x27]
+10003c79c: 17fffff8    	b	0x10003c77c <<lifecycle::Fixture>::open::{closure#0}+0x558>
+10003c7a0: f9411be0    	ldr	x0, [sp, #0x230]
+10003c7a4: 94302afc    	bl	0x100c47394 <<kasumi_engine::service::Database>::raft_group>
+10003c7a8: f90113e0    	str	x0, [sp, #0x220]
+10003c7ac: 14000001    	b	0x10003c7b0 <<lifecycle::Fixture>::open::{closure#0}+0x58c>
+10003c7b0: f94113e0    	ldr	x0, [sp, #0x220]
+10003c7b4: 943e5bc5    	bl	0x100fd36c8 <<kasumi_raft::RaftGroup>::raft>
+10003c7b8: f9010fe0    	str	x0, [sp, #0x218]
+10003c7bc: 14000001    	b	0x10003c7c0 <<lifecycle::Fixture>::open::{closure#0}+0x59c>
+10003c7c0: f9410fe0    	ldr	x0, [sp, #0x218]
+10003c7c4: 9440b96e    	bl	0x10106ad7c <<openraft::raft::Raft<kasumi_raft::TypeConfig> as core::clone::Clone>::clone>
+10003c7c8: f9010be0    	str	x0, [sp, #0x210]
+10003c7cc: 14000001    	b	0x10003c7d0 <<lifecycle::Fixture>::open::{closure#0}+0x5ac>
+10003c7d0: f9410be3    	ldr	x3, [sp, #0x210]
+10003c7d4: f94117e2    	ldr	x2, [sp, #0x228]
+10003c7d8: f94127e0    	ldr	x0, [sp, #0x248]
+10003c7dc: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003c7e0: 3900011f    	strb	wzr, [x8]
+10003c7e4: 914013e1    	add	x1, sp, #0x4, lsl #12   ; =0x4000
+10003c7e8: 912c4021    	add	x1, x1, #0xb10
+10003c7ec: 9438db36    	bl	0x100e734c4 <<kasumi_raft::network::InProcessRouter>::register>
+10003c7f0: 14000001    	b	0x10003c7f4 <<lifecycle::Fixture>::open::{closure#0}+0x5d0>
+10003c7f4: f94183e8    	ldr	x8, [sp, #0x300]
+10003c7f8: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003c7fc: 3900013f    	strb	wzr, [x9]
+10003c800: f9400108    	ldr	x8, [x8]
+10003c804: 910c0100    	add	x0, x8, #0x300
+10003c808: 9400d5f4    	bl	0x100071fd8 <<alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe> as core::ops::deref::Deref>::deref>
+10003c80c: f90107e0    	str	x0, [sp, #0x208]
+10003c810: 14000001    	b	0x10003c814 <<lifecycle::Fixture>::open::{closure#0}+0x5f0>
+10003c814: f94183e8    	ldr	x8, [sp, #0x300]
+10003c818: f9401108    	ldr	x8, [x8, #0x20]
+10003c81c: f900ffe8    	str	x8, [sp, #0x1f8]
+10003c820: 91400fe0    	add	x0, sp, #0x3, lsl #12   ; =0x3000
+10003c824: 9128c000    	add	x0, x0, #0xa30
+10003c828: 943383a8    	bl	0x100d1d6c8 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+10003c82c: f90103e0    	str	x0, [sp, #0x200]
+10003c830: 14000001    	b	0x10003c834 <<lifecycle::Fixture>::open::{closure#0}+0x610>
+10003c834: f94103e0    	ldr	x0, [sp, #0x200]
+10003c838: 94302ad7    	bl	0x100c47394 <<kasumi_engine::service::Database>::raft_group>
+10003c83c: f900fbe0    	str	x0, [sp, #0x1f0]
+10003c840: 14000001    	b	0x10003c844 <<lifecycle::Fixture>::open::{closure#0}+0x620>
+10003c844: f940fbe0    	ldr	x0, [sp, #0x1f0]
+10003c848: 943e5ba0    	bl	0x100fd36c8 <<kasumi_raft::RaftGroup>::raft>
+10003c84c: f900f7e0    	str	x0, [sp, #0x1e8]
+10003c850: 14000001    	b	0x10003c854 <<lifecycle::Fixture>::open::{closure#0}+0x630>
+10003c854: f940f7e0    	ldr	x0, [sp, #0x1e8]
+10003c858: 9440b8ba    	bl	0x10106ab40 <<openraft::raft::Raft<kasumi_raft::TypeConfig>>::metrics>
+10003c85c: f900efe0    	str	x0, [sp, #0x1d8]
+10003c860: f900f3e1    	str	x1, [sp, #0x1e0]
+10003c864: 14000001    	b	0x10003c868 <<lifecycle::Fixture>::open::{closure#0}+0x644>
+10003c868: f940f3e3    	ldr	x3, [sp, #0x1e0]
+10003c86c: f940efe2    	ldr	x2, [sp, #0x1d8]
+10003c870: f940ffe1    	ldr	x1, [sp, #0x1f8]
+10003c874: f94107e0    	ldr	x0, [sp, #0x208]
+10003c878: 9402ae07    	bl	0x1000e8094 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::register>
+10003c87c: 14000001    	b	0x10003c880 <<lifecycle::Fixture>::open::{closure#0}+0x65c>
+10003c880: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003c884: f94183e9    	ldr	x9, [sp, #0x300]
+10003c888: f940012a    	ldr	x10, [x9]
+10003c88c: 910c8140    	add	x0, x10, #0x320
+10003c890: f9401121    	ldr	x1, [x9, #0x20]
+10003c894: 3900051f    	strb	wzr, [x8, #0x1]
+10003c898: f95d1be2    	ldr	x2, [sp, #0x3a30]
+10003c89c: 9402f56f    	bl	0x1000f9e58 <<alloc::collections::btree::map::BTreeMap<u64, alloc::sync::Arc<kasumi_engine::service::Database>>>::insert>
+10003c8a0: f900ebe0    	str	x0, [sp, #0x1d0]
+10003c8a4: 14000001    	b	0x10003c8a8 <<lifecycle::Fixture>::open::{closure#0}+0x684>
+10003c8a8: f940ebe8    	ldr	x8, [sp, #0x1d0]
+10003c8ac: 914013e0    	add	x0, sp, #0x4, lsl #12   ; =0x4000
+10003c8b0: 912da000    	add	x0, x0, #0xb68
+10003c8b4: f925b7e8    	str	x8, [sp, #0x4b68]
+10003c8b8: 940175bf    	bl	0x100099fb4 <core::ptr::drop_glue::<core::option::Option<alloc::sync::Arc<kasumi_engine::service::Database>>>>
+10003c8bc: 14000001    	b	0x10003c8c0 <<lifecycle::Fixture>::open::{closure#0}+0x69c>
+10003c8c0: f94183e8    	ldr	x8, [sp, #0x300]
+10003c8c4: f9400109    	ldr	x9, [x8]
+10003c8c8: 910ce120    	add	x0, x9, #0x338
+10003c8cc: f9401101    	ldr	x1, [x8, #0x20]
+10003c8d0: 3901091f    	strb	wzr, [x8, #0x42]
+10003c8d4: f9401902    	ldr	x2, [x8, #0x30]
+10003c8d8: 9402f48f    	bl	0x1000f9b14 <<alloc::collections::btree::map::BTreeMap<u64, alloc::sync::Arc<kasumi_engine::security_audit::SecurityAudit>>>::insert>
+10003c8dc: f900e7e0    	str	x0, [sp, #0x1c8]
+10003c8e0: 14000001    	b	0x10003c8e4 <<lifecycle::Fixture>::open::{closure#0}+0x6c0>
+10003c8e4: f940e7e8    	ldr	x8, [sp, #0x1c8]
+10003c8e8: 914013e0    	add	x0, sp, #0x4, lsl #12   ; =0x4000
+10003c8ec: 912dc000    	add	x0, x0, #0xb70
+10003c8f0: f925bbe8    	str	x8, [sp, #0x4b70]
+10003c8f4: 9401759f    	bl	0x100099f70 <core::ptr::drop_glue::<core::option::Option<alloc::sync::Arc<kasumi_engine::security_audit::SecurityAudit>>>>
+10003c8f8: 14000001    	b	0x10003c8fc <<lifecycle::Fixture>::open::{closure#0}+0x6d8>
+10003c8fc: f94183e8    	ldr	x8, [sp, #0x300]
+10003c900: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003c904: 3900053f    	strb	wzr, [x9, #0x1]
+10003c908: 3901091f    	strb	wzr, [x8, #0x42]
+10003c90c: 3901051f    	strb	wzr, [x8, #0x41]
+10003c910: 17fffec4    	b	0x10003c420 <<lifecycle::Fixture>::open::{closure#0}+0x1fc>
+10003c914: f94167e8    	ldr	x8, [sp, #0x2c8]
+10003c918: f94163e9    	ldr	x9, [sp, #0x2c0]
+10003c91c: f901abe9    	str	x9, [sp, #0x350]
+10003c920: f901afe8    	str	x8, [sp, #0x358]
+10003c924: f941abe8    	ldr	x8, [sp, #0x350]
+10003c928: 36000108    	tbz	w8, #0x0, 0x10003c948 <<lifecycle::Fixture>::open::{closure#0}+0x724>
+10003c92c: 14000001    	b	0x10003c930 <<lifecycle::Fixture>::open::{closure#0}+0x70c>
+10003c930: f94183e8    	ldr	x8, [sp, #0x300]
+10003c934: f941afe9    	ldr	x9, [sp, #0x358]
+10003c938: f9001109    	str	x9, [x8, #0x20]
+10003c93c: 39410108    	ldrb	w8, [x8, #0x40]
+10003c940: 37000668    	tbnz	w8, #0x0, 0x10003ca0c <<lifecycle::Fixture>::open::{closure#0}+0x7e8>
+10003c944: 14000029    	b	0x10003c9e8 <<lifecycle::Fixture>::open::{closure#0}+0x7c4>
+10003c948: f94183e8    	ldr	x8, [sp, #0x300]
+10003c94c: f9400108    	ldr	x8, [x8]
+10003c950: 910c8100    	add	x0, x8, #0x320
+10003c954: 90011aa1    	adrp	x1, 0x102390000 <dyld_stub_binder+0x102390000>
+10003c958: 91108021    	add	x1, x1, #0x420
+10003c95c: d002ea02    	adrp	x2, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003c960: 910ea042    	add	x2, x2, #0x3a8
+10003c964: 9402fbf6    	bl	0x1000fb93c <<alloc::collections::btree::map::BTreeMap<u64, alloc::sync::Arc<kasumi_engine::service::Database>> as core::ops::index::Index<&u64>>::index>
+10003c968: f900e3e0    	str	x0, [sp, #0x1c0]
+10003c96c: 14000001    	b	0x10003c970 <<lifecycle::Fixture>::open::{closure#0}+0x74c>
+10003c970: f940e3e0    	ldr	x0, [sp, #0x1c0]
+10003c974: 94338355    	bl	0x100d1d6c8 <<alloc::sync::Arc<kasumi_engine::service::Database> as core::ops::deref::Deref>::deref>
+10003c978: f900dfe0    	str	x0, [sp, #0x1b8]
+10003c97c: 14000001    	b	0x10003c980 <<lifecycle::Fixture>::open::{closure#0}+0x75c>
+10003c980: f940dfe0    	ldr	x0, [sp, #0x1b8]
+10003c984: f94183e8    	ldr	x8, [sp, #0x300]
+10003c988: f9400101    	ldr	x1, [x8]
+10003c98c: 914017e8    	add	x8, sp, #0x5, lsl #12   ; =0x5000
+10003c990: 91098108    	add	x8, x8, #0x260
+10003c994: 94263a39    	bl	0x1009cb278 <kasumi_engine::bootstrap::initialize_replicated>
+10003c998: 14000001    	b	0x10003c99c <<lifecycle::Fixture>::open::{closure#0}+0x778>
+10003c99c: 914013e8    	add	x8, sp, #0x4, lsl #12   ; =0x4000
+10003c9a0: 912de108    	add	x8, x8, #0xb78
+10003c9a4: 914017e0    	add	x0, sp, #0x5, lsl #12   ; =0x5000
+10003c9a8: 91098000    	add	x0, x0, #0x260
+10003c9ac: 94027e8d    	bl	0x1000dc3e0 <<kasumi_engine::bootstrap::initialize_replicated::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003c9b0: 14000001    	b	0x10003c9b4 <<lifecycle::Fixture>::open::{closure#0}+0x790>
+10003c9b4: f94183e8    	ldr	x8, [sp, #0x300]
+10003c9b8: 91012100    	add	x0, x8, #0x48
+10003c9bc: 914013e1    	add	x1, sp, #0x4, lsl #12   ; =0x4000
+10003c9c0: 912de021    	add	x1, x1, #0xb78
+10003c9c4: 5280dd08    	mov	w8, #0x6e8              ; =1768
+10003c9c8: aa0803e2    	mov	x2, x8
+10003c9cc: 948d4b53    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003c9d0: 14000001    	b	0x10003c9d4 <<lifecycle::Fixture>::open::{closure#0}+0x7b0>
+10003c9d4: f94183e8    	ldr	x8, [sp, #0x300]
+10003c9d8: 91012108    	add	x8, x8, #0x48
+10003c9dc: f900dbe8    	str	x8, [sp, #0x1b0]
+10003c9e0: f81d03a8    	stur	x8, [x29, #-0x30]
+10003c9e4: 1400052b    	b	0x10003de90 <<lifecycle::Fixture>::open::{closure#0}+0x1c6c>
+10003c9e8: f94183e8    	ldr	x8, [sp, #0x300]
+10003c9ec: f9400109    	ldr	x9, [x8]
+10003c9f0: 910c2120    	add	x0, x9, #0x308
+10003c9f4: 91008101    	add	x1, x8, #0x20
+10003c9f8: d002ea02    	adrp	x2, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003c9fc: 910f0042    	add	x2, x2, #0x3c0
+10003ca00: 9402fc0d    	bl	0x1000fba34 <<alloc::collections::btree::map::BTreeMap<u64, lifecycle::common::PhysicalFixture> as core::ops::index::Index<&u64>>::index>
+10003ca04: f900d7e0    	str	x0, [sp, #0x1a8]
+10003ca08: 14000017    	b	0x10003ca64 <<lifecycle::Fixture>::open::{closure#0}+0x840>
+10003ca0c: f94183e8    	ldr	x8, [sp, #0x300]
+10003ca10: f9400109    	ldr	x9, [x8]
+10003ca14: 910c2120    	add	x0, x9, #0x308
+10003ca18: 91008101    	add	x1, x8, #0x20
+10003ca1c: d002ea02    	adrp	x2, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003ca20: 910f6042    	add	x2, x2, #0x3d8
+10003ca24: 9402fc04    	bl	0x1000fba34 <<alloc::collections::btree::map::BTreeMap<u64, lifecycle::common::PhysicalFixture> as core::ops::index::Index<&u64>>::index>
+10003ca28: f900d3e0    	str	x0, [sp, #0x1a0]
+10003ca2c: 14000074    	b	0x10003cbfc <<lifecycle::Fixture>::open::{closure#0}+0x9d8>
+10003ca30: f94183e8    	ldr	x8, [sp, #0x300]
+10003ca34: 3901051f    	strb	wzr, [x8, #0x41]
+10003ca38: 17fffe61    	b	0x10003c3bc <<lifecycle::Fixture>::open::{closure#0}+0x198>
+10003ca3c: aa0103e8    	mov	x8, x1
+10003ca40: f900cbe0    	str	x0, [sp, #0x190]
+10003ca44: b9019fe8    	str	w8, [sp, #0x19c]
+10003ca48: 14000001    	b	0x10003ca4c <<lifecycle::Fixture>::open::{closure#0}+0x828>
+10003ca4c: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003ca50: f940cbea    	ldr	x10, [sp, #0x190]
+10003ca54: b9419fe8    	ldr	w8, [sp, #0x19c]
+10003ca58: f93777ea    	str	x10, [sp, #0x6ee8]
+10003ca5c: b8027128    	stur	w8, [x9, #0x27]
+10003ca60: 17fffff4    	b	0x10003ca30 <<lifecycle::Fixture>::open::{closure#0}+0x80c>
+10003ca64: f94183e8    	ldr	x8, [sp, #0x300]
+10003ca68: f940d7e9    	ldr	x9, [sp, #0x1a8]
+10003ca6c: 91002129    	add	x9, x9, #0x8
+10003ca70: f900bfe9    	str	x9, [sp, #0x178]
+10003ca74: f9400108    	ldr	x8, [x8]
+10003ca78: 910b8100    	add	x0, x8, #0x2e0
+10003ca7c: 947a5ea8    	bl	0x101ed451c <<tempfile::dir::TempDir>::path>
+10003ca80: f900c3e0    	str	x0, [sp, #0x180]
+10003ca84: f900c7e1    	str	x1, [sp, #0x188]
+10003ca88: 14000001    	b	0x10003ca8c <<lifecycle::Fixture>::open::{closure#0}+0x868>
+10003ca8c: f94183e8    	ldr	x8, [sp, #0x300]
+10003ca90: 91008100    	add	x0, x8, #0x20
+10003ca94: 910fa3e8    	add	x8, sp, #0x3e8
+10003ca98: 94418d78    	bl	0x1010a0078 <<u64 as alloc::string::ToString>::to_string>
+10003ca9c: 14000001    	b	0x10003caa0 <<lifecycle::Fixture>::open::{closure#0}+0x87c>
+10003caa0: f940c7e1    	ldr	x1, [sp, #0x188]
+10003caa4: f940c3e0    	ldr	x0, [sp, #0x180]
+10003caa8: 910f43e8    	add	x8, sp, #0x3d0
+10003caac: 910fa3e2    	add	x2, sp, #0x3e8
+10003cab0: 9474287a    	bl	0x101d46c98 <<std::path::Path>::join::<alloc::string::String>>
+10003cab4: 14000001    	b	0x10003cab8 <<lifecycle::Fixture>::open::{closure#0}+0x894>
+10003cab8: 910f43e0    	add	x0, sp, #0x3d0
+10003cabc: 94024deb    	bl	0x1000d0268 <<std::path::PathBuf as core::ops::deref::Deref>::deref>
+10003cac0: f900b7e0    	str	x0, [sp, #0x168]
+10003cac4: f900bbe1    	str	x1, [sp, #0x170]
+10003cac8: 14000009    	b	0x10003caec <<lifecycle::Fixture>::open::{closure#0}+0x8c8>
+10003cacc: 910f43e0    	add	x0, sp, #0x3d0
+10003cad0: 947a5cbf    	bl	0x101ed3dcc <core::ptr::drop_glue::<std::path::PathBuf>>
+10003cad4: 17ffffd7    	b	0x10003ca30 <<lifecycle::Fixture>::open::{closure#0}+0x80c>
+10003cad8: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003cadc: f93777e0    	str	x0, [sp, #0x6ee8]
+10003cae0: aa0103e8    	mov	x8, x1
+10003cae4: b8027128    	stur	w8, [x9, #0x27]
+10003cae8: 17fffff9    	b	0x10003cacc <<lifecycle::Fixture>::open::{closure#0}+0x8a8>
+10003caec: f940bbe1    	ldr	x1, [sp, #0x170]
+10003caf0: f940b7e0    	ldr	x0, [sp, #0x168]
+10003caf4: 910ee3e8    	add	x8, sp, #0x3b8
+10003caf8: 90011aa2    	adrp	x2, 0x102390000 <dyld_stub_binder+0x102390000>
+10003cafc: 913d6042    	add	x2, x2, #0xf58
+10003cb00: 52800129    	mov	w9, #0x9                ; =9
+10003cb04: aa0903e3    	mov	x3, x9
+10003cb08: 94742889    	bl	0x101d46d2c <<std::path::Path>::join::<&str>>
+10003cb0c: 14000001    	b	0x10003cb10 <<lifecycle::Fixture>::open::{closure#0}+0x8ec>
+10003cb10: f940bfe0    	ldr	x0, [sp, #0x178]
+10003cb14: b0011aa8    	adrp	x8, 0x102391000 <dyld_stub_binder+0x102391000>
+10003cb18: 9125c108    	add	x8, x8, #0x970
+10003cb1c: 3dc00100    	ldr	q0, [x8]
+10003cb20: 91401be2    	add	x2, sp, #0x6, lsl #12   ; =0x6000
+10003cb24: 913c4042    	add	x2, x2, #0xf10
+10003cb28: 3d9bc7e0    	str	q0, [sp, #0x6f10]
+10003cb2c: 910ee3e1    	add	x1, sp, #0x3b8
+10003cb30: 9402fd95    	bl	0x1000fc184 <<kasumi_engine::test_utils::FixtureStorage>::open_existing::<std::path::PathBuf>>
+10003cb34: f900afe0    	str	x0, [sp, #0x158]
+10003cb38: f900b3e1    	str	x1, [sp, #0x160]
+10003cb3c: 14000001    	b	0x10003cb40 <<lifecycle::Fixture>::open::{closure#0}+0x91c>
+10003cb40: f940b3e8    	ldr	x8, [sp, #0x160]
+10003cb44: f940afe9    	ldr	x9, [sp, #0x158]
+10003cb48: f901b3e9    	str	x9, [sp, #0x360]
+10003cb4c: f901b7e8    	str	x8, [sp, #0x368]
+10003cb50: 910f43e0    	add	x0, sp, #0x3d0
+10003cb54: 947a5c9e    	bl	0x101ed3dcc <core::ptr::drop_glue::<std::path::PathBuf>>
+10003cb58: 14000001    	b	0x10003cb5c <<lifecycle::Fixture>::open::{closure#0}+0x938>
+10003cb5c: f941b3e9    	ldr	x9, [sp, #0x360]
+10003cb60: f941b7e8    	ldr	x8, [sp, #0x368]
+10003cb64: f937efe9    	str	x9, [sp, #0x6fd8]
+10003cb68: f937f3e8    	str	x8, [sp, #0x6fe0]
+10003cb6c: f977efe8    	ldr	x8, [sp, #0x6fd8]
+10003cb70: 360003c8    	tbz	w8, #0x0, 0x10003cbe8 <<lifecycle::Fixture>::open::{closure#0}+0x9c4>
+10003cb74: 14000001    	b	0x10003cb78 <<lifecycle::Fixture>::open::{closure#0}+0x954>
+10003cb78: f977f3e8    	ldr	x8, [sp, #0x6fe0]
+10003cb7c: d103e3a2    	sub	x2, x29, #0xf8
+10003cb80: f81083a8    	stur	x8, [x29, #-0xf8]
+10003cb84: b0011aa0    	adrp	x0, 0x102391000 <dyld_stub_binder+0x102391000>
+10003cb88: 9124ac00    	add	x0, x0, #0x92b
+10003cb8c: 52800568    	mov	w8, #0x2b               ; =43
+10003cb90: aa0803e1    	mov	x1, x8
+10003cb94: d002ea03    	adrp	x3, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003cb98: 91178063    	add	x3, x3, #0x5e0
+10003cb9c: d002ea04    	adrp	x4, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003cba0: 910fc084    	add	x4, x4, #0x3f0
+10003cba4: 948d489a    	bl	0x10238ee0c <core::result::unwrap_failed>
+10003cba8: 14000008    	b	0x10003cbc8 <<lifecycle::Fixture>::open::{closure#0}+0x9a4>
+10003cbac: f94173e9    	ldr	x9, [sp, #0x2e0]
+10003cbb0: f81183a0    	stur	x0, [x29, #-0xe8]
+10003cbb4: aa0103e8    	mov	x8, x1
+10003cbb8: b9003928    	str	w8, [x9, #0x38]
+10003cbbc: d103e3a0    	sub	x0, x29, #0xf8
+10003cbc0: 9454c96c    	bl	0x10156f170 <core::ptr::drop_glue::<anyhow::Error>>
+10003cbc4: 14000003    	b	0x10003cbd0 <<lifecycle::Fixture>::open::{closure#0}+0x9ac>
+10003cbc8: d4200020    	brk	#0x1
+10003cbcc: 948d48aa    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+10003cbd0: f94173e8    	ldr	x8, [sp, #0x2e0]
+10003cbd4: f85183a9    	ldur	x9, [x29, #-0xe8]
+10003cbd8: b9403908    	ldr	w8, [x8, #0x38]
+10003cbdc: f900cbe9    	str	x9, [sp, #0x190]
+10003cbe0: b9019fe8    	str	w8, [sp, #0x19c]
+10003cbe4: 17ffff9a    	b	0x10003ca4c <<lifecycle::Fixture>::open::{closure#0}+0x828>
+10003cbe8: f977f3e8    	ldr	x8, [sp, #0x6fe0]
+10003cbec: f900abe8    	str	x8, [sp, #0x150]
+10003cbf0: f81103a8    	stur	x8, [x29, #-0xf0]
+10003cbf4: 14000040    	b	0x10003ccf4 <<lifecycle::Fixture>::open::{closure#0}+0xad0>
+10003cbf8: 948d489f    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+10003cbfc: f94183e8    	ldr	x8, [sp, #0x300]
+10003cc00: f940d3e9    	ldr	x9, [sp, #0x1a0]
+10003cc04: 91002129    	add	x9, x9, #0x8
+10003cc08: f9009fe9    	str	x9, [sp, #0x138]
+10003cc0c: f9400108    	ldr	x8, [x8]
+10003cc10: 910b8100    	add	x0, x8, #0x2e0
+10003cc14: 947a5e42    	bl	0x101ed451c <<tempfile::dir::TempDir>::path>
+10003cc18: f900a3e0    	str	x0, [sp, #0x140]
+10003cc1c: f900a7e1    	str	x1, [sp, #0x148]
+10003cc20: 14000001    	b	0x10003cc24 <<lifecycle::Fixture>::open::{closure#0}+0xa00>
+10003cc24: f94183e8    	ldr	x8, [sp, #0x300]
+10003cc28: 91008100    	add	x0, x8, #0x20
+10003cc2c: 910e83e8    	add	x8, sp, #0x3a0
+10003cc30: 94418d12    	bl	0x1010a0078 <<u64 as alloc::string::ToString>::to_string>
+10003cc34: 14000001    	b	0x10003cc38 <<lifecycle::Fixture>::open::{closure#0}+0xa14>
+10003cc38: f940a7e1    	ldr	x1, [sp, #0x148]
+10003cc3c: f940a3e0    	ldr	x0, [sp, #0x140]
+10003cc40: 910e23e8    	add	x8, sp, #0x388
+10003cc44: 910e83e2    	add	x2, sp, #0x3a0
+10003cc48: 94742814    	bl	0x101d46c98 <<std::path::Path>::join::<alloc::string::String>>
+10003cc4c: 14000001    	b	0x10003cc50 <<lifecycle::Fixture>::open::{closure#0}+0xa2c>
+10003cc50: 910e23e0    	add	x0, sp, #0x388
+10003cc54: 94024d85    	bl	0x1000d0268 <<std::path::PathBuf as core::ops::deref::Deref>::deref>
+10003cc58: f90097e0    	str	x0, [sp, #0x128]
+10003cc5c: f9009be1    	str	x1, [sp, #0x130]
+10003cc60: 14000009    	b	0x10003cc84 <<lifecycle::Fixture>::open::{closure#0}+0xa60>
+10003cc64: 910e23e0    	add	x0, sp, #0x388
+10003cc68: 947a5c59    	bl	0x101ed3dcc <core::ptr::drop_glue::<std::path::PathBuf>>
+10003cc6c: 17ffff71    	b	0x10003ca30 <<lifecycle::Fixture>::open::{closure#0}+0x80c>
+10003cc70: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003cc74: f93777e0    	str	x0, [sp, #0x6ee8]
+10003cc78: aa0103e8    	mov	x8, x1
+10003cc7c: b8027128    	stur	w8, [x9, #0x27]
+10003cc80: 17fffff9    	b	0x10003cc64 <<lifecycle::Fixture>::open::{closure#0}+0xa40>
+10003cc84: f9409be1    	ldr	x1, [sp, #0x130]
+10003cc88: f94097e0    	ldr	x0, [sp, #0x128]
+10003cc8c: 910dc3e8    	add	x8, sp, #0x370
+10003cc90: 90011aa2    	adrp	x2, 0x102390000 <dyld_stub_binder+0x102390000>
+10003cc94: 913d6042    	add	x2, x2, #0xf58
+10003cc98: 52800129    	mov	w9, #0x9                ; =9
+10003cc9c: aa0903e3    	mov	x3, x9
+10003cca0: 94742823    	bl	0x101d46d2c <<std::path::Path>::join::<&str>>
+10003cca4: 14000001    	b	0x10003cca8 <<lifecycle::Fixture>::open::{closure#0}+0xa84>
+10003cca8: f9409fe0    	ldr	x0, [sp, #0x138]
+10003ccac: b0011aa8    	adrp	x8, 0x102391000 <dyld_stub_binder+0x102391000>
+10003ccb0: 9125c108    	add	x8, x8, #0x970
+10003ccb4: 3dc00100    	ldr	q0, [x8]
+10003ccb8: 91401be2    	add	x2, sp, #0x6, lsl #12   ; =0x6000
+10003ccbc: 913c8042    	add	x2, x2, #0xf20
+10003ccc0: 3d9bcbe0    	str	q0, [sp, #0x6f20]
+10003ccc4: 910dc3e1    	add	x1, sp, #0x370
+10003ccc8: 9402fce9    	bl	0x1000fc06c <<kasumi_engine::test_utils::FixtureStorage>::create_new::<std::path::PathBuf>>
+10003cccc: f9008fe0    	str	x0, [sp, #0x118]
+10003ccd0: f90093e1    	str	x1, [sp, #0x120]
+10003ccd4: 14000001    	b	0x10003ccd8 <<lifecycle::Fixture>::open::{closure#0}+0xab4>
+10003ccd8: f94093e8    	ldr	x8, [sp, #0x120]
+10003ccdc: f9408fe9    	ldr	x9, [sp, #0x118]
+10003cce0: f901b3e9    	str	x9, [sp, #0x360]
+10003cce4: f901b7e8    	str	x8, [sp, #0x368]
+10003cce8: 910e23e0    	add	x0, sp, #0x388
+10003ccec: 947a5c38    	bl	0x101ed3dcc <core::ptr::drop_glue::<std::path::PathBuf>>
+10003ccf0: 17ffff9b    	b	0x10003cb5c <<lifecycle::Fixture>::open::{closure#0}+0x938>
+10003ccf4: f94183e8    	ldr	x8, [sp, #0x300]
+10003ccf8: f940abe9    	ldr	x9, [sp, #0x150]
+10003ccfc: f9001509    	str	x9, [x8, #0x28]
+10003cd00: 52800029    	mov	w9, #0x1                ; =1
+10003cd04: 39010509    	strb	w9, [x8, #0x41]
+10003cd08: 39410108    	ldrb	w8, [x8, #0x40]
+10003cd0c: 370000e8    	tbnz	w8, #0x0, 0x10003cd28 <<lifecycle::Fixture>::open::{closure#0}+0xb04>
+10003cd10: 14000001    	b	0x10003cd14 <<lifecycle::Fixture>::open::{closure#0}+0xaf0>
+10003cd14: f94183e8    	ldr	x8, [sp, #0x300]
+10003cd18: 9100a100    	add	x0, x8, #0x28
+10003cd1c: 9475743e    	bl	0x101d99e14 <<alloc::sync::Arc<kasumi_store::NodeStore> as core::clone::Clone>::clone>
+10003cd20: f9008be0    	str	x0, [sp, #0x110]
+10003cd24: 1400000e    	b	0x10003cd5c <<lifecycle::Fixture>::open::{closure#0}+0xb38>
+10003cd28: f94183e8    	ldr	x8, [sp, #0x300]
+10003cd2c: 9100a100    	add	x0, x8, #0x28
+10003cd30: 94757439    	bl	0x101d99e14 <<alloc::sync::Arc<kasumi_store::NodeStore> as core::clone::Clone>::clone>
+10003cd34: f90087e0    	str	x0, [sp, #0x108]
+10003cd38: 14000083    	b	0x10003cf44 <<lifecycle::Fixture>::open::{closure#0}+0xd20>
+10003cd3c: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003cd40: 3900351f    	strb	wzr, [x8, #0xd]
+10003cd44: 14000031    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003cd48: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003cd4c: f93777e0    	str	x0, [sp, #0x6ee8]
+10003cd50: aa0103e8    	mov	x8, x1
+10003cd54: b8027128    	stur	w8, [x9, #0x27]
+10003cd58: 17fffff9    	b	0x10003cd3c <<lifecycle::Fixture>::open::{closure#0}+0xb18>
+10003cd5c: f94183e8    	ldr	x8, [sp, #0x300]
+10003cd60: f94177ea    	ldr	x10, [sp, #0x2e8]
+10003cd64: f9408be9    	ldr	x9, [sp, #0x110]
+10003cd68: f90a0be9    	str	x9, [sp, #0x1410]
+10003cd6c: 52800029    	mov	w9, #0x1                ; =1
+10003cd70: 39003549    	strb	w9, [x10, #0xd]
+10003cd74: f9400109    	ldr	x9, [x8]
+10003cd78: 910c2120    	add	x0, x9, #0x308
+10003cd7c: 91008101    	add	x1, x8, #0x20
+10003cd80: d002ea02    	adrp	x2, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003cd84: 91102042    	add	x2, x2, #0x408
+10003cd88: 9402fb2b    	bl	0x1000fba34 <<alloc::collections::btree::map::BTreeMap<u64, lifecycle::common::PhysicalFixture> as core::ops::index::Index<&u64>>::index>
+10003cd8c: f90083e0    	str	x0, [sp, #0x100]
+10003cd90: 1400000a    	b	0x10003cdb8 <<lifecycle::Fixture>::open::{closure#0}+0xb94>
+10003cd94: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003cd98: 39403508    	ldrb	w8, [x8, #0xd]
+10003cd9c: 37000bc8    	tbnz	w8, #0x0, 0x10003cf14 <<lifecycle::Fixture>::open::{closure#0}+0xcf0>
+10003cda0: 1400005a    	b	0x10003cf08 <<lifecycle::Fixture>::open::{closure#0}+0xce4>
+10003cda4: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003cda8: f93777e0    	str	x0, [sp, #0x6ee8]
+10003cdac: aa0103e8    	mov	x8, x1
+10003cdb0: b8027128    	stur	w8, [x9, #0x27]
+10003cdb4: 17fffff8    	b	0x10003cd94 <<lifecycle::Fixture>::open::{closure#0}+0xb70>
+10003cdb8: f94083e8    	ldr	x8, [sp, #0x100]
+10003cdbc: 91002100    	add	x0, x8, #0x8
+10003cdc0: 94338013    	bl	0x100d1ce0c <<alloc::sync::Arc<kasumi_engine::admission::NodeAdmission> as core::clone::Clone>::clone>
+10003cdc4: f9007fe0    	str	x0, [sp, #0xf8]
+10003cdc8: 14000001    	b	0x10003cdcc <<lifecycle::Fixture>::open::{closure#0}+0xba8>
+10003cdcc: f9407fe1    	ldr	x1, [sp, #0xf8]
+10003cdd0: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003cdd4: 3900351f    	strb	wzr, [x8, #0xd]
+10003cdd8: f94a0be0    	ldr	x0, [sp, #0x1410]
+10003cddc: 914007e8    	add	x8, sp, #0x1, lsl #12   ; =0x1000
+10003cde0: 91004108    	add	x8, x8, #0x10
+10003cde4: 9400c492    	bl	0x10006e02c <lifecycle::common::existing_security_audit>
+10003cde8: 14000001    	b	0x10003cdec <<lifecycle::Fixture>::open::{closure#0}+0xbc8>
+10003cdec: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003cdf0: 3900351f    	strb	wzr, [x8, #0xd]
+10003cdf4: 913043e8    	add	x8, sp, #0xc10
+10003cdf8: 914007e0    	add	x0, sp, #0x1, lsl #12   ; =0x1000
+10003cdfc: 91004000    	add	x0, x0, #0x10
+10003ce00: 97ff2a02    	bl	0x100007608 <<lifecycle::common::existing_security_audit::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003ce04: 1400000b    	b	0x10003ce30 <<lifecycle::Fixture>::open::{closure#0}+0xc0c>
+10003ce08: f94183e8    	ldr	x8, [sp, #0x300]
+10003ce0c: 3901091f    	strb	wzr, [x8, #0x42]
+10003ce10: 39410508    	ldrb	w8, [x8, #0x41]
+10003ce14: 37008248    	tbnz	w8, #0x0, 0x10003de5c <<lifecycle::Fixture>::open::{closure#0}+0x1c38>
+10003ce18: 17ffff06    	b	0x10003ca30 <<lifecycle::Fixture>::open::{closure#0}+0x80c>
+10003ce1c: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003ce20: f93777e0    	str	x0, [sp, #0x6ee8]
+10003ce24: aa0103e8    	mov	x8, x1
+10003ce28: b8027128    	stur	w8, [x9, #0x27]
+10003ce2c: 17fffff7    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003ce30: f94183e8    	ldr	x8, [sp, #0x300]
+10003ce34: 91012100    	add	x0, x8, #0x48
+10003ce38: 913043e1    	add	x1, sp, #0xc10
+10003ce3c: 52808008    	mov	w8, #0x400              ; =1024
+10003ce40: aa0803e2    	mov	x2, x8
+10003ce44: 948d4a35    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003ce48: 17fffd87    	b	0x10003c464 <<lifecycle::Fixture>::open::{closure#0}+0x240>
+10003ce4c: f94183e8    	ldr	x8, [sp, #0x300]
+10003ce50: 91012100    	add	x0, x8, #0x48
+10003ce54: 9401d26a    	bl	0x1000b17fc <core::ptr::drop_glue::<lifecycle::common::existing_security_audit::{closure#0}>>
+10003ce58: 17ffffec    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003ce5c: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003ce60: f93777e0    	str	x0, [sp, #0x6ee8]
+10003ce64: aa0103e8    	mov	x8, x1
+10003ce68: b8027128    	stur	w8, [x9, #0x27]
+10003ce6c: 17fffff8    	b	0x10003ce4c <<lifecycle::Fixture>::open::{closure#0}+0xc28>
+10003ce70: f9415be0    	ldr	x0, [sp, #0x2b0]
+10003ce74: f9418be1    	ldr	x1, [sp, #0x310]
+10003ce78: 97ff27fa    	bl	0x100006e60 <lifecycle::common::existing_security_audit::{closure#0}>
+10003ce7c: f9007be0    	str	x0, [sp, #0xf0]
+10003ce80: 14000001    	b	0x10003ce84 <<lifecycle::Fixture>::open::{closure#0}+0xc60>
+10003ce84: f9407be8    	ldr	x8, [sp, #0xf0]
+10003ce88: f90a0fe8    	str	x8, [sp, #0x1418]
+10003ce8c: f94a0fe9    	ldr	x9, [sp, #0x1418]
+10003ce90: d2800008    	mov	x8, #0x0                ; =0
+10003ce94: f1000129    	subs	x9, x9, #0x0
+10003ce98: 9a9f1508    	csinc	x8, x8, xzr, ne
+10003ce9c: 360001c8    	tbz	w8, #0x0, 0x10003ced4 <<lifecycle::Fixture>::open::{closure#0}+0xcb0>
+10003cea0: 14000001    	b	0x10003cea4 <<lifecycle::Fixture>::open::{closure#0}+0xc80>
+10003cea4: f94183e9    	ldr	x9, [sp, #0x300]
+10003cea8: 52800028    	mov	w8, #0x1                ; =1
+10003ceac: 390c7fe8    	strb	w8, [sp, #0x31f]
+10003ceb0: 52800088    	mov	w8, #0x4                ; =4
+10003ceb4: 39010d28    	strb	w8, [x9, #0x43]
+10003ceb8: 394c7fe8    	ldrb	w8, [sp, #0x31f]
+10003cebc: 12000100    	and	w0, w8, #0x1
+10003cec0: 91401fff    	add	sp, sp, #0x7, lsl #12   ; =0x7000
+10003cec4: 910343ff    	add	sp, sp, #0xd0
+10003cec8: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10003cecc: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10003ced0: d65f03c0    	ret
+10003ced4: f94183e8    	ldr	x8, [sp, #0x300]
+10003ced8: f94a0fe9    	ldr	x9, [sp, #0x1418]
+10003cedc: f9379fe9    	str	x9, [sp, #0x6f38]
+10003cee0: 5280002a    	mov	w10, #0x1               ; =1
+10003cee4: 3901090a    	strb	w10, [x8, #0x42]
+10003cee8: f9001909    	str	x9, [x8, #0x30]
+10003ceec: 91012100    	add	x0, x8, #0x48
+10003cef0: 9401d243    	bl	0x1000b17fc <core::ptr::drop_glue::<lifecycle::common::existing_security_audit::{closure#0}>>
+10003cef4: 14000001    	b	0x10003cef8 <<lifecycle::Fixture>::open::{closure#0}+0xcd4>
+10003cef8: f94183e8    	ldr	x8, [sp, #0x300]
+10003cefc: 39410108    	ldrb	w8, [x8, #0x40]
+10003cf00: 37000fa8    	tbnz	w8, #0x0, 0x10003d0f4 <<lifecycle::Fixture>::open::{closure#0}+0xed0>
+10003cf04: 1400006b    	b	0x10003d0b0 <<lifecycle::Fixture>::open::{closure#0}+0xe8c>
+10003cf08: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003cf0c: 3900351f    	strb	wzr, [x8, #0xd]
+10003cf10: 17ffffbe    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003cf14: 914007e0    	add	x0, sp, #0x1, lsl #12   ; =0x1000
+10003cf18: 91104000    	add	x0, x0, #0x410
+10003cf1c: 9477e502    	bl	0x101e36324 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::NodeStore>>>
+10003cf20: 17fffffa    	b	0x10003cf08 <<lifecycle::Fixture>::open::{closure#0}+0xce4>
+10003cf24: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003cf28: 3900391f    	strb	wzr, [x8, #0xe]
+10003cf2c: 17ffffb7    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003cf30: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003cf34: f93777e0    	str	x0, [sp, #0x6ee8]
+10003cf38: aa0103e8    	mov	x8, x1
+10003cf3c: b8027128    	stur	w8, [x9, #0x27]
+10003cf40: 17fffff9    	b	0x10003cf24 <<lifecycle::Fixture>::open::{closure#0}+0xd00>
+10003cf44: f94183e8    	ldr	x8, [sp, #0x300]
+10003cf48: f94177ea    	ldr	x10, [sp, #0x2e8]
+10003cf4c: f94087e9    	ldr	x9, [sp, #0x108]
+10003cf50: f90603e9    	str	x9, [sp, #0xc00]
+10003cf54: 52800029    	mov	w9, #0x1                ; =1
+10003cf58: 39003949    	strb	w9, [x10, #0xe]
+10003cf5c: f9400109    	ldr	x9, [x8]
+10003cf60: 910c2120    	add	x0, x9, #0x308
+10003cf64: 91008101    	add	x1, x8, #0x20
+10003cf68: d002ea02    	adrp	x2, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003cf6c: 91108042    	add	x2, x2, #0x420
+10003cf70: 9402fab1    	bl	0x1000fba34 <<alloc::collections::btree::map::BTreeMap<u64, lifecycle::common::PhysicalFixture> as core::ops::index::Index<&u64>>::index>
+10003cf74: f90077e0    	str	x0, [sp, #0xe8]
+10003cf78: 1400000a    	b	0x10003cfa0 <<lifecycle::Fixture>::open::{closure#0}+0xd7c>
+10003cf7c: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003cf80: 39403908    	ldrb	w8, [x8, #0xe]
+10003cf84: 37007488    	tbnz	w8, #0x0, 0x10003de14 <<lifecycle::Fixture>::open::{closure#0}+0x1bf0>
+10003cf88: 140003a0    	b	0x10003de08 <<lifecycle::Fixture>::open::{closure#0}+0x1be4>
+10003cf8c: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003cf90: f93777e0    	str	x0, [sp, #0x6ee8]
+10003cf94: aa0103e8    	mov	x8, x1
+10003cf98: b8027128    	stur	w8, [x9, #0x27]
+10003cf9c: 17fffff8    	b	0x10003cf7c <<lifecycle::Fixture>::open::{closure#0}+0xd58>
+10003cfa0: f94077e8    	ldr	x8, [sp, #0xe8]
+10003cfa4: 91002100    	add	x0, x8, #0x8
+10003cfa8: 94337f99    	bl	0x100d1ce0c <<alloc::sync::Arc<kasumi_engine::admission::NodeAdmission> as core::clone::Clone>::clone>
+10003cfac: f90073e0    	str	x0, [sp, #0xe0]
+10003cfb0: 14000001    	b	0x10003cfb4 <<lifecycle::Fixture>::open::{closure#0}+0xd90>
+10003cfb4: f94073e1    	ldr	x1, [sp, #0xe0]
+10003cfb8: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003cfbc: 3900391f    	strb	wzr, [x8, #0xe]
+10003cfc0: f94603e0    	ldr	x0, [sp, #0xc00]
+10003cfc4: 912003e8    	add	x8, sp, #0x800
+10003cfc8: 9400c40f    	bl	0x10006e004 <lifecycle::common::security_audit>
+10003cfcc: 14000001    	b	0x10003cfd0 <<lifecycle::Fixture>::open::{closure#0}+0xdac>
+10003cfd0: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003cfd4: 3900391f    	strb	wzr, [x8, #0xe]
+10003cfd8: 911003e8    	add	x8, sp, #0x400
+10003cfdc: 912003e0    	add	x0, sp, #0x800
+10003cfe0: 97ff297e    	bl	0x1000075d8 <<lifecycle::common::security_audit::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003cfe4: 14000001    	b	0x10003cfe8 <<lifecycle::Fixture>::open::{closure#0}+0xdc4>
+10003cfe8: f94183e8    	ldr	x8, [sp, #0x300]
+10003cfec: 91012100    	add	x0, x8, #0x48
+10003cff0: 911003e1    	add	x1, sp, #0x400
+10003cff4: 52808008    	mov	w8, #0x400              ; =1024
+10003cff8: aa0803e2    	mov	x2, x8
+10003cffc: 948d49c7    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003d000: 17fffd14    	b	0x10003c450 <<lifecycle::Fixture>::open::{closure#0}+0x22c>
+10003d004: f94183e8    	ldr	x8, [sp, #0x300]
+10003d008: 91012100    	add	x0, x8, #0x48
+10003d00c: 9401d1b6    	bl	0x1000b16e4 <core::ptr::drop_glue::<lifecycle::common::security_audit::{closure#0}>>
+10003d010: 17ffff7e    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003d014: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d018: f93777e0    	str	x0, [sp, #0x6ee8]
+10003d01c: aa0103e8    	mov	x8, x1
+10003d020: b8027128    	stur	w8, [x9, #0x27]
+10003d024: 17fffff8    	b	0x10003d004 <<lifecycle::Fixture>::open::{closure#0}+0xde0>
+10003d028: f9415fe0    	ldr	x0, [sp, #0x2b8]
+10003d02c: f9418be1    	ldr	x1, [sp, #0x310]
+10003d030: 97ff2653    	bl	0x10000697c <lifecycle::common::security_audit::{closure#0}>
+10003d034: f9006fe0    	str	x0, [sp, #0xd8]
+10003d038: 14000001    	b	0x10003d03c <<lifecycle::Fixture>::open::{closure#0}+0xe18>
+10003d03c: f9406fe8    	ldr	x8, [sp, #0xd8]
+10003d040: f90607e8    	str	x8, [sp, #0xc08]
+10003d044: f94607e9    	ldr	x9, [sp, #0xc08]
+10003d048: d2800008    	mov	x8, #0x0                ; =0
+10003d04c: f1000129    	subs	x9, x9, #0x0
+10003d050: 9a9f1508    	csinc	x8, x8, xzr, ne
+10003d054: 360001c8    	tbz	w8, #0x0, 0x10003d08c <<lifecycle::Fixture>::open::{closure#0}+0xe68>
+10003d058: 14000001    	b	0x10003d05c <<lifecycle::Fixture>::open::{closure#0}+0xe38>
+10003d05c: f94183e9    	ldr	x9, [sp, #0x300]
+10003d060: 52800028    	mov	w8, #0x1                ; =1
+10003d064: 390c7fe8    	strb	w8, [sp, #0x31f]
+10003d068: 52800068    	mov	w8, #0x3                ; =3
+10003d06c: 39010d28    	strb	w8, [x9, #0x43]
+10003d070: 394c7fe8    	ldrb	w8, [sp, #0x31f]
+10003d074: 12000100    	and	w0, w8, #0x1
+10003d078: 91401fff    	add	sp, sp, #0x7, lsl #12   ; =0x7000
+10003d07c: 910343ff    	add	sp, sp, #0xd0
+10003d080: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10003d084: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10003d088: d65f03c0    	ret
+10003d08c: f94183e8    	ldr	x8, [sp, #0x300]
+10003d090: f94607e9    	ldr	x9, [sp, #0xc08]
+10003d094: f937a3e9    	str	x9, [sp, #0x6f40]
+10003d098: 5280002a    	mov	w10, #0x1               ; =1
+10003d09c: 3901090a    	strb	w10, [x8, #0x42]
+10003d0a0: f9001909    	str	x9, [x8, #0x30]
+10003d0a4: 91012100    	add	x0, x8, #0x48
+10003d0a8: 9401d18f    	bl	0x1000b16e4 <core::ptr::drop_glue::<lifecycle::common::security_audit::{closure#0}>>
+10003d0ac: 17ffff93    	b	0x10003cef8 <<lifecycle::Fixture>::open::{closure#0}+0xcd4>
+10003d0b0: f94183e8    	ldr	x8, [sp, #0x300]
+10003d0b4: f94177ea    	ldr	x10, [sp, #0x2e8]
+10003d0b8: 3901051f    	strb	wzr, [x8, #0x41]
+10003d0bc: 52800029    	mov	w9, #0x1                ; =1
+10003d0c0: 39002549    	strb	w9, [x10, #0x9]
+10003d0c4: f9401508    	ldr	x8, [x8, #0x28]
+10003d0c8: f913b3e8    	str	x8, [sp, #0x2760]
+10003d0cc: 91400be8    	add	x8, sp, #0x2, lsl #12   ; =0x2000
+10003d0d0: 911da108    	add	x8, x8, #0x768
+10003d0d4: 90011aa0    	adrp	x0, 0x102391000 <dyld_stub_binder+0x102391000>
+10003d0d8: 91260000    	add	x0, x0, #0x980
+10003d0dc: 52800209    	mov	w9, #0x10               ; =16
+10003d0e0: aa0903e1    	mov	x1, x9
+10003d0e4: b002ea02    	adrp	x2, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003d0e8: 9110e042    	add	x2, x2, #0x438
+10003d0ec: 948149e1    	bl	0x10208f870 <<&str as core::convert::Into<alloc::string::String>>::into>
+10003d0f0: 1400001c    	b	0x10003d160 <<lifecycle::Fixture>::open::{closure#0}+0xf3c>
+10003d0f4: f94183e8    	ldr	x8, [sp, #0x300]
+10003d0f8: f94177ea    	ldr	x10, [sp, #0x2e8]
+10003d0fc: 3901051f    	strb	wzr, [x8, #0x41]
+10003d100: 52800029    	mov	w9, #0x1                ; =1
+10003d104: 39003149    	strb	w9, [x10, #0xc]
+10003d108: f9401508    	ldr	x8, [x8, #0x28]
+10003d10c: f90e93e8    	str	x8, [sp, #0x1d20]
+10003d110: 914007e8    	add	x8, sp, #0x1, lsl #12   ; =0x1000
+10003d114: 9134a108    	add	x8, x8, #0xd28
+10003d118: 90011aa0    	adrp	x0, 0x102391000 <dyld_stub_binder+0x102391000>
+10003d11c: 91260000    	add	x0, x0, #0x980
+10003d120: 52800209    	mov	w9, #0x10               ; =16
+10003d124: aa0903e1    	mov	x1, x9
+10003d128: b002ea02    	adrp	x2, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003d12c: 91120042    	add	x2, x2, #0x480
+10003d130: 948149d0    	bl	0x10208f870 <<&str as core::convert::Into<alloc::string::String>>::into>
+10003d134: 140000e3    	b	0x10003d4c0 <<lifecycle::Fixture>::open::{closure#0}+0x129c>
+10003d138: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d13c: 3900211f    	strb	wzr, [x8, #0x8]
+10003d140: 39402508    	ldrb	w8, [x8, #0x9]
+10003d144: 37001a28    	tbnz	w8, #0x0, 0x10003d488 <<lifecycle::Fixture>::open::{closure#0}+0x1264>
+10003d148: 140000cd    	b	0x10003d47c <<lifecycle::Fixture>::open::{closure#0}+0x1258>
+10003d14c: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d150: f93777e0    	str	x0, [sp, #0x6ee8]
+10003d154: aa0103e8    	mov	x8, x1
+10003d158: b8027128    	stur	w8, [x9, #0x27]
+10003d15c: 17fffff7    	b	0x10003d138 <<lifecycle::Fixture>::open::{closure#0}+0xf14>
+10003d160: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d164: 52800028    	mov	w8, #0x1                ; =1
+10003d168: 39002128    	strb	w8, [x9, #0x8]
+10003d16c: 52800568    	mov	w8, #0x2b               ; =43
+10003d170: b200c3e9    	mov	x9, #0x101010101010101  ; =72340172838076673
+10003d174: 9b097d08    	mul	x8, x8, x9
+10003d178: 4e080d00    	dup.2d	v0, x8
+10003d17c: 91400be0    	add	x0, sp, #0x2, lsl #12   ; =0x2000
+10003d180: 911f4000    	add	x0, x0, #0x7d0
+10003d184: 3d89f7e0    	str	q0, [sp, #0x27d0]
+10003d188: 3d89fbe0    	str	q0, [sp, #0x27e0]
+10003d18c: 91400be8    	add	x8, sp, #0x2, lsl #12   ; =0x2000
+10003d190: 911e4108    	add	x8, x8, #0x790
+10003d194: 94755f72    	bl	0x101d94f5c <<kasumi_store::test_utils::LocalKeyProvider>::new>
+10003d198: 1400000b    	b	0x10003d1c4 <<lifecycle::Fixture>::open::{closure#0}+0xfa0>
+10003d19c: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d1a0: 39001d1f    	strb	wzr, [x8, #0x7]
+10003d1a4: 39402108    	ldrb	w8, [x8, #0x8]
+10003d1a8: 37001628    	tbnz	w8, #0x0, 0x10003d46c <<lifecycle::Fixture>::open::{closure#0}+0x1248>
+10003d1ac: 17ffffe3    	b	0x10003d138 <<lifecycle::Fixture>::open::{closure#0}+0xf14>
+10003d1b0: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d1b4: f93777e0    	str	x0, [sp, #0x6ee8]
+10003d1b8: aa0103e8    	mov	x8, x1
+10003d1bc: b8027128    	stur	w8, [x9, #0x27]
+10003d1c0: 17fffff7    	b	0x10003d19c <<lifecycle::Fixture>::open::{closure#0}+0xf78>
+10003d1c4: 91400be0    	add	x0, sp, #0x2, lsl #12   ; =0x2000
+10003d1c8: 911e4000    	add	x0, x0, #0x790
+10003d1cc: 9400d18d    	bl	0x100071800 <<alloc::sync::Arc<kasumi_store::test_utils::LocalKeyProvider>>::new>
+10003d1d0: f9006be0    	str	x0, [sp, #0xd0]
+10003d1d4: 14000001    	b	0x10003d1d8 <<lifecycle::Fixture>::open::{closure#0}+0xfb4>
+10003d1d8: f9406be8    	ldr	x8, [sp, #0xd0]
+10003d1dc: f94177ea    	ldr	x10, [sp, #0x2e8]
+10003d1e0: 52800029    	mov	w9, #0x1                ; =1
+10003d1e4: 39001d49    	strb	w9, [x10, #0x7]
+10003d1e8: f913c3e8    	str	x8, [sp, #0x2780]
+10003d1ec: b002ea08    	adrp	x8, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003d1f0: 91114108    	add	x8, x8, #0x450
+10003d1f4: f913c7e8    	str	x8, [sp, #0x2788]
+10003d1f8: 91400be8    	add	x8, sp, #0x2, lsl #12   ; =0x2000
+10003d1fc: 911fe108    	add	x8, x8, #0x7f8
+10003d200: 9474cd35    	bl	0x101d706d4 <<kasumi_store::serving_access::StorageAccess>::node_control>
+10003d204: 1400000a    	b	0x10003d22c <<lifecycle::Fixture>::open::{closure#0}+0x1008>
+10003d208: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d20c: 39401d08    	ldrb	w8, [x8, #0x7]
+10003d210: 37001268    	tbnz	w8, #0x0, 0x10003d45c <<lifecycle::Fixture>::open::{closure#0}+0x1238>
+10003d214: 17ffffe2    	b	0x10003d19c <<lifecycle::Fixture>::open::{closure#0}+0xf78>
+10003d218: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d21c: f93777e0    	str	x0, [sp, #0x6ee8]
+10003d220: aa0103e8    	mov	x8, x1
+10003d224: b8027128    	stur	w8, [x9, #0x27]
+10003d228: 17fffff8    	b	0x10003d208 <<lifecycle::Fixture>::open::{closure#0}+0xfe4>
+10003d22c: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d230: 3900251f    	strb	wzr, [x8, #0x9]
+10003d234: 3900211f    	strb	wzr, [x8, #0x8]
+10003d238: 39001d1f    	strb	wzr, [x8, #0x7]
+10003d23c: f953b3e0    	ldr	x0, [sp, #0x2760]
+10003d240: f953c3e2    	ldr	x2, [sp, #0x2780]
+10003d244: f953c7e3    	ldr	x3, [sp, #0x2788]
+10003d248: 91400be8    	add	x8, sp, #0x2, lsl #12   ; =0x2000
+10003d24c: 910ba108    	add	x8, x8, #0x2e8
+10003d250: 91400be1    	add	x1, sp, #0x2, lsl #12   ; =0x2000
+10003d254: 911da021    	add	x1, x1, #0x768
+10003d258: 91400be4    	add	x4, sp, #0x2, lsl #12   ; =0x2000
+10003d25c: 911fe084    	add	x4, x4, #0x7f8
+10003d260: 94797a44    	bl	0x101e9bb70 <<kasumi_store::TenantStore>::open_existing_fixture_with_access>
+10003d264: 14000001    	b	0x10003d268 <<lifecycle::Fixture>::open::{closure#0}+0x1044>
+10003d268: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d26c: 39001d1f    	strb	wzr, [x8, #0x7]
+10003d270: 3900211f    	strb	wzr, [x8, #0x8]
+10003d274: 3900251f    	strb	wzr, [x8, #0x9]
+10003d278: 914007e8    	add	x8, sp, #0x1, lsl #12   ; =0x1000
+10003d27c: 9139c108    	add	x8, x8, #0xe70
+10003d280: 91400be0    	add	x0, sp, #0x2, lsl #12   ; =0x2000
+10003d284: 910ba000    	add	x0, x0, #0x2e8
+10003d288: 9400b12d    	bl	0x10006973c <<<kasumi_store::TenantStore>::open_existing_fixture_with_access::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003d28c: 14000014    	b	0x10003d2dc <<lifecycle::Fixture>::open::{closure#0}+0x10b8>
+10003d290: f94183e8    	ldr	x8, [sp, #0x300]
+10003d294: 39410908    	ldrb	w8, [x8, #0x42]
+10003d298: 37005da8    	tbnz	w8, #0x0, 0x10003de4c <<lifecycle::Fixture>::open::{closure#0}+0x1c28>
+10003d29c: 17fffedb    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003d2a0: aa0103e8    	mov	x8, x1
+10003d2a4: f90063e0    	str	x0, [sp, #0xc0]
+10003d2a8: b900cfe8    	str	w8, [sp, #0xcc]
+10003d2ac: 14000001    	b	0x10003d2b0 <<lifecycle::Fixture>::open::{closure#0}+0x108c>
+10003d2b0: f94063e9    	ldr	x9, [sp, #0xc0]
+10003d2b4: b940cfe8    	ldr	w8, [sp, #0xcc]
+10003d2b8: f9005be9    	str	x9, [sp, #0xb0]
+10003d2bc: b900bfe8    	str	w8, [sp, #0xbc]
+10003d2c0: 14000001    	b	0x10003d2c4 <<lifecycle::Fixture>::open::{closure#0}+0x10a0>
+10003d2c4: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d2c8: f9405bea    	ldr	x10, [sp, #0xb0]
+10003d2cc: b940bfe8    	ldr	w8, [sp, #0xbc]
+10003d2d0: f93777ea    	str	x10, [sp, #0x6ee8]
+10003d2d4: b8027128    	stur	w8, [x9, #0x27]
+10003d2d8: 17ffffee    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003d2dc: f94183e8    	ldr	x8, [sp, #0x300]
+10003d2e0: 91012100    	add	x0, x8, #0x48
+10003d2e4: 914007e1    	add	x1, sp, #0x1, lsl #12   ; =0x1000
+10003d2e8: 9139c021    	add	x1, x1, #0xe70
+10003d2ec: 52808f08    	mov	w8, #0x478              ; =1144
+10003d2f0: aa0803e2    	mov	x2, x8
+10003d2f4: 948d4909    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003d2f8: 17fffc65    	b	0x10003c48c <<lifecycle::Fixture>::open::{closure#0}+0x268>
+10003d2fc: f94183e8    	ldr	x8, [sp, #0x300]
+10003d300: 91012100    	add	x0, x8, #0x48
+10003d304: 9401943e    	bl	0x1000a23fc <core::ptr::drop_glue::<<kasumi_store::TenantStore>::open_existing_fixture_with_access::{closure#0}>>
+10003d308: 17ffffe2    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003d30c: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d310: f93777e0    	str	x0, [sp, #0x6ee8]
+10003d314: aa0103e8    	mov	x8, x1
+10003d318: b8027128    	stur	w8, [x9, #0x27]
+10003d31c: 17fffff8    	b	0x10003d2fc <<lifecycle::Fixture>::open::{closure#0}+0x10d8>
+10003d320: f94153e0    	ldr	x0, [sp, #0x2a0]
+10003d324: f9418be1    	ldr	x1, [sp, #0x310]
+10003d328: 9400affb    	bl	0x100069314 <<kasumi_store::TenantStore>::open_existing_fixture_with_access::{closure#0}>
+10003d32c: f90053e0    	str	x0, [sp, #0xa0]
+10003d330: f90057e1    	str	x1, [sp, #0xa8]
+10003d334: 14000001    	b	0x10003d338 <<lifecycle::Fixture>::open::{closure#0}+0x1114>
+10003d338: f94057e8    	ldr	x8, [sp, #0xa8]
+10003d33c: f94053e9    	ldr	x9, [sp, #0xa0]
+10003d340: f91457e9    	str	x9, [sp, #0x28a8]
+10003d344: f9145be8    	str	x8, [sp, #0x28b0]
+10003d348: f95457e9    	ldr	x9, [sp, #0x28a8]
+10003d34c: d2800008    	mov	x8, #0x0                ; =0
+10003d350: f1000929    	subs	x9, x9, #0x2
+10003d354: 9a9f1508    	csinc	x8, x8, xzr, ne
+10003d358: 360001c8    	tbz	w8, #0x0, 0x10003d390 <<lifecycle::Fixture>::open::{closure#0}+0x116c>
+10003d35c: 14000001    	b	0x10003d360 <<lifecycle::Fixture>::open::{closure#0}+0x113c>
+10003d360: f94183e9    	ldr	x9, [sp, #0x300]
+10003d364: 52800028    	mov	w8, #0x1                ; =1
+10003d368: 390c7fe8    	strb	w8, [sp, #0x31f]
+10003d36c: 528000c8    	mov	w8, #0x6                ; =6
+10003d370: 39010d28    	strb	w8, [x9, #0x43]
+10003d374: 394c7fe8    	ldrb	w8, [sp, #0x31f]
+10003d378: 12000100    	and	w0, w8, #0x1
+10003d37c: 91401fff    	add	sp, sp, #0x7, lsl #12   ; =0x7000
+10003d380: 910343ff    	add	sp, sp, #0xd0
+10003d384: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10003d388: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10003d38c: d65f03c0    	ret
+10003d390: f94183e8    	ldr	x8, [sp, #0x300]
+10003d394: f95457ea    	ldr	x10, [sp, #0x28a8]
+10003d398: f9545be9    	ldr	x9, [sp, #0x28b0]
+10003d39c: f937a7ea    	str	x10, [sp, #0x6f48]
+10003d3a0: f937abe9    	str	x9, [sp, #0x6f50]
+10003d3a4: f90a13ea    	str	x10, [sp, #0x1420]
+10003d3a8: f90a17e9    	str	x9, [sp, #0x1428]
+10003d3ac: 91012100    	add	x0, x8, #0x48
+10003d3b0: 94019413    	bl	0x1000a23fc <core::ptr::drop_glue::<<kasumi_store::TenantStore>::open_existing_fixture_with_access::{closure#0}>>
+10003d3b4: 14000001    	b	0x10003d3b8 <<lifecycle::Fixture>::open::{closure#0}+0x1194>
+10003d3b8: f94a13e9    	ldr	x9, [sp, #0x1420]
+10003d3bc: f94a17e8    	ldr	x8, [sp, #0x1428]
+10003d3c0: f937d7e9    	str	x9, [sp, #0x6fa8]
+10003d3c4: f937dbe8    	str	x8, [sp, #0x6fb0]
+10003d3c8: f977d7e8    	ldr	x8, [sp, #0x6fa8]
+10003d3cc: 36000408    	tbz	w8, #0x0, 0x10003d44c <<lifecycle::Fixture>::open::{closure#0}+0x1228>
+10003d3d0: 14000001    	b	0x10003d3d4 <<lifecycle::Fixture>::open::{closure#0}+0x11b0>
+10003d3d4: f977dbe8    	ldr	x8, [sp, #0x6fb0]
+10003d3d8: 91401be2    	add	x2, sp, #0x6, lsl #12   ; =0x6000
+10003d3dc: 913ee042    	add	x2, x2, #0xfb8
+10003d3e0: f937dfe8    	str	x8, [sp, #0x6fb8]
+10003d3e4: 90011aa0    	adrp	x0, 0x102391000 <dyld_stub_binder+0x102391000>
+10003d3e8: 9124ac00    	add	x0, x0, #0x92b
+10003d3ec: 52800568    	mov	w8, #0x2b               ; =43
+10003d3f0: aa0803e1    	mov	x1, x8
+10003d3f4: b002ea03    	adrp	x3, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003d3f8: 91178063    	add	x3, x3, #0x5e0
+10003d3fc: b002ea04    	adrp	x4, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003d400: 91126084    	add	x4, x4, #0x498
+10003d404: 948d4682    	bl	0x10238ee0c <core::result::unwrap_failed>
+10003d408: 14000009    	b	0x10003d42c <<lifecycle::Fixture>::open::{closure#0}+0x1208>
+10003d40c: f94173e9    	ldr	x9, [sp, #0x2e0]
+10003d410: f937e7e0    	str	x0, [sp, #0x6fc8]
+10003d414: aa0103e8    	mov	x8, x1
+10003d418: b9000928    	str	w8, [x9, #0x8]
+10003d41c: 91401be0    	add	x0, sp, #0x6, lsl #12   ; =0x6000
+10003d420: 913ee000    	add	x0, x0, #0xfb8
+10003d424: 9454c753    	bl	0x10156f170 <core::ptr::drop_glue::<anyhow::Error>>
+10003d428: 14000003    	b	0x10003d434 <<lifecycle::Fixture>::open::{closure#0}+0x1210>
+10003d42c: d4200020    	brk	#0x1
+10003d430: 948d4691    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+10003d434: f94173e8    	ldr	x8, [sp, #0x2e0]
+10003d438: f977e7e9    	ldr	x9, [sp, #0x6fc8]
+10003d43c: b9400908    	ldr	w8, [x8, #0x8]
+10003d440: f9005be9    	str	x9, [sp, #0xb0]
+10003d444: b900bfe8    	str	w8, [sp, #0xbc]
+10003d448: 17ffff9f    	b	0x10003d2c4 <<lifecycle::Fixture>::open::{closure#0}+0x10a0>
+10003d44c: f977dbe8    	ldr	x8, [sp, #0x6fb0]
+10003d450: f9004fe8    	str	x8, [sp, #0x98]
+10003d454: f937e3e8    	str	x8, [sp, #0x6fc0]
+10003d458: 1400009d    	b	0x10003d6cc <<lifecycle::Fixture>::open::{closure#0}+0x14a8>
+10003d45c: 91400be0    	add	x0, sp, #0x2, lsl #12   ; =0x2000
+10003d460: 911e0000    	add	x0, x0, #0x780
+10003d464: 9477e35f    	bl	0x101e361e0 <core::ptr::drop_glue::<alloc::sync::Arc<dyn kasumi_store::keys::KeyProvider>>>
+10003d468: 17ffff4d    	b	0x10003d19c <<lifecycle::Fixture>::open::{closure#0}+0xf78>
+10003d46c: 91400be0    	add	x0, sp, #0x2, lsl #12   ; =0x2000
+10003d470: 911da000    	add	x0, x0, #0x768
+10003d474: 94656932    	bl	0x10199793c <core::ptr::drop_glue::<alloc::string::String>>
+10003d478: 17ffff30    	b	0x10003d138 <<lifecycle::Fixture>::open::{closure#0}+0xf14>
+10003d47c: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d480: 3900251f    	strb	wzr, [x8, #0x9]
+10003d484: 17ffff83    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003d488: 91400be0    	add	x0, sp, #0x2, lsl #12   ; =0x2000
+10003d48c: 911d8000    	add	x0, x0, #0x760
+10003d490: 9477e3a5    	bl	0x101e36324 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::NodeStore>>>
+10003d494: 17fffffa    	b	0x10003d47c <<lifecycle::Fixture>::open::{closure#0}+0x1258>
+10003d498: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d49c: 39002d1f    	strb	wzr, [x8, #0xb]
+10003d4a0: 39403108    	ldrb	w8, [x8, #0xc]
+10003d4a4: 37004aa8    	tbnz	w8, #0x0, 0x10003ddf8 <<lifecycle::Fixture>::open::{closure#0}+0x1bd4>
+10003d4a8: 14000251    	b	0x10003ddec <<lifecycle::Fixture>::open::{closure#0}+0x1bc8>
+10003d4ac: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d4b0: f93777e0    	str	x0, [sp, #0x6ee8]
+10003d4b4: aa0103e8    	mov	x8, x1
+10003d4b8: b8027128    	stur	w8, [x9, #0x27]
+10003d4bc: 17fffff7    	b	0x10003d498 <<lifecycle::Fixture>::open::{closure#0}+0x1274>
+10003d4c0: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d4c4: 52800028    	mov	w8, #0x1                ; =1
+10003d4c8: 39002d28    	strb	w8, [x9, #0xb]
+10003d4cc: 52800568    	mov	w8, #0x2b               ; =43
+10003d4d0: b200c3e9    	mov	x9, #0x101010101010101  ; =72340172838076673
+10003d4d4: 9b097d08    	mul	x8, x8, x9
+10003d4d8: 4e080d00    	dup.2d	v0, x8
+10003d4dc: 914007e0    	add	x0, sp, #0x1, lsl #12   ; =0x1000
+10003d4e0: 91364000    	add	x0, x0, #0xd90
+10003d4e4: 3d8767e0    	str	q0, [sp, #0x1d90]
+10003d4e8: 3d876be0    	str	q0, [sp, #0x1da0]
+10003d4ec: 914007e8    	add	x8, sp, #0x1, lsl #12   ; =0x1000
+10003d4f0: 91354108    	add	x8, x8, #0xd50
+10003d4f4: 94755e9a    	bl	0x101d94f5c <<kasumi_store::test_utils::LocalKeyProvider>::new>
+10003d4f8: 1400000b    	b	0x10003d524 <<lifecycle::Fixture>::open::{closure#0}+0x1300>
+10003d4fc: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d500: 3900291f    	strb	wzr, [x8, #0xa]
+10003d504: 39402d08    	ldrb	w8, [x8, #0xb]
+10003d508: 370046a8    	tbnz	w8, #0x0, 0x10003dddc <<lifecycle::Fixture>::open::{closure#0}+0x1bb8>
+10003d50c: 17ffffe3    	b	0x10003d498 <<lifecycle::Fixture>::open::{closure#0}+0x1274>
+10003d510: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d514: f93777e0    	str	x0, [sp, #0x6ee8]
+10003d518: aa0103e8    	mov	x8, x1
+10003d51c: b8027128    	stur	w8, [x9, #0x27]
+10003d520: 17fffff7    	b	0x10003d4fc <<lifecycle::Fixture>::open::{closure#0}+0x12d8>
+10003d524: 914007e0    	add	x0, sp, #0x1, lsl #12   ; =0x1000
+10003d528: 91354000    	add	x0, x0, #0xd50
+10003d52c: 9400d0b5    	bl	0x100071800 <<alloc::sync::Arc<kasumi_store::test_utils::LocalKeyProvider>>::new>
+10003d530: f9004be0    	str	x0, [sp, #0x90]
+10003d534: 14000001    	b	0x10003d538 <<lifecycle::Fixture>::open::{closure#0}+0x1314>
+10003d538: f9404be8    	ldr	x8, [sp, #0x90]
+10003d53c: f94177ea    	ldr	x10, [sp, #0x2e8]
+10003d540: 52800029    	mov	w9, #0x1                ; =1
+10003d544: 39002949    	strb	w9, [x10, #0xa]
+10003d548: f90ea3e8    	str	x8, [sp, #0x1d40]
+10003d54c: b002ea08    	adrp	x8, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003d550: 91114108    	add	x8, x8, #0x450
+10003d554: f90ea7e8    	str	x8, [sp, #0x1d48]
+10003d558: 914007e8    	add	x8, sp, #0x1, lsl #12   ; =0x1000
+10003d55c: 9136c108    	add	x8, x8, #0xdb0
+10003d560: 9474cc5d    	bl	0x101d706d4 <<kasumi_store::serving_access::StorageAccess>::node_control>
+10003d564: 1400000a    	b	0x10003d58c <<lifecycle::Fixture>::open::{closure#0}+0x1368>
+10003d568: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d56c: 39402908    	ldrb	w8, [x8, #0xa]
+10003d570: 370042e8    	tbnz	w8, #0x0, 0x10003ddcc <<lifecycle::Fixture>::open::{closure#0}+0x1ba8>
+10003d574: 17ffffe2    	b	0x10003d4fc <<lifecycle::Fixture>::open::{closure#0}+0x12d8>
+10003d578: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d57c: f93777e0    	str	x0, [sp, #0x6ee8]
+10003d580: aa0103e8    	mov	x8, x1
+10003d584: b8027128    	stur	w8, [x9, #0x27]
+10003d588: 17fffff8    	b	0x10003d568 <<lifecycle::Fixture>::open::{closure#0}+0x1344>
+10003d58c: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d590: 3900311f    	strb	wzr, [x8, #0xc]
+10003d594: 39002d1f    	strb	wzr, [x8, #0xb]
+10003d598: 3900291f    	strb	wzr, [x8, #0xa]
+10003d59c: f94e93e0    	ldr	x0, [sp, #0x1d20]
+10003d5a0: f94ea3e2    	ldr	x2, [sp, #0x1d40]
+10003d5a4: f94ea7e3    	ldr	x3, [sp, #0x1d48]
+10003d5a8: 914007e8    	add	x8, sp, #0x1, lsl #12   ; =0x1000
+10003d5ac: 9122a108    	add	x8, x8, #0x8a8
+10003d5b0: 914007e1    	add	x1, sp, #0x1, lsl #12   ; =0x1000
+10003d5b4: 9134a021    	add	x1, x1, #0xd28
+10003d5b8: 914007e4    	add	x4, sp, #0x1, lsl #12   ; =0x1000
+10003d5bc: 9136c084    	add	x4, x4, #0xdb0
+10003d5c0: 94797988    	bl	0x101e9bbe0 <<kasumi_store::TenantStore>::initialize_catalog_fixture_with_access>
+10003d5c4: 14000001    	b	0x10003d5c8 <<lifecycle::Fixture>::open::{closure#0}+0x13a4>
+10003d5c8: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d5cc: 3900291f    	strb	wzr, [x8, #0xa]
+10003d5d0: 39002d1f    	strb	wzr, [x8, #0xb]
+10003d5d4: 3900311f    	strb	wzr, [x8, #0xc]
+10003d5d8: 914007e8    	add	x8, sp, #0x1, lsl #12   ; =0x1000
+10003d5dc: 9110c108    	add	x8, x8, #0x430
+10003d5e0: 914007e0    	add	x0, sp, #0x1, lsl #12   ; =0x1000
+10003d5e4: 9122a000    	add	x0, x0, #0x8a8
+10003d5e8: 9475abbc    	bl	0x101da84d8 <<<kasumi_store::TenantStore>::initialize_catalog_fixture_with_access::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003d5ec: 14000001    	b	0x10003d5f0 <<lifecycle::Fixture>::open::{closure#0}+0x13cc>
+10003d5f0: f94183e8    	ldr	x8, [sp, #0x300]
+10003d5f4: 91012100    	add	x0, x8, #0x48
+10003d5f8: 914007e1    	add	x1, sp, #0x1, lsl #12   ; =0x1000
+10003d5fc: 9110c021    	add	x1, x1, #0x430
+10003d600: 52808f08    	mov	w8, #0x478              ; =1144
+10003d604: aa0803e2    	mov	x2, x8
+10003d608: 948d4844    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003d60c: 17fffb9b    	b	0x10003c478 <<lifecycle::Fixture>::open::{closure#0}+0x254>
+10003d610: f94183e8    	ldr	x8, [sp, #0x300]
+10003d614: 91012100    	add	x0, x8, #0x48
+10003d618: 94780467    	bl	0x101e3e7b4 <core::ptr::drop_glue::<<kasumi_store::TenantStore>::initialize_catalog_fixture_with_access::{closure#0}>>
+10003d61c: 17ffff1d    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003d620: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d624: f93777e0    	str	x0, [sp, #0x6ee8]
+10003d628: aa0103e8    	mov	x8, x1
+10003d62c: b8027128    	stur	w8, [x9, #0x27]
+10003d630: 17fffff8    	b	0x10003d610 <<lifecycle::Fixture>::open::{closure#0}+0x13ec>
+10003d634: f94157e0    	ldr	x0, [sp, #0x2a8]
+10003d638: f9418be1    	ldr	x1, [sp, #0x310]
+10003d63c: 9475aab5    	bl	0x101da8110 <<kasumi_store::TenantStore>::initialize_catalog_fixture_with_access::{closure#0}>
+10003d640: f90043e0    	str	x0, [sp, #0x80]
+10003d644: f90047e1    	str	x1, [sp, #0x88]
+10003d648: 14000001    	b	0x10003d64c <<lifecycle::Fixture>::open::{closure#0}+0x1428>
+10003d64c: f94047e8    	ldr	x8, [sp, #0x88]
+10003d650: f94043e9    	ldr	x9, [sp, #0x80]
+10003d654: f90f33e9    	str	x9, [sp, #0x1e60]
+10003d658: f90f37e8    	str	x8, [sp, #0x1e68]
+10003d65c: f94f33e9    	ldr	x9, [sp, #0x1e60]
+10003d660: d2800008    	mov	x8, #0x0                ; =0
+10003d664: f1000929    	subs	x9, x9, #0x2
+10003d668: 9a9f1508    	csinc	x8, x8, xzr, ne
+10003d66c: 360001c8    	tbz	w8, #0x0, 0x10003d6a4 <<lifecycle::Fixture>::open::{closure#0}+0x1480>
+10003d670: 14000001    	b	0x10003d674 <<lifecycle::Fixture>::open::{closure#0}+0x1450>
+10003d674: f94183e9    	ldr	x9, [sp, #0x300]
+10003d678: 52800028    	mov	w8, #0x1                ; =1
+10003d67c: 390c7fe8    	strb	w8, [sp, #0x31f]
+10003d680: 528000a8    	mov	w8, #0x5                ; =5
+10003d684: 39010d28    	strb	w8, [x9, #0x43]
+10003d688: 394c7fe8    	ldrb	w8, [sp, #0x31f]
+10003d68c: 12000100    	and	w0, w8, #0x1
+10003d690: 91401fff    	add	sp, sp, #0x7, lsl #12   ; =0x7000
+10003d694: 910343ff    	add	sp, sp, #0xd0
+10003d698: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10003d69c: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10003d6a0: d65f03c0    	ret
+10003d6a4: f94183e8    	ldr	x8, [sp, #0x300]
+10003d6a8: f94f33ea    	ldr	x10, [sp, #0x1e60]
+10003d6ac: f94f37e9    	ldr	x9, [sp, #0x1e68]
+10003d6b0: f937afea    	str	x10, [sp, #0x6f58]
+10003d6b4: f937b3e9    	str	x9, [sp, #0x6f60]
+10003d6b8: f90a13ea    	str	x10, [sp, #0x1420]
+10003d6bc: f90a17e9    	str	x9, [sp, #0x1428]
+10003d6c0: 91012100    	add	x0, x8, #0x48
+10003d6c4: 9478043c    	bl	0x101e3e7b4 <core::ptr::drop_glue::<<kasumi_store::TenantStore>::initialize_catalog_fixture_with_access::{closure#0}>>
+10003d6c8: 17ffff3c    	b	0x10003d3b8 <<lifecycle::Fixture>::open::{closure#0}+0x1194>
+10003d6cc: f94183e8    	ldr	x8, [sp, #0x300]
+10003d6d0: f9404fe9    	ldr	x9, [sp, #0x98]
+10003d6d4: f937b7e9    	str	x9, [sp, #0x6f68]
+10003d6d8: 39410108    	ldrb	w8, [x8, #0x40]
+10003d6dc: 37000268    	tbnz	w8, #0x0, 0x10003d728 <<lifecycle::Fixture>::open::{closure#0}+0x1504>
+10003d6e0: 14000001    	b	0x10003d6e4 <<lifecycle::Fixture>::open::{closure#0}+0x14c0>
+10003d6e4: f9404fe8    	ldr	x8, [sp, #0x98]
+10003d6e8: f94177ea    	ldr	x10, [sp, #0x2e8]
+10003d6ec: 52800029    	mov	w9, #0x1                ; =1
+10003d6f0: 39001549    	strb	w9, [x10, #0x5]
+10003d6f4: f91cdfe8    	str	x8, [sp, #0x39b8]
+10003d6f8: 52801e28    	mov	w8, #0xf1               ; =241
+10003d6fc: b200c3e9    	mov	x9, #0x101010101010101  ; =72340172838076673
+10003d700: 9b097d08    	mul	x8, x8, x9
+10003d704: 4e080d00    	dup.2d	v0, x8
+10003d708: 91400fe0    	add	x0, sp, #0x3, lsl #12   ; =0x3000
+10003d70c: 91280000    	add	x0, x0, #0xa00
+10003d710: 3d8e83e0    	str	q0, [sp, #0x3a00]
+10003d714: 3d8e87e0    	str	q0, [sp, #0x3a10]
+10003d718: 91400fe8    	add	x8, sp, #0x3, lsl #12   ; =0x3000
+10003d71c: 91270108    	add	x8, x8, #0x9c0
+10003d720: 94755e0f    	bl	0x101d94f5c <<kasumi_store::test_utils::LocalKeyProvider>::new>
+10003d724: 1400001b    	b	0x10003d790 <<lifecycle::Fixture>::open::{closure#0}+0x156c>
+10003d728: f9404fe8    	ldr	x8, [sp, #0x98]
+10003d72c: f94177ea    	ldr	x10, [sp, #0x2e8]
+10003d730: 52800029    	mov	w9, #0x1                ; =1
+10003d734: 39001949    	strb	w9, [x10, #0x6]
+10003d738: f91907e8    	str	x8, [sp, #0x3208]
+10003d73c: 52801e28    	mov	w8, #0xf1               ; =241
+10003d740: b200c3e9    	mov	x9, #0x101010101010101  ; =72340172838076673
+10003d744: 9b097d08    	mul	x8, x8, x9
+10003d748: 4e080d00    	dup.2d	v0, x8
+10003d74c: 91400fe0    	add	x0, sp, #0x3, lsl #12   ; =0x3000
+10003d750: 91094000    	add	x0, x0, #0x250
+10003d754: 3d8c97e0    	str	q0, [sp, #0x3250]
+10003d758: 3d8c9be0    	str	q0, [sp, #0x3260]
+10003d75c: 91400fe8    	add	x8, sp, #0x3, lsl #12   ; =0x3000
+10003d760: 91084108    	add	x8, x8, #0x210
+10003d764: 94755dfe    	bl	0x101d94f5c <<kasumi_store::test_utils::LocalKeyProvider>::new>
+10003d768: 1400008f    	b	0x10003d9a4 <<lifecycle::Fixture>::open::{closure#0}+0x1780>
+10003d76c: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d770: 39401508    	ldrb	w8, [x8, #0x5]
+10003d774: 37000fe8    	tbnz	w8, #0x0, 0x10003d970 <<lifecycle::Fixture>::open::{closure#0}+0x174c>
+10003d778: 1400007b    	b	0x10003d964 <<lifecycle::Fixture>::open::{closure#0}+0x1740>
+10003d77c: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d780: f93777e0    	str	x0, [sp, #0x6ee8]
+10003d784: aa0103e8    	mov	x8, x1
+10003d788: b8027128    	stur	w8, [x9, #0x27]
+10003d78c: 17fffff8    	b	0x10003d76c <<lifecycle::Fixture>::open::{closure#0}+0x1548>
+10003d790: 91400fe0    	add	x0, sp, #0x3, lsl #12   ; =0x3000
+10003d794: 91270000    	add	x0, x0, #0x9c0
+10003d798: 9400d01a    	bl	0x100071800 <<alloc::sync::Arc<kasumi_store::test_utils::LocalKeyProvider>>::new>
+10003d79c: f9003fe0    	str	x0, [sp, #0x78]
+10003d7a0: 14000001    	b	0x10003d7a4 <<lifecycle::Fixture>::open::{closure#0}+0x1580>
+10003d7a4: f9403fe1    	ldr	x1, [sp, #0x78]
+10003d7a8: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d7ac: 3900151f    	strb	wzr, [x8, #0x5]
+10003d7b0: f95cdfe0    	ldr	x0, [sp, #0x39b8]
+10003d7b4: 91400fe8    	add	x8, sp, #0x3, lsl #12   ; =0x3000
+10003d7b8: 91188108    	add	x8, x8, #0x620
+10003d7bc: b002ea02    	adrp	x2, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003d7c0: 91114042    	add	x2, x2, #0x450
+10003d7c4: 94755f7d    	bl	0x101d955b8 <kasumi_store::test_utils::open_existing_custody_fixture>
+10003d7c8: 14000001    	b	0x10003d7cc <<lifecycle::Fixture>::open::{closure#0}+0x15a8>
+10003d7cc: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d7d0: 3900151f    	strb	wzr, [x8, #0x5]
+10003d7d4: 91400fe8    	add	x8, sp, #0x3, lsl #12   ; =0x3000
+10003d7d8: 910a2108    	add	x8, x8, #0x288
+10003d7dc: 91400fe0    	add	x0, sp, #0x3, lsl #12   ; =0x3000
+10003d7e0: 91188000    	add	x0, x0, #0x620
+10003d7e4: 9402fbda    	bl	0x1000fc74c <<kasumi_store::test_utils::open_existing_custody_fixture::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003d7e8: 14000001    	b	0x10003d7ec <<lifecycle::Fixture>::open::{closure#0}+0x15c8>
+10003d7ec: f94183e8    	ldr	x8, [sp, #0x300]
+10003d7f0: 91012100    	add	x0, x8, #0x48
+10003d7f4: 91400fe1    	add	x1, sp, #0x3, lsl #12   ; =0x3000
+10003d7f8: 910a2021    	add	x1, x1, #0x288
+10003d7fc: 52807308    	mov	w8, #0x398              ; =920
+10003d800: aa0803e2    	mov	x2, x8
+10003d804: 948d47c5    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003d808: 17fffb2b    	b	0x10003c4b4 <<lifecycle::Fixture>::open::{closure#0}+0x290>
+10003d80c: f94183e8    	ldr	x8, [sp, #0x300]
+10003d810: 91012100    	add	x0, x8, #0x48
+10003d814: 9401a211    	bl	0x1000a6058 <core::ptr::drop_glue::<kasumi_store::test_utils::open_existing_custody_fixture::{closure#0}>>
+10003d818: 17fffe9e    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003d81c: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d820: f93777e0    	str	x0, [sp, #0x6ee8]
+10003d824: aa0103e8    	mov	x8, x1
+10003d828: b8027128    	stur	w8, [x9, #0x27]
+10003d82c: 17fffff8    	b	0x10003d80c <<lifecycle::Fixture>::open::{closure#0}+0x15e8>
+10003d830: f9414be0    	ldr	x0, [sp, #0x290]
+10003d834: f9418be1    	ldr	x1, [sp, #0x310]
+10003d838: 9474c630    	bl	0x101d6f0f8 <kasumi_store::test_utils::open_existing_custody_fixture::{closure#0}>
+10003d83c: f90037e0    	str	x0, [sp, #0x68]
+10003d840: f9003be1    	str	x1, [sp, #0x70]
+10003d844: 14000001    	b	0x10003d848 <<lifecycle::Fixture>::open::{closure#0}+0x1624>
+10003d848: f9403be8    	ldr	x8, [sp, #0x70]
+10003d84c: f94037e9    	ldr	x9, [sp, #0x68]
+10003d850: f91d13e9    	str	x9, [sp, #0x3a20]
+10003d854: f91d17e8    	str	x8, [sp, #0x3a28]
+10003d858: f95d13e9    	ldr	x9, [sp, #0x3a20]
+10003d85c: d2800008    	mov	x8, #0x0                ; =0
+10003d860: f1000929    	subs	x9, x9, #0x2
+10003d864: 9a9f1508    	csinc	x8, x8, xzr, ne
+10003d868: 360001c8    	tbz	w8, #0x0, 0x10003d8a0 <<lifecycle::Fixture>::open::{closure#0}+0x167c>
+10003d86c: 14000001    	b	0x10003d870 <<lifecycle::Fixture>::open::{closure#0}+0x164c>
+10003d870: f94183e9    	ldr	x9, [sp, #0x300]
+10003d874: 52800028    	mov	w8, #0x1                ; =1
+10003d878: 390c7fe8    	strb	w8, [sp, #0x31f]
+10003d87c: 52800108    	mov	w8, #0x8                ; =8
+10003d880: 39010d28    	strb	w8, [x9, #0x43]
+10003d884: 394c7fe8    	ldrb	w8, [sp, #0x31f]
+10003d888: 12000100    	and	w0, w8, #0x1
+10003d88c: 91401fff    	add	sp, sp, #0x7, lsl #12   ; =0x7000
+10003d890: 910343ff    	add	sp, sp, #0xd0
+10003d894: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10003d898: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10003d89c: d65f03c0    	ret
+10003d8a0: f94183e8    	ldr	x8, [sp, #0x300]
+10003d8a4: f95d13ea    	ldr	x10, [sp, #0x3a20]
+10003d8a8: f95d17e9    	ldr	x9, [sp, #0x3a28]
+10003d8ac: f937bbea    	str	x10, [sp, #0x6f70]
+10003d8b0: f937bfe9    	str	x9, [sp, #0x6f78]
+10003d8b4: f9145fea    	str	x10, [sp, #0x28b8]
+10003d8b8: f91463e9    	str	x9, [sp, #0x28c0]
+10003d8bc: 91012100    	add	x0, x8, #0x48
+10003d8c0: 9401a1e6    	bl	0x1000a6058 <core::ptr::drop_glue::<kasumi_store::test_utils::open_existing_custody_fixture::{closure#0}>>
+10003d8c4: 14000001    	b	0x10003d8c8 <<lifecycle::Fixture>::open::{closure#0}+0x16a4>
+10003d8c8: f9545fe9    	ldr	x9, [sp, #0x28b8]
+10003d8cc: f95463e8    	ldr	x8, [sp, #0x28c0]
+10003d8d0: f81283a9    	stur	x9, [x29, #-0xd8]
+10003d8d4: f81303a8    	stur	x8, [x29, #-0xd0]
+10003d8d8: f85283a8    	ldur	x8, [x29, #-0xd8]
+10003d8dc: 360003c8    	tbz	w8, #0x0, 0x10003d954 <<lifecycle::Fixture>::open::{closure#0}+0x1730>
+10003d8e0: 14000001    	b	0x10003d8e4 <<lifecycle::Fixture>::open::{closure#0}+0x16c0>
+10003d8e4: f85303a8    	ldur	x8, [x29, #-0xd0]
+10003d8e8: d10323a2    	sub	x2, x29, #0xc8
+10003d8ec: f81383a8    	stur	x8, [x29, #-0xc8]
+10003d8f0: 90011aa0    	adrp	x0, 0x102391000 <dyld_stub_binder+0x102391000>
+10003d8f4: 9124ac00    	add	x0, x0, #0x92b
+10003d8f8: 52800568    	mov	w8, #0x2b               ; =43
+10003d8fc: aa0803e1    	mov	x1, x8
+10003d900: b002ea03    	adrp	x3, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003d904: 91178063    	add	x3, x3, #0x5e0
+10003d908: b002ea04    	adrp	x4, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003d90c: 9112c084    	add	x4, x4, #0x4b0
+10003d910: 948d453f    	bl	0x10238ee0c <core::result::unwrap_failed>
+10003d914: 14000008    	b	0x10003d934 <<lifecycle::Fixture>::open::{closure#0}+0x1710>
+10003d918: f94173e9    	ldr	x9, [sp, #0x2e0]
+10003d91c: f81483a0    	stur	x0, [x29, #-0xb8]
+10003d920: aa0103e8    	mov	x8, x1
+10003d924: b9006928    	str	w8, [x9, #0x68]
+10003d928: d10323a0    	sub	x0, x29, #0xc8
+10003d92c: 9454c611    	bl	0x10156f170 <core::ptr::drop_glue::<anyhow::Error>>
+10003d930: 14000003    	b	0x10003d93c <<lifecycle::Fixture>::open::{closure#0}+0x1718>
+10003d934: d4200020    	brk	#0x1
+10003d938: 948d454f    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+10003d93c: f94173e8    	ldr	x8, [sp, #0x2e0]
+10003d940: f85483a9    	ldur	x9, [x29, #-0xb8]
+10003d944: b9406908    	ldr	w8, [x8, #0x68]
+10003d948: f90063e9    	str	x9, [sp, #0xc0]
+10003d94c: b900cfe8    	str	w8, [sp, #0xcc]
+10003d950: 17fffe58    	b	0x10003d2b0 <<lifecycle::Fixture>::open::{closure#0}+0x108c>
+10003d954: f85303a8    	ldur	x8, [x29, #-0xd0]
+10003d958: f90033e8    	str	x8, [sp, #0x60]
+10003d95c: f81403a8    	stur	x8, [x29, #-0xc0]
+10003d960: 1400005f    	b	0x10003dadc <<lifecycle::Fixture>::open::{closure#0}+0x18b8>
+10003d964: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d968: 3900151f    	strb	wzr, [x8, #0x5]
+10003d96c: 17fffe49    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003d970: 91400fe0    	add	x0, sp, #0x3, lsl #12   ; =0x3000
+10003d974: 9126e000    	add	x0, x0, #0x9b8
+10003d978: 9477e262    	bl	0x101e36300 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::TenantStore>>>
+10003d97c: 17fffffa    	b	0x10003d964 <<lifecycle::Fixture>::open::{closure#0}+0x1740>
+10003d980: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d984: 39401908    	ldrb	w8, [x8, #0x6]
+10003d988: 370021a8    	tbnz	w8, #0x0, 0x10003ddbc <<lifecycle::Fixture>::open::{closure#0}+0x1b98>
+10003d98c: 14000109    	b	0x10003ddb0 <<lifecycle::Fixture>::open::{closure#0}+0x1b8c>
+10003d990: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003d994: f93777e0    	str	x0, [sp, #0x6ee8]
+10003d998: aa0103e8    	mov	x8, x1
+10003d99c: b8027128    	stur	w8, [x9, #0x27]
+10003d9a0: 17fffff8    	b	0x10003d980 <<lifecycle::Fixture>::open::{closure#0}+0x175c>
+10003d9a4: 91400fe0    	add	x0, sp, #0x3, lsl #12   ; =0x3000
+10003d9a8: 91084000    	add	x0, x0, #0x210
+10003d9ac: 9400cf95    	bl	0x100071800 <<alloc::sync::Arc<kasumi_store::test_utils::LocalKeyProvider>>::new>
+10003d9b0: f9002fe0    	str	x0, [sp, #0x58]
+10003d9b4: 14000001    	b	0x10003d9b8 <<lifecycle::Fixture>::open::{closure#0}+0x1794>
+10003d9b8: f9402fe1    	ldr	x1, [sp, #0x58]
+10003d9bc: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d9c0: 3900191f    	strb	wzr, [x8, #0x6]
+10003d9c4: f95907e0    	ldr	x0, [sp, #0x3208]
+10003d9c8: 91400be8    	add	x8, sp, #0x2, lsl #12   ; =0x2000
+10003d9cc: 9135a108    	add	x8, x8, #0xd68
+10003d9d0: b002ea02    	adrp	x2, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003d9d4: 91114042    	add	x2, x2, #0x450
+10003d9d8: 94755eeb    	bl	0x101d95584 <kasumi_store::test_utils::initialize_custody_fixture>
+10003d9dc: 14000001    	b	0x10003d9e0 <<lifecycle::Fixture>::open::{closure#0}+0x17bc>
+10003d9e0: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003d9e4: 3900191f    	strb	wzr, [x8, #0x6]
+10003d9e8: 91400be8    	add	x8, sp, #0x2, lsl #12   ; =0x2000
+10003d9ec: 91232108    	add	x8, x8, #0x8c8
+10003d9f0: 91400be0    	add	x0, sp, #0x2, lsl #12   ; =0x2000
+10003d9f4: 9135a000    	add	x0, x0, #0xd68
+10003d9f8: 9402fb49    	bl	0x1000fc71c <<kasumi_store::test_utils::initialize_custody_fixture::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003d9fc: 14000001    	b	0x10003da00 <<lifecycle::Fixture>::open::{closure#0}+0x17dc>
+10003da00: f94183e8    	ldr	x8, [sp, #0x300]
+10003da04: 91012100    	add	x0, x8, #0x48
+10003da08: 91400be1    	add	x1, sp, #0x2, lsl #12   ; =0x2000
+10003da0c: 91232021    	add	x1, x1, #0x8c8
+10003da10: 52809408    	mov	w8, #0x4a0              ; =1184
+10003da14: aa0803e2    	mov	x2, x8
+10003da18: 948d4740    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003da1c: 17fffaa1    	b	0x10003c4a0 <<lifecycle::Fixture>::open::{closure#0}+0x27c>
+10003da20: f94183e8    	ldr	x8, [sp, #0x300]
+10003da24: 91012100    	add	x0, x8, #0x48
+10003da28: 9401a103    	bl	0x1000a5e34 <core::ptr::drop_glue::<kasumi_store::test_utils::initialize_custody_fixture::{closure#0}>>
+10003da2c: 17fffe19    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003da30: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003da34: f93777e0    	str	x0, [sp, #0x6ee8]
+10003da38: aa0103e8    	mov	x8, x1
+10003da3c: b8027128    	stur	w8, [x9, #0x27]
+10003da40: 17fffff8    	b	0x10003da20 <<lifecycle::Fixture>::open::{closure#0}+0x17fc>
+10003da44: f9414fe0    	ldr	x0, [sp, #0x298]
+10003da48: f9418be1    	ldr	x1, [sp, #0x310]
+10003da4c: 9474c3c3    	bl	0x101d6e958 <kasumi_store::test_utils::initialize_custody_fixture::{closure#0}>
+10003da50: f90027e0    	str	x0, [sp, #0x48]
+10003da54: f9002be1    	str	x1, [sp, #0x50]
+10003da58: 14000001    	b	0x10003da5c <<lifecycle::Fixture>::open::{closure#0}+0x1838>
+10003da5c: f9402be8    	ldr	x8, [sp, #0x50]
+10003da60: f94027e9    	ldr	x9, [sp, #0x48]
+10003da64: f9193fe9    	str	x9, [sp, #0x3278]
+10003da68: f91943e8    	str	x8, [sp, #0x3280]
+10003da6c: f9593fe9    	ldr	x9, [sp, #0x3278]
+10003da70: d2800008    	mov	x8, #0x0                ; =0
+10003da74: f1000929    	subs	x9, x9, #0x2
+10003da78: 9a9f1508    	csinc	x8, x8, xzr, ne
+10003da7c: 360001c8    	tbz	w8, #0x0, 0x10003dab4 <<lifecycle::Fixture>::open::{closure#0}+0x1890>
+10003da80: 14000001    	b	0x10003da84 <<lifecycle::Fixture>::open::{closure#0}+0x1860>
+10003da84: f94183e9    	ldr	x9, [sp, #0x300]
+10003da88: 52800028    	mov	w8, #0x1                ; =1
+10003da8c: 390c7fe8    	strb	w8, [sp, #0x31f]
+10003da90: 528000e8    	mov	w8, #0x7                ; =7
+10003da94: 39010d28    	strb	w8, [x9, #0x43]
+10003da98: 394c7fe8    	ldrb	w8, [sp, #0x31f]
+10003da9c: 12000100    	and	w0, w8, #0x1
+10003daa0: 91401fff    	add	sp, sp, #0x7, lsl #12   ; =0x7000
+10003daa4: 910343ff    	add	sp, sp, #0xd0
+10003daa8: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10003daac: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10003dab0: d65f03c0    	ret
+10003dab4: f94183e8    	ldr	x8, [sp, #0x300]
+10003dab8: f9593fea    	ldr	x10, [sp, #0x3278]
+10003dabc: f95943e9    	ldr	x9, [sp, #0x3280]
+10003dac0: f937c3ea    	str	x10, [sp, #0x6f80]
+10003dac4: f937c7e9    	str	x9, [sp, #0x6f88]
+10003dac8: f9145fea    	str	x10, [sp, #0x28b8]
+10003dacc: f91463e9    	str	x9, [sp, #0x28c0]
+10003dad0: 91012100    	add	x0, x8, #0x48
+10003dad4: 9401a0d8    	bl	0x1000a5e34 <core::ptr::drop_glue::<kasumi_store::test_utils::initialize_custody_fixture::{closure#0}>>
+10003dad8: 17ffff7c    	b	0x10003d8c8 <<lifecycle::Fixture>::open::{closure#0}+0x16a4>
+10003dadc: f94183e8    	ldr	x8, [sp, #0x300]
+10003dae0: f94033e9    	ldr	x9, [sp, #0x60]
+10003dae4: f94177eb    	ldr	x11, [sp, #0x2e8]
+10003dae8: f937cbe9    	str	x9, [sp, #0x6f90]
+10003daec: f940110a    	ldr	x10, [x8, #0x20]
+10003daf0: f9001bea    	str	x10, [sp, #0x30]
+10003daf4: 5280002a    	mov	w10, #0x1               ; =1
+10003daf8: 3900116a    	strb	w10, [x11, #0x4]
+10003dafc: f924e7e9    	str	x9, [sp, #0x49c8]
+10003db00: f9400109    	ldr	x9, [x8]
+10003db04: f9001fe9    	str	x9, [sp, #0x38]
+10003db08: f9400108    	ldr	x8, [x8]
+10003db0c: 910c0100    	add	x0, x8, #0x300
+10003db10: 9400d0e2    	bl	0x100071e98 <<alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe> as core::clone::Clone>::clone>
+10003db14: f90023e0    	str	x0, [sp, #0x40]
+10003db18: 1400000c    	b	0x10003db48 <<lifecycle::Fixture>::open::{closure#0}+0x1924>
+10003db1c: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003db20: 39000d1f    	strb	wzr, [x8, #0x3]
+10003db24: 914013e0    	add	x0, sp, #0x4, lsl #12   ; =0x4000
+10003db28: 91272000    	add	x0, x0, #0x9c8
+10003db2c: 9477e246    	bl	0x101e36444 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::storage_domains::TenantStorageSet>>>
+10003db30: 1400009d    	b	0x10003dda4 <<lifecycle::Fixture>::open::{closure#0}+0x1b80>
+10003db34: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003db38: f93777e0    	str	x0, [sp, #0x6ee8]
+10003db3c: aa0103e8    	mov	x8, x1
+10003db40: b8027128    	stur	w8, [x9, #0x27]
+10003db44: 17fffff6    	b	0x10003db1c <<lifecycle::Fixture>::open::{closure#0}+0x18f8>
+10003db48: f94023e8    	ldr	x8, [sp, #0x40]
+10003db4c: f94177ea    	ldr	x10, [sp, #0x2e8]
+10003db50: 52800029    	mov	w9, #0x1                ; =1
+10003db54: 39000d49    	strb	w9, [x10, #0x3]
+10003db58: f924ebe8    	str	x8, [sp, #0x49d0]
+10003db5c: b002ea08    	adrp	x8, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003db60: 91132108    	add	x8, x8, #0x4c8
+10003db64: f924efe8    	str	x8, [sp, #0x49d8]
+10003db68: 914013e8    	add	x8, sp, #0x4, lsl #12   ; =0x4000
+10003db6c: 9129c108    	add	x8, x8, #0xa70
+10003db70: 944153cb    	bl	0x101092a9c <<openraft::config::config::Config as core::default::Default>::default>
+10003db74: 1400000c    	b	0x10003dba4 <<lifecycle::Fixture>::open::{closure#0}+0x1980>
+10003db78: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003db7c: 3900091f    	strb	wzr, [x8, #0x2]
+10003db80: 914013e0    	add	x0, sp, #0x4, lsl #12   ; =0x4000
+10003db84: 91274000    	add	x0, x0, #0x9d0
+10003db88: 940e988b    	bl	0x1003e3db4 <core::ptr::drop_glue::<alloc::sync::Arc<dyn kasumi_raft::network::RaftTransport>>>
+10003db8c: 1400007d    	b	0x10003dd80 <<lifecycle::Fixture>::open::{closure#0}+0x1b5c>
+10003db90: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003db94: f93777e0    	str	x0, [sp, #0x6ee8]
+10003db98: aa0103e8    	mov	x8, x1
+10003db9c: b8027128    	stur	w8, [x9, #0x27]
+10003dba0: 17fffff6    	b	0x10003db78 <<lifecycle::Fixture>::open::{closure#0}+0x1954>
+10003dba4: f94183e8    	ldr	x8, [sp, #0x300]
+10003dba8: f9417fea    	ldr	x10, [sp, #0x2f8]
+10003dbac: f94177eb    	ldr	x11, [sp, #0x2e8]
+10003dbb0: 52800029    	mov	w9, #0x1                ; =1
+10003dbb4: 39000969    	strb	w9, [x11, #0x2]
+10003dbb8: 3dd2a3e0    	ldr	q0, [sp, #0x4a80]
+10003dbbc: 3d927fe0    	str	q0, [sp, #0x49f0]
+10003dbc0: f9654be9    	ldr	x9, [sp, #0x4a90]
+10003dbc4: f92503e9    	str	x9, [sp, #0x4a00]
+10003dbc8: 52800c89    	mov	w9, #0x64               ; =100
+10003dbcc: f92507e9    	str	x9, [sp, #0x4a08]
+10003dbd0: 52801689    	mov	w9, #0xb4               ; =180
+10003dbd4: f9250be9    	str	x9, [sp, #0x4a10]
+10003dbd8: 528003c9    	mov	w9, #0x1e               ; =30
+10003dbdc: f9250fe9    	str	x9, [sp, #0x4a18]
+10003dbe0: f9655be9    	ldr	x9, [sp, #0x4ab0]
+10003dbe4: f92513e9    	str	x9, [sp, #0x4a20]
+10003dbe8: f9655fe9    	ldr	x9, [sp, #0x4ab8]
+10003dbec: f92517e9    	str	x9, [sp, #0x4a28]
+10003dbf0: f96563e9    	ldr	x9, [sp, #0x4ac0]
+10003dbf4: f9251be9    	str	x9, [sp, #0x4a30]
+10003dbf8: f96567e9    	ldr	x9, [sp, #0x4ac8]
+10003dbfc: f9251fe9    	str	x9, [sp, #0x4a38]
+10003dc00: f9656be9    	ldr	x9, [sp, #0x4ad0]
+10003dc04: f92523e9    	str	x9, [sp, #0x4a40]
+10003dc08: f9656fe9    	ldr	x9, [sp, #0x4ad8]
+10003dc0c: f92527e9    	str	x9, [sp, #0x4a48]
+10003dc10: f9653beb    	ldr	x11, [sp, #0x4a70]
+10003dc14: f9653fe9    	ldr	x9, [sp, #0x4a78]
+10003dc18: f924f3eb    	str	x11, [sp, #0x49e0]
+10003dc1c: f924f7e9    	str	x9, [sp, #0x49e8]
+10003dc20: f96573e9    	ldr	x9, [sp, #0x4ae0]
+10003dc24: f9252be9    	str	x9, [sp, #0x4a50]
+10003dc28: f96577e9    	ldr	x9, [sp, #0x4ae8]
+10003dc2c: f9252fe9    	str	x9, [sp, #0x4a58]
+10003dc30: f9657be9    	ldr	x9, [sp, #0x4af0]
+10003dc34: f92533e9    	str	x9, [sp, #0x4a60]
+10003dc38: 39446149    	ldrb	w9, [x10, #0x118]
+10003dc3c: 5280002b    	mov	w11, #0x1               ; =1
+10003dc40: 0a0b0129    	and	w9, w9, w11
+10003dc44: 39022149    	strb	w9, [x10, #0x88]
+10003dc48: 39446549    	ldrb	w9, [x10, #0x119]
+10003dc4c: 0a0b0129    	and	w9, w9, w11
+10003dc50: 39022549    	strb	w9, [x10, #0x89]
+10003dc54: 39446949    	ldrb	w9, [x10, #0x11a]
+10003dc58: 12000129    	and	w9, w9, #0x1
+10003dc5c: 39022949    	strb	w9, [x10, #0x8a]
+10003dc60: 9100c100    	add	x0, x8, #0x30
+10003dc64: 94337b20    	bl	0x100d1c8e4 <<alloc::sync::Arc<kasumi_engine::security_audit::SecurityAudit> as core::clone::Clone>::clone>
+10003dc68: f90017e0    	str	x0, [sp, #0x28]
+10003dc6c: 1400000a    	b	0x10003dc94 <<lifecycle::Fixture>::open::{closure#0}+0x1a70>
+10003dc70: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003dc74: 39400908    	ldrb	w8, [x8, #0x2]
+10003dc78: 370005c8    	tbnz	w8, #0x0, 0x10003dd30 <<lifecycle::Fixture>::open::{closure#0}+0x1b0c>
+10003dc7c: 14000028    	b	0x10003dd1c <<lifecycle::Fixture>::open::{closure#0}+0x1af8>
+10003dc80: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003dc84: f93777e0    	str	x0, [sp, #0x6ee8]
+10003dc88: aa0103e8    	mov	x8, x1
+10003dc8c: b8027128    	stur	w8, [x9, #0x27]
+10003dc90: 17fffff8    	b	0x10003dc70 <<lifecycle::Fixture>::open::{closure#0}+0x1a4c>
+10003dc94: f94017e6    	ldr	x6, [sp, #0x28]
+10003dc98: f9401fe2    	ldr	x2, [sp, #0x38]
+10003dc9c: f9401be0    	ldr	x0, [sp, #0x30]
+10003dca0: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003dca4: 3900111f    	strb	wzr, [x8, #0x4]
+10003dca8: 39000d1f    	strb	wzr, [x8, #0x3]
+10003dcac: 3900091f    	strb	wzr, [x8, #0x2]
+10003dcb0: f964e7e1    	ldr	x1, [sp, #0x49c8]
+10003dcb4: f964ebe3    	ldr	x3, [sp, #0x49d0]
+10003dcb8: f964efe4    	ldr	x4, [sp, #0x49d8]
+10003dcbc: 914013e8    	add	x8, sp, #0x4, lsl #12   ; =0x4000
+10003dcc0: 91080108    	add	x8, x8, #0x200
+10003dcc4: 914013e5    	add	x5, sp, #0x4, lsl #12   ; =0x4000
+10003dcc8: 912780a5    	add	x5, x5, #0x9e0
+10003dccc: 941099bd    	bl	0x1004643c0 <kasumi_engine::bootstrap::fixtures::open_fixture_replicated>
+10003dcd0: 14000001    	b	0x10003dcd4 <<lifecycle::Fixture>::open::{closure#0}+0x1ab0>
+10003dcd4: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003dcd8: 3900091f    	strb	wzr, [x8, #0x2]
+10003dcdc: 39000d1f    	strb	wzr, [x8, #0x3]
+10003dce0: 3900111f    	strb	wzr, [x8, #0x4]
+10003dce4: 91400fe8    	add	x8, sp, #0x3, lsl #12   ; =0x3000
+10003dce8: 9128e108    	add	x8, x8, #0xa38
+10003dcec: 914013e0    	add	x0, sp, #0x4, lsl #12   ; =0x4000
+10003dcf0: 91080000    	add	x0, x0, #0x200
+10003dcf4: 940279c7    	bl	0x1000dc410 <<kasumi_engine::bootstrap::fixtures::open_fixture_replicated::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003dcf8: 14000001    	b	0x10003dcfc <<lifecycle::Fixture>::open::{closure#0}+0x1ad8>
+10003dcfc: f94183e8    	ldr	x8, [sp, #0x300]
+10003dd00: 91012100    	add	x0, x8, #0x48
+10003dd04: 91400fe1    	add	x1, sp, #0x3, lsl #12   ; =0x3000
+10003dd08: 9128e021    	add	x1, x1, #0xa38
+10003dd0c: 5280f908    	mov	w8, #0x7c8              ; =1992
+10003dd10: aa0803e2    	mov	x2, x8
+10003dd14: 948d4681    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003dd18: 17fff9ec    	b	0x10003c4c8 <<lifecycle::Fixture>::open::{closure#0}+0x2a4>
+10003dd1c: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003dd20: 3900091f    	strb	wzr, [x8, #0x2]
+10003dd24: 39400d08    	ldrb	w8, [x8, #0x3]
+10003dd28: 37000168    	tbnz	w8, #0x0, 0x10003dd54 <<lifecycle::Fixture>::open::{closure#0}+0x1b30>
+10003dd2c: 14000005    	b	0x10003dd40 <<lifecycle::Fixture>::open::{closure#0}+0x1b1c>
+10003dd30: 914013e0    	add	x0, sp, #0x4, lsl #12   ; =0x4000
+10003dd34: 91278000    	add	x0, x0, #0x9e0
+10003dd38: 94417c0e    	bl	0x10109cd70 <core::ptr::drop_glue::<openraft::config::config::Config>>
+10003dd3c: 17fffff8    	b	0x10003dd1c <<lifecycle::Fixture>::open::{closure#0}+0x1af8>
+10003dd40: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003dd44: 39000d1f    	strb	wzr, [x8, #0x3]
+10003dd48: 39401108    	ldrb	w8, [x8, #0x4]
+10003dd4c: 37000128    	tbnz	w8, #0x0, 0x10003dd70 <<lifecycle::Fixture>::open::{closure#0}+0x1b4c>
+10003dd50: 14000005    	b	0x10003dd64 <<lifecycle::Fixture>::open::{closure#0}+0x1b40>
+10003dd54: 914013e0    	add	x0, sp, #0x4, lsl #12   ; =0x4000
+10003dd58: 91274000    	add	x0, x0, #0x9d0
+10003dd5c: 940e9816    	bl	0x1003e3db4 <core::ptr::drop_glue::<alloc::sync::Arc<dyn kasumi_raft::network::RaftTransport>>>
+10003dd60: 17fffff8    	b	0x10003dd40 <<lifecycle::Fixture>::open::{closure#0}+0x1b1c>
+10003dd64: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003dd68: 3900111f    	strb	wzr, [x8, #0x4]
+10003dd6c: 17fffa0b    	b	0x10003c598 <<lifecycle::Fixture>::open::{closure#0}+0x374>
+10003dd70: 914013e0    	add	x0, sp, #0x4, lsl #12   ; =0x4000
+10003dd74: 91272000    	add	x0, x0, #0x9c8
+10003dd78: 9477e1b3    	bl	0x101e36444 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::storage_domains::TenantStorageSet>>>
+10003dd7c: 17fffffa    	b	0x10003dd64 <<lifecycle::Fixture>::open::{closure#0}+0x1b40>
+10003dd80: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003dd84: 39000d1f    	strb	wzr, [x8, #0x3]
+10003dd88: 914013e0    	add	x0, sp, #0x4, lsl #12   ; =0x4000
+10003dd8c: 91272000    	add	x0, x0, #0x9c8
+10003dd90: 9477e1ad    	bl	0x101e36444 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::storage_domains::TenantStorageSet>>>
+10003dd94: 14000001    	b	0x10003dd98 <<lifecycle::Fixture>::open::{closure#0}+0x1b74>
+10003dd98: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003dd9c: 3900111f    	strb	wzr, [x8, #0x4]
+10003dda0: 17fff9fe    	b	0x10003c598 <<lifecycle::Fixture>::open::{closure#0}+0x374>
+10003dda4: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003dda8: 3900111f    	strb	wzr, [x8, #0x4]
+10003ddac: 17fff9fb    	b	0x10003c598 <<lifecycle::Fixture>::open::{closure#0}+0x374>
+10003ddb0: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003ddb4: 3900191f    	strb	wzr, [x8, #0x6]
+10003ddb8: 17fffd36    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003ddbc: 91400fe0    	add	x0, sp, #0x3, lsl #12   ; =0x3000
+10003ddc0: 91082000    	add	x0, x0, #0x208
+10003ddc4: 9477e14f    	bl	0x101e36300 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::TenantStore>>>
+10003ddc8: 17fffffa    	b	0x10003ddb0 <<lifecycle::Fixture>::open::{closure#0}+0x1b8c>
+10003ddcc: 914007e0    	add	x0, sp, #0x1, lsl #12   ; =0x1000
+10003ddd0: 91350000    	add	x0, x0, #0xd40
+10003ddd4: 9477e103    	bl	0x101e361e0 <core::ptr::drop_glue::<alloc::sync::Arc<dyn kasumi_store::keys::KeyProvider>>>
+10003ddd8: 17fffdc9    	b	0x10003d4fc <<lifecycle::Fixture>::open::{closure#0}+0x12d8>
+10003dddc: 914007e0    	add	x0, sp, #0x1, lsl #12   ; =0x1000
+10003dde0: 9134a000    	add	x0, x0, #0xd28
+10003dde4: 946566d6    	bl	0x10199793c <core::ptr::drop_glue::<alloc::string::String>>
+10003dde8: 17fffdac    	b	0x10003d498 <<lifecycle::Fixture>::open::{closure#0}+0x1274>
+10003ddec: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003ddf0: 3900311f    	strb	wzr, [x8, #0xc]
+10003ddf4: 17fffd27    	b	0x10003d290 <<lifecycle::Fixture>::open::{closure#0}+0x106c>
+10003ddf8: 914007e0    	add	x0, sp, #0x1, lsl #12   ; =0x1000
+10003ddfc: 91348000    	add	x0, x0, #0xd20
+10003de00: 9477e149    	bl	0x101e36324 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::NodeStore>>>
+10003de04: 17fffffa    	b	0x10003ddec <<lifecycle::Fixture>::open::{closure#0}+0x1bc8>
+10003de08: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003de0c: 3900391f    	strb	wzr, [x8, #0xe]
+10003de10: 17fffbfe    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003de14: 913003e0    	add	x0, sp, #0xc00
+10003de18: 9477e143    	bl	0x101e36324 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::NodeStore>>>
+10003de1c: 17fffffb    	b	0x10003de08 <<lifecycle::Fixture>::open::{closure#0}+0x1be4>
+10003de20: f94177e8    	ldr	x8, [sp, #0x2e8]
+10003de24: 3900011f    	strb	wzr, [x8]
+10003de28: 17fffa1b    	b	0x10003c694 <<lifecycle::Fixture>::open::{closure#0}+0x470>
+10003de2c: 914013e0    	add	x0, sp, #0x4, lsl #12   ; =0x4000
+10003de30: 912c4000    	add	x0, x0, #0xb10
+10003de34: 946566c2    	bl	0x10199793c <core::ptr::drop_glue::<alloc::string::String>>
+10003de38: 17fffffa    	b	0x10003de20 <<lifecycle::Fixture>::open::{closure#0}+0x1bfc>
+10003de3c: 91400fe0    	add	x0, sp, #0x3, lsl #12   ; =0x3000
+10003de40: 9128c000    	add	x0, x0, #0xa30
+10003de44: 940e9a5b    	bl	0x1003e47b0 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+10003de48: 17fff9d4    	b	0x10003c598 <<lifecycle::Fixture>::open::{closure#0}+0x374>
+10003de4c: f94183e8    	ldr	x8, [sp, #0x300]
+10003de50: 9100c100    	add	x0, x8, #0x30
+10003de54: 940e9a18    	bl	0x1003e46b4 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::security_audit::SecurityAudit>>>
+10003de58: 17fffbec    	b	0x10003ce08 <<lifecycle::Fixture>::open::{closure#0}+0xbe4>
+10003de5c: f94183e8    	ldr	x8, [sp, #0x300]
+10003de60: 9100a100    	add	x0, x8, #0x28
+10003de64: 9477e130    	bl	0x101e36324 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_store::NodeStore>>>
+10003de68: 17fffaf2    	b	0x10003ca30 <<lifecycle::Fixture>::open::{closure#0}+0x80c>
+10003de6c: f94183e8    	ldr	x8, [sp, #0x300]
+10003de70: 91012100    	add	x0, x8, #0x48
+10003de74: 9401a0de    	bl	0x1000a61ec <core::ptr::drop_glue::<kasumi_engine::bootstrap::initialize_replicated::{closure#0}>>
+10003de78: 17fff951    	b	0x10003c3bc <<lifecycle::Fixture>::open::{closure#0}+0x198>
+10003de7c: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003de80: f93777e0    	str	x0, [sp, #0x6ee8]
+10003de84: aa0103e8    	mov	x8, x1
+10003de88: b8027128    	stur	w8, [x9, #0x27]
+10003de8c: 17fffff8    	b	0x10003de6c <<lifecycle::Fixture>::open::{closure#0}+0x1c48>
+10003de90: f940dbe0    	ldr	x0, [sp, #0x1b0]
+10003de94: f9418be1    	ldr	x1, [sp, #0x310]
+10003de98: 940bdc65    	bl	0x10033502c <kasumi_engine::bootstrap::initialize_replicated::{closure#0}>
+10003de9c: f9000fe0    	str	x0, [sp, #0x18]
+10003dea0: f90013e1    	str	x1, [sp, #0x20]
+10003dea4: 14000001    	b	0x10003dea8 <<lifecycle::Fixture>::open::{closure#0}+0x1c84>
+10003dea8: f94013e8    	ldr	x8, [sp, #0x20]
+10003deac: f9400fe9    	ldr	x9, [sp, #0x18]
+10003deb0: f92ca7e9    	str	x9, [sp, #0x5948]
+10003deb4: f92cabe8    	str	x8, [sp, #0x5950]
+10003deb8: f96ca7e8    	ldr	x8, [sp, #0x5948]
+10003debc: 360001c8    	tbz	w8, #0x0, 0x10003def4 <<lifecycle::Fixture>::open::{closure#0}+0x1cd0>
+10003dec0: 14000001    	b	0x10003dec4 <<lifecycle::Fixture>::open::{closure#0}+0x1ca0>
+10003dec4: f94183e9    	ldr	x9, [sp, #0x300]
+10003dec8: 52800028    	mov	w8, #0x1                ; =1
+10003decc: 390c7fe8    	strb	w8, [sp, #0x31f]
+10003ded0: 52800148    	mov	w8, #0xa                ; =10
+10003ded4: 39010d28    	strb	w8, [x9, #0x43]
+10003ded8: 394c7fe8    	ldrb	w8, [sp, #0x31f]
+10003dedc: 12000100    	and	w0, w8, #0x1
+10003dee0: 91401fff    	add	sp, sp, #0x7, lsl #12   ; =0x7000
+10003dee4: 910343ff    	add	sp, sp, #0xd0
+10003dee8: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10003deec: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10003def0: d65f03c0    	ret
+10003def4: f94183e8    	ldr	x8, [sp, #0x300]
+10003def8: f96cabe9    	ldr	x9, [sp, #0x5950]
+10003defc: f9000be9    	str	x9, [sp, #0x10]
+10003df00: f937cfe9    	str	x9, [sp, #0x6f98]
+10003df04: 91012100    	add	x0, x8, #0x48
+10003df08: 9401a0b9    	bl	0x1000a61ec <core::ptr::drop_glue::<kasumi_engine::bootstrap::initialize_replicated::{closure#0}>>
+10003df0c: 14000001    	b	0x10003df10 <<lifecycle::Fixture>::open::{closure#0}+0x1cec>
+10003df10: f9400be8    	ldr	x8, [sp, #0x10]
+10003df14: f81883a8    	stur	x8, [x29, #-0x78]
+10003df18: f85883a8    	ldur	x8, [x29, #-0x78]
+10003df1c: f1000108    	subs	x8, x8, #0x0
+10003df20: 9a9f07e8    	cset	x8, ne
+10003df24: 360003c8    	tbz	w8, #0x0, 0x10003df9c <<lifecycle::Fixture>::open::{closure#0}+0x1d78>
+10003df28: 14000001    	b	0x10003df2c <<lifecycle::Fixture>::open::{closure#0}+0x1d08>
+10003df2c: f85883a8    	ldur	x8, [x29, #-0x78]
+10003df30: d101c3a2    	sub	x2, x29, #0x70
+10003df34: f81903a8    	stur	x8, [x29, #-0x70]
+10003df38: 90011aa0    	adrp	x0, 0x102391000 <dyld_stub_binder+0x102391000>
+10003df3c: 9124ac00    	add	x0, x0, #0x92b
+10003df40: 52800568    	mov	w8, #0x2b               ; =43
+10003df44: aa0803e1    	mov	x1, x8
+10003df48: b002ea03    	adrp	x3, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003df4c: 91178063    	add	x3, x3, #0x5e0
+10003df50: b002ea04    	adrp	x4, 0x105d7e000 <dyld_stub_binder+0x105d7e000>
+10003df54: 9113a084    	add	x4, x4, #0x4e8
+10003df58: 948d43ad    	bl	0x10238ee0c <core::result::unwrap_failed>
+10003df5c: 14000008    	b	0x10003df7c <<lifecycle::Fixture>::open::{closure#0}+0x1d58>
+10003df60: f94173e9    	ldr	x9, [sp, #0x2e0]
+10003df64: f81983a0    	stur	x0, [x29, #-0x68]
+10003df68: aa0103e8    	mov	x8, x1
+10003df6c: b900b928    	str	w8, [x9, #0xb8]
+10003df70: d101c3a0    	sub	x0, x29, #0x70
+10003df74: 9454c47f    	bl	0x10156f170 <core::ptr::drop_glue::<anyhow::Error>>
+10003df78: 14000003    	b	0x10003df84 <<lifecycle::Fixture>::open::{closure#0}+0x1d60>
+10003df7c: d4200020    	brk	#0x1
+10003df80: 948d43bd    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+10003df84: f94173e8    	ldr	x8, [sp, #0x2e0]
+10003df88: f85983a9    	ldur	x9, [x29, #-0x68]
+10003df8c: b940b908    	ldr	w8, [x8, #0xb8]
+10003df90: f9016be9    	str	x9, [sp, #0x2d0]
+10003df94: b902dfe8    	str	w8, [sp, #0x2dc]
+10003df98: 17fff912    	b	0x10003c3e0 <<lifecycle::Fixture>::open::{closure#0}+0x1bc>
+10003df9c: 14000001    	b	0x10003dfa0 <<lifecycle::Fixture>::open::{closure#0}+0x1d7c>
+10003dfa0: f94183e8    	ldr	x8, [sp, #0x300]
+10003dfa4: f9400100    	ldr	x0, [x8]
+10003dfa8: 91401be8    	add	x8, sp, #0x6, lsl #12   ; =0x6000
+10003dfac: 91104108    	add	x8, x8, #0x410
+10003dfb0: 94026e19    	bl	0x1000d9814 <<lifecycle::Fixture>::leader>
+10003dfb4: 14000001    	b	0x10003dfb8 <<lifecycle::Fixture>::open::{closure#0}+0x1d94>
+10003dfb8: 914017e8    	add	x8, sp, #0x5, lsl #12   ; =0x5000
+10003dfbc: 91258108    	add	x8, x8, #0x960
+10003dfc0: 91401be0    	add	x0, sp, #0x6, lsl #12   ; =0x6000
+10003dfc4: 91104000    	add	x0, x0, #0x410
+10003dfc8: 9400043c    	bl	0x10003f0b8 <<<lifecycle::Fixture>::leader::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10003dfcc: 14000001    	b	0x10003dfd0 <<lifecycle::Fixture>::open::{closure#0}+0x1dac>
+10003dfd0: f94183e8    	ldr	x8, [sp, #0x300]
+10003dfd4: 91012100    	add	x0, x8, #0x48
+10003dfd8: 914017e1    	add	x1, sp, #0x5, lsl #12   ; =0x5000
+10003dfdc: 91258021    	add	x1, x1, #0x960
+10003dfe0: 52815608    	mov	w8, #0xab0              ; =2736
+10003dfe4: aa0803e2    	mov	x2, x8
+10003dfe8: 948d45cc    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10003dfec: 14000001    	b	0x10003dff0 <<lifecycle::Fixture>::open::{closure#0}+0x1dcc>
+10003dff0: f94183e8    	ldr	x8, [sp, #0x300]
+10003dff4: 91012108    	add	x8, x8, #0x48
+10003dff8: f90007e8    	str	x8, [sp, #0x8]
+10003dffc: f81a83a8    	stur	x8, [x29, #-0x58]
+10003e000: 1400000a    	b	0x10003e028 <<lifecycle::Fixture>::open::{closure#0}+0x1e04>
+10003e004: f94183e8    	ldr	x8, [sp, #0x300]
+10003e008: 91012100    	add	x0, x8, #0x48
+10003e00c: 94019023    	bl	0x1000a2098 <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+10003e010: 17fff8eb    	b	0x10003c3bc <<lifecycle::Fixture>::open::{closure#0}+0x198>
+10003e014: f94177e9    	ldr	x9, [sp, #0x2e8]
+10003e018: f93777e0    	str	x0, [sp, #0x6ee8]
+10003e01c: aa0103e8    	mov	x8, x1
+10003e020: b8027128    	stur	w8, [x9, #0x27]
+10003e024: 17fffff8    	b	0x10003e004 <<lifecycle::Fixture>::open::{closure#0}+0x1de0>
+10003e028: f94007e0    	ldr	x0, [sp, #0x8]
+10003e02c: f9418be1    	ldr	x1, [sp, #0x310]
+10003e030: 9400026e    	bl	0x10003e9e8 <<lifecycle::Fixture>::leader::{closure#0}>
+10003e034: f90003e0    	str	x0, [sp]
+10003e038: 14000001    	b	0x10003e03c <<lifecycle::Fixture>::open::{closure#0}+0x1e18>
+10003e03c: f94003e8    	ldr	x8, [sp]
+10003e040: f93763e8    	str	x8, [sp, #0x6ec0]
+10003e044: f97763e9    	ldr	x9, [sp, #0x6ec0]
+10003e048: d2800008    	mov	x8, #0x0                ; =0
+10003e04c: f1000129    	subs	x9, x9, #0x0
+10003e050: 9a9f1508    	csinc	x8, x8, xzr, ne
+10003e054: 360001c8    	tbz	w8, #0x0, 0x10003e08c <<lifecycle::Fixture>::open::{closure#0}+0x1e68>
+10003e058: 14000001    	b	0x10003e05c <<lifecycle::Fixture>::open::{closure#0}+0x1e38>
+10003e05c: f94183e9    	ldr	x9, [sp, #0x300]
+10003e060: 52800028    	mov	w8, #0x1                ; =1
+10003e064: 390c7fe8    	strb	w8, [sp, #0x31f]
+10003e068: 52800168    	mov	w8, #0xb                ; =11
+10003e06c: 39010d28    	strb	w8, [x9, #0x43]
+10003e070: 394c7fe8    	ldrb	w8, [sp, #0x31f]
+10003e074: 12000100    	and	w0, w8, #0x1
+10003e078: 91401fff    	add	sp, sp, #0x7, lsl #12   ; =0x7000
+10003e07c: 910343ff    	add	sp, sp, #0xd0
+10003e080: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10003e084: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10003e088: d65f03c0    	ret
+10003e08c: f94183e8    	ldr	x8, [sp, #0x300]
+10003e090: f97763e9    	ldr	x9, [sp, #0x6ec0]
+10003e094: f937d3e9    	str	x9, [sp, #0x6fa0]
+10003e098: f92cafe9    	str	x9, [sp, #0x5958]
+10003e09c: 91012100    	add	x0, x8, #0x48
+10003e0a0: 94018ffe    	bl	0x1000a2098 <core::ptr::drop_glue::<<lifecycle::Fixture>::leader::{closure#0}>>
+10003e0a4: 14000001    	b	0x10003e0a8 <<lifecycle::Fixture>::open::{closure#0}+0x1e84>
+10003e0a8: 914017e0    	add	x0, sp, #0x5, lsl #12   ; =0x5000
+10003e0ac: 91256000    	add	x0, x0, #0x958
+10003e0b0: 940e99c0    	bl	0x1003e47b0 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+10003e0b4: 14000001    	b	0x10003e0b8 <<lifecycle::Fixture>::open::{closure#0}+0x1e94>
+10003e0b8: f94183e9    	ldr	x9, [sp, #0x300]
+10003e0bc: 390c7fff    	strb	wzr, [sp, #0x31f]
+10003e0c0: 52800028    	mov	w8, #0x1                ; =1
+10003e0c4: 39010d28    	strb	w8, [x9, #0x43]
+10003e0c8: 394c7fe8    	ldrb	w8, [sp, #0x31f]
+10003e0cc: 12000100    	and	w0, w8, #0x1
+10003e0d0: 91401fff    	add	sp, sp, #0x7, lsl #12   ; =0x7000
+10003e0d4: 910343ff    	add	sp, sp, #0xd0
+10003e0d8: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+10003e0dc: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+10003e0e0: d65f03c0    	ret

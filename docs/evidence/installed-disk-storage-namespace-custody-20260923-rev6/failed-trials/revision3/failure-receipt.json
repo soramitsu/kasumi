@@ -1,0 +1,49 @@
+{
+  "status": "failed_qualification_preserved",
+  "package_manifest_sha256": "09b411af5662c5e14a7a93b1ab2dd476ef2e4925c3f42cbbd21f95a3019828c7",
+  "patch_sha256": "d904609811574e3f10bd200255d918d172f2e654e30c435c0028c52217f4d98b",
+  "result": {
+    "source_unchanged": true,
+    "changed_inputs": [],
+    "source_count": 3453,
+    "dispatch_denied": null,
+    "completed_stages": 2,
+    "expected_stages": 5,
+    "all_passed": false,
+    "cohort_elapsed_seconds": 238.8010075,
+    "cohort_bound_seconds": 1200,
+    "results_sha256": "0bd11cfa4ecafb9e720f340ccea703b87ee92955aec14746da62ed0d2ddd2b43"
+  },
+  "result_sha256": "f633a6e653c60e9dd7a072796241d4f3d80632fb3e65e41cca2d1fd252154c70",
+  "results_sha256": "0bd11cfa4ecafb9e720f340ccea703b87ee92955aec14746da62ed0d2ddd2b43",
+  "process_groups": [
+    59927,
+    59948,
+    63588
+  ],
+  "remaining_processes": [],
+  "checks": [
+    {
+      "name": "workspace-check",
+      "exit_code": 0,
+      "pgid": 59948,
+      "drained": true,
+      "timeout": false,
+      "signals": [],
+      "log_sha256": "bd1ab03c3f77f898192e46b6b3b413505ad863b3b6a1765ec3fba4083aa1b4a0"
+    },
+    {
+      "name": "workspace-clippy",
+      "exit_code": 101,
+      "pgid": 63588,
+      "drained": true,
+      "timeout": false,
+      "signals": [],
+      "log_sha256": "8c8127f1d36912a11b61285de333e9e2b64e7a809a8d5718d26ba298d205efc4"
+    }
+  ],
+  "original_diagnostics_sha256": "793dd85dcd6ac407d059b9fdf854b3e33c51d3896c94b9555e94be9959de28b4",
+  "store_compile_or_tests_dispatched": false,
+  "failure": "Path import remained production-visible after removing its only production caller; test module still used Path through super::*.",
+  "correction": "Separate storage-namespace-custody-integration-revision4 moves Path into test module; this package and native artifacts remain unchanged."
+}

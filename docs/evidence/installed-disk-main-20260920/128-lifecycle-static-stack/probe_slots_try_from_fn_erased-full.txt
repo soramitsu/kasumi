@@ -1,0 +1,139 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000d06e8 <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>>:
+1000d06e8: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1000d06ec: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1000d06f0: 910043fd    	add	x29, sp, #0x10
+1000d06f4: d13203ff    	sub	sp, sp, #0xc80
+1000d06f8: f90003ff    	str	xzr, [sp]
+1000d06fc: d10203a9    	sub	x9, x29, #0x80
+1000d0700: f90033e9    	str	x9, [sp, #0x60]
+1000d0704: aa0003e8    	mov	x8, x0
+1000d0708: f9000128    	str	x8, [x9]
+1000d070c: f9000521    	str	x1, [x9, #0x8]
+1000d0710: 52800028    	mov	w8, #0x1                ; =1
+1000d0714: f9000d28    	str	x8, [x9, #0x18]
+1000d0718: f9003be0    	str	x0, [sp, #0x70]
+1000d071c: f9003fe1    	str	x1, [sp, #0x78]
+1000d0720: f90043ff    	str	xzr, [sp, #0x80]
+1000d0724: 14000001    	b	0x1000d0728 <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x40>
+1000d0728: f94043e8    	ldr	x8, [sp, #0x80]
+1000d072c: f9403fe9    	ldr	x9, [sp, #0x78]
+1000d0730: eb090108    	subs	x8, x8, x9
+1000d0734: 54000143    	b.lo	0x1000d075c <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x74>
+1000d0738: 14000001    	b	0x1000d073c <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x54>
+1000d073c: f94033e9    	ldr	x9, [sp, #0x60]
+1000d0740: f9403bea    	ldr	x10, [sp, #0x70]
+1000d0744: f9403fe8    	ldr	x8, [sp, #0x78]
+1000d0748: f900112a    	str	x10, [x9, #0x20]
+1000d074c: f9001528    	str	x8, [x9, #0x28]
+1000d0750: f94043e8    	ldr	x8, [sp, #0x80]
+1000d0754: f9001928    	str	x8, [x9, #0x30]
+1000d0758: 14000006    	b	0x1000d0770 <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x88>
+1000d075c: f94043e1    	ldr	x1, [sp, #0x80]
+1000d0760: 910da3e8    	add	x8, sp, #0x368
+1000d0764: 9101bfe0    	add	x0, sp, #0x6f
+1000d0768: 9400bd04    	bl	0x1000ffb78 <<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1::<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>
+1000d076c: 1400000d    	b	0x1000d07a0 <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0xb8>
+1000d0770: 913203ff    	add	sp, sp, #0xc80
+1000d0774: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+1000d0778: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+1000d077c: d65f03c0    	ret
+1000d0780: 9101c3e0    	add	x0, sp, #0x70
+1000d0784: 97ff259d    	bl	0x100099df8 <core::ptr::drop_glue::<core::array::Guard<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>>
+1000d0788: 14000059    	b	0x1000d08ec <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x204>
+1000d078c: f94033e9    	ldr	x9, [sp, #0x60]
+1000d0790: f9001d20    	str	x0, [x9, #0x38]
+1000d0794: aa0103e8    	mov	x8, x1
+1000d0798: b9004128    	str	w8, [x9, #0x40]
+1000d079c: 17fffff9    	b	0x1000d0780 <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x98>
+1000d07a0: 9107e3e8    	add	x8, sp, #0x1f8
+1000d07a4: 910da3e0    	add	x0, sp, #0x368
+1000d07a8: 9400bd62    	bl	0x1000ffd30 <<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>> as core::ops::try_trait::Try>::branch>
+1000d07ac: 14000001    	b	0x1000d07b0 <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0xc8>
+1000d07b0: 14000001    	b	0x1000d07b4 <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0xcc>
+1000d07b4: 9107e3e1    	add	x1, sp, #0x1f8
+1000d07b8: 911943e0    	add	x0, sp, #0x650
+1000d07bc: f9001be0    	str	x0, [sp, #0x30]
+1000d07c0: 52802e08    	mov	w8, #0x170              ; =368
+1000d07c4: aa0803e2    	mov	x2, x8
+1000d07c8: f90023e2    	str	x2, [sp, #0x40]
+1000d07cc: 948afbd3    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000d07d0: f9401be1    	ldr	x1, [sp, #0x30]
+1000d07d4: f94023e2    	ldr	x2, [sp, #0x40]
+1000d07d8: 910223e0    	add	x0, sp, #0x88
+1000d07dc: f9001fe0    	str	x0, [sp, #0x38]
+1000d07e0: 948afbce    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000d07e4: f9401fe1    	ldr	x1, [sp, #0x38]
+1000d07e8: f94023e2    	ldr	x2, [sp, #0x40]
+1000d07ec: 911383e0    	add	x0, sp, #0x4e0
+1000d07f0: 948afbca    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000d07f4: f94033e9    	ldr	x9, [sp, #0x60]
+1000d07f8: f9403bea    	ldr	x10, [sp, #0x70]
+1000d07fc: f90027ea    	str	x10, [sp, #0x48]
+1000d0800: f9403fe8    	ldr	x8, [sp, #0x78]
+1000d0804: f9002be8    	str	x8, [sp, #0x50]
+1000d0808: f900252a    	str	x10, [x9, #0x48]
+1000d080c: f9002928    	str	x8, [x9, #0x50]
+1000d0810: f94043e8    	ldr	x8, [sp, #0x80]
+1000d0814: f9002fe8    	str	x8, [sp, #0x58]
+1000d0818: f9002d28    	str	x8, [x9, #0x58]
+1000d081c: 14000001    	b	0x1000d0820 <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x138>
+1000d0820: f9402be1    	ldr	x1, [sp, #0x50]
+1000d0824: f9402fe0    	ldr	x0, [sp, #0x58]
+1000d0828: d002e582    	adrp	x2, 0x105d82000 <dyld_stub_binder+0x105d82000>
+1000d082c: 910a2042    	add	x2, x2, #0x288
+1000d0830: 97ffe547    	bl	0x1000c9d4c <<usize as core::slice::index::SliceIndex<[_]>>::get_unchecked_mut::precondition_check>
+1000d0834: 14000001    	b	0x1000d0838 <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x150>
+1000d0838: f94033e9    	ldr	x9, [sp, #0x60]
+1000d083c: f94027e8    	ldr	x8, [sp, #0x48]
+1000d0840: f9402fea    	ldr	x10, [sp, #0x58]
+1000d0844: 52802e0b    	mov	w11, #0x170             ; =368
+1000d0848: 9b0b7d4a    	mul	x10, x10, x11
+1000d084c: 8b0a0108    	add	x8, x8, x10
+1000d0850: f9000be8    	str	x8, [sp, #0x10]
+1000d0854: f9003128    	str	x8, [x9, #0x60]
+1000d0858: 911383e1    	add	x1, sp, #0x4e0
+1000d085c: 912a83e0    	add	x0, sp, #0xaa0
+1000d0860: f90003e0    	str	x0, [sp]
+1000d0864: 52802e08    	mov	w8, #0x170              ; =368
+1000d0868: aa0803e2    	mov	x2, x8
+1000d086c: f90013e2    	str	x2, [sp, #0x20]
+1000d0870: 948afbaa    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000d0874: f94003e1    	ldr	x1, [sp]
+1000d0878: f94013e2    	ldr	x2, [sp, #0x20]
+1000d087c: 9124c3e0    	add	x0, sp, #0x930
+1000d0880: f90007e0    	str	x0, [sp, #0x8]
+1000d0884: 948afba5    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000d0888: f94007e1    	ldr	x1, [sp, #0x8]
+1000d088c: f94013e2    	ldr	x2, [sp, #0x20]
+1000d0890: 911f03e0    	add	x0, sp, #0x7c0
+1000d0894: f9000fe0    	str	x0, [sp, #0x18]
+1000d0898: 948afba0    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000d089c: f9400be0    	ldr	x0, [sp, #0x10]
+1000d08a0: f9400fe1    	ldr	x1, [sp, #0x18]
+1000d08a4: f94013e2    	ldr	x2, [sp, #0x20]
+1000d08a8: 948afb9c    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000d08ac: f94033e9    	ldr	x9, [sp, #0x60]
+1000d08b0: f94043e8    	ldr	x8, [sp, #0x80]
+1000d08b4: f90017e8    	str	x8, [sp, #0x28]
+1000d08b8: f9003528    	str	x8, [x9, #0x68]
+1000d08bc: 14000001    	b	0x1000d08c0 <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x1d8>
+1000d08c0: f94017e0    	ldr	x0, [sp, #0x28]
+1000d08c4: 52800028    	mov	w8, #0x1                ; =1
+1000d08c8: aa0803e1    	mov	x1, x8
+1000d08cc: d002e582    	adrp	x2, 0x105d82000 <dyld_stub_binder+0x105d82000>
+1000d08d0: 910a8042    	add	x2, x2, #0x2a0
+1000d08d4: 97fe5220    	bl	0x100065154 <<usize>::unchecked_add::precondition_check>
+1000d08d8: 14000001    	b	0x1000d08dc <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x1f4>
+1000d08dc: f94017e8    	ldr	x8, [sp, #0x28]
+1000d08e0: 91000508    	add	x8, x8, #0x1
+1000d08e4: f90043e8    	str	x8, [sp, #0x80]
+1000d08e8: 17ffff90    	b	0x1000d0728 <core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>+0x40>
+1000d08ec: f94033e8    	ldr	x8, [sp, #0x60]
+1000d08f0: f9401d00    	ldr	x0, [x8, #0x38]
+1000d08f4: 948afacc    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>
+1000d08f8: 948af95f    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>

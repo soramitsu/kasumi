@@ -2,7 +2,7 @@
 // This fixture signs real opaque capabilities to isolate the encrypted engine's
 // queue, materialization and release boundaries under a deterministic clock.
 struct ServingFixture {
-    directory: tempfile::TempDir,
+    storage: Vec<crate::test_utils::FixtureStorage>,
     databases: Vec<Arc<Database>>,
     audits: Vec<Arc<SecurityAudit>>,
     signer: Arc<kasumi_serving::AuthoritySigner>,
@@ -12,6 +12,7 @@ struct ServingFixture {
     clock: Arc<CredentialClock>,
     router: Arc<kasumi_raft::InProcessRouter>,
     context: RequestContext,
+    directory: tempfile::TempDir,
 }
 impl ServingFixture {
     async fn new() -> Self {
@@ -66,8 +67,19 @@ impl ServingFixture {
                 })
                 .collect(),
         };
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let storage = (1..=3)
+            .map(|id| {
+                let root = directory.path().join(format!("node-{id}"));
+                kasumi_store::private_files::create_directory(&root).unwrap();
+                let (persistent, scratch) = crate::test_utils::fixture_disk_configs(&root).unwrap();
+                crate::test_utils::FixtureStorage::open(&persistent, &scratch, Default::default())
+                    .unwrap()
+            })
+            .collect();
         let mut fixture = Self {
-            directory: kasumi_store::test_utils::private_tempdir().unwrap(),
+            directory,
+            storage,
             databases: vec![],
             audits: vec![],
             signer,
@@ -82,7 +94,8 @@ impl ServingFixture {
         crate::initialize_replicated(&fixture.databases[0], &fixture.bootstrap)
             .await
             .unwrap();
-        let leader = fixture.leader().await;
+        let leader = fixture.leader("initial bootstrap").await;
+        fixture.disable_automatic_elections();
         leader
             .administer(
                 fixture.context.clone(),
@@ -140,18 +153,15 @@ impl ServingFixture {
                 )
                 .unwrap();
             let gate = kasumi_serving::ServingGate::new(lease).unwrap();
+            let storage = &self.storage[id as usize - 1];
+            let path = self
+                .directory
+                .path()
+                .join(format!("node-{id}/persistent/node.redb"));
             let node = (if create {
-                NodeStore::create_new_fixture(
-                    self.directory.path().join(format!("node-{id}.redb")),
-                    kasumi_store::test_utils::NODE_STORE_ID,
-                    kasumi_store::ScratchDisk::fixture(),
-                )
+                storage.create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             } else {
-                NodeStore::open_existing_fixture(
-                    self.directory.path().join(format!("node-{id}.redb")),
-                    kasumi_store::test_utils::NODE_STORE_ID,
-                    kasumi_store::ScratchDisk::fixture(),
-                )
+                storage.open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
             })
             .unwrap();
             let audit_store = (if create {
@@ -174,13 +184,14 @@ impl ServingFixture {
             .unwrap();
             // Each simulated data node has the same independent governor used
             // by a real NodeRuntime, including its maintenance reservation.
-            let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
+            let admission = storage.admission.clone();
             let archive = Arc::new(
-                kasumi_store::FilesystemAuditArchive::open_fixture(
+                kasumi_store::FilesystemAuditArchive::open(
                     audit_store
                         .durable_directory()
                         .unwrap()
                         .join("audit-archives"),
+                    storage.persistent.clone(),
                 )
                 .unwrap(),
             );
@@ -236,22 +247,52 @@ impl ServingFixture {
             self.audits.push(audit);
         }
     }
-    async fn leader(&self) -> Arc<Database> {
-        tokio::time::timeout(Duration::from_secs(10), async {
+    fn disable_automatic_elections(&self) {
+        // Credential-expiry checks own the leadership timeline. Keep the
+        // serving fixture on its ready leader while storage and backup work
+        // run; bootstrap and reopening still elect before this call.
+        for db in &self.databases {
+            db.group.raft().runtime_config().elect(false);
+        }
+    }
+    async fn leader(&self, phase: &str) -> Arc<Database> {
+        let mut last_barrier_error = None;
+        let selected = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 for db in &self.databases {
                     let metrics = db.group.raft().metrics().borrow().clone();
-                    if metrics.current_leader == Some(metrics.id)
-                        && db.group.linearizable_barrier().await.is_ok()
-                    {
-                        return db.clone();
+                    if metrics.current_leader == Some(metrics.id) {
+                        match db.group.linearizable_barrier().await {
+                            Ok(_) => return db.clone(),
+                            Err(error) => {
+                                last_barrier_error = Some(format!(
+                                    "node={} term={}: {error:#}",
+                                    metrics.id, metrics.current_term
+                                ));
+                            }
+                        }
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
-        .await
-        .unwrap()
+        .await;
+        match selected {
+            Ok(db) => db,
+            Err(_) => {
+                let nodes = self
+                    .databases
+                    .iter()
+                    .map(|db| {
+                        let metrics = db.group.raft().metrics().borrow().clone();
+                        format!("running={:?}; {metrics}", metrics.running_state)
+                    })
+                    .collect::<Vec<_>>();
+                panic!(
+                    "serving fixture leader timed out in {phase}; last_barrier_error={last_barrier_error:?}; nodes={nodes:?}"
+                );
+            }
+        }
     }
     async fn drain(&mut self) {
         for db in &self.databases {
@@ -267,23 +308,61 @@ impl ServingFixture {
     async fn drain_after_expiry(&mut self) {
         use kasumi_types::drain::DrainCompletion;
         for db in &self.databases {
-            assert!(db.group.check_access().is_err(), "fixture lease must be expired");
+            assert!(
+                db.group.check_access().is_err(),
+                "fixture lease must be expired"
+            );
             if let Err(failure) = db.shutdown().await {
                 assert_eq!(failure.completion(), DrainCompletion::Complete);
+                assert_eq!(failure.issues().len(), 1, "{failure:?}");
                 for issue in failure.issues() {
+                    assert_eq!(issue.component(), "OpenRaft runtime");
+                    assert_eq!(issue.instance(), 0);
                     let original = issue.error()
                         .downcast_ref::<openraft::error::ShutdownError<u64, tokio::task::JoinError>>()
                         .expect("expired storage must retain the original OpenRaft failure");
-                    assert!(original.core_join_error().is_none());
-                    let message = original.to_string();
-                    assert!(message.contains("key-access lease unavailable or expired")
-                        || message.contains("access expired before acknowledgment"), "{message}");
+                    assert!(original.core_join_error().is_none(), "{original:?}");
+                    assert!(original.ticker().is_none(), "{original:?}");
+                    assert!(original.snapshot_builder().is_none(), "{original:?}");
+                    assert!(original.auxiliary().is_empty(), "{original:?}");
+                    assert!(original.incoming_snapshot().is_none(), "{original:?}");
+                    let mut observed = 0;
+                    if let Some(core) = original.core() {
+                        let openraft::error::Fatal::StorageError(error) = core else {
+                            panic!("unexpected expired core failure: {core:?}");
+                        };
+                        assert!(is_serving_expiry_write(error), "{error:?}");
+                        observed += 1;
+                    }
+                    if let Some(worker) = original.state_machine() {
+                        let error = worker.storage_error().expect("original storage error");
+                        assert!(is_serving_expiry_write(error), "{error:?}");
+                        observed += 1;
+                    }
+                    for replication in original.replications() {
+                        assert!(replication.owner_id > 0, "{replication:?}");
+                        assert!((1..=3).contains(&replication.target), "{replication:?}");
+                        assert!(replication.snapshot.is_none(), "{replication:?}");
+                        let error = replication
+                            .stream
+                            .as_ref()
+                            .and_then(|stream| stream.storage_error())
+                            .expect("original replication storage error");
+                        assert!(is_serving_expiry_write(error), "{error:?}");
+                        observed += 1;
+                    }
+                    assert!(observed > 0, "no original expiry failure: {original:?}");
                 }
                 let repeated = db.shutdown().await.unwrap_err();
                 assert_eq!(repeated.completion(), DrainCompletion::Complete);
                 assert_eq!(repeated.issues().len(), failure.issues().len());
                 for issue in failure.issues() {
-                    assert!(repeated.issues().iter().any(|next| Arc::ptr_eq(issue, next)));
+                    assert!(
+                        repeated
+                            .issues()
+                            .iter()
+                            .any(|next| Arc::ptr_eq(issue, next))
+                    );
                 }
             }
         }
@@ -294,10 +373,87 @@ impl ServingFixture {
         self.audits.clear();
         self.router = Arc::new(kasumi_raft::InProcessRouter::default());
     }
-    async fn reopen(&mut self) {
+    async fn reopen(&mut self, phase: &str) {
         self.drain_after_expiry().await;
         self.open(false).await;
-        self.leader().await;
+        self.leader(phase).await;
+        self.disable_automatic_elections();
+    }
+}
+
+fn is_serving_expiry_write(error: &openraft::StorageError<u64>) -> bool {
+    if !matches!(error, openraft::StorageError::IO { .. }) {
+        return false;
+    }
+    [
+        "tenant is sealed: key-access lease unavailable or expired",
+        "domain transaction committed; access expired before acknowledgment; outcome unknown",
+        "batch committed but key access was lost before acknowledgment; outcome unknown",
+        "Corruption: batch committed but key access was lost before acknowledgment; outcome unknown",
+    ]
+    .into_iter()
+    .any(|message| {
+        let expected = openraft::StorageError::<u64>::from_io_error(
+            openraft::ErrorSubject::Store,
+            openraft::ErrorVerb::Write,
+            std::io::Error::other(message),
+        );
+        error.to_string() == expected.to_string()
+    })
+}
+
+#[test]
+fn serving_expiry_drain_rejects_unrelated_storage_causes() {
+    use openraft::{ErrorSubject, ErrorVerb, StorageError};
+    let closed =
+        "domain transaction committed; access expired before acknowledgment; outcome unknown";
+    let committed =
+        "batch committed but key access was lost before acknowledgment; outcome unknown";
+    let wrapped_committed = "Corruption: batch committed but key access was lost before acknowledgment; outcome unknown";
+    for (subject, verb, message, expected) in [
+        (ErrorSubject::Store, ErrorVerb::Write, closed, true),
+        (ErrorSubject::Store, ErrorVerb::Read, closed, false),
+        (ErrorSubject::Vote, ErrorVerb::Write, closed, false),
+        (ErrorSubject::Store, ErrorVerb::Write, committed, true),
+        (
+            ErrorSubject::Store,
+            ErrorVerb::Write,
+            wrapped_committed,
+            true,
+        ),
+        (
+            ErrorSubject::Store,
+            ErrorVerb::Read,
+            wrapped_committed,
+            false,
+        ),
+        (
+            ErrorSubject::Vote,
+            ErrorVerb::Write,
+            wrapped_committed,
+            false,
+        ),
+        (
+            ErrorSubject::Store,
+            ErrorVerb::Write,
+            "Corruption: batch committed but key access was lost before acknowledgment",
+            false,
+        ),
+        (
+            ErrorSubject::Store,
+            ErrorVerb::Write,
+            "unrelated I/O failure",
+            false,
+        ),
+        (
+            ErrorSubject::Store,
+            ErrorVerb::Write,
+            "unrelated access expired before acknowledgment",
+            false,
+        ),
+    ] {
+        let error = StorageError::from_io_error(subject, verb, std::io::Error::other(message));
+        assert_eq!(is_serving_expiry_write(&error), expected, "{error:?}");
     }
 }
 
@@ -305,7 +461,7 @@ impl ServingFixture {
 async fn serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly()
 {
     let mut fixture = ServingFixture::new().await;
-    let db = fixture.leader().await;
+    let db = fixture.leader("queued-effect initial").await;
     let gate = db.proposal_gate.lock().await;
     let mut queued = Box::pin(db.mutate(fixture.context.clone(), credential_batch("queued")));
     assert!(
@@ -317,8 +473,8 @@ async fn serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_the
     drop(gate);
     assert!(queued.await.is_err());
     drop(db);
-    fixture.reopen().await;
-    let db = fixture.leader().await;
+    fixture.reopen("queued-effect first reopen").await;
+    let db = fixture.leader("queued-effect first reopen").await;
     assert!(
         db.operation_receipt(&fixture.context, "queued")
             .await
@@ -352,8 +508,8 @@ async fn serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_the
     assert!(db.get(&fixture.context, "docs", "accepted").await.is_err());
     drop(response);
     drop(db);
-    fixture.reopen().await;
-    let db = fixture.leader().await;
+    fixture.reopen("queued-effect second reopen").await;
+    let db = fixture.leader("queued-effect second reopen").await;
     assert_eq!(
         db.mutate(fixture.context.clone(), credential_batch("accepted"))
             .await
@@ -367,14 +523,15 @@ async fn serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_the
 #[tokio::test]
 async fn serving_expiry_suppresses_long_backup_verification_and_post_publication_proof() {
     let mut fixture = ServingFixture::new().await;
-    let db = fixture.leader().await;
+    let db = fixture.leader("backup-expiry initial").await;
     db.mutate(fixture.context.clone(), credential_batch("read"))
         .await
         .unwrap();
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new_fixture(
-            fixture.directory.path().join("backups"),
+        kasumi_store::FilesystemBackupDestination::new(
+            db.store.durable_directory().unwrap().join("backups"),
             32 << 20,
+            db.store.persistent_disk().clone(),
         )
         .unwrap(),
     );
@@ -408,10 +565,11 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
     };
     assert!(result.is_err());
     drop(db);
-    fixture.reopen().await;
+    fixture.reopen("backup-expiry reopen").await;
     let mut expired = false;
-    for _ in 0..3 {
-        let db = fixture.leader().await;
+    for attempt in 0..3 {
+        let phase = format!("backup-expiry capture attempt {}", attempt + 1);
+        let db = fixture.leader(&phase).await;
         let session_id = uuid::Uuid::new_v4();
         let result = expire_paused_backup(
             db.backup_checkpoint(fixture.context.clone(), &paused, session_id),
@@ -495,7 +653,11 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
             }
         }
     }
-    fixture.drain().await;
+    if expired {
+        fixture.drain_after_expiry().await;
+    } else {
+        fixture.drain().await;
+    }
     assert!(
         expired,
         "elections repeatedly prevented the controlled expiry attempt"

@@ -9,6 +9,7 @@ use kasumi_types::{
     ControlAuthorityPartition, ControlSigningRoot, LifecycleIntent, LifecyclePhase,
 };
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 const NS: &str = "target.journal";
@@ -19,9 +20,36 @@ const MAX_RECORD: usize = 256 << 10;
 const COMPLETION_RESERVE: u64 = MAX_RECORD as u64;
 // Each generation independently reserves a stop and an activation projection.
 const GENERATION_RESERVE: u64 = COMPLETION_RESERVE * 2;
+// Every accepted first-membership dispatch precharges one bounded future fact.
+const DISPATCH_TERMINAL_RESERVE: u64 = MAX_RECORD as u64;
+#[path = "target_journal_dispatch.rs"]
+mod dispatch;
 #[path = "target_projection.rs"]
 mod projection;
 pub use projection::VerifiedTargetServingProjection;
+
+/// A format-2 journal record is the exact current writer's JSON bytes. This
+/// streaming comparison avoids allocating another record during bounded reopen.
+fn decode_current<T: serde::de::DeserializeOwned + Serialize>(bytes: &[u8]) -> Result<T> {
+    struct Compare<'a>(&'a [u8]);
+    impl Write for Compare<'_> {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if !self.0.starts_with(bytes) {
+                return Err(io::Error::other("noncanonical target journal record"));
+            }
+            self.0 = &self.0[bytes.len()..];
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let value: T = serde_json::from_slice(bytes)?;
+    let mut compare = Compare(bytes);
+    serde_json::to_writer(&mut compare, &value)?;
+    ensure!(compare.0.is_empty(), "noncanonical target journal record");
+    Ok(value)
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetJournalInstallation {
@@ -132,6 +160,7 @@ struct Metadata {
     installation: TargetJournalInstallation,
     intents: u64,
     generations: u64,
+    dispatches: u64,
     charged_bytes: u64,
 }
 /// The unique store catalog owns the mutation lock; runtime retains this one
@@ -181,6 +210,7 @@ impl TargetJournal {
         admission: Arc<crate::admission::NodeAdmission>,
         create: bool,
     ) -> Result<Arc<Self>> {
+        admission.memory().require_store_memory(&store)?;
         let gate = Self::owner_gate(&store)?;
         Self::open_with_owner(store, installed, limits, admission, create, &gate)
     }
@@ -255,10 +285,11 @@ impl TargetJournal {
                 anyhow::bail!("target journal records exist without a canonical head")
             })?;
             let metadata = Metadata {
-                format: 1,
+                format: 2,
                 installation: journal.installed.clone(),
                 intents: 0,
                 generations: 0,
+                dispatches: 0,
                 charged_bytes: MAX_RECORD as u64,
             };
             journal.store.write_batch(&[WriteOp::put(
@@ -272,11 +303,12 @@ impl TargetJournal {
         // a time. Permanent identities are never silently dropped or truncated.
         let mut intents = 0u64;
         let mut generations = 0u64;
+        let mut dispatches = 0u64;
         let mut charged = MAX_RECORD as u64;
         journal.store.visit(NS, MAX_RECORD, |key, value| {
             if key.starts_with(b"intent/") {
                 intents = intents.checked_add(1).context("journal count exhausted")?;
-                let i: TargetJournalIntent = serde_json::from_slice(value)?;
+                let i: TargetJournalIntent = decode_current(value)?;
                 journal.validate_intent(&i)?;
                 ensure!(
                     key == intent_key(i.intent.request.command_id),
@@ -289,7 +321,7 @@ impl TargetJournal {
                 generations = generations
                     .checked_add(1)
                     .context("journal count exhausted")?;
-                let target: GenerationBinding = serde_json::from_slice(value)?;
+                let target: GenerationBinding = decode_current(value)?;
                 ensure!(
                     key == generation_key(&target.tenant, target.target_incarnation),
                     "journal generation key differs"
@@ -297,8 +329,16 @@ impl TargetJournal {
                 charged = charged
                     .checked_add(value.len() as u64 + GENERATION_RESERVE)
                     .context("journal bytes exhausted")?;
+            } else if key.starts_with(b"dispatch/") {
+                dispatches = dispatches
+                    .checked_add(1)
+                    .context("journal dispatch count exhausted")?;
+                journal.validate_dispatch_record(key, value)?;
+                charged = charged
+                    .checked_add(value.len() as u64 + DISPATCH_TERMINAL_RESERVE)
+                    .context("journal dispatch bytes exhausted")?;
             } else if key.starts_with(b"file/") {
-                let file: FileCreation = serde_json::from_slice(value)?;
+                let file: FileCreation = decode_current(value)?;
                 journal.validate_file_creation(key, &file)?;
                 charged = charged
                     .checked_add(value.len() as u64)
@@ -308,7 +348,7 @@ impl TargetJournal {
             } else if key.starts_with(b"activation/") {
                 journal.decode_projection_record(key, value)?;
             } else if key.starts_with(b"stop/") {
-                let stop: TargetJournalStop = serde_json::from_slice(value)?;
+                let stop: TargetJournalStop = decode_current(value)?;
                 journal.validate_stop(&stop)?;
                 ensure!(
                     key == stop_key(
@@ -325,6 +365,7 @@ impl TargetJournal {
         ensure!(
             metadata.intents == intents
                 && metadata.generations == generations
+                && metadata.dispatches == dispatches
                 && metadata.charged_bytes == charged,
             "target journal accounting differs"
         );
@@ -336,9 +377,9 @@ impl TargetJournal {
             .store
             .get_bounded(NS, b"metadata", MAX_RECORD)?
             .context("target journal metadata missing")?;
-        let m: Metadata = serde_json::from_slice(&value)?;
+        let m: Metadata = decode_current(&value)?;
         ensure!(
-            m.format == 1
+            m.format == 2
                 && m.installation == self.installed
                 && m.charged_bytes <= self.limits.max_metadata_bytes,
             "target journal binding or capacity differs"
@@ -411,7 +452,7 @@ impl TargetJournal {
             MAX_RECORD,
         )? {
             ensure!(
-                serde_json::from_slice::<TargetJournalIntent>(&old)? == intent,
+                decode_current::<TargetJournalIntent>(&old)? == intent,
                 "target command identity already bound"
             );
             op.check()?;
@@ -443,7 +484,7 @@ impl TargetJournal {
                 .get_bounded(NS, &generation_key(&binding.tenant, target), MAX_RECORD)?
         {
             ensure!(
-                serde_json::from_slice::<GenerationBinding>(&old)? == binding,
+                decode_current::<GenerationBinding>(&old)? == binding,
                 "target generation binding differs"
             );
         } else {
@@ -485,7 +526,7 @@ impl TargetJournal {
             .store
             .get_bounded(NS, &intent_key(file.materialization_command_id), MAX_RECORD)?
             .context("target file creation original intent missing")?;
-        let intent: TargetJournalIntent = serde_json::from_slice(&bytes)?;
+        let intent: TargetJournalIntent = decode_current(&bytes)?;
         self.validate_intent(&intent)?;
         let request = &intent.intent.request;
         ensure!(
@@ -494,7 +535,7 @@ impl TargetJournal {
                 && key == file_key(&request.tenant, request.target_incarnation),
             "target file creation identity differs"
         );
-        let binding: GenerationBinding = serde_json::from_slice(
+        let binding: GenerationBinding = decode_current(
             &self
                 .store
                 .get_bounded(
@@ -517,7 +558,7 @@ impl TargetJournal {
         let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
         kasumi_types::validate_name(tenant)?;
         let key = file_key(tenant, target);
-        let file: FileCreation = serde_json::from_slice(
+        let file: FileCreation = decode_current(
             &self
                 .store
                 .get_bounded(NS, &key, MAX_RECORD)?
@@ -575,7 +616,7 @@ impl TargetJournal {
         )?;
         if let Some(old) = self.store.get_bounded(NS, &key, MAX_RECORD)? {
             ensure!(
-                serde_json::from_slice::<FileCreation>(&old)? == file,
+                decode_current::<FileCreation>(&old)? == file,
                 "target file already bound to another original materialization"
             );
             op.check()?;
@@ -682,7 +723,7 @@ impl TargetJournal {
             self.store
                 .get_bounded(NS, &stop_key(&binding.tenant, target), MAX_RECORD)?
         {
-            let old: TargetJournalStop = serde_json::from_slice(&bytes)?;
+            let old: TargetJournalStop = decode_current(&bytes)?;
             self.validate_stop(&old)?;
             ensure!(
                 old.stopped.observation.stop.digest()?
@@ -707,7 +748,7 @@ impl TargetJournal {
                 .get_bounded(NS, &generation_key(&binding.tenant, target), MAX_RECORD)?
         {
             ensure!(
-                serde_json::from_slice::<GenerationBinding>(&old)? == binding,
+                decode_current::<GenerationBinding>(&old)? == binding,
                 "target generation binding differs"
             );
         } else {

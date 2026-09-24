@@ -1,0 +1,40 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+0000000100135d78 <lifecycle::recovery_control::commit_next_intent::{closure#0}>:
+100135d78: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+100135d7c: a9017bfd    	stp	x29, x30, [sp, #0x10]
+100135d80: 910043fd    	add	x29, sp, #0x10
+100135d84: d14043e9    	sub	x9, sp, #0x10, lsl #12  ; =0x10000
+100135d88: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+100135d8c: f90003ff    	str	xzr, [sp]
+100135d90: eb2963ff    	cmp	sp, x9
+100135d94: 54ffffa1    	b.ne	0x100135d88 <lifecycle::recovery_control::commit_next_intent::{closure#0}+0x10>
+100135d98: d134c3ff    	sub	sp, sp, #0xd30
+100135d9c: f90003ff    	str	xzr, [sp]
+100135da0: 91403fe9    	add	x9, sp, #0xf, lsl #12   ; =0xf000
+100135da4: 91318129    	add	x9, x9, #0xc60
+100135da8: f900f3e9    	str	x9, [sp, #0x1e0]
+100135dac: 914023ea    	add	x10, sp, #0x8, lsl #12  ; =0x8000
+100135db0: 910dc14a    	add	x10, x10, #0x370
+100135db4: f900f7ea    	str	x10, [sp, #0x1e8]
+100135db8: 91401bea    	add	x10, sp, #0x6, lsl #12  ; =0x6000
+100135dbc: 9135a14a    	add	x10, x10, #0xd68
+100135dc0: f900fbea    	str	x10, [sp, #0x1f0]
+100135dc4: 91400bea    	add	x10, sp, #0x2, lsl #12  ; =0x2000
+100135dc8: 913a014a    	add	x10, x10, #0xe80
+100135dcc: f900ffea    	str	x10, [sp, #0x1f8]
+100135dd0: f90103e8    	str	x8, [sp, #0x200]
+100135dd4: f90107e0    	str	x0, [sp, #0x208]
+100135dd8: f9010fe1    	str	x1, [sp, #0x218]
+100135ddc: aa0003e8    	mov	x8, x0
+100135de0: f9057128    	str	x8, [x9, #0xae0]
+100135de4: aa0003e8    	mov	x8, x0
+100135de8: f9057528    	str	x8, [x9, #0xae8]
+100135dec: 39529c08    	ldrb	w8, [x0, #0x4a7]
+100135df0: b90217e8    	str	w8, [sp, #0x214]
+100135df4: 340003e8    	cbz	w8, 0x100135e70 <lifecycle::recovery_control::commit_next_intent::{closure#0}+0xf8>
+100135df8: 14000001    	b	0x100135dfc <lifecycle::recovery_control::commit_next_intent::{closure#0}+0x84>
+100135dfc: b94217e8    	ldr	w8, [sp, #0x214]

@@ -1,0 +1,9 @@
+{
+  "operation": "Python in-memory symbol successor lookup",
+  "pid": 52638,
+  "signal": "SIGINT",
+  "exit_code": 130,
+  "reason": "Quadratic successor lookup replaced by sorted unique address zip",
+  "external_disassembly_started": false,
+  "binary_or_Rust_execution": false
+}

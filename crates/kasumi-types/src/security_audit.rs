@@ -1,7 +1,8 @@
 //! Protected service-audit observations. Cursors retain the original stream and
 //! exclusive end; transports must never restart them against another snapshot.
 use crate::{
-    AuditArchiveReference, AuditRetentionBudget, AuditRetentionState, Error, ErrorCode, Result,
+    AuditArchiveLink, AuditArchiveReference, AuditRetentionBudget, AuditRetentionState, Error,
+    ErrorCode, Result,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -81,10 +82,26 @@ pub struct SecurityAuditArchiveCursor {
     pub stream_id: Uuid,
     pub next_index: u64,
     pub through_index: u64,
+    /// Exact immutable archive head at through_index, even as new archives append.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub snapshot_head: Option<AuditArchiveLink>,
+    /// Last object from the preceding page; binds the next page to its chain.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub previous: Option<AuditArchiveLink>,
 }
 impl SecurityAuditArchiveCursor {
     pub fn validate(&self) -> Result<()> {
-        if self.stream_id.is_nil() || self.next_index > self.through_index {
+        if self.stream_id.is_nil()
+            || self.next_index > self.through_index
+            || (self.through_index == 0) != self.snapshot_head.is_none()
+            || (self.next_index == 0) != self.previous.is_none()
+            || (self.next_index == self.through_index && self.previous != self.snapshot_head)
+            || self
+                .snapshot_head
+                .as_ref()
+                .is_some_and(invalid_archive_link)
+            || self.previous.as_ref().is_some_and(invalid_archive_link)
+        {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,
                 "invalid service audit archive cursor",
@@ -120,6 +137,8 @@ pub struct SecurityAuditArchivePage {
     pub stream_id: Uuid,
     pub next_index: u64,
     pub through_index: u64,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub snapshot_head: Option<AuditArchiveLink>,
     pub archives: Vec<AuditArchiveReference>,
 }
 impl SecurityAuditArchivePage {
@@ -128,8 +147,15 @@ impl SecurityAuditArchivePage {
             stream_id: self.stream_id,
             next_index: self.next_index,
             through_index: self.through_index,
+            snapshot_head: self.snapshot_head.clone(),
+            previous: self.archives.last().map(|archive| archive.object.clone()),
         })
     }
+}
+fn invalid_archive_link(link: &AuditArchiveLink) -> bool {
+    link.object_id.is_nil()
+        || link.first_sequence >= link.next_sequence
+        || crate::validate_sha256(&link.ciphertext_sha256).is_err()
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

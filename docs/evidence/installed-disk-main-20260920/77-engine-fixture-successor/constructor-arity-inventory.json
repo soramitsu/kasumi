@@ -1,0 +1,265 @@
+{
+  "status": "SOURCE_OVERLAY_TEXT_SCAN_NOT_TYPECHECK",
+  "calls": [
+    {
+      "path": "crates/kasumi-engine/src/audit_maintenance_service.rs",
+      "line": 391,
+      "call": "FilesystemAuditArchive::open",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/audit_maintenance_service.rs",
+      "line": 401,
+      "call": "FilesystemAuditArchive::open",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/security_audit.rs",
+      "line": 909,
+      "call": "NodeStore::open_fixture_backend_on_disk",
+      "expected": 4,
+      "observed": 4
+    },
+    {
+      "path": "crates/kasumi-engine/src/security_audit.rs",
+      "line": 954,
+      "call": "NodeStore::open_fixture_backend_on_disk",
+      "expected": 4,
+      "observed": 4
+    },
+    {
+      "path": "crates/kasumi-engine/src/security_audit.rs",
+      "line": 159,
+      "call": "FilesystemAuditArchive::open",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/security_audit.rs",
+      "line": 184,
+      "call": "FilesystemAuditArchive::open",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/security_audit.rs",
+      "line": 540,
+      "call": "FilesystemAuditArchive::open",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/security_audit.rs",
+      "line": 898,
+      "call": "FilesystemAuditArchive::open",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/target_resolution_tests.rs",
+      "line": 76,
+      "call": "ScratchDisk::fixture",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/target_resolution_tests.rs",
+      "line": 77,
+      "call": "NodeStore::create_new_fixture",
+      "expected": 4,
+      "observed": 4
+    },
+    {
+      "path": "crates/kasumi-engine/src/snapshot_bundle.rs",
+      "line": 535,
+      "call": "ScratchDisk::fixture",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/snapshot_bundle.rs",
+      "line": 536,
+      "call": "NodeStore::create_new_fixture",
+      "expected": 4,
+      "observed": 4
+    },
+    {
+      "path": "crates/kasumi-engine/src/mutation_receipt_tests.rs",
+      "line": 72,
+      "call": "ScratchDisk::fixture",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/mutation_receipt_tests.rs",
+      "line": 73,
+      "call": "NodeStore::create_new_fixture",
+      "expected": 4,
+      "observed": 4
+    },
+    {
+      "path": "crates/kasumi-engine/src/mutation_receipt_tests.rs",
+      "line": 144,
+      "call": "NodeStore::open_existing_fixture",
+      "expected": 4,
+      "observed": 4
+    },
+    {
+      "path": "crates/kasumi-engine/src/staged_terminal_tests.rs",
+      "line": 93,
+      "call": "ScratchDisk::fixture",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/staged_terminal_tests.rs",
+      "line": 94,
+      "call": "NodeStore::create_new_fixture",
+      "expected": 4,
+      "observed": 4
+    },
+    {
+      "path": "crates/kasumi-engine/src/staged_terminal_tests.rs",
+      "line": 164,
+      "call": "NodeStore::open_existing_fixture",
+      "expected": 4,
+      "observed": 4
+    },
+    {
+      "path": "crates/kasumi-engine/src/test_utils.rs",
+      "line": 168,
+      "call": "ScratchDisk::open_fixture",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/test_utils.rs",
+      "line": 161,
+      "call": "NodeDisk::open_fixture",
+      "expected": 3,
+      "observed": 3
+    },
+    {
+      "path": "crates/kasumi-engine/src/codec_fixture.rs",
+      "line": 12,
+      "call": "ScratchDisk::fixture",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/service_credential_tests.rs",
+      "line": 488,
+      "call": "FilesystemBackupDestination::new",
+      "expected": 3,
+      "observed": 3
+    },
+    {
+      "path": "crates/kasumi-engine/src/mutation_apply_tests.rs",
+      "line": 36,
+      "call": "ScratchDisk::fixture",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/service_retirement_tests.rs",
+      "line": 7,
+      "call": "FilesystemBackupDestination::new",
+      "expected": 3,
+      "observed": 3
+    },
+    {
+      "path": "crates/kasumi-engine/src/service_serving_tests.rs",
+      "line": 396,
+      "call": "FilesystemBackupDestination::new",
+      "expected": 3,
+      "observed": 3
+    },
+    {
+      "path": "crates/kasumi-engine/src/service_serving_tests.rs",
+      "line": 188,
+      "call": "FilesystemAuditArchive::open",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/service_custody_tests.rs",
+      "line": 4,
+      "call": "FilesystemBackupDestination::new",
+      "expected": 3,
+      "observed": 3
+    },
+    {
+      "path": "crates/kasumi-engine/src/security_audit_retention.rs",
+      "line": 705,
+      "call": "FilesystemAuditArchive::open",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/tenant_audit.rs",
+      "line": 437,
+      "call": "ScratchDisk::fixture",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/tenant_audit.rs",
+      "line": 438,
+      "call": "NodeStore::create_new_fixture",
+      "expected": 4,
+      "observed": 4
+    },
+    {
+      "path": "crates/kasumi-engine/src/tenant_audit.rs",
+      "line": 453,
+      "call": "FilesystemAuditArchive::open",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/tenant_audit.rs",
+      "line": 460,
+      "call": "FilesystemAuditArchive::open",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/tenant_audit.rs",
+      "line": 658,
+      "call": "FilesystemAuditArchive::open",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/lease_retention_tests.rs",
+      "line": 57,
+      "call": "ScratchDisk::fixture",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/database_construction_tests.rs",
+      "line": 42,
+      "call": "ScratchDisk::open_fixture",
+      "expected": 2,
+      "observed": 2
+    },
+    {
+      "path": "crates/kasumi-engine/src/database_construction_tests.rs",
+      "line": 44,
+      "call": "NodeDisk::open_fixture",
+      "expected": 3,
+      "observed": 3
+    },
+    {
+      "path": "crates/kasumi-engine/src/security_audit_jobs.rs",
+      "line": 267,
+      "call": "FilesystemAuditArchive::open",
+      "expected": 2,
+      "observed": 2
+    }
+  ],
+  "mismatches": []
+}

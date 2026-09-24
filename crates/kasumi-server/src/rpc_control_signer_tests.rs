@@ -138,7 +138,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
     };
     let wrapping = directory.join("wrapping.json");
     kasumi_store::FileKeyProvider::initialize(&wrapping, "remote-control-trust").unwrap();
-    let initialization = InitializeSignerVerifier {
+    let mut initialization = InitializeSignerVerifier {
         admission: Default::default(),
         persistent_disk: crate::persistent_disk::fixture_config(&directory.join("data")),
         scratch_disk: kasumi_store::ScratchDiskConfig {
@@ -154,17 +154,30 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         },
         initial_certificates: vec![f.initial_certificate.clone()],
     };
-    initialization.initialize().await.unwrap();
-    let scratch = kasumi_store::ScratchDisk::open(initialization.scratch_disk.clone()).unwrap();
+    let storage = crate::runtime_memory::RuntimeStorage::isolated_fixture(
+        initialization.admission.clone(),
+        &initialization.persistent_disk,
+        &initialization.scratch_disk,
+    )
+    .unwrap();
+    initialization.admission = storage.policy().clone();
+    initialization
+        .initialize_with_storage(storage.clone())
+        .await
+        .unwrap();
+    let admission = storage.facade(storage.policy()).unwrap();
+    let scratch = storage.open_scratch(&initialization.scratch_disk).unwrap();
     let domains = BTreeMap::from([(domain.digest().unwrap(), domain.clone())]);
     let verifier = initialization
         .verifier
         .open(
             domains.clone(),
             Arc::new(file_secret),
-            crate::persistent_disk::open(&initialization.persistent_disk).unwrap(),
+            storage
+                .open_persistent(&initialization.persistent_disk)
+                .unwrap(),
             scratch.clone(),
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            admission,
         )
         .await
         .unwrap();
@@ -553,14 +566,17 @@ pub(super) async fn exercise(f: Fixture<'_>) {
     serving.await.unwrap().unwrap();
     verifier.shutdown().await.unwrap();
     drop(verifier);
+    let admission = storage.facade(storage.policy()).unwrap();
     let reopened = initialization
         .verifier
         .open(
             domains,
             Arc::new(file_secret),
-            crate::persistent_disk::open(&initialization.persistent_disk).unwrap(),
+            storage
+                .open_persistent(&initialization.persistent_disk)
+                .unwrap(),
             scratch,
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            admission,
         )
         .await
         .unwrap();

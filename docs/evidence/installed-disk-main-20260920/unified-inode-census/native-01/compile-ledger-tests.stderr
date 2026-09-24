@@ -1,0 +1,3355 @@
+error[E0433]: cannot find `test_utils` in `crate`
+ --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:8:28
+  |
+8 |     let directory = crate::test_utils::private_tempdir().unwrap();
+  |                            ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:10:12
+   |
+10 |     crate::private_files::create_directory(&root).unwrap();
+   |            ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:26:12
+   |
+26 |     crate::test_utils::retry_disk_registry(|| {
+   |            ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:34:33
+   |
+34 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+   |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:39:16
+   |
+39 |         crate::private_files::create_directory(&config.roots["data"].join(&relative)).unwrap();
+   |                ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:49:40
+   |
+49 |     let (result, allocations) = crate::allocation_tests::measure(|| -> io::Result<()> {
+   |                                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:68:36
+   |
+68 |     let ((), allocations) = crate::allocation_tests::measure(|| drop(file));
+   |                                    ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:77:33
+   |
+77 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+   |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:93:40
+   |
+93 |     let (result, allocations) = crate::allocation_tests::measure(|| file.sync_all());
+   |                                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:100:36
+    |
+100 |     let ((), allocations) = crate::allocation_tests::measure(|| {
+    |                                    ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:110:33
+    |
+110 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:122:40
+    |
+122 |     let (result, allocations) = crate::allocation_tests::measure(|| file.settle_growth(0));
+    |                                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:157:33
+    |
+157 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:184:27
+    |
+184 |     let reopened = crate::test_utils::retry_disk_registry(|| {
+    |                           ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:199:33
+    |
+199 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:215:23
+    |
+215 |     let same = crate::test_utils::retry_disk_registry(|| {
+    |                       ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:233:33
+    |
+233 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:262:33
+    |
+262 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:299:33
+    |
+299 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:320:33
+    |
+320 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:343:33
+    |
+343 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:351:16
+    |
+351 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+    |                ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:361:16
+    |
+361 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+    |                ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:376:33
+    |
+376 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:382:16
+    |
+382 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open(
+    |                ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:392:16
+    |
+392 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open(
+    |                ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:401:12
+    |
+401 |     crate::private_files::create_directory(&nested).unwrap();
+    |            ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:406:16
+    |
+406 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open(
+    |                ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:416:16
+    |
+416 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open(
+    |                ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:428:33
+    |
+428 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:445:33
+    |
+445 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `ScratchDisk` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:450:26
+    |
+450 |     let scratch = crate::ScratchDisk::test_with_device(
+    |                          ^^^^^^^^^^^ could not find `ScratchDisk` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:481:33
+    |
+481 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `ScratchDisk` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:485:26
+    |
+485 |     let scratch = crate::ScratchDisk::test_with_device(
+    |                          ^^^^^^^^^^^ could not find `ScratchDisk` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:545:33
+    |
+545 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find module or crate `file` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:553:16
+    |
+553 |         stage: file::CloseStage::DataClosed,
+    |                ^^^^ use of unresolved module or unlinked crate `file`
+    |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+    |
+  2 + mod file;
+    |
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:585:33
+    |
+585 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `ScratchDisk` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:588:26
+    |
+588 |     let scratch = crate::ScratchDisk::test_with_device(
+    |                          ^^^^^^^^^^^ could not find `ScratchDisk` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:619:33
+    |
+619 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:645:33
+    |
+645 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:675:33
+    |
+675 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:705:33
+    |
+705 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:710:27
+    |
+710 |     let identity = crate::private_files::file_identity(&path).unwrap();
+    |                           ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:720:16
+    |
+720 |         crate::private_files::file_identity(&path).unwrap(),
+    |                ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:752:33
+    |
+752 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find module or crate `file` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:754:9
+    |
+754 |         file::ShrinkFailure::Truncate,
+    |         ^^^^ use of unresolved module or unlinked crate `file`
+    |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+    |
+  2 + mod file;
+    |
+
+error[E0433]: cannot find module or crate `file` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:755:9
+    |
+755 |         file::ShrinkFailure::FileSync,
+    |         ^^^^ use of unresolved module or unlinked crate `file`
+    |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+    |
+  2 + mod file;
+    |
+
+error[E0433]: cannot find module or crate `file` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:756:9
+    |
+756 |         file::ShrinkFailure::DirectorySync,
+    |         ^^^^ use of unresolved module or unlinked crate `file`
+    |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+    |
+  2 + mod file;
+    |
+
+error[E0433]: cannot find `ScratchDisk` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:761:30
+    |
+761 |         let scratch = crate::ScratchDisk::test_with_device(
+    |                              ^^^^^^^^^^^ could not find `ScratchDisk` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:772:44
+    |
+772 |         let (result, allocations) = crate::allocation_tests::measure(|| file.shrink(32 << 10));
+    |                                            ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find module or crate `file` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:777:27
+    |
+777 |             if failure == file::ShrinkFailure::Truncate {
+    |                           ^^^^ use of unresolved module or unlinked crate `file`
+    |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+    |
+  2 + mod file;
+    |
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:794:40
+    |
+794 |         let ((), allocations) = crate::allocation_tests::measure(|| drop(file));
+    |                                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find module or crate `file` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:809:27
+    |
+809 |             if failure == file::ShrinkFailure::Truncate {
+    |                           ^^^^ use of unresolved module or unlinked crate `file`
+    |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+    |
+  2 + mod file;
+    |
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:850:33
+    |
+850 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:860:16
+    |
+860 |         crate::private_files::file_identity(&path).unwrap()
+    |                ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:894:33
+    |
+894 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:898:16
+    |
+898 |         crate::private_files::create_directory(&root.join("parent")).unwrap();
+    |                ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:906:20
+    |
+906 |             crate::private_files::create_directory(&root.join("parent")).unwrap();
+    |                    ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:918:20
+    |
+918 |             crate::private_files::file_identity(&retained).unwrap(),
+    |                    ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:950:33
+    |
+950 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:993:33
+    |
+993 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1022:33
+     |
+1022 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1046:33
+     |
+1046 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1067:33
+     |
+1067 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1098:33
+     |
+1098 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1126:33
+     |
+1126 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1175:33
+     |
+1175 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1203:33
+     |
+1203 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1221:46
+     |
+1221 |         let (outcomes, allocations) = crate::allocation_tests::measure(|| {
+     |                                              ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1242:33
+     |
+1242 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1268:33
+     |
+1268 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1279:44
+     |
+1279 |         let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+     |                                            ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1282:44
+     |
+1282 |         let (result, allocations) = crate::allocation_tests::measure(|| file.check_owner());
+     |                                            ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1285:40
+     |
+1285 |         let ((), allocations) = crate::allocation_tests::measure(|| drop(file));
+     |                                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1300:33
+     |
+1300 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1302:9
+     |
+1302 |         file::NamespaceFailure::CreateFileSync,
+     |         ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1303:9
+     |
+1303 |         file::NamespaceFailure::CreateParentSync,
+     |         ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1312:44
+     |
+1312 |         let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+     |                                            ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1336:33
+     |
+1336 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1342:36
+     |
+1342 |     let ((), allocations) = crate::allocation_tests::measure(|| drop(prepared));
+     |                                    ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1355:36
+     |
+1355 |     let ((), allocations) = crate::allocation_tests::measure(|| drop(prepared));
+     |                                    ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1367:33
+     |
+1367 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1372:16
+     |
+1372 |         crate::private_files::create_directory(&config.roots["data"].join(name)).unwrap();
+     |                ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1389:40
+     |
+1389 |     let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+     |                                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1396:16
+     |
+1396 |         crate::allocation_tests::measure(|| disk.shrink_file(file, 16 << 10));
+     |                ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1402:40
+     |
+1402 |     let (result, allocations) = crate::allocation_tests::measure(|| disk.delete_file(file));
+     |                                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1412:33
+     |
+1412 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1414:9
+     |
+1414 |         file::NamespaceFailure::PublishSourceSync,
+     |         ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1415:9
+     |
+1415 |         file::NamespaceFailure::PublishDestinationSync,
+     |         ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1416:9
+     |
+1416 |         file::NamespaceFailure::PublishVerify,
+     |         ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1434:44
+     |
+1434 |         let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+     |                                            ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1439:20
+     |
+1439 |             crate::private_files::file_identity(&config.roots["data"].join("destination")).unwrap(),
+     |                    ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1468:33
+     |
+1468 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1470:26
+     |
+1470 |         (Some(16 << 10), file::NamespaceFailure::ReclaimFileSync),
+     |                          ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1471:26
+     |
+1471 |         (Some(16 << 10), file::NamespaceFailure::ReclaimParentSync),
+     |                          ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1472:16
+     |
+1472 |         (None, file::NamespaceFailure::ReclaimParentSync),
+     |                ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1486:44
+     |
+1486 |         let (result, allocations) = crate::allocation_tests::measure(|| match length {
+     |                                            ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1519:33
+     |
+1519 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1533:40
+     |
+1533 |     let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+     |                                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1541:16
+     |
+1541 |         crate::private_files::file_identity(&config.roots["data"].join("destination")).unwrap(),
+     |                ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1549:33
+     |
+1549 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1551:12
+     |
+1551 |     crate::private_files::create_directory(&config.roots["data"].join("nested")).unwrap();
+     |            ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1558:40
+     |
+1558 |     let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+     |                                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1576:33
+     |
+1576 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1579:16
+     |
+1579 |         crate::private_files::create_directory(&config.roots["data"].join("nested")).unwrap();
+     |                ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1600:44
+     |
+1600 |         let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+     |                                            ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1616:33
+     |
+1616 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1641:33
+     |
+1641 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1643:12
+     |
+1643 |     crate::private_files::create_directory(&config.roots["data"].join("nested")).unwrap();
+     |            ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1650:40
+     |
+1650 |     let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+     |                                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1681:33
+     |
+1681 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1696:20
+     |
+1696 |             crate::allocation_tests::measure(|| prepared.execute())
+     |                    ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1701:20
+     |
+1701 |             crate::allocation_tests::measure(|| prepared.execute())
+     |                    ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1720:33
+     |
+1720 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1733:20
+     |
+1733 |             crate::allocation_tests::measure(|| prepared.execute())
+     |                    ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1738:20
+     |
+1738 |             crate::allocation_tests::measure(|| prepared.execute())
+     |                    ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1754:33
+     |
+1754 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1757:12
+     |
+1757 |     crate::private_files::create_directory(&parent).unwrap();
+     |            ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1763:12
+     |
+1763 |     crate::private_files::create_directory(&parent).unwrap();
+     |            ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1764:40
+     |
+1764 |     let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+     |                                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1775:33
+     |
+1775 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1778:12
+     |
+1778 |     crate::private_files::create_directory(&parent).unwrap();
+     |            ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1782:12
+     |
+1782 |     crate::private_files::create_directory(&parent).unwrap();
+     |            ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1796:33
+     |
+1796 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1801:16
+     |
+1801 |         crate::private_files::create_directory(&parent).unwrap();
+     |                ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1827:33
+     |
+1827 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1835:12
+     |
+1835 |     crate::private_files::create_directory(root).unwrap();
+     |            ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1852:33
+     |
+1852 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1855:12
+     |
+1855 |     crate::private_files::create_directory(&parent).unwrap();
+     |            ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1860:12
+     |
+1860 |     crate::private_files::create_directory(&parent).unwrap();
+     |            ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1864:40
+     |
+1864 |     let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+     |                                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1876:33
+     |
+1876 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1908:24
+     |
+1908 |                 crate::allocation_tests::measure(|| prepared.execute())
+     |                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1913:24
+     |
+1913 |                 crate::allocation_tests::measure(|| prepared.execute())
+     |                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1933:33
+     |
+1933 |     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                                 ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1959:24
+     |
+1959 |                 crate::allocation_tests::measure(|| prepared.execute())
+     |                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1964:24
+     |
+1964 |                 crate::allocation_tests::measure(|| prepared.execute())
+     |                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1990:25
+     |
+1990 |     .map(|bytes| crate::test_utils::TestDiskMemory::required_reservation_bytes(bytes).unwrap())
+     |                         ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2000:22
+     |
+2000 |     let cap = crate::test_utils::TestDiskMemory::required_reservation_bytes(required.owner_bytes)
+     |                      ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2003:25
+     |
+2003 |     let memory = crate::test_utils::TestDiskMemory::new(cap, 4);
+     |                         ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2004:54
+     |
+2004 |     let crate::DiskOpenError::Failed(error) = crate::test_utils::retry_disk_registry(|| {
+     |                                                      ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `DiskOpenError` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2004:16
+     |
+2004 |     let crate::DiskOpenError::Failed(error) = crate::test_utils::retry_disk_registry(|| {
+     |                ^^^^^^^^^^^^^ could not find `DiskOpenError` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2025:29
+     |
+2025 |         let memory = crate::test_utils::TestDiskMemory::new(total, slots);
+     |                             ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2027:20
+     |
+2027 |             crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+     |                    ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2047:25
+     |
+2047 |     let memory = crate::test_utils::TestDiskMemory::new(total, 4);
+     |                         ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2048:23
+     |
+2048 |     let disk = crate::test_utils::retry_disk_registry(|| {
+     |                       ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2055:23
+     |
+2055 |     let same = crate::test_utils::retry_disk_registry(|| {
+     |                       ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2061:26
+     |
+2061 |     let foreign = crate::test_utils::TestDiskMemory::new(total, 4);
+     |                          ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2063:16
+     |
+2063 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+     |                ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2074:16
+     |
+2074 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+     |                ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2095:25
+     |
+2095 |     let memory = crate::test_utils::TestDiskMemory::new(total, 4);
+     |                         ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2097:16
+     |
+2097 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+     |                ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2111:23
+     |
+2111 |     let disk = crate::test_utils::retry_disk_registry(|| {
+     |                       ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2124:25
+     |
+2124 |     let memory = crate::test_utils::TestDiskMemory::new(total, 4);
+     |                         ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2125:23
+     |
+2125 |     let disk = crate::test_utils::retry_disk_registry(|| {
+     |                       ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2129:31
+     |
+2129 |     let other_memory = crate::test_utils::TestDiskMemory::new(1 << 20, 4);
+     |                               ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2130:36
+     |
+2130 |     let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+     |                                    ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `ScratchDisk` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2131:26
+     |
+2131 |     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), other_memory.clone());
+     |                          ^^^^^^^^^^^ could not find `ScratchDisk` in the crate root
+
+error[E0433]: cannot find `private_files` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2136:27
+     |
+2136 |     let identity = crate::private_files::file_identity(&empty).unwrap();
+     |                           ^^^^^^^^^^^^^ could not find `private_files` in the crate root
+
+error[E0433]: cannot find `NodeStore` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2138:16
+     |
+2138 |         crate::NodeStore::create_new(
+     |                ^^^^^^^^^ could not find `NodeStore` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2140:20
+     |
+2140 |             crate::test_utils::NODE_STORE_ID,
+     |                    ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `NodeStore` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2147:16
+     |
+2147 |         crate::NodeStore::open_existing(
+     |                ^^^^^^^^^ could not find `NodeStore` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2149:20
+     |
+2149 |             crate::test_utils::NODE_STORE_ID,
+     |                    ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `NodeStore` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2156:16
+     |
+2156 |         crate::NodeStore::initialize_owned_empty(
+     |                ^^^^^^^^^ could not find `NodeStore` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2159:20
+     |
+2159 |             crate::test_utils::NODE_STORE_ID,
+     |                    ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2178:25
+     |
+2178 |     let memory = crate::test_utils::TestDiskMemory::new(1, 1);
+     |                         ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2180:40
+     |
+2180 |     let (result, allocations) = crate::allocation_tests::measure(|| {
+     |                                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `DiskOpenError` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2183:41
+     |
+2183 |     assert!(matches!(result, Err(crate::DiskOpenError::RegistryBusy)));
+     |                                         ^^^^^^^^^^^^^ could not find `DiskOpenError` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2194:16
+     |
+2194 |         crate::allocation_tests::measure(|| NodeDisk::memory_requirements(&config));
+     |                ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2208:9
+     |
+2208 |         file::CloseStage::DataClosed,
+     |         ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2209:9
+     |
+2209 |         file::CloseStage::ResourcesClosed,
+     |         ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2211:29
+     |
+2211 |         let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                             ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2232:21
+     |
+2232 |         if stage == file::CloseStage::DataClosed {
+     |                     ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2242:44
+     |
+2242 |         let (result, allocations) = crate::allocation_tests::measure(|| {
+     |                                            ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2266:25
+     |
+2266 |     let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                         ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2285:16
+     |
+2285 |         stage: file::CloseStage::ResourcesClosed,
+     |                ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2313:29
+     |
+2313 |         let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                             ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2325:17
+     |
+2325 |                 file::NamespaceFailure::ReclaimParentSync as u8,
+     |                 ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2332:20
+     |
+2332 |             stage: file::CloseStage::ResourcesClosed,
+     |                    ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2367:25
+     |
+2367 |     let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                         ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2375:36
+     |
+2375 |     let ((), allocations) = crate::allocation_tests::measure(|| drop(prepared));
+     |                                    ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2384:40
+     |
+2384 |     let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+     |                                        ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `test_utils` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2408:25
+     |
+2408 |     let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     |                         ^^^^^^^^^^ could not find `test_utils` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2417:36
+     |
+2417 |     let ((), allocations) = crate::allocation_tests::measure(|| drop(prepared));
+     |                                    ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0433]: cannot find `allocation_tests` in `crate`
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2430:36
+     |
+2430 |     let ((), allocations) = crate::allocation_tests::measure(|| drop(prepared));
+     |                                    ^^^^^^^^^^^^^^^^ could not find `allocation_tests` in the crate root
+
+error[E0425]: cannot find type `NodeDiskConfig` in this scope
+ --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:7:42
+  |
+7 | fn installation() -> (tempfile::TempDir, NodeDiskConfig) {
+  |                                          ^^^^^^^^^^^^^^ not found in this scope
+
+error[E0422]: cannot find struct, variant or union type `NodeDiskConfig` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:11:18
+   |
+11 |     let config = NodeDiskConfig {
+   |                  ^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: cannot find type `BTreeMap` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:12:16
+   |
+12 |         roots: BTreeMap::from([("data".into(), root)]),
+   |                ^^^^^^^^ use of undeclared type `BTreeMap`
+   |
+help: consider importing one of these structs
+   |
+ 1 + use crate::BTreeMap;
+   |
+ 1 + use std::collections::BTreeMap;
+   |
+
+error[E0425]: cannot find type `NodeDiskConfig` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:25:17
+   |
+25 | fn open(config: NodeDiskConfig, memory: Arc<dyn NodeDiskMemoryAdmission>) -> Arc<NodeDisk> {
+   |                 ^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `Arc` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:25:41
+   |
+25 | fn open(config: NodeDiskConfig, memory: Arc<dyn NodeDiskMemoryAdmission>) -> Arc<NodeDisk> {
+   |                                         ^^^ not found in this scope
+   |
+help: consider importing one of these structs
+   |
+ 1 + use crate::Arc;
+   |
+ 1 + use std::sync::Arc;
+   |
+
+error[E0405]: cannot find trait `NodeDiskMemoryAdmission` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:25:49
+   |
+25 | fn open(config: NodeDiskConfig, memory: Arc<dyn NodeDiskMemoryAdmission>) -> Arc<NodeDisk> {
+   |                                                 ^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `Arc` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:25:78
+   |
+25 | fn open(config: NodeDiskConfig, memory: Arc<dyn NodeDiskMemoryAdmission>) -> Arc<NodeDisk> {
+   |                                                                              ^^^ not found in this scope
+   |
+help: consider importing one of these structs
+   |
+ 1 + use crate::Arc;
+   |
+ 1 + use std::sync::Arc;
+   |
+
+error[E0425]: cannot find type `NodeDisk` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:25:82
+   |
+25 | fn open(config: NodeDiskConfig, memory: Arc<dyn NodeDiskMemoryAdmission>) -> Arc<NodeDisk> {
+   |                                                                                  ^^^^^^^^ not found in this scope
+   |
+help: you might be missing a type parameter
+   |
+25 | fn open<NodeDisk>(config: NodeDiskConfig, memory: Arc<dyn NodeDiskMemoryAdmission>) -> Arc<NodeDisk> {
+   |        ++++++++++
+
+error[E0433]: cannot find module or crate `io` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:49:72
+   |
+49 |     let (result, allocations) = crate::allocation_tests::measure(|| -> io::Result<()> {
+   |                                                                        ^^ use of unresolved module or unlinked crate `io`
+   |
+   = help: you might be missing a crate named `io`
+help: a builtin type with a similar name exists
+   |
+49 -     let (result, allocations) = crate::allocation_tests::measure(|| -> io::Result<()> {
+49 +     let (result, allocations) = crate::allocation_tests::measure(|| -> i8::Result<()> {
+   |
+help: consider importing this module
+   |
+ 1 + use std::io;
+   |
+
+error[E0425]: cannot find type `NodeDiskConfig` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:131:18
+    |
+131 | fn seed(config: &NodeDiskConfig, name: &str, len: u64) {
+    |                  ^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `Arc` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:143:17
+    |
+143 | fn clean(disk: &Arc<NodeDisk>, names: &[&str]) {
+    |                 ^^^ not found in this scope
+    |
+help: consider importing one of these structs
+    |
+  1 + use crate::Arc;
+    |
+  1 + use std::sync::Arc;
+    |
+
+error[E0425]: cannot find type `NodeDisk` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:143:21
+    |
+143 | fn clean(disk: &Arc<NodeDisk>, names: &[&str]) {
+    |                     ^^^^^^^^ not found in this scope
+    |
+help: you might be missing a type parameter
+    |
+143 | fn clean<NodeDisk>(disk: &Arc<NodeDisk>, names: &[&str]) {
+    |         ++++++++++
+
+error[E0433]: cannot find type `Arc` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:182:19
+    |
+182 |     let pointer = Arc::as_ptr(&disk);
+    |                   ^^^ use of undeclared type `Arc`
+    |
+help: consider importing one of these structs
+    |
+  1 + use crate::Arc;
+    |
+  1 + use std::sync::Arc;
+    |
+
+error[E0433]: cannot find type `Arc` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:192:16
+    |
+192 |     assert_eq!(Arc::as_ptr(&reopened), pointer);
+    |                ^^^ use of undeclared type `Arc`
+    |
+help: consider importing one of these structs
+    |
+  1 + use crate::Arc;
+    |
+  1 + use std::sync::Arc;
+    |
+
+error[E0433]: cannot find type `Arc` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:223:13
+    |
+223 |     assert!(Arc::ptr_eq(&same, &disk));
+    |             ^^^ use of undeclared type `Arc`
+    |
+help: consider importing one of these structs
+    |
+  1 + use crate::Arc;
+    |
+  1 + use std::sync::Arc;
+    |
+
+error[E0433]: cannot find type `File` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:264:16
+    |
+264 |     let root = File::open(&config.roots["data"]).unwrap();
+    |                ^^^^ use of undeclared type `File`
+    |
+help: consider importing one of these structs
+    |
+  1 + use crate::File;
+    |
+  1 + use std::fs::File;
+    |
+
+error[E0433]: cannot find module or crate `io` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:279:9
+    |
+279 |         io::ErrorKind::StorageFull
+    |         ^^ use of unresolved module or unlinked crate `io`
+    |
+    = help: you might be missing a crate named `io`
+help: consider importing this enum
+    |
+  1 + use std::io::ErrorKind;
+    |
+help: if you import `ErrorKind`, refer to it directly
+    |
+279 -         io::ErrorKind::StorageFull
+279 +         ErrorKind::StorageFull
+    |
+
+error[E0433]: cannot find type `Ordering` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:349:31
+    |
+349 |     cancel.cancel_at.store(5, Ordering::Relaxed);
+    |                               ^^^^^^^^ use of undeclared type `Ordering`
+    |
+help: consider importing one of these enums
+    |
+  1 + use std::cmp::Ordering;
+    |
+  1 + use std::sync::atomic::Ordering;
+    |
+
+error[E0433]: cannot find type `BTreeMap` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:404:19
+    |
+404 |     child.roots = BTreeMap::from([("nested".into(), nested)]);
+    |                   ^^^^^^^^ use of undeclared type `BTreeMap`
+    |
+help: consider importing one of these structs
+    |
+  1 + use crate::BTreeMap;
+    |
+  1 + use std::collections::BTreeMap;
+    |
+
+error[E0433]: cannot find module or crate `io` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:463:9
+    |
+463 |         io::ErrorKind::StorageFull
+    |         ^^ use of unresolved module or unlinked crate `io`
+    |
+    = help: you might be missing a crate named `io`
+help: consider importing this enum
+    |
+  1 + use std::io::ErrorKind;
+    |
+help: if you import `ErrorKind`, refer to it directly
+    |
+463 -         io::ErrorKind::StorageFull
+463 +         ErrorKind::StorageFull
+    |
+
+error[E0433]: cannot find module or crate `io` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:565:9
+    |
+565 |         io::ErrorKind::WouldBlock
+    |         ^^ use of unresolved module or unlinked crate `io`
+    |
+    = help: you might be missing a crate named `io`
+help: consider importing this enum
+    |
+  1 + use std::io::ErrorKind;
+    |
+help: if you import `ErrorKind`, refer to it directly
+    |
+565 -         io::ErrorKind::WouldBlock
+565 +         ErrorKind::WouldBlock
+    |
+
+error[E0433]: cannot find type `Ordering` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:597:38
+    |
+597 |     disk.available_error.store(true, Ordering::Relaxed);
+    |                                      ^^^^^^^^ use of undeclared type `Ordering`
+    |
+help: consider importing one of these enums
+    |
+  1 + use std::cmp::Ordering;
+    |
+  1 + use std::sync::atomic::Ordering;
+    |
+
+error[E0433]: cannot find type `Ordering` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:609:39
+    |
+609 |     disk.available_error.store(false, Ordering::Relaxed);
+    |                                       ^^^^^^^^ use of undeclared type `Ordering`
+    |
+help: consider importing one of these enums
+    |
+  1 + use std::cmp::Ordering;
+    |
+  1 + use std::sync::atomic::Ordering;
+    |
+
+error[E0433]: cannot find type `File` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:715:21
+    |
+715 |     let contender = File::open(&path).unwrap();
+    |                     ^^^^ use of undeclared type `File`
+    |
+help: consider importing one of these structs
+    |
+  1 + use crate::File;
+    |
+  1 + use std::fs::File;
+    |
+
+error[E0433]: cannot find type `File` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:870:21
+    |
+870 |     let contender = File::open(&path).unwrap();
+    |                     ^^^^ use of undeclared type `File`
+    |
+help: consider importing one of these structs
+    |
+  1 + use crate::File;
+    |
+  1 + use std::fs::File;
+    |
+
+error[E0433]: cannot find type `Ordering` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:962:42
+    |
+962 |     disk.parent_sync_failure.store(true, Ordering::Relaxed);
+    |                                          ^^^^^^^^ use of undeclared type `Ordering`
+    |
+help: consider importing one of these enums
+    |
+  1 + use std::cmp::Ordering;
+    |
+  1 + use std::sync::atomic::Ordering;
+    |
+
+error[E0433]: cannot find type `Ordering` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:974:43
+    |
+974 |     disk.parent_sync_failure.store(false, Ordering::Relaxed);
+    |                                           ^^^^^^^^ use of undeclared type `Ordering`
+    |
+help: consider importing one of these enums
+    |
+  1 + use std::cmp::Ordering;
+    |
+  1 + use std::sync::atomic::Ordering;
+    |
+
+error[E0433]: cannot find type `Ordering` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1311:35
+     |
+1311 |             .store(failure as u8, Ordering::Relaxed);
+     |                                   ^^^^^^^^ use of undeclared type `Ordering`
+     |
+help: consider importing one of these enums
+     |
+   1 + use std::cmp::Ordering;
+     |
+   1 + use std::sync::atomic::Ordering;
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1313:48
+     |
+1313 |         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+     |                                                ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1313 -         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+1313 +         assert_eq!(result.unwrap_err().kind(), ErrorKind::Other);
+     |
+
+error[E0433]: cannot find type `Identity` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1322:24
+     |
+1322 |         let identity = Identity::of(&raw.metadata().unwrap());
+     |                        ^^^^^^^^ use of undeclared type `Identity`
+     |
+help: consider importing this struct
+     |
+   1 + use crate::Identity;
+     |
+
+error[E0433]: cannot find type `Ordering` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1433:35
+     |
+1433 |             .store(failure as u8, Ordering::Relaxed);
+     |                                   ^^^^^^^^ use of undeclared type `Ordering`
+     |
+help: consider importing one of these enums
+     |
+   1 + use std::cmp::Ordering;
+     |
+   1 + use std::sync::atomic::Ordering;
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1435:48
+     |
+1435 |         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+     |                                                ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1435 -         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+1435 +         assert_eq!(result.unwrap_err().kind(), ErrorKind::Other);
+     |
+
+error[E0433]: cannot find type `Ordering` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1485:35
+     |
+1485 |             .store(failure as u8, Ordering::Relaxed);
+     |                                   ^^^^^^^^ use of undeclared type `Ordering`
+     |
+help: consider importing one of these enums
+     |
+   1 + use std::cmp::Ordering;
+     |
+   1 + use std::sync::atomic::Ordering;
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1490:48
+     |
+1490 |         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+     |                                                ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1490 -         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+1490 +         assert_eq!(result.unwrap_err().kind(), ErrorKind::Other);
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1534:44
+     |
+1534 |     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+     |                                            ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1534 -     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+1534 +     assert_eq!(result.unwrap_err().kind(), ErrorKind::AlreadyExists);
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1559:44
+     |
+1559 |     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+     |                                            ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1559 -     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+1559 +     assert_eq!(result.unwrap_err().kind(), ErrorKind::NotFound);
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1601:48
+     |
+1601 |         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+     |                                                ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1601 -         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+1601 +         assert_eq!(result.unwrap_err().kind(), ErrorKind::NotFound);
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1658:9
+     |
+1658 |         io::ErrorKind::NotFound
+     |         ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1658 -         io::ErrorKind::NotFound
+1658 +         ErrorKind::NotFound
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1669:9
+     |
+1669 |         io::ErrorKind::NotFound
+     |         ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1669 -         io::ErrorKind::NotFound
+1669 +         ErrorKind::NotFound
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1703:48
+     |
+1703 |         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+     |                                                ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1703 -         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+1703 +         assert_eq!(result.unwrap_err().kind(), ErrorKind::NotFound);
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1740:48
+     |
+1740 |         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+     |                                                ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1740 -         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+1740 +         assert_eq!(result.unwrap_err().kind(), ErrorKind::AlreadyExists);
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1765:44
+     |
+1765 |     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+     |                                            ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1765 -     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+1765 +     assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidData);
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1787:9
+     |
+1787 |         io::ErrorKind::NotFound
+     |         ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1787 -         io::ErrorKind::NotFound
+1787 +         ErrorKind::NotFound
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1865:44
+     |
+1865 |     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+     |                                            ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1865 -     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+1865 +     assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidData);
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1915:52
+     |
+1915 |             assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+     |                                                    ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1915 -             assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+1915 +             assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidData);
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1966:52
+     |
+1966 |             assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+     |                                                    ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+1966 -             assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+1966 +             assert_eq!(result.unwrap_err().kind(), ErrorKind::AlreadyExists);
+     |
+
+error[E0425]: cannot find type `DiskMemoryRequirements` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1982:39
+     |
+1982 | fn installed_metadata_total(required: DiskMemoryRequirements) -> u64 {
+     |                                       ^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2011:30
+     |
+2011 |         error.downcast_ref::<io::Error>().unwrap().kind(),
+     |                              ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: a builtin type with a similar name exists
+     |
+2011 -         error.downcast_ref::<io::Error>().unwrap().kind(),
+2011 +         error.downcast_ref::<i8::Error>().unwrap().kind(),
+     |
+help: consider importing this module
+     |
+   1 + use std::io;
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2012:9
+     |
+2012 |         io::ErrorKind::OutOfMemory
+     |         ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+2012 -         io::ErrorKind::OutOfMemory
+2012 +         ErrorKind::OutOfMemory
+     |
+
+error[E0433]: cannot find type `Arc` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2059:13
+     |
+2059 |     assert!(Arc::ptr_eq(&disk, &same));
+     |             ^^^ use of undeclared type `Arc`
+     |
+help: consider importing one of these structs
+     |
+   1 + use crate::Arc;
+     |
+   1 + use std::sync::Arc;
+     |
+
+error[E0433]: cannot find type `Identity` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2218:24
+     |
+2218 |         let identity = Identity::of(&std::fs::metadata(config.roots["data"].join("file")).unwrap());
+     |                        ^^^^^^^^ use of undeclared type `Identity`
+     |
+help: consider importing this struct
+     |
+   1 + use crate::Identity;
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2245:48
+     |
+2245 |         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::StorageFull);
+     |                                                ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+2245 -         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::StorageFull);
+2245 +         assert_eq!(result.unwrap_err().kind(), ErrorKind::StorageFull);
+     |
+
+error[E0433]: cannot find type `Arc` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2271:17
+     |
+2271 |     let start = Arc::new(std::sync::Barrier::new(9));
+     |                 ^^^ use of undeclared type `Arc`
+     |
+help: consider importing one of these structs
+     |
+   1 + use crate::Arc;
+     |
+   1 + use std::sync::Arc;
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2298:9
+     |
+2298 |         io::ErrorKind::WouldBlock
+     |         ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+2298 -         io::ErrorKind::WouldBlock
+2298 +         ErrorKind::WouldBlock
+     |
+
+error[E0433]: cannot find type `Ordering` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2326:17
+     |
+2326 |                 Ordering::Relaxed,
+     |                 ^^^^^^^^ use of undeclared type `Ordering`
+     |
+help: consider importing one of these enums
+     |
+   1 + use std::cmp::Ordering;
+     |
+   1 + use std::sync::atomic::Ordering;
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2352:52
+     |
+2352 |             assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+     |                                                    ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing this enum
+     |
+   1 + use std::io::ErrorKind;
+     |
+help: if you import `ErrorKind`, refer to it directly
+     |
+2352 -             assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+2352 +             assert_eq!(result.unwrap_err().kind(), ErrorKind::Other);
+     |
+
+error[E0425]: cannot find type `Identity` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2395:73
+     |
+2395 | fn retired_descriptor_no_longer_names(fd: std::os::fd::RawFd, expected: Identity) {
+     |                                                                         ^^^^^^^^ not found in this scope
+     |
+help: consider importing this struct
+     |
+   1 + use crate::Identity;
+     |
+
+error[E0425]: cannot find function, tuple struct or tuple variant `Identity` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2400:20
+     |
+2400 |         assert_ne!(Identity(stat.st_dev as u64, stat.st_ino as u64), expected);
+     |                    ^^^^^^^^ not found in this scope
+     |
+help: consider importing this tuple struct
+     |
+   1 + use crate::Identity;
+     |
+
+error[E0433]: cannot find module or crate `io` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2402:20
+     |
+2402 |         assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+     |                    ^^ use of unresolved module or unlinked crate `io`
+     |
+     = help: you might be missing a crate named `io`
+help: consider importing one of these items
+     |
+   1 + use std::error::Error;
+     |
+   1 + use std::fmt::Error;
+     |
+   1 + use std::io::Error;
+     |
+   1 + use core::error::Error;
+     |
+     = and 1 other candidate
+help: if you import `Error`, refer to it directly
+     |
+2402 -         assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+2402 +         assert_eq!(Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+     |
+
+warning: unused imports: `Arc`, `BTreeMap`, `HashMap`, `Mutex`, `Weak`, `ffi::CString`, `fs::File`, and `path::PathBuf`
+ --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:25
+  |
+2 | use std::{collections::{BTreeMap,HashMap},ffi::CString,fs::File,path::PathBuf,sync::{Arc,Mutex,Weak}};
+  |                         ^^^^^^^^ ^^^^^^^  ^^^^^^^^^^^^ ^^^^^^^^ ^^^^^^^^^^^^^        ^^^ ^^^^^ ^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `ledger::AccountedInode`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:36:5
+   |
+36 | use ledger::AccountedInode;
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:27:9
+   |
+27 |         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+   |         ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:27:58
+   |
+27 |         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+   |                                                          ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:44:41
+   |
+44 |         .create_file("data", &relative, DiskWork::Foreground)
+   |                                         ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:46:38
+   |
+46 |     file.reserve_growth(0, 64 << 10, DiskWork::Foreground)
+   |                                      ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:81:49
+   |
+81 |         .create_file("data", Path::new("file"), DiskWork::Foreground)
+   |                                                 ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:83:38
+   |
+83 |     file.reserve_growth(0, 32 << 10, DiskWork::Foreground)
+   |                                      ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:99:39
+   |
+99 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+   |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:114:49
+    |
+114 |         .create_file("data", Path::new("file"), DiskWork::Foreground)
+    |                                                 ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:116:39
+    |
+116 |     file.reserve_growth(0, 128 << 10, DiskWork::Foreground)
+    |                                       ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:126:39
+    |
+126 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:145:21
+    |
+145 |     disk.reconcile(&CensusCancellation::default()).unwrap();
+    |                     ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:167:25
+    |
+167 |         disk.reconcile(&CensusCancellation::default()).unwrap();
+    |                         ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:185:9
+    |
+185 |         NodeDisk::open(
+    |         ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:188:14
+    |
+188 |             &CensusCancellation::default(),
+    |              ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:203:52
+    |
+203 |         .create_file("data", Path::new("pending"), DiskWork::Foreground)
+    |                                                    ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:205:38
+    |
+205 |     file.reserve_growth(0, 64 << 10, DiskWork::Foreground)
+    |                                      ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:211:31
+    |
+211 |     assert_eq!(stopped.phase, NodeDiskPhase::Failed);
+    |                               ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:216:9
+    |
+216 |         NodeDisk::open(
+    |         ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:219:14
+    |
+219 |             &CensusCancellation::default(),
+    |              ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:225:21
+    |
+225 |     disk.reconcile(&CensusCancellation::default()).unwrap();
+    |                     ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:237:51
+    |
+237 |         .create_file("data", Path::new("sparse"), DiskWork::Foreground)
+    |                                                   ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:239:39
+    |
+239 |     file.reserve_growth(0, 128 << 10, DiskWork::Foreground)
+    |                                       ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:243:43
+    |
+243 |         file.reserve_growth(0, 256 << 10, DiskWork::Foreground)
+    |                                           ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:254:21
+    |
+254 |     disk.reconcile(&CensusCancellation::default()).unwrap();
+    |                     ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0425]: cannot find function `filesystem` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:265:21
+    |
+265 |     let (_, unit) = filesystem(&root).unwrap();
+    |                     ^^^^^^^^^^ not found in this scope
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:270:49
+    |
+270 |         .create_file("data", Path::new("data"), DiskWork::Foreground)
+    |                                                 ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:272:38
+    |
+272 |     file.reserve_growth(0, 2 * unit, DiskWork::Foreground)
+    |                                      ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:276:42
+    |
+276 |         file.reserve_growth(0, 3 * unit, DiskWork::Foreground)
+    |                                          ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:289:38
+    |
+289 |     file.reserve_growth(0, 3 * unit, DiskWork::Maintenance)
+    |                                      ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:332:39
+    |
+332 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:348:18
+    |
+348 |     let cancel = CensusCancellation::default();
+    |                  ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:351:51
+    |
+351 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+    |                                                   ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:361:51
+    |
+361 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+    |                                                   ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:364:14
+    |
+364 |             &CensusCancellation::default()
+    |              ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:382:51
+    |
+382 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open(
+    |                                                   ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:385:14
+    |
+385 |             &CensusCancellation::default()
+    |              ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:392:51
+    |
+392 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open(
+    |                                                   ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:395:14
+    |
+395 |             &CensusCancellation::default()
+    |              ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:406:51
+    |
+406 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open(
+    |                                                   ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:409:14
+    |
+409 |             &CensusCancellation::default()
+    |              ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:416:51
+    |
+416 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open(
+    |                                                   ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:419:14
+    |
+419 |             &CensusCancellation::default()
+    |              ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:456:52
+    |
+456 |         .create_file("data", Path::new("pending"), DiskWork::Foreground)
+    |                                                    ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:458:43
+    |
+458 |     file.reserve_growth(0, 2 * disk.unit, DiskWork::Foreground)
+    |                                           ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:472:21
+    |
+472 |     disk.reconcile(&CensusCancellation::default()).unwrap();
+    |                     ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:491:49
+    |
+491 |         .create_file("data", Path::new("file"), DiskWork::Foreground)
+    |                                                 ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:493:39
+    |
+493 |     file.reserve_growth(0, disk.unit, DiskWork::Foreground)
+    |                                       ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:501:55
+    |
+501 |         file.reserve_growth(disk.unit, 2 * disk.unit, DiskWork::Foreground)
+    |                                                       ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:514:39
+    |
+514 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:519:21
+    |
+519 |     disk.reconcile(&CensusCancellation::default()).unwrap();
+    |                     ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:531:56
+    |
+531 |         disk.create_file("data", Path::new("blocked"), DiskWork::Foreground)
+    |                                                        ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:574:39
+    |
+574 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:594:49
+    |
+594 |         .create_file("data", Path::new("file"), DiskWork::Foreground)
+    |                                                 ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:599:43
+    |
+599 |         file.reserve_growth(0, disk.unit, DiskWork::Foreground)
+    |                                           ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:604:39
+    |
+604 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:606:29
+    |
+606 |     assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+    |                             ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:610:21
+    |
+610 |     disk.reconcile(&CensusCancellation::default()).unwrap();
+    |                     ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:632:39
+    |
+632 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:664:39
+    |
+664 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:680:46
+    |
+680 |     file.reserve_growth(64 << 10, 128 << 10, DiskWork::Foreground)
+    |                                              ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:698:39
+    |
+698 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:728:39
+    |
+728 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:737:45
+    |
+737 |         .reserve_growth(32 << 10, 64 << 10, DiskWork::Foreground)
+    |                                             ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:789:43
+    |
+789 |         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    |                                           ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:792:33
+    |
+792 |         assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+    |                                 ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:803:43
+    |
+803 |         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    |                                           ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:806:25
+    |
+806 |         disk.reconcile(&CensusCancellation::default()).unwrap();
+    |                         ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:839:39
+    |
+839 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:855:49
+    |
+855 |         .create_file("data", Path::new("node"), DiskWork::Foreground)
+    |                                                 ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:862:34
+    |
+862 |     file.reserve_growth(0, 8192, DiskWork::Foreground).unwrap();
+    |                                  ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:935:43
+    |
+935 |         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    |                                           ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:954:49
+    |
+954 |         .create_file("data", Path::new("node"), DiskWork::Foreground)
+    |                                                 ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:956:38
+    |
+956 |     file.reserve_growth(0, 64 << 10, DiskWork::Foreground)
+    |                                      ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:972:39
+    |
+972 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:976:29
+    |
+976 |     assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+    |                             ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:981:21
+    |
+981 |     disk.reconcile(&CensusCancellation::default()).unwrap();
+    |                     ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:997:51
+    |
+997 |         .create_file("data", Path::new("staged"), DiskWork::Maintenance)
+    |                                                   ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:999:34
+    |
+999 |     file.reserve_growth(0, 4096, DiskWork::Maintenance).unwrap();
+    |                                  ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1026:50
+     |
+1026 |         .create_file("data", Path::new("first"), DiskWork::Foreground)
+     |                                                  ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1029:54
+     |
+1029 |         .create_file("data", Path::new("published"), DiskWork::Foreground)
+     |                                                      ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1037:39
+     |
+1037 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1050:50
+     |
+1050 |         .create_file("data", Path::new("first"), DiskWork::Foreground)
+     |                                                  ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1062:39
+     |
+1062 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1071:53
+     |
+1071 |         .create_file("data", Path::new("retained"), DiskWork::Foreground)
+     |                                                     ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1077:30
+     |
+1077 |     assert_eq!(failed.phase, NodeDiskPhase::Failed);
+     |                              ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1082:29
+     |
+1082 |     assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+     |                             ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1084:21
+     |
+1084 |     disk.reconcile(&CensusCancellation::default()).unwrap();
+     |                     ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1111:39
+     |
+1111 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1115:21
+     |
+1115 |     disk.reconcile(&CensusCancellation::default()).unwrap();
+     |                     ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1130:49
+     |
+1130 |         .create_file("data", Path::new("file"), DiskWork::Foreground)
+     |                                                 ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1133:39
+     |
+1133 |     file.reserve_growth(0, 256 << 10, DiskWork::Foreground)
+     |                                       ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1181:55
+     |
+1181 |             disk.create_file("data", Path::new(name), DiskWork::Foreground)
+     |                                                       ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1186:53
+     |
+1186 |         disk.create_file("data", Path::new("four"), DiskWork::Foreground)
+     |                                                     ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1190:39
+     |
+1190 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1198:21
+     |
+1198 |     disk.reconcile(&CensusCancellation::default()).unwrap();
+     |                     ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1208:53
+     |
+1208 |             .create_file("data", Path::new("file"), DiskWork::Foreground)
+     |                                                     ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1210:38
+     |
+1210 |         file.reserve_growth(0, 4096, DiskWork::Foreground).unwrap();
+     |                                      ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1246:49
+     |
+1246 |         .create_file("data", Path::new("file"), DiskWork::Foreground)
+     |                                                 ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1248:34
+     |
+1248 |     file.reserve_growth(0, 4096, DiskWork::Foreground).unwrap();
+     |                                  ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1258:41
+     |
+1258 |         file.reserve_growth(4096, 8192, DiskWork::Foreground)
+     |                                         ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1261:39
+     |
+1261 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Paused);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1276:58
+     |
+1276 |             .prepare_file("data", Path::new(&name), Some(DiskWork::Foreground))
+     |                                                          ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1308:62
+     |
+1308 |             .prepare_file("data", Path::new("created"), Some(DiskWork::Foreground))
+     |                                                              ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1316:36
+     |
+1316 |         assert_eq!(snapshot.phase, NodeDiskPhase::Failed);
+     |                                    ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1340:57
+     |
+1340 |         .prepare_file("data", Path::new("absent"), Some(DiskWork::Foreground))
+     |                                                         ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1347:39
+     |
+1347 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1350:51
+     |
+1350 |         .create_file("data", Path::new("source"), DiskWork::Foreground)
+     |                                                   ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1360:39
+     |
+1360 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1378:39
+     |
+1378 |         .create_file("data", &source, DiskWork::Foreground)
+     |                                       ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1380:38
+     |
+1380 |     file.reserve_growth(0, 32 << 10, DiskWork::Foreground)
+     |                                      ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1421:55
+     |
+1421 |             .create_file("data", Path::new("source"), DiskWork::Foreground)
+     |                                                       ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1423:42
+     |
+1423 |         file.reserve_growth(0, 32 << 10, DiskWork::Foreground)
+     |                                          ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1443:36
+     |
+1443 |         assert_eq!(snapshot.phase, NodeDiskPhase::Failed);
+     |                                    ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0599]: no associated function or constant named `root` found for struct `NamespaceBinding` in the current scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1447:41
+     |
+1447 |         let binding = NamespaceBinding::root(disk.roots["data"].identity).child(c"destination");
+     |                                         ^^^^ associated function or constant not found in `NamespaceBinding`
+     |
+    ::: /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:4:46
+     |
+   4 | #[derive(Clone, Copy, Debug, PartialEq, Eq)] struct NamespaceBinding([u8;32]);
+     |                                              ----------------------- associated function or constant `root` not found for this struct
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1477:53
+     |
+1477 |             .create_file("data", Path::new("file"), DiskWork::Foreground)
+     |                                                     ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1479:42
+     |
+1479 |         file.reserve_growth(0, 32 << 10, DiskWork::Foreground)
+     |                                          ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1493:36
+     |
+1493 |         assert_eq!(snapshot.phase, NodeDiskPhase::Failed);
+     |                                    ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1506:25
+     |
+1506 |         disk.reconcile(&CensusCancellation::default()).unwrap();
+     |                         ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1523:50
+     |
+1523 |         .create_file("data", Path::new("first"), DiskWork::Foreground)
+     |                                                  ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1526:56
+     |
+1526 |         .create_file("data", Path::new("destination"), DiskWork::Foreground)
+     |                                                        ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1536:39
+     |
+1536 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1561:39
+     |
+1561 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1565:58
+     |
+1565 |         .create_file("data", Path::new("nested/absent"), DiskWork::Foreground)
+     |                                                          ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1586:64
+     |
+1586 |                 .create_file("data", Path::new("nested/file"), DiskWork::Foreground)
+     |                                                                ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1588:46
+     |
+1588 |             file.reserve_growth(0, 32 << 10, DiskWork::Foreground)
+     |                                              ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1603:43
+     |
+1603 |         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     |                                           ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1607:25
+     |
+1607 |         disk.reconcile(&CensusCancellation::default()).unwrap();
+     |                         ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1630:47
+     |
+1630 |             assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     |                                               ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1660:39
+     |
+1660 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1671:39
+     |
+1671 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1674:61
+     |
+1674 |         .create_file("data", Path::new("nested/published"), DiskWork::Foreground)
+     |                                                             ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1687:59
+     |
+1687 |             disk.create_file("data", Path::new("source"), DiskWork::Foreground)
+     |                                                           ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1699:65
+     |
+1699 |                 .prepare_file("data", Path::new("target"), Some(DiskWork::Foreground))
+     |                                                                 ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1706:43
+     |
+1706 |         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     |                                           ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1713:29
+     |
+1713 |             disk.reconcile(&CensusCancellation::default()).unwrap();
+     |                             ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1728:59
+     |
+1728 |                 .create_file("data", Path::new("source"), DiskWork::Foreground)
+     |                                                           ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1736:65
+     |
+1736 |                 .prepare_file("data", Path::new("target"), Some(DiskWork::Foreground))
+     |                                                                 ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1742:43
+     |
+1742 |         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     |                                           ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1767:39
+     |
+1767 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1769:21
+     |
+1769 |     disk.reconcile(&CensusCancellation::default()).unwrap();
+     |                     ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1789:39
+     |
+1789 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1813:43
+     |
+1813 |         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     |                                           ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1840:39
+     |
+1840 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1867:39
+     |
+1867 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1889:57
+     |
+1889 |                     .reserve_growth(32 << 10, reserved, DiskWork::Foreground)
+     |                                                         ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1893:63
+     |
+1893 |                 disk.create_file("data", Path::new("source"), DiskWork::Foreground)
+     |                                                               ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1911:69
+     |
+1911 |                     .prepare_file("data", Path::new("target"), Some(DiskWork::Foreground))
+     |                                                                     ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1917:47
+     |
+1917 |             assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     |                                               ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1941:53
+     |
+1941 |                 .reserve_growth(32 << 10, 64 << 10, DiskWork::Foreground)
+     |                                                     ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1951:63
+     |
+1951 |                 disk.create_file("data", Path::new("source"), DiskWork::Foreground)
+     |                                                               ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1962:69
+     |
+1962 |                     .prepare_file("data", Path::new("target"), Some(DiskWork::Foreground))
+     |                                                                     ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1968:47
+     |
+1968 |             assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     |                                               ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:1999:20
+     |
+1999 |     let required = NodeDisk::memory_requirements(&config).unwrap();
+     |                    ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2005:9
+     |
+2005 |         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     |         ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2005:58
+     |
+2005 |         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     |                                                          ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2024:46
+     |
+2024 |         let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+     |                                              ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2027:55
+     |
+2027 |             crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+     |                                                       ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2030:18
+     |
+2030 |                 &CensusCancellation::default()
+     |                  ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find module or crate `census` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2039:9
+     |
+2039 |         census::lock(&raw, libc::LOCK_EX).unwrap();
+     |         ^^^^^^ use of unresolved module or unlinked crate `census`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/census.rs, use `mod census` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod census;
+     |
+
+error[E0433]: cannot find module or crate `libc` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2039:28
+     |
+2039 |         census::lock(&raw, libc::LOCK_EX).unwrap();
+     |                            ^^^^ use of unresolved module or unlinked crate `libc`
+     |
+     = help: you might be missing a crate named `libc`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2046:42
+     |
+2046 |     let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+     |                                          ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2049:9
+     |
+2049 |         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     |         ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2049:58
+     |
+2049 |         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     |                                                          ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2056:9
+     |
+2056 |         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     |         ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2056:58
+     |
+2056 |         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     |                                                          ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2063:51
+     |
+2063 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+     |                                                   ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2066:14
+     |
+2066 |             &CensusCancellation::default()
+     |              ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2074:51
+     |
+2074 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+     |                                                   ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2077:14
+     |
+2077 |             &CensusCancellation::default()
+     |              ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2094:42
+     |
+2094 |     let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+     |                                          ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2097:51
+     |
+2097 |         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+     |                                                   ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2100:14
+     |
+2100 |             &CensusCancellation::default()
+     |              ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find module or crate `census` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2108:5
+     |
+2108 |     census::lock(&raw, libc::LOCK_EX).unwrap();
+     |     ^^^^^^ use of unresolved module or unlinked crate `census`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/census.rs, use `mod census` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod census;
+     |
+
+error[E0433]: cannot find module or crate `libc` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2108:24
+     |
+2108 |     census::lock(&raw, libc::LOCK_EX).unwrap();
+     |                        ^^^^ use of unresolved module or unlinked crate `libc`
+     |
+     = help: you might be missing a crate named `libc`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2112:9
+     |
+2112 |         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     |         ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2112:58
+     |
+2112 |         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     |                                                          ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2123:42
+     |
+2123 |     let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+     |                                          ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2126:9
+     |
+2126 |         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     |         ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2126:58
+     |
+2126 |         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     |                                                          ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2169:39
+     |
+2169 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0425]: cannot find function `registry` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2179:17
+     |
+2179 |     let guard = registry().lock();
+     |                 ^^^^^^^^ not found in this scope
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2181:9
+     |
+2181 |         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     |         ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2181:58
+     |
+2181 |         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     |                                                          ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2194:45
+     |
+2194 |         crate::allocation_tests::measure(|| NodeDisk::memory_requirements(&config));
+     |                                             ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find type `NodeDisk` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2201:13
+     |
+2201 |     assert!(NodeDisk::memory_requirements(&config).is_err());
+     |             ^^^^^^^^ use of undeclared type `NodeDisk`
+
+error[E0433]: cannot find module or crate `libc` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2234:33
+     |
+2234 |             assert_ne!(unsafe { libc::fcntl(parent, libc::F_GETFD) }, -1);
+     |                                 ^^^^ use of unresolved module or unlinked crate `libc`
+     |
+     = help: you might be missing a crate named `libc`
+
+error[E0433]: cannot find module or crate `libc` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2234:53
+     |
+2234 |             assert_ne!(unsafe { libc::fcntl(parent, libc::F_GETFD) }, -1);
+     |                                                     ^^^^ use of unresolved module or unlinked crate `libc`
+     |
+     = help: you might be missing a crate named `libc`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2243:64
+     |
+2243 |             disk.create_file("data", Path::new("replacement"), DiskWork::Foreground)
+     |                                                                ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2251:33
+     |
+2251 |         assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+     |                                 ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2256:25
+     |
+2256 |         disk.reconcile(&CensusCancellation::default()).unwrap();
+     |                         ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2306:39
+     |
+2306 |     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     |                                       ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2318:49
+     |
+2318 |         file.reserve_growth(32 << 10, 64 << 10, DiskWork::Foreground)
+     |                                                 ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2353:37
+     |
+2353 |             assert_eq!(after.phase, NodeDiskPhase::Failed);
+     |                                     ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `NodeDiskPhase` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2357:37
+     |
+2357 |             assert_eq!(after.phase, NodeDiskPhase::Open);
+     |                                     ^^^^^^^^^^^^^ use of undeclared type `NodeDiskPhase`
+
+error[E0433]: cannot find type `CensusCancellation` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2361:25
+     |
+2361 |         disk.reconcile(&CensusCancellation::default()).unwrap();
+     |                         ^^^^^^^^^^^^^^^^^^ use of undeclared type `CensusCancellation`
+
+error[E0433]: cannot find module or crate `libc` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2397:17
+     |
+2397 |     if unsafe { libc::fstat(fd, &mut stat) } == 0 {
+     |                 ^^^^ use of unresolved module or unlinked crate `libc`
+     |
+     = help: you might be missing a crate named `libc`
+
+error[E0433]: cannot find module or crate `libc` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2402:68
+     |
+2402 |         assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+     |                                                                    ^^^^ use of unresolved module or unlinked crate `libc`
+     |
+     = help: you might be missing a crate named `libc`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2413:60
+     |
+2413 |         .prepare_file("data", Path::new("uncreated"), Some(DiskWork::Foreground))
+     |                                                            ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find type `DiskWork` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2423:52
+     |
+2423 |         .create_file("data", Path::new("created"), DiskWork::Foreground)
+     |                                                    ^^^^^^^^ use of undeclared type `DiskWork`
+
+error[E0433]: cannot find module or crate `tempfile` in this scope
+ --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:7:23
+  |
+7 | fn installation() -> (tempfile::TempDir, NodeDiskConfig) {
+  |                       ^^^^^^^^ use of unresolved module or unlinked crate `tempfile`
+  |
+  = help: you might be missing a crate named `tempfile`
+
+error[E0433]: cannot find module or crate `file` in this scope
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:552:51
+    |
+552 |     *disk.after_file_close.lock().unwrap() = Some(file::ClosePause {
+    |                                                   ^^^^ use of unresolved module or unlinked crate `file`
+    |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+   --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+    |
+  2 + mod file;
+    |
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2223:55
+     |
+2223 |         *disk.after_file_close.lock().unwrap() = Some(file::ClosePause {
+     |                                                       ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2284:51
+     |
+2284 |     *disk.after_file_close.lock().unwrap() = Some(file::ClosePause {
+     |                                                   ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find module or crate `file` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2331:55
+     |
+2331 |         *disk.after_file_close.lock().unwrap() = Some(file::ClosePause {
+     |                                                       ^^^^ use of unresolved module or unlinked crate `file`
+     |
+help: to make use of source file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs, use `mod file` in this file to declare the module
+    -->  /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/native-01/ledger_tests.rs:2:1
+     |
+   2 + mod file;
+     |
+
+error[E0433]: cannot find module or crate `libc` in this scope
+    --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs:2396:19
+     |
+2396 |     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+     |                   ^^^^ use of unresolved module or unlinked crate `libc`
+     |
+     = help: you might be missing a crate named `libc`
+
+error: aborting due to 449 previous errors; 2 warnings emitted
+
+Some errors have detailed explanations: E0405, E0422, E0425, E0433, E0599.
+For more information about an error, try `rustc --explain E0405`.

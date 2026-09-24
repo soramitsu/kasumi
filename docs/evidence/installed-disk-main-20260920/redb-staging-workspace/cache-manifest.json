@@ -1,0 +1,17 @@
+{
+  "status": "TARGET_ONLY_NATIVE_EXTRACTED_TESTED_NOT_FULL_VENDOR_QUALIFIED",
+  "patch_sha256": "b2dc5f78c3c77633593cbf416cd12f541bcccc15e3e240cc703ea781680e27a9",
+  "file": {
+    "path": "vendor/redb-4.2.0/src/tree_store/page_store/lru_cache.rs",
+    "before_sha256": "d17a92a700a492dbbb3a8989722d1e43c2da7c1df6d7e742a3de8c90f797bac8",
+    "proposed_sha256": "3dad9116b06284f993544620885cc57ef7b382f0fc77152eb88e363e68450189"
+  },
+  "native_receipt_sha256": "047c425886a15548d6dd3d4b0ad7f165a4355eea4795c61783a68ed7050aa0a3",
+  "review_sha256": "1a7ffbee37216f10e02df45b126b5f6e26f29385075e9d41e87d52f70ea2072c",
+  "apply_check": {
+    "exit_code": 0,
+    "stderr": ""
+  },
+  "actual_source_modified": false,
+  "cargo_invoked": false
+}

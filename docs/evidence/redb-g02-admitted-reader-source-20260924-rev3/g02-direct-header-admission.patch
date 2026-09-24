@@ -1,0 +1,752 @@
+--- a/crates/kasumi-engine/src/admission/disk_memory.rs
++++ b/crates/kasumi-engine/src/admission/disk_memory.rs
+@@ -1,8 +1,15 @@
+ //! Mandatory lower-layer resident charge ownership, independent of a facade.
+-use super::{MemoryCore, Reservation, allocation_bytes};
++use super::{ALLOCATION_ALLOWANCE, ChargeKind, MemoryCore, Reservation, ReserveKindError};
+ use std::{io, sync::Arc};
+ 
+ impl MemoryCore {
++    fn installed_reservation_bytes(workspace: u64) -> Option<u64> {
++        workspace.checked_add(
++            u64::try_from(std::mem::size_of::<Reservation>())
++                .ok()?
++                .checked_add(ALLOCATION_ALLOWANCE)?,
++        )
++    }
+     /// Bind an engine owner to the exact lower-layer governor before any work.
+     pub(crate) fn require_store_memory(
+         self: &Arc<Self>,
+@@ -20,8 +27,7 @@
+     /// Disk workspace plus this provider's real opaque lease allocation.
+     /// This checked planning helper allocates neither workspace nor a charge.
+     pub fn required_installed_reservation_bytes(workspace: u64) -> anyhow::Result<u64> {
+-        workspace
+-            .checked_add(allocation_bytes::<Reservation>(1)?)
++        Self::installed_reservation_bytes(workspace)
+             .ok_or_else(|| anyhow::anyhow!("installed reservation workspace overflow"))
+     }
+ }
+@@ -34,11 +40,16 @@
+         workspace: u64,
+     ) -> io::Result<kasumi_store::DiskMemoryLease> {
+         let bytes =
+-            Self::required_installed_reservation_bytes(workspace).map_err(io::Error::other)?;
++            Self::installed_reservation_bytes(workspace).ok_or(io::ErrorKind::OutOfMemory)?;
+         // Admission covers the opaque box before allocating it. The actual
+         // Reservation keeps the shared core alive until its actual box is destroyed
+         // and only then releases the resident byte/slot credit.
+-        let charge = self.reserve_resident(bytes).map_err(io::Error::other)?;
++        let charge = self
++            .reserve_kind_raw(bytes, None, ChargeKind::Resident)
++            .map_err(|error| match error {
++                ReserveKindError::Exhausted => io::ErrorKind::OutOfMemory,
++                ReserveKindError::IdentifierExhausted => io::ErrorKind::Other,
++            })?;
+         Ok(kasumi_store::DiskMemoryLease::new(charge))
+     }
+ }
+@@ -85,7 +96,15 @@
+         config.max_inflight_bytes = Some(baseline + required - 1);
+         let node = NodeAdmission::with_fixed_memory(config, 2 << 30, 0).unwrap();
+         let before = node.snapshot();
+-        assert!(node.memory().clone().reserve_installed(1234).is_err());
++        assert_eq!(
++            node.memory()
++                .clone()
++                .reserve_installed(1234)
++                .err()
++                .unwrap()
++                .kind(),
++            io::ErrorKind::OutOfMemory,
++        );
+         let after = node.snapshot();
+         assert_eq!(after.reserved_bytes, before.reserved_bytes);
+         assert_eq!(after.live_reservations, before.live_reservations);
+--- a/crates/kasumi-engine/src/admission.rs
++++ b/crates/kasumi-engine/src/admission.rs
+@@ -247,6 +247,11 @@
+     Resident,
+     Bookkeeping,
+ }
++#[derive(Clone, Copy)]
++enum ReserveKindError {
++    Exhausted,
++    IdentifierExhausted,
++}
+ struct Charge {
+     bytes: u64,
+     kind: ChargeKind,
+@@ -657,6 +662,26 @@
+         cancellation: Option<QueryCancellation>,
+         kind: ChargeKind,
+     ) -> Result<Reservation> {
++        self.reserve_kind_raw(bytes, cancellation, kind)
++            .map_err(|error| match error {
++                ReserveKindError::Exhausted => Error::new(
++                    ErrorCode::ResourceExhausted,
++                    "node memory or work admission budget exhausted",
++                ),
++                ReserveKindError::IdentifierExhausted => {
++                    Error::new(ErrorCode::Unavailable, "admission identifier exhausted")
++                }
++            })
++    }
++    // Installed storage needs a typed refusal before its first resident buffer
++    // allocation or physical read. This path avoids constructing a rich Error
++    // for the refusal; the existing sampler may have its own workspace.
++    fn reserve_kind_raw(
++        self: &Arc<Self>,
++        bytes: u64,
++        cancellation: Option<QueryCancellation>,
++        kind: ChargeKind,
++    ) -> std::result::Result<Reservation, ReserveKindError> {
+         let mut state = self.data.state.lock().unwrap_or_else(|p| p.into_inner());
+         self.data.refresh_stale(&mut state);
+         let total = state.bytes.checked_add(bytes);
+@@ -673,16 +698,13 @@
+                         .is_none_or(|observed| observed >= self.data.high)
+             })
+         {
+-            return Err(Error::new(
+-                ErrorCode::ResourceExhausted,
+-                "node memory or work admission budget exhausted",
+-            ));
++            return Err(ReserveKindError::Exhausted);
+         }
+         let id = state.next;
+         state.next = state
+             .next
+             .checked_add(1)
+-            .ok_or_else(|| Error::new(ErrorCode::Unavailable, "admission identifier exhausted"))?;
++            .ok_or(ReserveKindError::IdentifierExhausted)?;
+         let slot = state.free.expect("checked free charge slot");
+         state.free = state.slots[slot].next_free;
+         state.slots[slot] = ChargeSlot {
+--- a/crates/kasumi-store/src/node_file.rs
++++ b/crates/kasumi-store/src/node_file.rs
+@@ -442,6 +442,36 @@
+             .map_err(|_| OwnerFailed)
+     }
+ 
++    fn reserve_workspace(
++        &self,
++        bytes: u64,
++    ) -> std::result::Result<Box<dyn redb::ResidentLease>, AdmissionError> {
++        self.check_owner()
++            .map_err(|_| AdmissionError::OwnerFailed)?;
++        // The provider accounts for its own reservation token. This addition
++        // admits the returned trait-object box before constructing it.
++        let bytes = crate::disk_memory::add(
++            bytes,
++            crate::disk_memory::allocation::<crate::DiskMemoryLease>(1)
++                .map_err(|_| AdmissionError::CapacityDenied)?,
++        )
++        .map_err(|_| AdmissionError::CapacityDenied)?;
++        let lease = self
++            .disk
++            .memory()
++            .clone()
++            .reserve_installed(bytes)
++            .map_err(|error| {
++                if error.kind() == io::ErrorKind::OutOfMemory {
++                    AdmissionError::CapacityDenied
++                } else {
++                    self.disk.fail();
++                    AdmissionError::OwnerFailed
++                }
++            })?;
++        Ok(Box::new(lease))
++    }
++
+     fn reserve_growth(
+         &self,
+         current_len: u64,
+--- a/crates/kasumi-store/src/retained_spool_tests.rs
++++ b/crates/kasumi-store/src/retained_spool_tests.rs
+@@ -52,6 +52,14 @@
+     }
+ }
+ impl StorageAdmission for AggregateBackend {
++    fn reserve_workspace(
++        &self,
++        _bytes: u64,
++    ) -> core::result::Result<Box<dyn redb::ResidentLease>, redb::AdmissionError> {
++        self.check_owner()
++            .map_err(|_| redb::AdmissionError::OwnerFailed)?;
++        Ok(Box::new(()))
++    }
+     fn check_owner(&self) -> Result<(), OwnerFailed> {
+         self.with(|spool| spool.check_owner())
+             .map_err(|_| OwnerFailed)
+--- a/crates/kasumi-store/src/scratch_table.rs
++++ b/crates/kasumi-store/src/scratch_table.rs
+@@ -32,6 +32,35 @@
+ impl StorageAdmission for Owner {
+     fn check_owner(&self) -> std::result::Result<(), OwnerFailed> {
+         self.with(|_| Ok(())).map_err(|_| OwnerFailed)
++    }
++    fn reserve_workspace(
++        &self,
++        bytes: u64,
++    ) -> std::result::Result<Box<dyn redb::ResidentLease>, AdmissionError> {
++        self.with(|spool| {
++            let bytes = crate::disk_memory::add(
++                bytes,
++                crate::disk_memory::allocation::<crate::DiskMemoryLease>(1)
++                    .map_err(|_| io::ErrorKind::OutOfMemory)?,
++            )
++            .map_err(|_| io::ErrorKind::OutOfMemory)?;
++            let lease = match spool.disk().memory().clone().reserve_installed(bytes) {
++                Ok(lease) => lease,
++                Err(error) if error.kind() == io::ErrorKind::OutOfMemory => return Err(error),
++                Err(error) => {
++                    spool.owner_failed();
++                    return Err(error);
++                }
++            };
++            Ok(Box::new(lease) as Box<dyn redb::ResidentLease>)
++        })
++        .map_err(|error| {
++            if error.kind() == io::ErrorKind::OutOfMemory {
++                AdmissionError::CapacityDenied
++            } else {
++                AdmissionError::OwnerFailed
++            }
++        })
+     }
+     fn reserve_growth(
+         &self,
+--- a/crates/kasumi-store/src/test_utils.rs
++++ b/crates/kasumi-store/src/test_utils.rs
+@@ -229,6 +229,14 @@
+ }
+ 
+ impl redb::StorageAdmission for FixtureStorageAdmission {
++    fn reserve_workspace(
++        &self,
++        _bytes: u64,
++    ) -> core::result::Result<Box<dyn redb::ResidentLease>, redb::AdmissionError> {
++        self.check_owner()
++            .map_err(|_| redb::AdmissionError::OwnerFailed)?;
++        Ok(Box::new(()))
++    }
+     fn check_owner(&self) -> std::result::Result<(), redb::OwnerFailed> {
+         if self.failed.load(Ordering::Acquire) {
+             Err(redb::OwnerFailed)
+--- a/vendor/redb-4.2.0/src/admission/tests.rs
++++ b/vendor/redb-4.2.0/src/admission/tests.rs
+@@ -19,6 +19,8 @@
+     failures: AtomicU64,
+     settled: AtomicU64,
+     reservations: AtomicU64,
++    workspace_denied: AtomicBool,
++    workspace_calls: AtomicU64,
+ }
+ impl Owner {
+     fn new(maximum: u64) -> Arc<Self> {
+@@ -28,10 +30,24 @@
+             failures: AtomicU64::new(0),
+             settled: AtomicU64::new(0),
+             reservations: AtomicU64::new(0),
++            workspace_denied: AtomicBool::new(false),
++            workspace_calls: AtomicU64::new(0),
+         })
+     }
+ }
+ impl StorageAdmission for Owner {
++    fn reserve_workspace(
++        &self,
++        _bytes: u64,
++    ) -> core::result::Result<Box<dyn crate::ResidentLease>, crate::AdmissionError> {
++        self.workspace_calls.fetch_add(1, Ordering::Relaxed);
++        if self.workspace_denied.load(Ordering::Acquire) {
++            return Err(crate::AdmissionError::CapacityDenied);
++        }
++        self.check_owner()
++            .map_err(|_| crate::AdmissionError::OwnerFailed)?;
++        Ok(Box::new(()))
++    }
+     fn check_owner(&self) -> Result<(), OwnerFailed> {
+         if self.failed.load(Ordering::Acquire) {
+             Err(OwnerFailed)
+@@ -95,6 +111,31 @@
+         Err(DatabaseError::Storage(StorageError::CapacityDenied))
+     ));
+     assert_eq!(file.as_file().metadata().unwrap().len(), 0);
++    assert_eq!(owner.failures.load(Ordering::Relaxed), 0);
++}
++#[test]
++fn direct_header_workspace_denial_precedes_create_file_mutation() {
++    let file = tempfile::NamedTempFile::new().unwrap();
++    let owner = Owner::new(u64::MAX);
++    owner.workspace_denied.store(true, Ordering::Release);
++    assert!(matches!(
++        Database::builder(owner.clone()).create(file.path()),
++        Err(DatabaseError::Storage(StorageError::CapacityDenied))
++    ));
++    assert!(owner.workspace_calls.load(Ordering::Relaxed) >= 1);
++    assert_eq!(file.as_file().metadata().unwrap().len(), 0);
++    assert_eq!(owner.failures.load(Ordering::Relaxed), 0);
++    owner.workspace_denied.store(false, Ordering::Release);
++    let db = create(&file, owner.clone());
++    seed(&db);
++    db.close().unwrap();
++    let before = std::fs::read(file.path()).unwrap();
++    owner.workspace_denied.store(true, Ordering::Release);
++    assert!(matches!(
++        Database::builder(owner.clone()).open(file.path()),
++        Err(DatabaseError::Storage(StorageError::CapacityDenied))
++    ));
++    assert_eq!(std::fs::read(file.path()).unwrap(), before);
+     assert_eq!(owner.failures.load(Ordering::Relaxed), 0);
+ }
+ #[test]
+--- a/vendor/redb-4.2.0/src/admission.rs
++++ b/vendor/redb-4.2.0/src/admission.rs
+@@ -1,5 +1,6 @@
+ //! The physical owner is installed before storage construction and survives all
+ //! database, transaction and backend handles. There is no unowned default.
++use alloc::boxed::Box;
+ use core::fmt::Debug;
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -13,12 +14,25 @@
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub struct OwnerFailed;
+ 
++/// An exact resident reservation kept alive with the allocated object.
++/// Implementations must retire physical backing before this token returns
++/// credit. The trait object itself is part of the charged allocation plan.
++pub trait ResidentLease: Send + Sync {}
++impl<T: Send + Sync> ResidentLease for T {}
++
+ /// Admission for the exact physical file supplied to the database builder.
+ /// Implementations retain physical charges after handles close; only verified
+ /// physical reclamation or a complete drained census may release those charges.
+ pub trait StorageAdmission: Debug + Send + Sync + 'static {
+     /// Observe the retained owner fence without reserving or allocating.
+     fn check_owner(&self) -> Result<(), OwnerFailed>;
++    /// Reserve resident backing before allocating `bytes`. The returned lease
++    /// stays with the actual object, including error and cancellation paths.
++    /// The provider also charges its concrete token and returned box backing.
++    fn reserve_workspace(
++        &self,
++        bytes: u64,
++    ) -> core::result::Result<Box<dyn ResidentLease>, AdmissionError>;
+     /// Reserve before growing the physical file. Denial must have no effects.
+     fn reserve_growth(&self, current_len: u64, requested_len: u64) -> Result<(), AdmissionError>;
+     /// Synchronize and settle unused reservation against this exact retained
+@@ -36,6 +50,12 @@
+ impl StorageAdmission for TestAdmission {
+     fn check_owner(&self) -> Result<(), OwnerFailed> {
+         Ok(())
++    }
++    fn reserve_workspace(
++        &self,
++        _: u64,
++    ) -> core::result::Result<Box<dyn ResidentLease>, AdmissionError> {
++        Ok(Box::new(()))
+     }
+     fn reserve_growth(&self, _: u64, _: u64) -> Result<(), AdmissionError> {
+         Ok(())
+--- a/vendor/redb-4.2.0/src/cache_admission_tests.rs
++++ b/vendor/redb-4.2.0/src/cache_admission_tests.rs
+@@ -22,6 +22,14 @@
+     marker: Arc<Marker>,
+ }
+ impl StorageAdmission for Owner {
++    fn reserve_workspace(
++        &self,
++        _bytes: u64,
++    ) -> core::result::Result<Box<dyn crate::ResidentLease>, crate::AdmissionError> {
++        self.check_owner()
++            .map_err(|_| crate::AdmissionError::OwnerFailed)?;
++        Ok(Box::new(()))
++    }
+     fn check_owner(&self) -> Result<(), OwnerFailed> {
+         if self.failed.load(Ordering::Acquire) {
+             Err(OwnerFailed)
+--- a/vendor/redb-4.2.0/src/lib.rs
++++ b/vendor/redb-4.2.0/src/lib.rs
+@@ -119,7 +119,7 @@
+ mod complex_types;
+ #[cfg(test)]
+ pub(crate) use admission::test_admission;
+-pub use admission::{AdmissionError, OwnerFailed, StorageAdmission};
++pub use admission::{AdmissionError, OwnerFailed, ResidentLease, StorageAdmission};
+ mod db;
+ mod error;
+ // Public only where it is needed: without std a backend author has to be able to name these types
+--- a/vendor/redb-4.2.0/src/page_list_tests.rs
++++ b/vendor/redb-4.2.0/src/page_list_tests.rs
+@@ -174,6 +174,14 @@
+     failed: AtomicBool,
+ }
+ impl StorageAdmission for Owner {
++    fn reserve_workspace(
++        &self,
++        _bytes: u64,
++    ) -> core::result::Result<Box<dyn crate::ResidentLease>, crate::AdmissionError> {
++        self.check_owner()
++            .map_err(|_| crate::AdmissionError::OwnerFailed)?;
++        Ok(Box::new(()))
++    }
+     fn check_owner(&self) -> core::result::Result<(), OwnerFailed> {
+         if self.failed.load(Ordering::Acquire) {
+             Err(OwnerFailed)
+--- a/vendor/redb-4.2.0/src/retained_opening.rs
++++ b/vendor/redb-4.2.0/src/retained_opening.rs
+@@ -117,6 +117,15 @@
+             return Err(crate::OwnerFailed);
+         }
+         self.inner.check_owner()
++    }
++    fn reserve_workspace(
++        &self,
++        bytes: u64,
++    ) -> core::result::Result<Box<dyn crate::ResidentLease>, crate::AdmissionError> {
++        if self.failed.load(Ordering::Acquire) {
++            return Err(crate::AdmissionError::OwnerFailed);
++        }
++        self.inner.reserve_workspace(bytes)
+     }
+     fn reserve_growth(&self, current: u64, requested: u64) -> Result<(), crate::AdmissionError> {
+         if self.failed.load(Ordering::Acquire) {
+--- a/vendor/redb-4.2.0/src/retained_opening_tests.rs
++++ b/vendor/redb-4.2.0/src/retained_opening_tests.rs
+@@ -389,6 +389,14 @@
+     calls: AtomicUsize,
+ }
+ impl crate::StorageAdmission for PanickingAdmission {
++    fn reserve_workspace(
++        &self,
++        _bytes: u64,
++    ) -> core::result::Result<Box<dyn crate::ResidentLease>, crate::AdmissionError> {
++        self.check_owner()
++            .map_err(|_| crate::AdmissionError::OwnerFailed)?;
++        Ok(Box::new(()))
++    }
+     fn check_owner(&self) -> Result<(), crate::OwnerFailed> {
+         Ok(())
+     }
+@@ -539,6 +547,14 @@
+     failed: AtomicBool,
+ }
+ impl crate::StorageAdmission for RollbackAdmission {
++    fn reserve_workspace(
++        &self,
++        _bytes: u64,
++    ) -> core::result::Result<Box<dyn crate::ResidentLease>, crate::AdmissionError> {
++        self.check_owner()
++            .map_err(|_| crate::AdmissionError::OwnerFailed)?;
++        Ok(Box::new(()))
++    }
+     fn check_owner(&self) -> Result<(), crate::OwnerFailed> {
+         if self.failed.load(Ordering::Acquire) {
+             Err(crate::OwnerFailed)
+--- a/vendor/redb-4.2.0/src/retained_transaction_tests.rs
++++ b/vendor/redb-4.2.0/src/retained_transaction_tests.rs
+@@ -32,6 +32,14 @@
+     marker: Arc<Marker>,
+ }
+ impl StorageAdmission for Owner {
++    fn reserve_workspace(
++        &self,
++        _bytes: u64,
++    ) -> core::result::Result<Box<dyn crate::ResidentLease>, crate::AdmissionError> {
++        self.check_owner()
++            .map_err(|_| crate::AdmissionError::OwnerFailed)?;
++        Ok(Box::new(()))
++    }
+     fn check_owner(&self) -> Result<(), OwnerFailed> {
+         if self.failed.load(Ordering::Acquire) {
+             Err(OwnerFailed)
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
+@@ -6,7 +6,7 @@
+ use alloc::sync::Arc;
+ use alloc::vec;
+ use alloc::vec::Vec;
+-use core::ops::{Index, IndexMut};
++use core::ops::{Deref, Index, IndexMut};
+ use core::slice::SliceIndex;
+ #[cfg(feature = "cache_metrics")]
+ use core::sync::atomic::AtomicU64;
+@@ -17,6 +17,30 @@
+ fn zero_filled_arc(len: usize) -> Arc<[u8]> {
+     // This is documented to do a single allocation: https://doc.rust-lang.org/std/sync/struct.Arc.html#iterators-of-known-length
+     core::iter::repeat_n(0u8, len).collect()
++}
++
++/// A direct read's byte buffer and the exact resident credit that preceded it.
++/// The fields drop in declaration order, so buffer storage retires before the
++/// lease returns its credit. Header parsing may retain this across operations.
++pub(super) struct AdmittedBytes {
++    bytes: Vec<u8>,
++    _lease: Box<dyn crate::ResidentLease>,
++}
++pub(super) struct DirectReadCredit {
++    len: usize,
++    lease: Box<dyn crate::ResidentLease>,
++}
++impl Deref for AdmittedBytes {
++    type Target = [u8];
++
++    fn deref(&self) -> &[u8] {
++        &self.bytes
++    }
++}
++impl AsRef<[u8]> for AdmittedBytes {
++    fn as_ref(&self) -> &[u8] {
++        &self.bytes
++    }
+ }
+ 
+ pub(super) struct WritablePage {
+@@ -189,6 +213,21 @@
+     fn read(&self, offset: u64, out: &mut [u8]) -> Result<()> {
+         self.check_failure()?;
+         self.io(self.file.read(offset, out))
++    }
++
++    fn reserve_workspace(&self, bytes: u64) -> core::result::Result<Box<dyn crate::ResidentLease>> {
++        self.check_failure()?;
++        match self.admission.reserve_workspace(bytes) {
++            Ok(lease) => Ok(lease),
++            Err(crate::AdmissionError::CapacityDenied) => {
++                self.capacity_denied.store(true, Ordering::Release);
++                Err(StorageError::CapacityDenied)
++            }
++            Err(crate::AdmissionError::OwnerFailed) => {
++                self.fail_owner();
++                Err(StorageError::OwnerFailed)
++            }
++        }
+     }
+ 
+     fn set_len(&self, len: u64) -> Result<()> {
+@@ -656,10 +695,29 @@
+     }
+ 
+     // Read directly from the file, ignoring any cached data
+-    pub(super) fn read_direct(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
++    pub(super) fn reserve_direct_read(&self, len: usize) -> Result<DirectReadCredit> {
++        let requested = u64::try_from(len).map_err(|_| StorageError::CapacityDenied)?;
++        let lease = self.file.reserve_workspace(requested)?;
++        Ok(DirectReadCredit { len, lease })
++    }
++
++    pub(super) fn read_direct_reserved(
++        &self,
++        offset: u64,
++        credit: DirectReadCredit,
++    ) -> Result<AdmittedBytes> {
++        let DirectReadCredit { len, lease } = credit;
+         let mut buffer = vec![0; len];
+         self.file.read(offset, &mut buffer)?;
+-        Ok(buffer)
++        Ok(AdmittedBytes {
++            bytes: buffer,
++            _lease: lease,
++        })
++    }
++
++    pub(super) fn read_direct(&self, offset: u64, len: usize) -> Result<AdmittedBytes> {
++        let credit = self.reserve_direct_read(len)?;
++        self.read_direct_reserved(offset, credit)
+     }
+ 
+     // Like `read_direct`, but writes directly into an `Arc<[u8]>` instead of a
+@@ -979,12 +1037,13 @@
+     use crate::tree_store::PageHint;
+     use crate::tree_store::page_store::cached_file::PagedCachedFile;
+     use alloc::sync::Arc;
+-    use core::sync::atomic::{AtomicU64, Ordering};
++    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+ 
+     #[derive(Debug)]
+     struct CountingBackend {
+         inner: InMemoryBackend,
+         writes: Arc<AtomicU64>,
++        reads: Arc<AtomicU64>,
+     }
+ 
+     impl CountingBackend {
+@@ -996,6 +1055,7 @@
+                 Self {
+                     inner,
+                     writes: writes.clone(),
++                    reads: Arc::new(AtomicU64::new(0)),
+                 },
+                 writes,
+             )
+@@ -1011,6 +1071,7 @@
+         }
+ 
+         fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), std::io::Error> {
++            self.reads.fetch_add(1, Ordering::SeqCst);
+             self.inner.read(offset, out)
+         }
+ 
+@@ -1026,6 +1087,78 @@
+             self.writes.fetch_add(1, Ordering::SeqCst);
+             self.inner.write(offset, data)
+         }
++    }
++
++    #[derive(Debug, Default)]
++    struct WorkspaceOwner {
++        available: AtomicBool,
++        failed: AtomicBool,
++        live: Arc<AtomicU64>,
++    }
++    struct WorkspaceLease {
++        bytes: u64,
++        live: Arc<AtomicU64>,
++    }
++    impl Drop for WorkspaceLease {
++        fn drop(&mut self) {
++            self.live.fetch_sub(self.bytes, Ordering::SeqCst);
++        }
++    }
++    impl crate::StorageAdmission for WorkspaceOwner {
++        fn check_owner(&self) -> Result<(), crate::OwnerFailed> {
++            if self.failed.load(Ordering::Acquire) {
++                Err(crate::OwnerFailed)
++            } else {
++                Ok(())
++            }
++        }
++        fn reserve_workspace(
++            &self,
++            bytes: u64,
++        ) -> Result<Box<dyn crate::ResidentLease>, crate::AdmissionError> {
++            if !self.available.load(Ordering::Acquire) {
++                return Err(crate::AdmissionError::CapacityDenied);
++            }
++            self.check_owner()
++                .map_err(|_| crate::AdmissionError::OwnerFailed)?;
++            self.live.fetch_add(bytes, Ordering::SeqCst);
++            Ok(Box::new(WorkspaceLease {
++                bytes,
++                live: self.live.clone(),
++            }))
++        }
++        fn reserve_growth(&self, _: u64, _: u64) -> Result<(), crate::AdmissionError> {
++            Ok(())
++        }
++        fn settle_growth(&self, _: u64) -> Result<(), crate::OwnerFailed> {
++            self.check_owner()
++        }
++        fn owner_failed(&self) {
++            self.failed.store(true, Ordering::Release);
++        }
++    }
++
++    #[test]
++    fn direct_header_read_denies_before_allocation_or_io_and_retains_its_credit() {
++        let (backend, _) = CountingBackend::new(1024);
++        let reads = backend.reads.clone();
++        let owner = Arc::new(WorkspaceOwner::default());
++        let cached_file =
++            PagedCachedFile::new(Box::new(backend), owner.clone(), 128, 1024).unwrap();
++        let (denied, allocations) =
++            crate::admission::observe_test_allocations(|| cached_file.read_direct(0, 128));
++        assert!(matches!(denied, Err(crate::StorageError::CapacityDenied)));
++        assert_eq!(allocations, 0);
++        assert_eq!(reads.load(Ordering::SeqCst), 0);
++        assert_eq!(owner.live.load(Ordering::SeqCst), 0);
++
++        owner.available.store(true, Ordering::Release);
++        let header = cached_file.read_direct(0, 128).unwrap();
++        assert_eq!(header.len(), 128);
++        assert_eq!(owner.live.load(Ordering::SeqCst), 128);
++        assert_eq!(reads.load(Ordering::SeqCst), 1);
++        drop(header);
++        assert_eq!(owner.live.load(Ordering::SeqCst), 0);
+     }
+ 
+     #[test]
+@@ -1144,12 +1277,15 @@
+             &*cached_file.read(0, 128, PageHint::None).unwrap(),
+             [0xAB; 128].as_slice()
+         );
+-        assert_eq!(cached_file.read_direct(0, 128).unwrap(), vec![0; 128]);
++        assert_eq!(cached_file.read_direct(0, 128).unwrap().as_ref(), &[0; 128]);
+ 
+         // A flush writes the page out and clears the buffer
+         cached_file.flush().unwrap();
+         assert_eq!(writes.load(Ordering::SeqCst), 1);
+-        assert_eq!(cached_file.read_direct(0, 128).unwrap(), vec![0xAB; 128]);
++        assert_eq!(
++            cached_file.read_direct(0, 128).unwrap().as_ref(),
++            &[0xAB; 128]
++        );
+         assert_eq!(
+             &*cached_file.read(0, 128, PageHint::Clean).unwrap(),
+             [0xAB; 128].as_slice()
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/checked_backend_tests.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/checked_backend_tests.rs
+@@ -65,6 +65,14 @@
+     failures: AtomicUsize,
+ }
+ impl StorageAdmission for Owner {
++    fn reserve_workspace(
++        &self,
++        _bytes: u64,
++    ) -> core::result::Result<Box<dyn crate::ResidentLease>, crate::AdmissionError> {
++        self.check_owner()
++            .map_err(|_| crate::AdmissionError::OwnerFailed)?;
++        Ok(Box::new(()))
++    }
+     fn check_owner(&self) -> Result<(), OwnerFailed> {
+         if self.failed.load(Ordering::Acquire) {
+             Err(OwnerFailed)
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
+@@ -459,11 +459,17 @@
+         assert!(region_size.is_power_of_two());
+         let storage = storage_owner.as_ref().expect("prepared cache retained");
+         let initial_storage_len = storage.raw_file_len()?;
++        // Both possible direct buffers are admitted before initialization may
++        // grow or publish the new file. Keep their actual leases until each
++        // read result is destroyed; an unused magic lease simply retires.
++        let magic_credit = storage.reserve_direct_read(MAGICNUMBER.len())?;
++        let header_credit = storage.reserve_direct_read(DB_HEADER_SIZE)?;
+ 
+         let magic_number: [u8; MAGICNUMBER.len()] =
+             if initial_storage_len >= MAGICNUMBER.len() as u64 {
+                 storage
+-                    .read_direct(0, MAGICNUMBER.len())?
++                    .read_direct_reserved(0, magic_credit)?
++                    .as_ref()
+                     .try_into()
+                     .unwrap()
+             } else {
+@@ -538,7 +544,7 @@
+                 .copy_from_slice(&header.to_bytes(true));
+             storage.flush()?;
+         }
+-        let header_bytes = storage.read_direct(0, DB_HEADER_SIZE)?;
++        let header_bytes = storage.read_direct_reserved(0, header_credit)?;
+         let unrepaired =
+             UnrepairedDatabaseHeader::from_bytes(&header_bytes, page_size.try_into().unwrap())?;
+         let file_len = storage.raw_file_len()?;
+@@ -648,6 +654,7 @@
+     }
+ 
+     pub(crate) fn clear_cache_and_reload(&mut self) -> Result<bool, DatabaseError> {
++        let header_credit = self.storage.reserve_direct_read(DB_HEADER_SIZE)?;
+         // The in-memory state is being discarded for the on-disk state, so buffered writes --
+         // which can only belong to the discarded state -- are dropped rather than written out;
+         // after an external truncation, writing them could even fail beyond the end of the file.
+@@ -657,7 +664,7 @@
+         self.storage.invalidate_cache_all();
+         self.storage.sync_file()?;
+ 
+-        let header_bytes = self.storage.read_direct(0, DB_HEADER_SIZE)?;
++        let header_bytes = self.storage.read_direct_reserved(0, header_credit)?;
+         let unrepaired = UnrepairedDatabaseHeader::from_bytes(&header_bytes, self.page_size)?;
+         let (header, was_clean) = unrepaired.finalize(self.storage.raw_file_len()?)?;
+         // Integrity validation must reject obsolete namespaces before any

@@ -1,0 +1,478 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi/vendor/redb-4.2.0)
+error: reference as raw pointer
+   --> src/cache_admission_tests.rs:115:5
+    |
+115 |     error as *const _
+    |     ^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref(error)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+note: the lint level is defined here
+   --> src/lib.rs:2:22
+    |
+  2 | #![deny(clippy::all, clippy::pedantic, clippy::disallowed_methods)]
+    |                      ^^^^^^^^^^^^^^^^
+    = note: `#[deny(clippy::ref_as_ptr)]` implied by `#[deny(clippy::pedantic)]`
+
+error: this could be rewritten as `let...else`
+   --> src/cache_admission_tests.rs:199:9
+    |
+199 | /         let database = match f.db.close() {
+200 | |             Err(CloseError::Busy(db)) => db,
+201 | |             _ => panic!("actual retained tx must keep DB busy"),
+202 | |         };
+    | |__________^ help: consider writing: `let Err(CloseError::Busy(database)) = f.db.close() else { panic!("actual retained tx must keep DB busy") };`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_let_else
+    = note: `#[deny(clippy::manual_let_else)]` implied by `#[deny(clippy::pedantic)]`
+
+error: borrow as raw pointer
+   --> src/retained_database_tests.rs:293:19
+    |
+293 |     let address = &fixture.owner.database as *const Database;
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `&raw const fixture.owner.database`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#borrow_as_ptr
+    = note: `#[deny(clippy::borrow_as_ptr)]` implied by `#[deny(clippy::pedantic)]`
+
+error: borrow as raw pointer
+   --> src/retained_database_tests.rs:301:16
+    |
+301 |     assert_eq!(&fixture.owner.database as *const Database, address);
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `&raw const fixture.owner.database`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#borrow_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:241:23
+    |
+241 |     let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<WriteTransaction>(write.transaction.as_ref().unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:248:9
+    |
+248 |         write.transaction.as_ref().unwrap() as *const WriteTransaction,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<WriteTransaction>(write.transaction.as_ref().unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:266:9
+    |
+266 |         write.transaction.as_ref().unwrap() as *const WriteTransaction,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<WriteTransaction>(write.transaction.as_ref().unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:311:23
+    |
+311 |     let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<WriteTransaction>(write.transaction.as_ref().unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:320:9
+    |
+320 |         write.transaction.as_ref().unwrap() as *const WriteTransaction,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<WriteTransaction>(write.transaction.as_ref().unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:499:23
+    |
+499 |     let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<WriteTransaction>(write.transaction.as_ref().unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:517:9
+    |
+517 |         write.transaction.as_ref().unwrap() as *const WriteTransaction,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<WriteTransaction>(write.transaction.as_ref().unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:567:20
+    |
+567 |     let rollback = error as *const StorageError;
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<StorageError>(error)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:574:16
+    |
+574 |     assert_eq!(error as *const StorageError, rollback);
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<StorageError>(error)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:584:23
+    |
+584 |     let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<WriteTransaction>(write.transaction.as_ref().unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:594:20
+    |
+594 |     let original = payload as *const (dyn Any + Send);
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<dyn Any + Send>(payload)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:597:9
+    |
+597 |         write.transaction.as_ref().unwrap() as *const WriteTransaction,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<WriteTransaction>(write.transaction.as_ref().unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:605:26
+    |
+605 |     assert!(std::ptr::eq(payload as *const (dyn Any + Send), original));
+    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<dyn Any + Send>(payload)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:648:20
+    |
+648 |     let original = payload as *const (dyn Any + Send);
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<dyn Any + Send>(payload)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:655:26
+    |
+655 |     assert!(std::ptr::eq(payload as *const (dyn Any + Send), original));
+    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<dyn Any + Send>(payload)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:664:20
+    |
+664 |     let identity = write.transaction().unwrap() as *const WriteTransaction;
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<WriteTransaction>(write.transaction().unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:671:9
+    |
+671 |         write.transaction().unwrap() as *const WriteTransaction,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<WriteTransaction>(write.transaction().unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:705:23
+    |
+705 |     let transaction = write.transaction.as_ref().unwrap() as *const WriteTransaction;
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<WriteTransaction>(write.transaction.as_ref().unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: reference as raw pointer
+   --> src/retained_transaction_tests.rs:715:9
+    |
+715 |         write.transaction.as_ref().unwrap() as *const WriteTransaction,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::ptr::from_ref::<WriteTransaction>(write.transaction.as_ref().unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+
+error: casting `usize` to `u32` may truncate the value on targets with 64-bit wide pointers
+  --> src/page_list_tests.rs:17:50
+   |
+17 |             .copy_from_slice(&PageNumber::new(0, index as u32, 0).to_le_bytes());
+   |                                                  ^^^^^^^^^^^^
+   |
+   = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+   = note: `#[deny(clippy::cast_possible_truncation)]` implied by `#[deny(clippy::pedantic)]`
+help: ... or use `try_from` and handle the error accordingly
+   |
+17 -             .copy_from_slice(&PageNumber::new(0, index as u32, 0).to_le_bytes());
+17 +             .copy_from_slice(&PageNumber::new(0, u32::try_from(index), 0).to_le_bytes());
+   |
+
+error: casting `usize` to `u32` may truncate the value on targets with 64-bit wide pointers
+  --> src/page_list_tests.rs:33:32
+   |
+33 |             PageNumber::new(0, (count - 1) as u32, 0)
+   |                                ^^^^^^^^^^^^^^^^^^
+   |
+   = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+   |
+33 -             PageNumber::new(0, (count - 1) as u32, 0)
+33 +             PageNumber::new(0, u32::try_from(count - 1), 0)
+   |
+
+error: casting `usize` to `u32` may truncate the value on targets with 64-bit wide pointers
+   --> src/page_list_tests.rs:135:45
+    |
+135 |             pending.push(PageNumber::new(0, i as u32, 0)).unwrap();
+    |                                             ^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+135 -             pending.push(PageNumber::new(0, i as u32, 0)).unwrap();
+135 +             pending.push(PageNumber::new(0, u32::try_from(i), 0)).unwrap();
+    |
+
+error: casting `usize` to `u32` may truncate the value on targets with 64-bit wide pointers
+   --> src/page_list_tests.rs:146:46
+    |
+146 |         assert_eq!(*page, PageNumber::new(0, i as u32, 0));
+    |                                              ^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+146 -         assert_eq!(*page, PageNumber::new(0, i as u32, 0));
+146 +         assert_eq!(*page, PageNumber::new(0, u32::try_from(i), 0));
+    |
+
+error: this call to `map()` won't have an effect on the call to `count()`
+   --> src/page_list_tests.rs:514:25
+    |
+514 |           let remaining = table
+    |  _________________________^
+515 | |             .range::<TransactionIdWithPagination>(..)
+516 | |             .unwrap()
+517 | |             .map(|entry| entry.unwrap())
+518 | |             .count();
+    | |____________________^
+    |
+    = help: make sure you did not confuse `map` with `filter`, `for_each` or `inspect`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#suspicious_map
+note: the lint level is defined here
+   --> src/lib.rs:2:9
+    |
+  2 | #![deny(clippy::all, clippy::pedantic, clippy::disallowed_methods)]
+    |         ^^^^^^^^^^^
+    = note: `#[deny(clippy::suspicious_map)]` implied by `#[deny(clippy::all)]`
+
+error: unneeded `return` statement
+   --> src/tree_store/page_store/cached_file.rs:414:13
+    |
+414 | /             return self
+415 | |                 .write_entry_capacity_override
+416 | |                 .load(Ordering::Acquire)
+417 | |                 .min(self.write_entry_capacity);
+    | |_______________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_return
+    = note: `#[deny(clippy::needless_return)]` implied by `#[deny(clippy::all)]`
+help: remove `return`
+    |
+414 ~             self
+415 +                 .write_entry_capacity_override
+416 +                 .load(Ordering::Acquire)
+417 ~                 .min(self.write_entry_capacity)
+    |
+
+error: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+    --> src/tree_store/page_store/cached_file.rs:1296:43
+     |
+1296 |         let mut borrowed = cache.write(0, page_size as usize, true).unwrap();
+     |                                           ^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1296 -         let mut borrowed = cache.write(0, page_size as usize, true).unwrap();
+1296 +         let mut borrowed = cache.write(0, usize::try_from(page_size), true).unwrap();
+     |
+
+error: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+    --> src/tree_store/page_store/cached_file.rs:1301:49
+     |
+1301 |         let mut available = cache.write(stride, page_size as usize, true).unwrap();
+     |                                                 ^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1301 -         let mut available = cache.write(stride, page_size as usize, true).unwrap();
+1301 +         let mut available = cache.write(stride, usize::try_from(page_size), true).unwrap();
+     |
+
+error: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+    --> src/tree_store/page_store/cached_file.rs:1305:52
+     |
+1305 |         let mut new_page = cache.write(stride * 2, page_size as usize, true).unwrap();
+     |                                                    ^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1305 -         let mut new_page = cache.write(stride * 2, page_size as usize, true).unwrap();
+1305 +         let mut new_page = cache.write(stride * 2, usize::try_from(page_size), true).unwrap();
+     |
+
+error: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+    --> src/tree_store/page_store/cached_file.rs:1317:31
+     |
+1317 |                 .read(offset, page_size as usize, PageHint::Clean)
+     |                               ^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1317 -                 .read(offset, page_size as usize, PageHint::Clean)
+1317 +                 .read(offset, usize::try_from(page_size), PageHint::Clean)
+     |
+
+error: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+    --> src/tree_store/page_store/cached_file.rs:1335:40
+     |
+1335 |                 .write(index * stride, page_size as usize, true)
+     |                                        ^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1335 -                 .write(index * stride, page_size as usize, true)
+1335 +                 .write(index * stride, usize::try_from(page_size), true)
+     |
+
+error: casting `u64` to `u8` may truncate the value
+    --> src/tree_store/page_store/cached_file.rs:1337:33
+     |
+1337 |             page.mem_mut().fill(index as u8);
+     |                                 ^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1337 -             page.mem_mut().fill(index as u8);
+1337 +             page.mem_mut().fill(u8::try_from(index));
+     |
+
+error: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+    --> src/tree_store/page_store/cached_file.rs:1344:39
+     |
+1344 |                 .read(index * stride, page_size as usize, PageHint::Clean)
+     |                                       ^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1344 -                 .read(index * stride, page_size as usize, PageHint::Clean)
+1344 +                 .read(index * stride, usize::try_from(page_size), PageHint::Clean)
+     |
+
+error: casting `u64` to `u8` may truncate the value
+    --> src/tree_store/page_store/cached_file.rs:1346:54
+     |
+1346 |             assert!(value.iter().all(|byte| *byte == index as u8));
+     |                                                      ^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1346 -             assert!(value.iter().all(|byte| *byte == index as u8));
+1346 +             assert!(value.iter().all(|byte| *byte == u8::try_from(index)));
+     |
+
+error: this could be rewritten as `let...else`
+    --> src/tree_store/page_store/cached_file.rs:1409:9
+     |
+1409 | /         let error = match cache.write(128 * 131, 128, true) {
+1410 | |             Err(error) => error,
+1411 | |             Ok(_) => panic!("eviction should fail"),
+1412 | |         };
+     | |__________^ help: consider writing: `let Err(error) = cache.write(128 * 131, 128, true) else { panic!("eviction should fail") };`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_let_else
+
+error: reference as raw pointer
+   --> src/tree_store/page_store/checked_backend_tests.rs:137:24
+    |
+137 |           let identity = original
+    |  ________________________^
+138 | |             .get_ref()
+139 | |             .unwrap()
+140 | |             .downcast_ref::<OriginalIoFailure>()
+141 | |             .unwrap() as *const OriginalIoFailure;
+    | |_________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+help: try
+    |
+137 ~         let identity = std::ptr::from_ref::<OriginalIoFailure>(original
+138 +             .get_ref()
+139 +             .unwrap()
+140 +             .downcast_ref::<OriginalIoFailure>()
+141 ~             .unwrap());
+    |
+
+error: reference as raw pointer
+   --> src/tree_store/page_store/checked_backend_tests.rs:162:13
+    |
+162 | /             original
+163 | |                 .get_ref()
+164 | |                 .unwrap()
+165 | |                 .downcast_ref::<OriginalIoFailure>()
+166 | |                 .unwrap() as *const OriginalIoFailure,
+    | |_____________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+help: try
+    |
+162 ~             std::ptr::from_ref::<OriginalIoFailure>(original
+163 +                 .get_ref()
+164 +                 .unwrap()
+165 +                 .downcast_ref::<OriginalIoFailure>()
+166 ~                 .unwrap()),
+    |
+
+error: reference as raw pointer
+   --> src/tree_store/page_store/checked_backend_tests.rs:197:13
+    |
+197 | /             original
+198 | |                 .get_ref()
+199 | |                 .unwrap()
+200 | |                 .downcast_ref::<OriginalIoFailure>()
+201 | |                 .unwrap() as *const OriginalIoFailure,
+    | |_____________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ref_as_ptr
+help: try
+    |
+197 ~             std::ptr::from_ref::<OriginalIoFailure>(original
+198 +                 .get_ref()
+199 +                 .unwrap()
+200 +                 .downcast_ref::<OriginalIoFailure>()
+201 ~                 .unwrap()),
+    |
+
+error: could not compile `redb` (lib test) due to 41 previous errors
+warning: build failed, waiting for other jobs to finish...

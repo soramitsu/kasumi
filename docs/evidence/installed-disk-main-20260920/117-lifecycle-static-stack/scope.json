@@ -1,0 +1,18 @@
+{
+  "binary": "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0",
+  "binary_sha256": "5b01407141bac88d2db20ed91ae5396525f0983b11bd58c0c7d898cbf55615ad",
+  "mode": "STATIC disassembly only; no binary execution, Cargo or source edits",
+  "addresses": {
+    "complete_recovery_poll": "0x10011e750",
+    "exercise_completed_recovery_poll": "0x10014e2ac",
+    "exercise_route_publication_poll": "0x100140660",
+    "resolve_expired_completion_poll": "0x100147554",
+    "root_test_closure_a": "0x10014fd0c",
+    "root_test_closure_b": "0x1001506c0",
+    "leader_poll": "0x10003dff8",
+    "leader_timeout_poll": "0x100024cc0",
+    "leader_diagnostic": "0x100025238",
+    "exercise_completed_recovery_constructor": "0x1000cb070",
+    "root_test_sync": "0x1000cbac4"
+  }
+}

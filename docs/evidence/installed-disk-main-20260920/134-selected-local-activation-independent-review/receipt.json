@@ -1,0 +1,47 @@
+{
+  "verdict": "APPROVED_BOUNDED_FIXTURE_HANDOFF_PENDING_COORDINATED_GATES",
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "subject_manifest_sha256": "262b88c6cef9a4090a7d04e0ea35dba8f78e756a3e704884c83255eca043de4f",
+  "subject_patch_sha256": "1c70fe3cf15453a7286b2a0407441fb672b5aff5c7bb58b1ea8505b14c9801ff",
+  "base_sha256": "953a03768ae5b239b65107b4b263efdbf5a24312d85695d9fb1da97bf43e17be",
+  "proposed_sha256": "9928fb65994688b0b38da4214dc3ed75c537c43f0a5774d507331799e8bf43d9",
+  "subject_and_terminal_evidence_verified_before_after": true,
+  "mechanical_reverse_matches_original_source": true,
+  "added_original_confirmation_calls": 1,
+  "projection_and_replay_use_same_local_proof": true,
+  "same_fact_and_selected_observer_asserted": true,
+  "proof_dropped_before_original_drain": true,
+  "request_deadline_phase_identity_unchanged": true,
+  "tests_or_rust_execution": false,
+  "target_apply_check_exact_apply_passed": true,
+  "source_before": {
+    "crates/kasumi-authority/src/target_materialization_tests.rs": "953a03768ae5b239b65107b4b263efdbf5a24312d85695d9fb1da97bf43e17be",
+    "crates/kasumi-engine/src/target_activation_service.rs": "2c236f6c51132c970f1207743b74f2655ecb8cce9b458d214995f4e3407cfd79",
+    "crates/kasumi-engine/src/target_projection.rs": "935b2e0a828cb1108920cbb1f7a736ca3024520c5cbd7ae44bcda0e599e8cfd2",
+    "crates/kasumi-engine/src/target_signer.rs": "6160edb65607b1eb4894f6945a69d175a97c03e91637fc9c3d0df919464c2b5c",
+    "crates/kasumi-engine/src/target_invocation.rs": "93601d8069c5d199d2f3fd0b40c92d416377aecb11299623ae076c4cecc735dd",
+    "crates/kasumi-engine/src/service.rs": "4ae922724056357579b842e82d982553f17550e05ab11eb01954ce23908f80c6",
+    "crates/kasumi-raft/src/local_applied.rs": "7750e7f0f65175a9a0c06ee8a3432d4556203dbc6faa45148547a03af1759b06",
+    "crates/kasumi-raft/src/lib.rs": "c4e9fbff404df3fa9ec93810b8f8bfff8e07b1cc3dac0b4070f32f6172e879a2",
+    "crates/kasumi-engine/src/state.rs": "3c959da4d02f11ddb4a885a375c1d6ed29800f60d77512c1679dcb049c18545c"
+  },
+  "source_after": {
+    "crates/kasumi-authority/src/target_materialization_tests.rs": "953a03768ae5b239b65107b4b263efdbf5a24312d85695d9fb1da97bf43e17be",
+    "crates/kasumi-engine/src/target_activation_service.rs": "2c236f6c51132c970f1207743b74f2655ecb8cce9b458d214995f4e3407cfd79",
+    "crates/kasumi-engine/src/target_projection.rs": "935b2e0a828cb1108920cbb1f7a736ca3024520c5cbd7ae44bcda0e599e8cfd2",
+    "crates/kasumi-engine/src/target_signer.rs": "6160edb65607b1eb4894f6945a69d175a97c03e91637fc9c3d0df919464c2b5c",
+    "crates/kasumi-engine/src/target_invocation.rs": "93601d8069c5d199d2f3fd0b40c92d416377aecb11299623ae076c4cecc735dd",
+    "crates/kasumi-engine/src/service.rs": "4ae922724056357579b842e82d982553f17550e05ab11eb01954ce23908f80c6",
+    "crates/kasumi-raft/src/local_applied.rs": "7750e7f0f65175a9a0c06ee8a3432d4556203dbc6faa45148547a03af1759b06",
+    "crates/kasumi-raft/src/lib.rs": "c4e9fbff404df3fa9ec93810b8f8bfff8e07b1cc3dac0b4070f32f6172e879a2",
+    "crates/kasumi-engine/src/state.rs": "3c959da4d02f11ddb4a885a375c1d6ed29800f60d77512c1679dcb049c18545c"
+  },
+  "source_unchanged": true,
+  "review_sha256": "5a9ad6c80cbd4eec6b5e479495f416b39f54320a21144ffa1a88af3fa2afa731",
+  "files": {
+    "apply-check/crates/kasumi-authority/src/target_materialization_tests.rs": "9928fb65994688b0b38da4214dc3ed75c537c43f0a5774d507331799e8bf43d9",
+    "apply-checks.json": "3703a0ddc476326cdfd29eb3a22cb1f78098ee2310f88b88347a3753c116b010",
+    "review.md": "5a9ad6c80cbd4eec6b5e479495f416b39f54320a21144ffa1a88af3fa2afa731"
+  }
+}

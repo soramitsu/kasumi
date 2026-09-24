@@ -176,8 +176,8 @@ impl StateMachineBackend for JointBackend {
         }))
     }
 }
-fn image(tag: u8, index: u64) -> SnapshotEnvelope {
-    let mut result = envelope(vec![tag]);
+fn image(tag: u8, index: u64, fixture_scratch: Arc<kasumi_store::ScratchDisk>) -> SnapshotEnvelope {
+    let mut result = envelope(vec![tag], fixture_scratch.clone());
     result.meta.last_log_id.as_mut().unwrap().index = index;
     result
 }
@@ -196,11 +196,12 @@ async fn install(machine: &mut StateMachine, image: &SnapshotEnvelope) -> Result
 async fn open(
     disk: FaultBackend,
     create: bool,
+    fixture_scratch: Arc<kasumi_store::ScratchDisk>,
 ) -> Result<(Arc<TenantStore>, Arc<JointBackend>, StateMachine)> {
     let store = if create {
-        new_fault_store(disk).await?
+        new_fault_store(disk, fixture_scratch.clone()).await?
     } else {
-        existing_fault_store(disk).await?
+        existing_fault_store(disk, fixture_scratch.clone()).await?
     };
     let backend = JointBackend::new(store.clone());
     let domains = if create {
@@ -252,14 +253,17 @@ async fn selected(
 #[tokio::test]
 async fn joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_prefix() -> Result<()>
 {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let seed = FaultBackend::new();
-    let old = image(7, 3);
-    let new = image(9, 4);
-    let (store, backend, mut machine) = open(seed.clone(), true).await?;
+    let old = image(7, 3, fixture_scratch.clone());
+    let new = image(9, 4, fixture_scratch.clone());
+    let (store, backend, mut machine) = open(seed.clone(), true, fixture_scratch.clone()).await?;
     install(&mut machine, &old).await?;
     let old_selection = selected(&store, &backend, &mut machine).await?;
     let baseline = seed.crash();
-    let (_, _, mut measured) = open(baseline.clone(), false).await?;
+    let (_, _, mut measured) = open(baseline.clone(), false, fixture_scratch.clone()).await?;
     let start = baseline.operations();
     install(&mut measured, &new).await?;
     let operations = baseline.operations() - start;
@@ -269,10 +273,11 @@ async fn joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_p
     );
     for boundary in 0..=operations {
         let disk = seed.crash();
-        let (_, _, mut installing) = open(disk.clone(), false).await?;
+        let (_, _, mut installing) = open(disk.clone(), false, fixture_scratch.clone()).await?;
         disk.fail_after(boundary);
         let outcome = install(&mut installing, &new).await;
-        let (recovered_store, recovered_backend, mut recovered) = open(disk.crash(), false).await?;
+        let (recovered_store, recovered_backend, mut recovered) =
+            open(disk.crash(), false, fixture_scratch.clone()).await?;
         let observed = selected(&recovered_store, &recovered_backend, &mut recovered).await?;
         ensure!(
             observed.tag == 7 || observed.tag == 9,
@@ -294,8 +299,11 @@ async fn joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_p
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_joint_table_publication_seals_and_reopens_exact_committed_prefix() -> Result<()>
 {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = FaultBackend::new();
-    let store = new_fault_store(disk.clone()).await?;
+    let store = new_fault_store(disk.clone(), fixture_scratch.clone()).await?;
     let backend = JointBackend::new(store.clone());
     let domains = kasumi_store::test_utils::initialize_custody_fixture(
         store.clone(),
@@ -311,9 +319,9 @@ async fn cancelled_joint_table_publication_seals_and_reopens_exact_committed_pre
         crate::SnapshotBufferOwner::fixture(),
     )
     .await?;
-    install(&mut machine, &image(7, 3)).await?;
+    install(&mut machine, &image(7, 3, fixture_scratch.clone())).await?;
     let old = backend.current.lock().unwrap().clone();
-    let new = image(9, 4);
+    let new = image(9, 4, fixture_scratch.clone());
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, wait) = std::sync::mpsc::channel();
     *backend.pause.lock().unwrap() = Some(Pause {
@@ -347,7 +355,8 @@ async fn cancelled_joint_table_publication_seals_and_reopens_exact_committed_pre
     assert_eq!(*backend.current.lock().unwrap(), old);
     drop(machine);
     tokio::time::timeout(Duration::from_secs(10), drain.wait()).await?;
-    let (recovered_store, recovered_backend, mut recovered) = open(disk.crash(), false).await?;
+    let (recovered_store, recovered_backend, mut recovered) =
+        open(disk.crash(), false, fixture_scratch.clone()).await?;
     assert_eq!(
         selected(&recovered_store, &recovered_backend, &mut recovered).await?,
         expected

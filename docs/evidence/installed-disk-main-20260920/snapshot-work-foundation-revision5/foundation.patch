@@ -1,0 +1,2221 @@
+diff --git a/crates/kasumi-engine/src/admission/snapshot_work.rs b/crates/kasumi-engine/src/admission/snapshot_work.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-engine/src/admission/snapshot_work.rs
+@@ -0,0 +1,930 @@
++//! Retained actual blocking-child ownership for admitted snapshot operations.
++//!
++//! This foundation has no adapter for the current snapshot decoder's consuming
++//! transaction cleanup. Such an adapter must keep its staging state outside the
++//! fallible worker body and return Retained whenever cleanup is not proved.
++use super::{MemoryCore, NodeAdmission, Reservation, allocation_bytes, arc_bytes};
++use kasumi_query::QueryCancellation;
++use kasumi_types::{Error, ErrorCode, Result, drain::DrainCompletion};
++use std::{
++    any::Any,
++    error::Error as StdError,
++    future::Future,
++    mem::ManuallyDrop,
++    ops::Deref,
++    panic::{AssertUnwindSafe, catch_unwind},
++    pin::Pin,
++    sync::{Arc, Mutex},
++    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
++};
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct SnapshotWorkId {
++    pub slot: usize,
++    pub generation: u64,
++}
++struct CensusSlot {
++    generation: u64,
++    reserved: bool,
++    owner: Option<ErasedOwner>,
++}
++pub(super) struct Census {
++    next: u64,
++    slots: Box<[CensusSlot]>,
++}
++impl Census {
++    pub(super) fn required_bytes(capacity: usize) -> anyhow::Result<u64> {
++        allocation_bytes::<CensusSlot>(capacity)
++    }
++    pub(super) fn allocate(capacity: usize) -> anyhow::Result<Self> {
++        let mut slots = Vec::new();
++        slots.try_reserve_exact(capacity)?;
++        slots.resize_with(capacity, || CensusSlot {
++            generation: 0,
++            reserved: false,
++            owner: None,
++        });
++        Ok(Self {
++            next: 0,
++            slots: slots.into_boxed_slice(),
++        })
++    }
++}
++struct CensusTicket {
++    core: Arc<MemoryCore>,
++    id: SnapshotWorkId,
++    published: bool,
++}
++impl Drop for CensusTicket {
++    fn drop(&mut self) {
++        if !self.published {
++            let mut census = self
++                .core
++                .snapshot_work
++                .lock()
++                .unwrap_or_else(|p| p.into_inner());
++            let slot = &mut census.slots[self.id.slot];
++            if slot.generation == self.id.generation && slot.owner.is_none() {
++                slot.reserved = false;
++            }
++        }
++    }
++}
++
++/// Trusted concrete operation state, installed before its actual child starts.
++///
++/// backing_bytes validates the plan and accounts for all operation-owned heap,
++/// original diagnostic and output backing beyond Self. The owner separately
++/// reserves its concrete layout and the named Tokio slot workspace estimate.
++/// allocate is inert; run borrows the retained operation and must not hide an
++/// independently owned child in a local variable or detached supervisor.
++///
++/// poll_cleanup positively drains operation-owned resources. A joined worker is
++/// not proof of cleanup. Interrupted consuming close/abort, an opaque run panic,
++/// or uncertain ownership must remain Retained. poll_discard does the same for
++/// an unclaimed output. Complete permits infallible destruction of that value.
++/// A claimed Output must own its backing and leases independently of this owner.
++/// Arbitrary anyhow or panic payload sizes are not implicitly a bounded plan.
++/// Cleanup/discard may wake their Context synchronously. The owner records that
++/// proxy notification and calls the external executor only after its locks exit.
++pub trait SnapshotOperation: Send + 'static {
++    type Plan;
++    type Output: Send + 'static;
++    type Failure: StdError + Send + 'static;
++    fn validate_memory(plan: &Self::Plan, core: &Arc<MemoryCore>) -> anyhow::Result<()>;
++    fn backing_bytes(plan: &Self::Plan) -> anyhow::Result<u64>;
++    fn allocate(plan: Self::Plan, cancellation: QueryCancellation) -> Self;
++    fn run(&mut self) -> std::result::Result<Self::Output, Self::Failure>;
++    fn poll_cleanup(&mut self, cx: &mut Context<'_>) -> Poll<DrainCompletion>;
++    fn poll_discard(output: &mut Self::Output, cx: &mut Context<'_>) -> Poll<DrainCompletion>;
++    fn visit_diagnostics(&self, visit: &mut dyn FnMut(&(dyn StdError + 'static)));
++    fn visit_output_diagnostics(
++        output: &Self::Output,
++        visit: &mut dyn FnMut(&(dyn StdError + 'static)),
++    );
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum SnapshotPanicPhase {
++    Allocate,
++    Start,
++    Run,
++    JoinPoll,
++    Cleanup,
++    Discard,
++}
++struct OriginalPanic {
++    phase: SnapshotPanicPhase,
++    payload: Box<dyn Any + Send>,
++}
++struct Resource<O: SnapshotOperation> {
++    operation: Option<O>,
++    output: Option<O::Output>,
++    // Positive output cleanup leaves the original fixed output/diagnostic object
++    // with the report until its last view drops, without retaining physical work.
++    discarded: Option<O::Output>,
++    failure: Option<O::Failure>,
++    panic: Option<OriginalPanic>,
++    cleanup_complete: bool,
++}
++struct Control {
++    started: bool,
++    joined: bool,
++    closing: bool,
++    child: Option<tokio::task::JoinHandle<()>>,
++    join_error: Option<tokio::task::JoinError>,
++    panic: Option<OriginalPanic>,
++}
++struct WakeState {
++    waiter: Option<Waker>,
++    // Nested and concurrent owner scopes share one inline deferral counter.
++    // A scope is entered before any owner lock and exits after its guards.
++    owner_scopes: usize,
++    notified: bool,
++}
++impl WakeState {
++    fn take_notification(&mut self) -> Option<Waker> {
++        if self.owner_scopes == 0 && self.notified {
++            self.notified = false;
++            self.waiter.take()
++        } else {
++            None
++        }
++    }
++}
++// The actual wake allocation can outlive its operation through a registered or
++// in-progress proxy Waker. Keep the original complete operation reservation here.
++// Every strong release uses into_inner, so this allocation itself is destroyed
++// before its final field can return admission credit. No raw Arc or Weak escapes.
++struct WorkWake {
++    state: Mutex<WakeState>,
++    _charge: Reservation,
++}
++impl WorkWake {
++    fn notify(&self) {
++        let waiter = {
++            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
++            state.notified = true;
++            state.take_notification()
++        };
++        // Consume the registration outside the wake-state mutex. An owner
++        // callback records its notification until all entered scopes leave;
++        // it cannot synchronously reenter the owner through an executor wake.
++        if let Some(waiter) = waiter {
++            waiter.wake();
++        }
++    }
++    fn dispatch_pending(&self) {
++        if std::thread::panicking() {
++            // As in DeferWake, never introduce an executor callback during an
++            // existing unwind. Preserve the registration and notification.
++            return;
++        }
++        let waiter = self
++            .state
++            .lock()
++            .unwrap_or_else(|p| p.into_inner())
++            .take_notification();
++        if let Some(waiter) = waiter {
++            waiter.wake();
++        }
++    }
++    fn defer(&self) -> DeferWake<'_> {
++        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
++        state.owner_scopes = state
++            .owner_scopes
++            .checked_add(1)
++            .expect("snapshot wake scope overflow");
++        DeferWake(self)
++    }
++    fn register(&self, incoming: Waker) {
++        let replaced = {
++            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
++            if state
++                .waiter
++                .as_ref()
++                .is_none_or(|old| !old.will_wake(&incoming))
++            {
++                state.waiter.replace(incoming)
++            } else {
++                Some(incoming)
++            }
++        };
++        drop(replaced);
++    }
++}
++// Declare this guard before acquiring any Owner mutex. Rust drops the later
++// mutex guards first on every return/unwind path. The last nested/concurrent
++// scope forwards a queued notification only after releasing its owner locks.
++// The counter and flag belong to the already admitted WorkWake allocation.
++struct DeferWake<'a>(&'a WorkWake);
++impl Drop for DeferWake<'_> {
++    fn drop(&mut self) {
++        let waiter = {
++            let mut state = self.0.state.lock().unwrap_or_else(|p| p.into_inner());
++            state.owner_scopes -= 1;
++            // Do not invoke an arbitrary callback while unwinding an existing
++            // panic. Keep its pending notification/registration for a retry;
++            // a cancelled finish clears that registration outside all locks.
++            if std::thread::panicking() {
++                None
++            } else {
++                state.take_notification()
++            }
++        };
++        if let Some(waiter) = waiter {
++            waiter.wake();
++        }
++    }
++}
++struct OwnedWake(Option<Arc<WorkWake>>);
++impl OwnedWake {
++    fn new(charge: Reservation) -> Self {
++        Self(Some(Arc::new(WorkWake {
++            state: Mutex::new(WakeState {
++                waiter: None,
++                owner_scopes: 0,
++                notified: false,
++            }),
++            _charge: charge,
++        })))
++    }
++    fn waker(&self) -> Waker {
++        let wake = self.0.as_ref().expect("owned wake").clone();
++        let pointer = Arc::into_raw(wake).cast::<()>();
++        // SAFETY: the raw pointer transfers exactly one live Arc strong count
++        // into this Waker; every vtable operation follows that ownership below.
++        unsafe { Waker::from_raw(RawWaker::new(pointer, &WORK_WAKE_VTABLE)) }
++    }
++}
++impl Clone for OwnedWake {
++    fn clone(&self) -> Self {
++        Self(Some(self.0.as_ref().expect("owned wake").clone()))
++    }
++}
++impl Deref for OwnedWake {
++    type Target = WorkWake;
++    fn deref(&self) -> &Self::Target {
++        self.0.as_deref().expect("owned wake")
++    }
++}
++impl Drop for OwnedWake {
++    fn drop(&mut self) {
++        if let Some(wake) = self.0.take().and_then(Arc::into_inner) {
++            // No Weak exists. Arc::into_inner already retired the real backing.
++            drop(wake);
++        }
++    }
++}
++
++// These private callbacks are the only owners of raw WorkWake pointers. A raw
++// Waker owns one count, cloning creates one, wake/drop consume one, and
++// wake_by_ref only borrows one. Every consumed count goes through OwnedWake;
++// even a panicking user wake callback cannot skip the final retirement protocol.
++static WORK_WAKE_VTABLE: RawWakerVTable =
++    RawWakerVTable::new(clone_work_wake, wake_work, wake_work_by_ref, drop_work_wake);
++unsafe fn clone_work_wake(pointer: *const ()) -> RawWaker {
++    // SAFETY: the borrowed source Waker keeps this exact Arc allocation alive.
++    unsafe { Arc::increment_strong_count(pointer.cast::<WorkWake>()) };
++    RawWaker::new(pointer, &WORK_WAKE_VTABLE)
++}
++unsafe fn wake_work(pointer: *const ()) {
++    // SAFETY: wake consumes the source Waker's one strong count exactly once.
++    let wake = OwnedWake(Some(unsafe { Arc::from_raw(pointer.cast::<WorkWake>()) }));
++    wake.notify();
++    // OwnedWake also runs during callback unwinding.
++}
++unsafe fn wake_work_by_ref(pointer: *const ()) {
++    // SAFETY: this is a borrowed count owned by the source Waker. ManuallyDrop
++    // prevents decrementing it on return or callback unwind; the source still
++    // owns it. No new Arc count is created and no raw Arc is returned.
++    let wake = ManuallyDrop::new(unsafe { Arc::from_raw(pointer.cast::<WorkWake>()) });
++    wake.notify();
++}
++unsafe fn drop_work_wake(pointer: *const ()) {
++    // SAFETY: drop consumes the source Waker's one strong count exactly once.
++    drop(OwnedWake(Some(unsafe {
++        Arc::from_raw(pointer.cast::<WorkWake>())
++    })));
++}
++struct ClearWaiter<'a>(&'a WorkWake);
++impl Drop for ClearWaiter<'_> {
++    fn drop(&mut self) {
++        let waiter = self
++            .0
++            .state
++            .lock()
++            .unwrap_or_else(|p| p.into_inner())
++            .waiter
++            .take();
++        drop(waiter);
++    }
++}
++
++struct Owner<O: SnapshotOperation> {
++    id: SnapshotWorkId,
++    // The worker may hold resource while blocked. Poll/report paths inspect
++    // control first and never take resource until the actual handle is joined.
++    control: Mutex<Control>,
++    resource: Mutex<Resource<O>>,
++    serial: tokio::sync::Mutex<()>,
++    cancellation: QueryCancellation,
++    core: Arc<MemoryCore>,
++    // Last: actual Owner allocation and all fields retire before this count.
++    // External proxy wakers may retain the same original charge even longer.
++    wake: OwnedWake,
++}
++// Typed delivery/worker handles and erased report/census handles cannot expose
++// their inner Arc. Every final release moves the value out before destroying it,
++// rather than releasing a lease from inside the still-allocated Arc payload.
++struct OwnedOwner<O: SnapshotOperation>(Option<Arc<Owner<O>>>);
++impl<O: SnapshotOperation> OwnedOwner<O> {
++    fn erased(&self) -> ErasedOwner {
++        ErasedOwner(Some(self.0.as_ref().expect("owned operation").clone()))
++    }
++}
++impl<O: SnapshotOperation> Clone for OwnedOwner<O> {
++    fn clone(&self) -> Self {
++        Self(Some(self.0.as_ref().expect("owned operation").clone()))
++    }
++}
++impl<O: SnapshotOperation> Deref for OwnedOwner<O> {
++    type Target = Owner<O>;
++    fn deref(&self) -> &Self::Target {
++        self.0.as_deref().expect("owned operation")
++    }
++}
++impl<O: SnapshotOperation> Drop for OwnedOwner<O> {
++    fn drop(&mut self) {
++        if let Some(owner) = self.0.take().and_then(Arc::into_inner) {
++            drop(owner);
++        }
++    }
++}
++struct ErasedOwner(Option<Arc<dyn ErasedWork>>);
++impl Clone for ErasedOwner {
++    fn clone(&self) -> Self {
++        Self(Some(self.0.as_ref().expect("owned report").clone()))
++    }
++}
++impl Deref for ErasedOwner {
++    type Target = dyn ErasedWork;
++    fn deref(&self) -> &Self::Target {
++        self.0.as_deref().expect("owned report")
++    }
++}
++impl Drop for ErasedOwner {
++    fn drop(&mut self) {
++        if let Some(owner) = self.0.take() {
++            // Dynamic dispatch restores the concrete sized Arc before release.
++            owner.retire();
++        }
++    }
++}
++impl<O: SnapshotOperation> Owner<O> {
++    fn required_bytes(plan: &O::Plan) -> anyhow::Result<u64> {
++        let backing = O::backing_bytes(plan)?;
++        let cancellation = u64::try_from(QueryCancellation::shared_state_bytes())?
++            .checked_add(arc_bytes::<()>()?)
++            .ok_or_else(|| anyhow::anyhow!("snapshot cancellation allocation overflow"))?;
++        arc_bytes::<Self>()?
++            .checked_add(arc_bytes::<WorkWake>()?)
++            .and_then(|n| n.checked_add(cancellation))
++            .and_then(|n| n.checked_add(kasumi_serving::BACKGROUND_WORK_SLOT_BYTES))
++            .and_then(|n| n.checked_add(backing))
++            .ok_or_else(|| anyhow::anyhow!("snapshot work allocation overflow or unsupported plan"))
++    }
++    fn run(&self) {
++        let _defer = self.wake.defer();
++        let mut resource = self.resource.lock().unwrap_or_else(|p| p.into_inner());
++        let operation = resource
++            .operation
++            .as_mut()
++            .expect("inert operation installed");
++        match catch_unwind(AssertUnwindSafe(|| operation.run())) {
++            Ok(Ok(output)) => resource.output = Some(output),
++            Ok(Err(failure)) => resource.failure = Some(failure),
++            Err(payload) => {
++                resource.panic = Some(OriginalPanic {
++                    phase: SnapshotPanicPhase::Run,
++                    payload,
++                })
++            }
++        }
++        // The Tokio handle, not this wake or callback return, proves termination.
++    }
++    fn start(owner: &OwnedOwner<O>) -> Result<()> {
++        let _defer = owner.wake.defer();
++        let mut control = owner.control.lock().unwrap_or_else(|p| p.into_inner());
++        if control.closing || control.started || control.panic.is_some() {
++            return Err(Error::new(
++                ErrorCode::Conflict,
++                "snapshot work is closed or already started",
++            ));
++        }
++        if owner
++            .resource
++            .lock()
++            .unwrap_or_else(|p| p.into_inner())
++            .panic
++            .is_some()
++        {
++            return Err(Error::new(
++                ErrorCode::Unavailable,
++                "snapshot work allocation panicked",
++            ));
++        }
++        control.started = true;
++        let worker = owner.clone();
++        // No suspension or application work intervenes between actual spawn and
++        // retaining its original handle in the already published owner.
++        match catch_unwind(AssertUnwindSafe(|| {
++            tokio::task::spawn_blocking(move || worker.run())
++        })) {
++            Ok(child) => control.child = Some(child),
++            Err(payload) => {
++                control.panic = Some(OriginalPanic {
++                    phase: SnapshotPanicPhase::Start,
++                    payload,
++                });
++                return Err(Error::new(
++                    ErrorCode::Unavailable,
++                    "snapshot child start panicked; owner retained",
++                ));
++            }
++        }
++        Ok(())
++    }
++    fn poll_join(&self, cx: &mut Context<'_>) -> Poll<bool> {
++        let _defer = self.wake.defer();
++        let mut control = self.control.lock().unwrap_or_else(|p| p.into_inner());
++        if control.panic.is_some() || control.join_error.is_some() {
++            return Poll::Ready(false);
++        }
++        if control.joined {
++            return Poll::Ready(true);
++        }
++        if !control.started {
++            if control.closing {
++                control.joined = true;
++                return Poll::Ready(true);
++            }
++            return Poll::Ready(false);
++        }
++        let child = control.child.as_mut().expect("started child retained");
++        match catch_unwind(AssertUnwindSafe(|| Pin::new(child).poll(cx))) {
++            Ok(Poll::Pending) => Poll::Pending,
++            Ok(Poll::Ready(outcome)) => {
++                control.child.take();
++                control.joined = true;
++                match outcome {
++                    Ok(()) => Poll::Ready(true),
++                    Err(error) => {
++                        control.join_error = Some(error);
++                        Poll::Ready(false)
++                    }
++                }
++            }
++            Err(payload) => {
++                // Never poll an actual handle again after an interrupted poll.
++                control.panic = Some(OriginalPanic {
++                    phase: SnapshotPanicPhase::JoinPoll,
++                    payload,
++                });
++                Poll::Ready(false)
++            }
++        }
++    }
++    fn poll_finish(&self, cx: &mut Context<'_>, discard: bool) -> Poll<()> {
++        let _defer = self.wake.defer();
++        match self.poll_join(cx) {
++            Poll::Pending => return Poll::Pending,
++            Poll::Ready(false) => return Poll::Ready(()),
++            Poll::Ready(true) => {}
++        }
++        let mut resource = self.resource.lock().unwrap_or_else(|p| p.into_inner());
++        if resource.panic.is_some() {
++            return Poll::Ready(());
++        }
++        if !resource.cleanup_complete {
++            let operation = resource
++                .operation
++                .as_mut()
++                .expect("non-panicked inert operation");
++            match catch_unwind(AssertUnwindSafe(|| operation.poll_cleanup(cx))) {
++                Ok(Poll::Pending) => return Poll::Pending,
++                Ok(Poll::Ready(DrainCompletion::Retained)) => return Poll::Ready(()),
++                Ok(Poll::Ready(DrainCompletion::Complete)) => resource.cleanup_complete = true,
++                Err(payload) => {
++                    resource.panic = Some(OriginalPanic {
++                        phase: SnapshotPanicPhase::Cleanup,
++                        payload,
++                    });
++                    return Poll::Ready(());
++                }
++            }
++        }
++        if discard && let Some(output) = resource.output.as_mut() {
++            match catch_unwind(AssertUnwindSafe(|| O::poll_discard(output, cx))) {
++                Ok(Poll::Pending) => return Poll::Pending,
++                Ok(Poll::Ready(DrainCompletion::Retained)) => return Poll::Ready(()),
++                Ok(Poll::Ready(DrainCompletion::Complete)) => {
++                    resource.discarded = resource.output.take();
++                }
++                Err(payload) => {
++                    resource.panic = Some(OriginalPanic {
++                        phase: SnapshotPanicPhase::Discard,
++                        payload,
++                    })
++                }
++            }
++        }
++        Poll::Ready(())
++    }
++}
++trait ErasedWork: Send + Sync {
++    fn id(&self) -> SnapshotWorkId;
++    fn core(&self) -> &Arc<MemoryCore>;
++    fn serial(&self) -> &tokio::sync::Mutex<()>;
++    fn wake(&self) -> &OwnedWake;
++    fn retire(self: Arc<Self>);
++    fn close(&self);
++    fn poll_finish(&self, cx: &mut Context<'_>, discard: bool) -> Poll<()>;
++    fn completion(&self) -> DrainCompletion;
++    fn visit(&self, visit: &mut dyn FnMut(SnapshotObservation<'_>));
++}
++impl<O: SnapshotOperation> ErasedWork for Owner<O> {
++    fn id(&self) -> SnapshotWorkId {
++        self.id
++    }
++    fn core(&self) -> &Arc<MemoryCore> {
++        &self.core
++    }
++    fn serial(&self) -> &tokio::sync::Mutex<()> {
++        &self.serial
++    }
++    fn wake(&self) -> &OwnedWake {
++        &self.wake
++    }
++    fn retire(self: Arc<Self>) {
++        if let Some(owner) = Arc::into_inner(self) {
++            drop(owner);
++        }
++    }
++    fn close(&self) {
++        let _defer = self.wake.defer();
++        self.control
++            .lock()
++            .unwrap_or_else(|p| p.into_inner())
++            .closing = true;
++        self.cancellation.cancel();
++    }
++    fn poll_finish(&self, cx: &mut Context<'_>, discard: bool) -> Poll<()> {
++        let _defer = self.wake.defer();
++        Owner::poll_finish(self, cx, discard)
++    }
++    fn completion(&self) -> DrainCompletion {
++        let _defer = self.wake.defer();
++        let control = self.control.lock().unwrap_or_else(|p| p.into_inner());
++        if !control.joined || control.panic.is_some() || control.join_error.is_some() {
++            return DrainCompletion::Retained;
++        }
++        let resource = self.resource.lock().unwrap_or_else(|p| p.into_inner());
++        if resource.cleanup_complete && resource.panic.is_none() && resource.output.is_none() {
++            DrainCompletion::Complete
++        } else {
++            DrainCompletion::Retained
++        }
++    }
++    fn visit(&self, visit: &mut dyn FnMut(SnapshotObservation<'_>)) {
++        let _defer = self.wake.defer();
++        let control = self.control.lock().unwrap_or_else(|p| p.into_inner());
++        if let Some(error) = &control.join_error {
++            visit(SnapshotObservation::JoinError(error));
++        }
++        if let Some(panic) = &control.panic {
++            visit(SnapshotObservation::Panic {
++                phase: panic.phase,
++                payload: panic.payload.as_ref(),
++            });
++        }
++        // A report callback must never wait for a running blocking operation.
++        if !control.joined {
++            return;
++        }
++        let resource = self.resource.lock().unwrap_or_else(|p| p.into_inner());
++        if let Some(error) = &resource.failure {
++            visit(SnapshotObservation::Failure(error));
++        }
++        if let Some(operation) = &resource.operation {
++            operation.visit_diagnostics(&mut |error| visit(SnapshotObservation::Diagnostic(error)));
++        }
++        if let Some(output) = resource.discarded.as_ref().or(resource.output.as_ref()) {
++            O::visit_output_diagnostics(output, &mut |error| {
++                visit(SnapshotObservation::Diagnostic(error))
++            });
++        }
++        if let Some(panic) = &resource.panic {
++            visit(SnapshotObservation::Panic {
++                phase: panic.phase,
++                payload: panic.payload.as_ref(),
++            });
++        }
++    }
++}
++
++/// Caller delivery capability. Dropping it cancels delivery, never the actual
++/// handle or result retained in MemoryCore's fixed strong census.
++pub struct SnapshotWork<O: SnapshotOperation> {
++    owner: OwnedOwner<O>,
++}
++impl<O: SnapshotOperation> Drop for SnapshotWork<O> {
++    fn drop(&mut self) {
++        self.owner.cancellation.cancel();
++    }
++}
++impl<O: SnapshotOperation> SnapshotWork<O> {
++    pub fn id(&self) -> SnapshotWorkId {
++        self.owner.id
++    }
++    pub fn start(&self) -> Result<()> {
++        Owner::start(&self.owner)
++    }
++    pub fn report(&self) -> SnapshotWorkReport {
++        SnapshotWorkReport {
++            owner: self.owner.erased(),
++        }
++    }
++    /// Wait for the actual join and operation cleanup without moving its output
++    /// into this cancelable future. Claim is a later synchronous transfer.
++    pub async fn ready(&self) -> SnapshotWorkReport {
++        let report = self.report();
++        report.finish(false).await;
++        // A joined typed failure with positive cleanup has no pending output.
++        // Do not leave an already Complete operation in the strong core cycle.
++        report.retire_complete();
++        report
++    }
++    pub fn claim(&self) -> std::result::Result<O::Output, SnapshotWorkReport> {
++        // Arbitrary executor callbacks must finish while the output is still
++        // in retained custody. They can themselves close/claim this owner, so
++        // recheck all eligibility only after dispatch returns.
++        self.owner.wake.dispatch_pending();
++        let report = self.report();
++        // This final section invokes no adapter, Waker or executor callback.
++        // In particular, do not add a dispatching DeferWake/Tokio guard here:
++        // a callback panic after output.take would destroy an undelivered value
++        // without its required poll_discard. Concurrent callbacks can contend
++        // for these std mutexes, but this section cannot call back into them.
++        let control = self.owner.control.lock().unwrap_or_else(|p| p.into_inner());
++        if control.closing
++            || !control.joined
++            || control.panic.is_some()
++            || control.join_error.is_some()
++        {
++            return Err(report);
++        }
++        let mut resource = self
++            .owner
++            .resource
++            .lock()
++            .unwrap_or_else(|p| p.into_inner());
++        if !resource.cleanup_complete || resource.panic.is_some() || resource.failure.is_some() {
++            return Err(report);
++        }
++        let Some(output) = resource.output.take() else {
++            return Err(report);
++        };
++        let retired = {
++            let mut census = self
++                .owner
++                .core
++                .snapshot_work
++                .lock()
++                .unwrap_or_else(|p| p.into_inner());
++            match census.slots.get_mut(self.owner.id.slot) {
++                Some(slot) if slot.generation == self.owner.id.generation => {
++                    slot.reserved = false;
++                    slot.owner.take()
++                }
++                _ => None,
++            }
++        };
++        drop(resource);
++        drop(control);
++        // No completion()/retire_complete() dispatch after the transfer. Both
++        // extra owner counts retire outside the locks; borrowed self guarantees
++        // that neither can be the final actual Owner/resource destruction.
++        drop(retired);
++        drop(report);
++        Ok(output)
++    }
++}
++
++/// Original diagnostics are borrowed under the owner locks. Callbacks must not
++/// recursively enter the same owner. No report grows or clones a diagnostic Vec.
++pub enum SnapshotObservation<'a> {
++    Failure(&'a (dyn StdError + 'static)),
++    Diagnostic(&'a (dyn StdError + 'static)),
++    JoinError(&'a tokio::task::JoinError),
++    Panic {
++        phase: SnapshotPanicPhase,
++        payload: &'a (dyn Any + Send),
++    },
++}
++/// Executor callbacks may inspect completion, but must not synchronously block
++/// waiting for another finish/drain of this same owner. Those asynchronous
++/// operations share a serial gate protecting the single waiter registration.
++#[derive(Clone)]
++pub struct SnapshotWorkReport {
++    owner: ErasedOwner,
++}
++impl SnapshotWorkReport {
++    pub fn id(&self) -> SnapshotWorkId {
++        self.owner.id()
++    }
++    pub fn completion(&self) -> DrainCompletion {
++        self.owner.completion()
++    }
++    pub fn visit(&self, mut visit: impl FnMut(SnapshotObservation<'_>)) {
++        self.owner.visit(&mut visit);
++    }
++    async fn finish(&self, discard: bool) {
++        let _serial = self.owner.serial().lock().await;
++        let wake = self.owner.wake();
++        let _clear = ClearWaiter(wake);
++        let proxy = wake.waker();
++        std::future::poll_fn(|cx| {
++            // Clone callbacks may run arbitrary executor code; do this before
++            // acquiring the waiter lock, and destroy replaced counts after it.
++            wake.register(cx.waker().clone());
++            self.owner
++                .poll_finish(&mut Context::from_waker(&proxy), discard)
++        })
++        .await;
++    }
++    /// Synchronously fences this one job before the first suspension. Cancelled
++    /// drains leave the exact handle, resource and outcome in the same cell.
++    pub async fn drain(&self) -> Self {
++        self.owner.close();
++        self.finish(true).await;
++        self.retire_complete();
++        self.clone()
++    }
++    fn retire_complete(&self) {
++        if self.completion() != DrainCompletion::Complete {
++            return;
++        }
++        let retired = {
++            let mut census = self
++                .owner
++                .core()
++                .snapshot_work
++                .lock()
++                .unwrap_or_else(|p| p.into_inner());
++            let id = self.id();
++            let slot = &mut census.slots[id.slot];
++            if slot.generation != id.generation {
++                return;
++            }
++            slot.reserved = false;
++            slot.owner.take()
++        };
++        drop(retired);
++    }
++}
++impl NodeAdmission {
++    /// Reserve a concrete operation and result owner before constructing its
++    /// inert state. Slot count comes from max_inflight_operations, not the
++    /// unrelated startup-scope policy. This does not spawn the actual child.
++    pub fn prepare_snapshot_work<O: SnapshotOperation>(
++        self: &Arc<Self>,
++        plan: O::Plan,
++    ) -> Result<SnapshotWork<O>> {
++        O::validate_memory(&plan, self.memory()).map_err(|_| {
++            Error::new(
++                ErrorCode::Conflict,
++                "snapshot operation and memory owners differ",
++            )
++        })?;
++        let bytes = Owner::<O>::required_bytes(&plan)
++            .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot work plan invalid"))?;
++        let mut ticket = {
++            let mut census = self
++                .core
++                .snapshot_work
++                .lock()
++                .unwrap_or_else(|p| p.into_inner());
++            let slot = census
++                .slots
++                .iter()
++                .position(|slot| !slot.reserved)
++                .ok_or_else(|| {
++                    Error::new(ErrorCode::ResourceExhausted, "snapshot work census is full")
++                })?;
++            let generation = census.next;
++            census.next = generation.checked_add(1).ok_or_else(|| {
++                Error::new(ErrorCode::Unavailable, "snapshot work identity exhausted")
++            })?;
++            census.slots[slot].reserved = true;
++            census.slots[slot].generation = generation;
++            CensusTicket {
++                core: self.core.clone(),
++                id: SnapshotWorkId { slot, generation },
++                published: false,
++            }
++        };
++        // The reservation precedes even the cancellation Arc allocation. Bind
++        // its token into that same already charged operation slot before any
++        // inert builder or child can run; concurrent pressure is observed here.
++        let charge = self.reserve(bytes, None)?;
++        let cancellation = QueryCancellation::default();
++        {
++            let mut state = self
++                .core
++                .data
++                .state
++                .lock()
++                .unwrap_or_else(|p| p.into_inner());
++            let cancel_now = !state.usable || state.pressured;
++            state
++                .charge_mut(charge.slot, charge.id)
++                .expect("admitted snapshot charge")
++                .cancellation = Some(cancellation.clone());
++            if cancel_now {
++                cancellation.cancel();
++            }
++        }
++        let allocated = catch_unwind(AssertUnwindSafe(|| O::allocate(plan, cancellation.clone())));
++        let (operation, panic) = match allocated {
++            Ok(operation) => (Some(operation), None),
++            Err(payload) => (
++                None,
++                Some(OriginalPanic {
++                    phase: SnapshotPanicPhase::Allocate,
++                    payload,
++                }),
++            ),
++        };
++        let allocation_panicked = panic.is_some();
++        let owner = OwnedOwner(Some(Arc::new(Owner {
++            id: ticket.id,
++            control: Mutex::new(Control {
++                started: false,
++                joined: false,
++                closing: false,
++                child: None,
++                join_error: None,
++                panic: None,
++            }),
++            resource: Mutex::new(Resource {
++                operation,
++                output: None,
++                discarded: None,
++                failure: None,
++                panic,
++                cleanup_complete: false,
++            }),
++            serial: tokio::sync::Mutex::new(()),
++            cancellation,
++            core: self.core.clone(),
++            wake: OwnedWake::new(charge),
++        })));
++        {
++            let mut census = self
++                .core
++                .snapshot_work
++                .lock()
++                .unwrap_or_else(|p| p.into_inner());
++            census.slots[ticket.id.slot].owner = Some(owner.erased());
++            ticket.published = true;
++        }
++        if allocation_panicked {
++            return Err(Error::new(
++                ErrorCode::Unavailable,
++                "snapshot inert allocation panicked; exact owner retained",
++            ));
++        }
++        Ok(SnapshotWork { owner })
++    }
++}
++impl MemoryCore {
++    pub fn snapshot_work_capacity(&self) -> usize {
++        self.data.config.max_inflight_operations
++    }
++    /// Stable per-cell custody lookup. Traversal alone does not assert whole-core
++    /// completion while admission/preparation remains open. Runtime adapters must
++    /// close their own admission first and retain a preparing census obligation.
++    pub fn snapshot_work_at(&self, index: usize) -> Option<SnapshotWorkReport> {
++        self.snapshot_work
++            .lock()
++            .unwrap_or_else(|p| p.into_inner())
++            .slots
++            .get(index)
++            .and_then(|slot| slot.owner.clone())
++            .map(|owner| SnapshotWorkReport { owner })
++    }
++}
++#[cfg(test)]
++#[path = "snapshot_work_tests.rs"]
++mod tests;
+diff --git a/crates/kasumi-engine/src/admission/snapshot_work_tests.rs b/crates/kasumi-engine/src/admission/snapshot_work_tests.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-engine/src/admission/snapshot_work_tests.rs
+@@ -0,0 +1,1214 @@
++use super::*;
++use crate::admission::{AdmissionConfig, MemorySource};
++use std::{
++    sync::{
++        Condvar,
++        atomic::{AtomicBool, AtomicUsize, Ordering},
++    },
++    time::Duration,
++};
++
++struct ZeroRss;
++impl MemorySource for ZeroRss {
++    fn resident_bytes(&self) -> anyhow::Result<u64> {
++        Ok(0)
++    }
++}
++fn admission(capacity: usize) -> Arc<NodeAdmission> {
++    NodeAdmission::from_memory(
++        MemoryCore::create(
++            AdmissionConfig {
++                max_inflight_operations: capacity,
++                ..Default::default()
++            },
++            1 << 30,
++            Arc::new(ZeroRss),
++            Arc::new(kasumi_clock::SystemLeaseClock),
++        )
++        .unwrap(),
++    )
++    .unwrap()
++}
++#[derive(Debug)]
++struct OriginalFailure(u64);
++impl std::fmt::Display for OriginalFailure {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(f, "original failure {}", self.0)
++    }
++}
++impl StdError for OriginalFailure {}
++#[derive(Default)]
++struct Gate {
++    started: AtomicBool,
++    released: Mutex<bool>,
++    wake: Condvar,
++    cleanup_ready: AtomicBool,
++    cleanup_calls: AtomicUsize,
++    cleanup_wake_pending: AtomicBool,
++    discard_wake_pending: AtomicBool,
++    output_drops: AtomicUsize,
++    allocations: AtomicUsize,
++    operation_drops: AtomicUsize,
++}
++impl Gate {
++    fn release(&self) {
++        *self.released.lock().unwrap() = true;
++        self.wake.notify_one();
++    }
++    async fn started(&self) {
++        tokio::time::timeout(Duration::from_secs(5), async {
++            while !self.started.load(Ordering::Acquire) {
++                tokio::task::yield_now().await;
++            }
++        })
++        .await
++        .unwrap();
++    }
++}
++#[derive(Clone, Copy)]
++enum Outcome {
++    Success,
++    Failure,
++    Panic,
++}
++struct Plan {
++    core: Arc<MemoryCore>,
++    gate: Arc<Gate>,
++    outcome: Outcome,
++}
++struct Operation {
++    core: Arc<MemoryCore>,
++    gate: Arc<Gate>,
++    outcome: Outcome,
++    _cancel: QueryCancellation,
++    cleanup_failure: Option<OriginalFailure>,
++}
++impl Drop for Operation {
++    fn drop(&mut self) {
++        self.gate.operation_drops.fetch_add(1, Ordering::AcqRel);
++    }
++}
++struct Output {
++    gate: Arc<Gate>,
++    _charge: Reservation,
++}
++impl Drop for Output {
++    fn drop(&mut self) {
++        self.gate.output_drops.fetch_add(1, Ordering::AcqRel);
++    }
++}
++impl SnapshotOperation for Operation {
++    type Plan = Plan;
++    type Output = Output;
++    type Failure = OriginalFailure;
++    fn validate_memory(plan: &Plan, core: &Arc<MemoryCore>) -> anyhow::Result<()> {
++        anyhow::ensure!(
++            Arc::ptr_eq(&plan.core, core),
++            "foreign fixture memory owner"
++        );
++        Ok(())
++    }
++    fn backing_bytes(_: &Plan) -> anyhow::Result<u64> {
++        // The owner includes the named Tokio task estimate. The actual fixture
++        // operation/error/output are fixed inline; their one shared Gate is the
++        // only backing allocation. This is custody, not allocator qualification.
++        arc_bytes::<Gate>()
++    }
++    fn allocate(plan: Plan, cancellation: QueryCancellation) -> Self {
++        plan.gate.allocations.fetch_add(1, Ordering::AcqRel);
++        Self {
++            core: plan.core,
++            gate: plan.gate,
++            outcome: plan.outcome,
++            _cancel: cancellation,
++            cleanup_failure: None,
++        }
++    }
++    fn run(&mut self) -> std::result::Result<Output, OriginalFailure> {
++        self.gate.started.store(true, Ordering::Release);
++        let released = self.gate.released.lock().unwrap();
++        drop(
++            self.gate
++                .wake
++                .wait_while(released, |released| !*released)
++                .unwrap(),
++        );
++        match self.outcome {
++            Outcome::Success => {
++                let charge = self
++                    .core
++                    .reserve_resident(arc_bytes::<Gate>().unwrap())
++                    .map_err(|_| OriginalFailure(812))?;
++                Ok(Output {
++                    gate: self.gate.clone(),
++                    _charge: charge,
++                })
++            }
++            Outcome::Failure => Err(OriginalFailure(731)),
++            Outcome::Panic => std::panic::panic_any(OriginalFailure(937)),
++        }
++    }
++    fn poll_cleanup(&mut self, cx: &mut Context<'_>) -> Poll<DrainCompletion> {
++        self.gate.cleanup_calls.fetch_add(1, Ordering::AcqRel);
++        if self.gate.cleanup_wake_pending.swap(false, Ordering::AcqRel) {
++            cx.waker().wake_by_ref();
++            return Poll::Pending;
++        }
++        if self.gate.cleanup_ready.load(Ordering::Acquire) {
++            Poll::Ready(DrainCompletion::Complete)
++        } else {
++            self.cleanup_failure.get_or_insert(OriginalFailure(991));
++            Poll::Ready(DrainCompletion::Retained)
++        }
++    }
++    fn poll_discard(output: &mut Output, cx: &mut Context<'_>) -> Poll<DrainCompletion> {
++        if output
++            .gate
++            .discard_wake_pending
++            .swap(false, Ordering::AcqRel)
++        {
++            cx.waker().wake_by_ref();
++            return Poll::Pending;
++        }
++        Poll::Ready(DrainCompletion::Complete)
++    }
++    fn visit_diagnostics(&self, visit: &mut dyn FnMut(&(dyn StdError + 'static))) {
++        if let Some(error) = &self.cleanup_failure {
++            visit(error);
++        }
++    }
++    fn visit_output_diagnostics(_: &Output, _: &mut dyn FnMut(&(dyn StdError + 'static))) {}
++}
++fn new_gate() -> Arc<Gate> {
++    Arc::new(Gate {
++        cleanup_ready: AtomicBool::new(true),
++        ..Default::default()
++    })
++}
++fn prepare(
++    node: &Arc<NodeAdmission>,
++    gate: &Arc<Gate>,
++    outcome: Outcome,
++) -> SnapshotWork<Operation> {
++    node.prepare_snapshot_work::<Operation>(Plan {
++        core: node.memory().clone(),
++        gate: gate.clone(),
++        outcome,
++    })
++    .unwrap()
++}
++fn original(report: &SnapshotWorkReport) -> (*const OriginalFailure, u64) {
++    let mut original = None;
++    report.visit(|observation| {
++        if let SnapshotObservation::Failure(error) = observation {
++            let error = error.downcast_ref::<OriginalFailure>().unwrap();
++            original = Some((std::ptr::from_ref(error), error.0));
++        }
++    });
++    original.unwrap()
++}
++fn cleanup_identity(report: &SnapshotWorkReport) -> (*const OriginalFailure, u64) {
++    let mut found = None;
++    report.visit(|observation| {
++        if let SnapshotObservation::Diagnostic(error) = observation {
++            let error = error.downcast_ref::<OriginalFailure>().unwrap();
++            found = Some((std::ptr::from_ref(error), error.0));
++        }
++    });
++    found.unwrap()
++}
++fn panic_identity(report: &SnapshotWorkReport) -> (*const OriginalFailure, u64) {
++    let mut original = None;
++    report.visit(|observation| {
++        if let SnapshotObservation::Panic { phase, payload } = observation {
++            assert_eq!(phase, SnapshotPanicPhase::Run);
++            let error = payload.downcast_ref::<OriginalFailure>().unwrap();
++            original = Some((std::ptr::from_ref(error), error.0));
++        }
++    });
++    original.unwrap()
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn cancelled_delivery_and_drain_join_the_actual_late_failure() {
++    let node = admission(1);
++    let core = node.memory().clone();
++    let baseline = core.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Failure);
++    let id = work.id();
++    work.start().unwrap();
++    gate.started().await;
++    let mut waiting = Box::pin(work.ready());
++    assert!(
++        std::future::poll_fn(|cx| Poll::Ready(waiting.as_mut().poll(cx)))
++            .await
++            .is_pending()
++    );
++    drop(waiting);
++    assert!(
++        tokio::time::timeout(Duration::from_millis(1), work.ready())
++            .await
++            .is_err()
++    );
++    drop(work);
++    let report = core.snapshot_work_at(id.slot).unwrap();
++    let charged = core.snapshot().reserved_bytes;
++    assert!(charged > baseline);
++    assert_eq!(core.snapshot().inflight_operations, 1);
++    let mut draining = Box::pin(report.drain());
++    assert!(
++        std::future::poll_fn(|cx| Poll::Ready(draining.as_mut().poll(cx)))
++            .await
++            .is_pending()
++    );
++    drop(draining);
++    assert_eq!(core.snapshot().reserved_bytes, charged);
++    assert_eq!(gate.cleanup_calls.load(Ordering::Acquire), 0);
++    let denied = new_gate();
++    assert!(
++        node.prepare_snapshot_work::<Operation>(Plan {
++            core: node.memory().clone(),
++            gate: denied.clone(),
++            outcome: Outcome::Success
++        })
++        .is_err()
++    );
++    assert_eq!(denied.allocations.load(Ordering::Acquire), 0);
++    gate.release();
++    let completed = report.drain().await;
++    assert_eq!(completed.completion(), DrainCompletion::Complete);
++    assert!(core.snapshot_work_at(id.slot).is_none());
++    let first = original(&completed);
++    assert_eq!(first.1, 731);
++    let repeated = report.drain().await;
++    assert_eq!(repeated.completion(), DrainCompletion::Complete);
++    assert_eq!(original(&repeated), first);
++    assert_eq!(core.snapshot().reserved_bytes, charged);
++    drop(repeated);
++    drop(completed);
++    drop(report);
++    assert_eq!(core.snapshot().reserved_bytes, baseline);
++    assert_eq!(core.snapshot().inflight_operations, 0);
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn actual_run_panic_retains_original_payload_resource_and_charge_without_cleanup() {
++    let node = admission(1);
++    let core = node.memory().clone();
++    let baseline = core.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Panic);
++    work.start().unwrap();
++    gate.started().await;
++    let id = work.id();
++    drop(work);
++    gate.release();
++    let report = core.snapshot_work_at(id.slot).unwrap();
++    let first = report.drain().await;
++    assert_eq!(first.completion(), DrainCompletion::Retained);
++    let identity = panic_identity(&first);
++    assert_eq!(identity.1, 937);
++    let repeated = report.drain().await;
++    assert_eq!(repeated.completion(), DrainCompletion::Retained);
++    assert_eq!(panic_identity(&repeated), identity);
++    assert_eq!(gate.cleanup_calls.load(Ordering::Acquire), 0);
++    assert!(core.snapshot().reserved_bytes > baseline);
++    assert!(core.snapshot_work_at(id.slot).is_some());
++    // This deliberately unresolved fixture proves retained panic custody; it
++    // makes no Complete claim and does not erase or reset the fixed census.
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn retained_cleanup_can_resolve_without_losing_the_original_failure() {
++    let node = admission(1);
++    let core = node.memory().clone();
++    let gate = new_gate();
++    gate.cleanup_ready.store(false, Ordering::Release);
++    let work = prepare(&node, &gate, Outcome::Failure);
++    work.start().unwrap();
++    gate.started().await;
++    gate.release();
++    let report = work.report();
++    let first = report.drain().await;
++    assert_eq!(first.completion(), DrainCompletion::Retained);
++    let identity = original(&first);
++    let cleanup = cleanup_identity(&first);
++    assert_eq!(cleanup.1, 991);
++    assert!(core.snapshot_work_at(work.id().slot).is_some());
++    gate.cleanup_ready.store(true, Ordering::Release);
++    let second = report.drain().await;
++    assert_eq!(second.completion(), DrainCompletion::Complete);
++    assert_eq!(original(&second), identity);
++    assert_eq!(cleanup_identity(&second), cleanup);
++    assert!(core.snapshot_work_at(work.id().slot).is_none());
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn successful_unclaimed_output_stays_owned_until_explicit_drain() {
++    let node = admission(1);
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Success);
++    work.start().unwrap();
++    gate.started().await;
++    gate.release();
++    let ready = work.ready().await;
++    assert_eq!(ready.completion(), DrainCompletion::Retained);
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 0);
++    drop(work);
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 0);
++    assert_eq!(ready.drain().await.completion(), DrainCompletion::Complete);
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 0);
++    assert_eq!(ready.drain().await.completion(), DrainCompletion::Complete);
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 0);
++    drop(ready);
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 1);
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn synchronous_claim_retires_only_its_generation_and_keeps_transferred_output() {
++    let node = admission(2);
++    let core = node.memory().clone();
++    let first_gate = new_gate();
++    let first = prepare(&node, &first_gate, Outcome::Success);
++    let old_id = first.id();
++    first.start().unwrap();
++    first_gate.started().await;
++    first_gate.release();
++    let report = first.ready().await;
++    let output = first.claim().ok().expect("ready output");
++    assert_eq!(report.completion(), DrainCompletion::Complete);
++    assert!(core.snapshot_work_at(old_id.slot).is_none());
++    assert_eq!(first_gate.output_drops.load(Ordering::Acquire), 0);
++    // A retained report truthfully keeps the first operation charge. Capacity
++    // two admits a successor while that old generation remains observable.
++    let successor_gate = new_gate();
++    let successor = prepare(&node, &successor_gate, Outcome::Success);
++    assert_eq!(successor.id().slot, old_id.slot);
++    assert_ne!(successor.id().generation, old_id.generation);
++    assert_eq!(report.drain().await.completion(), DrainCompletion::Complete);
++    assert_eq!(
++        core.snapshot_work_at(old_id.slot).unwrap().id(),
++        successor.id()
++    );
++    let successor_report = successor.report();
++    assert_eq!(
++        successor_report.drain().await.completion(),
++        DrainCompletion::Complete
++    );
++    assert!(!successor_gate.started.load(Ordering::Acquire));
++    drop(output);
++    assert_eq!(first_gate.output_drops.load(Ordering::Acquire), 1);
++}
++
++#[tokio::test]
++async fn admission_failure_precedes_inert_builder_and_returns_the_reserved_slot() {
++    let node = admission(1);
++    let baseline = node.snapshot();
++    let held = node.reserve(0, None).unwrap();
++    let gate = new_gate();
++    assert!(
++        node.prepare_snapshot_work::<Operation>(Plan {
++            core: node.memory().clone(),
++            gate: gate.clone(),
++            outcome: Outcome::Success
++        })
++        .is_err()
++    );
++    assert_eq!(gate.allocations.load(Ordering::Acquire), 0);
++    assert!(node.memory().snapshot_work_at(0).is_none());
++    assert_eq!(node.snapshot().reserved_bytes, baseline.reserved_bytes);
++    drop(held);
++    let accepted = prepare(&node, &gate, Outcome::Success);
++    assert_eq!(gate.allocations.load(Ordering::Acquire), 1);
++    // No child starts in preparation. The accepted inert owner remains in its
++    // census until a later asynchronous drain; caller Drop cannot discard it.
++    assert!(!gate.started.load(Ordering::Acquire));
++    drop(accepted);
++    let retained = node.memory().snapshot_work_at(0).unwrap();
++    assert_eq!(
++        retained.drain().await.completion(),
++        DrainCompletion::Complete
++    );
++    drop(retained);
++    assert_eq!(node.snapshot().reserved_bytes, baseline.reserved_bytes);
++}
++
++#[tokio::test]
++async fn foreign_core_and_one_byte_short_plan_are_denied_before_allocation() {
++    let node = admission(2);
++    let foreign = admission(2);
++    let gate = new_gate();
++    let before = node.snapshot().reserved_bytes;
++    let foreign_before = foreign.snapshot().reserved_bytes;
++    let error = node
++        .prepare_snapshot_work::<Operation>(Plan {
++            core: foreign.memory().clone(),
++            gate: gate.clone(),
++            outcome: Outcome::Success,
++        })
++        .err()
++        .unwrap();
++    assert_eq!(error.code, ErrorCode::Conflict);
++    assert_eq!(gate.allocations.load(Ordering::Acquire), 0);
++    assert_eq!(node.snapshot().reserved_bytes, before);
++    assert_eq!(foreign.snapshot().reserved_bytes, foreign_before);
++    let plan = Plan {
++        core: node.memory().clone(),
++        gate: gate.clone(),
++        outcome: Outcome::Success,
++    };
++    let required = Owner::<Operation>::required_bytes(&plan).unwrap();
++    let held = node
++        .reserve_resident(
++            node.memory()
++                .data
++                .max_bytes
++                .checked_sub(before)
++                .unwrap()
++                .checked_sub(required)
++                .unwrap()
++                .checked_add(1)
++                .unwrap(),
++        )
++        .unwrap();
++    let denied = node.prepare_snapshot_work::<Operation>(plan).err().unwrap();
++    assert_eq!(denied.code, ErrorCode::ResourceExhausted);
++    assert_eq!(gate.allocations.load(Ordering::Acquire), 0);
++    assert!(node.memory().snapshot_work_at(0).is_none());
++    drop(held);
++    let accepted = prepare(&node, &gate, Outcome::Success);
++    let report = accepted.report();
++    assert_eq!(report.drain().await.completion(), DrainCompletion::Complete);
++    drop(accepted);
++    drop(report);
++    assert_eq!(node.snapshot().reserved_bytes, before);
++}
++
++// Observe the actual global allocator event, rather than a destructor callback
++// which runs before Arc backing is freed. Only two exact live allocation ranges
++// are armed; unrelated concurrent test/runtime allocations are forwarded intact.
++mod deallocation {
++    use super::*;
++    use std::alloc::{GlobalAlloc, Layout, System};
++
++    pub(super) struct Watch {
++        address: AtomicUsize,
++        block: AtomicBool,
++        entered: AtomicBool,
++        released: AtomicBool,
++        finished: AtomicBool,
++        count: AtomicUsize,
++    }
++    impl Watch {
++        const fn new() -> Self {
++            Self {
++                address: AtomicUsize::new(0),
++                block: AtomicBool::new(false),
++                entered: AtomicBool::new(false),
++                released: AtomicBool::new(false),
++                finished: AtomicBool::new(false),
++                count: AtomicUsize::new(0),
++            }
++        }
++        pub(super) fn arm(&'static self, address: usize, block: bool) -> Release {
++            assert_ne!(address, 0);
++            assert_eq!(self.address.load(Ordering::Acquire), 0);
++            self.block.store(block, Ordering::Relaxed);
++            self.entered.store(false, Ordering::Relaxed);
++            self.released.store(false, Ordering::Relaxed);
++            self.finished.store(false, Ordering::Relaxed);
++            self.count.store(0, Ordering::Relaxed);
++            self.address.store(address, Ordering::Release);
++            Release(self)
++        }
++        fn before(&self, pointer: *mut u8, layout: Layout) -> bool {
++            let address = self.address.load(Ordering::Acquire);
++            if address == 0 || address.wrapping_sub(pointer as usize) >= layout.size() {
++                return false;
++            }
++            if self
++                .address
++                .compare_exchange(address, 0, Ordering::AcqRel, Ordering::Acquire)
++                .is_err()
++            {
++                return false;
++            }
++            self.count.fetch_add(1, Ordering::AcqRel);
++            self.entered.store(true, Ordering::Release);
++            while self.block.load(Ordering::Acquire) && !self.released.load(Ordering::Acquire) {
++                std::thread::yield_now();
++            }
++            true
++        }
++        pub(super) async fn entered(&self) {
++            tokio::time::timeout(Duration::from_secs(5), async {
++                while !self.entered.load(Ordering::Acquire) {
++                    tokio::task::yield_now().await;
++                }
++            })
++            .await
++            .unwrap();
++        }
++        pub(super) fn finished(&self) -> bool {
++            self.finished.load(Ordering::Acquire)
++        }
++        pub(super) fn count(&self) -> usize {
++            self.count.load(Ordering::Acquire)
++        }
++    }
++    pub(super) struct Release(&'static Watch);
++    impl Release {
++        pub(super) fn release(&self) {
++            self.0.released.store(true, Ordering::Release);
++        }
++    }
++    impl Drop for Release {
++        fn drop(&mut self) {
++            self.release();
++            self.0.address.store(0, Ordering::Release);
++        }
++    }
++    pub(super) static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
++    pub(super) static OWNER: Watch = Watch::new();
++    pub(super) static WAKE: Watch = Watch::new();
++    struct ObservedSystem;
++    #[global_allocator]
++    static ALLOCATOR: ObservedSystem = ObservedSystem;
++    // SAFETY: every allocation operation is forwarded unchanged to System. The
++    // deallocation observer uses only atomics and yield_now, never allocation,
++    // dereference of observed payload pointers, formatting, or user callbacks.
++    unsafe impl GlobalAlloc for ObservedSystem {
++        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++            unsafe { System.alloc(layout) }
++        }
++        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
++            unsafe { System.alloc_zeroed(layout) }
++        }
++        unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
++            unsafe { System.realloc(pointer, layout, size) }
++        }
++        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
++            let owner = OWNER.before(pointer, layout);
++            let wake = WAKE.before(pointer, layout);
++            unsafe { System.dealloc(pointer, layout) };
++            if owner {
++                OWNER.finished.store(true, Ordering::Release);
++            }
++            if wake {
++                WAKE.finished.store(true, Ordering::Release);
++            }
++        }
++    }
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn ready_failure_retires_census_without_a_redundant_drain() {
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Failure);
++    work.start().unwrap();
++    gate.started().await;
++    gate.release();
++    let report = work.ready().await;
++    assert_eq!(report.completion(), DrainCompletion::Complete);
++    assert!(node.memory().snapshot_work_at(work.id().slot).is_none());
++    let identity = original(&report);
++    let failed_claim = work
++        .claim()
++        .err()
++        .expect("typed failure cannot become output");
++    assert_eq!(original(&failed_claim), identity);
++    drop(failed_claim);
++    drop(report);
++    drop(work);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++    assert_eq!(node.snapshot().inflight_operations, 0);
++    let successor = prepare(&node, &gate, Outcome::Failure);
++    drop(successor.report().drain().await);
++    drop(successor);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn concurrent_final_reports_cannot_reuse_credit_before_actual_owner_deallocation() {
++    let _serial = deallocation::SERIAL.lock().await;
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Failure);
++    let owner_address = std::ptr::from_ref::<Owner<Operation>>(&work.owner) as usize;
++    let wake_address = std::ptr::from_ref::<WorkWake>(&work.owner.wake) as usize;
++    work.start().unwrap();
++    gate.started().await;
++    gate.release();
++    let report = work.ready().await;
++    let charged = node.snapshot().reserved_bytes;
++    let rendezvous = Arc::new(std::sync::Barrier::new(9));
++    let mut threads = Vec::new();
++    for _ in 0..8 {
++        let report = report.clone();
++        let rendezvous = rendezvous.clone();
++        threads.push(std::thread::spawn(move || {
++            rendezvous.wait();
++            drop(report);
++        }));
++    }
++    let owner_release = deallocation::OWNER.arm(owner_address, true);
++    let _wake_release = deallocation::WAKE.arm(wake_address, false);
++    drop(report);
++    drop(work);
++    rendezvous.wait();
++    deallocation::OWNER.entered().await;
++    assert!(!deallocation::OWNER.finished());
++    assert_eq!(gate.operation_drops.load(Ordering::Acquire), 0);
++    assert_eq!(node.snapshot().reserved_bytes, charged);
++    assert_eq!(node.snapshot().inflight_operations, 1);
++    assert!(
++        node.reserve(0, None).is_err(),
++        "actual operation backing is still alive"
++    );
++    owner_release.release();
++    for thread in threads {
++        thread.join().unwrap();
++    }
++    assert!(deallocation::OWNER.finished());
++    assert!(deallocation::WAKE.finished());
++    assert_eq!(deallocation::OWNER.count(), 1);
++    assert_eq!(deallocation::WAKE.count(), 1);
++    assert_eq!(gate.operation_drops.load(Ordering::Acquire), 1);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++    assert_eq!(node.snapshot().inflight_operations, 0);
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn proxy_waker_outlives_all_owner_views_and_keeps_credit_until_actual_deallocation() {
++    let _serial = deallocation::SERIAL.lock().await;
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Failure);
++    let owner_address = std::ptr::from_ref::<Owner<Operation>>(&work.owner) as usize;
++    let wake_address = std::ptr::from_ref::<WorkWake>(&work.owner.wake) as usize;
++    // The identical proxy type handed to cleanup/JoinHandle can remain alive
++    // after its registration is removed or while a concurrent wake is running.
++    let proxy = work.owner.wake.waker();
++    let last_proxy = proxy.clone();
++    work.start().unwrap();
++    gate.started().await;
++    gate.release();
++    let report = work.ready().await;
++    let charged = node.snapshot().reserved_bytes;
++    let _owner_release = deallocation::OWNER.arm(owner_address, false);
++    let wake_release = deallocation::WAKE.arm(wake_address, true);
++    drop(report);
++    drop(work);
++    assert!(deallocation::OWNER.finished());
++    assert_eq!(gate.operation_drops.load(Ordering::Acquire), 1);
++    proxy.wake_by_ref();
++    proxy.wake();
++    assert_eq!(node.snapshot().reserved_bytes, charged);
++    assert_eq!(node.snapshot().inflight_operations, 1);
++    let thread = std::thread::spawn(move || last_proxy.wake());
++    deallocation::WAKE.entered().await;
++    assert!(!deallocation::WAKE.finished());
++    assert_eq!(node.snapshot().reserved_bytes, charged);
++    assert!(node.reserve(0, None).is_err());
++    wake_release.release();
++    thread.join().unwrap();
++    assert!(deallocation::WAKE.finished());
++    assert_eq!(deallocation::OWNER.count(), 1);
++    assert_eq!(deallocation::WAKE.count(), 1);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++    assert_eq!(node.snapshot().inflight_operations, 0);
++}
++
++struct ReentrantWake {
++    wake: OwnedWake,
++    wake_calls: Arc<AtomicUsize>,
++    drops: Arc<AtomicUsize>,
++    panic_on_wake: bool,
++}
++impl ReentrantWake {
++    fn check_unlocked(&self) {
++        match self.wake.state.try_lock() {
++            Ok(guard) => drop(guard),
++            Err(std::sync::TryLockError::Poisoned(error)) => drop(error.into_inner()),
++            Err(std::sync::TryLockError::WouldBlock) => panic!("waker callback under waiter lock"),
++        }
++    }
++}
++impl std::task::Wake for ReentrantWake {
++    fn wake(self: Arc<Self>) {
++        self.check_unlocked();
++        self.wake_calls.fetch_add(1, Ordering::AcqRel);
++        assert!(!self.panic_on_wake, "original executor wake panic");
++    }
++}
++impl Drop for ReentrantWake {
++    fn drop(&mut self) {
++        self.check_unlocked();
++        self.drops.fetch_add(1, Ordering::AcqRel);
++    }
++}
++fn reentrant_waker(
++    wake: &OwnedWake,
++    calls: &Arc<AtomicUsize>,
++    drops: &Arc<AtomicUsize>,
++    panic: bool,
++) -> Waker {
++    Waker::from(Arc::new(ReentrantWake {
++        wake: wake.clone(),
++        wake_calls: calls.clone(),
++        drops: drops.clone(),
++        panic_on_wake: panic,
++    }))
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn cancelled_finish_destroys_executor_waiter_after_unlock_and_before_next_poll() {
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Failure);
++    work.start().unwrap();
++    gate.started().await;
++    let calls = Arc::new(AtomicUsize::new(0));
++    let drops = Arc::new(AtomicUsize::new(0));
++    let outer = reentrant_waker(&work.owner.wake, &calls, &drops, false);
++    let mut ready = Box::pin(work.ready());
++    assert!(
++        ready
++            .as_mut()
++            .poll(&mut Context::from_waker(&outer))
++            .is_pending()
++    );
++    drop(outer);
++    assert_eq!(drops.load(Ordering::Acquire), 0);
++    drop(ready);
++    assert_eq!(drops.load(Ordering::Acquire), 1);
++    assert!(work.owner.wake.state.lock().unwrap().waiter.is_none());
++    assert_eq!(calls.load(Ordering::Acquire), 0);
++    // The next waiter must use the same actual operation; no dropped wrapper
++    // may erase its join custody or let another operation consume the slot.
++    gate.release();
++    drop(work.ready().await);
++    drop(work);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++}
++
++#[tokio::test]
++async fn proxy_callback_panic_and_poison_preserve_borrowed_and_consumed_count_ownership() {
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Failure);
++    let wake = work.owner.wake.clone();
++    let proxy = wake.waker();
++    let calls = Arc::new(AtomicUsize::new(0));
++    let drops = Arc::new(AtomicUsize::new(0));
++    let report = work.report().drain().await;
++    let charged = node.snapshot().reserved_bytes;
++    drop(report);
++    drop(work);
++    assert!(
++        catch_unwind(AssertUnwindSafe(|| {
++            let _locked = wake.state.lock().unwrap();
++            panic!("fixture waiter poison");
++        }))
++        .is_err()
++    );
++    wake.state.lock().unwrap_or_else(|p| p.into_inner()).waiter =
++        Some(reentrant_waker(&wake, &calls, &drops, true));
++    assert!(catch_unwind(AssertUnwindSafe(|| proxy.wake_by_ref())).is_err());
++    assert_eq!(calls.load(Ordering::Acquire), 1);
++    assert_eq!(drops.load(Ordering::Acquire), 1);
++    assert_eq!(
++        node.snapshot().reserved_bytes,
++        charged,
++        "borrowed wake kept its count"
++    );
++    wake.state.lock().unwrap_or_else(|p| p.into_inner()).waiter =
++        Some(reentrant_waker(&wake, &calls, &drops, true));
++    drop(wake);
++    assert!(catch_unwind(AssertUnwindSafe(|| proxy.wake())).is_err());
++    assert_eq!(calls.load(Ordering::Acquire), 2);
++    assert_eq!(drops.load(Ordering::Acquire), 2);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++    assert_eq!(node.snapshot().inflight_operations, 0);
++}
++
++// This executor deliberately reenters the public report, rather than merely
++// checking the proxy's own mutex. The try_lock checks make a regression fail
++// promptly instead of deadlocking the test process inside completion().
++struct CompletionWake {
++    owner: OwnedOwner<Operation>,
++    report: SnapshotWorkReport,
++    calls: AtomicUsize,
++    panic_on_wake: AtomicBool,
++}
++impl CompletionWake {
++    fn inspect(&self) {
++        fn require_unlocked<T>(mutex: &Mutex<T>) {
++            match mutex.try_lock() {
++                Ok(guard) => drop(guard),
++                Err(std::sync::TryLockError::Poisoned(error)) => drop(error.into_inner()),
++                Err(std::sync::TryLockError::WouldBlock) => {
++                    panic!("external executor callback under an owner lock")
++                }
++            }
++        }
++        require_unlocked(&self.owner.control);
++        require_unlocked(&self.owner.resource);
++        require_unlocked(&self.owner.wake.state);
++        // Execute the actual public path after the deadlock-prevention checks.
++        let _completion = self.report.completion();
++    }
++}
++impl std::task::Wake for CompletionWake {
++    fn wake(self: Arc<Self>) {
++        self.inspect();
++        self.calls.fetch_add(1, Ordering::AcqRel);
++        assert!(
++            !self.panic_on_wake.load(Ordering::Acquire),
++            "original deferred executor wake panic"
++        );
++    }
++}
++impl Drop for CompletionWake {
++    fn drop(&mut self) {
++        self.inspect();
++    }
++}
++fn completion_waker(work: &SnapshotWork<Operation>) -> (Arc<CompletionWake>, Waker) {
++    let callback = Arc::new(CompletionWake {
++        owner: work.owner.clone(),
++        report: work.report(),
++        calls: AtomicUsize::new(0),
++        panic_on_wake: AtomicBool::new(false),
++    });
++    let waker = Waker::from(callback.clone());
++    (callback, waker)
++}
++async fn join_only(work: &SnapshotWork<Operation>, gate: &Gate) {
++    work.start().unwrap();
++    gate.started().await;
++    gate.release();
++    assert!(std::future::poll_fn(|cx| work.owner.poll_join(cx)).await);
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn cleanup_and_discard_wakes_reenter_actual_completion_only_after_owner_unlock() {
++    for outcome in [Outcome::Failure, Outcome::Success] {
++        let node = admission(1);
++        let baseline = node.snapshot().reserved_bytes;
++        let gate = new_gate();
++        gate.cleanup_wake_pending.store(true, Ordering::Release);
++        gate.discard_wake_pending.store(true, Ordering::Release);
++        let work = prepare(&node, &gate, outcome);
++        join_only(&work, &gate).await;
++        let (callback, outer) = completion_waker(&work);
++        let report = work.report();
++        let original_failure = match outcome {
++            Outcome::Failure => Some(original(&report)),
++            _ => None,
++        };
++        let mut draining = Box::pin(report.drain());
++        assert!(
++            draining
++                .as_mut()
++                .poll(&mut Context::from_waker(&outer))
++                .is_pending()
++        );
++        assert_eq!(callback.calls.load(Ordering::Acquire), 1);
++        assert_eq!(report.completion(), DrainCompletion::Retained);
++        assert_eq!(work.owner.wake.state.lock().unwrap().owner_scopes, 0);
++        assert_eq!(node.snapshot().inflight_operations, 1);
++        if matches!(outcome, Outcome::Success) {
++            assert!(
++                draining
++                    .as_mut()
++                    .poll(&mut Context::from_waker(&outer))
++                    .is_pending()
++            );
++            assert_eq!(callback.calls.load(Ordering::Acquire), 2);
++            assert_eq!(report.completion(), DrainCompletion::Retained);
++            assert_eq!(gate.output_drops.load(Ordering::Acquire), 0);
++        }
++        let Poll::Ready(drained) = draining.as_mut().poll(&mut Context::from_waker(&outer)) else {
++            panic!("the same operation must complete after its deferred wake");
++        };
++        assert_eq!(drained.completion(), DrainCompletion::Complete);
++        assert!(node.memory().snapshot_work_at(work.id().slot).is_none());
++        if let Some(original_failure) = original_failure {
++            assert_eq!(original(&drained), original_failure);
++        }
++        drop(drained);
++        drop(draining);
++        drop(report);
++        drop(outer);
++        drop(callback);
++        drop(work);
++        assert_eq!(gate.operation_drops.load(Ordering::Acquire), 1);
++        assert_eq!(
++            gate.output_drops.load(Ordering::Acquire),
++            usize::from(matches!(outcome, Outcome::Success))
++        );
++        assert_eq!(node.snapshot().reserved_bytes, baseline);
++        assert_eq!(node.snapshot().inflight_operations, 0);
++    }
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn deferred_callback_panic_then_cancel_preserves_original_outcome_and_retry() {
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    gate.cleanup_wake_pending.store(true, Ordering::Release);
++    let work = prepare(&node, &gate, Outcome::Failure);
++    join_only(&work, &gate).await;
++    let report = work.report();
++    let original_failure = original(&report);
++    let charged = node.snapshot().reserved_bytes;
++    let (callback, outer) = completion_waker(&work);
++    callback.panic_on_wake.store(true, Ordering::Release);
++    let mut draining = Box::pin(report.drain());
++    let Err(panic) = catch_unwind(AssertUnwindSafe(|| {
++        draining.as_mut().poll(&mut Context::from_waker(&outer))
++    })) else {
++        panic!("the external executor panic must leave the owner poll scope");
++    };
++    assert_eq!(
++        panic.downcast_ref::<&str>(),
++        Some(&"original deferred executor wake panic")
++    );
++    assert_eq!(callback.calls.load(Ordering::Acquire), 1);
++    assert_eq!(original(&report), original_failure);
++    assert!(work.owner.resource.lock().unwrap().panic.is_none());
++    assert_eq!(work.owner.wake.state.lock().unwrap().owner_scopes, 0);
++    assert_eq!(node.snapshot().reserved_bytes, charged);
++    assert!(node.memory().snapshot_work_at(work.id().slot).is_some());
++    // The failed poll did not finish the future. Cancel that waiter and then
++    // retry the same actual child/resources; never repoll the unwound future.
++    drop(draining);
++    assert!(work.owner.wake.state.lock().unwrap().waiter.is_none());
++    let drained = report.drain().await;
++    assert_eq!(drained.completion(), DrainCompletion::Complete);
++    assert_eq!(original(&drained), original_failure);
++    assert!(node.memory().snapshot_work_at(work.id().slot).is_none());
++    drop(drained);
++    drop(report);
++    drop(outer);
++    drop(callback);
++    drop(work);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++}
++
++#[tokio::test]
++async fn nested_owner_scopes_coalesce_wakes_and_unwind_leaves_registration_recoverable() {
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Failure);
++    let report = work.report().drain().await;
++    let (callback, outer) = completion_waker(&work);
++    let proxy = work.owner.wake.waker();
++    work.owner.wake.register(outer.clone());
++    let control_scope = work.owner.wake.defer();
++    let control = work.owner.control.lock().unwrap();
++    let resource_scope = work.owner.wake.defer();
++    let resource = work.owner.resource.lock().unwrap();
++    proxy.wake_by_ref();
++    proxy.wake_by_ref();
++    assert_eq!(callback.calls.load(Ordering::Acquire), 0);
++    drop(resource);
++    drop(resource_scope);
++    assert_eq!(callback.calls.load(Ordering::Acquire), 0);
++    drop(control);
++    assert_eq!(callback.calls.load(Ordering::Acquire), 0);
++    drop(control_scope);
++    assert_eq!(callback.calls.load(Ordering::Acquire), 1);
++    assert_eq!(report.completion(), DrainCompletion::Complete);
++    work.owner.wake.register(outer.clone());
++    assert!(
++        catch_unwind(AssertUnwindSafe(|| {
++            let _scope = work.owner.wake.defer();
++            proxy.wake_by_ref();
++            panic!("original owner-scope unwind");
++        }))
++        .is_err()
++    );
++    assert_eq!(
++        callback.calls.load(Ordering::Acquire),
++        1,
++        "never invoke the executor during an existing unwind"
++    );
++    {
++        let state = work.owner.wake.state.lock().unwrap();
++        assert_eq!(state.owner_scopes, 0);
++        assert!(state.notified);
++        assert!(state.waiter.is_some());
++    }
++    // A later scope drains the preserved notification after its own locks are
++    // released. Its executor really reenters completion, with no lost wake.
++    assert_eq!(report.completion(), DrainCompletion::Complete);
++    assert_eq!(callback.calls.load(Ordering::Acquire), 2);
++    assert!(!work.owner.wake.state.lock().unwrap().notified);
++    drop(proxy);
++    drop(report);
++    drop(outer);
++    drop(callback);
++    drop(work);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++}
++
++fn queue_pending_on_unwind(wake: &OwnedWake, executor: Waker) {
++    wake.register(executor);
++    let proxy = wake.waker();
++    assert!(
++        catch_unwind(AssertUnwindSafe(|| {
++            let _scope = wake.defer();
++            proxy.wake_by_ref();
++            panic!("preserve pending notification for claim preflight");
++        }))
++        .is_err()
++    );
++    let state = wake.state.lock().unwrap();
++    assert_eq!(state.owner_scopes, 0);
++    assert!(state.notified);
++    assert!(state.waiter.is_some());
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn claim_executor_panic_keeps_original_output_and_census_until_successful_retry() {
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Success);
++    join_only(&work, &gate).await;
++    let report = work.ready().await;
++    let output_id = work
++        .owner
++        .resource
++        .lock()
++        .unwrap()
++        .output
++        .as_ref()
++        .unwrap()
++        ._charge
++        .id;
++    let charged = node.snapshot().reserved_bytes;
++    let (callback, outer) = completion_waker(&work);
++    callback.panic_on_wake.store(true, Ordering::Release);
++    queue_pending_on_unwind(&work.owner.wake, outer.clone());
++    let Err(panic) = catch_unwind(AssertUnwindSafe(|| work.claim())) else {
++        panic!("the real executor panic must occur before output transfer");
++    };
++    assert_eq!(
++        panic.downcast_ref::<&str>(),
++        Some(&"original deferred executor wake panic")
++    );
++    assert_eq!(callback.calls.load(Ordering::Acquire), 1);
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 0);
++    {
++        let resource = work.owner.resource.lock().unwrap();
++        assert_eq!(resource.output.as_ref().unwrap()._charge.id, output_id);
++        assert!(resource.discarded.is_none());
++        assert!(resource.panic.is_none());
++    }
++    assert_eq!(report.completion(), DrainCompletion::Retained);
++    assert!(node.memory().snapshot_work_at(work.id().slot).is_some());
++    assert_eq!(node.snapshot().reserved_bytes, charged);
++    assert_eq!(node.snapshot().inflight_operations, 1);
++    callback.panic_on_wake.store(false, Ordering::Release);
++    let output = match work.claim() {
++        Ok(output) => output,
++        Err(_) => panic!("retry must deliver the original retained output"),
++    };
++    assert_eq!(output._charge.id, output_id);
++    assert!(Arc::ptr_eq(&output.gate, &gate));
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 0);
++    assert_eq!(report.completion(), DrainCompletion::Complete);
++    assert!(node.memory().snapshot_work_at(work.id().slot).is_none());
++    drop(report);
++    drop(outer);
++    drop(callback);
++    drop(work);
++    assert_eq!(node.snapshot().inflight_operations, 0);
++    assert_eq!(
++        node.snapshot().reserved_bytes,
++        baseline + arc_bytes::<Gate>().unwrap()
++    );
++    drop(output);
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 1);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++}
++
++struct ClaimingWake {
++    owner: OwnedOwner<Operation>,
++    output: Mutex<Option<Output>>,
++    calls: AtomicUsize,
++}
++impl std::task::Wake for ClaimingWake {
++    fn wake(self: Arc<Self>) {
++        let work = SnapshotWork {
++            owner: self.owner.clone(),
++        };
++        let output = match work.claim() {
++            Ok(output) => output,
++            Err(_) => panic!("preflight callback must claim the still-owned output"),
++        };
++        self.calls.fetch_add(1, Ordering::AcqRel);
++        assert!(self.output.lock().unwrap().replace(output).is_none());
++    }
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn claim_revalidates_after_reentrant_executor_already_claims_the_output() {
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Success);
++    join_only(&work, &gate).await;
++    let report = work.ready().await;
++    let output_id = work
++        .owner
++        .resource
++        .lock()
++        .unwrap()
++        .output
++        .as_ref()
++        .unwrap()
++        ._charge
++        .id;
++    let callback = Arc::new(ClaimingWake {
++        owner: work.owner.clone(),
++        output: Mutex::new(None),
++        calls: AtomicUsize::new(0),
++    });
++    queue_pending_on_unwind(&work.owner.wake, Waker::from(callback.clone()));
++    let denied = match work.claim() {
++        Ok(_) => panic!("outer claim must not deliver the same output twice"),
++        Err(report) => report,
++    };
++    assert_eq!(denied.id(), report.id());
++    assert_eq!(denied.completion(), DrainCompletion::Complete);
++    assert_eq!(callback.calls.load(Ordering::Acquire), 1);
++    let output = callback.output.lock().unwrap().take().unwrap();
++    assert_eq!(output._charge.id, output_id);
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 0);
++    assert!(node.memory().snapshot_work_at(work.id().slot).is_none());
++    drop(denied);
++    drop(report);
++    drop(callback);
++    drop(work);
++    assert_eq!(node.snapshot().inflight_operations, 0);
++    assert_eq!(
++        node.snapshot().reserved_bytes,
++        baseline + arc_bytes::<Gate>().unwrap()
++    );
++    drop(output);
++    assert_eq!(gate.output_drops.load(Ordering::Acquire), 1);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++}
+diff --git a/crates/kasumi-engine/src/admission.rs b/crates/kasumi-engine/src/admission.rs
+--- a/crates/kasumi-engine/src/admission.rs
++++ b/crates/kasumi-engine/src/admission.rs
+@@ -115,6 +115,7 @@
+ 
+ mod disk_memory;
+ mod installed;
++pub mod snapshot_work;
+ pub mod startup;
+ 
+ trait MemorySource: Send + Sync {
+@@ -316,6 +317,7 @@
+ /// remains separately tracked in the storage-admission workstream.
+ pub struct MemoryCore {
+     startups: Mutex<startup::Census>,
++    snapshot_work: Mutex<snapshot_work::Census>,
+     sampler: Option<std::thread::JoinHandle<()>>,
+     data: Arc<MemoryState>,
+ }
+@@ -362,10 +364,12 @@
+         let clock = arc_bytes::<SystemLeaseClock>()?;
+         let data = arc_bytes::<MemoryState>()?;
+         let startups = startup::Census::required_bytes(config.max_startup_scopes)?;
++        let snapshot_work = snapshot_work::Census::required_bytes(config.max_inflight_operations)?;
+         arc_bytes::<Self>()?
+             .checked_add(allocation_bytes::<ChargeSlot>(config.max_reservations)?)
+             .and_then(|bytes| bytes.checked_add(data))
+             .and_then(|bytes| bytes.checked_add(startups))
++            .and_then(|bytes| bytes.checked_add(snapshot_work))
+             .and_then(|bytes| bytes.checked_add(source))
+             .and_then(|bytes| bytes.checked_add(clock))
+             .and_then(|bytes| bytes.checked_add(SAMPLER_STACK_BYTES as u64))
+@@ -413,6 +417,9 @@
+     ) -> anyhow::Result<Arc<Self>> {
+         let startups = Mutex::new(startup::Census::allocate(
+             prepared.config.max_startup_scopes,
++        )?);
++        let snapshot_work = Mutex::new(snapshot_work::Census::allocate(
++            prepared.config.max_inflight_operations,
+         )?);
+         let mut slots = Vec::new();
+         slots.try_reserve_exact(prepared.config.max_reservations)?;
+@@ -451,6 +458,7 @@
+         drop(data.stop.lock().unwrap());
+         Ok(Arc::new(Self {
+             startups,
++            snapshot_work,
+             sampler: None,
+             data,
+         }))
+diff --git a/crates/kasumi-query/src/cancellation.rs b/crates/kasumi-query/src/cancellation.rs
+--- a/crates/kasumi-query/src/cancellation.rs
++++ b/crates/kasumi-query/src/cancellation.rs
+@@ -18,6 +18,13 @@
+ }
+ 
+ impl QueryCancellation {
++    /// Concrete shared-state storage, including this crate's active cfg layout.
++    /// Admission planners must additionally cover Arc and allocator bookkeeping;
++    /// the inline QueryCancellation value contains only the shared owner handle.
++    pub const fn shared_state_bytes() -> usize {
++        std::mem::size_of::<CancellationState>()
++    }
++
+     pub fn cancel(&self) {
+         self.0.cancelled.store(true, Ordering::Release);
+     }

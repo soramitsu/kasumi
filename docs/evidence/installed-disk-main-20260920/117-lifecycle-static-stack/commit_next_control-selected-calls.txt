@@ -1,0 +1,5 @@
+10013f008: 97fe2fdd    	bl	0x1000caf7c <lifecycle::recovery_control::commit_next_control_for>
+10013f070: 94006742    	bl	0x100158d78 <<lifecycle::recovery_control::commit_next_control_for::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+10013f0c8: 97fdad21    	bl	0x1000aa54c <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_control_for::{closure#0}>>
+10013f0f4: 94000031    	bl	0x10013f1b8 <lifecycle::recovery_control::commit_next_control_for::{closure#0}>
+10013f16c: 97fdacf8    	bl	0x1000aa54c <core::ptr::drop_glue::<lifecycle::recovery_control::commit_next_control_for::{closure#0}>>

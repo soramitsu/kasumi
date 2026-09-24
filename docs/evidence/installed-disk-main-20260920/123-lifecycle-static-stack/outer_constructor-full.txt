@@ -1,0 +1,16 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000cb664 <lifecycle::recovery_control::exercise_completed_recovery>:
+1000cb664: d10043ff    	sub	sp, sp, #0x10
+1000cb668: 390037e0    	strb	w0, [sp, #0xd]
+1000cb66c: 39003be1    	strb	w1, [sp, #0xe]
+1000cb670: 39003fe2    	strb	w2, [sp, #0xf]
+1000cb674: 393f0d00    	strb	w0, [x8, #0xfc3]
+1000cb678: 393f0901    	strb	w1, [x8, #0xfc2]
+1000cb67c: 393f1102    	strb	w2, [x8, #0xfc4]
+1000cb680: 393f051f    	strb	wzr, [x8, #0xfc1]
+1000cb684: 910043ff    	add	sp, sp, #0x10
+1000cb688: d65f03c0    	ret

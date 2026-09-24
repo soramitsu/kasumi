@@ -116,6 +116,11 @@ fn permanent_staged_reservation_bounds_all_terminal_outcomes_and_maximum_counter
 
 #[test]
 fn permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_identity_reuse() {
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+    )
+    .unwrap();
+    let disk = &scratch.disk;
     let mut state = state();
     let (key, original) = stage("a");
     let charge = permanent_charge(&key, &original).unwrap();
@@ -129,7 +134,7 @@ fn permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_i
         StagedOutcome::Expired { .. }
     ));
     assert_eq!(expired.reserved_staged_terminal_bytes, 0);
-    let expired_rows = persist_terminal_overlay(&state, &mut expired);
+    let expired_rows = persist_terminal_overlay(disk, &state, &mut expired);
     validate_restored(&expired).unwrap();
     expired_rows.validate_state(&expired).unwrap();
     assert!(!expired.staged_transactions.contains_key(&key));
@@ -161,7 +166,7 @@ fn permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_i
     replace_record(&mut state, key.clone(), final_record.clone()).unwrap();
     assert_eq!(state.permanent_staged_bytes, overlay_bytes);
     state.revision = 1;
-    let terminal_rows = persist_terminal_overlay(&previous, &mut state);
+    let terminal_rows = persist_terminal_overlay(disk, &previous, &mut state);
     assert!(!state.staged_transactions.contains_key(&key));
     assert_eq!(terminal_rows.head().count, 1);
     state.limits.atomic.max_permanent_staged_bytes = state.permanent_staged_bytes;
@@ -193,12 +198,13 @@ fn permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_i
 // The ordered apply path moves terminal overlays into their permanent owner
 // before validating a published state. Exercise that same transfer here.
 fn persist_terminal_overlay(
+    disk: &Arc<kasumi_store::ScratchDisk>,
     previous: &TenantState,
     next: &mut TenantState,
 ) -> crate::staged_terminal::View {
     let owner = crate::staged_terminal::View::empty(&previous.tenant, &previous.incarnation)
         .unwrap()
-        .fixture_owner(previous)
+        .fixture_owner(disk, previous)
         .unwrap();
     let applied = crate::staged_terminal::AppliedIdentity {
         incarnation: next.incarnation.clone(),

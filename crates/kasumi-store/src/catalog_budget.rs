@@ -35,11 +35,16 @@ impl KeyProvider for WideReferences {
 
 #[tokio::test]
 async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_persistence() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir().unwrap();
     let node = NodeStore::create_new_fixture(
         directory.path().join("catalog.redb"),
         crate::test_utils::NODE_STORE_ID,
-        crate::ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )
     .unwrap();
     let provider = Arc::new(WideReferences {
@@ -103,11 +108,16 @@ async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_pe
 
 #[tokio::test]
 async fn exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encoding() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir().unwrap();
     let node = NodeStore::create_new_fixture(
         directory.path().join("boundary.redb"),
         crate::test_utils::NODE_STORE_ID,
-        crate::ScratchDisk::fixture(),
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
     )
     .unwrap();
     let tenant = "\u{0001}".repeat(1024);

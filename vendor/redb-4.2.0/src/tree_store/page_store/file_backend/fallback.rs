@@ -1,4 +1,8 @@
-use crate::{DatabaseError, Result, StorageBackend};
+// This target has no supported primitive that reports the native File close
+// outcome. The first release requires explicit proof before disposal.
+compile_error!("redb FileBackend requires a supported native close primitive on this target");
+
+use crate::{BackendCloseOutcome, DatabaseError, Result, StorageBackend};
 use std::fs::File;
 use std::io;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -47,5 +51,9 @@ impl StorageBackend for FileBackend {
         let mut file = self.file.lock().unwrap();
         file.seek(SeekFrom::Start(offset))?;
         file.write_all(data)
+    }
+
+    fn close(&self) -> BackendCloseOutcome {
+        BackendCloseOutcome::retained(io::ErrorKind::Unsupported.into())
     }
 }

@@ -1,0 +1,17 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED_TEMPORARY_DIAGNOSTIC",
+  "patch_sha256": "b38c1fd7ca1f538d7b4161f855eb9a2e16775202ddc66f008c51fe88857eeeac",
+  "files": [
+    {
+      "path": "crates/kasumi-authority/src/service.rs",
+      "before_sha256": "0654e41ea12f521a408490d514b5b5671eb0a4f72e8b38aee57254828d2aea26",
+      "proposed_sha256": "e2d329b4497d30ca40bf92796abc8f96f7ab77e08e4ae83b99fc8e070c65948c"
+    },
+    {
+      "path": "crates/kasumi-engine/src/target_activation_service.rs",
+      "before_sha256": "b8d6a17f1e27b22546ffc7d22e2d50eab1cb0888ea30559d42457c7f3870c8a1",
+      "proposed_sha256": "2c236f6c51132c970f1207743b74f2655ecb8cce9b458d214995f4e3407cfd79"
+    }
+  ],
+  "assertions_workloads_deadlines_unchanged": true
+}

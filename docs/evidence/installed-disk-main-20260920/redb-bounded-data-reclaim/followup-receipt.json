@@ -1,0 +1,67 @@
+{
+  "patch_sha256": "f2103f19fa5223101a83c8c6cdf230a658f1d26fcfb54be56ab2ea5660cb85f8",
+  "manifest_sha256": "723f3a172c4a1af9fae04225f287899d5beb6024844a2d7256b7b08102223d32",
+  "native_or_cargo_run": false,
+  "support_sources": {
+    "vendor/redb-4.2.0/src/table.rs": {
+      "source_path": "vendor/redb-4.2.0/src/table.rs",
+      "sha256": "419f979536fa019dd55e0c8826d0c4c522d7246e715b0b7e117e437c24eaab76"
+    },
+    "vendor/redb-4.2.0/src/tree_store/extract_if.rs": {
+      "source_path": "vendor/redb-4.2.0/src/tree_store/extract_if.rs",
+      "sha256": "7b35def784b51faf82aab9e51574a910153ecf1d074bbf2a92cbb76fdf20f298"
+    },
+    "vendor/redb-4.2.0/src/tree_store/btree_cursor_range.rs": {
+      "source_path": "vendor/redb-4.2.0/src/tree_store/btree_cursor_range.rs",
+      "sha256": "ac743b16c410245f8ad366d7226254c457438a663b619dc150879b9f4bee46b7"
+    },
+    "vendor/redb-4.2.0/src/tree_store/btree_iters.rs": {
+      "source_path": "vendor/redb-4.2.0/src/tree_store/btree_iters.rs",
+      "sha256": "34ecf2117b570e563a59876e95c9191d0fe9b8bdad89c7e04fb3a97dcb5f2abb"
+    },
+    "vendor/redb-4.2.0/src/tree_store/btree_base.rs": {
+      "source_path": "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+      "sha256": "6bf0407250bcae126a6a04f5dbad1bf23aeb5b0a3098a0bc37b19544a9386a78"
+    },
+    "vendor/redb-4.2.0/src/tree_store/btree_cursor.rs": {
+      "source_path": "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/btree_cursor.rs",
+      "sha256": "347061bf7feda16f835cedd3eb4246bae22bc25c00bcc1b113c1ba37eff0320d"
+    },
+    "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs": {
+      "source_path": "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "sha256": "6e8b4f5aaa8b359832309c3680db70afa6cabaa7d17e03039182e380fe6799a3"
+    },
+    "vendor/redb-4.2.0/src/tree_store/btree.rs": {
+      "source_path": "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "sha256": "9b74190495ba1c8d2b2efdacbdbb3e67310e96d99881117ac812c0016047cd4e"
+    },
+    "vendor/redb-4.2.0/src/tree_store/page_store/base.rs": {
+      "source_path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+      "sha256": "773858218823539467cd503b4524cbf97de1a20eb2745e97877921f8acc7a7d1"
+    },
+    "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs": {
+      "source_path": "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "sha256": "09912e97be739f0766bfe9d806904b984ab1cfdcaa9e7bac1fd5ec6d8c9fdf3f"
+    },
+    "vendor/redb-4.2.0/src/tree_store/table_tree.rs": {
+      "source_path": "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/tree_store/table_tree.rs",
+      "sha256": "6c34bc2c6ea096f12bd0c087e2c90b341963fb397b164cd0dea6ec90091de152"
+    },
+    "vendor/redb-4.2.0/src/transactions.rs": {
+      "source_path": "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/transactions.rs",
+      "sha256": "1209c02021691458e421e34c1baa8f00896a924bf3508f47ec8ea75b73d0ce58"
+    },
+    "vendor/redb-4.2.0/src/db.rs": {
+      "source_path": "target/installed-disk-validation/redb-bounded-data-reclaim/proposed/vendor/redb-4.2.0/src/db.rs",
+      "sha256": "76f3c101c143a8314cad64fee3bb6ea6ef5563f5fcc7ebc911f1b7c19bbe8bf7"
+    },
+    "vendor/redb-4.2.0/src/admission/tests.rs": {
+      "source_path": "vendor/redb-4.2.0/src/admission/tests.rs",
+      "sha256": "82351c92ff8b8dc69b76e640407980f30590641d1c3df0292aa147e4b071b3ab"
+    }
+  },
+  "artifacts": {
+    "selected-prefix-allocation-inventory.md": "f79424a901a79c255baa801d1a52f93da89114e55b14bf6860484ec6a3e026b3",
+    "test-replacements.json": "5db0d72296426b264ae85e038a4b03a51b8c3fe06dcaa6b2bc2eed24e1aabc53"
+  }
+}

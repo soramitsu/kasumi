@@ -1,0 +1,7 @@
+# Authority Unavailable diagnostic
+
+Target-only one-file cfg(test) trace, uncompiled. Original error codes/messages and every test assertion, workload, clock value and deadline remain unchanged. Production execution does not format or emit a diagnostic. The exact four failed tests from run91 should be run with --nocapture under the root-owned bounded runner, preserving run91 evidence. Do not rerun the unchanged entire suite.
+
+The trace records the Display of the original cause before service::unavailable erases it. #[track_caller] records direct caller locations; map_err function-pointer adapters may report their adapter site rather than the semantic source location. The original cause should distinguish the shared barrier/term/signer/storage branches before any correction is chosen. Trace output can allocate and is deliberately outside the measured no-allocation physical-publication path; it is temporary test instrumentation, not a production diagnostic policy.
+
+Read-only findings so far: all three restart failures report the generic "independent authority is unavailable", unlike the preserved "exact fence drain has not completed" branch. Thus simply increasing the modeled clock/drain interval is not justified. The coverage failure occurs after backend.snapshot/validate_snapshot and before the deliberately failing installed transport returns UnknownOutcome. A stalled/superseded Raft leader is plausible but unproved until this original-cause evidence is available. No assertion relaxation, retry, clock or election change has been prepared.

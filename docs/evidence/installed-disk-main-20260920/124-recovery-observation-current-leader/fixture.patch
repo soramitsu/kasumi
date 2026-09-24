@@ -1,0 +1,18 @@
+--- a/crates/kasumi-engine/tests/common/recovery_control.rs
++++ b/crates/kasumi-engine/tests/common/recovery_control.rs
+@@ -649,8 +649,14 @@
+         old, completion,
+         "peer retry must preserve original command and absolute deadline"
+     );
++    // Planning resolves its exact phase through the current leader. Observe
++    // that same phase on the current route, retaining the original context
++    // across leader selection and the complete read. The fixture still owns
++    // every original database and physical resource.
++    let context = f.context("owner");
++    let db = f.leader().await;
+     assert!(
+-        db.recovery_phase(f.context("owner"), id, unresolved)
++        db.recovery_phase(context, id, unresolved)
+             .await
+             .unwrap()
+             .record()

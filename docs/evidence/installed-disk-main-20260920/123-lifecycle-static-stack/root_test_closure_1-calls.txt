@@ -1,0 +1,10 @@
+100150898: 97fdeb73    	bl	0x1000cb664 <lifecycle::recovery_control::exercise_completed_recovery>
+1001508dc: 9488dd8b    	bl	0x102387f08 <dyld_stub_binder+0x102387f08>
+1001508fc: 9400219c    	bl	0x100158f6c <<lifecycle::recovery_control::exercise_completed_recovery::{closure#0} as core::future::into_future::IntoFuture>::into_future>
+100150914: 9488de3a    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+100150930: 9488dd0c    	bl	0x102387d60 <core::panicking::panic_const::panic_const_async_fn_resumed>
+10015093c: 9488dd10    	bl	0x102387d7c <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+100150944: 97fd7248    	bl	0x1000ad264 <core::ptr::drop_glue::<lifecycle::recovery_control::exercise_completed_recovery::{closure#0}>>
+100150964: 97fff43a    	bl	0x10014da4c <lifecycle::recovery_control::exercise_completed_recovery::{closure#0}>
+1001509c4: 97fd7228    	bl	0x1000ad264 <core::ptr::drop_glue::<lifecycle::recovery_control::exercise_completed_recovery::{closure#0}>>
+100150a00: 9488dbd6    	bl	0x102387958 <core::panicking::panic_in_cleanup>

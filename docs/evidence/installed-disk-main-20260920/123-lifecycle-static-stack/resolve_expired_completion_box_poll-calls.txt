@@ -1,0 +1,2 @@
+1000d2c58: 9400ca31    	bl	0x10010551c <<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}> as core::ops::deref::DerefMut>::deref_mut>
+1000d2c68: 9401d023    	bl	0x100146cf4 <lifecycle::recovery_control::resolve_expired_completion::{closure#0}>

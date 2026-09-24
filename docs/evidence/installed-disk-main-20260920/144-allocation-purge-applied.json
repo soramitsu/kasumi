@@ -1,0 +1,52 @@
+{
+  "status": "APPLIED UNCOMMITTED;144 full library pending",
+  "scope": "Bounded allocation prefix before DATA reclamation plus deletion of two obsolete internal helpers",
+  "branch": "master",
+  "packages": [
+    {
+      "package": "redb-bounded-allocation-purge",
+      "patch_sha256": "78a204853988603b83b3e18ef04f2c433a0c42687701fe7c4040963ac717150a",
+      "manifest_sha256": "dd1162c8f780f2cd2c96d924ab2471d7de5c506aaa075ee85fc52e4d347efaa6",
+      "files": [
+        {
+          "path": "vendor/redb-4.2.0/src/transactions.rs",
+          "before_sha256": "26aac3a2915250a146f0b8066edfe3a035482d692a706c96e920c6cf4fa4ddd0",
+          "proposed_sha256": "e43528ac247dd4985cac4d9084ec4e0b4204f044af1af834bf4a626a64fb4136",
+          "current_actual_matches_before": false
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/db.rs",
+          "before_sha256": "76f3c101c143a8314cad64fee3bb6ea6ef5563f5fcc7ebc911f1b7c19bbe8bf7",
+          "proposed_sha256": "de347514818cfa2855f9acdce01dd0581ed3a027a84ca0b17d058b9e1e305066",
+          "current_actual_matches_before": true
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/page_list_tests.rs",
+          "before_sha256": "ab8a173509aaf654412890f7179819ce8b45a7a00334e806535854d9b1af3515",
+          "proposed_sha256": "ee6c0ebc6d89596b03ea6efa6be31b1f480440a02a88c98ebb48dc01500c77f0",
+          "current_actual_matches_before": false
+        }
+      ]
+    },
+    {
+      "package": "143-obsolete-reclaim-helpers",
+      "patch_sha256": "a2fccf34eeaad4e0b4e3343d9edb62f4ed030daeb46b993ac8c07e7405589a60",
+      "manifest_sha256": "3887058c8ac63de1ae3de0b74df20250ccad4842d1abdc81bf45eb5f453056bc",
+      "files": [
+        {
+          "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+          "before_sha256": "9b74190495ba1c8d2b2efdacbdbb3e67310e96d99881117ac812c0016047cd4e",
+          "proposed_sha256": "7cdfaedb6cbd25b97870913d0640c85d0b14feda7e4f8c1e0f548ba076be2d01"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/tree_store/table_tree.rs",
+          "before_sha256": "6c34bc2c6ea096f12bd0c087e2c90b341963fb397b164cd0dea6ec90091de152",
+          "proposed_sha256": "e0890dbbfbe8dabeca263a7a9055fbe6a6286cdfbeca82f913736c206909db90"
+        }
+      ]
+    }
+  ],
+  "independent_review_sha256": "3a0cca7651c98ae5f2fd227f9f5b176dd6fff1d1c42bb826d755b5cd3f8b6eba",
+  "root_review": "Verified source-pinned400-ID plans, both selected queues validated before extraction, original DATA horizon captured first, retained eligible allocation debt blocks DATA, no additional page-ID collection; reviewed helper deletion has no callers. Physical maintenance/custody/full workspace qualification remains open.",
+  "previous_process_group_drained": true
+}

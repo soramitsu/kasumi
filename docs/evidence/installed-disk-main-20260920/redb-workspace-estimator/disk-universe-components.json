@@ -1,0 +1,33 @@
+{
+  "warning": "SOURCE-DERIVED COMPONENTS ONLY. NOT TOTAL MEMORY OR A USEFUL ADMISSION PLAN. Includes default original 8x+64MiB policies. All arithmetic in final Rust estimator must be checked.",
+  "cases": [
+    {
+      "profile": "custody_default_per_table",
+      "canonical_limit": 67108864,
+      "max_disk_bytes": 603979776,
+      "base_page_upper": 147456,
+      "cache_start_universe_per_stripe_upper": 1126,
+      "resident_cache_map_requested_bytes": 35416112,
+      "resident_cache_queue_requested_bytes": 4720192,
+      "cache_metadata_requested_subtotal_only": 40136304,
+      "all_cache_realloc_overlap_requested_bytes": 80272608,
+      "debug_allocated_map_requested_bytes": 6815752,
+      "deferred_vec_one_resident_requested_bytes": 3538944,
+      "deferred_vec_old_plus_new_requested_bytes": 7077888
+    },
+    {
+      "profile": "terminal_default",
+      "canonical_limit": 1610612736,
+      "max_disk_bytes": 12952010752,
+      "base_page_upper": 3162112,
+      "cache_start_universe_per_stripe_upper": 24139,
+      "resident_cache_map_requested_bytes": 566626352,
+      "resident_cache_queue_requested_bytes": 101190688,
+      "cache_metadata_requested_subtotal_only": 667817040,
+      "all_cache_realloc_overlap_requested_bytes": 1335634080,
+      "debug_allocated_map_requested_bytes": 109051912,
+      "deferred_vec_one_resident_requested_bytes": 75890688,
+      "deferred_vec_old_plus_new_requested_bytes": 151781376
+    }
+  ]
+}

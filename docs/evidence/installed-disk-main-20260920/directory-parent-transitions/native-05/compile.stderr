@@ -1,0 +1,16 @@
+warning: unused import: `directory::NodeDiskDirectory`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/node_disk.rs:31:9
+   |
+31 | pub use directory::NodeDiskDirectory;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `file::NodeDiskFile`
+  --> /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/native-05/node_disk.rs:32:9
+   |
+32 | pub use file::NodeDiskFile;
+   |         ^^^^^^^^^^^^^^^^^^
+
+warning: 2 warnings emitted
+

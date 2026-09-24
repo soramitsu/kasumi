@@ -1,0 +1,2 @@
+10014fe08: 97fdf0c2    	bl	0x1000cc110 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation>
+10014fe10: 97fe544e    	bl	0x1000e4f48 <test::assert_test_result::<()>>

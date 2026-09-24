@@ -87,6 +87,7 @@ pub async fn open_serving_target(
     audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<TargetServingReplica> {
     audit.require_admission(&config.admission)?;
+    let construction = DatabaseConstruction::new(stores.clone(), audit.clone())?;
     let gate = stores
         .application()
         .storage_access()
@@ -145,12 +146,9 @@ pub async fn open_serving_target(
                 .store()
                 .get_bounded("engine.deployment", b"mode", 256 << 10)?
                 .context("target deployment absent")?;
-            let (mode, bootstrap): (String, ReplicatedBootstrap) =
-                serde_json::from_slice(&encoded)?;
-            bootstrap.validate()?;
+            let bootstrap = decode_current_target_deployment(&material, &encoded)?;
             anyhow::ensure!(
-                mode == "replicated"
-                    && bootstrap.incarnation == proof.target_incarnation().to_string()
+                bootstrap.incarnation == proof.target_incarnation().to_string()
                     && bootstrap.voters.len() == expected.origin.input.voters.len()
                     && bootstrap.voters.iter().all(|(id, peer)| expected
                         .origin
@@ -170,20 +168,18 @@ pub async fn open_serving_target(
         .await??;
         projection.check(&gate)?;
         engine.install_audit_maintenance(&config.admission)?;
-        let group = RaftGroup::open(
-            config.node_id,
-            format!("{}/{}", projection.tenant(), bootstrap.incarnation),
-            stores.clone(),
-            engine.clone(),
-            transport,
-            kasumi_raft::RaftGroupConfig {
-                raft: config.raft,
-                limits: kasumi_raft::RaftLimits::default(),
-            },
-            config.admission.snapshot_buffer_owner()?,
-        )
-        .await?;
-        let database = Database::new(engine, group, stores.application().clone(), audit);
+        let database = construction
+            .start_replicated(
+                engine,
+                config.node_id,
+                format!("{}/{}", projection.tenant(), bootstrap.incarnation),
+                transport,
+                kasumi_raft::RaftGroupConfig {
+                    raft: config.raft,
+                    limits: kasumi_raft::RaftLimits::default(),
+                },
+            )
+            .await?;
         let owner = TargetServingReplica {
             database,
             projection,

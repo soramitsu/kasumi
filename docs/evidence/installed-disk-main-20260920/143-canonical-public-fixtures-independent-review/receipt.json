@@ -1,0 +1,33 @@
+{
+  "Cargo_native_or_formatter_execution": false,
+  "actual_source_edits": false,
+  "commands": [
+    {
+      "argv": [
+        "git",
+        "apply",
+        "--check",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/143-canonical-public-fixtures/fixture.patch"
+      ],
+      "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/143-canonical-public-fixtures-independent-review/apply-check",
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "argv": [
+        "git",
+        "apply",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/143-canonical-public-fixtures/fixture.patch"
+      ],
+      "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/143-canonical-public-fixtures-independent-review/apply-check",
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": ""
+    }
+  ],
+  "review_sha256": "130e24ad3533f35b06fad26f7be6d2e8fcb2a8d2b6bbcbd45135fa2d0ddc704d",
+  "status": "APPROVED_FIXTURE_DELTA_PENDING_PUBLIC_TEST_GATE",
+  "subject_manifest_sha256": "d64d129bd83e883363bd7dd8b31848ddf7cad4bab2ccbe1754f0fcc495ad307b",
+  "subject_patch_sha256": "ee1a66c26484a408ccdae3a40042eb13ff9925469ce5ac3d7d4df2ea217ff7dc"
+}

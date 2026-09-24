@@ -1,0 +1,909 @@
+--- a/crates/kasumi-engine/src/service.rs
++++ b/crates/kasumi-engine/src/service.rs
+@@ -2,6 +2,8 @@
+ use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, TenantEngine};
+ #[path = "audit_maintenance_service.rs"]
+ mod audit_maintenance_service;
++#[path = "database_construction.rs"]
++pub(crate) mod construction;
+ #[path = "control_administration.rs"]
+ pub(crate) mod control_administration;
+ #[cfg(test)]
+@@ -682,56 +684,7 @@
+         Ok(fence)
+     }
+ 
+-    /// Every database uses its security ledger's exact installed node governor.
+-    /// The governor is present before any background worker starts.
+-    pub fn new(
+-        engine: Arc<TenantEngine>,
+-        group: RaftGroup,
+-        store: Arc<TenantStore>,
+-        security_audit: Arc<SecurityAudit>,
+-    ) -> Arc<Self> {
+-        Self::new_inner(
+-            engine,
+-            group,
+-            store,
+-            security_audit,
+-            DatabaseClocks::default(),
+-        )
+-    }
+-
+-    /// Fixture-only constructor. One paired clock drives command admission UTC
+-    /// and snapshot/cursor elapsed leases; existing authorization deadlines retain
+-    /// their original observations. Production catalogs are always rejected.
+-    #[cfg(any(test, feature = "test-utils"))]
+-    pub(crate) fn new_fixture_with_epoch_clock(
+-        engine: Arc<TenantEngine>,
+-        group: RaftGroup,
+-        store: Arc<TenantStore>,
+-        security_audit: Arc<SecurityAudit>,
+-        clock: Arc<kasumi_clock::EpochClock>,
+-    ) -> anyhow::Result<Arc<Self>> {
+-        anyhow::ensure!(
+-            matches!(
+-                store.storage_access().purpose(),
+-                kasumi_store::StoragePurpose::LocalFixture
+-            ) && Arc::ptr_eq(&store, group.storage_domains().application()),
+-            "fixture clock requires the exact fixture application store"
+-        );
+-        clock.now_ms()?;
+-        let clocks = DatabaseClocks {
+-            elapsed: clock.elapsed_clock(),
+-            command: Arc::new(FixtureCommandClock(clock)),
+-        };
+-        Ok(Self::new_inner(
+-            engine,
+-            group,
+-            store,
+-            security_audit,
+-            clocks,
+-        ))
+-    }
+-
+-    fn new_inner(
++    fn finish_construction(
+         engine: Arc<TenantEngine>,
+         group: RaftGroup,
+         store: Arc<TenantStore>,
+--- /dev/null
++++ b/crates/kasumi-engine/src/database_construction.rs
+@@ -0,0 +1,110 @@
++//! Checked identity and clock preparation before any Database Raft startup.
++//! This owns construction inputs; retained startup children remain owned by
++//! SnapshotBufferOwner. It is not a replacement for the runtime startup census.
++use super::{Database, DatabaseClocks, SecurityAudit, TenantEngine};
++use crate::admission::NodeAdmission;
++use kasumi_raft::{RaftGroup, RaftGroupConfig, RaftTransport};
++use kasumi_store::TenantStorageSet;
++use std::sync::Arc;
++
++pub(crate) struct DatabaseConstruction {
++    stores: Arc<TenantStorageSet>,
++    audit: Arc<SecurityAudit>,
++    clocks: DatabaseClocks,
++}
++
++impl DatabaseConstruction {
++    pub(crate) fn new(
++        stores: Arc<TenantStorageSet>,
++        audit: Arc<SecurityAudit>,
++    ) -> anyhow::Result<Self> {
++        let memory = audit.admission().memory();
++        memory.require_store_memory(audit.store())?;
++        memory.require_store_memory(stores.application())?;
++        Ok(Self {
++            stores,
++            audit,
++            clocks: DatabaseClocks::default(),
++        })
++    }
++
++    #[cfg(any(test, feature = "test-utils"))]
++    pub(crate) fn with_fixture_clock(
++        stores: Arc<TenantStorageSet>,
++        audit: Arc<SecurityAudit>,
++        clock: Arc<kasumi_clock::EpochClock>,
++    ) -> anyhow::Result<Self> {
++        let mut construction = Self::new(stores, audit)?;
++        anyhow::ensure!(
++            matches!(
++                construction.stores.application().storage_access().purpose(),
++                kasumi_store::StoragePurpose::LocalFixture
++            ),
++            "fixture clock requires the exact fixture application store"
++        );
++        clock.now_ms()?;
++        construction.clocks = DatabaseClocks {
++            elapsed: clock.elapsed_clock(),
++            command: Arc::new(super::FixtureCommandClock(clock)),
++        };
++        Ok(construction)
++    }
++
++    pub(crate) fn stores(&self) -> &Arc<TenantStorageSet> {
++        &self.stores
++    }
++
++    pub(crate) fn admission(&self) -> &Arc<NodeAdmission> {
++        self.audit.admission()
++    }
++
++    pub(crate) async fn start_local(
++        self,
++        engine: Arc<TenantEngine>,
++        node_id: u64,
++        name: String,
++    ) -> anyhow::Result<Arc<Database>> {
++        let buffers = self.admission().snapshot_buffer_owner()?;
++        let group =
++            RaftGroup::local(node_id, name, self.stores.clone(), engine.clone(), buffers).await?;
++        // No fallible operation or suspension follows the successful transfer
++        // of the retained Raft startup outcome into this Database owner.
++        Ok(self.finish(engine, group))
++    }
++
++    pub(crate) async fn start_replicated(
++        self,
++        engine: Arc<TenantEngine>,
++        node_id: u64,
++        name: String,
++        transport: Arc<dyn RaftTransport>,
++        config: RaftGroupConfig,
++    ) -> anyhow::Result<Arc<Database>> {
++        let buffers = self.admission().snapshot_buffer_owner()?;
++        let group = RaftGroup::open(
++            node_id,
++            name,
++            self.stores.clone(),
++            engine.clone(),
++            transport,
++            config,
++            buffers,
++        )
++        .await?;
++        Ok(self.finish(engine, group))
++    }
++
++    fn finish(self, engine: Arc<TenantEngine>, group: RaftGroup) -> Arc<Database> {
++        Database::finish_construction(
++            engine,
++            group,
++            self.stores.application().clone(),
++            self.audit,
++            self.clocks,
++        )
++    }
++}
++
++#[cfg(test)]
++#[path = "database_construction_tests.rs"]
++mod tests;
+--- /dev/null
++++ b/crates/kasumi-engine/src/database_construction_tests.rs
+@@ -0,0 +1,157 @@
++use super::*;
++use crate::admission::{AdmissionConfig, MemoryCore};
++use kasumi_store::{
++    CensusCancellation, DiskMemoryRequirements, NodeDisk, NodeDiskConfig, NodeDiskPhase, NodeStore,
++    ScratchDisk, ScratchDiskConfig, TenantStore,
++    test_utils::{LocalKeyProvider, NODE_STORE_ID, retry_disk_registry},
++};
++use kasumi_types::{Limits, Policy};
++use std::path::Path;
++
++struct Fixture {
++    node: Arc<NodeStore>,
++    stores: Arc<TenantStorageSet>,
++    audit: Arc<SecurityAudit>,
++    admission: Arc<NodeAdmission>,
++}
++
++fn metadata_bytes(plan: DiskMemoryRequirements) -> anyhow::Result<u64> {
++    [
++        plan.owner_bytes,
++        plan.registry_bytes,
++        plan.device_bytes,
++        plan.registration_bytes,
++    ]
++    .into_iter()
++    .try_fold(0_u64, |total, bytes| {
++        total
++            .checked_add(MemoryCore::required_installed_reservation_bytes(bytes)?)
++            .ok_or_else(|| anyhow::anyhow!("fixture metadata charge overflow"))
++    })
++}
++
++impl Fixture {
++    async fn new(
++        path: &Path,
++        disk: &NodeDiskConfig,
++        scratch: &ScratchDiskConfig,
++        config: AdmissionConfig,
++    ) -> anyhow::Result<Self> {
++        let admission = NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
++        let memory = admission.memory().clone();
++        let scratch = retry_disk_registry(|| ScratchDisk::open_fixture(scratch, memory.clone()))?;
++        let persistent = retry_disk_registry(|| {
++            NodeDisk::open_fixture(disk, memory.clone(), &CensusCancellation::default())
++        })?;
++        let node = NodeStore::create_new(path, NODE_STORE_ID, persistent, scratch)?;
++        let audit_store = TenantStore::initialize_catalog_fixture(
++            node.clone(),
++            crate::SECURITY_TENANT.into(),
++            Arc::new(LocalKeyProvider::new([181; 32])),
++        )
++        .await?;
++        let audit = SecurityAudit::initialize(audit_store, Default::default(), admission.clone())?;
++        let stores = TenantStorageSet::initialize_catalogs_fixture(
++            node.clone(),
++            "construction".into(),
++            Arc::new(LocalKeyProvider::new([182; 32])),
++            Arc::new(LocalKeyProvider::new([183; 32])),
++        )
++        .await?;
++        Ok(Self {
++            node,
++            stores,
++            audit,
++            admission,
++        })
++    }
++
++    async fn close(self) -> anyhow::Result<()> {
++        self.audit.shutdown().await?;
++        self.stores.shutdown().await?;
++        self.admission.drain_snapshot_startups().await?;
++        self.node.shutdown().await?;
++        Ok(())
++    }
++}
++
++#[tokio::test]
++async fn foreign_equal_policy_core_is_rejected_before_bootstrap_or_raft_startup()
++-> anyhow::Result<()> {
++    let left_directory = kasumi_store::test_utils::private_tempdir()?;
++    let right_directory = kasumi_store::test_utils::private_tempdir()?;
++    kasumi_store::private_files::create_directory(&left_directory.path().join("persistent"))?;
++    kasumi_store::private_files::create_directory(&right_directory.path().join("persistent"))?;
++    let left_path = left_directory.path().join("persistent/node.redb");
++    let right_path = right_directory.path().join("persistent/node.redb");
++    let left_disk = NodeDisk::fixture_config(&left_path)?;
++    let right_disk = NodeDisk::fixture_config(&right_path)?;
++    let scratch_config = |root: &Path| ScratchDiskConfig {
++        directory: root.join("scratch"),
++        max_bytes: 64 << 20,
++        min_free_bytes: 0,
++    };
++    let left_scratch = scratch_config(left_directory.path());
++    let right_scratch = scratch_config(right_directory.path());
++    let required = |disk: &NodeDiskConfig, scratch: &ScratchDiskConfig| -> anyhow::Result<u64> {
++        metadata_bytes(NodeDisk::memory_requirements(disk)?)?
++            .checked_add(metadata_bytes(ScratchDisk::memory_requirements(scratch)?)?)
++            .ok_or_else(|| anyhow::anyhow!("fixture metadata charge overflow"))
++    };
++    let metadata = required(&left_disk, &left_scratch)?.max(required(&right_disk, &right_scratch)?);
++    // One identical explicit policy for both actual cores. New installed owner
++    // metadata is added once above the fixture's bounded operation allowance.
++    let config = AdmissionConfig::default();
++    let total = (256_u64 << 20)
++        .checked_add(NodeAdmission::required_bookkeeping_bytes(&config)?)
++        .and_then(|bytes| bytes.checked_add(metadata))
++        .ok_or_else(|| anyhow::anyhow!("fixture admission budget overflow"))?;
++    let config = AdmissionConfig {
++        max_inflight_bytes: Some(total),
++        ..config
++    };
++    let left = Fixture::new(&left_path, &left_disk, &left_scratch, config.clone()).await?;
++    let right = Fixture::new(&right_path, &right_disk, &right_scratch, config).await?;
++    assert!(!left.admission.shares_memory(&right.admission));
++    let before_left = left.admission.snapshot();
++    let before_right = right.admission.snapshot();
++    let disk_before = right.node.persistent_disk().snapshot();
++    let result = crate::bootstrap::fixtures::open_fixture(
++        right.stores.clone(),
++        Policy::default(),
++        Limits::default(),
++        left.audit.clone(),
++    )
++    .await;
++    let error = match result {
++        Ok(_) => panic!("foreign core must be rejected before startup"),
++        Err(error) => error,
++    };
++    assert_eq!(
++        error.to_string(),
++        "engine and physical storage memory owners differ"
++    );
++    for (admission, before) in [
++        (&left.admission, before_left),
++        (&right.admission, before_right),
++    ] {
++        let after = admission.snapshot();
++        assert_eq!(after.reserved_bytes, before.reserved_bytes);
++        assert_eq!(after.live_reservations, before.live_reservations);
++    }
++    for store in [right.stores.application(), right.stores.custody().store()] {
++        assert!(store.get("engine.deployment", b"mode")?.is_none());
++        assert!(store.get("engine.bootstrap", b"manifest")?.is_none());
++        assert!(store.get("raft.meta", b"node_id")?.is_none());
++    }
++    let disk_after = right.node.persistent_disk().snapshot();
++    assert_eq!(disk_after.phase, NodeDiskPhase::Open);
++    assert_eq!(disk_after.charged_bytes, disk_before.charged_bytes);
++    assert_eq!(disk_after.pending_bytes, disk_before.pending_bytes);
++    let exact = DatabaseConstruction::new(right.stores.clone(), right.audit.clone())?;
++    assert!(Arc::ptr_eq(exact.admission(), &right.admission));
++    drop(exact);
++    left.close().await?;
++    right.close().await?;
++    Ok(())
++}
+--- a/crates/kasumi-engine/src/bootstrap.rs
++++ b/crates/kasumi-engine/src/bootstrap.rs
+@@ -1,8 +1,9 @@
+ use kasumi_store::{EncryptedSpool, SnapshotImage};
+ use std::io::{Read, Write};
+ // Persisted bootstrap and logical restore, separate from node-bound Raft snapshots.
++use crate::service::construction::DatabaseConstruction;
+ use crate::{Database, SecurityAudit, TenantEngine};
+-use kasumi_raft::{BasicNode, Config, RaftGroup, RaftTransport};
++use kasumi_raft::{BasicNode, Config, RaftTransport};
+ use kasumi_store::{
+     BackupDestination, EncryptedBackup, KeyProvider, TenantStorageSet, TenantStore, WriteOp,
+ };
+@@ -104,10 +105,7 @@
+     security_audit: Arc<SecurityAudit>,
+ ) -> anyhow::Result<PreparedReplicaRestore> {
+     security_audit.require_admission(&replica.admission)?;
+-    replica
+-        .admission
+-        .memory()
+-        .require_store_memory(targets.application())?;
++    let construction = DatabaseConstruction::new(targets.clone(), security_audit.clone())?;
+     let target = targets.application().clone();
+     if let Some(gate) = target.storage_access().serving_gate() {
+         anyhow::ensure!(
+@@ -192,20 +190,18 @@
+         .verify_bootstrap_dependencies_owned(replica.admission.clone())
+         .await?;
+     engine.install_audit_maintenance(&replica.admission)?;
+-    let group = RaftGroup::open(
+-        replica.node_id,
+-        format!("{}/{}", target.tenant(), bootstrap.incarnation),
+-        targets.clone(),
+-        engine.clone(),
+-        transport,
+-        kasumi_raft::RaftGroupConfig {
+-            raft: replica.raft,
+-            limits: kasumi_raft::RaftLimits::default(),
+-        },
+-        replica.admission.snapshot_buffer_owner()?,
+-    )
+-    .await?;
+-    let database = Database::new(engine, group, target, security_audit);
++    let database = construction
++        .start_replicated(
++            engine,
++            replica.node_id,
++            format!("{}/{}", target.tenant(), bootstrap.incarnation),
++            transport,
++            kasumi_raft::RaftGroupConfig {
++                raft: replica.raft,
++                limits: kasumi_raft::RaftLimits::default(),
++            },
++        )
++        .await?;
+     database.install_archive_destination(
+         source.destination_alias.clone(),
+         source.destination.clone(),
+@@ -423,10 +419,7 @@
+     security_audit: Arc<SecurityAudit>,
+     runtime: ReplicaRuntime<'a>,
+ ) -> anyhow::Result<(Arc<Database>, Cow<'a, ReplicatedBootstrap>)> {
+-    security_audit
+-        .admission()
+-        .memory()
+-        .require_store_memory(stores.application())?;
++    let construction = DatabaseConstruction::new(stores.clone(), security_audit.clone())?;
+     let store = stores.application().clone();
+     anyhow::ensure!(
+         store.storage_access().lifecycle_gate().is_none(),
+@@ -498,20 +491,18 @@
+     if runtime.maintenance() {
+         engine.install_audit_maintenance(security_audit.admission())?;
+     }
+-    let group = RaftGroup::open(
+-        node_id,
+-        format!("{}/{}", store.tenant(), bootstrap.incarnation),
+-        stores.clone(),
+-        engine.clone(),
+-        transport,
+-        kasumi_raft::RaftGroupConfig {
+-            raft: config,
+-            limits: kasumi_raft::RaftLimits::default(),
+-        },
+-        security_audit.admission().snapshot_buffer_owner()?,
+-    )
+-    .await?;
+-    let database = Database::new(engine, group, store, security_audit);
++    let database = construction
++        .start_replicated(
++            engine,
++            node_id,
++            format!("{}/{}", store.tenant(), bootstrap.incarnation),
++            transport,
++            kasumi_raft::RaftGroupConfig {
++                raft: config,
++                limits: kasumi_raft::RaftLimits::default(),
++            },
++        )
++        .await?;
+     Ok((database, bootstrap))
+ }
+ 
+@@ -671,10 +662,9 @@
+     security_audit: Arc<SecurityAudit>,
+ ) -> anyhow::Result<Arc<Database>> {
+     open_local_inner(
+-        stores,
++        DatabaseConstruction::new(stores, security_audit)?,
+         initial_policy,
+         initial_limits,
+-        security_audit,
+         None,
+         LocalRuntime::Production,
+     )
+@@ -689,10 +679,7 @@
+     security_audit: Arc<SecurityAudit>,
+     expected_incarnation: uuid::Uuid,
+ ) -> anyhow::Result<Arc<Database>> {
+-    security_audit
+-        .admission()
+-        .memory()
+-        .require_store_memory(stores.application())?;
++    let construction = DatabaseConstruction::new(stores.clone(), security_audit)?;
+     anyhow::ensure!(!expected_incarnation.is_nil(), "nil local incarnation");
+     anyhow::ensure!(
+         stores
+@@ -708,10 +695,9 @@
+     let bytes = load(stores.application())?
+         .ok_or_else(|| anyhow::anyhow!("local bootstrap is not initialized"))?;
+     start(
+-        stores,
++        construction,
+         &bytes,
+         LocalRuntime::Production,
+-        security_audit,
+         Some(expected_incarnation),
+     )
+     .await
+@@ -729,10 +715,9 @@
+ ) -> anyhow::Result<Arc<Database>> {
+     anyhow::ensure!(!incarnation.is_nil(), "nil local incarnation");
+     open_local_inner(
+-        stores,
++        DatabaseConstruction::new(stores, security_audit)?,
+         initial_policy,
+         initial_limits,
+-        security_audit,
+         Some(incarnation),
+         LocalRuntime::Production,
+     )
+@@ -759,14 +744,13 @@
+         ),
+         "fixture clock cannot open production storage"
+     );
+-    clock.now_ms()?;
++    let construction = DatabaseConstruction::with_fixture_clock(stores, security_audit, clock)?;
+     open_local_inner(
+-        stores,
++        construction,
+         initial_policy,
+         initial_limits,
+-        security_audit,
+         None,
+-        LocalRuntime::Fixture { clock },
++        LocalRuntime::FixtureDefault,
+     )
+     .await
+ }
+@@ -779,24 +763,16 @@
+     Production,
+     #[cfg(any(test, feature = "test-utils"))]
+     FixtureDefault,
+-    #[cfg(any(test, feature = "test-utils"))]
+-    Fixture {
+-        clock: Arc<kasumi_clock::EpochClock>,
+-    },
+ }
+ 
+ async fn open_local_inner(
+-    stores: Arc<TenantStorageSet>,
++    construction: DatabaseConstruction,
+     initial_policy: Policy,
+     initial_limits: Limits,
+-    security_audit: Arc<SecurityAudit>,
+     incarnation: Option<uuid::Uuid>,
+     runtime: LocalRuntime,
+ ) -> anyhow::Result<Arc<Database>> {
+-    security_audit
+-        .admission()
+-        .memory()
+-        .require_store_memory(stores.application())?;
++    let stores = construction.stores().clone();
+     let store = stores.application().clone();
+     anyhow::ensure!(
+         store.storage_access().serving_gate().is_none(),
+@@ -819,17 +795,17 @@
+             bytes
+         }
+     };
+-    start(stores, &bytes, runtime, security_audit, incarnation).await
++    start(construction, &bytes, runtime, incarnation).await
+ }
+ 
+ async fn start(
+-    stores: Arc<TenantStorageSet>,
++    construction: DatabaseConstruction,
+     bytes: &SnapshotImage,
+     runtime: LocalRuntime,
+-    security_audit: Arc<SecurityAudit>,
+     expected_incarnation: Option<uuid::Uuid>,
+ ) -> anyhow::Result<Arc<Database>> {
+-    validate_bootstrap_control(&stores, bytes)?;
++    let stores = construction.stores();
++    validate_bootstrap_control(stores, bytes)?;
+     let engine = Arc::new(TenantEngine::from_bootstrap(
+         stores.application().tenant(),
+         bytes,
+@@ -853,22 +829,17 @@
+             "local bootstrap differs from authenticated standalone identity"
+         );
+     }
+-    start_prepared(stores, engine, runtime, security_audit).await
++    start_prepared(construction, engine, runtime).await
+ }
+ 
+ async fn start_prepared(
+-    stores: Arc<TenantStorageSet>,
++    construction: DatabaseConstruction,
+     engine: Arc<TenantEngine>,
+     runtime: LocalRuntime,
+-    security_audit: Arc<SecurityAudit>,
+ ) -> anyhow::Result<Arc<Database>> {
+-    security_audit
+-        .admission()
+-        .memory()
+-        .require_store_memory(stores.application())?;
+-    let store = stores.application().clone();
++    let store = construction.stores().application().clone();
+     engine.install_storage_access(&store)?;
+-    let admission = security_audit.admission().clone();
++    let admission = construction.admission().clone();
+     engine
+         .verify_bootstrap_dependencies_owned(admission.clone())
+         .await?;
+@@ -876,23 +847,9 @@
+         engine.install_audit_maintenance(&admission)?;
+     }
+     let incarnation = engine.generation()?.state.incarnation.clone();
+-    let group = RaftGroup::local(
+-        1,
+-        format!("{}/{incarnation}", store.tenant()),
+-        stores.clone(),
+-        engine.clone(),
+-        admission.snapshot_buffer_owner()?,
+-    )
+-    .await?;
+-    Ok(match runtime {
+-        LocalRuntime::Production => Database::new(engine, group, store, security_audit),
+-        #[cfg(any(test, feature = "test-utils"))]
+-        LocalRuntime::FixtureDefault => Database::new(engine, group, store, security_audit),
+-        #[cfg(any(test, feature = "test-utils"))]
+-        LocalRuntime::Fixture { clock } => {
+-            Database::new_fixture_with_epoch_clock(engine, group, store, security_audit, clock)?
+-        }
+-    })
++    construction
++        .start_local(engine, 1, format!("{}/{incarnation}", store.tenant()))
++        .await
+ }
+ 
+ /// Exact independently authorized source and target for one local materialization.
+@@ -916,10 +873,7 @@
+     admission: Arc<crate::admission::NodeAdmission>,
+     security_audit: Arc<SecurityAudit>,
+ ) -> anyhow::Result<Arc<Database>> {
+-    security_audit
+-        .admission()
+-        .memory()
+-        .require_store_memory(targets.application())?;
++    let construction = DatabaseConstruction::new(targets.clone(), security_audit.clone())?;
+     request.checkpoint.validate()?;
+     security_audit.require_admission(&admission)?;
+     let incarnation = request.target_incarnation;
+@@ -1004,13 +958,7 @@
+     }
+     .persist(restored, _gate, b"local-v1".to_vec())
+     .await?;
+-    let database = start_prepared(
+-        targets,
+-        restored.engine,
+-        LocalRuntime::Production,
+-        security_audit,
+-    )
+-    .await?;
++    let database = start_prepared(construction, restored.engine, LocalRuntime::Production).await?;
+     database.install_archive_destination(
+         source.destination_alias.clone(),
+         source.destination.clone(),
+--- a/crates/kasumi-engine/src/bootstrap_fixtures.rs
++++ b/crates/kasumi-engine/src/bootstrap_fixtures.rs
+@@ -21,10 +21,9 @@
+ ) -> anyhow::Result<Arc<Database>> {
+     check(&stores)?;
+     open_local_inner(
+-        stores,
++        DatabaseConstruction::new(stores, audit)?,
+         policy,
+         limits,
+-        audit,
+         None,
+         LocalRuntime::FixtureDefault,
+     )
+@@ -41,10 +40,9 @@
+     check(&stores)?;
+     anyhow::ensure!(!incarnation.is_nil(), "nil fixture incarnation");
+     open_local_inner(
+-        stores,
++        DatabaseConstruction::new(stores, audit)?,
+         policy,
+         limits,
+-        audit,
+         Some(incarnation),
+         LocalRuntime::FixtureDefault,
+     )
+--- a/crates/kasumi-engine/src/bootstrap_target_quorum.rs
++++ b/crates/kasumi-engine/src/bootstrap_target_quorum.rs
+@@ -144,10 +144,7 @@
+     security_audit: Arc<SecurityAudit>,
+ ) -> anyhow::Result<TargetReplica> {
+     security_audit.require_admission(&config.admission)?;
+-    config
+-        .admission
+-        .memory()
+-        .require_store_memory(stores.application())?;
++    let construction = DatabaseConstruction::new(stores.clone(), security_audit.clone())?;
+     operation.check()?;
+     let invocation = operation.invocation().clone();
+     let lease = invocation.gate().current()?;
+@@ -329,24 +326,22 @@
+         // here until open returns and the target owner closes any started group.
+         let registration = owned.register_group()?;
+         engine.install_audit_maintenance(&config.admission)?;
+-        let group = RaftGroup::open(
+-            config.node_id,
+-            format!(
+-                "{}/{}",
+-                stores.application().tenant(),
+-                bootstrap.incarnation
+-            ),
+-            stores.clone(),
+-            engine.clone(),
+-            transport,
+-            kasumi_raft::RaftGroupConfig {
+-                raft: config.raft,
+-                limits: kasumi_raft::RaftLimits::default(),
+-            },
+-            config.admission.snapshot_buffer_owner()?,
+-        )
+-        .await?;
+-        let database = Database::new(engine, group, stores.application().clone(), security_audit);
++        let database = construction
++            .start_replicated(
++                engine,
++                config.node_id,
++                format!(
++                    "{}/{}",
++                    stores.application().tenant(),
++                    bootstrap.incarnation
++                ),
++                transport,
++                kasumi_raft::RaftGroupConfig {
++                    raft: config.raft,
++                    limits: kasumi_raft::RaftLimits::default(),
++                },
++            )
++            .await?;
+         let owner = TargetReplica {
+             database,
+             bootstrap,
+--- a/crates/kasumi-engine/src/bootstrap_target_serving.rs
++++ b/crates/kasumi-engine/src/bootstrap_target_serving.rs
+@@ -87,10 +87,7 @@
+     audit: Arc<SecurityAudit>,
+ ) -> anyhow::Result<TargetServingReplica> {
+     audit.require_admission(&config.admission)?;
+-    config
+-        .admission
+-        .memory()
+-        .require_store_memory(stores.application())?;
++    let construction = DatabaseConstruction::new(stores.clone(), audit.clone())?;
+     let gate = stores
+         .application()
+         .storage_access()
+@@ -174,20 +171,18 @@
+         .await??;
+         projection.check(&gate)?;
+         engine.install_audit_maintenance(&config.admission)?;
+-        let group = RaftGroup::open(
+-            config.node_id,
+-            format!("{}/{}", projection.tenant(), bootstrap.incarnation),
+-            stores.clone(),
+-            engine.clone(),
+-            transport,
+-            kasumi_raft::RaftGroupConfig {
+-                raft: config.raft,
+-                limits: kasumi_raft::RaftLimits::default(),
+-            },
+-            config.admission.snapshot_buffer_owner()?,
+-        )
+-        .await?;
+-        let database = Database::new(engine, group, stores.application().clone(), audit);
++        let database = construction
++            .start_replicated(
++                engine,
++                config.node_id,
++                format!("{}/{}", projection.tenant(), bootstrap.incarnation),
++                transport,
++                kasumi_raft::RaftGroupConfig {
++                    raft: config.raft,
++                    limits: kasumi_raft::RaftLimits::default(),
++                },
++            )
++            .await?;
+         let owner = TargetServingReplica {
+             database,
+             projection,
+--- a/crates/kasumi-engine/src/audit_maintenance_service.rs
++++ b/crates/kasumi-engine/src/audit_maintenance_service.rs
+@@ -270,16 +270,12 @@
+             )
+             .await
+             .unwrap();
+-            let group = RaftGroup::local(
+-                1,
+-                format!("tenant/{incarnation}"),
+-                stores,
+-                engine.clone(),
+-                kasumi_raft::SnapshotBufferOwner::fixture(),
+-            )
+-            .await
+-            .unwrap();
+-            let database = Database::new(engine, group, store.clone(), audit.clone());
++            let database =
++                crate::service::construction::DatabaseConstruction::new(stores, audit.clone())
++                    .unwrap()
++                    .start_local(engine, 1, format!("tenant/{incarnation}"))
++                    .await
++                    .unwrap();
+             let weak_database = Arc::downgrade(&database);
+             let pause = Arc::new(WorkerPause {
+                 entered: Default::default(),
+@@ -441,16 +437,13 @@
+         )
+         .await
+         .unwrap();
+-        let group = RaftGroup::local(
+-            1,
+-            format!("tenant/{incarnation}"),
+-            stores,
+-            engine.clone(),
+-            kasumi_raft::SnapshotBufferOwner::fixture(),
+-        )
+-        .await
+-        .unwrap();
+-        let database = Database::new(engine.clone(), group.clone(), store, audit.clone());
++        let database =
++            crate::service::construction::DatabaseConstruction::new(stores, audit.clone())
++                .unwrap()
++                .start_local(engine.clone(), 1, format!("tenant/{incarnation}"))
++                .await
++                .unwrap();
++        let group = database.raft_group().clone();
+         for number in 0..50 {
+             let command = Command {
+                 context: RequestContext {
+@@ -542,6 +535,13 @@
+         drop(pool);
+         database.shutdown().await.unwrap();
+         audit.shutdown().await.unwrap();
++        assert_eq!(
++            crate::test_utils::reserved_payload_bytes(&admission),
++            kasumi_raft::SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)
++                .unwrap()
++        );
++        drop(group);
++        drop(database);
+         assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+     }
+ }
+--- a/crates/kasumi-engine/src/database_worker_outcome_tests.rs
++++ b/crates/kasumi-engine/src/database_worker_outcome_tests.rs
+@@ -96,15 +96,9 @@
+             Arc::new(LocalKeyProvider::new([73; 32])),
+         )
+         .await?;
+-        let group = RaftGroup::local(
+-            1,
+-            format!("{name}/{incarnation}"),
+-            stores,
+-            engine.clone(),
+-            kasumi_raft::SnapshotBufferOwner::fixture(),
+-        )
+-        .await?;
+-        let database = Database::new(engine, group, store, audit.clone());
++        let database = construction::DatabaseConstruction::new(stores, audit.clone())?
++            .start_local(engine, 1, format!("{name}/{incarnation}"))
++            .await?;
+         database
+             .group
+             .raft()
+--- a/crates/kasumi-engine/tests/admission.rs
++++ b/crates/kasumi-engine/tests/admission.rs
+@@ -1,10 +1,6 @@
+ mod common;
+ 
+-use kasumi_engine::{
+-    Database, TenantEngine,
+-    admission::{AdmissionConfig, NodeAdmission},
+-};
+-use kasumi_raft::RaftGroup;
++use kasumi_engine::admission::{AdmissionConfig, NodeAdmission};
+ use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
+ use kasumi_types::*;
+ use serde_json::json;
+@@ -51,30 +47,17 @@
+         }],
+         strict_read_audit: false,
+     };
+-    let engine = Arc::new(
+-        TenantEngine::new(
+-            "tenant".into(),
+-            "incarnation".into(),
+-            policy,
+-            Limits::default(),
+-        )
+-        .unwrap(),
+-    );
+-    let group = RaftGroup::local(
+-        1,
+-        "tenant/incarnation".into(),
+-        kasumi_store::test_utils::initialize_custody_fixture(
+-            store.clone(),
+-            Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+-        )
+-        .await
+-        .unwrap(),
+-        engine.clone(),
+-        admission.snapshot_buffer_owner().unwrap(),
+-    )
+-    .await
+-    .unwrap();
+-    let database = Database::new(engine, group.clone(), store, audit.clone());
++    let stores = kasumi_store::test_utils::initialize_custody_fixture(
++        store,
++        Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
++    )
++    .await
++    .unwrap();
++    let database =
++        kasumi_engine::test_utils::open_fixture(stores, policy, Limits::default(), audit.clone())
++            .await
++            .unwrap();
++    let group = database.raft_group().clone();
+     // Startup and audit use the same healthy facade. A real retained reservation
+     // exhausts capacity after startup; no governor is replaced or reconfigured.
+     let occupied = kasumi_engine::test_utils::reserved_payload_bytes(&admission);

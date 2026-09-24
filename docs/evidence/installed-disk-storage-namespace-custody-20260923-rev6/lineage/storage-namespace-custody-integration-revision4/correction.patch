@@ -1,0 +1,23 @@
+diff --git a/crates/kasumi-store/src/node_disk/census.rs b/crates/kasumi-store/src/node_disk/census.rs
+--- a/crates/kasumi-store/src/node_disk/census.rs
++++ b/crates/kasumi-store/src/node_disk/census.rs
+@@ -12,7 +12,7 @@
+         fd::{AsRawFd, FromRawFd, IntoRawFd},
+         unix::fs::{MetadataExt, OpenOptionsExt},
+     },
+-    path::{Path, PathBuf},
++    path::PathBuf,
+ };
+ 
+ pub(super) struct Root {
+diff --git a/crates/kasumi-store/src/node_disk/census/tests.rs b/crates/kasumi-store/src/node_disk/census/tests.rs
+--- a/crates/kasumi-store/src/node_disk/census/tests.rs
++++ b/crates/kasumi-store/src/node_disk/census/tests.rs
+@@ -6,6 +6,7 @@
+ use crate::test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry};
+ use std::{
+     panic::{AssertUnwindSafe, catch_unwind},
++    path::Path,
+     sync::Arc,
+ };
+ 

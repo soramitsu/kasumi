@@ -1,0 +1,73 @@
+--- a/crates/kasumi-engine/tests/staged_transactions.rs
++++ b/crates/kasumi-engine/tests/staged_transactions.rs
+@@ -640,9 +640,11 @@
+         .unwrap()
+         .block_on(async {
+             let directory = std::path::Path::new(&directory);
+-            let physical =
+-                common::PhysicalFixture::new(&directory.join("node.redb"), Default::default());
+-            let (db, _audit) = open(&physical, &directory.join("node.redb"), true).await;
++            let physical = common::PhysicalFixture::new(
++                &directory.join("persistent/node.redb"),
++                Default::default(),
++            );
++            let (db, _audit) = open(&physical, &directory.join("persistent/node.redb"), true).await;
+             for name in ["docs", "ledger"] {
+                 db.administer(
+                     context(),
+@@ -680,7 +682,13 @@
+ 
+ #[tokio::test]
+ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_once() {
++    use std::os::unix::fs::DirBuilderExt;
+     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
++    // The harness marker belongs outside the private installed storage root.
++    std::fs::DirBuilder::new()
++        .mode(0o700)
++        .create(directory.path().join("persistent"))
++        .unwrap();
+     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+         .args(["--exact", "staged_crash_worker", "--nocapture"])
+         .env("KASUMI_STAGED_CRASH_DIRECTORY", directory.path())
+@@ -701,16 +709,23 @@
+     }
+     child.kill().unwrap();
+     child.wait().unwrap();
+-    let raw = std::fs::read(directory.path().join("node.redb")).unwrap();
++    let raw = std::fs::read(directory.path().join("persistent/node.redb")).unwrap();
+     let amount = b"90071992547409931234567890.123456789";
+     assert!(
+         !raw.windows(amount.len()).any(|bytes| bytes == amount),
+         "invisible staging payload must still be encrypted on disk"
+     );
+     drop(raw);
+-    let physical =
+-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+-    let (db, audit) = open(&physical, &directory.path().join("node.redb"), false).await;
++    let physical = common::PhysicalFixture::new(
++        &directory.path().join("persistent/node.redb"),
++        Default::default(),
++    );
++    let (db, audit) = open(
++        &physical,
++        &directory.path().join("persistent/node.redb"),
++        false,
++    )
++    .await;
+     let chunks = chunks();
+     let (_, reference) = begin(
+         &db.engine().generation().unwrap().state.incarnation,
+@@ -744,7 +759,12 @@
+     audit.shutdown().await.unwrap();
+     drop(db);
+     drop(audit);
+-    let (db, audit) = open(&physical, &directory.path().join("node.redb"), false).await;
++    let (db, audit) = open(
++        &physical,
++        &directory.path().join("persistent/node.redb"),
++        false,
++    )
++    .await;
+     assert_eq!(
+         db.finalize_staged_transaction(context(), reference.clone())
+             .await

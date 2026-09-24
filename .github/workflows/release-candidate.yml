@@ -30,6 +30,15 @@ jobs:
       KASUMI_TARGET: ${{ matrix.target }}
       KASUMI_RUN_NAME: kasumi-release-${{ github.run_id }}-${{ github.run_attempt }}
       PYTHONDONTWRITEBYTECODE: "1"
+      KASUMI_ASSEMBLY_INPUTS_DIR: ${{ vars.KASUMI_ASSEMBLY_INPUTS_DIR }}
+      KASUMI_FUNCTIONAL_MAX_BYTES: ${{ vars.KASUMI_FUNCTIONAL_MAX_BYTES }}
+      KASUMI_ASSEMBLY_MAX_BYTES: ${{ vars.KASUMI_ASSEMBLY_MAX_BYTES }}
+      KASUMI_FUNCTIONAL_TAR: functional-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}.tar
+      KASUMI_FUNCTIONAL_PRODUCER: producer-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}.json
+      KASUMI_ASSEMBLY_TAR: assembly-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}.tar
+      KASUMI_ASSEMBLY_PRODUCER: assembly-producer-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}.json
+      KASUMI_ASSEMBLY_FAILURE_TAR: assembly-failed-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}.tar
+      KASUMI_ASSEMBLY_FAILURE_PRODUCER: assembly-failed-producer-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,8 +50,15 @@ jobs:
           KASUMI_RUN="$RUNNER_TEMP/$KASUMI_RUN_NAME"
           printf 'KASUMI_RUN=%s\n' "$KASUMI_RUN" >> "$GITHUB_ENV"
           mkdir "$KASUMI_RUN"
+          test -n "$KASUMI_ASSEMBLY_INPUTS_DIR"
+          test -f "$KASUMI_ASSEMBLY_INPUTS_DIR/inputs.json"
+          [[ "$KASUMI_FUNCTIONAL_MAX_BYTES" =~ ^[1-9][0-9]*$ ]]
+          [[ "$KASUMI_ASSEMBLY_MAX_BYTES" =~ ^[1-9][0-9]*$ ]]
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'KASUMI_EXPECTED_TREE=%s\n' "$(git rev-parse HEAD^{tree})" >> "$GITHUB_ENV"
           python3 scripts/release_host.py --output "$KASUMI_RUN/host.json" --target "$KASUMI_TARGET"
       - name: Linux frozen gates and candidate assembly
+        id: linux_candidate
         if: runner.os == 'Linux'
         shell: bash
         run: |
@@ -54,12 +70,25 @@ jobs:
           docker image inspect "$image" > "$KASUMI_RUN/build-image.json"
           docker run --rm --network none "$image" dpkg-query -W \
             > "$KASUMI_RUN/build-packages.txt"
+          KASUMI_UPLOAD_UID="$(id -u)"
+          KASUMI_UPLOAD_GID="$(id -g)"
           container=$(docker create --init --name "$KASUMI_RUN_NAME" \
             --cpus 2 --memory 15g --memory-swap 15g \
             --env PYTHONDONTWRITEBYTECODE=1 \
             --env KASUMI_TARGET="$KASUMI_TARGET" \
+            --env KASUMI_FUNCTIONAL_MAX_BYTES="$KASUMI_FUNCTIONAL_MAX_BYTES" \
+            --env KASUMI_ASSEMBLY_MAX_BYTES="$KASUMI_ASSEMBLY_MAX_BYTES" \
+            --env KASUMI_FUNCTIONAL_TAR="$KASUMI_FUNCTIONAL_TAR" \
+            --env KASUMI_FUNCTIONAL_PRODUCER="$KASUMI_FUNCTIONAL_PRODUCER" \
+            --env KASUMI_ASSEMBLY_TAR="$KASUMI_ASSEMBLY_TAR" \
+            --env KASUMI_ASSEMBLY_PRODUCER="$KASUMI_ASSEMBLY_PRODUCER" \
+            --env KASUMI_EXPECTED_SHA="$GITHUB_SHA" \
+            --env KASUMI_EXPECTED_TREE="$KASUMI_EXPECTED_TREE" \
+            --env KASUMI_UPLOAD_UID="$KASUMI_UPLOAD_UID" \
+            --env KASUMI_UPLOAD_GID="$KASUMI_UPLOAD_GID" \
             --env GIT_CONFIG_COUNT=1 --env GIT_CONFIG_KEY_0=safe.directory \
             --env GIT_CONFIG_VALUE_0=/workspace \
+            --volume "$KASUMI_ASSEMBLY_INPUTS_DIR:/assembly-inputs:ro" \
             --volume "$GITHUB_WORKSPACE:/workspace:ro" \
             --volume "$KASUMI_RUN:/evidence" "$image" bash -euc '
               python3 /workspace/scripts/release_host.py \
@@ -67,11 +96,46 @@ jobs:
               python3 /workspace/scripts/release_gate.py --repository /workspace \
                 --output /evidence/run --jobs 2 \
                 --execution-description "Native Linux acceptance host; two CPUs and 15 GiB container ceiling; host.json, container-host.json, container-created.json and build-image.json record the environment"
-              python3 /evidence/run/source/scripts/package_release.py \
-                --evidence /evidence/run --output /evidence/candidate
-              python3 /evidence/run/source/scripts/package_release.py \
-                --evidence /evidence/run --output /evidence/repeated-assembly
-              cmp /evidence/candidate/SHA256SUMS /evidence/repeated-assembly/SHA256SUMS
+              python3 -B -S /evidence/run/source/scripts/export_functional_evidence.py create \
+                --evidence /evidence/run --output /evidence/functional-export \
+                --max-bytes "$KASUMI_FUNCTIONAL_MAX_BYTES" \
+                > /evidence/functional-manifest.sha256
+              python3 -B -S /evidence/run/source/scripts/export_functional_evidence.py archive \
+                --export /evidence/functional-export \
+                --expected-manifest-sha256 "$(cat /evidence/functional-manifest.sha256)" \
+                --output "/evidence/$KASUMI_FUNCTIONAL_TAR" \
+                --max-bytes "$KASUMI_FUNCTIONAL_MAX_BYTES" \
+                > /evidence/functional-archive.sha256
+              python3 -B -S /evidence/run/source/scripts/export_functional_evidence.py producer \
+                --evidence /evidence/run --export /evidence/functional-export \
+                --archive "/evidence/$KASUMI_FUNCTIONAL_TAR" \
+                --expected-manifest-sha256 "$(cat /evidence/functional-manifest.sha256)" \
+                --expected-archive-sha256 "$(cat /evidence/functional-archive.sha256)" \
+                --expected-target "$KASUMI_TARGET" \
+                --expected-source-commit "$KASUMI_EXPECTED_SHA" \
+                --expected-source-tree "$KASUMI_EXPECTED_TREE" \
+                --max-bytes "$KASUMI_FUNCTIONAL_MAX_BYTES" \
+                --output "/evidence/$KASUMI_FUNCTIONAL_PRODUCER" \
+                > /evidence/functional-producer.sha256
+              chown "$KASUMI_UPLOAD_UID:$KASUMI_UPLOAD_GID" \
+                "/evidence/$KASUMI_FUNCTIONAL_TAR" \
+                /evidence/functional-manifest.sha256 /evidence/functional-archive.sha256 \
+                "/evidence/$KASUMI_FUNCTIONAL_PRODUCER" /evidence/functional-producer.sha256
+              chmod 0600 "/evidence/$KASUMI_FUNCTIONAL_TAR" \
+                /evidence/functional-manifest.sha256 /evidence/functional-archive.sha256 \
+                "/evidence/$KASUMI_FUNCTIONAL_PRODUCER" /evidence/functional-producer.sha256
+              python3 -B -S /evidence/run/source/scripts/run_repeatable_assembly_owned.py \
+                --evidence /evidence/run --native-inputs /assembly-inputs/inputs.json \
+                --output /evidence/repeatable-assembly
+              python3 -B -S /evidence/run/source/scripts/transport_assembly_evidence.py produce \
+                --assembly /evidence/repeatable-assembly --evidence /evidence/run \
+                --archive "/evidence/$KASUMI_ASSEMBLY_TAR" \
+                --producer "/evidence/$KASUMI_ASSEMBLY_PRODUCER" \
+                --receipt /evidence/assembly-transport.json \
+                --max-bytes "$KASUMI_ASSEMBLY_MAX_BYTES" \
+                --expected-target "$KASUMI_TARGET" \
+                --expected-source-commit "$KASUMI_EXPECTED_SHA" \
+                --expected-source-tree "$KASUMI_EXPECTED_TREE"
             ')
           # Keep actual resource settings, exit state and OOM status even when
           # a gate fails or this shell is interrupted. Stop only this container.
@@ -80,6 +144,62 @@ jobs:
             trap - EXIT INT TERM
             if ! docker stop --time 30 "$container" > "$KASUMI_RUN/container-stop.log" 2>&1; then
               if test "$result" = 0; then result=1; fi
+            fi
+            # Capture from the original mounted directory after the owned
+            # container stops, even if its shell exited before publication.
+            # A second always-run host step retries when this Docker helper fails.
+            if ! docker run --rm --network none \
+              --env KASUMI_UPLOAD_UID="$KASUMI_UPLOAD_UID" \
+              --env KASUMI_UPLOAD_GID="$KASUMI_UPLOAD_GID" \
+              --env KASUMI_ASSEMBLY_TAR="$KASUMI_ASSEMBLY_TAR" \
+              --env KASUMI_ASSEMBLY_PRODUCER="$KASUMI_ASSEMBLY_PRODUCER" \
+              --env KASUMI_ASSEMBLY_FAILURE_TAR="$KASUMI_ASSEMBLY_FAILURE_TAR" \
+              --env KASUMI_ASSEMBLY_FAILURE_PRODUCER="$KASUMI_ASSEMBLY_FAILURE_PRODUCER" \
+              --env KASUMI_ASSEMBLY_MAX_BYTES="$KASUMI_ASSEMBLY_MAX_BYTES" \
+              --env KASUMI_NATIVE_RESULT="$result" \
+              --env KASUMI_TARGET="$KASUMI_TARGET" \
+              --env KASUMI_EXPECTED_SHA="$GITHUB_SHA" \
+              --env KASUMI_EXPECTED_TREE="$KASUMI_EXPECTED_TREE" \
+              --volume "$KASUMI_RUN:/evidence" "$image" bash -euc '
+                snapshot_result=0
+                if test -d /evidence/repeatable-assembly \
+                    && ! test -e /evidence/assembly-failure-transport.json \
+                    && { test "$KASUMI_NATIVE_RESULT" != 0 \
+                         || ! test -s /evidence/assembly-transport.json \
+                         || ! test -s "/evidence/$KASUMI_ASSEMBLY_TAR" \
+                         || ! test -s "/evidence/$KASUMI_ASSEMBLY_PRODUCER"; }; then
+                  if test -f /evidence/run/source/scripts/transport_assembly_evidence.py; then
+                    python3 -B -S /evidence/run/source/scripts/transport_assembly_evidence.py snapshot-failure \
+                      --assembly /evidence/repeatable-assembly \
+                      --archive "/evidence/$KASUMI_ASSEMBLY_FAILURE_TAR" \
+                      --producer "/evidence/$KASUMI_ASSEMBLY_FAILURE_PRODUCER" \
+                      --receipt /evidence/assembly-failure-transport.json \
+                      --max-bytes "$KASUMI_ASSEMBLY_MAX_BYTES" \
+                      --expected-target "$KASUMI_TARGET" \
+                      --expected-source-commit "$KASUMI_EXPECTED_SHA" \
+                      --expected-source-tree "$KASUMI_EXPECTED_TREE" || snapshot_result=$?
+                  else
+                    snapshot_result=1
+                  fi
+                fi
+                for path in /evidence/repeatable-assembly \
+                            "/evidence/$KASUMI_ASSEMBLY_TAR" \
+                            "/evidence/$KASUMI_ASSEMBLY_PRODUCER" \
+                            /evidence/assembly-transport.json \
+                            "/evidence/$KASUMI_ASSEMBLY_FAILURE_TAR" \
+                            "/evidence/$KASUMI_ASSEMBLY_FAILURE_PRODUCER" \
+                            /evidence/assembly-failure-transport.json; do
+                  if test -e "$path"; then
+                    chown -R "$KASUMI_UPLOAD_UID:$KASUMI_UPLOAD_GID" "$path"
+                  fi
+                done
+                exit "$snapshot_result"
+              ' > "$KASUMI_RUN/candidate-custody.log" 2>&1; then
+              if test "$result" = 0; then result=1; fi
+            fi
+            if test -e "$KASUMI_RUN/assembly-failure-transport.json" \
+                && test "$result" = 0; then
+              result=1
             fi
             if ! docker inspect "$container" > "$KASUMI_RUN/container-terminal.json"; then
               if test "$result" = 0; then result=1; fi
@@ -94,6 +214,7 @@ jobs:
           test "$(docker inspect --format '{{.State.Running}}' "$container")" = false
           test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0
       - name: macOS frozen gates and development candidate
+        id: mac_candidate
         if: runner.os == 'macOS'
         shell: bash
         run: |
@@ -103,11 +224,320 @@ jobs:
           python3 scripts/release_gate.py --output "$KASUMI_RUN/run" --jobs 2 \
             --execution-description 'Native macOS ARM64 development acceptance; host.json records the environment' \
             > "$KASUMI_RUN/runner.log" 2>&1
-          python3 "$KASUMI_RUN/run/source/scripts/package_release.py" \
-            --evidence "$KASUMI_RUN/run" --output "$KASUMI_RUN/candidate"
-          python3 "$KASUMI_RUN/run/source/scripts/package_release.py" \
-            --evidence "$KASUMI_RUN/run" --output "$KASUMI_RUN/repeated-assembly"
-          cmp "$KASUMI_RUN/candidate/SHA256SUMS" "$KASUMI_RUN/repeated-assembly/SHA256SUMS"
+          python3 -B -S "$KASUMI_RUN/run/source/scripts/export_functional_evidence.py" create \
+            --evidence "$KASUMI_RUN/run" --output "$KASUMI_RUN/functional-export" \
+            --max-bytes "$KASUMI_FUNCTIONAL_MAX_BYTES" \
+            > "$KASUMI_RUN/functional-manifest.sha256"
+          python3 -B -S "$KASUMI_RUN/run/source/scripts/export_functional_evidence.py" archive \
+            --export "$KASUMI_RUN/functional-export" \
+            --expected-manifest-sha256 "$(cat "$KASUMI_RUN/functional-manifest.sha256")" \
+            --output "$KASUMI_RUN/$KASUMI_FUNCTIONAL_TAR" \
+            --max-bytes "$KASUMI_FUNCTIONAL_MAX_BYTES" \
+            > "$KASUMI_RUN/functional-archive.sha256"
+          python3 -B -S "$KASUMI_RUN/run/source/scripts/export_functional_evidence.py" producer \
+            --evidence "$KASUMI_RUN/run" --export "$KASUMI_RUN/functional-export" \
+            --archive "$KASUMI_RUN/$KASUMI_FUNCTIONAL_TAR" \
+            --expected-manifest-sha256 "$(cat "$KASUMI_RUN/functional-manifest.sha256")" \
+            --expected-archive-sha256 "$(cat "$KASUMI_RUN/functional-archive.sha256")" \
+            --expected-target "$KASUMI_TARGET" \
+            --expected-source-commit "$GITHUB_SHA" \
+            --expected-source-tree "$KASUMI_EXPECTED_TREE" \
+            --max-bytes "$KASUMI_FUNCTIONAL_MAX_BYTES" \
+            --output "$KASUMI_RUN/$KASUMI_FUNCTIONAL_PRODUCER" \
+            > "$KASUMI_RUN/functional-producer.sha256"
+          python3 -B -S "$KASUMI_RUN/run/source/scripts/run_repeatable_assembly_owned.py" \
+            --evidence "$KASUMI_RUN/run" --native-inputs "$KASUMI_ASSEMBLY_INPUTS_DIR/inputs.json" \
+            --output "$KASUMI_RUN/repeatable-assembly"
+          python3 -B -S "$KASUMI_RUN/run/source/scripts/transport_assembly_evidence.py" produce \
+            --assembly "$KASUMI_RUN/repeatable-assembly" --evidence "$KASUMI_RUN/run" \
+            --archive "$KASUMI_RUN/$KASUMI_ASSEMBLY_TAR" \
+            --producer "$KASUMI_RUN/$KASUMI_ASSEMBLY_PRODUCER" \
+            --receipt "$KASUMI_RUN/assembly-transport.json" \
+            --max-bytes "$KASUMI_ASSEMBLY_MAX_BYTES" \
+            --expected-target "$KASUMI_TARGET" \
+            --expected-source-commit "$GITHUB_SHA" \
+            --expected-source-tree "$KASUMI_EXPECTED_TREE"
+      - name: Preserve failed or interrupted original assembly
+        id: assembly_failure_snapshot
+        if: always()
+        shell: bash
+        env:
+          KASUMI_NATIVE_COMPLETED: ${{ steps.linux_candidate.outcome == 'success' || steps.mac_candidate.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          if test -z "${KASUMI_RUN:-}" || ! test -d "$KASUMI_RUN"; then
+            exit 0
+          fi
+          if test -e "$KASUMI_RUN/assembly-failure-transport.json"; then
+            exit 0
+          fi
+          success_complete=false
+          if test -s "$KASUMI_RUN/assembly-transport.json"; then
+            success_complete=true
+            for path in "$KASUMI_RUN/$KASUMI_ASSEMBLY_TAR" \
+                        "$KASUMI_RUN/$KASUMI_ASSEMBLY_PRODUCER"; do
+              if ! test -f "$path" || ! test -s "$path" \
+                  || ! test -O "$path" || ! test -r "$path"; then
+                success_complete=false
+              fi
+            done
+          fi
+          if test "$KASUMI_NATIVE_COMPLETED" = true \
+              && test "$success_complete" = true; then
+            exit 0
+          fi
+          if ! test -d "$KASUMI_RUN/repeatable-assembly"; then
+            python3 -B -S - "$KASUMI_RUN/assembly-absence.json" "$KASUMI_TARGET" \
+              "$GITHUB_SHA" "${KASUMI_EXPECTED_TREE:-}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          path = Path(sys.argv[1])
+          path.write_text(json.dumps({"schema": "kasumi-assembly-absence-v1",
+                                      "status": "interrupted", "reason": "no original assembly root",
+                                      "target": sys.argv[2], "source_commit": sys.argv[3],
+                                      "source_tree": sys.argv[4]}, sort_keys=True) + "\n")
+          PY
+            if test "$KASUMI_NATIVE_COMPLETED" = true; then
+              printf 'completed candidate lost its original assembly root\n' \
+                > "$KASUMI_RUN/assembly-custody-failure.txt"
+              exit 1
+            fi
+            exit 0
+          fi
+          source="$KASUMI_RUN/run/source/scripts/transport_assembly_evidence.py"
+          if ! test -f "$source"; then
+            printf 'original assembly exists but frozen transport source is absent\n' \
+              > "$KASUMI_RUN/assembly-custody-failure.txt"
+            exit 1
+          fi
+          if ! python3 -B -S "$source" snapshot-failure \
+              --assembly "$KASUMI_RUN/repeatable-assembly" \
+              --archive "$KASUMI_RUN/$KASUMI_ASSEMBLY_FAILURE_TAR" \
+              --producer "$KASUMI_RUN/$KASUMI_ASSEMBLY_FAILURE_PRODUCER" \
+              --receipt "$KASUMI_RUN/assembly-failure-transport.json" \
+              --max-bytes "$KASUMI_ASSEMBLY_MAX_BYTES" \
+              --expected-target "$KASUMI_TARGET" \
+              --expected-source-commit "$GITHUB_SHA" \
+              --expected-source-tree "$KASUMI_EXPECTED_TREE" \
+              > "$KASUMI_RUN/assembly-failure-snapshot.log" 2>&1; then
+            printf 'raw failed-attempt capture failed; retain original directory\n' \
+              > "$KASUMI_RUN/assembly-custody-failure.txt"
+            exit 1
+          fi
+          if test "$KASUMI_NATIVE_COMPLETED" = true; then
+            printf 'native candidate completed, but passing transport was incomplete after cleanup\n' \
+              > "$KASUMI_RUN/assembly-custody-failure.txt"
+            exit 1
+          fi
+      - name: Discover completed functional transport
+        id: functional_transport
+        if: always()
+        shell: bash
+        env:
+          KASUMI_NATIVE_COMPLETED: ${{ steps.linux_candidate.outcome == 'success' || steps.mac_candidate.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          available=false
+          if test "$KASUMI_NATIVE_COMPLETED" = true; then
+            available=true
+          elif test -n "${KASUMI_RUN:-}"; then
+            if test -e "$KASUMI_RUN/functional-manifest.sha256" \
+               || test -e "$KASUMI_RUN/functional-archive.sha256" \
+               || test -e "$KASUMI_RUN/$KASUMI_FUNCTIONAL_PRODUCER" \
+               || test -e "$KASUMI_RUN/functional-producer.sha256" \
+               || test -e "$KASUMI_RUN/$KASUMI_FUNCTIONAL_TAR"; then
+              available=true
+            fi
+          fi
+          if test "$available" = true; then
+            for path in "$KASUMI_RUN/$KASUMI_FUNCTIONAL_TAR" \
+                        "$KASUMI_RUN/functional-manifest.sha256" \
+                        "$KASUMI_RUN/functional-archive.sha256" \
+                        "$KASUMI_RUN/$KASUMI_FUNCTIONAL_PRODUCER" \
+                        "$KASUMI_RUN/functional-producer.sha256"; do
+              test -f "$path" && test -s "$path" && test -O "$path" && test -r "$path"
+            done
+          fi
+          echo "available=$available" >> "$GITHUB_OUTPUT"
+      # v7 raw upload uses the single file's basename as its artifact name.
+      # The tar carries executable modes; direct directory upload would lose them.
+      - name: Upload complete functional transport
+        id: functional_upload
+        if: ${{ always() && steps.functional_transport.outputs.available == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/${{ env.KASUMI_FUNCTIONAL_TAR }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 90
+      # A second raw artifact retains identities taken from the original native
+      # run, outside the functional tar. Its upload digest is the collector input.
+      - name: Upload native functional producer identity
+        id: functional_producer_upload
+        if: ${{ always() && steps.functional_transport.outputs.available == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/${{ env.KASUMI_FUNCTIONAL_PRODUCER }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 90
+      - name: Bind uploaded functional transport and producer
+        if: ${{ always() && steps.functional_upload.outcome == 'success' && steps.functional_producer_upload.outcome == 'success' }}
+        shell: bash
+        env:
+          KASUMI_UPLOADED_DIGEST: ${{ steps.functional_upload.outputs.artifact-digest }}
+          KASUMI_UPLOADED_ID: ${{ steps.functional_upload.outputs.artifact-id }}
+          KASUMI_PRODUCER_UPLOADED_DIGEST: ${{ steps.functional_producer_upload.outputs.artifact-digest }}
+          KASUMI_PRODUCER_UPLOADED_ID: ${{ steps.functional_producer_upload.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          test "$(cat "$KASUMI_RUN/functional-archive.sha256")" = "$KASUMI_UPLOADED_DIGEST"
+          test "$(cat "$KASUMI_RUN/functional-producer.sha256")" = "$KASUMI_PRODUCER_UPLOADED_DIGEST"
+          test -n "$KASUMI_UPLOADED_ID"
+          test -n "$KASUMI_PRODUCER_UPLOADED_ID"
+          python3 -B -S - "$KASUMI_RUN/$KASUMI_FUNCTIONAL_PRODUCER" \
+            "$KASUMI_PRODUCER_UPLOADED_DIGEST" "$KASUMI_UPLOADED_DIGEST" \
+            "$(cat "$KASUMI_RUN/functional-manifest.sha256")" \
+            "$KASUMI_TARGET" "$GITHUB_SHA" "$KASUMI_EXPECTED_TREE" \
+            "$KASUMI_FUNCTIONAL_TAR" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from collect_functional_evidence import read_producer
+          record = read_producer(Path(sys.argv[1]), sys.argv[2])[2]
+          source = record["source"]
+          transport = record["transport"]
+          if (transport["archive_sha256"] != sys.argv[3]
+                  or transport["manifest_sha256"] != sys.argv[4]
+                  or record["target"] != sys.argv[5]
+                  or source["commit"] != sys.argv[6]
+                  or source["tree"] != sys.argv[7]
+                  or transport["archive_name"] != sys.argv[8]):
+              raise SystemExit("uploaded functional artifacts differ from native producer identity")
+          PY
+          printf 'tar-artifact-name=%s\ntar-artifact-id=%s\ntar-artifact-digest=%s\nproducer-artifact-name=%s\nproducer-artifact-id=%s\nproducer-artifact-digest=%s\n' \
+            "$KASUMI_FUNCTIONAL_TAR" "$KASUMI_UPLOADED_ID" "$KASUMI_UPLOADED_DIGEST" \
+            "$KASUMI_FUNCTIONAL_PRODUCER" "$KASUMI_PRODUCER_UPLOADED_ID" "$KASUMI_PRODUCER_UPLOADED_DIGEST" \
+            > "$KASUMI_RUN/functional-upload.txt"
+      - name: Discover completed assembly transport
+        id: assembly_transport
+        if: always()
+        shell: bash
+        env:
+          KASUMI_NATIVE_COMPLETED: ${{ steps.linux_candidate.outcome == 'success' || steps.mac_candidate.outcome == 'success' }}
+          KASUMI_PRESERVATION_FAILED: ${{ steps.assembly_failure_snapshot.outcome == 'failure' }}
+        run: |
+          set -euo pipefail
+          available=false
+          if test -n "${KASUMI_RUN:-}" \
+              && test -e "$KASUMI_RUN/assembly-failure-transport.json"; then
+            if test "$KASUMI_NATIVE_COMPLETED" = true; then
+              test "$KASUMI_PRESERVATION_FAILED" = true
+            fi
+            archive="$KASUMI_ASSEMBLY_FAILURE_TAR"
+            producer="$KASUMI_ASSEMBLY_FAILURE_PRODUCER"
+            receipt=assembly-failure-transport.json
+            disposition=failed
+            available=true
+          elif test -n "${KASUMI_RUN:-}" && test -e "$KASUMI_RUN/assembly-transport.json"; then
+            test "$KASUMI_NATIVE_COMPLETED" = true
+            test "$KASUMI_PRESERVATION_FAILED" = false
+            archive="$KASUMI_ASSEMBLY_TAR"
+            producer="$KASUMI_ASSEMBLY_PRODUCER"
+            receipt=assembly-transport.json
+            disposition=passed
+            available=true
+          elif test -n "${KASUMI_RUN:-}" \
+              && test -d "$KASUMI_RUN/repeatable-assembly"; then
+            printf 'original assembly exists without a complete raw transport\n' >&2
+            exit 1
+          fi
+          if test "$available" = true; then
+            for path in "$KASUMI_RUN/$archive" "$KASUMI_RUN/$producer" "$KASUMI_RUN/$receipt"; do
+              test -f "$path" && test -s "$path" && test -O "$path" && test -r "$path"
+            done
+            printf 'archive=%s\nproducer=%s\nreceipt=%s\ndisposition=%s\n' \
+              "$archive" "$producer" "$receipt" "$disposition" >> "$GITHUB_OUTPUT"
+          fi
+          echo "available=$available" >> "$GITHUB_OUTPUT"
+      - name: Upload raw owned assembly attempt
+        id: assembly_upload
+        if: ${{ always() && steps.assembly_transport.outputs.available == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/${{ steps.assembly_transport.outputs.archive }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload native owned assembly attempt producer
+        id: assembly_producer_upload
+        if: ${{ always() && steps.assembly_transport.outputs.available == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/${{ steps.assembly_transport.outputs.producer }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 90
+      - name: Bind uploaded owned assembly attempt transport
+        if: ${{ always() && steps.assembly_upload.outcome == 'success' && steps.assembly_producer_upload.outcome == 'success' }}
+        shell: bash
+        env:
+          KASUMI_ASSEMBLY_UPLOADED_DIGEST: ${{ steps.assembly_upload.outputs.artifact-digest }}
+          KASUMI_ASSEMBLY_UPLOADED_ID: ${{ steps.assembly_upload.outputs.artifact-id }}
+          KASUMI_ASSEMBLY_PRODUCER_UPLOADED_DIGEST: ${{ steps.assembly_producer_upload.outputs.artifact-digest }}
+          KASUMI_ASSEMBLY_PRODUCER_UPLOADED_ID: ${{ steps.assembly_producer_upload.outputs.artifact-id }}
+          KASUMI_ASSEMBLY_ARCHIVE_NAME: ${{ steps.assembly_transport.outputs.archive }}
+          KASUMI_ASSEMBLY_PRODUCER_NAME: ${{ steps.assembly_transport.outputs.producer }}
+          KASUMI_ASSEMBLY_RECEIPT_NAME: ${{ steps.assembly_transport.outputs.receipt }}
+          KASUMI_ASSEMBLY_DISPOSITION: ${{ steps.assembly_transport.outputs.disposition }}
+          KASUMI_NATIVE_COMPLETED: ${{ steps.linux_candidate.outcome == 'success' || steps.mac_candidate.outcome == 'success' }}
+          KASUMI_PRESERVATION_FAILED: ${{ steps.assembly_failure_snapshot.outcome == 'failure' }}
+        run: |
+          set -euo pipefail
+          test -n "$KASUMI_ASSEMBLY_UPLOADED_ID"
+          test -n "$KASUMI_ASSEMBLY_PRODUCER_UPLOADED_ID"
+          python3 -B -S - "$KASUMI_RUN/$KASUMI_ASSEMBLY_RECEIPT_NAME" \
+            "$KASUMI_RUN/$KASUMI_ASSEMBLY_PRODUCER_NAME" \
+            "$KASUMI_ASSEMBLY_PRODUCER_UPLOADED_DIGEST" \
+            "$KASUMI_ASSEMBLY_UPLOADED_DIGEST" \
+            "$KASUMI_TARGET" "$GITHUB_SHA" "$KASUMI_EXPECTED_TREE" \
+            "$KASUMI_ASSEMBLY_ARCHIVE_NAME" "$KASUMI_ASSEMBLY_PRODUCER_NAME" \
+            "$KASUMI_ASSEMBLY_DISPOSITION" "$KASUMI_NATIVE_COMPLETED" \
+            "$KASUMI_PRESERVATION_FAILED" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from transport_assembly_evidence import read_native_receipt, read_producer
+          native = read_native_receipt(Path(sys.argv[1]))
+          producer = read_producer(Path(sys.argv[2]), sys.argv[3])[2]
+          identity = producer["identity"]
+          transport = producer["transport"]
+          if (native["producer"] != {"name": Path(sys.argv[2]).name,
+                                      "sha256": sys.argv[3],
+                                      "bytes": Path(sys.argv[2]).stat().st_size}
+                  or native["archive"] != {"name": transport["archive_name"],
+                                           "sha256": sys.argv[4],
+                                           "bytes": transport["archive_bytes"]}
+                  or native["manifest_sha256"] != transport["manifest_sha256"]
+                  or producer["transport"]["archive_sha256"] != sys.argv[4]
+                  or native.get("identity") != identity
+                  or identity["target"] != sys.argv[5]
+                  or identity["source_commit"] != sys.argv[6]
+                  or identity["source_tree"] != sys.argv[7]
+                  or transport["archive_name"] != sys.argv[8]
+                  or native["producer"]["name"] != sys.argv[9]
+                  or native["status"] != producer["status"]
+                  or (native["status"] == "passed")
+                     != (sys.argv[11] == "true" and sys.argv[12] == "false")
+                  or ("passed" if native["status"] == "passed" else "failed") != sys.argv[10]):
+              raise SystemExit("uploaded assembly artifacts differ from original native identity")
+          PY
+          printf 'disposition=%s\ntar-artifact-name=%s\ntar-artifact-id=%s\ntar-artifact-digest=%s\nproducer-artifact-name=%s\nproducer-artifact-id=%s\nproducer-artifact-digest=%s\n' \
+            "$KASUMI_ASSEMBLY_DISPOSITION" \
+            "$KASUMI_ASSEMBLY_ARCHIVE_NAME" "$KASUMI_ASSEMBLY_UPLOADED_ID" "$KASUMI_ASSEMBLY_UPLOADED_DIGEST" \
+            "$KASUMI_ASSEMBLY_PRODUCER_NAME" "$KASUMI_ASSEMBLY_PRODUCER_UPLOADED_ID" "$KASUMI_ASSEMBLY_PRODUCER_UPLOADED_DIGEST" \
+            > "$KASUMI_RUN/assembly-upload.txt"
       - name: Preserve candidate and failed or successful evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -120,11 +550,9 @@ jobs:
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/*.json
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/*.log
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/*.txt
+            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/*.sha256
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/build-image-id
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/*.json
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/*.log
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/source.tar
-            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/candidate/*.tar.gz
-            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/candidate/SHA256SUMS
-            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/candidate/binary-sha256
-            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/repeated-assembly/SHA256SUMS
+            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/repeatable-assembly/**

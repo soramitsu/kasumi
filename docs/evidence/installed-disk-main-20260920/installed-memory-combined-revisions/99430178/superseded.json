@@ -1,0 +1,4 @@
+{
+  "status": "NOT_APPLIED_SUPERSEDED",
+  "reason": "Engine fixed-memory fixtures resolved old default cap against host RAM; corrected engine package preserves original256MiB before new metadata."
+}

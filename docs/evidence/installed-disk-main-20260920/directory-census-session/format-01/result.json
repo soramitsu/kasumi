@@ -1,0 +1,31 @@
+{
+  "argv": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-server/src/persistent_disk.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-server/src/runtime_memory.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/census/tests.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/census.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/directory/cursor.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/file.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/fixed_map/tests.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/fixed_map.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/ledger/tests.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/ledger.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/memory.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/proposed/crates/kasumi-store/src/node_disk.rs"
+  ],
+  "pid": 74566,
+  "pgid": 74566,
+  "exit_code": 0,
+  "drained": true,
+  "elapsed_seconds": 0.14790329200000002,
+  "executable_unchanged": true,
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "TMPDIR": "/Users/mtakemiya/dev/kasumi/target/tmp"
+}

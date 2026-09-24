@@ -18,7 +18,25 @@ pub(crate) async fn initialize(config: RuntimeConfig) -> Result<()> {
         config.mode == DeploymentMode::Replicated,
         "HA node enrollment requires replicated mode"
     );
-    crate::startup_owner::open(crate::startup_owner::Kind::Data, initialize_owned(config)).await?;
+    let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+    initialize_with_storage(config, storage).await
+}
+
+pub(crate) async fn initialize_with_storage(
+    config: RuntimeConfig,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<()> {
+    config.validate()?;
+    ensure!(
+        config.mode == DeploymentMode::Replicated,
+        "HA node enrollment requires replicated mode"
+    );
+    storage.require_policy(&config.admission)?;
+    crate::startup_owner::open(
+        crate::startup_owner::Kind::Data,
+        initialize_owned(config, storage),
+    )
+    .await?;
     Ok(())
 }
 
@@ -34,10 +52,14 @@ impl crate::startup_owner::Runtime for Enrolled {
     }
 }
 
-async fn initialize_owned(config: RuntimeConfig) -> Result<Enrolled> {
+async fn initialize_owned(
+    config: RuntimeConfig,
+    storage: crate::runtime_memory::RuntimeStorage,
+) -> Result<Enrolled> {
     let mut pending = crate::startup_resources::Resources::default();
     let result = crate::startup_preparation::capture("HA node enrollment", async {
-        let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
+        let admission = storage.facade(&config.admission)?;
+        pending.owned_admissions.push(admission.clone());
         let (node, audit) = crate::node_provision::create(
             &config.database_path,
             config.database_id,
@@ -45,6 +67,7 @@ async fn initialize_owned(config: RuntimeConfig) -> Result<Enrolled> {
             &config.scratch_disk,
             &config.security_audit,
             admission,
+            &storage,
         )
         .await?;
         pending.owned_nodes.push(node.clone());

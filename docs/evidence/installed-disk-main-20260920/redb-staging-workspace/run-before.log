@@ -1,0 +1,20 @@
+
+running 3 tests
+test exact_removal_path_performs_no_heap_allocation ... ok
+test tree_store::page_store::lru_cache::tests::invalidation_preserves_other_pages_priority_and_second_chance ... ok
+test tree_store::page_store::lru_cache::tests::repeated_same_key_invalidation_keeps_one_queue_registration_per_live_page ... live_pages=3 queue_entries=10003 queue_capacity=16384
+
+thread 'tree_store::page_store::lru_cache::tests::repeated_same_key_invalidation_keeps_one_queue_registration_per_live_page' (4211457) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-staging-workspace/native-input/before/lru_cache.rs:126:9:
+assertion `left == right` failed
+  left: 10003
+ right: 3
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    tree_store::page_store::lru_cache::tests::repeated_same_key_invalidation_keeps_one_queue_registration_per_live_page
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

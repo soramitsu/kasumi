@@ -401,19 +401,20 @@ mod lifecycle_tests {
             .unwrap();
         state.release.notified().await;
         assert!(Arc::strong_count(&state.node) > 0);
+        state.node.shutdown().await.unwrap();
         "completed before listener returned"
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn accept_io_failure_drains_active_tls_request_before_releasing_node() {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-        let path = directory.path().join("accept-error.redb");
-        let node = NodeStore::create_new_fixture(
-            &path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap();
+        let physical =
+            crate::runtime_storage_fixtures::physical(directory.path(), Default::default())
+                .unwrap();
+        let path = directory.path().join("persistent/accept-error.redb");
+        let node = physical
+            .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap();
         let weak = Arc::downgrade(&node);
         let rcgen::CertifiedKey { cert, signing_key } =
             rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
@@ -502,14 +503,10 @@ mod lifecycle_tests {
             "completed before listener returned"
         );
         assert!(weak.upgrade().is_none());
-        drop(
-            NodeStore::open_existing_fixture(
-                &path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-            .unwrap(),
-        );
+        let reopened = physical
+            .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap();
+        reopened.shutdown().await.unwrap();
     }
 
     struct RecordingAudit(tokio::sync::mpsc::UnboundedSender<TlsHandshakeEvent>);

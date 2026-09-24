@@ -1,0 +1,27 @@
+--- a/vendor/redb-4.2.0/src/retained_transaction.rs
++++ b/vendor/redb-4.2.0/src/retained_transaction.rs
+@@ -149,10 +149,8 @@
+             self.transaction.completed = true;
+             let latch = AllocatorStateLatch::arm(self.transaction.mem.clone());
+             self.terminal.observe(|| {
+-                if self.transaction.mem.capacity_denied() {
+-                    return Err(WriteTerminalError::Commit(
+-                        StorageError::CapacityDenied.into(),
+-                    ));
++                if let Some(error) = self.transaction.mem.capacity_error() {
++                    return Err(WriteTerminalError::Commit(error.into()));
+                 }
+                 if self.transaction.is_poisoned() {
+                     return Err(WriteTerminalError::Commit(CommitError::TransactionPoisoned));
+@@ -167,8 +165,9 @@
+             if matches!(
+                 self.terminal,
+                 Observation::Returned(Err(WriteTerminalError::Commit(
+-                    CommitError::Storage(StorageError::CapacityDenied)
+-                        | CommitError::TransactionPoisoned
++                    CommitError::Storage(
++                        StorageError::CapacityDenied | StorageError::CacheCapacityDenied
++                    ) | CommitError::TransactionPoisoned
+                 )))
+             ) {
+                 self.rollback.observe(|| self.transaction.abort_inner());

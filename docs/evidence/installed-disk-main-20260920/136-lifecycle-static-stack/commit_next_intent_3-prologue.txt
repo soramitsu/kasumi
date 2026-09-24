@@ -1,0 +1,40 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001001236b0 <lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}>:
+1001236b0: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1001236b4: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1001236b8: 910043fd    	add	x29, sp, #0x10
+1001236bc: d118c3ff    	sub	sp, sp, #0x630
+1001236c0: f90003ff    	str	xzr, [sp]
+1001236c4: 9105c3e8    	add	x8, sp, #0x170
+1001236c8: f90083e8    	str	x8, [sp, #0x100]
+1001236cc: f90087e0    	str	x0, [sp, #0x108]
+1001236d0: f9008be1    	str	x1, [sp, #0x110]
+1001236d4: f9400000    	ldr	x0, [x0]
+1001236d8: 9487930b    	bl	0x102308304 <<std::time::Instant>::elapsed>
+1001236dc: f9008fe0    	str	x0, [sp, #0x118]
+1001236e0: b90127e1    	str	w1, [sp, #0x124]
+1001236e4: 14000008    	b	0x100123704 <lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}+0x54>
+1001236e8: f9408be0    	ldr	x0, [sp, #0x110]
+1001236ec: 9484b55c    	bl	0x102250c5c <core::ptr::drop_glue::<kasumi_types::Error>>
+1001236f0: 140001a0    	b	0x100123d70 <lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}+0x6c0>
+1001236f4: f81c03a0    	stur	x0, [x29, #-0x40]
+1001236f8: aa0103e8    	mov	x8, x1
+1001236fc: b81c83a8    	stur	w8, [x29, #-0x38]
+100123700: 17fffffa    	b	0x1001236e8 <lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}+0x38>
+100123704: f9408be8    	ldr	x8, [sp, #0x110]
+100123708: f94087e9    	ldr	x9, [sp, #0x108]
+10012370c: b94127ea    	ldr	w10, [sp, #0x124]
+100123710: f9408feb    	ldr	x11, [sp, #0x118]
+100123714: 910583ee    	add	x14, sp, #0x160
+100123718: f900b3eb    	str	x11, [sp, #0x160]
+10012371c: b9016bea    	str	w10, [sp, #0x168]
+100123720: f940052d    	ldr	x13, [x9, #0x8]
+100123724: f940092c    	ldr	x12, [x9, #0x10]
+100123728: f9400d2b    	ldr	x11, [x9, #0x18]
+10012372c: f940112a    	ldr	x10, [x9, #0x20]
+100123730: f9401529    	ldr	x9, [x9, #0x28]
+100123734: f90097ee    	str	x14, [sp, #0x128]

@@ -1,0 +1,65 @@
+{
+  "at_utc": "2026-09-22T23:52:10.664539+00:00",
+  "scope": "Read-only review of backup revision4 native-01 runner/preparation/pure gates; no native dispatch or source edits",
+  "input_hashes": {
+    "target/installed-disk-validation/filesystem-backup-admission-revision4/native-01/run.py": "a366eecbc98a70c44645e14f16367685679de7b2a9bc0d546f4f1938ae4f934e",
+    "target/installed-disk-validation/filesystem-backup-admission-revision4/prepare_native.py": "1ec36ad6b12a9037e019db7dc3d900be2203f7bc5ed417bfccfe1810caed21c8",
+    "target/installed-disk-validation/filesystem-backup-admission-revision4/check_runner_gates.py": "8d950c735eb83c60c62a500c314080f5ea96842eb86fc2358237307aa6c60e5b",
+    "target/installed-disk-validation/filesystem-backup-admission-revision4/native-01/runner-gate-tests.json": "ba3627c05dcc50089ad3ec56bdf8e05afc8abfc0c2be094a7c748b23390ace67",
+    "target/installed-disk-validation/filesystem-backup-admission-revision4/qualification-plan.json": "e3e250b0570c7f85ee4efdc8c87ed99f9e9a0a75d37ef16dd322ee48e535da46",
+    "target/installed-disk-validation/filesystem-backup-admission-revision4/manifest.json": "d7d1932126c2c6a8d7734f45637262ac0024849fbdf6a1e3a3e4dc168070e169"
+  },
+  "disposition": "REQUEST_SUCCESSOR_BEFORE_DISPATCH",
+  "findings": [
+    {
+      "id": "R1",
+      "file": "native-01/run.py",
+      "problem": "Compiled retained store-test binary identity is recorded but not enforced across stage boundaries. Per-stage executable before/after equality accepts a replacement made after compile or between list and full run; source inventory excludes the newly created binary.",
+      "required_fix": "Pin retained compiled binary hash and byte count, enforce before each binary dispatch and at terminal acceptance, and test a mismatch even when stage before/after agree.",
+      "pure_reproduction": {
+        "qualified_stage_accepts_different_compiled_and_stage_hashes": true,
+        "input": {
+          "exit_code": 0,
+          "drained": true,
+          "timeout": false,
+          "signals": [],
+          "executable_before": {
+            "path": "retained-store-binary",
+            "sha256": "replacement",
+            "bytes": 5
+          },
+          "executable_after": {
+            "path": "retained-store-binary",
+            "sha256": "replacement",
+            "bytes": 5
+          },
+          "inventory_passed": true,
+          "runtime_passed": true,
+          "compiled_retained_binary": {
+            "path": "retained-store-binary",
+            "sha256": "original",
+            "bytes": 5
+          }
+        }
+      }
+    },
+    {
+      "id": "R2",
+      "file": "prepare_native.py",
+      "problem": "Outside-composition source comparison iterates only opening frozen assembly files; current additions are not rejected. Top-level Cargo.toml/Cargo.lock/rust-toolchain.toml are copied without matching frozen qualification unless selected among composition files. Modes are not part of this baseline comparison.",
+      "required_fix": "Require exact nonselected file sets, bytes/hash/modes, and top-level Cargo inputs equal to opening frozen qualification, or use an explicit reviewed successor. Add extra/missing file and top-level Cargo drift regression cases."
+    }
+  ],
+  "source_reviewed_positive": [
+    "Fresh Cargo target required; compiled store artifact is nonfresh and selected from exact assembly crate path.",
+    "Expected345-name set is enforced before full unfiltered serial runtime; runtime summary requires343 passed,0 failed,2 ignored,0 measured,0 filtered.",
+    "Expired1200-second budget refuses Popen; timeout, forced cleanup signals, undrained process groups, changed stage executable, incomplete stage count or changed inventoried source cannot pass.",
+    "Existing24 pure checks validate predicates and specified source gates, but do not cover either reported provenance gap."
+  ],
+  "scope_limits": [
+    "Runner is undispatched; no existing successful native result is being invalidated.",
+    "Compiled dependency artifact hashes support artifact stability, not complete registry dependency source or broad toolchain inventory. Keep future qualification wording aligned with what is actually hashed.",
+    "No whole test-runner process-tree or storage implementation re-review is claimed."
+  ],
+  "author_response": "Managed author accepted both findings and is preserving native-01 unchanged while preparing a distinct native-02 runner/preparer/pure-gate successor."
+}

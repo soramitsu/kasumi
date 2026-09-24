@@ -8,6 +8,40 @@ use kasumi_serving::{
 
 const NS: &str = "live.signer.trust";
 
+fn require_current_json<T: serde::Serialize>(
+    value: &T,
+    original: &[u8],
+    diagnostic: &'static str,
+) -> Result<()> {
+    struct Exact<'a> {
+        original: &'a [u8],
+        offset: usize,
+    }
+    impl std::io::Write for Exact<'_> {
+        fn write(&mut self, encoded: &[u8]) -> std::io::Result<usize> {
+            let end = self
+                .offset
+                .checked_add(encoded.len())
+                .ok_or_else(|| std::io::Error::other("noncanonical live signer trust JSON"))?;
+            if self.original.get(self.offset..end) != Some(encoded) {
+                return Err(std::io::Error::other("noncanonical live signer trust JSON"));
+            }
+            self.offset = end;
+            Ok(encoded.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut exact = Exact {
+        original,
+        offset: 0,
+    };
+    serde_json::to_writer(&mut exact, value).context(diagnostic)?;
+    ensure!(exact.offset == original.len(), "{diagnostic}");
+    Ok(())
+}
+
 struct EncryptedTrust {
     store: Arc<TenantStore>,
     verifier: TrustVerifierIdentity,
@@ -19,17 +53,18 @@ impl EncryptedTrust {
         format!("receipt/{}/{id}", self.key)
     }
     fn read_record(&self) -> Result<Option<LocalSignerTrustRecord>> {
-        let record: Option<LocalSignerTrustRecord> = self
-            .store
-            .get_bounded(NS, self.key.as_bytes(), MAX_SIGNER_TRUST_RECORD_BYTES)?
-            .map(|bytes| serde_json::from_slice(&bytes))
-            .transpose()?;
-        if let Some(record) = &record {
+        let bytes =
+            self.store
+                .get_bounded(NS, self.key.as_bytes(), MAX_SIGNER_TRUST_RECORD_BYTES)?;
+        let record: Option<LocalSignerTrustRecord> =
+            bytes.as_deref().map(serde_json::from_slice).transpose()?;
+        if let (Some(record), Some(bytes)) = (&record, bytes.as_deref()) {
             record.validate()?;
             ensure!(
                 record.verifier == self.verifier && record.active.identity.domain == self.domain,
                 "encrypted local trust binding differs"
             );
+            require_current_json(record, bytes, "noncanonical local signer trust record")?;
             for certificate in std::iter::once(&record.active)
                 .chain(record.staged.as_ref().map(|staged| &staged.certificate))
             {
@@ -138,16 +173,14 @@ impl LiveTrustPersistence for EncryptedTrust {
             .context("local signer trust is not initialized")
     }
     fn receipt(&self, operation_id: Uuid) -> Result<Option<SignerTrustReceipt>> {
-        let receipt: Option<SignerTrustReceipt> = self
-            .store
-            .get_bounded(
-                NS,
-                self.receipt_key(operation_id).as_bytes(),
-                MAX_SIGNER_TRUST_RECORD_BYTES,
-            )?
-            .map(|bytes| serde_json::from_slice(&bytes))
-            .transpose()?;
-        if let Some(receipt) = &receipt {
+        let bytes = self.store.get_bounded(
+            NS,
+            self.receipt_key(operation_id).as_bytes(),
+            MAX_SIGNER_TRUST_RECORD_BYTES,
+        )?;
+        let receipt: Option<SignerTrustReceipt> =
+            bytes.as_deref().map(serde_json::from_slice).transpose()?;
+        if let (Some(receipt), Some(bytes)) = (&receipt, bytes.as_deref()) {
             ensure!(
                 receipt.command.operation_id == operation_id
                     && receipt.command_sha256 == receipt.command.digest()?
@@ -157,15 +190,21 @@ impl LiveTrustPersistence for EncryptedTrust {
             );
             kasumi_types::validate_name(&receipt.principal)?;
             kasumi_types::validate_sha256(&receipt.active_certificate_sha256)?;
+            require_current_json(receipt, bytes, "noncanonical signer trust receipt")?;
         }
         Ok(receipt)
     }
     fn key_use(&self, public_key: &str) -> Result<Option<SignerKeyUse>> {
         kasumi_types::validate_sha256(public_key)?;
-        self.store
-            .get_bounded(NS, format!("key-use/{public_key}").as_bytes(), 1024)?
-            .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
-            .transpose()
+        let bytes = self
+            .store
+            .get_bounded(NS, format!("key-use/{public_key}").as_bytes(), 1024)?;
+        let key_use: Option<SignerKeyUse> =
+            bytes.as_deref().map(serde_json::from_slice).transpose()?;
+        if let (Some(key_use), Some(bytes)) = (&key_use, bytes.as_deref()) {
+            require_current_json(key_use, bytes, "noncanonical signer key-use record")?;
+        }
+        Ok(key_use)
     }
     fn commit(
         &self,

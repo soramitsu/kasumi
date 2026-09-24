@@ -1,0 +1,40 @@
+{
+  "status": "PREPARED_UNAPPLIED_UNCOMPILED",
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "patch_sha256": "676ad67135a8f9b97ee21f141348bba26c81957819e384b9d9327132e31157e9",
+  "readme_sha256": "6f119d10ec60bbd7a2b290e23bbbc820a50a533745e7a961913749d04f04718d",
+  "files": [
+    {
+      "path": "crates/kasumi-store/src/node_disk/file.rs",
+      "before_sha256": "488a5b8182ff33ee20cfc1685749ff0e3887662cf7da0bf14c8224d5c0c2bdaa",
+      "proposed_sha256": "24934b329c935269f578118d70a4e2e9e108f6cf62c3e68455d232aee51843e5",
+      "new_test_functions": [],
+      "removed_or_renamed_test_functions": []
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "before_sha256": "2f0f2d3890daae76a8f3eec6f374c04db20fe94221c8e81cb0e894c72b4e2fdf",
+      "proposed_sha256": "9825a52cea3a3392bf16a5dd5f7f737370c64b833bc8a50026a073071c8cf1f4",
+      "new_test_functions": [
+        "a_retiring_predecessor_keeps_exclusive_registration_until_all_resources_close",
+        "abandoned_preparation_closes_target_descriptors_before_the_next_preparation",
+        "concurrent_final_file_clones_retire_exactly_one_registration",
+        "prepared_publication_abandonment_retires_old_weak_registration_once_without_allocation",
+        "reclaim_retires_parent_metadata_and_weak_backing_before_releasing_promises",
+        "retiring_file_cannot_lend_handle_or_metadata_credit_before_parent_and_backing_release"
+      ],
+      "removed_or_renamed_test_functions": [
+        "a_closed_predecessor_cannot_unregister_the_new_owner_of_the_same_inode"
+      ]
+    }
+  ],
+  "cargo_run": false,
+  "tests_run": false,
+  "actual_source_changes": false,
+  "rustfmt_exit": 0,
+  "git_apply_check_exit": 0,
+  "test_contract_change": "old predecessor test now requires complete resource retirement before same-inode reopen; no test coverage or allocation limits removed",
+  "directory_draft_dependency": false
+}

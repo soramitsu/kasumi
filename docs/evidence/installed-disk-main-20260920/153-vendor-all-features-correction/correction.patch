@@ -1,0 +1,24 @@
+--- a/vendor/redb-4.2.0/src/page_list_tests.rs
++++ b/vendor/redb-4.2.0/src/page_list_tests.rs
+@@ -1,4 +1,6 @@
+ use super::*;
++#[cfg(feature = "experimental-api-5")]
++use crate::ReadableTable;
+ use crate::{
+     AdmissionError, Database, DatabaseCloseSettlement, OwnerFailed, ReadableDatabase,
+     RetainedDatabase, RetainedWriteTransaction, StorageAdmission, StorageBackend,
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
+@@ -289,9 +289,11 @@
+         if page_size_usize == 0 {
+             return Err(StorageError::CacheCapacityDenied.into());
+         }
++        let lock_stripes = usize::try_from(Self::lock_stripes())
++            .map_err(|_| StorageError::CacheCapacityDenied)?;
+         let read_entry_capacity = max_cache_size
+             .div_ceil(page_size_usize)
+-            .div_ceil(Self::lock_stripes() as usize)
++            .div_ceil(lock_stripes)
+             .max(1);
+         // A depth-bounded internal mutation can retain ancestor PageMut values
+         // plus a leaf, split siblings and direct-header preparation. This is a

@@ -1,0 +1,69 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000e914c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send>:
+1000e914c: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1000e9150: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1000e9154: 910043fd    	add	x29, sp, #0x10
+1000e9158: d10a03ff    	sub	sp, sp, #0x280
+1000e915c: aa0003e8    	mov	x8, x0
+1000e9160: aa0103e9    	mov	x9, x1
+1000e9164: f90003e9    	str	x9, [sp]
+1000e9168: f90007e2    	str	x2, [sp, #0x8]
+1000e916c: f9000be5    	str	x5, [sp, #0x10]
+1000e9170: aa0603e1    	mov	x1, x6
+1000e9174: aa0803e0    	mov	x0, x8
+1000e9178: f90013e0    	str	x0, [sp, #0x20]
+1000e917c: f90017e9    	str	x9, [sp, #0x28]
+1000e9180: f9001be2    	str	x2, [sp, #0x30]
+1000e9184: f9001fe3    	str	x3, [sp, #0x38]
+1000e9188: f90023e4    	str	x4, [sp, #0x40]
+1000e918c: f90027e5    	str	x5, [sp, #0x48]
+1000e9190: 9101a3e0    	add	x0, sp, #0x68
+1000e9194: f9009be8    	str	x8, [sp, #0x130]
+1000e9198: f900abe3    	str	x3, [sp, #0x150]
+1000e919c: f900afe4    	str	x4, [sp, #0x158]
+1000e91a0: 52801908    	mov	w8, #0xc8               ; =200
+1000e91a4: aa0803e2    	mov	x2, x8
+1000e91a8: 948a995c    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e91ac: f94003e1    	ldr	x1, [sp]
+1000e91b0: f94007e2    	ldr	x2, [sp, #0x8]
+1000e91b4: f9400be5    	ldr	x5, [sp, #0x10]
+1000e91b8: f9009fe1    	str	x1, [sp, #0x138]
+1000e91bc: f900a3e2    	str	x2, [sp, #0x140]
+1000e91c0: f900a7e5    	str	x5, [sp, #0x148]
+1000e91c4: 3909c3ff    	strb	wzr, [sp, #0x270]
+1000e91c8: 52800108    	mov	w8, #0x8                ; =8
+1000e91cc: aa0803e0    	mov	x0, x8
+1000e91d0: 52804208    	mov	w8, #0x210              ; =528
+1000e91d4: aa0803e1    	mov	x1, x8
+1000e91d8: 97fca798    	bl	0x100013038 <alloc::boxed::box_new_uninit>
+1000e91dc: f9000fe0    	str	x0, [sp, #0x18]
+1000e91e0: 1400000a    	b	0x1000e9208 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send+0xbc>
+1000e91e4: f9002fe0    	str	x0, [sp, #0x58]
+1000e91e8: aa0103e8    	mov	x8, x1
+1000e91ec: b90063e8    	str	w8, [sp, #0x60]
+1000e91f0: 9101a3e0    	add	x0, sp, #0x68
+1000e91f4: 97ff221f    	bl	0x1000b1a70 <core::ptr::drop_glue::<<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}>>
+1000e91f8: 14000002    	b	0x1000e9200 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send+0xb4>
+1000e91fc: 948a971e    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+1000e9200: f9402fe0    	ldr	x0, [sp, #0x58]
+1000e9204: 948a9888    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>
+1000e9208: f9400fe0    	ldr	x0, [sp, #0x18]
+1000e920c: aa0003e8    	mov	x8, x0
+1000e9210: f81e83a8    	stur	x8, [x29, #-0x18]
+1000e9214: 9101a3e1    	add	x1, sp, #0x68
+1000e9218: 52804208    	mov	w8, #0x210              ; =528
+1000e921c: aa0803e2    	mov	x2, x8
+1000e9220: 948a993e    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e9224: f9400fe0    	ldr	x0, [sp, #0x18]
+1000e9228: aa0003e8    	mov	x8, x0
+1000e922c: f9002be8    	str	x8, [sp, #0x50]
+1000e9230: f002e4c1    	adrp	x1, 0x105d84000 <dyld_stub_binder+0x105d84000>
+1000e9234: 91306021    	add	x1, x1, #0xc18
+1000e9238: 910a03ff    	add	sp, sp, #0x280
+1000e923c: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+1000e9240: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+1000e9244: d65f03c0    	ret

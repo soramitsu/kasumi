@@ -1,0 +1,13 @@
+{
+  "source": "crates/kasumi-engine/tests/common/recovery_control.rs",
+  "before_sha256": "2147b8684336bf4e81f0b1104fdab747309e9f15721f1bc8138d005b592e816a",
+  "after_sha256": "5a404fabbd2cbbff1eb5d3c90a842dd617c898ae2e26504ed7595c45949dd27b",
+  "original135_result_sha256": "8a79f42e8d007367d8449f89f0fde009ea57350f0af7a70d28c0b8442096fb4d",
+  "original135_log_sha256": "65a430ee1329b8ea335c512ca5e2ea3e0263688a32aba88bbc0e6487f5519ffd",
+  "files": {
+    "README.md": "788c2e1f76aa34e47863559ac641985a0515ba67008a70b82f5e460ecd44c573",
+    "base/crates/kasumi-engine/tests/common/recovery_control.rs": "2147b8684336bf4e81f0b1104fdab747309e9f15721f1bc8138d005b592e816a",
+    "correction.patch": "4a4a6c581421d3be81a846561f40e16595a785e2fc469dc7b9bb689ab5487126",
+    "proposed/crates/kasumi-engine/tests/common/recovery_control.rs": "5a404fabbd2cbbff1eb5d3c90a842dd617c898ae2e26504ed7595c45949dd27b"
+  }
+}

@@ -59,10 +59,19 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
         scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
         request_id: "custody-native-restart".into(),
     };
-    create_fixture_node(&config).await;
-    let mut runtime = NodeRuntime::open_using(config.clone(), |_| {
-        Ok(Zeroizing::new("test-runtime-token".into()))
-    })
+    let backup_directory = dir.path().join("backup");
+    kasumi_store::private_files::create_directory(&backup_directory).unwrap();
+    config
+        .persistent_disk
+        .roots
+        .insert("backup".into(), backup_directory.clone());
+    let storage = crate::runtime_storage_fixtures::configure(&mut config).unwrap();
+    create_fixture_node(&config, &storage).await;
+    let mut runtime = NodeRuntime::open_using_storage(
+        config.clone(),
+        |_| Ok(Zeroizing::new("test-runtime-token".into())),
+        storage.clone(),
+    )
     .await
     .unwrap();
     let db = runtime.tenants[0].database.clone();
@@ -80,8 +89,12 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
     .await
     .unwrap();
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new_fixture(dir.path().join("backup"), 32 << 20)
-            .unwrap(),
+        kasumi_store::FilesystemBackupDestination::new(
+            backup_directory,
+            32 << 20,
+            storage.open_persistent(&config.persistent_disk).unwrap(),
+        )
+        .unwrap(),
     );
     db.install_archive_destination("approved".into(), destination.clone())
         .unwrap();
@@ -140,13 +153,17 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
         .unwrap()
         .token_file
         .clone();
-    let mut runtime = NodeRuntime::open_using(config, move |name| {
-        anyhow::ensure!(
-            name != forbidden_credential,
-            "retired application credential must not be requested"
-        );
-        Ok(Zeroizing::new("test-runtime-token".into()))
-    })
+    let mut runtime = NodeRuntime::open_using_storage(
+        config,
+        move |name| {
+            anyhow::ensure!(
+                name != forbidden_credential,
+                "retired application credential must not be requested"
+            );
+            Ok(Zeroizing::new("test-runtime-token".into()))
+        },
+        storage.clone(),
+    )
     .await
     .unwrap();
     assert!(

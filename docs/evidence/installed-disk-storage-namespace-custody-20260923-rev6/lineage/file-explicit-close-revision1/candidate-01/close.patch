@@ -1,0 +1,817 @@
+--- a/crates/kasumi-store/src/node_disk/file.rs
++++ b/crates/kasumi-store/src/node_disk/file.rs
+@@ -99,6 +99,11 @@
+ }
+ 
+ #[cfg(test)]
++std::thread_local! {
++    static PARENT_CLOSE_FAILURE: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
++}
++
++#[cfg(test)]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub(super) enum ShrinkFailure {
+     Truncate,
+@@ -145,6 +150,12 @@
+ 
+ impl std::fmt::Debug for NodeDiskFile {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        if self.0.0.is_none() {
++            return f
++                .debug_struct("NodeDiskFile")
++                .field("closed", &true)
++                .finish_non_exhaustive();
++        }
+         f.debug_struct("NodeDiskFile")
+             .field("root", &self.0.root)
+             .field("relative", &self.0.relative)
+@@ -1040,6 +1051,7 @@
+         root: &str,
+         relative: &Path,
+     ) -> io::Result<PreparedPublication<'a>> {
++        file.ensure_open()?;
+         if !Arc::ptr_eq(self, &file.0.disk) {
+             return Err(io::ErrorKind::InvalidInput.into());
+         }
+@@ -1104,6 +1116,7 @@
+     }
+ 
+     fn reclaim(&self, file: NodeDiskFile, len: Option<u64>) -> io::Result<()> {
++        file.ensure_open()?;
+         if !std::ptr::eq(self, Arc::as_ptr(&file.0.disk)) {
+             return Err(io::ErrorKind::InvalidInput.into());
+         }
+@@ -1574,6 +1587,183 @@
+ }
+ 
+ impl NodeDiskFile {
++    fn ensure_open(&self) -> io::Result<()> {
++        let owner = self.0.0.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
++        let mutex = owner.budget.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
++        let budget = mutex.lock().map_err(|_| {
++            owner.disk.fail();
++            io::Error::from(io::ErrorKind::InvalidData)
++        })?;
++        if budget.file.is_none() {
++            return Err(io::ErrorKind::BrokenPipe.into());
++        }
++        Ok(())
++    }
++
++    /// Retire the sole file owner explicitly. A failed attempt leaves this exact
++    /// Arc and its original native/owner outcomes retained; the returned error
++    /// is only an errno/kind projection. An uncertain native close is never retried.
++    /// Success follows descriptor, heap backing, Arc and registration retirement.
++    /// A successfully closed handle remains closed and may be closed again.
++    pub fn close(&mut self) -> io::Result<()> {
++        let Some(owner) = self.0.0.as_ref() else {
++            return Ok(());
++        };
++        let disk = owner.disk.clone();
++        let mut state = disk.lock_state();
++        let identity = owner.identity;
++        let registration = owner.registration;
++        if registration == 0
++            || !state
++                .live
++                .get(&identity)
++                .is_some_and(|entry| entry.as_ptr() as usize == registration)
++        {
++            disk.fail_locked(&mut state);
++            return Err(owner.record_error(io::ErrorKind::InvalidData.into()));
++        }
++        // Every registry upgrade holds State. No other strong/weak owner may
++        // survive this gate, so the original allocation can be borrowed mutably.
++        if Arc::strong_count(owner) != 1 || Arc::weak_count(owner) != 1 {
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
++        // Keep the occupied map slot and every credit while releasing its Weak.
++        // Replacing the value needs no HashMap insertion or new allocation.
++        drop(std::mem::replace(
++            state
++                .live
++                .get_mut(&identity)
++                .expect("validated live registration"),
++            std::sync::Weak::new(),
++        ));
++        let mut close = ExplicitClose {
++            owner: &mut self.0,
++            state,
++            identity,
++            executing: false,
++        };
++        let failed =
++            close.state.phase == NodeDiskPhase::Failed || !disk.device.lock().admission_ready();
++        let owner = Arc::get_mut(&mut *close.owner).expect("exclusive original owner");
++        if let Some(error) = owner.resources.close_projection() {
++            return Err(error);
++        }
++        if owner.budget.is_none() || owner.original_error.is_none() {
++            // A previous retirement unwound after retiring this backing but
++            // before credit. Preserve that exact owner without rebuilding an
++            // error slot, retrying a descriptor, or fabricating positive close.
++            close.executing = true;
++            return Err(io::ErrorKind::Other.into());
++        }
++        let settled = owner.budget.as_mut().is_some_and(|mutex| {
++            let poisoned = mutex.is_poisoned();
++            let budget = mutex.get_mut().unwrap_or_else(|poison| poison.into_inner());
++            !poisoned && budget.settled
++        });
++        close.executing = true;
++        if failed || !settled || owner.resources.has_failure() {
++            if !owner.resources.has_failure() {
++                let _projected = owner.record_error(if settled {
++                    io::ErrorKind::Other.into()
++                } else {
++                    io::ErrorKind::InvalidData.into()
++                });
++            }
++            if !settled
++                && let Some(enrolled) = close
++                    .state
++                    .accounted
++                    .get_mut(&identity)
++                    .and_then(AccountedInode::file_mut)
++            {
++                enrolled.settled = false;
++            }
++            let native = owner.resources.close_descriptors();
++            return Err(owner
++                .resources
++                .failure_projection()
++                .unwrap_or_else(|| native.err().unwrap_or_else(|| io::ErrorKind::Other.into())));
++        }
++        // All fallible bookkeeping checks precede descriptor/heap retirement.
++        let next = close
++            .state
++            .open_files
++            .checked_sub(1)
++            .ok_or_else(|| owner.record_error(io::ErrorKind::InvalidData.into()))?;
++        let parent = owner
++            .parent
++            .as_ref()
++            .map(RetainedParent::identity)
++            .ok_or_else(|| owner.record_error(io::ErrorKind::InvalidData.into()))?;
++        if owner.retiring_parent.is_some()
++            || owner.retired_parent.is_some()
++            || !namespace::can_retire_parent(&close.state, parent)
++            || !close.state.file_custody.reserved_empty(owner.custody_slot)
++        {
++            return Err(owner.record_error(io::ErrorKind::InvalidData.into()));
++        }
++        let slot = owner.custody_slot;
++        if let Err(projected) = owner.retire_resources() {
++            return Err(owner.resources.failure_projection().unwrap_or(projected));
++        }
++        assert_eq!(
++            owner.retired_parent,
++            Some(parent),
++            "validated parent retirement"
++        );
++        owner.retired_parent = None;
++        owner.registration = 0;
++        owner.custody_slot = usize::MAX;
++        // FileOwner::drop is now inert. No Weak survives, so this frees the
++        // actual original Arc before the counters or custody slot are credited.
++        drop(close.owner.0.take());
++        drop(close.state.live.remove(&identity));
++        namespace::retire_parent(&mut close.state, parent);
++        close.state.open_files = next;
++        close.state.file_custody.release(slot);
++        close.executing = false;
++        Ok(())
++    }
++
++    #[cfg(test)]
++    pub(crate) fn close_owner_address(&self) -> Option<usize> {
++        self.0.0.as_ref().map(|owner| Arc::as_ptr(owner) as usize)
++    }
++    #[cfg(test)]
++    pub(crate) fn close_error_address(&self) -> Option<usize> {
++        let owner = self.0.0.as_ref()?;
++        if let Some(mutex) = &owner.budget {
++            let budget = mutex.lock().unwrap_or_else(|poison| poison.into_inner());
++            if let Some(outcome) = &budget.close_outcome {
++                return Some(std::ptr::from_ref(&outcome.error) as usize);
++            }
++        }
++        owner.original_error.as_ref().and_then(|mutex| {
++            mutex
++                .lock()
++                .unwrap_or_else(|poison| poison.into_inner())
++                .as_ref()
++                .map(|error| std::ptr::from_ref(error) as usize)
++        })
++    }
++    #[cfg(test)]
++    pub(crate) fn fail_next_native_close(errno: i32) {
++        super::native_file::fail_next_close(errno);
++    }
++    #[cfg(test)]
++    pub(super) fn fail_parent_close(errno: i32) {
++        PARENT_CLOSE_FAILURE.with(|failure| assert!(failure.replace(Some(errno)).is_none()));
++    }
++    #[cfg(test)]
++    pub(super) fn data_descriptor(&self) -> std::os::fd::RawFd {
++        self.0
++            .lock_budget()
++            .unwrap()
++            .file
++            .as_ref()
++            .unwrap()
++            .as_raw_fd()
++    }
+     #[cfg(test)]
+     pub(super) fn parent_descriptor(&self) -> std::os::fd::RawFd {
+         self.0.parent().as_raw_fd()
+@@ -1582,6 +1772,7 @@
+     /// The installed redb adapter uses this before every physical operation.
+     /// Failure is represented without allocating an error payload.
+     pub fn check_owner(&self) -> io::Result<()> {
++        self.ensure_open()?;
+         let budget = self.0.lock_budget()?;
+         let file = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
+         self.0.check(file)?;
+@@ -1608,7 +1799,9 @@
+     /// Latch uncertain backend activity without allocating or forgetting extent
+     /// charges. Only a complete census after actual owner drain may reopen it.
+     pub fn owner_failed(&self) {
+-        self.0.disk.fail();
++        if let Some(owner) = &self.0.0 {
++            owner.disk.fail();
++        }
+     }
+ 
+     /// Settle unused pre-I/O promises after a commit or aborted transaction.
+@@ -1616,6 +1809,7 @@
+     /// between its retained reservation and its actual durable extent. This is
+     /// valid with live redb readers because no physical byte is removed.
+     pub fn settle_growth(&self, actual_len: u64) -> io::Result<()> {
++        self.ensure_open()?;
+         let mut budget = self.0.lock_budget()?;
+         let file = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
+         let mut state = self.0.disk.lock_state();
+@@ -1684,6 +1878,7 @@
+     /// The value grants no descriptor access or ownership; this handle retains
+     /// the exclusive lock, and every observation verifies the installed binding.
+     pub fn identity(&self) -> io::Result<crate::private_files::FileIdentity> {
++        self.ensure_open()?;
+         let budget = self.0.lock_budget()?;
+         let file = budget.file.as_ref().expect("live persistent descriptor");
+         self.0.check(file)?;
+@@ -1701,6 +1896,7 @@
+     /// reclaimed by this operation. Only verified durable shrink credits bytes;
+     /// uncertainty retains all prior charges and seals shared device admission.
+     pub fn shrink(&mut self, len: u64) -> io::Result<()> {
++        self.ensure_open()?;
+         let owner = &self.0;
+         let mut state = owner.disk.lock_state();
+         if Arc::strong_count(owner) != 1 {
+@@ -1820,6 +2016,7 @@
+     }
+ 
+     pub fn observed_len(&self) -> io::Result<u64> {
++        self.ensure_open()?;
+         let budget = self.0.lock_budget()?;
+         let file = budget.file.as_ref().expect("live persistent descriptor");
+         self.0.check(file)?;
+@@ -1840,6 +2037,7 @@
+         requested_len: u64,
+         work: DiskWork,
+     ) -> io::Result<()> {
++        self.ensure_open()?;
+         let mut budget = self.0.lock_budget()?;
+         let file = budget.file.as_ref().expect("live persistent descriptor");
+         self.0.check(file)?;
+@@ -1869,6 +2067,7 @@
+ 
+     /// Execute an already admitted extension. Shrink uses the drained-owner API.
+     pub fn grow_reserved(&self, len: u64) -> io::Result<()> {
++        self.ensure_open()?;
+         let mut budget = self.0.lock_budget()?;
+         let file = budget.file.as_ref().expect("live persistent descriptor");
+         self.0.check(file)?;
+@@ -1907,6 +2106,7 @@
+     }
+ 
+     pub fn write_all_at(&self, data: &[u8], offset: u64) -> io::Result<()> {
++        self.ensure_open()?;
+         let mut budget = self.0.lock_budget()?;
+         let file = budget.file.as_ref().expect("live persistent descriptor");
+         self.0.check(file)?;
+@@ -1952,6 +2152,7 @@
+     }
+ 
+     pub fn read_exact_at(&self, out: &mut [u8], offset: u64) -> io::Result<()> {
++        self.ensure_open()?;
+         let budget = self.0.lock_budget()?;
+         let file = budget.file.as_ref().expect("live persistent descriptor");
+         let mut state = self.0.disk.lock_state();
+@@ -1976,6 +2177,7 @@
+     /// Verified materialization retires only pending filesystem promises; the
+     /// complete persistent extent charge remains after this owner closes.
+     pub fn sync_all(&self) -> io::Result<()> {
++        self.ensure_open()?;
+         let mut budget = self.0.lock_budget()?;
+         let file = budget.file.as_ref().expect("live persistent descriptor");
+         let mut state = self.0.disk.lock_state();
+@@ -2004,6 +2206,7 @@
+     /// parent and the exact installed binding have all been verified. Failure
+     /// keeps existing charges and fences admission until an exclusive census.
+     pub fn sync_all_and_parent(&self) -> io::Result<()> {
++        self.ensure_open()?;
+         let mut budget = self.0.lock_budget()?;
+         let mut state = self.0.disk.lock_state();
+         if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
+@@ -2040,9 +2243,74 @@
+     }
+ }
+ 
++// State excludes registry upgrades while its occupied slot temporarily holds
++// an empty Weak. Failure/unwind restores the original pointer before unlock.
++struct ExplicitClose<'a> {
++    owner: &'a mut OwnedFileArc,
++    state: std::sync::MutexGuard<'a, State>,
++    identity: Identity,
++    executing: bool,
++}
++impl Drop for ExplicitClose<'_> {
++    fn drop(&mut self) {
++        if let Some(owner) = &self.owner.0 {
++            *self
++                .state
++                .live
++                .get_mut(&self.identity)
++                .expect("retained live registration") = Arc::downgrade(owner);
++            if self.executing {
++                owner.disk.fail_locked(&mut self.state);
++            }
++        }
++    }
++}
++
++impl FileResources {
++    fn close_projection(&self) -> Option<io::Error> {
++        self.provisional_close
++            .as_ref()
++            .map(|outcome| super::native_file::projection(&outcome.error))
++            .or_else(|| {
++                self.budget.as_ref().and_then(|mutex| {
++                    mutex
++                        .lock()
++                        .unwrap_or_else(|poison| poison.into_inner())
++                        .close_outcome
++                        .as_ref()
++                        .map(|outcome| super::native_file::projection(&outcome.error))
++                })
++            })
++            .or_else(|| {
++                self.parent
++                    .as_ref()
++                    .and_then(RetainedParent::close_diagnostic)
++                    .map(|(_, errno)| io::Error::from_raw_os_error(errno))
++            })
++            .or_else(|| {
++                self.retiring_parent
++                    .as_ref()
++                    .and_then(RetainedParent::close_diagnostic)
++                    .map(|(_, errno)| io::Error::from_raw_os_error(errno))
++            })
++    }
++    fn failure_projection(&self) -> Option<io::Error> {
++        self.close_projection().or_else(|| {
++            self.original_error.as_ref().and_then(|mutex| {
++                mutex
++                    .lock()
++                    .unwrap_or_else(|poison| poison.into_inner())
++                    .as_ref()
++                    .map(super::native_file::projection)
++            })
++        })
++    }
++}
++
+ impl FileOwner {
+-    // This value is outside its original Arc. The map's Weak keeps that exact
+-    // allocation admitted while data/parent descriptors and heap backing retire.
++    // The caller has exclusive access: Drop moved the value out of its Arc;
++    // explicit close borrowed the original allocation under State. Registration
++    // credit remains held while descriptors and heap backing retire.
+     fn retire_resources(&mut self) -> io::Result<()> {
+         if let Some(mutex) = &mut self.resources.budget {
+             let budget = mutex.get_mut().unwrap_or_else(|poison| poison.into_inner());
+@@ -2050,6 +2318,10 @@
+         }
+         #[cfg(test)]
+         self.close_checkpoint(CloseStage::DataClosed);
++        #[cfg(test)]
++        if let Some(errno) = PARENT_CLOSE_FAILURE.with(std::cell::Cell::take) {
++            super::native_file::fail_next_close(errno);
++        }
+         self.resources.close_descriptors()?;
+         if self.resources.has_failure() {
+             return Err(io::ErrorKind::InvalidData.into());
+--- a/crates/kasumi-store/src/node_disk/file/custody.rs
++++ b/crates/kasumi-store/src/node_disk/file/custody.rs
+@@ -42,6 +42,11 @@
+             .ok_or(io::ErrorKind::StorageFull)?;
+         self.slots[index].reserved = true;
+         Ok(index)
++    }
++    pub(super) fn reserved_empty(&self, index: usize) -> bool {
++        self.slots
++            .get(index)
++            .is_some_and(|slot| slot.reserved && slot.resources.is_none())
+     }
+     pub(super) fn release(&mut self, index: usize) {
+         let slot = &mut self.slots[index];
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -2864,3 +2864,214 @@
+     drop(file);
+     clean(&disk, &["child/file"]);
+ }
++
++fn explicit_close_fixture() -> (tempfile::TempDir, Arc<NodeDisk>, NodeDiskFile) {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let (directory, config) = installation();
++    seed(&config, "file", 32 << 10);
++    let disk = open(config, memory);
++    let file = disk.open_file("data", Path::new("file")).unwrap();
++    (directory, disk, file)
++}
++
++#[test]
++fn explicit_file_close_drains_original_resources_before_credit_and_closed_calls() {
++    let (_directory, disk, mut file) = explicit_close_fixture();
++    let identity = file.identity().unwrap();
++    let data_identity =
++        Identity::of(&std::fs::metadata(disk.config.roots["data"].join("file")).unwrap());
++    let data = file.data_descriptor();
++    let parent = file.parent_descriptor();
++    let before = disk.snapshot();
++    let clone = file.clone();
++    let attempts = native_file::close_attempts();
++    assert_eq!(file.close().unwrap_err().kind(), io::ErrorKind::WouldBlock);
++    assert_eq!(native_file::close_attempts(), attempts);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    assert_eq!(disk.snapshot().open_files, before.open_files);
++    assert_eq!(file.identity().unwrap(), identity);
++    drop(clone);
++    let attempts = native_file::close_attempts();
++    let (result, allocations) = crate::allocation_tests::measure(|| file.close());
++    result.unwrap();
++    assert_eq!(allocations, 0);
++    assert_eq!(native_file::close_attempts(), attempts + 2);
++    retired_descriptor_no_longer_names(data, data_identity);
++    retired_descriptor_no_longer_names(parent, disk.roots["data"].identity);
++    assert_eq!(file.close_owner_address(), None);
++    assert_eq!(disk.snapshot().open_files, 0);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
++    assert!(disk.lock_state().live.is_empty());
++    assert!(file.check_owner().is_err());
++    assert!(file.identity().is_err());
++    assert!(file.observed_len().is_err());
++    assert!(file.read_exact_at(&mut [0], 0).is_err());
++    assert!(file.write_all_at(&[0], 0).is_err());
++    assert!(file.grow_reserved(0).is_err());
++    assert!(file.reserve_growth(0, 0, DiskWork::Foreground).is_err());
++    assert!(file.settle_growth(0).is_err());
++    assert!(file.shrink(0).is_err());
++    assert!(file.sync_all().is_err());
++    assert!(file.sync_all_and_parent().is_err());
++    assert!(disk.delete_file(file.clone()).is_err());
++    assert!(disk.shrink_file(file.clone(), 0).is_err());
++    assert!(
++        disk.publish_file(file.clone(), "data", Path::new("new"))
++            .is_err()
++    );
++    file.owner_failed();
++    file.close().unwrap();
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    clean(&disk, &["file"]);
++}
++
++#[test]
++fn explicit_unknown_data_close_keeps_exact_owner_error_and_never_retries_integer() {
++    use std::os::fd::{AsRawFd, FromRawFd};
++    let (_directory, disk, mut file) = explicit_close_fixture();
++    let data = file.data_descriptor();
++    let identity = file.identity().unwrap();
++    let owner = file.close_owner_address().unwrap();
++    let before = disk.snapshot();
++    native_file::fail_next_close(libc::EIO);
++    let attempts = native_file::close_attempts();
++    assert_eq!(file.close().unwrap_err().raw_os_error(), Some(libc::EIO));
++    assert_eq!(native_file::close_attempts(), attempts + 1);
++    let error = file.close_error_address().unwrap();
++    assert_eq!(file.close_owner_address(), Some(owner));
++    assert_eq!(disk.snapshot().open_files, 1);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    assert_eq!(
++        disk.lock_state().live.values().next().unwrap().as_ptr() as usize,
++        owner
++    );
++    let observer = File::open(disk.config.roots["data"].join("file")).unwrap();
++    let reused = if observer.as_raw_fd() == data {
++        observer
++    } else {
++        assert_eq!(unsafe { libc::dup2(observer.as_raw_fd(), data) }, data);
++        // SAFETY: dup2 created this independent test descriptor at the consumed
++        // number. Production retains that number only as diagnostic data.
++        unsafe { File::from_raw_fd(data) }
++    };
++    for _ in 0..2 {
++        assert_eq!(file.close().unwrap_err().raw_os_error(), Some(libc::EIO));
++        assert_eq!(file.close_owner_address(), Some(owner));
++        assert_eq!(file.close_error_address(), Some(error));
++        assert_eq!(native_file::close_attempts(), attempts + 1);
++        assert_eq!(
++            crate::private_files::descriptor_identity(&reused).unwrap(),
++            identity
++        );
++        assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    }
++    drop(file);
++    assert_eq!(
++        crate::private_files::descriptor_identity(&reused).unwrap(),
++        identity
++    );
++    assert_eq!(disk.snapshot().open_files, 1);
++    assert_eq!(
++        disk.snapshot().uncertain_file_close,
++        Some((data, libc::EIO))
++    );
++}
++
++#[test]
++fn explicit_unknown_parent_close_keeps_registration_and_original_diagnostic() {
++    let (_directory, disk, mut file) = explicit_close_fixture();
++    let parent = file.parent_descriptor();
++    let owner = file.close_owner_address();
++    let before = disk.snapshot();
++    NodeDiskFile::fail_parent_close(libc::EIO);
++    let attempts = native_file::close_attempts();
++    assert_eq!(file.close().unwrap_err().raw_os_error(), Some(libc::EIO));
++    assert_eq!(native_file::close_attempts(), attempts + 2);
++    for _ in 0..2 {
++        assert_eq!(file.close().unwrap_err().raw_os_error(), Some(libc::EIO));
++        assert_eq!(native_file::close_attempts(), attempts + 2);
++        assert_eq!(file.close_owner_address(), owner);
++        assert_eq!(disk.snapshot().open_files, 1);
++        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    }
++    drop(file);
++    assert_eq!(
++        disk.snapshot().uncertain_file_close,
++        Some((parent, libc::EIO))
++    );
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++}
++
++#[test]
++fn explicit_owner_failure_or_unsettled_extent_cannot_report_positive_close() {
++    for unsettled in [false, true] {
++        let (_directory, disk, mut file) = explicit_close_fixture();
++        if unsettled {
++            file.reserve_growth(32 << 10, 64 << 10, DiskWork::Foreground)
++                .unwrap();
++            file.grow_reserved(64 << 10).unwrap();
++        } else {
++            disk.fail();
++        }
++        let owner = file.close_owner_address();
++        let before = disk.snapshot();
++        assert!(file.close().is_err());
++        let error = file.close_error_address();
++        assert!(error.is_some());
++        assert_eq!(file.close_owner_address(), owner);
++        assert!(file.close().is_err());
++        assert_eq!(file.close_error_address(), error);
++        assert_eq!(disk.snapshot().open_files, 1);
++        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++        assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
++        assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++        drop(file);
++        disk.reconcile(&CensusCancellation::default()).unwrap();
++        clean(&disk, &["file"]);
++    }
++}
++
++#[test]
++fn explicit_close_unwind_preserves_exact_owner_weak_and_repeat_error_at_both_stages() {
++    for stage in [
++        file::CloseStage::DataClosed,
++        file::CloseStage::ResourcesClosed,
++    ] {
++        let (_directory, disk, mut file) = explicit_close_fixture();
++        let owner = file.close_owner_address().unwrap();
++        let before = disk.snapshot();
++        let (entered, observed) = std::sync::mpsc::channel();
++        let (release, resumed) = std::sync::mpsc::channel();
++        drop(release);
++        *disk.after_file_close.lock().unwrap() = Some(file::ClosePause {
++            stage,
++            entered,
++            release: resumed,
++        });
++        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| file.close())).is_err());
++        observed
++            .recv_timeout(std::time::Duration::from_secs(5))
++            .unwrap();
++        assert_eq!(file.close_owner_address(), Some(owner));
++        assert_eq!(
++            disk.lock_state().live.values().next().unwrap().as_ptr() as usize,
++            owner
++        );
++        assert_eq!(disk.snapshot().open_files, 1);
++        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++        assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
++        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++        let repeated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| file.close()));
++        assert!(repeated.unwrap().is_err());
++        assert_eq!(file.close_owner_address(), Some(owner));
++        assert_eq!(
++            disk.lock_state().live.values().next().unwrap().as_ptr() as usize,
++            owner
++        );
++        assert_eq!(disk.snapshot().open_files, 1);
++        assert!(file.check_owner().is_err());
++    }
++}
+--- a/crates/kasumi-store/src/node_file.rs
++++ b/crates/kasumi-store/src/node_file.rs
+@@ -452,7 +452,13 @@
+     }
+ 
+     fn close(&self) -> io::Result<()> {
+-        drop(self.0.file.write().take());
++        let mut guard = self.0.file.write();
++        if let Some(file) = guard.as_mut() {
++            // Failure or unwind keeps the exact FileOwner in this same slot.
++            // The I/O error is a projection; its original stays in file custody.
++            file.close()?;
++        }
++        drop(guard.take());
+         Ok(())
+     }
+ }
+--- a/crates/kasumi-store/src/node_file/tests.rs
++++ b/crates/kasumi-store/src/node_file/tests.rs
+@@ -368,7 +368,9 @@
+     assert!(resize(&backend, 0).is_err());
+     assert!(backend.sync_data().is_err());
+     assert_eq!(std::fs::read(&path).unwrap(), header_before);
+-    backend.close().unwrap();
++    assert!(backend.close().is_err());
++    assert!(owner.file.read().is_some());
++    assert_eq!(owner.disk.snapshot().open_files, 1);
+     assert!(backend.len().is_err());
+     assert!(backend.read(0, &mut read).is_err());
+     assert!(backend.write(0, b"closed").is_err());
+@@ -437,26 +439,48 @@
+     assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+     assert!(owner.backend().write(0, b"must not write").is_err());
+     assert!(NodeStore::open_existing(&moved, ID, disk.clone(), fixture_scratch.clone()).is_err());
+-    // The canonical opening owner keeps the actual backend and original error
+-    // until explicit positive close, even while this NodeFile Arc survives.
++    // A failed physical owner cannot produce positive close merely because
++    // its known descriptors closed. Both original opening error and actual
++    // file owner remain retained until this test explicitly drops them.
+     assert_eq!(disk.snapshot().open_files, 1);
++    let file_owner = owner.file.read().as_ref().unwrap().close_owner_address();
+     assert_eq!(
+         opening.close().settlement(),
+-        redb::DatabaseOpenSettlement::Closed
+-    );
+-    let closed_report = opening.report();
+-    let redb::TerminalObservation::Returned(Err(error)) = closed_report.opening() else {
+-        panic!("positive close must preserve the original opening error");
+-    };
+-    assert_eq!(std::ptr::from_ref(error), original_failure);
+-    // Only an explicit drained census reopens admission.
+-    assert_eq!(disk.snapshot().open_files, 0);
++        redb::DatabaseOpenSettlement::Retained
++    );
++    {
++        let report = opening.report();
++        let redb::TerminalObservation::Returned(Err(error)) = report.opening() else {
++            panic!("failed close must preserve the original opening error");
++        };
++        assert_eq!(std::ptr::from_ref(error), original_failure);
++        assert!(matches!(
++            report.partial_close(),
++            redb::TerminalObservation::Returned(Err(_))
++        ));
++    }
++    assert_eq!(
++        owner.file.read().as_ref().unwrap().close_owner_address(),
++        file_owner
++    );
++    assert_eq!(disk.snapshot().open_files, 1);
+     assert!(owner.backend().len().is_err());
++    assert!(owner.backend().write(0, b"still retained").is_err());
++    assert!(
++        disk.reconcile(&crate::CensusCancellation::default())
++            .is_err()
++    );
++    assert_eq!(original, std::fs::read(&moved).unwrap());
++    assert_eq!(unrelated, std::fs::read(&path).unwrap());
++    drop(opening);
++    drop(owner);
++    // Explicitly observed/dropped outcomes transfer to installed custody. Only
++    // an accepted census after actual facade drain may now release that custody.
+     disk.reconcile(&crate::CensusCancellation::default())
+         .unwrap();
++    assert_eq!(disk.snapshot().open_files, 0);
+     assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+     let reopened = NodeStore::open_existing(&moved, ID, disk, fixture_scratch.clone()).unwrap();
+-    assert!(owner.backend().write(0, b"closed after census").is_err());
+     let tx = reopened.db.begin_read().unwrap();
+     assert!(tx.open_table(PROBE).is_err());
+     assert_eq!(unrelated, std::fs::read(&path).unwrap());
+@@ -708,3 +732,80 @@
+     assert_eq!(std::fs::read(&path).unwrap(), expected_header);
+     backend.close().unwrap();
+ }
++
++#[test]
++fn backend_close_preserves_busy_owner_then_retires_before_positive_idempotent_close() {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let directory = directory();
++    let path = directory.path().join("explicit-close");
++    let owner = create_node(&path, ID, memory);
++    let backend = owner.backend();
++    let before = std::fs::read(&path).unwrap();
++    let held = owner.file.read().as_ref().unwrap().clone();
++    let address = held.close_owner_address();
++    assert_eq!(
++        backend.close().unwrap_err().kind(),
++        io::ErrorKind::WouldBlock
++    );
++    assert_eq!(
++        owner.file.read().as_ref().unwrap().close_owner_address(),
++        address
++    );
++    assert_eq!(owner.disk.snapshot().open_files, 1);
++    assert_eq!(backend.len().unwrap(), 0);
++    drop(held);
++    backend.close().unwrap();
++    assert!(owner.file.read().is_none());
++    assert_eq!(owner.disk.snapshot().open_files, 0);
++    backend.close().unwrap();
++    assert!(backend.len().is_err());
++    assert!(backend.read(0, &mut []).is_err());
++    assert!(backend.write(0, &[]).is_err());
++    assert!(backend.sync_data().is_err());
++    assert_eq!(std::fs::read(&path).unwrap(), before);
++    let observer = options().open(&path).unwrap();
++    observer.try_lock().unwrap();
++}
++
++#[test]
++fn backend_close_reports_native_error_and_keeps_exact_file_and_original_outcome() {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let directory = directory();
++    let path = directory.path().join("failed-explicit-close");
++    let owner = create_node(&path, ID, memory);
++    let backend = owner.backend();
++    let address = owner.file.read().as_ref().unwrap().close_owner_address();
++    let before = owner.disk.snapshot();
++    let bytes = std::fs::read(&path).unwrap();
++    NodeDiskFile::fail_next_native_close(libc::EIO);
++    assert_eq!(backend.close().unwrap_err().raw_os_error(), Some(libc::EIO));
++    let original = owner
++        .file
++        .read()
++        .as_ref()
++        .unwrap()
++        .close_error_address()
++        .unwrap();
++    for _ in 0..2 {
++        assert_eq!(backend.close().unwrap_err().raw_os_error(), Some(libc::EIO));
++        let file = owner.file.read();
++        let file = file.as_ref().unwrap();
++        assert_eq!(file.close_owner_address(), address);
++        assert_eq!(file.close_error_address(), Some(original));
++        assert_eq!(owner.disk.snapshot().open_files, 1);
++        assert_eq!(owner.disk.snapshot().charged_bytes, before.charged_bytes);
++        assert_eq!(owner.disk.snapshot().pending_bytes, before.pending_bytes);
++        assert_eq!(owner.disk.snapshot().phase, crate::NodeDiskPhase::Failed);
++        assert!(
++            owner
++                .disk
++                .reconcile(&crate::CensusCancellation::default())
++                .is_err()
++        );
++    }
++    assert!(backend.len().is_err());
++    assert!(backend.read(0, &mut []).is_err());
++    assert!(backend.write(0, &[]).is_err());
++    assert!(backend.sync_data().is_err());
++    assert_eq!(std::fs::read(&path).unwrap(), bytes);
++}

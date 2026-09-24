@@ -1,0 +1,11 @@
+{
+  "exception": null,
+  "source_unchanged": true,
+  "changed_inputs": [],
+  "source_count": 1608,
+  "native_source_after_sha256": "be13204c969d6514bd5da6128090871b6ffc7e2bd7c3b383d296746633a39bd0",
+  "native_all_passed": false,
+  "all_passed": true,
+  "cohort_elapsed_seconds": 2.97614662500564,
+  "cohort_bound_seconds": 300
+}

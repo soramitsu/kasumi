@@ -32,17 +32,29 @@ class PackageReleaseTests(unittest.TestCase):
         interpreter = {"path": "/native/remote/bin/python3.13", "artifact": "tools/python",
                        "sha256": sha256(root / "tools/python")}
         artifacts = {}
-        for name in package.BINARIES:
+        for name in sorted(package.BINARIES):
             binary = root / "target" / name
             header = bytearray(20)
             header[:6] = b"\x7fELF\x02\x01"
             struct.pack_into("<H", header, 18, 183)
             binary.write_bytes(header)
-            artifacts[name] = {"target": name, "test": False, "sha256": sha256(binary)}
+            binary.chmod(0o755)
+            artifacts[name] = {"target": name, "test": False, "package_id": "fixture",
+                               "sha256": sha256(binary), "bytes": binary.stat().st_size}
         gates = []
         for name, command in functional_gates(2, interpreter["path"]):
             log = root / (name + ".log")
-            log.write_text("host: aarch64-unknown-linux-gnu\n" if name == "toolchain" else "fixture\n")
+            lines = ["host: aarch64-unknown-linux-gnu\n" if name == "toolchain" else "fixture\n"]
+            if name == "production":
+                for executable in artifacts:
+                    lines.append(json.dumps({"reason": "compiler-artifact",
+                                             "executable": str(root / "target" / executable),
+                                             "target": {"name": executable, "kind": ["bin"],
+                                                        "crate_types": ["bin"]},
+                                             "profile": {"test": False},
+                                             "features": [],
+                                             "package_id": "fixture"}) + "\n")
+            log.write_text("".join(lines))
             resources = root / (name + "-resources.json")
             write_json(resources, {"before": {"available": False}, "after": {"available": False}})
             gate = {"name": name, "command": command, "exit_code": 0,
@@ -52,6 +64,7 @@ class PackageReleaseTests(unittest.TestCase):
                        "errors": [], "drained": True, "process_returncode": 0}
             process = root / (name + "-process.json")
             write_json(process, {"status": "passed", "outputs_stable": True, "command": command, "exit_code": 0,
+                                 "working_directory": str(source),
                                  "executable": {"path": interpreter["path"], "sha256": interpreter["sha256"]}
                                  if name in {"python", "dependency-patches"} else
                                  {"path": "/native/remote/bin/" + command[0], "sha256": "a" * 64},
@@ -60,8 +73,12 @@ class PackageReleaseTests(unittest.TestCase):
                                  "cleanup": cleanup})
             gate.update(process=process.name, process_sha256=sha256(process), process_cleanup=cleanup,
                         timeout_seconds=14400, timed_out=False, received_signals=[], process_error=None)
+            gate["executables"] = artifacts if name == "production" else {}
+            gate["compiled_packages"] = {}
             if name == "production":
-                gate.update(executables=artifacts, compiled_packages={"fixture": {"features": []}})
+                gate["compiled_packages"] = {"fixture": {"features": [], "targets": [
+                    {"name": executable, "kind": ["bin"], "crate_types": ["bin"]}
+                    for executable in artifacts]}}
             gates.append(gate)
         record = {"schema": 1, "status": "passed", "toolchain": package.TOOLCHAIN, "jobs": 2,
                   "gate_timeout_seconds": 14400,
@@ -112,7 +129,7 @@ class PackageReleaseTests(unittest.TestCase):
                     package.verify_evidence(root)
 
     def test_changed_binary_log_source_and_failed_gate_cannot_be_packaged(self):
-        for changed in ("binary", "log", "source", "failed", "missing-inventory", "missing-doc-gate", "missing-network-gate",
+        for changed in ("binary", "log", "source", "failed", "missing-inventory", "rehashed-features", "rehashed-features-and-receipt", "missing-doc-gate", "missing-network-gate",
                         "weakened-clippy", "different-build", "missing-jobs", "resources", "missing-resources"):
             with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -132,6 +149,17 @@ class PackageReleaseTests(unittest.TestCase):
                     record["gates"][2]["exit_code"] = 7
                 elif changed == "missing-inventory":
                     record["gates"][-1]["compiled_packages"] = {}
+                elif changed in {"rehashed-features", "rehashed-features-and-receipt"}:
+                    production = next(g for g in record["gates"] if g["name"] == "production")
+                    log = root / production["log"]
+                    lines = log.read_text().splitlines()
+                    event = json.loads(lines[1])
+                    event["features"] = ["test-utils"]
+                    lines[1] = json.dumps(event)
+                    log.write_text("\n".join(lines) + "\n")
+                    production["log_sha256"] = sha256(log)
+                    if changed == "rehashed-features-and-receipt":
+                        production["compiled_packages"]["fixture"]["features"] = ["test-utils"]
                 elif changed == "weakened-clippy":
                     next(g for g in record["gates"] if g["name"] == "clippy")["command"].remove("--all-targets")
                 elif changed == "different-build":

@@ -1,0 +1,530 @@
+diff --git a/crates/kasumi-engine/src/admission/snapshot_work.rs b/crates/kasumi-engine/src/admission/snapshot_work.rs
+--- a/crates/kasumi-engine/src/admission/snapshot_work.rs
++++ b/crates/kasumi-engine/src/admission/snapshot_work.rs
+@@ -85,6 +85,8 @@
+ /// an unclaimed output. Complete permits infallible destruction of that value.
+ /// A claimed Output must own its backing and leases independently of this owner.
+ /// Arbitrary anyhow or panic payload sizes are not implicitly a bounded plan.
++/// Cleanup/discard may wake their Context synchronously. The owner records that
++/// proxy notification and calls the external executor only after its locks exit.
+ pub trait SnapshotOperation: Send + 'static {
+     type Plan;
+     type Output: Send + 'static;
+@@ -133,20 +135,88 @@
+     join_error: Option<tokio::task::JoinError>,
+     panic: Option<OriginalPanic>,
+ }
++struct WakeState {
++    waiter: Option<Waker>,
++    // Nested and concurrent owner scopes share one inline deferral counter.
++    // A scope is entered before any owner lock and exits after its guards.
++    owner_scopes: usize,
++    notified: bool,
++}
++impl WakeState {
++    fn take_notification(&mut self) -> Option<Waker> {
++        if self.owner_scopes == 0 && self.notified {
++            self.notified = false;
++            self.waiter.take()
++        } else {
++            None
++        }
++    }
++}
+ // The actual wake allocation can outlive its operation through a registered or
+ // in-progress proxy Waker. Keep the original complete operation reservation here.
+ // Every strong release uses into_inner, so this allocation itself is destroyed
+ // before its final field can return admission credit. No raw Arc or Weak escapes.
+ struct WorkWake {
+-    waiter: Mutex<Option<Waker>>,
++    state: Mutex<WakeState>,
+     _charge: Reservation,
+ }
+ impl WorkWake {
+     fn notify(&self) {
+-        let waiter = self.waiter.lock().unwrap_or_else(|p| p.into_inner()).take();
+-        // A wake consumes this registration; finish installs the next one before
+-        // polling. Concurrent notifications coalesce without cloning a user
+-        // waker under the lock. Neither callback nor destructor runs locked.
++        let waiter = {
++            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
++            state.notified = true;
++            state.take_notification()
++        };
++        // Consume the registration outside the wake-state mutex. An owner
++        // callback records its notification until all entered scopes leave;
++        // it cannot synchronously reenter the owner through an executor wake.
++        if let Some(waiter) = waiter {
++            waiter.wake();
++        }
++    }
++    fn defer(&self) -> DeferWake<'_> {
++        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
++        state.owner_scopes = state
++            .owner_scopes
++            .checked_add(1)
++            .expect("snapshot wake scope overflow");
++        DeferWake(self)
++    }
++    fn register(&self, incoming: Waker) {
++        let replaced = {
++            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
++            if state
++                .waiter
++                .as_ref()
++                .is_none_or(|old| !old.will_wake(&incoming))
++            {
++                state.waiter.replace(incoming)
++            } else {
++                Some(incoming)
++            }
++        };
++        drop(replaced);
++    }
++}
++// Declare this guard before acquiring any Owner mutex. Rust drops the later
++// mutex guards first on every return/unwind path. The last nested/concurrent
++// scope forwards a queued notification only after releasing its owner locks.
++// The counter and flag belong to the already admitted WorkWake allocation.
++struct DeferWake<'a>(&'a WorkWake);
++impl Drop for DeferWake<'_> {
++    fn drop(&mut self) {
++        let waiter = {
++            let mut state = self.0.state.lock().unwrap_or_else(|p| p.into_inner());
++            state.owner_scopes -= 1;
++            // Do not invoke an arbitrary callback while unwinding an existing
++            // panic. Keep its pending notification/registration for a retry;
++            // a cancelled finish clears that registration outside all locks.
++            if std::thread::panicking() {
++                None
++            } else {
++                state.take_notification()
++            }
++        };
+         if let Some(waiter) = waiter {
+             waiter.wake();
+         }
+@@ -156,7 +226,11 @@
+ impl OwnedWake {
+     fn new(charge: Reservation) -> Self {
+         Self(Some(Arc::new(WorkWake {
+-            waiter: Mutex::new(None),
++            state: Mutex::new(WakeState {
++                waiter: None,
++                owner_scopes: 0,
++                notified: false,
++            }),
+             _charge: charge,
+         })))
+     }
+@@ -223,9 +297,10 @@
+     fn drop(&mut self) {
+         let waiter = self
+             .0
+-            .waiter
++            .state
+             .lock()
+             .unwrap_or_else(|p| p.into_inner())
++            .waiter
+             .take();
+         drop(waiter);
+     }
+@@ -305,6 +380,7 @@
+             .ok_or_else(|| anyhow::anyhow!("snapshot work allocation overflow or unsupported plan"))
+     }
+     fn run(&self) {
++        let _defer = self.wake.defer();
+         let mut resource = self.resource.lock().unwrap_or_else(|p| p.into_inner());
+         let operation = resource
+             .operation
+@@ -323,6 +399,7 @@
+         // The Tokio handle, not this wake or callback return, proves termination.
+     }
+     fn start(owner: &OwnedOwner<O>) -> Result<()> {
++        let _defer = owner.wake.defer();
+         let mut control = owner.control.lock().unwrap_or_else(|p| p.into_inner());
+         if control.closing || control.started || control.panic.is_some() {
+             return Err(Error::new(
+@@ -364,6 +441,7 @@
+         Ok(())
+     }
+     fn poll_join(&self, cx: &mut Context<'_>) -> Poll<bool> {
++        let _defer = self.wake.defer();
+         let mut control = self.control.lock().unwrap_or_else(|p| p.into_inner());
+         if control.panic.is_some() || control.join_error.is_some() {
+             return Poll::Ready(false);
+@@ -403,6 +481,7 @@
+         }
+     }
+     fn poll_finish(&self, cx: &mut Context<'_>, discard: bool) -> Poll<()> {
++        let _defer = self.wake.defer();
+         match self.poll_join(cx) {
+             Poll::Pending => return Poll::Pending,
+             Poll::Ready(false) => return Poll::Ready(()),
+@@ -478,6 +557,7 @@
+         }
+     }
+     fn close(&self) {
++        let _defer = self.wake.defer();
+         self.control
+             .lock()
+             .unwrap_or_else(|p| p.into_inner())
+@@ -485,9 +565,11 @@
+         self.cancellation.cancel();
+     }
+     fn poll_finish(&self, cx: &mut Context<'_>, discard: bool) -> Poll<()> {
++        let _defer = self.wake.defer();
+         Owner::poll_finish(self, cx, discard)
+     }
+     fn completion(&self) -> DrainCompletion {
++        let _defer = self.wake.defer();
+         let control = self.control.lock().unwrap_or_else(|p| p.into_inner());
+         if !control.joined || control.panic.is_some() || control.join_error.is_some() {
+             return DrainCompletion::Retained;
+@@ -500,6 +582,7 @@
+         }
+     }
+     fn visit(&self, visit: &mut dyn FnMut(SnapshotObservation<'_>)) {
++        let _defer = self.wake.defer();
+         let control = self.control.lock().unwrap_or_else(|p| p.into_inner());
+         if let Some(error) = &control.join_error {
+             visit(SnapshotObservation::JoinError(error));
+@@ -568,6 +651,7 @@
+         report
+     }
+     pub fn claim(&self) -> std::result::Result<O::Output, SnapshotWorkReport> {
++        let _defer = self.owner.wake.defer();
+         let report = self.report();
+         let control = self.owner.control.lock().unwrap_or_else(|p| p.into_inner());
+         if control.closing
+@@ -628,16 +712,7 @@
+         std::future::poll_fn(|cx| {
+             // Clone callbacks may run arbitrary executor code; do this before
+             // acquiring the waiter lock, and destroy replaced counts after it.
+-            let incoming = cx.waker().clone();
+-            let replaced = {
+-                let mut waiter = wake.waiter.lock().unwrap_or_else(|p| p.into_inner());
+-                if waiter.as_ref().is_none_or(|old| !old.will_wake(&incoming)) {
+-                    waiter.replace(incoming)
+-                } else {
+-                    Some(incoming)
+-                }
+-            };
+-            drop(replaced);
++            wake.register(cx.waker().clone());
+             self.owner
+                 .poll_finish(&mut Context::from_waker(&proxy), discard)
+         })
+diff --git a/crates/kasumi-engine/src/admission/snapshot_work_tests.rs b/crates/kasumi-engine/src/admission/snapshot_work_tests.rs
+--- a/crates/kasumi-engine/src/admission/snapshot_work_tests.rs
++++ b/crates/kasumi-engine/src/admission/snapshot_work_tests.rs
+@@ -44,6 +44,8 @@
+     wake: Condvar,
+     cleanup_ready: AtomicBool,
+     cleanup_calls: AtomicUsize,
++    cleanup_wake_pending: AtomicBool,
++    discard_wake_pending: AtomicBool,
+     output_drops: AtomicUsize,
+     allocations: AtomicUsize,
+     operation_drops: AtomicUsize,
+@@ -146,8 +148,12 @@
+             Outcome::Panic => std::panic::panic_any(OriginalFailure(937)),
+         }
+     }
+-    fn poll_cleanup(&mut self, _: &mut Context<'_>) -> Poll<DrainCompletion> {
++    fn poll_cleanup(&mut self, cx: &mut Context<'_>) -> Poll<DrainCompletion> {
+         self.gate.cleanup_calls.fetch_add(1, Ordering::AcqRel);
++        if self.gate.cleanup_wake_pending.swap(false, Ordering::AcqRel) {
++            cx.waker().wake_by_ref();
++            return Poll::Pending;
++        }
+         if self.gate.cleanup_ready.load(Ordering::Acquire) {
+             Poll::Ready(DrainCompletion::Complete)
+         } else {
+@@ -155,7 +161,15 @@
+             Poll::Ready(DrainCompletion::Retained)
+         }
+     }
+-    fn poll_discard(_: &mut Output, _: &mut Context<'_>) -> Poll<DrainCompletion> {
++    fn poll_discard(output: &mut Output, cx: &mut Context<'_>) -> Poll<DrainCompletion> {
++        if output
++            .gate
++            .discard_wake_pending
++            .swap(false, Ordering::AcqRel)
++        {
++            cx.waker().wake_by_ref();
++            return Poll::Pending;
++        }
+         Poll::Ready(DrainCompletion::Complete)
+     }
+     fn visit_diagnostics(&self, visit: &mut dyn FnMut(&(dyn StdError + 'static))) {
+@@ -718,7 +732,7 @@
+ }
+ impl ReentrantWake {
+     fn check_unlocked(&self) {
+-        match self.wake.waiter.try_lock() {
++        match self.wake.state.try_lock() {
+             Ok(guard) => drop(guard),
+             Err(std::sync::TryLockError::Poisoned(error)) => drop(error.into_inner()),
+             Err(std::sync::TryLockError::WouldBlock) => panic!("waker callback under waiter lock"),
+@@ -774,7 +788,7 @@
+     assert_eq!(drops.load(Ordering::Acquire), 0);
+     drop(ready);
+     assert_eq!(drops.load(Ordering::Acquire), 1);
+-    assert!(work.owner.wake.waiter.lock().unwrap().is_none());
++    assert!(work.owner.wake.state.lock().unwrap().waiter.is_none());
+     assert_eq!(calls.load(Ordering::Acquire), 0);
+     // The next waiter must use the same actual operation; no dropped wrapper
+     // may erase its join custody or let another operation consume the slot.
+@@ -800,12 +814,12 @@
+     drop(work);
+     assert!(
+         catch_unwind(AssertUnwindSafe(|| {
+-            let _locked = wake.waiter.lock().unwrap();
++            let _locked = wake.state.lock().unwrap();
+             panic!("fixture waiter poison");
+         }))
+         .is_err()
+     );
+-    *wake.waiter.lock().unwrap_or_else(|p| p.into_inner()) =
++    wake.state.lock().unwrap_or_else(|p| p.into_inner()).waiter =
+         Some(reentrant_waker(&wake, &calls, &drops, true));
+     assert!(catch_unwind(AssertUnwindSafe(|| proxy.wake_by_ref())).is_err());
+     assert_eq!(calls.load(Ordering::Acquire), 1);
+@@ -815,7 +829,7 @@
+         charged,
+         "borrowed wake kept its count"
+     );
+-    *wake.waiter.lock().unwrap_or_else(|p| p.into_inner()) =
++    wake.state.lock().unwrap_or_else(|p| p.into_inner()).waiter =
+         Some(reentrant_waker(&wake, &calls, &drops, true));
+     drop(wake);
+     assert!(catch_unwind(AssertUnwindSafe(|| proxy.wake())).is_err());
+@@ -824,3 +838,227 @@
+     assert_eq!(node.snapshot().reserved_bytes, baseline);
+     assert_eq!(node.snapshot().inflight_operations, 0);
+ }
++
++// This executor deliberately reenters the public report, rather than merely
++// checking the proxy's own mutex. The try_lock checks make a regression fail
++// promptly instead of deadlocking the test process inside completion().
++struct CompletionWake {
++    owner: OwnedOwner<Operation>,
++    report: SnapshotWorkReport,
++    calls: AtomicUsize,
++    panic_on_wake: AtomicBool,
++}
++impl CompletionWake {
++    fn inspect(&self) {
++        fn require_unlocked<T>(mutex: &Mutex<T>) {
++            match mutex.try_lock() {
++                Ok(guard) => drop(guard),
++                Err(std::sync::TryLockError::Poisoned(error)) => drop(error.into_inner()),
++                Err(std::sync::TryLockError::WouldBlock) => {
++                    panic!("external executor callback under an owner lock")
++                }
++            }
++        }
++        require_unlocked(&self.owner.control);
++        require_unlocked(&self.owner.resource);
++        require_unlocked(&self.owner.wake.state);
++        // Execute the actual public path after the deadlock-prevention checks.
++        let _completion = self.report.completion();
++    }
++}
++impl std::task::Wake for CompletionWake {
++    fn wake(self: Arc<Self>) {
++        self.inspect();
++        self.calls.fetch_add(1, Ordering::AcqRel);
++        assert!(
++            !self.panic_on_wake.load(Ordering::Acquire),
++            "original deferred executor wake panic"
++        );
++    }
++}
++impl Drop for CompletionWake {
++    fn drop(&mut self) {
++        self.inspect();
++    }
++}
++fn completion_waker(work: &SnapshotWork<Operation>) -> (Arc<CompletionWake>, Waker) {
++    let callback = Arc::new(CompletionWake {
++        owner: work.owner.clone(),
++        report: work.report(),
++        calls: AtomicUsize::new(0),
++        panic_on_wake: AtomicBool::new(false),
++    });
++    let waker = Waker::from(callback.clone());
++    (callback, waker)
++}
++async fn join_only(work: &SnapshotWork<Operation>, gate: &Gate) {
++    work.start().unwrap();
++    gate.started().await;
++    gate.release();
++    assert!(std::future::poll_fn(|cx| work.owner.poll_join(cx)).await);
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn cleanup_and_discard_wakes_reenter_actual_completion_only_after_owner_unlock() {
++    for outcome in [Outcome::Failure, Outcome::Success] {
++        let node = admission(1);
++        let baseline = node.snapshot().reserved_bytes;
++        let gate = new_gate();
++        gate.cleanup_wake_pending.store(true, Ordering::Release);
++        gate.discard_wake_pending.store(true, Ordering::Release);
++        let work = prepare(&node, &gate, outcome);
++        join_only(&work, &gate).await;
++        let (callback, outer) = completion_waker(&work);
++        let report = work.report();
++        let original_failure = match outcome {
++            Outcome::Failure => Some(original(&report)),
++            _ => None,
++        };
++        let mut draining = Box::pin(report.drain());
++        assert!(
++            draining
++                .as_mut()
++                .poll(&mut Context::from_waker(&outer))
++                .is_pending()
++        );
++        assert_eq!(callback.calls.load(Ordering::Acquire), 1);
++        assert_eq!(report.completion(), DrainCompletion::Retained);
++        assert_eq!(work.owner.wake.state.lock().unwrap().owner_scopes, 0);
++        assert_eq!(node.snapshot().inflight_operations, 1);
++        if matches!(outcome, Outcome::Success) {
++            assert!(
++                draining
++                    .as_mut()
++                    .poll(&mut Context::from_waker(&outer))
++                    .is_pending()
++            );
++            assert_eq!(callback.calls.load(Ordering::Acquire), 2);
++            assert_eq!(report.completion(), DrainCompletion::Retained);
++            assert_eq!(gate.output_drops.load(Ordering::Acquire), 0);
++        }
++        let Poll::Ready(drained) = draining.as_mut().poll(&mut Context::from_waker(&outer)) else {
++            panic!("the same operation must complete after its deferred wake");
++        };
++        assert_eq!(drained.completion(), DrainCompletion::Complete);
++        assert!(node.memory().snapshot_work_at(work.id().slot).is_none());
++        if let Some(original_failure) = original_failure {
++            assert_eq!(original(&drained), original_failure);
++        }
++        drop(drained);
++        drop(draining);
++        drop(report);
++        drop(outer);
++        drop(callback);
++        drop(work);
++        assert_eq!(gate.operation_drops.load(Ordering::Acquire), 1);
++        assert_eq!(
++            gate.output_drops.load(Ordering::Acquire),
++            usize::from(matches!(outcome, Outcome::Success))
++        );
++        assert_eq!(node.snapshot().reserved_bytes, baseline);
++        assert_eq!(node.snapshot().inflight_operations, 0);
++    }
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn deferred_callback_panic_then_cancel_preserves_original_outcome_and_retry() {
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    gate.cleanup_wake_pending.store(true, Ordering::Release);
++    let work = prepare(&node, &gate, Outcome::Failure);
++    join_only(&work, &gate).await;
++    let report = work.report();
++    let original_failure = original(&report);
++    let charged = node.snapshot().reserved_bytes;
++    let (callback, outer) = completion_waker(&work);
++    callback.panic_on_wake.store(true, Ordering::Release);
++    let mut draining = Box::pin(report.drain());
++    let Err(panic) = catch_unwind(AssertUnwindSafe(|| {
++        draining.as_mut().poll(&mut Context::from_waker(&outer))
++    })) else {
++        panic!("the external executor panic must leave the owner poll scope");
++    };
++    assert_eq!(
++        panic.downcast_ref::<&str>(),
++        Some(&"original deferred executor wake panic")
++    );
++    assert_eq!(callback.calls.load(Ordering::Acquire), 1);
++    assert_eq!(original(&report), original_failure);
++    assert!(work.owner.resource.lock().unwrap().panic.is_none());
++    assert_eq!(work.owner.wake.state.lock().unwrap().owner_scopes, 0);
++    assert_eq!(node.snapshot().reserved_bytes, charged);
++    assert!(node.memory().snapshot_work_at(work.id().slot).is_some());
++    // The failed poll did not finish the future. Cancel that waiter and then
++    // retry the same actual child/resources; never repoll the unwound future.
++    drop(draining);
++    assert!(work.owner.wake.state.lock().unwrap().waiter.is_none());
++    let drained = report.drain().await;
++    assert_eq!(drained.completion(), DrainCompletion::Complete);
++    assert_eq!(original(&drained), original_failure);
++    assert!(node.memory().snapshot_work_at(work.id().slot).is_none());
++    drop(drained);
++    drop(report);
++    drop(outer);
++    drop(callback);
++    drop(work);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++}
++
++#[tokio::test]
++async fn nested_owner_scopes_coalesce_wakes_and_unwind_leaves_registration_recoverable() {
++    let node = admission(1);
++    let baseline = node.snapshot().reserved_bytes;
++    let gate = new_gate();
++    let work = prepare(&node, &gate, Outcome::Failure);
++    let report = work.report().drain().await;
++    let (callback, outer) = completion_waker(&work);
++    let proxy = work.owner.wake.waker();
++    work.owner.wake.register(outer.clone());
++    let control_scope = work.owner.wake.defer();
++    let control = work.owner.control.lock().unwrap();
++    let resource_scope = work.owner.wake.defer();
++    let resource = work.owner.resource.lock().unwrap();
++    proxy.wake_by_ref();
++    proxy.wake_by_ref();
++    assert_eq!(callback.calls.load(Ordering::Acquire), 0);
++    drop(resource);
++    drop(resource_scope);
++    assert_eq!(callback.calls.load(Ordering::Acquire), 0);
++    drop(control);
++    assert_eq!(callback.calls.load(Ordering::Acquire), 0);
++    drop(control_scope);
++    assert_eq!(callback.calls.load(Ordering::Acquire), 1);
++    assert_eq!(report.completion(), DrainCompletion::Complete);
++    work.owner.wake.register(outer.clone());
++    assert!(
++        catch_unwind(AssertUnwindSafe(|| {
++            let _scope = work.owner.wake.defer();
++            proxy.wake_by_ref();
++            panic!("original owner-scope unwind");
++        }))
++        .is_err()
++    );
++    assert_eq!(
++        callback.calls.load(Ordering::Acquire),
++        1,
++        "never invoke the executor during an existing unwind"
++    );
++    {
++        let state = work.owner.wake.state.lock().unwrap();
++        assert_eq!(state.owner_scopes, 0);
++        assert!(state.notified);
++        assert!(state.waiter.is_some());
++    }
++    // A later scope drains the preserved notification after its own locks are
++    // released. Its executor really reenters completion, with no lost wake.
++    assert_eq!(report.completion(), DrainCompletion::Complete);
++    assert_eq!(callback.calls.load(Ordering::Acquire), 2);
++    assert!(!work.owner.wake.state.lock().unwrap().notified);
++    drop(proxy);
++    drop(report);
++    drop(outer);
++    drop(callback);
++    drop(work);
++    assert_eq!(node.snapshot().reserved_bytes, baseline);
++}

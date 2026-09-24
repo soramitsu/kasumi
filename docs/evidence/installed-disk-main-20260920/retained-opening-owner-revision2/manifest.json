@@ -1,0 +1,84 @@
+{
+  "status": "TARGET_ONLY_FORMATTED_NOT_COMPILED_NOT_NATIVE_TESTED",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "predecessor_patch_sha256": "9729155dc09c080a696ba8883d6c9e7eaa951ae6d5eb1f86632b6eb9e26a6cd6",
+  "predecessor_manifest_sha256": "09e7c995e8ca63d89d705ca03e30600e896c2aa88edb889c1734ebb624bf1e99",
+  "patch_sha256": "154d2181bdbbb13926be4cad1fe4c2ae6f33a32f14978de93efdb9fdf2133dc7",
+  "delta_sha256": "1508092b0d4e51335e3d6161889591bd8b807731ae7a97060fde6365a117a97c",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/db.rs",
+      "base_sha256": "de347514818cfa2855f9acdce01dd0581ed3a027a84ca0b17d058b9e1e305066",
+      "proposed_sha256": "a23d91671c6ae073977142fb4c795d104d8fb9ae67447ed497237f60b59c2ad6",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/lib.rs",
+      "base_sha256": "f55ea9cba2e2d33d159e49e1d8bf43da809db5547351c911b3b3ddcd34e46d30",
+      "proposed_sha256": "8460da21c47cc89b62bb0b91728b488a143b796eda20f4b682c2908e6f3987b8",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_opening.rs",
+      "base_sha256": null,
+      "proposed_sha256": "a5cfbad69291e2686012bb57b182a7ca037703afb9509f29d1f2c77473605eac",
+      "new_file": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_opening_tests.rs",
+      "base_sha256": null,
+      "proposed_sha256": "54f07b4371feb24470f330b4398131fad360b0b3e65df135d3203d69f93d6f0b",
+      "new_file": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_transaction.rs",
+      "base_sha256": "eeaeba8b05d1fd4203c98c0fd99feea10ac829fadb2212186428846360ef9718",
+      "proposed_sha256": "7dcc471bacab91d6ca1e0119e46b664cf194a87adbfc33deca6e1d6906ee7ee3",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "base_sha256": "e43528ac247dd4985cac4d9084ec4e0b4204f044af1af834bf4a626a64fb4136",
+      "proposed_sha256": "d15b62d4b66210badcd91d83919342e372b2a5aa83aa0e86d440241a3e741e7e",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/mod.rs",
+      "base_sha256": "d1b8c13d009219f5bc10e598e6c07523cfdf18eb17bb78a757f38d7b42c72b0d",
+      "proposed_sha256": "fc05270f898544dcf01d613572febec8e5341946f9bc897f481af04a31e83b33",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+      "base_sha256": "712705a50997d9e586f6008d1a2a3fe00e1a3f333797d8f289ff3e039cb3e6ef",
+      "proposed_sha256": "eaeb682771238934fc2d55f0dbf4e5476ce240382f68fa035bb0e84cb72780da",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/mod.rs",
+      "base_sha256": "d91c85b7a1fec6e8cf17cd0560e1c515bdf4dd848e9c548a96ceb7d2d3f0c210",
+      "proposed_sha256": "842420b03df7877e6e57dc09b714d0cb1b122958dde2accd3526365b8cd1b30e",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "base_sha256": "a0f083e6a15453538227999d93a77e44723e24cc7a87a608f0a47f6353e1e853",
+      "proposed_sha256": "c1de3401967294278a636b50b76c7e2b86e73aa2a43ae672c2f82f607eddd374",
+      "new_file": false
+    }
+  ],
+  "test_count": 11,
+  "readme_sha256": "8bff28d3afe5d90ab1df30bf015ede718c9c050e70a63a472c8ce01fc37c77ff",
+  "fault_design_sha256": "bc56cadc4b886ec0ed6bed438b7b4b2b1bfa9c651bd2441c1c362b377d70c35a",
+  "target_formatter": {
+    "tool": "rustfmt1.97.1",
+    "edition": "2024",
+    "skip_children": true,
+    "exit_code": 0
+  },
+  "actual_source_edits": false,
+  "compiler_or_native_tests": false,
+  "requires_composition_with_pending_allocator_key_validation": true,
+  "production_adoption_complete": false
+}

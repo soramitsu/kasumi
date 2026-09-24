@@ -1,0 +1,30 @@
+{
+  "scope": "development four authority failures with test-only original unavailable-cause diagnostics; unchanged original workloads/deadlines; not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-authority",
+    "--all-features",
+    "--lib",
+    "--",
+    "--test-threads=1",
+    "--nocapture",
+    "--exact",
+    "service::tests::coverage_dispatch_precedes_permission_and_survives_exact_encrypted_restart",
+    "service::tests::encrypted_restart_restarts_full_drain_and_never_reuses_an_old_incarnation",
+    "service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain",
+    "service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 1082,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 176.2343339920044,
+  "inventoried_source_unchanged": true
+}

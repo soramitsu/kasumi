@@ -1,0 +1,159 @@
+[
+  {
+    "name": "compile-store",
+    "pid": 21511,
+    "pgid": 21511,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kasumi-store",
+      "--all-features",
+      "--lib",
+      "--no-run",
+      "--message-format=json"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/compile-store.log",
+    "remaining_bound_seconds": 1199.975623417,
+    "executable_before": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "bytes": 31867672
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 82.62746137500001,
+    "log_sha256": "964af95ed4dcba46e2977b08738bf85c21410e4032a19c928f25d1948f114133"
+  },
+  {
+    "name": "store-inventory",
+    "pid": 22778,
+    "pgid": 22778,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/store-test-binary",
+      "--list"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/store-inventory.log",
+    "remaining_bound_seconds": 1116.810796833,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/store-test-binary",
+      "sha256": "7bfb563957a03c986d094f086924af27cde917901b620681426f3d1bd9de158f",
+      "bytes": 54285840
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/store-test-binary",
+      "sha256": "7bfb563957a03c986d094f086924af27cde917901b620681426f3d1bd9de158f",
+      "bytes": 54285840
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.8501380830000045,
+    "log_sha256": "aab23d97890374ccd63d7a1dc49f4a12bd6d0fcd68552153163c5cd89fb33276",
+    "inventory_passed": true
+  },
+  {
+    "name": "store-full",
+    "pid": 22790,
+    "pgid": 22790,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/store-test-binary",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/store-full.log",
+    "remaining_bound_seconds": 1115.9604152499999,
+    "executable_before": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/store-test-binary",
+      "sha256": "7bfb563957a03c986d094f086924af27cde917901b620681426f3d1bd9de158f",
+      "bytes": 54285840
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/store-test-binary",
+      "sha256": "7bfb563957a03c986d094f086924af27cde917901b620681426f3d1bd9de158f",
+      "bytes": 54285840
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 259.22889124999995,
+    "log_sha256": "b89d727e942923c3dfb253b07f9188672081fbba7ea3453e17db2aad053d1b57"
+  },
+  {
+    "name": "python-version",
+    "pid": 27053,
+    "pgid": 27053,
+    "command": [
+      "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "--version"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/python-version.log",
+    "remaining_bound_seconds": 856.743172042,
+    "executable_before": {
+      "path": "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e",
+      "bytes": 18041888
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e",
+      "bytes": 18041888
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.16088625000003276,
+    "log_sha256": "4c3569f5da09975434dd9fd9a91fadbc4367a91d8f3c3fab59e9241ab9ee4bd8",
+    "expected_python_3_12": true
+  },
+  {
+    "name": "smoke-script-tests",
+    "pid": 27058,
+    "pgid": 27058,
+    "command": [
+      "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "scripts/test_small_native_smoke.py",
+      "-v"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision6/native-full-store/smoke-script-tests.log",
+    "remaining_bound_seconds": 856.581142042,
+    "executable_before": {
+      "path": "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e",
+      "bytes": 18041888
+    },
+    "executable_after": {
+      "path": "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e",
+      "bytes": 18041888
+    },
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.5062443330000406,
+    "log_sha256": "11dab31fa64bebeaf85eafeea38c3e3b6270f45212213e4c308f044239285327"
+  }
+]

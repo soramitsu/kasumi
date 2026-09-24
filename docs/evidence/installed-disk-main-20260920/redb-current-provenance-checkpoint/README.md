@@ -1,0 +1,11 @@
+# Target-only redb provenance/inventory successor
+
+Ready for root review as a current-source checkpoint, not release acceptance. No actual source, vendor manifest or checker was modified; no Cargo/native test command ran in this preparation.
+
+Proposed installation consists of `proposed/docs/evidence/redb-current-source-20260922/` and the reviewed policy update in `proposed/vendor/patch-manifest.json`. `policy-update.patch` contains only that policy diff. `redb-inventory-candidate.json` and `vendor-support-candidate.json` expose the two intentional policy changes separately. The candidate replaces only redb's inventory/review binding and vendor/README.md's support record; other inventories and support records are unchanged.
+
+There are 109 current source files, 111 provenance rows including two historical removals, and 37 changed/added entries since the original import. The provenance preserves upstream archive identities and original per-file hashes, adds prior-canonical hashes, and binds exact modes/bytes. Original evidence is unchanged. Historical reviews and source-specific completed tests are included with explicit coverage limits. See the proposed evidence README for the five deltas that require direct checkpoint review because no selected historical patch file covers them.
+
+`final-verification.json` records successful execution of the exact unmodified scripts/check_dependency_patches.py verify_sources function with bundled Python 3.12.14 against a full target-only verification tree. No Cargo metadata call or resolver-selection verification ran. Three negative checks still reject original97/current109 provenance mismatch, omitting the new allocator payload file, and a mode mismatch. The normal complete release gate remains for the root after deliberate integration.
+
+`current-source/` and `verification-root/` are target scratch copies for source readback and exact checker execution. They are not proposed installation content. `manifest.json` freezes only the proposed artifacts and proof inputs; `preparation.json` pins the final actual vendor bytes including the completed README, CHANGELOG and KASUMI_PATCH edits. Earlier drift reports remain unchanged in the separate vendor-inventory-drift package.

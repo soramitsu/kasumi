@@ -101,6 +101,7 @@ impl AuditArchiveReference {
             || self.key.provider.len() > 1024
             || self.key.key_ref.is_empty()
             || self.key.key_ref.len() > 8192
+            || self.key.version == 0
         {
             return Err(invalid());
         }
@@ -186,6 +187,35 @@ impl AuditRetentionState {
 
 #[cfg(test)]
 mod tests {
+    use super::{AuditArchiveKeyDependency, AuditArchiveLink, AuditArchiveReference};
+    use uuid::Uuid;
+
+    #[test]
+    fn archive_key_dependency_requires_a_real_wrapping_version() {
+        let mut reference = AuditArchiveReference {
+            stream_id: Uuid::from_u128(1),
+            object: AuditArchiveLink {
+                object_id: Uuid::from_u128(2),
+                first_sequence: 0,
+                next_sequence: 1,
+                ciphertext_sha256: "0".repeat(64),
+            },
+            previous: None,
+            record_count: 1,
+            plaintext_bytes: 1,
+            ciphertext_bytes: 2,
+            key: AuditArchiveKeyDependency {
+                provider: "file".into(),
+                key_ref: "installed-key".into(),
+                version: 1,
+                wrapped_key_sha256: "0".repeat(64),
+            },
+        };
+        reference.validate().unwrap();
+        reference.key.version = 0;
+        assert!(reference.validate().is_err());
+    }
+
     #[test]
     fn limits_reject_removed_count_ceiling_and_missing_format_fields() {
         let current = serde_json::to_value(crate::Limits::default()).unwrap();

@@ -4,13 +4,13 @@ Build the production binary without fixture features, then initialize an absolut
 
 ```sh
 cargo +1.97.1 build --release -p kasumi-server --bin kasumid
-target/release/kasumid init --mode standalone /var/lib/kasumi --tenant default
+target/release/kasumid init --mode standalone /var/lib/kasumi --directory-policy /etc/kasumi/directory-policy.json --network /etc/kasumi/standalone-network.json --tenant default
 target/release/kasumid serve /var/lib/kasumi/kasumi.json
 ```
 
 Initialization creates private directories and files, an exclusive installation identity, independent application/custody/Control/security wrapping keyrings, an Ed25519 issuer, TLS identities, and two client profiles. It provisions the Control and application catalogs, authenticated bootstrap, reserved Control schema and initial topology while holding exclusive storage ownership. It drains those owners before publishing the configuration and completion marker. A failed initialization leaves an incomplete private directory; initialization never adopts or overwrites it.
 
-Listeners default to loopback: MCP on 9443, native data on 9444, and native administration on 9445. The initial MCP endpoint and certificate pin are committed in Control topology. Changing that endpoint requires a corresponding authorized topology update; editing only the configuration is insufficient. A stopped endpoint-configuration command remains to be implemented.
+Supply an explicit private `--network` JSON file before installation, for example `{"mcp_listen":"127.0.0.1:9443","mcp_public_url":"https://localhost:9443/mcp","native_listen":"127.0.0.1:9444","admin_listen":"127.0.0.1:9445"}`. The four fields are required, unknown fields are rejected, and the listener ports must be nonzero and distinct. Standalone TLS identities currently cover `localhost` and `127.0.0.1`, so the MCP public URL must be `https://localhost:<mcp-listen-port>/mcp`. The selected endpoint and certificate pin are committed together in original Control topology, configuration, and generated profiles. Changing the endpoint later requires an authorized topology update; editing only the configuration is insufficient.
 
 Established standalone runtime and operator opens require the existing application/custody catalogs, authenticated bootstrap and exact configured incarnation. Missing bootstrap or Control topology is an error, never permission to create a new genesis from configuration defaults. The completion marker binds the immutable Control incarnation; unsupported marker formats are rejected explicitly.
 
@@ -31,7 +31,11 @@ share one filesystem and cannot overlap each other or `scratch`. The initial
 limits are `max_bytes: 137438953472` (128 GiB),
 `maintenance_reserve_bytes: 1073741824` (1 GiB),
 `min_free_bytes: 268435456` (256 MiB), `max_open_files: 4096`,
-`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.
+`max_open_directories: 4096`, `max_persistent_files: 1000000`,
+`max_persistent_subdirectories: 1000000`, `census_work_per_step: 1000000`,
+`max_depth: 64`, and `max_name_bytes: 255`. The subdirectory count excludes the
+explicitly configured roots. Census work is limited per step; it is not the
+full-job file or directory count. All three namespace/work fields are required.
 The bounded startup census must finish before storage admission opens. Database,
 recovery generation, local archive and backup files use this retained owner;
 configuration never derives a persistent root from a database path. Install every
@@ -181,3 +185,12 @@ command after an uncertain result to resolve the original session. The
 verification, permanent abort outcomes, bounded cleanup passes, and key retention.
 Use the resulting checkpoint as the exact source checkpoint in a stopped local
 recovery request.
+
+The first-release directory owner requires `persistent_disk.max_open_directories`
+explicitly; the generated installed policy uses 4,096 directory owners alongside
+4,096 file owners. There is no default or legacy field alias. The inode ledger
+uses one physical-identity key space for files and directories. The one-million
+limit continues to bound census work and separately retained regular-file count;
+it is not a combined file/directory admission cap.
+
+The required `--directory-policy` file contains exactly `extent_bytes` and `max_entries`, both positive integers. The generated persistent disk configuration retains these explicit values; there is no production default. `extent_bytes` is a per-directory allocated-byte ceiling reserved before managed file namespace effects. `max_entries` limits positive membership changes; deletion retains cleanup access. Supply values qualified for the installed filesystem and supported namespace operations. Numeric validation alone does not establish that qualification. This target proposal has not yet established a supported filesystem growth bound, so production namespace admission remains a release blocker.

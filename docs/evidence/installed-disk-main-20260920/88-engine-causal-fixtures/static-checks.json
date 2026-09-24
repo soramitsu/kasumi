@@ -1,0 +1,46 @@
+{
+  "checks": [
+    {
+      "command": [
+        "git",
+        "apply",
+        "--check",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/88-engine-causal-fixtures/corrections.patch"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "git",
+        "apply",
+        "--numstat",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/88-engine-causal-fixtures/corrections.patch"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "bcce5da06b60e4791f538b7aa3512176710eb484d758577fec5cefff07ecfc7a",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/88-engine-causal-fixtures/proposed/crates/kasumi-engine/tests/common/recovery_control.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/88-engine-causal-fixtures/proposed/crates/kasumi-engine/tests/history.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/88-engine-causal-fixtures/proposed/crates/kasumi-engine/tests/lifecycle.rs",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/88-engine-causal-fixtures/proposed/crates/kasumi-engine/tests/schema_activation.rs"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "actual_source_matches_base": true,
+  "tests_run": false,
+  "cargo_run": false
+}

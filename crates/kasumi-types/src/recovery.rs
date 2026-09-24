@@ -35,8 +35,9 @@ pub struct RecoveryStart {
     pub expected_policy_epoch: u64,
     pub authority_policy_epoch: u64,
     pub authority_partition: String,
-    /// Exact installed endpoints, trust, and independently bound credential
-    /// sources are selected by this digest, never supplied as request URLs.
+    /// Exact installed endpoints and CA trust are selected by this digest,
+    /// never supplied as request URLs. Control members provide local client
+    /// credentials that must still be authorized by each remote service.
     pub dispatch_configuration_sha256: String,
     #[serde(deserialize_with = "crate::deserialize_u64_map")]
     pub target_nodes: BTreeMap<u64, LifecycleNode>,
@@ -340,6 +341,40 @@ pub enum RecoveryDispatchOutcome {
     },
 }
 
+/// The bounded classes of effects that can escape one frozen recovery phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryEffect {
+    AuthorityCommand,
+    ActivationIntentAcceptance,
+    ControlIntent,
+    TargetCommand,
+    SourceRetirement,
+}
+
+/// The exact signed issuer acceptance is retained as canonical JSON because
+/// the issuer receipt type belongs to kasumi-serving, above kasumi-types.
+/// The engine decodes and verifies the complete signed receipt on commit and
+/// every state or snapshot validation. This record is never an execution grant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryActivationAcceptance {
+    pub attempt_id: Uuid,
+    pub committed_revision: u64,
+    pub signed_receipt_json: String,
+    pub signed_receipt_sha256: String,
+}
+
+/// A committed possibility of dispatch, not evidence that the receiver acted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryEffectAttempt {
+    pub attempt_id: Uuid,
+    pub input_sha256: String,
+    pub admitted_at_ms: u64,
+    pub begun_revision: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryPhaseRecord {
@@ -357,6 +392,11 @@ pub struct RecoveryPhaseRecord {
     pub admitted_at_ms: u64,
     pub original_credential_expires_at_ms: u64,
     pub prepared_revision: u64,
+    /// Required first-release field. An absent field is an invalid old format.
+    pub effect_attempts: BTreeMap<RecoveryEffect, RecoveryEffectAttempt>,
+    /// Required first-release field. Marker-only issuer acceptance is invalid.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub activation_acceptance: Option<RecoveryActivationAcceptance>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub outcome: Option<RecoveryDispatchOutcome>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
@@ -387,6 +427,82 @@ impl RecoveryPhaseRecord {
                     .resolved_revision
                     .is_none_or(|revision| revision >= self.prepared_revision),
             "recovery phase identity, deadline, or durable outcome differs",
+        )?;
+        require_recovery(
+            self.effect_attempts.len() <= 2
+                && self.effect_attempts.iter().all(|(effect, attempt)| {
+                    let allowed = match (&self.input, effect) {
+                        (RecoveryDispatch::Authority(_), RecoveryEffect::AuthorityCommand)
+                        | (RecoveryDispatch::ControlIntent(_), RecoveryEffect::ControlIntent)
+                        | (RecoveryDispatch::Target { .. }, RecoveryEffect::TargetCommand)
+                        | (RecoveryDispatch::RetireSource(_), RecoveryEffect::SourceRetirement) => {
+                            true
+                        }
+                        (
+                            RecoveryDispatch::Authority(command),
+                            RecoveryEffect::ActivationIntentAcceptance,
+                        ) => {
+                            self.phase == RecoveryPhase::Activate
+                                && matches!(
+                                    &command.action,
+                                    AuthorityAction::ActivateCommitted { .. }
+                                )
+                        }
+                        _ => false,
+                    };
+                    let command_limit = match &self.input {
+                        RecoveryDispatch::Authority(command) => Some(command.not_after_ms),
+                        RecoveryDispatch::Target { request, .. } => Some(request.not_after_ms),
+                        RecoveryDispatch::RetireSource(request) => Some(request.not_after_ms),
+                        _ => None,
+                    };
+                    allowed
+                        && !attempt.attempt_id.is_nil()
+                        && attempt.input_sha256 == self.input_sha256
+                        && attempt.admitted_at_ms >= self.admitted_at_ms
+                        && attempt.admitted_at_ms < self.original_credential_expires_at_ms
+                        && command_limit.is_none_or(|limit| attempt.admitted_at_ms < limit)
+                        && attempt.begun_revision > self.prepared_revision
+                        && self
+                            .resolved_revision
+                            .is_none_or(|revision| attempt.begun_revision < revision)
+                })
+                && match (
+                    self.effect_attempts
+                        .get(&RecoveryEffect::ActivationIntentAcceptance),
+                    &self.activation_acceptance,
+                ) {
+                    (None, None) => true,
+                    (Some(attempt), Some(evidence)) => {
+                        evidence.attempt_id == attempt.attempt_id
+                            && evidence.committed_revision > attempt.begun_revision
+                            && evidence.committed_revision > self.prepared_revision
+                            && !evidence.signed_receipt_json.is_empty()
+                            && evidence.signed_receipt_json.len() <= 256 * 1024
+                            && validate_sha256(&evidence.signed_receipt_sha256).is_ok()
+                            && self
+                                .resolved_revision
+                                .is_none_or(|revision| evidence.committed_revision < revision)
+                    }
+                    (Some(_), None) => !self
+                        .effect_attempts
+                        .contains_key(&RecoveryEffect::AuthorityCommand),
+                    (None, Some(_)) => false,
+                }
+                && match self.effect_attempts.get(&RecoveryEffect::AuthorityCommand) {
+                    Some(command) if matches!(&self.input, RecoveryDispatch::Authority(input) if matches!(&input.action, AuthorityAction::ActivateCommitted { .. })) => {
+                        self.effect_attempts
+                            .get(&RecoveryEffect::ActivationIntentAcceptance)
+                            .zip(self.activation_acceptance.as_ref())
+                            .is_some_and(|(acceptance, evidence)| {
+                                acceptance.begun_revision < evidence.committed_revision
+                                    && evidence.committed_revision < command.begun_revision
+                                    && acceptance.attempt_id != command.attempt_id
+                            })
+                    }
+                    _ => true,
+                },
+            "recovery effect attempt differs from frozen phase or original deadline",
         )?;
         bounded_recovery(self, MAX_RECOVERY_RECORD_BYTES)
     }

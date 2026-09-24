@@ -6,7 +6,7 @@ use crate::custody_state::{CustodyAudit, CustodyState};
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{TenantStore, WriteOp};
 use kasumi_types::{CustodyReceipt, CustodyRequest, Error, ErrorCode, RequestContext};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -17,6 +17,17 @@ pub(crate) const AUDIT: &str = "raft.custody-audit";
 // sets (current and immutable origin). Keep the existing control-record bound.
 pub(crate) const HEAD_BYTES: usize = 2 << 20;
 pub(crate) const RECORD_BYTES: usize = 64 << 10;
+
+/// Custody point records have one first-release writer spelling. A decoded
+/// equivalent byte string is not an accepted permanent command or policy head.
+pub(crate) fn decode_canonical<T: DeserializeOwned + Serialize>(bytes: &[u8]) -> Result<T> {
+    let record: T = serde_json::from_slice(bytes)?;
+    ensure!(
+        serde_json::to_vec(&record)? == bytes,
+        "noncanonical custody point record"
+    );
+    Ok(record)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -196,7 +207,7 @@ pub(crate) fn load(store: &TenantStore) -> Result<CustodyHead> {
     let bytes = store
         .get_bounded(crate::control::META, HEAD, HEAD_BYTES)?
         .context("custody point table head absent; unsupported custody storage format")?;
-    let head: CustodyHead = serde_json::from_slice(&bytes)?;
+    let head: CustodyHead = decode_canonical(&bytes)?;
     head.validate()?;
     Ok(head)
 }
@@ -204,7 +215,7 @@ pub(crate) fn load(store: &TenantStore) -> Result<CustodyHead> {
 pub(crate) fn receipt(store: &TenantStore, identity: &str) -> Result<Option<CustodyReceipt>> {
     store
         .get_bounded(COMMANDS, identity.as_bytes(), RECORD_BYTES)?
-        .map(|bytes| serde_json::from_slice(&bytes).context("invalid custody receipt record"))
+        .map(|bytes| decode_canonical(&bytes).context("invalid custody receipt record"))
         .transpose()
 }
 
@@ -243,7 +254,7 @@ pub(crate) fn transition_writes(
 #[cfg(test)]
 pub(crate) fn snapshot(store: &Arc<TenantStore>) -> Result<CustodyState> {
     let view = store.read_view()?;
-    let head: CustodyHead = serde_json::from_slice(
+    let head: CustodyHead = decode_canonical(
         &view
             .get(crate::control::META, HEAD, HEAD_BYTES)?
             .context("custody point table head absent")?,
@@ -252,7 +263,7 @@ pub(crate) fn snapshot(store: &Arc<TenantStore>) -> Result<CustodyState> {
     let mut state = head.policy.clone();
     let mut count = 0u64;
     view.visit(COMMANDS, RECORD_BYTES, |key, bytes| {
-        let receipt: CustodyReceipt = serde_json::from_slice(bytes)?;
+        let receipt: CustodyReceipt = decode_canonical(bytes)?;
         ensure!(
             key == receipt.command_id.as_bytes(),
             "custody receipt key differs"
@@ -275,7 +286,7 @@ pub(crate) fn snapshot(store: &Arc<TenantStore>) -> Result<CustodyState> {
         let event = view
             .get(AUDIT, &index.to_be_bytes(), RECORD_BYTES)?
             .context("custody audit sequence missing")?;
-        state.audit.push(serde_json::from_slice(&event)?);
+        state.audit.push(decode_canonical(&event)?);
     }
     let mut count = 0u64;
     view.visit(AUDIT, RECORD_BYTES, |key, _| {
@@ -303,7 +314,7 @@ pub(crate) fn prepare_replacement(
     // identity. The publication gate is held while this installed prefix is read.
     let previous = store
         .get_bounded(crate::control::META, HEAD, HEAD_BYTES)?
-        .map(|bytes| serde_json::from_slice::<CustodyHead>(&bytes))
+        .map(|bytes| decode_canonical::<CustodyHead>(&bytes))
         .transpose()?;
     if let Some(previous) = &previous {
         previous.validate()?;

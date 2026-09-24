@@ -1,0 +1,49 @@
+{
+  "at_utc": "2026-09-23T01:26:19.846663+00:00",
+  "status": "FOCUSED_ORIGINAL_AUTHORITY_REGRESSION_PASS",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "result_sha256": "d03ae95900f9cec912a6c918655982469ce97aed091b3528db54e2578929228b",
+  "results_sha256": "1481577768f5681cd3506825f6aeec7ccc2ccd63e543c3afd6ccfdc66e034034",
+  "source_before_sha256": "1167e4677a20589ea5cb27936ded00ea07c12fea4b9a4fa261f0e9a427a4e953",
+  "source_after_sha256": "1167e4677a20589ea5cb27936ded00ea07c12fea4b9a4fa261f0e9a427a4e953",
+  "source_count": 1597,
+  "source_unchanged": true,
+  "binary": {
+    "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/actual-authority-route-qualification/native-01/cargo-target/debug/deps/kasumi_authority-c9f40d981df0df58",
+    "sha256": "de405151f01b44489d0d783998b63e4c6e1504c6c2e3fda1e8c2d7f491f87812",
+    "bytes": 197011824,
+    "fresh_cargo_artifact": true
+  },
+  "binary_unchanged": true,
+  "inventory": {
+    "count": 63,
+    "sha256": "b797ca4418716a41073bac4ec3f04bc99a219e03f71c160b5126b3f34b742a10"
+  },
+  "focused": {
+    "test": "service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain",
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "other_original_names_filtered": 62,
+    "elapsed_seconds": 9.115645707934164,
+    "log_sha256": "77c95121a112f85a600a3183e3e6e47ec2dfcfdf5a83623b80d3d19e1946a3d8"
+  },
+  "cohort_elapsed_seconds": 269.04391999996733,
+  "cohort_bound_seconds": 1200,
+  "all_process_groups": [
+    32483,
+    32486,
+    36877,
+    36892
+  ],
+  "all_process_groups_absent": true,
+  "no_timeouts_or_cleanup_signals": true,
+  "actual_source_edited_by_this_agent": false,
+  "scope_limits": [
+    "Only the exact original authority regression was executed; this does not qualify all63 authority cases or remaining workspace tests.",
+    "The prior actual combined native run remains failed and invalidated by its preserved source drift.",
+    "Current service.rs7c6fd2 includes two Box::pin allocations; their admission and stack/heap consequences remain separate open G02/G03 work, not formatting changes or proof established by this fixture pass.",
+    "Recovery target candidates and all release goals remain separately unqualified/open as recorded."
+  ]
+}

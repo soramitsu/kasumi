@@ -1,0 +1,14 @@
+
+running 9 tests
+test storage_opening::tests::a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close ... ok
+test storage_opening::tests::abandoned_failed_open_keeps_original_after_positive_close_until_explicit_report_release ... ok
+test storage_opening::tests::actual_body_error_is_retained_before_abort_and_disposal_without_replay ... ok
+test storage_opening::tests::actual_queued_worker_keeps_request_without_blocking_close_and_cancels_after_seal ... ok
+test storage_opening::tests::busy_worker_cannot_acknowledge_the_body_error_that_it_has_not_produced_yet ... ok
+test storage_opening::tests::queued_relinquishment_seals_the_request_before_another_facade_can_run ... ok
+test storage_opening::tests::real_commit_and_abort_failures_keep_actual_request_after_all_facades_cancel ... ok
+test storage_opening::tests::registered_node_tables_retains_actual_transaction_and_reports_through_physical_close ... ok
+test storage_opening::tests::registered_opening_exists_before_actual_creation_and_abandoned_prepare_has_no_file_effect ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 236 filtered out; finished in 1.21s
+

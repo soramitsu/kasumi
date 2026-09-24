@@ -1,0 +1,12 @@
+--- a/crates/kasumi-engine/tests/schema_activation.rs
++++ b/crates/kasumi-engine/tests/schema_activation.rs
+@@ -1192,6 +1192,9 @@
+             .code,
+         ErrorCode::Conflict
+     );
++    // The generation retains its durable receipt store and physical file owner.
++    // Its copied snapshot fences above remain valid after the owner is released.
++    drop(before);
+     db.shutdown().await.unwrap();
+     audit.shutdown().await.unwrap();
+     drop(db);

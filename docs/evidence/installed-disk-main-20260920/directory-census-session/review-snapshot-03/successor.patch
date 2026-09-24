@@ -1,0 +1,2018 @@
+--- a/crates/kasumi-server/src/persistent_disk.rs
++++ b/crates/kasumi-server/src/persistent_disk.rs
+@@ -78,7 +78,9 @@
+         max_open_files: 4096,
+         max_open_directories: 4096,
+         directory_policy,
+-        max_census_entries: 1_000_000,
++        max_persistent_files: 1_000_000,
++        max_persistent_subdirectories: 1_000_000,
++        census_work_per_step: 1_000_000,
+         max_depth: 64,
+         max_name_bytes: 255,
+     })
+@@ -150,7 +152,9 @@
+     config.min_free_bytes = 0;
+     // A bounded test policy; the fixture's explicit RuntimeStorage installs its
+     // isolated owners under the same admitted memory core before storage use.
+-    config.max_census_entries = 16_384;
++    config.max_persistent_files = 16_384;
++    config.max_persistent_subdirectories = 16_384;
++    config.census_work_per_step = 16_384;
+     config.max_open_files = 256;
+     config.max_open_directories = 256;
+     config
+@@ -172,6 +176,42 @@
+         assert!(config.validate_persistent_disk().is_err());
+     }
+     #[test]
++    fn persistent_namespace_limits_are_required_without_legacy_fields() {
++        let config =
++            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
++        let encoded = serde_json::to_value(&config).unwrap();
++        let limits = [
++            "max_persistent_files",
++            "max_persistent_subdirectories",
++            "census_work_per_step",
++        ];
++        for name in limits {
++            assert_eq!(encoded["persistent_disk"][name], 1_000_000);
++            let mut missing = encoded.clone();
++            missing["persistent_disk"]
++                .as_object_mut()
++                .unwrap()
++                .remove(name);
++            assert!(
++                serde_json::from_value::<crate::runtime::RuntimeConfig>(missing).is_err(),
++                "missing required limit {name} was accepted"
++            );
++        }
++        let decoded =
++            serde_json::from_value::<crate::runtime::RuntimeConfig>(encoded.clone()).unwrap();
++        assert_eq!(decoded.persistent_disk, config.persistent_disk);
++        let mut legacy = encoded.clone();
++        let policy = legacy["persistent_disk"].as_object_mut().unwrap();
++        for name in limits {
++            policy.remove(name);
++        }
++        policy.insert("max_census_entries".into(), 1_000_000.into());
++        assert!(serde_json::from_value::<crate::runtime::RuntimeConfig>(legacy).is_err());
++        let mut mixed = encoded;
++        mixed["persistent_disk"]["max_census_entries"] = 1_000_000.into();
++        assert!(serde_json::from_value::<crate::runtime::RuntimeConfig>(mixed).is_err());
++    }
++    #[test]
+     fn persistent_roots_cannot_overlap_each_other_or_scratch() {
+         let mut config =
+             crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+--- a/crates/kasumi-server/src/runtime_memory.rs
++++ b/crates/kasumi-server/src/runtime_memory.rs
+@@ -112,7 +112,9 @@
+     #[cfg(test)]
+     fn fixture_disk_profile(config: NodeDiskConfig) -> NodeDiskConfig {
+         NodeDiskConfig {
+-            max_census_entries: 16_384,
++            max_persistent_files: 16_384,
++            max_persistent_subdirectories: 16_384,
++            census_work_per_step: 16_384,
+             max_open_files: 256,
+             max_open_directories: 256,
+             ..config
+--- /dev/null
++++ b/crates/kasumi-store/src/node_disk/census/tests.rs
+@@ -0,0 +1,633 @@
++use super::super::{
++    DiskWork, NodeDisk, NodeDiskPhase, PreparedResources, PreparingRegistration, RegisteredDisk,
++    Registration, fixed_map,
++};
++use super::*;
++use crate::test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry};
++use std::{
++    panic::{AssertUnwindSafe, catch_unwind},
++    sync::Arc,
++};
++
++fn fixture() -> (tempfile::TempDir, NodeDiskConfig, Arc<TestDiskMemory>) {
++    let root = private_tempdir().unwrap();
++    let mut config = NodeDisk::fixture_config(root.path().join("anchor")).unwrap();
++    config.max_persistent_files = 8;
++    config.max_persistent_subdirectories = 8;
++    config.census_work_per_step = 8;
++    (root, config, TestDiskMemory::new(256 << 20, 4096))
++}
++fn open(config: &NodeDiskConfig, memory: &Arc<TestDiskMemory>) -> Arc<NodeDisk> {
++    retry_disk_registry(|| {
++        NodeDisk::open_fixture(config, memory.clone(), &CensusCancellation::default())
++    })
++    .unwrap()
++}
++fn file(path: &Path) {
++    let file = OpenOptions::new()
++        .write(true)
++        .create_new(true)
++        .mode(0o600)
++        .open(path)
++        .unwrap();
++    file.sync_all().unwrap();
++}
++fn root_set(config: &NodeDiskConfig) -> (BTreeMap<String, Root>, Vec<File>, u64) {
++    let roots = open_roots(config).unwrap();
++    let locks = lock_roots(&roots, config.max_depth).unwrap();
++    let unit = super::super::filesystem(&roots.values().next().unwrap().file)
++        .unwrap()
++        .1;
++    (roots, locks, unit)
++}
++
++#[test]
++fn original_tiny_file_population_reconciles_without_reducing_admission() {
++    let (root, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    for index in 0..8 {
++        let name = format!("file-{index}");
++        let file = disk
++            .create_file("fixture", Path::new(&name), DiskWork::Foreground)
++            .unwrap();
++        file.sync_all().unwrap();
++        file.settle_growth(0).unwrap();
++        drop(file);
++        if index == 6 {
++            disk.pause().unwrap();
++            disk.reconcile(&CensusCancellation::default()).unwrap();
++            assert_eq!(disk.snapshot().persistent_files, 7);
++        }
++    }
++    assert!(
++        disk.create_file("fixture", Path::new("overflow"), DiskWork::Foreground)
++            .is_err()
++    );
++    assert!(!root.path().join("overflow").exists());
++    let old = disk.snapshot();
++    let memory_before = memory.snapshot();
++    disk.pause().unwrap();
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    let after = disk.snapshot();
++    assert_eq!(after.persistent_files, 8);
++    assert_eq!(after.phase, NodeDiskPhase::Open);
++    assert_eq!(after.charged_bytes, old.charged_bytes);
++    assert_eq!(after.pending_bytes, old.pending_bytes);
++    assert_eq!(after.open_census_streams, 0);
++    assert_eq!(memory.snapshot().used_bytes, memory_before.used_bytes);
++    assert_eq!(memory.snapshot().attempts, memory_before.attempts);
++}
++
++#[test]
++fn full_file_and_directory_geometry_progresses_without_reopening_streams() {
++    let (root, config, _memory) = fixture();
++    for index in 0..8 {
++        let path = root.path().join(format!("directory-{index}"));
++        crate::private_files::create_directory(&path).unwrap();
++        file(&path.join("data"));
++    }
++    let (roots, _locks, unit) = root_set(&config);
++    let (limit, _) = super::super::ledger::map_limits(&config).unwrap();
++    let mut banks = fixed_map::Banks::new(limit).unwrap();
++    let streams = Streams::default();
++    let cancel = CensusCancellation::default();
++    let mut session = CensusSession::new(
++        &roots,
++        &config,
++        unit,
++        &cancel,
++        banks.stage(limit).unwrap(),
++        &streams,
++    )
++    .unwrap();
++    let mut previous_work = 0;
++    let mut root_stream = None;
++    let mut pending = 0;
++    loop {
++        let progress = session.advance();
++        assert!(session.work - previous_work <= 8);
++        previous_work = session.work;
++        assert_eq!(streams.outstanding() as usize, session.stack.len());
++        if progress != Progress::Pending {
++            assert_eq!(progress, Progress::Complete);
++            break;
++        }
++        pending += 1;
++        let pointer = session.stack[0].entries.unwrap();
++        let fd = unsafe { libc::dirfd(pointer.as_ptr()) };
++        if let Some((old_pointer, old_fd)) = root_stream {
++            assert_eq!((pointer, fd), (old_pointer, old_fd));
++        }
++        root_stream = Some((pointer, fd));
++        assert!(unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0);
++    }
++    assert_eq!(pending, 5);
++    assert_eq!(session.work, 8 + 4 * 8 + 3);
++    let totals = session.finish().unwrap();
++    assert_eq!((totals.files, totals.directories), (8, 9));
++    assert_eq!(streams.outstanding(), 0);
++    assert_eq!(
++        unsafe { libc::fcntl(root_stream.unwrap().1, libc::F_GETFD) },
++        -1
++    );
++    banks.commit_stage();
++    assert_eq!(banks.len(), 17);
++}
++
++#[test]
++fn file_and_subdirectory_excess_fail_without_candidate_publication() {
++    for directories in [false, true] {
++        let (root, config, memory) = fixture();
++        for index in 0..9 {
++            let path = root.path().join(format!("entry-{index}"));
++            if directories {
++                crate::private_files::create_directory(&path).unwrap();
++            } else {
++                file(&path);
++            }
++        }
++        let before = memory.snapshot();
++        let error = retry_disk_registry(|| {
++            NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
++        })
++        .unwrap_err();
++        assert!(format!("{error:#}").contains(if directories {
++            "subdirectory cardinality"
++        } else {
++            "file cardinality"
++        }));
++        assert_eq!(memory.snapshot().used_bytes, before.used_bytes);
++        assert_eq!(
++            memory.snapshot().live_reservations,
++            before.live_reservations
++        );
++        // Fully closed failed scans release root locks for a later valid census.
++        if directories {
++            std::fs::remove_dir(root.path().join("entry-8")).unwrap();
++        } else {
++            std::fs::remove_file(root.path().join("entry-8")).unwrap();
++        }
++        let disk = open(&config, &memory);
++        assert_eq!(
++            disk.snapshot().persistent_files,
++            if directories { 0 } else { 8 }
++        );
++        assert_eq!(
++            disk.snapshot().persistent_directories,
++            if directories { 9 } else { 1 }
++        );
++    }
++}
++
++#[test]
++fn cancellation_between_steps_closes_actual_stream_and_resets_partial_spare() {
++    let (root, mut config, _memory) = fixture();
++    config.census_work_per_step = 1;
++    file(&root.path().join("data"));
++    let (roots, _locks, unit) = root_set(&config);
++    let mut banks = fixed_map::Banks::new(17).unwrap();
++    let streams = Streams::default();
++    let cancel = CensusCancellation::default();
++    let mut session = CensusSession::new(
++        &roots,
++        &config,
++        unit,
++        &cancel,
++        banks.stage(17).unwrap(),
++        &streams,
++    )
++    .unwrap();
++    assert_eq!(session.advance(), Progress::Pending);
++    assert_eq!(streams.outstanding(), 1);
++    let fd = unsafe { libc::dirfd(session.stack[0].entries.unwrap().as_ptr()) };
++    cancel.cancel();
++    assert_eq!(session.advance(), Progress::Failed);
++    assert_eq!(session.advance(), Progress::Failed);
++    assert_eq!(streams.outstanding(), 0);
++    assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
++    assert_eq!(session.scan.accounted.len(), 0);
++    assert!(format!("{:#}", session.finish().unwrap_err()).contains("cancelled"));
++    assert_eq!(banks.len(), 0);
++}
++
++#[test]
++fn cancellation_retains_independent_native_close_error_without_retry() {
++    let (root, mut config, _memory) = fixture();
++    config.census_work_per_step = 1;
++    file(&root.path().join("data"));
++    let (roots, _locks, unit) = root_set(&config);
++    let mut banks = fixed_map::Banks::new(17).unwrap();
++    let streams = Streams::default();
++    let cancel = CensusCancellation::default();
++    let mut session = CensusSession::new(
++        &roots,
++        &config,
++        unit,
++        &cancel,
++        banks.stage(17).unwrap(),
++        &streams,
++    )
++    .unwrap();
++    assert_eq!(session.advance(), Progress::Pending);
++    streams.fail_next_close.set(true);
++    cancel.cancel();
++    assert_eq!(session.advance(), Progress::Failed);
++    assert_eq!(streams.outstanding(), 1);
++    assert_eq!(streams.close_errno(), Some(libc::EIO));
++    let error = session.finish().unwrap_err();
++    assert_eq!(
++        error.downcast_ref::<CensusCloseFailure>().unwrap().errno,
++        libc::EIO
++    );
++    let rendered = format!("{error:#}");
++    assert!(rendered.contains("cancelled"));
++    assert!(rendered.contains("close also failed"));
++    assert_eq!(streams.outstanding(), 1);
++    assert!(
++        CensusSession::new(
++            &roots,
++            &config,
++            unit,
++            &CensusCancellation::default(),
++            banks.stage(17).unwrap(),
++            &streams
++        )
++        .is_err()
++    );
++}
++
++#[test]
++fn unfinished_or_unwound_session_cannot_publish_partial_candidate() {
++    for unwind in [false, true] {
++        let (_root, mut config, _memory) = fixture();
++        config.census_work_per_step = 1;
++        let (roots, _locks, unit) = root_set(&config);
++        let mut banks = fixed_map::Banks::new(17).unwrap();
++        let streams = Streams::default();
++        let cancel = CensusCancellation::default();
++        if unwind {
++            assert!(
++                catch_unwind(AssertUnwindSafe(|| {
++                    let mut session = CensusSession::new(
++                        &roots,
++                        &config,
++                        unit,
++                        &cancel,
++                        banks.stage(17).unwrap(),
++                        &streams,
++                    )
++                    .unwrap();
++                    assert_eq!(session.advance(), Progress::Pending);
++                    panic!("injected census unwind");
++                }))
++                .is_err()
++            );
++        } else {
++            let mut session = CensusSession::new(
++                &roots,
++                &config,
++                unit,
++                &cancel,
++                banks.stage(17).unwrap(),
++                &streams,
++            )
++            .unwrap();
++            assert_eq!(session.advance(), Progress::Pending);
++            assert!(session.finish().is_err());
++        }
++        assert_eq!(streams.outstanding(), 0);
++        // commit_stage is deliberately attempted only to verify the failed
++        // candidate was emptied; production never publishes failed sessions.
++        banks.commit_stage();
++        assert_eq!(banks.len(), 0);
++    }
++}
++
++#[test]
++fn uncertain_reconcile_close_retains_old_ledger_promises_and_drain_fence() {
++    let (_root, config, memory) = fixture();
++    let disk = open(&config, &memory);
++    let file = disk
++        .create_file("fixture", Path::new("data"), DiskWork::Foreground)
++        .unwrap();
++    file.sync_all().unwrap();
++    file.settle_growth(0).unwrap();
++    drop(file);
++    let before = disk.snapshot();
++    let memory_before = memory.snapshot();
++    let entries = disk
++        .lock_state()
++        .accounted
++        .iter()
++        .map(|(k, v)| (*k, *v))
++        .collect::<BTreeMap<_, _>>();
++    disk.lock_state().census_streams.fail_next_close.set(true);
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    let after = disk.snapshot();
++    assert_eq!(after.phase, NodeDiskPhase::Failed);
++    assert_eq!(after.open_census_streams, 1);
++    assert_eq!(after.census_close_errno, Some(libc::EIO));
++    assert_eq!(after.charged_bytes, before.charged_bytes);
++    assert_eq!(after.pending_bytes, before.pending_bytes);
++    assert_eq!(
++        after.filesystem_pending_bytes,
++        before.filesystem_pending_bytes
++    );
++    assert_eq!(
++        disk.lock_state()
++            .accounted
++            .iter()
++            .map(|(k, v)| (*k, *v))
++            .collect::<BTreeMap<_, _>>(),
++        entries
++    );
++    assert!(disk.pause().is_err());
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    assert_eq!(memory.snapshot().used_bytes, memory_before.used_bytes);
++    assert_eq!(disk.snapshot().open_census_streams, 1);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++}
++
++fn registered_preparation(
++    config: &NodeDiskConfig,
++    memory: &Arc<TestDiskMemory>,
++    installed: &mut super::super::List<RegisteredDisk>,
++) -> (Identity, u64, *const ()) {
++    use crate::NodeDiskMemoryAdmission;
++    let requirements = NodeDisk::memory_requirements(config).unwrap();
++    let charge = memory
++        .clone()
++        .reserve_installed(requirements.owner_bytes)
++        .unwrap();
++    let registry_charge = memory
++        .clone()
++        .reserve_installed(requirements.registry_bytes)
++        .unwrap();
++    let (roots, ancestor_locks, unit) = root_set(config);
++    let identity = roots.values().next().unwrap().identity;
++    let (limit, _) = super::super::ledger::map_limits(config).unwrap();
++    let accounted = fixed_map::Banks::new(limit).unwrap();
++    let live = fixed_map::Banks::new(config.max_open_files as usize).unwrap();
++    let entry = super::super::List::prepare(RegisteredDisk {
++        identity,
++        registration: Registration::Preparing(PreparedResources {
++            config: config.clone(),
++            memory: memory.clone(),
++            roots,
++            ancestor_locks,
++            accounted,
++            live,
++            streams: Streams::default(),
++            charge,
++        }),
++        _charge: registry_charge,
++    });
++    let allocation = std::ptr::from_ref(entry.as_ref()).cast::<()>();
++    installed.insert(entry);
++    (identity, unit, allocation)
++}
++
++#[test]
++fn uncertain_initial_close_retains_registered_outcome_and_resources_through_error_or_unwind() {
++    for unwind in [false, true] {
++        let (_root, mut config, memory) = fixture();
++        config.census_work_per_step = 1;
++        let mut installed = super::super::registry().lock();
++        let (identity, unit, _allocation) =
++            registered_preparation(&config, &memory, &mut installed);
++        let before = memory.snapshot();
++        let root_fd = installed
++            .find(|entry| entry.identity == identity)
++            .unwrap()
++            .roots()
++            .unwrap()
++            .values()
++            .next()
++            .unwrap()
++            .file
++            .as_raw_fd();
++        let cancel = CensusCancellation::default();
++        let run = || {
++            let mut registration = PreparingRegistration {
++                installed: &mut installed,
++                identity,
++                committed: false,
++            };
++            let prepared = registration.prepared();
++            let mut session = CensusSession::new(
++                &prepared.roots,
++                &prepared.config,
++                unit,
++                &cancel,
++                prepared.accounted.stage(17).unwrap(),
++                &prepared.streams,
++            )
++            .unwrap();
++            assert_eq!(session.advance(), Progress::Pending);
++            prepared.streams.fail_next_close.set(true);
++            if unwind {
++                panic!("injected initial census unwind");
++            }
++            cancel.cancel();
++            assert_eq!(session.advance(), Progress::Failed);
++            assert!(session.finish().is_err());
++        };
++        assert_eq!(catch_unwind(AssertUnwindSafe(run)).is_err(), unwind);
++        let entry = installed.find(|entry| entry.identity == identity).unwrap();
++        let Registration::Preparing(prepared) = &entry.registration else {
++            panic!("lost initial custody");
++        };
++        assert_eq!(prepared.streams.outstanding(), 1);
++        assert_eq!(prepared.streams.close_errno(), Some(libc::EIO));
++        assert_eq!(prepared.accounted.len(), 0);
++        assert!(entry.owner().is_err());
++        assert_eq!(memory.snapshot().used_bytes, before.used_bytes);
++        assert_eq!(
++            memory.snapshot().live_reservations,
++            before.live_reservations
++        );
++        assert!(unsafe { libc::fcntl(root_fd, libc::F_GETFD) } >= 0);
++        drop(installed);
++        // The production constructor finds the pre-effect registration without
++        // acquiring new memory or silently retrying the failed native resource.
++        let error = NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
++            .unwrap_err();
++        let crate::DiskOpenError::Failed(error) = error else {
++            panic!("lost retained failure");
++        };
++        assert_eq!(
++            error.downcast_ref::<io::Error>().unwrap().raw_os_error(),
++            Some(libc::EIO)
++        );
++        assert_eq!(memory.snapshot().attempts, before.attempts);
++        let other = open_roots(&config).unwrap();
++        assert!(lock_roots(&other, config.max_depth).is_err());
++    }
++}
++
++#[test]
++fn ordinary_initial_failure_retires_descriptors_before_admission_credit() {
++    let (_root, config, memory) = fixture();
++    let mut installed = super::super::registry().lock();
++    let (identity, _unit, allocation) = registered_preparation(&config, &memory, &mut installed);
++    let mut registration = PreparingRegistration {
++        installed: &mut installed,
++        identity,
++        committed: false,
++    };
++    let prepared = registration.prepared();
++    let fds = prepared
++        .roots
++        .values()
++        .map(|root| root.file.as_raw_fd())
++        .chain(prepared.ancestor_locks.iter().map(AsRawFd::as_raw_fd))
++        .collect::<Vec<_>>();
++    struct ObserveRetirement {
++        lease: Option<crate::DiskMemoryLease>,
++        fds: Vec<i32>,
++        observed: Arc<std::sync::atomic::AtomicBool>,
++        allocation: Arc<crate::allocation_tests::DeallocationObservation>,
++    }
++    impl Drop for ObserveRetirement {
++        fn drop(&mut self) {
++            assert!(
++                self.allocation.finished(),
++                "actual registry backing still live at owner credit retirement"
++            );
++            for fd in &self.fds {
++                assert_eq!(
++                    unsafe { libc::fcntl(*fd, libc::F_GETFD) },
++                    -1,
++                    "descriptor still owned at lease retirement"
++                );
++            }
++            self.observed
++                .store(true, std::sync::atomic::Ordering::Release);
++            drop(self.lease.take());
++        }
++    }
++    let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
++    let deallocation = Arc::new(crate::allocation_tests::DeallocationObservation::new(false));
++    // Only the test adds this callback wrapper; production retirement is the
++    // ordinary ordered resource bundle with its original mandatory leases.
++    let lease = std::mem::replace(&mut prepared.charge, crate::DiskMemoryLease::new(()));
++    prepared.charge = crate::DiskMemoryLease::new(ObserveRetirement {
++        lease: Some(lease),
++        fds,
++        observed: observed.clone(),
++        allocation: deallocation.clone(),
++    });
++    assert!(memory.snapshot().used_bytes > 0);
++    crate::allocation_tests::observe_deallocation(allocation, &deallocation, || drop(registration));
++    assert_eq!(deallocation.count(), 1);
++    assert_eq!(
++        deallocation.bytes(),
++        std::mem::size_of::<crate::disk_memory::Entry<RegisteredDisk>>()
++    );
++    assert!(installed.find(|entry| entry.identity == identity).is_none());
++    assert!(observed.load(std::sync::atomic::Ordering::Acquire));
++    assert_eq!(memory.snapshot().used_bytes, 0);
++    assert_eq!(memory.snapshot().live_reservations, 0);
++}
++
++#[test]
++fn checked_geometry_never_substitutes_step_work_for_namespace_capacity() {
++    let (_root, mut config, _memory) = fixture();
++    assert_eq!(config.census_work_bound().unwrap(), 43);
++    config.census_work_per_step = 1;
++    assert_eq!(config.census_work_bound().unwrap(), 43);
++    assert_eq!(super::super::ledger::map_limits(&config).unwrap(), (17, 17));
++    config.max_persistent_subdirectories = u64::MAX / 4 + 1;
++    assert!(config.validate().is_err());
++}
++
++#[test]
++fn provisional_arc_allocation_retires_before_lease_on_error_and_unwind() {
++    use super::super::ProvisionalOwner;
++    use crate::NodeDiskMemoryAdmission;
++    use crate::allocation_tests::{DeallocationObservation, observe_deallocation};
++    struct Credit {
++        lease: Option<crate::DiskMemoryLease>,
++        observation: Arc<DeallocationObservation>,
++    }
++    impl Drop for Credit {
++        fn drop(&mut self) {
++            assert!(
++                self.observation.finished(),
++                "provisional Arc backing still live at resident credit retirement"
++            );
++            drop(self.lease.take());
++        }
++    }
++    for unwind in [false, true] {
++        let memory = TestDiskMemory::new(1 << 20, 4);
++        let observation = Arc::new(DeallocationObservation::new(false));
++        let owner = ProvisionalOwner::new(Credit {
++            lease: Some(memory.clone().reserve_installed(4096).unwrap()),
++            observation: observation.clone(),
++        });
++        // Pinned std ArcInner is repr(C): strong, weak, then aligned T. The
++        // observer verifies this exact native allocation and requested layout.
++        let (layout, offset) = std::alloc::Layout::new::<[usize; 2]>()
++            .extend(std::alloc::Layout::new::<Credit>())
++            .unwrap();
++        let value = Arc::as_ptr(owner.0.as_ref().unwrap()).cast::<u8>();
++        let allocation = unsafe { value.sub(offset) }.cast::<()>();
++        let outcome = catch_unwind(AssertUnwindSafe(|| {
++            observe_deallocation(allocation, &observation, || -> Result<()> {
++                let _owner = owner;
++                if unwind {
++                    panic!("original provisional publication panic");
++                }
++                Err(io::Error::from_raw_os_error(libc::EIO).into())
++            })
++        }));
++        if unwind {
++            assert_eq!(
++                outcome.unwrap_err().downcast_ref::<&str>(),
++                Some(&"original provisional publication panic")
++            );
++        } else {
++            assert_eq!(
++                outcome
++                    .unwrap()
++                    .unwrap_err()
++                    .downcast_ref::<io::Error>()
++                    .unwrap()
++                    .raw_os_error(),
++                Some(libc::EIO)
++            );
++        }
++        assert_eq!(observation.count(), 1);
++        assert_eq!(observation.bytes(), layout.pad_to_align().size());
++        assert_eq!(memory.snapshot().used_bytes, 0);
++        assert_eq!(memory.snapshot().live_reservations, 0);
++    }
++}
++
++#[test]
++fn actual_initial_promise_overflow_removes_only_the_unpublished_registration() {
++    let (_root, config, memory) = fixture();
++    let device = super::super::DeviceDisk::isolated(0, memory.clone()).unwrap();
++    device.lock().set_pending(u64::MAX).unwrap();
++    let error = NodeDisk::open_inner(
++        &config,
++        memory.clone(),
++        &CensusCancellation::default(),
++        super::super::DeviceSelection::Existing(device),
++    )
++    .unwrap_err();
++    assert!(format!("{error:#}").contains("promises overflow"));
++    assert!(
++        super::super::registry()
++            .lock()
++            .find(|entry| entry
++                .config()
++                .is_some_and(|candidate| candidate.roots == config.roots))
++            .is_none()
++    );
++    assert_eq!(memory.snapshot().used_bytes, 0);
++    assert_eq!(memory.snapshot().live_reservations, 0);
++    let disk = open(&config, &memory);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++}
+--- a/crates/kasumi-store/src/node_disk/census.rs
++++ b/crates/kasumi-store/src/node_disk/census.rs
+@@ -239,38 +239,78 @@
+     anyhow::bail!("persistent file path is empty")
+ }
+ 
+-pub(super) struct Cursor {
++/// Native stream custody remains inside the caller's State/initial-open guard.
++/// Cells are used only by this synchronous scan and its stack unwinding; neither
++/// a Cell reference nor a native cursor crosses a thread or await boundary.
++#[derive(Default)]
++pub(super) struct Streams {
++    outstanding: std::cell::Cell<u32>,
++    first_close_errno: std::cell::Cell<Option<i32>>,
++    #[cfg(test)]
++    fail_next_close: std::cell::Cell<bool>,
++}
++impl Streams {
++    pub(super) fn outstanding(&self) -> u32 {
++        self.outstanding.get()
++    }
++    pub(super) fn close_errno(&self) -> Option<i32> {
++        self.first_close_errno.get()
++    }
++    pub(super) fn close_error(&self) -> Option<io::Error> {
++        self.close_errno().map(io::Error::from_raw_os_error)
++    }
++}
++
++pub(super) struct Cursor<'a> {
+     identity: Identity,
+     binding: NamespaceBinding,
+     file: File,
+-    entries: *mut libc::DIR,
+-}
+-
+-impl Cursor {
+-    fn open(file: File, binding: NamespaceBinding) -> Result<Self> {
++    entries: Option<std::ptr::NonNull<libc::DIR>>,
++    streams: &'a Streams,
++}
++
++impl<'a> Cursor<'a> {
++    fn open(
++        file: File,
++        binding: NamespaceBinding,
++        streams: &'a Streams,
++        maximum: u32,
++    ) -> Result<Self> {
++        let next = streams
++            .outstanding()
++            .checked_add(1)
++            .context("census stream count overflow")?;
++        ensure!(next <= maximum, "census stream budget exhausted");
++        ensure!(
++            streams.close_errno().is_none(),
++            "uncertain census stream requires process restart"
++        );
+         let identity = Identity::of(&file.metadata()?);
+-        // A dup shares the directory offset and would make a later census start
+-        // at EOF. Open a new file description anchored to this descriptor.
++        // A dup shares offsets. This independent file description is retained
++        // until exactly one closedir invocation consumes its native owner.
+         let fd = open_at(&file, c".", libc::O_RDONLY | libc::O_DIRECTORY)?.into_raw_fd();
+         // SAFETY: fdopendir takes ownership only on success.
+-        let entries = unsafe { libc::fdopendir(fd) };
+-        if entries.is_null() {
++        let pointer = unsafe { libc::fdopendir(fd) };
++        let Some(entries) = std::ptr::NonNull::new(pointer) else {
+             let error = io::Error::last_os_error();
+             drop(unsafe { File::from_raw_fd(fd) });
+             return Err(error.into());
+-        }
++        };
++        // No fallible handoff follows native acquisition before registration.
++        streams.outstanding.set(next);
+         Ok(Self {
+             identity,
++            binding,
+             file,
+-            entries,
+-            binding,
++            entries: Some(entries),
++            streams,
+         })
+     }
+ 
+     fn next(&mut self, max_name_bytes: u32) -> Result<Option<CString>> {
+         // SAFETY: this cursor alone owns DIR and clears errno to distinguish EOF.
+         unsafe { set_errno(0) };
+-        let item = unsafe { libc::readdir(self.entries) };
++        let item = unsafe { libc::readdir(self.entries.expect("live census stream").as_ptr()) };
+         if item.is_null() {
+             let error = io::Error::last_os_error();
+             if error.raw_os_error() != Some(0) {
+@@ -285,6 +325,33 @@
+         );
+         Ok(Some(name.to_owned()))
+     }
++
++    fn close(&mut self) -> io::Result<()> {
++        let Some(pointer) = self.entries.take() else {
++            return Ok(());
++        };
++        // SAFETY: the sole native owner is consumed exactly once, even when
++        // closedir reports an uncertain outcome. Never retry this pointer.
++        let result = unsafe { libc::closedir(pointer.as_ptr()) };
++        let error = (result != 0).then(io::Error::last_os_error);
++        #[cfg(test)]
++        let error = if self.streams.fail_next_close.replace(false) {
++            Some(io::Error::from_raw_os_error(libc::EIO))
++        } else {
++            error
++        };
++        if let Some(error) = error {
++            // Capture the actual native errno before any other field retires.
++            // Every failed close keeps its slot; the first outcome is retained
++            // independently of any preceding cancellation/read/identity error.
++            if self.streams.close_errno().is_none() {
++                self.streams.first_close_errno.set(error.raw_os_error());
++            }
++            return Err(error);
++        }
++        self.streams.outstanding.set(self.streams.outstanding() - 1);
++        Ok(())
++    }
+ }
+ 
+ #[cfg(target_os = "linux")]
+@@ -295,14 +362,13 @@
+ unsafe fn set_errno(value: libc::c_int) {
+     unsafe { *libc::__error() = value };
+ }
+-
+-impl Drop for Cursor {
++impl Drop for Cursor<'_> {
+     fn drop(&mut self) {
+-        unsafe { libc::closedir(self.entries) };
+-    }
+-}
+-
+-#[derive(Default)]
++        let _ = self.close();
++    }
++}
++
++#[derive(Debug, Default)]
+ pub(super) struct Totals {
+     pub(super) bytes: u64,
+     pub(super) pending: u64,
+@@ -310,7 +376,6 @@
+     pub(super) directory_bytes: u64,
+     pub(super) directories: u64,
+ }
+-
+ struct Scan<'a> {
+     counters: Totals,
+     accounted: &'a mut super::fixed_map::Map<AccountedInode>,
+@@ -327,50 +392,155 @@
+     }
+ }
+ 
+-pub(super) fn census(
+-    roots: &BTreeMap<String, Root>,
+-    config: &NodeDiskConfig,
++/// Typed secondary-close context; the original primary cause remains in the
++/// anyhow chain, while this independent native errno remains downcastable.
++#[derive(Debug)]
++pub(super) struct CensusCloseFailure {
++    pub(super) errno: i32,
++}
++impl std::fmt::Display for CensusCloseFailure {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(
++            f,
++            "census stream close also failed: {}",
++            io::Error::from_raw_os_error(self.errno)
++        )
++    }
++}
++impl std::error::Error for CensusCloseFailure {}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum Progress {
++    Pending,
++    Complete,
++    Failed,
++}
++
++/// One scan owns one inactive bank and its actual DFS streams across every
++/// Pending result. State/registry serialization is retained by the synchronous
++/// caller, so no runtime file mutation, bank rebuild or other census overlaps.
++struct CensusSession<'a> {
++    roots: std::collections::btree_map::Values<'a, String, Root>,
++    current_root: Option<&'a Root>,
++    stack: Vec<Cursor<'a>>,
++    scan: Scan<'a>,
++    config: &'a NodeDiskConfig,
+     unit: u64,
+-    cancel: &CensusCancellation,
+-    accounted: &mut super::fixed_map::Map<AccountedInode>,
+-) -> Result<Totals> {
+-    let mut totals = Scan {
+-        counters: Totals::default(),
+-        accounted,
+-    };
+-    let mut work = 0_u64;
+-    for root in roots.values() {
+-        root.verify()?;
+-        enroll_directory(
+-            &mut totals,
+-            &root.file,
+-            NamespaceBinding::root(root.identity),
+-            None,
+-            config.directory_policy,
+-        )?;
+-        let mut stack = vec![Cursor::open(
+-            root.file.try_clone()?,
+-            NamespaceBinding::root(root.identity),
+-        )?];
+-        while !stack.is_empty() {
+-            cancel.check()?;
+-            let current = stack.last_mut().expect("nonempty census stack");
+-            let Some(name) = current.next(config.max_name_bytes)? else {
++    cancel: &'a CensusCancellation,
++    streams: &'a Streams,
++    work: u64,
++    whole_work: u64,
++    subdirectories: u64,
++    progress: Progress,
++    failure: Option<anyhow::Error>,
++}
++impl<'a> CensusSession<'a> {
++    fn new(
++        roots: &'a BTreeMap<String, Root>,
++        config: &'a NodeDiskConfig,
++        unit: u64,
++        cancel: &'a CensusCancellation,
++        accounted: &'a mut super::fixed_map::Map<AccountedInode>,
++        streams: &'a Streams,
++    ) -> Result<Self> {
++        ensure!(
++            streams.outstanding() == 0 && streams.close_errno().is_none(),
++            "uncertain census streams require process restart"
++        );
++        ensure!(
++            config.census_work_per_step > 0,
++            "census step budget is zero"
++        );
++        let whole_work = config.census_work_bound()?;
++        // All stack backing is prepared before the first fdopendir. No stack
++        // growth or scan restart occurs when a step exhausts its work budget.
++        let mut stack = Vec::new();
++        stack.try_reserve_exact(config.max_depth as usize)?;
++        Ok(Self {
++            roots: roots.values(),
++            current_root: None,
++            stack,
++            scan: Scan {
++                counters: Totals::default(),
++                accounted,
++            },
++            config,
++            unit,
++            cancel,
++            streams,
++            work: 0,
++            whole_work,
++            subdirectories: 0,
++            progress: Progress::Pending,
++            failure: None,
++        })
++    }
++    fn advance(&mut self) -> Progress {
++        if self.progress != Progress::Pending {
++            return self.progress;
++        }
++        match self.advance_inner() {
++            Ok(progress) => self.progress = progress,
++            Err(error) => {
++                self.failure = Some(error);
++                self.progress = Progress::Failed;
++                self.close_all();
++                self.scan.accounted.reset();
++            }
++        }
++        self.progress
++    }
++    fn advance_inner(&mut self) -> Result<Progress> {
++        for _ in 0..self.config.census_work_per_step {
++            self.cancel.check()?;
++            if self.current_root.is_none() {
++                let Some(root) = self.roots.next() else {
++                    return Ok(Progress::Complete);
++                };
++                root.verify()?;
++                enroll_directory(
++                    &mut self.scan,
++                    &root.file,
++                    NamespaceBinding::root(root.identity),
++                    None,
++                    self.config.directory_policy,
++                )?;
++                self.stack.push(Cursor::open(
++                    root.file.try_clone()?,
++                    NamespaceBinding::root(root.identity),
++                    self.streams,
++                    self.config.max_depth,
++                )?);
++                self.current_root = Some(root);
++            }
++            let root = self.current_root.expect("active census root");
++            ensure!(
++                self.work < self.whole_work,
++                "persistent census geometry work exhausted"
++            );
++            self.work += 1; // checked whole-job bound includes dots and EOF.
++            let current = self.stack.last_mut().expect("active census stack");
++            let Some(name) = current.next(self.config.max_name_bytes)? else {
+                 current.file.sync_all()?;
+-                verify_enrolled_directory(&totals, current)?;
+-                stack.pop();
++                verify_enrolled_directory(&self.scan, current)?;
++                current.close()?;
++                self.stack.pop();
++                if self.stack.is_empty() {
++                    root.verify()?;
++                    self.current_root = None;
++                    if self.roots.len() == 0 {
++                        self.cancel.check()?;
++                        return Ok(Progress::Complete);
++                    }
++                }
+                 continue;
+             };
+-            work = work.checked_add(1).context("census work overflow")?;
+-            ensure!(
+-                work <= config.max_census_entries,
+-                "persistent census work exhausted"
+-            );
+             if name.to_bytes() == b"." || name.to_bytes() == b".." {
+                 continue;
+             }
+             let parent = current.identity;
+-            let enrolled = totals
++            let enrolled = self
++                .scan
+                 .accounted
+                 .get_mut(&parent)
+                 .and_then(AccountedInode::directory_mut)
+@@ -380,7 +550,7 @@
+                 .checked_add(1)
+                 .context("directory child count overflow")?;
+             let binding = current.binding.child(&name);
+-            // Open nonblocking so a substituted FIFO cannot stall a bounded census.
++            // Nonblocking open prevents a substituted FIFO from stalling census.
+             let child = open_at(&current.file, &name, libc::O_RDONLY | libc::O_NONBLOCK)?;
+             let metadata = child.metadata()?;
+             ensure!(
+@@ -390,19 +560,33 @@
+             if metadata.is_dir() {
+                 directory(&metadata)?;
+                 ensure!(
+-                    stack.len() < config.max_depth as usize,
++                    self.subdirectories < self.config.max_persistent_subdirectories,
++                    "persistent subdirectory cardinality exhausted"
++                );
++                ensure!(
++                    self.stack.len() < self.config.max_depth as usize,
+                     "census depth exhausted"
+                 );
+                 enroll_directory(
+-                    &mut totals,
++                    &mut self.scan,
+                     &child,
+                     binding,
+                     Some(parent),
+-                    config.directory_policy,
++                    self.config.directory_policy,
+                 )?;
+-                stack.push(Cursor::open(child, binding)?);
++                self.subdirectories += 1;
++                self.stack.push(Cursor::open(
++                    child,
++                    binding,
++                    self.streams,
++                    self.config.max_depth,
++                )?);
+             } else {
+                 regular(&metadata, root.identity.0)?;
++                ensure!(
++                    self.scan.files < self.config.max_persistent_files,
++                    "persistent file cardinality exhausted"
++                );
+                 lock(&child, libc::LOCK_EX)?;
+                 child.sync_all()?;
+                 let verified = child.metadata()?;
+@@ -411,13 +595,13 @@
+                     Identity::of(&verified) == Identity::of(&metadata),
+                     "census inode changed"
+                 );
+-                let (bytes, pending) = extent(&verified, unit)?;
+-                totals
++                let (bytes, pending) = extent(&verified, self.unit)?;
++                self.scan
+                     .accounted
+                     .try_reserve(1)
+                     .context("reserving census inode metadata")?;
+                 ensure!(
+-                    totals
++                    self.scan
+                         .accounted
+                         .insert(
+                             Identity::of(&verified),
+@@ -425,30 +609,81 @@
+                                 binding,
+                                 bytes,
+                                 pending,
+-                                verified.len(),
+-                            )),
++                                verified.len()
++                            ))
+                         )
+                         .is_none(),
+                     "persistent census repeated an enrolled physical inode"
+                 );
+-                totals.bytes = totals
++                self.scan.bytes = self
++                    .scan
+                     .bytes
+                     .checked_add(bytes)
+                     .context("census extent overflow")?;
+-                totals.pending = totals
++                self.scan.pending = self
++                    .scan
+                     .pending
+                     .checked_add(pending)
+                     .context("census pending overflow")?;
+-                totals.files = totals
++                self.scan.files = self
++                    .scan
+                     .files
+                     .checked_add(1)
+                     .context("census file count overflow")?;
+             }
+         }
+-        root.verify()?;
+-    }
+-    cancel.check()?;
+-    Ok(totals.counters)
++        Ok(Progress::Pending)
++    }
++    fn close_all(&mut self) {
++        while let Some(mut cursor) = self.stack.pop() {
++            let _ = cursor.close();
++        }
++    }
++    fn finish(mut self) -> Result<Totals> {
++        self.close_all();
++        if self.progress == Progress::Pending {
++            self.progress = Progress::Failed;
++            self.failure = Some(anyhow::anyhow!("persistent census is incomplete"));
++        }
++        match (self.failure.take(), self.streams.close_error()) {
++            (Some(error), Some(close)) => Err(error.context(CensusCloseFailure {
++                errno: close.raw_os_error().expect("native close errno"),
++            })),
++            (Some(error), None) => Err(error),
++            (None, Some(close)) => {
++                self.progress = Progress::Failed;
++                Err(close.into())
++            }
++            (None, None) => Ok(std::mem::take(&mut self.scan.counters)),
++        }
++    }
++}
++impl Drop for CensusSession<'_> {
++    fn drop(&mut self) {
++        self.close_all();
++        // Error/cancellation/unwind never leaves a partial candidate available
++        // for publication. This does not retire either bank's funded backing.
++        if self.progress != Progress::Complete {
++            self.scan.accounted.reset();
++        }
++    }
++}
++
++pub(super) fn census(
++    roots: &BTreeMap<String, Root>,
++    config: &NodeDiskConfig,
++    unit: u64,
++    cancel: &CensusCancellation,
++    accounted: &mut super::fixed_map::Map<AccountedInode>,
++    streams: &Streams,
++) -> Result<Totals> {
++    let mut session = CensusSession::new(roots, config, unit, cancel, accounted, streams)?;
++    while session.advance() == Progress::Pending {
++        // Internal synchronous progress only. Guards and native streams remain
++        // owned here; yielding does not promise an async scheduler/cancellation API.
++        std::thread::yield_now();
++    }
++    session.finish()
+ }
+ 
+ // Directories are not sparse regular files: st_size is a namespace value, not
+@@ -517,7 +752,7 @@
+     Ok(())
+ }
+ 
+-fn verify_enrolled_directory(totals: &Scan<'_>, cursor: &Cursor) -> Result<()> {
++fn verify_enrolled_directory(totals: &Scan<'_>, cursor: &Cursor<'_>) -> Result<()> {
+     let metadata = cursor.file.metadata()?;
+     directory(&metadata)?;
+     let enrolled = totals
+@@ -537,3 +772,7 @@
+     );
+     Ok(())
+ }
++
++#[cfg(test)]
++#[path = "census/tests.rs"]
++mod tests;
+--- a/crates/kasumi-store/src/node_disk/directory/cursor.rs
++++ b/crates/kasumi-store/src/node_disk/directory/cursor.rs
+@@ -299,7 +299,15 @@
+                     return Ok(None);
+                 }
+                 self.work = self.work.checked_add(1).ok_or(io::ErrorKind::StorageFull)?;
+-                if self.work > disk.config.max_census_entries {
++                // This operational scan visits one enrolled directory. Its complete
++                // returned-entry bound is the retained child count plus dots;
++                // census_work_per_step is not a lifetime limit for this cursor.
++                if self.work
++                    > self
++                        .expected_children
++                        .checked_add(2)
++                        .ok_or(io::ErrorKind::InvalidData)?
++                {
+                     return Err(io::ErrorKind::StorageFull.into());
+                 }
+                 let name = unsafe { CStr::from_ptr((*item).d_name.as_ptr()) };
+--- a/crates/kasumi-store/src/node_disk/directory/tests.rs
++++ b/crates/kasumi-store/src/node_disk/directory/tests.rs
+@@ -293,7 +293,9 @@
+ #[test]
+ fn file_capacity_remains_independent_of_directory_membership() {
+     let (directory, mut config, memory) = fixture();
+-    config.max_census_entries = 8;
++    config.max_persistent_files = 8;
++    config.max_persistent_subdirectories = 8;
++    config.census_work_per_step = 8;
+     crate::private_files::create_directory(&directory.path().join("child")).unwrap();
+     let disk = open(&config, &memory);
+     // Both directories remain enrolled as each of the original eight file
+@@ -322,15 +324,14 @@
+         std::io::ErrorKind::StorageFull
+     );
+     assert!(!directory.path().join("overflow").exists());
+-    // This unchanged work limit may reject recensus even though the files
+-    // were individually admitted. Failure retains the entire old union.
++    // The same admitted namespace now completes over retained bounded steps.
+     let old = disk
+         .lock_state()
+         .accounted
+         .iter()
+         .map(|(key, entry)| (*key, *entry))
+         .collect::<std::collections::BTreeMap<_, _>>();
+-    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    disk.reconcile(&CensusCancellation::default()).unwrap();
+     assert_eq!(
+         disk.lock_state()
+             .accounted
+@@ -339,4 +340,5 @@
+             .collect::<std::collections::BTreeMap<_, _>>(),
+         old
+     );
+-}
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++}
+--- a/crates/kasumi-store/src/node_disk/file.rs
++++ b/crates/kasumi-store/src/node_disk/file.rs
+@@ -659,7 +659,7 @@
+             return Err(io::ErrorKind::StorageFull.into());
+         }
+         if let Some(work) = create {
+-            if state.files >= self.config.max_census_entries {
++            if state.files >= self.config.max_persistent_files {
+                 return Err(io::ErrorKind::StorageFull.into());
+             }
+             self.reserve(&mut state, 0, work)?;
+--- a/crates/kasumi-store/src/node_disk/fixed_map/tests.rs
++++ b/crates/kasumi-store/src/node_disk/fixed_map/tests.rs
+@@ -284,12 +284,14 @@
+         max_open_files: 4096,
+         max_open_directories: 4096,
+         directory_policy: DirectoryPolicy::new(1 << 20, 32768).unwrap(),
+-        max_census_entries: 1_000_000,
++        max_persistent_files: 1_000_000,
++        max_persistent_subdirectories: 1_000_000,
++        census_work_per_step: 1_000_000,
+         max_depth: 64,
+         max_name_bytes: 255,
+     };
+     let (retained, census) = super::super::ledger::map_limits(&config).unwrap();
+-    assert_eq!((retained, census), (2_000_001, 1_000_001));
++    assert_eq!((retained, census), (2_000_001, 2_000_001));
+     let banks = 2 * bank_bytes::<AccountedInode>(retained).unwrap();
+     let live = 2 * bank_bytes::<Weak<super::super::file::FileOwner>>(4096).unwrap();
+     println!(
+--- a/crates/kasumi-store/src/node_disk/fixed_map.rs
++++ b/crates/kasumi-store/src/node_disk/fixed_map.rs
+@@ -63,7 +63,7 @@
+     pub(super) fn remove(&mut self, key: &Identity) -> Option<V> {
+         self.entries.remove(key)
+     }
+-    fn reset(&mut self) {
++    pub(super) fn reset(&mut self) {
+         // clear() skips an empty map and can preserve depleted growth_left.
+         // RawDrain's Drop calls clear_no_drop even when len == 0.
+         drop(self.entries.drain());
+--- a/crates/kasumi-store/src/node_disk/ledger/tests.rs
++++ b/crates/kasumi-store/src/node_disk/ledger/tests.rs
+@@ -52,9 +52,7 @@
+ fn retained_and_replacement_bounds_preserve_independent_file_capacity() {
+     let n = 8;
+     let roots = 2;
+-    let (retained, replacement) = capacities(n, roots).unwrap();
+-    // No dot-entry credit is assumed. Even N census directories plus roots
+-    // leave room for the original N files admitted after census completes.
++    let (retained, replacement) = capacities(n, n, roots).unwrap();
+     let mut old = HashMap::new();
+     for index in 0..n + roots {
+         old.insert(
+@@ -66,32 +64,47 @@
+         old.insert(Identity(2, index), AccountedInode::File(file(2)));
+     }
+     assert_eq!(old.len() as u64, retained);
+-    assert!(old.len() as u64 > replacement);
+-    // A fresh census spends one work unit on each non-root inode, whatever
+-    // its kind. Exhaust every mixture while the old allocation remains live.
++    assert_eq!(retained, replacement);
++    // The complete directory and file populations fit in each simultaneously
++    // retained bank; work-step boundaries never reduce logical capacity.
+     for files in 0..=n {
+-        let mut new = HashMap::new();
+-        for index in 0..files {
+-            new.insert(Identity(3, index), AccountedInode::File(file(3)));
++        for directories in 0..=n {
++            let mut new = HashMap::new();
++            for index in 0..files {
++                new.insert(Identity(3, index), AccountedInode::File(file(3)));
++            }
++            for index in 0..directories + roots {
++                new.insert(
++                    Identity(4, index),
++                    AccountedInode::Directory(directory(4, None)),
++                );
++            }
++            assert_eq!(
++                new.values().filter(|entry| entry.file().is_some()).count() as u64,
++                files
++            );
++            assert_eq!(
++                new.values()
++                    .filter(|entry| entry.directory().is_some())
++                    .count() as u64,
++                directories + roots
++            );
++            assert!(new.len() as u64 <= replacement);
++            assert!((old.len() + new.len()) as u64 <= 4 * n + 2 * roots);
+         }
+-        for index in files..n + roots {
+-            new.insert(
+-                Identity(4, index),
+-                AccountedInode::Directory(directory(4, None)),
+-            );
+-        }
+-        assert_eq!(new.len() as u64, replacement);
+-        assert_eq!((old.len() + new.len()) as u64, 3 * n + 2 * roots);
+     }
+ }
+ 
+ #[test]
+ fn peak_cardinality_overflow_fails_before_allocation() {
+-    assert_eq!(capacities(u64::MAX, 1), None);
+-    assert_eq!(capacities(u64::MAX / 2 + 1, 0), None);
++    assert_eq!(capacities(u64::MAX, 1, 0), None);
++    assert_eq!(capacities(u64::MAX / 2 + 1, u64::MAX / 2 + 1, 0), None);
+     assert_eq!(
+-        capacities(u64::MAX / 2, 1),
+-        Some((u64::MAX, u64::MAX / 2 + 1))
++        capacities(u64::MAX / 2, u64::MAX / 2, 1),
++        Some((u64::MAX, u64::MAX))
+     );
+-    assert_eq!(capacities(1_000_000, 1), Some((2_000_001, 1_000_001)));
++    assert_eq!(
++        capacities(1_000_000, 1_000_000, 1),
++        Some((2_000_001, 2_000_001))
++    );
+ }
+--- a/crates/kasumi-store/src/node_disk/ledger.rs
++++ b/crates/kasumi-store/src/node_disk/ledger.rs
+@@ -1,8 +1,7 @@
+ //! One physical-inode key space for file and directory enrollment.
+ //!
+-//! The retained owner can create up to N files after a census enrolled up to
+-//! N + R directories. A replacement census visits at most N non-root entries,
+-//! so its union is bounded by N + R. These different peaks must both be funded.
++//! Both retained banks fund the entire permitted namespace F + D + R. Census
++//! work includes dot and EOF observations but never spends logical inode slots.
+ use super::{AccountedDirectory, AccountedFile, NamespaceBinding};
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -43,24 +42,25 @@
+     }
+ }
+ 
+-/// Checked cardinalities, independent of readdir's treatment of dot entries.
+-/// Do not replace the retained limit by `census`: that reduces file admission
+-/// when the owner retains directories from an earlier census.
+-pub(super) fn capacities(entries: u64, roots: u64) -> Option<(u64, u64)> {
+-    let census = entries.checked_add(roots)?;
+-    let retained = census.checked_add(entries)?;
+-    Some((retained, census))
++/// Retained and replacement banks have the same full logical inode capacity.
++pub(super) fn capacities(files: u64, subdirectories: u64, roots: u64) -> Option<(u64, u64)> {
++    let capacity = files.checked_add(subdirectories)?.checked_add(roots)?;
++    Some((capacity, capacity))
+ }
+ 
+ #[cfg(test)]
+ #[path = "ledger/tests.rs"]
+ mod tests;
+ 
+-/// Retained physical capacity and the smaller census logical cardinality.
++/// Both retained bank capacities, independent of census step work.
+ pub(super) fn map_limits(config: &super::NodeDiskConfig) -> std::io::Result<(usize, usize)> {
+     let roots = u64::try_from(config.roots.len()).map_err(|_| crate::disk_memory::overflow())?;
+-    let (retained, census) =
+-        capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;
++    let (retained, census) = capacities(
++        config.max_persistent_files,
++        config.max_persistent_subdirectories,
++        roots,
++    )
++    .ok_or_else(crate::disk_memory::overflow)?;
+     Ok((
+         usize::try_from(retained).map_err(|_| crate::disk_memory::overflow())?,
+         usize::try_from(census).map_err(|_| crate::disk_memory::overflow())?,
+--- a/crates/kasumi-store/src/node_disk/memory.rs
++++ b/crates/kasumi-store/src/node_disk/memory.rs
+@@ -23,8 +23,8 @@
+         let handles = u64::from(config.max_open_files);
+         let name = add(u64::from(config.max_name_bytes), 1)?;
+         let (retained, _replacement) = ledger::map_limits(config)?;
+-        // The inactive retained-capacity bank receives the logically smaller
+-        // N+R census. It is also the pre-effect tombstone rebuild workspace.
++        // Both banks fund the full F+D+R namespace. The inactive bank receives
++        // census and is also the pre-effect tombstone rebuild workspace.
+         // No third map and no post-publication expansion allocation exist.
+         let ledgers = banks::<AccountedInode>(retained)?;
+         let live = banks::<Weak<file::FileOwner>>(
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -16,7 +16,9 @@
+         max_open_files: 16,
+         max_open_directories: 16,
+         directory_policy: DirectoryPolicy::fixture(),
+-        max_census_entries: 10_000,
++        max_persistent_files: 10_000,
++        max_persistent_subdirectories: 10_000,
++        census_work_per_step: 10_000,
+         max_depth: 32,
+         max_name_bytes: 255,
+     };
+@@ -385,7 +387,7 @@
+ }
+ 
+ #[test]
+-fn cancelled_or_work_exhausted_census_publishes_no_partial_owner() {
++fn cancelled_or_cardinality_exhausted_census_publishes_no_partial_owner() {
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     let (_directory, config) = installation();
+     for name in ["one", "two", "three"] {
+@@ -402,7 +404,7 @@
+         .is_err()
+     );
+     let mut bounded = config.clone();
+-    bounded.max_census_entries = 2;
++    bounded.max_persistent_files = 2;
+     assert!(
+         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+             &bounded,
+@@ -1269,7 +1271,7 @@
+ fn enrolled_file_metadata_limit_rejects_before_creating_an_untracked_inode() {
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     let (_directory, mut config) = installation();
+-    config.max_census_entries = 3;
++    config.max_persistent_files = 3;
+     let disk = open(config.clone(), fixture_memory.clone());
+     for name in ["one", "two", "three"] {
+         drop(
+@@ -2325,7 +2327,7 @@
+     assert!(required.device_bytes > 0 && required.registration_bytes > 0);
+     assert_eq!(allocations, 0);
+     assert!(!config.roots["data"].exists());
+-    config.max_census_entries = u64::MAX;
++    config.max_persistent_files = u64::MAX;
+     assert!(NodeDisk::memory_requirements(&config).is_err());
+     assert!(!config.roots["data"].exists());
+ }
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -50,11 +50,13 @@
+     pub max_open_directories: u32,
+     /// Explicit per-directory namespace admission. No implicit filesystem bound.
+     pub directory_policy: DirectoryPolicy,
+-    /// Bounds census traversal work and the separately admitted file count.
+-    /// Directories also occupy the unified inode ledger. File creation retains
+-    /// its full count allowance after census; it does not spend directory slots.
+-    /// An incomplete census never opens admission; new files require a free slot.
+-    pub max_census_entries: u64,
++    /// Independent persistent regular-file cardinality, including closed files.
++    pub max_persistent_files: u64,
++    /// Persistent subdirectories, excluding the explicitly configured roots.
++    pub max_persistent_subdirectories: u64,
++    /// Maximum native readdir calls in one retained census step, including
++    /// dot entries and EOF. The whole scan bound derives from F + 4D + 3R.
++    pub census_work_per_step: u64,
+     /// Bounds traversal stack, ownership ancestor locks and path walk depth.
+     pub max_depth: u32,
+     /// Bound each directory entry before copying its name.
+@@ -113,7 +115,13 @@
+             self.max_open_directories > 0,
+             "open-directory metadata budget is zero"
+         );
+-        ensure!(self.max_census_entries > 0, "census work budget is zero");
++        ensure!(
++            self.max_persistent_files > 0,
++            "persistent file budget is zero"
++        );
++        ensure!(self.census_work_per_step > 0, "census step budget is zero");
++        self.census_work_bound()?;
++        ledger::map_limits(self)?;
+         ensure!(self.max_depth > 0, "census depth budget is zero");
+         ensure!(
+             self.max_name_bytes > 0 && self.max_name_bytes <= u16::MAX.into(),
+@@ -139,6 +147,21 @@
+             );
+         }
+         Ok(())
++    }
++
++    /// A tree with F files, D non-root directories and R configured roots has
++    /// F+D child entries, 2(D+R) dot entries and D+R EOF observations. This is
++    /// a checked whole-job bound, independent of the scheduling step budget.
++    fn census_work_bound(&self) -> io::Result<u64> {
++        let roots = u64::try_from(self.roots.len()).map_err(|_| disk_memory::overflow())?;
++        self.max_persistent_files
++            .checked_add(
++                self.max_persistent_subdirectories
++                    .checked_mul(4)
++                    .ok_or_else(disk_memory::overflow)?,
++            )
++            .and_then(|n| roots.checked_mul(3).and_then(|r| n.checked_add(r)))
++            .ok_or_else(disk_memory::overflow)
+     }
+ 
+     /// Resolve only an explicitly installed accounting root. This performs no
+@@ -221,6 +244,8 @@
+     pub persistent_directories: u64,
+     pub open_directories: u32,
+     pub open_directory_cursors: u32,
++    pub open_census_streams: u32,
++    pub census_close_errno: Option<i32>,
+     pub observed_directory_bytes: u64,
+     pub max_bytes: u64,
+     pub maintenance_reserve_bytes: u64,
+@@ -313,6 +338,7 @@
+     open_files: u32,
+     open_directories: u32,
+     open_directory_cursors: u32,
++    census_streams: census::Streams,
+     namespace_generation: u64,
+     directory_bytes: u64,
+     directories: u64,
+@@ -358,14 +384,165 @@
+     }
+ }
+ 
++/// The one pre-admitted registry allocation owns either an unfinished initial
++/// census or its installed owner. Preparing remains inspectable after an
++/// uncertain close, including when the original constructor unwinds.
++// Inline preparation deliberately uses the one charged registry node; boxing
++// this variant would introduce a separate retention allocation.
++#[allow(clippy::large_enum_variant)]
++enum Registration {
++    Preparing(PreparedResources),
++    Installed(Arc<NodeDisk>),
++    Transition,
++}
+ struct RegisteredDisk {
+-    owner: Arc<NodeDisk>,
++    identity: Identity,
++    registration: Registration,
+     _charge: Lease,
++}
++impl RegisteredDisk {
++    fn config(&self) -> Option<&NodeDiskConfig> {
++        match &self.registration {
++            Registration::Preparing(prepared) => Some(&prepared.config),
++            Registration::Installed(owner) => Some(&owner.config),
++            Registration::Transition => None,
++        }
++    }
++    fn roots(&self) -> Option<&BTreeMap<String, Root>> {
++        match &self.registration {
++            Registration::Preparing(prepared) => Some(&prepared.roots),
++            Registration::Installed(owner) => Some(&owner.roots),
++            Registration::Transition => None,
++        }
++    }
++    fn owner(&self) -> std::result::Result<&Arc<NodeDisk>, DiskOpenError> {
++        match &self.registration {
++            Registration::Installed(owner) => Ok(owner),
++            Registration::Preparing(prepared) => {
++                let error = prepared
++                    .streams
++                    .close_error()
++                    .map(anyhow::Error::from)
++                    .unwrap_or_else(|| anyhow::anyhow!("initial census is incomplete"));
++                Err(error.context(format!(
++                    "initial census retains {} unretired native streams; process restart required",
++                    prepared.streams.outstanding())).into())
++            }
++            Registration::Transition => {
++                Err(anyhow::anyhow!("initial census publication is incomplete").into())
++            }
++        }
++    }
+ }
+ type RegisteredDisks = parking_lot::Mutex<List<RegisteredDisk>>;
+ fn registry() -> &'static RegisteredDisks {
+     static REGISTRY: RegisteredDisks = parking_lot::Mutex::new(List::new());
+     &REGISTRY
++}
++
++/// All backing/descriptor owners retire before the owner lease on ordinary
++/// failure. The registry's own lease retires after its actual list node.
++struct PreparedResources {
++    config: NodeDiskConfig,
++    memory: Arc<dyn NodeDiskMemoryAdmission>,
++    roots: BTreeMap<String, Root>,
++    ancestor_locks: Vec<File>,
++    accounted: fixed_map::Banks<AccountedInode>,
++    live: fixed_map::Banks<Weak<file::FileOwner>>,
++    streams: census::Streams,
++    charge: Lease,
++}
++struct PreparingRegistration<'a> {
++    installed: &'a mut List<RegisteredDisk>,
++    identity: Identity,
++    committed: bool,
++}
++impl PreparingRegistration<'_> {
++    fn entry(&mut self) -> &mut RegisteredDisk {
++        self.installed
++            .find_mut(|entry| entry.identity == self.identity)
++            .expect("registered initial census")
++    }
++    fn prepared(&mut self) -> &mut PreparedResources {
++        match &mut self.entry().registration {
++            Registration::Preparing(prepared) => prepared,
++            _ => unreachable!("unpublished initial census"),
++        }
++    }
++    fn take(&mut self) -> PreparedResources {
++        assert_eq!(
++            self.prepared().streams.outstanding(),
++            0,
++            "unretired initial census stream"
++        );
++        assert!(
++            self.prepared().streams.close_errno().is_none(),
++            "uncertain initial census close"
++        );
++        match std::mem::replace(&mut self.entry().registration, Registration::Transition) {
++            Registration::Preparing(prepared) => prepared,
++            _ => unreachable!("unpublished initial census"),
++        }
++    }
++    fn commit(&mut self, owner: Arc<NodeDisk>) {
++        self.entry().registration = Registration::Installed(owner);
++        self.committed = true;
++    }
++}
++impl Drop for PreparingRegistration<'_> {
++    fn drop(&mut self) {
++        if self.committed {
++            return;
++        }
++        if let Registration::Preparing(prepared) = &self.entry().registration {
++            if prepared.streams.outstanding() != 0 {
++                // The pre-effect registry node remains the actual owner of all
++                // resource backing, locks, leases AND native close diagnostics.
++                // A later constructor reports this retained failure. Never retry
++                // a possibly consumed DIR or allocate a detached retention task.
++                return;
++            }
++        }
++        // Removing the actual node deallocates its backing before returning
++        // the value; ordered fields then retire resources before lease credit.
++        drop(
++            self.installed
++                .remove(|entry| entry.identity == self.identity),
++        );
++    }
++}
++
++/// Private, unique Arc custody until registry publication. On error/unwind the
++/// Arc allocation itself retires before its value and resident lease can drop.
++struct ProvisionalOwner<T>(Option<Arc<T>>);
++impl<T> ProvisionalOwner<T> {
++    fn new(value: T) -> Self {
++        Self(Some(Arc::new(value)))
++    }
++}
++impl<T> std::ops::Deref for ProvisionalOwner<T> {
++    type Target = T;
++    fn deref(&self) -> &T {
++        self.0.as_deref().expect("private provisional owner")
++    }
++}
++impl<T> Drop for ProvisionalOwner<T> {
++    fn drop(&mut self) {
++        if let Some(owner) = self.0.take() {
++            // No Arc or Weak escapes before publication. into_inner retires
++            // the strong/implicit-weak backing before returning the owned T.
++            let value = Arc::into_inner(owner).expect("unique provisional Arc");
++            drop(value);
++        }
++    }
++}
++impl ProvisionalOwner<NodeDisk> {
++    fn install(mut self, registration: &mut PreparingRegistration<'_>) -> Arc<NodeDisk> {
++        // Keep private custody until the retained registry clone is installed.
++        // There is no fallible operation between that installation and take.
++        registration.commit(self.0.as_ref().expect("provisional owner").clone());
++        self.0.take().expect("registered owner")
++    }
+ }
+ 
+ impl NodeDisk {
+@@ -413,8 +590,12 @@
+         config.validate()?;
+         cancel.check()?;
+         let mut installed = registry().try_lock().ok_or(DiskOpenError::RegistryBusy)?;
+-        if let Some(existing) = installed.find(|entry| entry.owner.config.roots == config.roots) {
+-            let owner = &existing.owner;
++        if let Some(existing) = installed.find(|entry| {
++            entry
++                .config()
++                .is_some_and(|installed| installed.roots == config.roots)
++        }) {
++            let owner = existing.owner()?;
+             disk_memory::require(
+                 owner.config == *config,
+                 "installed persistent owner has different budgets",
+@@ -435,29 +616,69 @@
+             .reserve_installed(requirement.registry_bytes)?;
+         let roots = open_roots(config)?;
+         for entry in installed.iter() {
+-            let owner = &entry.owner;
+             disk_memory::require(
+-                !owner
+-                    .roots
+-                    .values()
+-                    .any(|old| roots.values().any(|new| old.identity == new.identity)),
+-                "persistent root is already part of another installed owner",
++                entry.roots().is_none_or(|old_roots| {
++                    !old_roots
++                        .values()
++                        .any(|old| roots.values().any(|new| old.identity == new.identity))
++                }),
++                "persistent root is already part of another registered owner",
+             )?;
+         }
+         let ancestor_locks = census::lock_roots(&roots, config.max_depth)?;
+         let root = roots.values().next().expect("validated roots");
+         let (_, unit) = filesystem(&root.file)?;
+         let (retained_limit, census_limit) = ledger::map_limits(config)?;
+-        let mut accounted = fixed_map::Banks::new(retained_limit)?;
+-        let totals = census(&roots, config, unit, cancel, accounted.stage(census_limit)?)?;
+-        cancel.check()?;
+-        accounted.commit_stage();
++        let accounted = fixed_map::Banks::new(retained_limit)?;
+         let live = fixed_map::Banks::new(
+             usize::try_from(config.max_open_files).map_err(|_| disk_memory::overflow())?,
+         )?;
+-        let device = selection.open(root.identity.0, config.min_free_bytes, memory.clone())?;
+-        let disk = Arc::new(Self {
+-            config: config.clone(),
++        let identity = roots.values().next().expect("validated roots").identity;
++        // Fund and publish actual initial-census custody before fdopendir. A
++        // failed/uncertain constructor remains represented in this same node.
++        installed.insert(List::prepare(RegisteredDisk {
++            identity,
++            registration: Registration::Preparing(PreparedResources {
++                config: config.clone(),
++                memory,
++                roots,
++                ancestor_locks,
++                accounted,
++                live,
++                streams: census::Streams::default(),
++                charge,
++            }),
++            _charge: registry_charge,
++        }));
++        let mut registration = PreparingRegistration {
++            installed: &mut installed,
++            identity,
++            committed: false,
++        };
++        let prepared = registration.prepared();
++        let totals = census(
++            &prepared.roots,
++            &prepared.config,
++            unit,
++            cancel,
++            prepared.accounted.stage(census_limit)?,
++            &prepared.streams,
++        )?;
++        cancel.check()?;
++        prepared.accounted.commit_stage();
++        let device = selection.open(identity.0, config.min_free_bytes, prepared.memory.clone())?;
++        let PreparedResources {
++            config,
++            memory,
++            roots,
++            ancestor_locks,
++            accounted,
++            live,
++            streams: _,
++            charge,
++        } = registration.take();
++        let disk = ProvisionalOwner::new(Self {
++            config,
+             memory,
+             roots,
+             _ancestor_locks: ancestor_locks,
+@@ -471,6 +692,7 @@
+                 open_files: 0,
+                 open_directories: 0,
+                 open_directory_cursors: 0,
++                census_streams: census::Streams::default(),
+                 namespace_generation: 0,
+                 directory_bytes: totals.directory_bytes,
+                 directories: totals.directories,
+@@ -500,10 +722,6 @@
+             drop(disk.after_file_close.lock().unwrap());
+             drop(disk.shrink_failure.lock().unwrap());
+         }
+-        let entry = List::prepare(RegisteredDisk {
+-            owner: disk.clone(),
+-            _charge: registry_charge,
+-        });
+         let mut promises = disk.device.lock();
+         let next = promises
+             .checked_add(totals.pending)
+@@ -512,8 +730,7 @@
+         // read/cleanup can proceed, while every new reservation checks both limits.
+         promises.set_pending(next)?;
+         drop(promises);
+-        installed.insert(entry);
+-        Ok(disk)
++        Ok(disk.install(&mut registration))
+     }
+ 
+     /// Test installations select their file's parent explicitly. This helper is
+@@ -528,8 +745,13 @@
+         let existing = {
+             let installed = registry().try_lock().ok_or(DiskOpenError::RegistryBusy)?;
+             installed
+-                .find(|entry| entry.owner.config.binding(path.as_ref()).is_ok())
+-                .map(|entry| entry.owner.clone())
++                .find(|entry| {
++                    entry
++                        .config()
++                        .is_some_and(|config| config.binding(path.as_ref()).is_ok())
++                })
++                .map(|entry| entry.owner().cloned())
++                .transpose()?
+         };
+         if let Some(owner) = existing {
+             disk_memory::require(
+@@ -543,6 +765,7 @@
+             if snapshot.open_files == 0
+                 && snapshot.open_directories == 0
+                 && snapshot.open_directory_cursors == 0
++                && snapshot.open_census_streams == 0
+             {
+                 owner.reconcile(&CensusCancellation::default())?;
+             }
+@@ -552,7 +775,7 @@
+         Self::open_fixture(&config, memory, &CensusCancellation::default())
+     }
+     /// Explicit bounded generic fixture policy. Production installation policy
+-    /// retains one million census entries and 4096 owners in the server generator.
++    /// retains one million files, one million subdirectories and 4096 owners in the server generator.
+     #[cfg(any(test, feature = "test-utils"))]
+     pub fn fixture_config(path: impl AsRef<std::path::Path>) -> Result<NodeDiskConfig> {
+         let root = path
+@@ -567,7 +790,9 @@
+             max_open_files: 256,
+             max_open_directories: 256,
+             directory_policy: DirectoryPolicy::fixture(),
+-            max_census_entries: 16_384,
++            max_persistent_files: 16_384,
++            max_persistent_subdirectories: 16_384,
++            census_work_per_step: 16_384,
+             max_depth: 64,
+             max_name_bytes: 255,
+         })
+@@ -585,6 +810,8 @@
+             persistent_directories: state.directories,
+             open_directories: state.open_directories,
+             open_directory_cursors: state.open_directory_cursors,
++            open_census_streams: state.census_streams.outstanding(),
++            census_close_errno: state.census_streams.close_errno(),
+             observed_directory_bytes: state.directory_bytes,
+             max_bytes: self.config.max_bytes,
+             maintenance_reserve_bytes: self.config.maintenance_reserve_bytes,
+@@ -605,7 +832,8 @@
+         ensure!(
+             state.open_files == 0
+                 && state.open_directories == 0
+-                && state.open_directory_cursors == 0,
++                && state.open_directory_cursors == 0
++                && state.census_streams.outstanding() == 0,
+             "persistent file or directory owners are still live"
+         );
+         Ok(())
+@@ -619,21 +847,34 @@
+             "poisoned persistent ownership requires process restart"
+         );
+         let mut state = self.lock_state();
+-        state.phase = NodeDiskPhase::Paused;
++        if state.phase != NodeDiskPhase::Failed {
++            state.phase = NodeDiskPhase::Paused;
++        }
+         ensure!(
+             state.open_files == 0
+                 && state.open_directories == 0
+-                && state.open_directory_cursors == 0,
++                && state.open_directory_cursors == 0
++                && state.census_streams.outstanding() == 0,
+             "persistent file or directory owners are still live"
+         );
+         let (_, census_limit) = ledger::map_limits(&self.config)?;
+-        let result = census(
+-            &self.roots,
+-            &self.config,
+-            self.unit,
+-            cancel,
+-            state.accounted.stage(census_limit)?,
+-        );
++        let result = {
++            // Disjoint borrows keep the actual streams and spare bank under the
++            // same State guard for every Pending step and during stack unwind.
++            let State {
++                accounted,
++                census_streams,
++                ..
++            } = &mut *state;
++            census(
++                &self.roots,
++                &self.config,
++                self.unit,
++                cancel,
++                accounted.stage(census_limit)?,
++                census_streams,
++            )
++        };
+         let totals = match result {
+             Ok(totals) => totals,
+             Err(error) => {
+--- a/docs/standalone.md
++++ b/docs/standalone.md
+@@ -31,7 +31,11 @@
+ limits are `max_bytes: 137438953472` (128 GiB),
+ `maintenance_reserve_bytes: 1073741824` (1 GiB),
+ `min_free_bytes: 268435456` (256 MiB), `max_open_files: 4096`,
+-`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.
++`max_open_directories: 4096`, `max_persistent_files: 1000000`,
++`max_persistent_subdirectories: 1000000`, `census_work_per_step: 1000000`,
++`max_depth: 64`, and `max_name_bytes: 255`. The subdirectory count excludes the
++explicitly configured roots. Census work is limited per step; it is not the
++full-job file or directory count. All three namespace/work fields are required.
+ The bounded startup census must finish before storage admission opens. Database,
+ recovery generation, local archive and backup files use this retained owner;
+ configuration never derives a persistent root from a database path. Install every

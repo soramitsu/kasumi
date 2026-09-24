@@ -1,0 +1,11 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED",
+  "patch_sha256": "12c78bd5fcf406b032e11c8651b68372e455f72e2189687f4bfb875da2d4687d",
+  "files": [
+    {
+      "path": "crates/kasumi-authority/src/target_materialization_tests.rs",
+      "before_sha256": "237e6769f01dcbd2dc75cd89d4c0e64d7120df12634931f186ddeff7061351a5",
+      "proposed_sha256": "953a03768ae5b239b65107b4b263efdbf5a24312d85695d9fb1da97bf43e17be"
+    }
+  ]
+}

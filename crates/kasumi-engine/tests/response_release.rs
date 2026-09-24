@@ -1,7 +1,7 @@
 mod common;
 
 use kasumi_engine::open_local;
-use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
+use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
 use std::{collections::BTreeSet, sync::Arc};
@@ -10,19 +10,22 @@ use std::{collections::BTreeSet, sync::Arc};
 async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let keys = Arc::new(LocalKeyProvider::new([41; 32]));
-    let node = NodeStore::create_new_fixture(
-        directory.path().join("node.redb"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    let admission =
-        kasumi_engine::admission::NodeAdmission::new(kasumi_engine::admission::AdmissionConfig {
+    let physical = common::PhysicalFixture::new(
+        &directory.path().join("node.redb"),
+        kasumi_engine::admission::AdmissionConfig {
             max_inflight_operations: 1,
             ..Default::default()
-        })
+        },
+    );
+    let node = physical
+        .storage
+        .create_new(
+            directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
         .unwrap();
-    let audit = common::security_audit_with_admission(node.clone(), admission.clone()).await;
+    let admission = physical.storage.admission.clone();
+    let audit = common::security_audit(node.clone(), admission.clone()).await;
     let store = TenantStore::initialize_catalog_fixture(node, "tenant".into(), keys.clone())
         .await
         .unwrap();

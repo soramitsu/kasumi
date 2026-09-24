@@ -1,0 +1,11 @@
+--- a/crates/kasumi-authority/src/service.rs
++++ b/crates/kasumi-authority/src/service.rs
+@@ -438,7 +438,7 @@
+                     || current.current_leader != Some(self.local_node_id)
+                     || current.running_state.is_err()
+                 {
+-                    #[cfg(any(test, feature = "test-utils"))]
++                    #[cfg(test)]
+                     eprintln!(
+                         "AUTHORITY_PROPOSAL_ROUTE: local={} admitted_term={term} current={current:?}",
+                         self.local_node_id

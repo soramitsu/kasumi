@@ -1,0 +1,48 @@
+[
+  {
+    "name": "store-inventory",
+    "pid": 87249,
+    "pgid": 87249,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-full-store/store-test-binary",
+      "--list"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-full-store-resume/store-inventory.log",
+    "cohort_bound_seconds": 1200,
+    "executable_sha256_before": "b5a6f147846656057c9949a1378148fa5667a53a97612471a40845f678e88bae",
+    "executable_sha256_after": "b5a6f147846656057c9949a1378148fa5667a53a97612471a40845f678e88bae",
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 0.21351929199999997,
+    "log_sha256": "9a10a8a83ab25f712ea9c5b33ba2c0de4844278e87aca83b5bedd2ce606cc647",
+    "exact_inventory_passed": true,
+    "missing": [],
+    "extra": []
+  },
+  {
+    "name": "store-full",
+    "pid": 87254,
+    "pgid": 87254,
+    "command": [
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-full-store/store-test-binary",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-full-store-resume/store-full.log",
+    "cohort_bound_seconds": 1200,
+    "executable_sha256_before": "b5a6f147846656057c9949a1378148fa5667a53a97612471a40845f678e88bae",
+    "executable_sha256_after": "b5a6f147846656057c9949a1378148fa5667a53a97612471a40845f678e88bae",
+    "exit_code": 101,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 95.652045375,
+    "log_sha256": "86fc8a336cc350de7b154750c76d01144ede39878ce8e990b0f315f5c2dc080d"
+  }
+]

@@ -1,0 +1,12 @@
+10003e074: 94015b12    	bl	0x100094cbc <<core::time::Duration>::from_secs>
+10003e0b8: 948d2794    	bl	0x102387f08 <dyld_stub_binder+0x102387f08>
+10003e0fc: 9402f841    	bl	0x1000fc200 <tokio::time::timeout::timeout::<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}>>
+10003e10c: 9402ff29    	bl	0x1000fddb0 <<tokio::time::timeout::Timeout<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}> as core::future::into_future::IntoFuture>::into_future>
+10003e128: 948d2835    	bl	0x1023881fc <dyld_stub_binder+0x1023881fc>
+10003e14c: 948d2705    	bl	0x102387d60 <core::panicking::panic_const::panic_const_async_fn_resumed>
+10003e158: 948d2709    	bl	0x102387d7c <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+10003e164: 94017214    	bl	0x10009a9b4 <core::ptr::drop_glue::<tokio::time::timeout::Timeout<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}>>>
+10003e184: 9403002b    	bl	0x1000fe230 <<tokio::time::timeout::Timeout<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}> as core::future::future::Future>::poll>
+10003e1ec: 940171f2    	bl	0x10009a9b4 <core::ptr::drop_glue::<tokio::time::timeout::Timeout<<lifecycle::Fixture>::leader::{closure#0}::{closure#0}>>>
+10003e208: 94030493    	bl	0x1000ff454 <<core::result::Result<alloc::sync::Arc<kasumi_engine::service::Database>, tokio::time::error::Elapsed>>::unwrap_or_else::<<lifecycle::Fixture>::leader::{closure#0}::{closure#1}>>
+10003e240: 948d25c6    	bl	0x102387958 <core::panicking::panic_in_cleanup>

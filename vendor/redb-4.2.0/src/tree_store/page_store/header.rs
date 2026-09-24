@@ -2,9 +2,7 @@ use crate::transaction_tracker::TransactionId;
 use crate::tree_store::btree_base::{BtreeHeader, Checksum};
 use crate::tree_store::page_store::base::{MAX_PAGE_INDEX, MAX_REGIONS};
 use crate::tree_store::page_store::layout::{DatabaseLayout, RegionLayout};
-use crate::tree_store::page_store::page_manager::{
-    FILE_FORMAT_VERSION1, FILE_FORMAT_VERSION2, FILE_FORMAT_VERSION3, xxh3_checksum,
-};
+use crate::tree_store::page_store::page_manager::{FILE_FORMAT_VERSION4, xxh3_checksum};
 use crate::{DatabaseError, Result, StorageError};
 use alloc::format;
 use alloc::string::ToString;
@@ -108,6 +106,11 @@ pub(super) struct DatabaseHeader {
 impl UnrepairedDatabaseHeader {
     // `expected_page_size` is the page size this database was opened with.
     pub(super) fn from_bytes(data: &[u8], expected_page_size: u32) -> Result<Self, DatabaseError> {
+        if data.len() < DB_HEADER_SIZE {
+            return Err(
+                StorageError::Corrupted("Invalid database header length".to_string()).into(),
+            );
+        }
         if data[..MAGICNUMBER.len()] != MAGICNUMBER {
             return Err(StorageError::Corrupted("Invalid magic number".to_string()).into());
         }
@@ -144,10 +147,11 @@ impl UnrepairedDatabaseHeader {
             ))
             .into());
         }
-        // 0 is valid (v3 has no region header); cap it to keep the region-size math from overflowing.
-        if region_header_pages > MAX_PAGE_INDEX + 1 {
+        // The sole canonical writer uses no region headers. Older optional
+        // region-header layouts are rejected, not interpreted as format4.
+        if region_header_pages != 0 {
             return Err(StorageError::Corrupted(format!(
-                "Invalid region header page count: {region_header_pages}"
+                "Noncanonical region header page count: {region_header_pages}"
             ))
             .into());
         }
@@ -437,7 +441,7 @@ pub(super) struct TransactionHeader {
 impl TransactionHeader {
     fn new(transaction_id: TransactionId) -> Self {
         Self {
-            version: FILE_FORMAT_VERSION3,
+            version: FILE_FORMAT_VERSION4,
             user_root: None,
             system_root: None,
             transaction_id,
@@ -447,18 +451,14 @@ impl TransactionHeader {
 
     // Returned bool indicates whether the checksum was corrupted
     pub(super) fn from_bytes(data: &[u8]) -> Result<(Self, bool), DatabaseError> {
+        if data.len() != TRANSACTION_SIZE {
+            return Err(
+                StorageError::Corrupted("Invalid transaction slot length".to_string()).into(),
+            );
+        }
         let version = data[VERSION_OFFSET];
-        match version {
-            FILE_FORMAT_VERSION1 | FILE_FORMAT_VERSION2 => {
-                return Err(DatabaseError::UpgradeRequired(version));
-            }
-            FILE_FORMAT_VERSION3 => {}
-            _ => {
-                return Err(StorageError::Corrupted(format!(
-                    "Expected file format version <= {FILE_FORMAT_VERSION3}, found {version}",
-                ))
-                .into());
-            }
+        if version != FILE_FORMAT_VERSION4 {
+            return Err(DatabaseError::UnsupportedFileFormat(version));
         }
         let checksum = Checksum::from_le_bytes(
             data[SLOT_CHECKSUM_OFFSET..(SLOT_CHECKSUM_OFFSET + size_of::<Checksum>())]
@@ -466,13 +466,33 @@ impl TransactionHeader {
                 .unwrap(),
         );
         let corrupted = checksum != xxh3_checksum(&data[..SLOT_CHECKSUM_OFFSET]);
+        // A torn unused slot is opaque. Its roots must never be normalized,
+        // accessed or rewritten as valid; authoritative-primary validation
+        // rejects this quarantine marker before any root can be published.
+        if corrupted {
+            return Ok((
+                Self {
+                    version,
+                    user_root: None,
+                    system_root: None,
+                    transaction_id: TransactionId::new(get_u64(&data[TRANSACTION_ID_OFFSET..])),
+                    corrupt_bytes: Some(data.try_into().unwrap()),
+                },
+                true,
+            ));
+        }
+        if data[USER_ROOT_NON_NULL_OFFSET] > 1 || data[SYSTEM_ROOT_NON_NULL_OFFSET] > 1 {
+            return Err(
+                StorageError::Corrupted("Invalid transaction root presence".to_string()).into(),
+            );
+        }
 
         let user_root = if data[USER_ROOT_NON_NULL_OFFSET] != 0 {
             Some(BtreeHeader::from_le_bytes(
                 data[USER_ROOT_OFFSET..(USER_ROOT_OFFSET + BtreeHeader::serialized_size())]
                     .try_into()
                     .unwrap(),
-            ))
+            )?)
         } else {
             None
         };
@@ -481,7 +501,7 @@ impl TransactionHeader {
                 data[SYSTEM_ROOT_OFFSET..(SYSTEM_ROOT_OFFSET + BtreeHeader::serialized_size())]
                     .try_into()
                     .unwrap(),
-            ))
+            )?)
         } else {
             None
         };
@@ -492,11 +512,7 @@ impl TransactionHeader {
             user_root,
             system_root,
             transaction_id,
-            corrupt_bytes: if corrupted {
-                Some(data[..TRANSACTION_SIZE].try_into().unwrap())
-            } else {
-                None
-            },
+            corrupt_bytes: None,
         };
 
         Ok((result, corrupted))
@@ -507,7 +523,7 @@ impl TransactionHeader {
         if let Some(bytes) = self.corrupt_bytes {
             return bytes;
         }
-        assert_eq!(self.version, FILE_FORMAT_VERSION3);
+        assert_eq!(self.version, FILE_FORMAT_VERSION4);
         let mut result = [0; TRANSACTION_SIZE];
         result[VERSION_OFFSET] = self.version;
         if let Some(header) = self.user_root {
@@ -549,7 +565,7 @@ mod test {
     use core::mem::size_of;
     use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
     use std::fs::OpenOptions;
-    use std::io::{Error, ErrorKind, Read, Seek, SeekFrom, Write};
+    use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 
     const X: TableDefinition<&str, &str> = TableDefinition::new("x");
 
@@ -689,7 +705,7 @@ mod test {
             Ok(())
         }
 
-        fn close(&self) -> Result<(), Error> {
+        fn close(&self) -> crate::BackendCloseOutcome {
             self.inner.close()
         }
     }
@@ -1011,8 +1027,7 @@ mod test {
         file.sync_all().unwrap();
     }
 
-    // A torn commit slot can carry an invalid page number. Repair must treat that as a bad primary
-    // and fall back to the secondary, as it does for a checksum mismatch.
+    // An invalid winning root never permits rollback to an earlier secondary commit.
     #[test]
     fn repair_rejects_invalid_primary_root_without_legacy_rollback() {
         let tmpfile = crate::create_tempfile();
@@ -1109,6 +1124,10 @@ mod test {
             }
             data[offset..offset + src.len()].copy_from_slice(src);
             Ok(())
+        }
+
+        fn close(&self) -> crate::BackendCloseOutcome {
+            crate::BackendCloseOutcome::drained(Ok(()))
         }
     }
 
@@ -1436,5 +1455,271 @@ mod test {
             || *x == 0x0B
             || (0x0E <= *x && *x <= 0x1F)
             || (0x7F <= *x && *x <= 0x9F)));
+    }
+    #[test]
+    fn only_canonical_format_four_opens_without_mutating_rejected_files() {
+        for version in [0u8, 1, 2, 3, 5, u8::MAX] {
+            let tmpfile = crate::create_tempfile();
+            create_database_with_one_table(tmpfile.path());
+            let mut bytes = std::fs::read(tmpfile.path()).unwrap();
+            for slot in [super::TRANSACTION_0_OFFSET, super::TRANSACTION_1_OFFSET] {
+                bytes[slot + super::VERSION_OFFSET] = version;
+                let checksum =
+                    super::xxh3_checksum(&bytes[slot..slot + super::SLOT_CHECKSUM_OFFSET]);
+                let start = slot + super::SLOT_CHECKSUM_OFFSET;
+                bytes[start..start + size_of::<super::Checksum>()]
+                    .copy_from_slice(&checksum.to_le_bytes());
+            }
+            std::fs::write(tmpfile.path(), &bytes).unwrap();
+            let error = Database::open(tmpfile.path(), crate::test_admission()).unwrap_err();
+            assert!(
+                matches!(error, DatabaseError::UnsupportedFileFormat(actual) if actual == version)
+            );
+            assert_eq!(std::fs::read(tmpfile.path()).unwrap(), bytes);
+            let error = Database::builder(crate::test_admission())
+                .open_read_only(tmpfile.path())
+                .unwrap_err();
+            assert!(
+                matches!(error, DatabaseError::UnsupportedFileFormat(actual) if actual == version)
+            );
+            assert_eq!(std::fs::read(tmpfile.path()).unwrap(), bytes);
+        }
+    }
+
+    fn checksum_slot(slot: &mut [u8]) {
+        let checksum = super::xxh3_checksum(&slot[..super::SLOT_CHECKSUM_OFFSET]);
+        slot[super::SLOT_CHECKSUM_OFFSET..].copy_from_slice(&checksum.to_le_bytes());
+    }
+
+    #[test]
+    fn canonical_slot_roots_reject_every_reserved_bit_before_publication() {
+        use crate::transaction_tracker::TransactionId;
+        use crate::tree_store::btree_base::BtreeHeader;
+        use crate::tree_store::page_store::base::{MAX_PAGE_INDEX, PageNumber};
+        for order in 0..=20 {
+            let root = BtreeHeader::new(
+                PageNumber::new(MAX_REGIONS - 1, MAX_PAGE_INDEX >> order, order),
+                42,
+                3,
+            );
+            let mut slot = super::TransactionHeader::new(TransactionId::new(7));
+            slot.user_root = Some(root);
+            slot.system_root = Some(root);
+            let canonical = slot.to_bytes();
+            let (decoded, corrupted) = super::TransactionHeader::from_bytes(&canonical).unwrap();
+            assert!(!corrupted);
+            assert_eq!(decoded.user_root, Some(root));
+            assert_eq!(decoded.system_root, Some(root));
+            assert_eq!(decoded.to_bytes(), canonical);
+            for offset in [super::USER_ROOT_OFFSET, super::SYSTEM_ROOT_OFFSET] {
+                for bit in (40..59).chain((20 - u32::from(order))..20) {
+                    let mut bad = canonical;
+                    let raw = super::get_u64(&bad[offset..]) | (1_u64 << bit);
+                    bad[offset..offset + 8].copy_from_slice(&raw.to_le_bytes());
+                    checksum_slot(&mut bad);
+                    assert!(
+                        matches!(
+                            super::TransactionHeader::from_bytes(&bad),
+                            Err(DatabaseError::Storage(StorageError::Corrupted(_)))
+                        ),
+                        "order={order}, offset={offset}, bit={bit}"
+                    );
+                }
+            }
+            for offset in [
+                super::USER_ROOT_NON_NULL_OFFSET,
+                super::SYSTEM_ROOT_NON_NULL_OFFSET,
+            ] {
+                let mut bad = canonical;
+                bad[offset] = 2;
+                checksum_slot(&mut bad);
+                assert!(matches!(
+                    super::TransactionHeader::from_bytes(&bad),
+                    Err(DatabaseError::Storage(StorageError::Corrupted(_)))
+                ));
+            }
+            for length in [0, 1, super::TRANSACTION_SIZE - 1] {
+                assert!(super::TransactionHeader::from_bytes(&canonical[..length]).is_err());
+            }
+        }
+        for length in [0, MAGICNUMBER.len() - 1, DB_HEADER_SIZE - 1] {
+            assert!(super::UnrepairedDatabaseHeader::from_bytes(&vec![0; length], 4096).is_err());
+        }
+    }
+
+    #[derive(Debug)]
+    struct HeaderReadBackend {
+        inner: FileBackend,
+        reads_beyond_header: Arc<AtomicU64>,
+        mutations: Arc<AtomicU64>,
+    }
+    impl StorageBackend for HeaderReadBackend {
+        fn len(&self) -> std::io::Result<u64> {
+            self.inner.len()
+        }
+        fn read(&self, offset: u64, out: &mut [u8]) -> std::io::Result<()> {
+            if offset + out.len() as u64 > DB_HEADER_SIZE as u64 {
+                self.reads_beyond_header.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.read(offset, out)
+        }
+        fn set_len(&self, length: u64) -> std::io::Result<()> {
+            self.mutations.fetch_add(1, Ordering::Relaxed);
+            self.inner.set_len(length)
+        }
+        fn write(&self, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
+            self.mutations.fetch_add(1, Ordering::Relaxed);
+            self.inner.write(offset, bytes)
+        }
+        fn sync_data(&self) -> std::io::Result<()> {
+            self.mutations.fetch_add(1, Ordering::Relaxed);
+            self.inner.sync_data()
+        }
+        fn close(&self) -> crate::BackendCloseOutcome {
+            self.inner.close()
+        }
+    }
+
+    #[test]
+    fn selected_root_alias_rejects_before_page_reads_repair_and_writes() {
+        use crate::{DatabaseOpenMode, DatabaseOpenSettlement, TerminalObservation};
+        for selected in [0, 1] {
+            for recovering in [false, true] {
+                for root_offset in [super::USER_ROOT_OFFSET, super::SYSTEM_ROOT_OFFSET] {
+                    let file = crate::create_tempfile();
+                    create_database_with_one_table(file.path());
+                    let mut bytes = std::fs::read(file.path()).unwrap();
+                    let original = primary_slot_offset(bytes[GOD_BYTE_OFFSET]);
+                    let slot: [u8; super::TRANSACTION_SIZE] = bytes
+                        [original..original + super::TRANSACTION_SIZE]
+                        .try_into()
+                        .unwrap();
+                    for offset in [TRANSACTION_0_OFFSET, TRANSACTION_1_OFFSET] {
+                        bytes[offset..offset + slot.len()].copy_from_slice(&slot);
+                    }
+                    bytes[GOD_BYTE_OFFSET] = TWO_PHASE_COMMIT
+                        | selected
+                        | if recovering { RECOVERY_REQUIRED } else { 0 };
+                    let selected_offset = primary_slot_offset(bytes[GOD_BYTE_OFFSET]);
+                    let offset = selected_offset + root_offset;
+                    let raw = super::get_u64(&bytes[offset..]) | (1_u64 << 40);
+                    bytes[offset..offset + 8].copy_from_slice(&raw.to_le_bytes());
+                    checksum_slot(
+                        &mut bytes[selected_offset..selected_offset + super::TRANSACTION_SIZE],
+                    );
+                    std::fs::write(file.path(), &bytes).unwrap();
+                    let reads = Arc::new(AtomicU64::new(0));
+                    let mutations = Arc::new(AtomicU64::new(0));
+                    let callbacks = Arc::new(AtomicU64::new(0));
+                    let backend = || HeaderReadBackend {
+                        inner: FileBackend::new(file.reopen().unwrap()).unwrap(),
+                        reads_beyond_header: reads.clone(),
+                        mutations: mutations.clone(),
+                    };
+                    let observed = callbacks.clone();
+                    assert!(matches!(
+                        Database::builder(crate::test_admission())
+                            .set_repair_callback(move |_| {
+                                observed.fetch_add(1, Ordering::Relaxed);
+                            })
+                            .create_with_backend(backend()),
+                        Err(DatabaseError::Storage(StorageError::Corrupted(_)))
+                    ));
+                    assert!(matches!(
+                        Database::builder(crate::test_admission()).open_read_only(file.path()),
+                        Err(DatabaseError::Storage(StorageError::Corrupted(_)))
+                    ));
+                    let observed = callbacks.clone();
+                    let mut builder = Database::builder(crate::test_admission());
+                    builder.set_repair_callback(move |_| {
+                        observed.fetch_add(1, Ordering::Relaxed);
+                    });
+                    let mut owner =
+                        builder.retain_backend(Box::new(backend()), DatabaseOpenMode::Existing);
+                    let report = owner.open();
+                    assert_eq!(report.settlement(), DatabaseOpenSettlement::Retained);
+                    assert!(matches!(
+                        report.opening(),
+                        TerminalObservation::Returned(Err(DatabaseError::Storage(
+                            StorageError::Corrupted(_)
+                        )))
+                    ));
+                    assert!(owner.database().is_none());
+                    assert_eq!(owner.close().settlement(), DatabaseOpenSettlement::Closed);
+                    assert_eq!(reads.load(Ordering::Relaxed), 0);
+                    assert_eq!(mutations.load(Ordering::Relaxed), 0);
+                    assert_eq!(callbacks.load(Ordering::Relaxed), 0);
+                    assert_eq!(std::fs::read(file.path()).unwrap(), bytes);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn torn_unused_slot_quarantines_aliases_and_survives_both_primary_orders() {
+        for selected in [0, 1] {
+            let file = crate::create_tempfile();
+            create_database_with_one_table(file.path());
+            let mut bytes = std::fs::read(file.path()).unwrap();
+            let primary = primary_slot_offset(bytes[GOD_BYTE_OFFSET]);
+            let slot: [u8; super::TRANSACTION_SIZE] = bytes
+                [primary..primary + super::TRANSACTION_SIZE]
+                .try_into()
+                .unwrap();
+            for offset in [TRANSACTION_0_OFFSET, TRANSACTION_1_OFFSET] {
+                bytes[offset..offset + slot.len()].copy_from_slice(&slot);
+            }
+            bytes[GOD_BYTE_OFFSET] = TWO_PHASE_COMMIT | RECOVERY_REQUIRED | selected;
+            let secondary = primary_slot_offset(bytes[GOD_BYTE_OFFSET] ^ PRIMARY_BIT);
+            let torn = &mut bytes[secondary..secondary + super::TRANSACTION_SIZE];
+            for offset in [super::USER_ROOT_OFFSET, super::SYSTEM_ROOT_OFFSET] {
+                torn[offset..offset + 8].fill(0xff);
+            }
+            torn[super::USER_ROOT_NON_NULL_OFFSET] = 255;
+            torn[super::SYSTEM_ROOT_NON_NULL_OFFSET] = 255;
+            torn[super::TRANSACTION_ID_OFFSET..super::TRANSACTION_ID_OFFSET + 8]
+                .copy_from_slice(&u64::MAX.to_le_bytes());
+            checksum_slot(torn);
+            torn[super::SLOT_CHECKSUM_OFFSET] ^= 1;
+            let original: [u8; super::TRANSACTION_SIZE] = torn.try_into().unwrap();
+            let (quarantined, corrupted) = super::TransactionHeader::from_bytes(&original).unwrap();
+            assert!(corrupted);
+            assert!(quarantined.user_root.is_none() && quarantined.system_root.is_none());
+            assert_eq!(quarantined.to_bytes(), original);
+            std::fs::write(file.path(), &bytes).unwrap();
+            let database = Database::open(file.path(), crate::test_admission()).unwrap();
+            {
+                let read = database.begin_read().unwrap();
+                assert_eq!(
+                    read.open_table(X)
+                        .unwrap()
+                        .get_owned("k")
+                        .unwrap()
+                        .unwrap()
+                        .value(),
+                    "v"
+                );
+            }
+            let recovered = std::fs::read(file.path()).unwrap();
+            assert_eq!(
+                &recovered[secondary..secondary + super::TRANSACTION_SIZE],
+                &original
+            );
+            let transaction = database.begin_write().unwrap();
+            transaction
+                .open_table(X)
+                .unwrap()
+                .insert("k", "after")
+                .unwrap();
+            transaction.commit().unwrap();
+            let committed = std::fs::read(file.path()).unwrap();
+            let replacement = &committed[secondary..secondary + super::TRANSACTION_SIZE];
+            let (replacement, corrupted) =
+                super::TransactionHeader::from_bytes(replacement).unwrap();
+            assert!(!corrupted);
+            assert!(replacement.corrupt_bytes.is_none());
+            assert!(replacement.user_root.is_some());
+            database.close().unwrap();
+        }
     }
 }

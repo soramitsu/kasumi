@@ -1,0 +1,22 @@
+--- a/vendor/redb-4.2.0/src/transactions.rs
++++ b/vendor/redb-4.2.0/src/transactions.rs
+@@ -1362,7 +1362,7 @@
+             };
+             let mut system_tables = self.system_tables.lock().unwrap();
+             let mut data_freed = system_tables.open_system_table(self, DATA_FREED_TABLE)?;
+-            let drain = || -> Result<(), StorageError> {
++            let mut drain = || -> Result<(), StorageError> {
+                 data_freed.validate_page_lists(lower.., PageListKind::Data)?;
+                 let mut iter = data_freed.extract_from_if(lower.., |_, _| true)?;
+                 for entry in &mut iter {
+--- a/vendor/redb-4.2.0/src/page_list_tests.rs
++++ b/vendor/redb-4.2.0/src/page_list_tests.rs
+@@ -302,7 +302,7 @@
+     mode.store(1, Ordering::Release);
+     let error = tx.finish_page_list_extraction(iter, Ok(())).unwrap_err();
+     let StorageError::Io(original) = &error else {
+-        panic!("close lost original I/O: {error:?}");
++        std::panic!("close lost original I/O: {error:?}");
+     };
+     assert!(Arc::ptr_eq(
+         &original

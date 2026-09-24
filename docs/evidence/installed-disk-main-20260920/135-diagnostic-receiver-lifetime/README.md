@@ -1,0 +1,3 @@
+# Diagnostic metrics receiver lifetime
+
+Attempt135 compilation fails with E0716 before any runtime test: a Ref guard borrows the temporary metrics receiver across the following statement. Bind that receiver inside the existing before-route block, then borrow it. Both the guard and receiver leave scope before the original write await. Only the four copied route fields escape. This is a direct compile correction; no metric clone, new work, response retry, request change or extended authorization is added. The exact failed compiler result/log remain preserved. Root reviewed the scope and applies the two-line lifetime fix after135 drained.

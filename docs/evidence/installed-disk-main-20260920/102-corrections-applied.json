@@ -1,0 +1,77 @@
+{
+  "status": "APPLIED_UNTESTED",
+  "workspace": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "applied_at_unix": 1789914883.80361,
+  "packages": [
+    {
+      "package": "88-engine-causal-fixtures",
+      "patch_sha256": "5448758b017fdb86d38dae1930e8f0b678262ab3edd8023ea95b3b20748f6a6a",
+      "files": [
+        {
+          "path": "crates/kasumi-engine/tests/common/recovery_control.rs",
+          "base_sha256": "a1c54c397791fd20fe0ac803f22c145b174a07ca9bcab8cbf775bfb2f11438be",
+          "proposed_sha256": "385db3954c23cd9b22a9bac87d29113685f2744a1957635305469bf48e29eb87"
+        },
+        {
+          "path": "crates/kasumi-engine/tests/history.rs",
+          "base_sha256": "c0396b11b7a18ab581421fc37b9b9d741c41bddec6d5837e99cb1386b1f5261a",
+          "proposed_sha256": "68d40f8c095975ebec5d87a8866896d053b587c7fa58ef5d7f25628d6030ad48"
+        },
+        {
+          "path": "crates/kasumi-engine/tests/lifecycle.rs",
+          "base_sha256": "e443d720e697aa8b51bd6655a5148011b31c006df3905f476fb01dfc5082c014",
+          "proposed_sha256": "3b6e06580a1835154bce5fefe3a16358788ea336dab82d96e789584f735f16fb"
+        },
+        {
+          "path": "crates/kasumi-engine/tests/schema_activation.rs",
+          "base_sha256": "828234affb6215e38b59b47f330a7965f4abdcf44f32e9c024109620d8d4a0cf",
+          "proposed_sha256": "19e95f834fc144d24a5e3398bafe5f80edc79fe6adc2fe2e264eb2645fc4a811"
+        }
+      ]
+    },
+    {
+      "package": "authority-unknown-diagnostic",
+      "patch_sha256": "b38c1fd7ca1f538d7b4161f855eb9a2e16775202ddc66f008c51fe88857eeeac",
+      "files": [
+        {
+          "path": "crates/kasumi-authority/src/service.rs",
+          "before_sha256": "0654e41ea12f521a408490d514b5b5671eb0a4f72e8b38aee57254828d2aea26",
+          "proposed_sha256": "e2d329b4497d30ca40bf92796abc8f96f7ab77e08e4ae83b99fc8e070c65948c"
+        },
+        {
+          "path": "crates/kasumi-engine/src/target_activation_service.rs",
+          "before_sha256": "b8d6a17f1e27b22546ffc7d22e2d50eab1cb0888ea30559d42457c7f3870c8a1",
+          "proposed_sha256": "2c236f6c51132c970f1207743b74f2655ecb8cce9b458d214995f4e3407cfd79"
+        }
+      ]
+    },
+    {
+      "package": "redb-retained-terminal",
+      "patch_sha256": "0e24a98eb895f58ad55521f1b37a2f23268f79f6a11c6c29ad964a38e248782f",
+      "files": [
+        {
+          "path": "vendor/redb-4.2.0/src/transactions.rs",
+          "base_sha256": "72d369c48d5947972f1d721e88eaa64bd87e81247d8bcd0ea7050b2156d3c869",
+          "proposed_sha256": "d8b20ab61cd6864d7704312c868d66e729a4bab6f54a55993cd9257850a8b8ff"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/lib.rs",
+          "base_sha256": "fa003f8401aa9b91d8d5265b1c05385dddf6dedf9abd0c982cc01520197715c9",
+          "proposed_sha256": "5f587febd53cccaf8b10be5bed3d0f60fdd46d5b3c3fbd536460d90f1d208d06"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/retained_transaction.rs",
+          "base_sha256": null,
+          "proposed_sha256": "98efcb4039728e7cc18178e1b9c000f411555dc836dfafec29b9645732880315"
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/retained_transaction_tests.rs",
+          "base_sha256": null,
+          "proposed_sha256": "47d8917f9b36919ae4c6d4046bda6621ba28485bfe1adcffd1ffa939da23dbc3"
+        }
+      ]
+    }
+  ],
+  "limits": "redb primitive only; mandatory Kasumi caller adoption, admitted backing and complete cleanup remain open"
+}

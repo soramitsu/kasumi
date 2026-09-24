@@ -1,0 +1,34 @@
+{
+  "argv": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/backup_session_admission_tests.rs",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/backup_sessions_fs.rs",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/node_disk.rs",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/node_disk/batch.rs",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/node_disk/directory/managed.rs",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/node_disk/batch/tests.rs"
+  ],
+  "exit_code": 0,
+  "pgid": 56544,
+  "drained": true,
+  "before": {
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/backup_session_admission_tests.rs": "2278c7d13d757c991ebbebd02246cf546caca51a302e3722109fcf5b55f96cf7",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/backup_sessions_fs.rs": "33ef71bd1a91c2848ad0fa00298afc1bb5efcc88558780c627de5a2a32a87c42",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/node_disk.rs": "5e004ab58f505c3c2c45b30c5a3a8732c0d16bc56045cd4ac6e1110f2f201b63",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/node_disk/batch.rs": "8cf31248f14e656c3a36027523c88c53ce60759a7b440fa668ac6c3d7192def1",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/node_disk/directory/managed.rs": "94272ba64b5cff23d738ce7082d3d94ad65774ed8686062c0b450d0507fb3735",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/node_disk/batch/tests.rs": "24b18f97f88088f4e098b7fd5f43d148f3d20e7c4bc9f4626f27c8e722dd35b7"
+  },
+  "after": {
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/backup_session_admission_tests.rs": "10223e8cbca60cf40464a6d181c16dedf7cbceacc3825789d3d941e0bb866716",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/backup_sessions_fs.rs": "8edf2ee51cf5da3eb851885e33ace0d72354daa79c1508a89ff94cc37470d412",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/node_disk.rs": "4b07e79678a413e44a3245a60a3891805118ef3737144d62eff4ef3386cf8060",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/node_disk/batch.rs": "8cf31248f14e656c3a36027523c88c53ce60759a7b440fa668ac6c3d7192def1",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/node_disk/directory/managed.rs": "ea272b792e0249b26a6ea60a3fd2363fcbf770a40992aef84bbf4505fd4e039e",
+    "target/installed-disk-validation/backup-namespace-admission-revision4/proposed/crates/kasumi-store/src/node_disk/batch/tests.rs": "17b72df132213639ffc1f15352412a59f9630cdc3c27e699e3ed4e9c3b0e6038"
+  }
+}

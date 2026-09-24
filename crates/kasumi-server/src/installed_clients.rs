@@ -41,8 +41,20 @@ pub(crate) fn connections(
         ca.is_absolute(),
         "installed service CA path must be absolute"
     );
-    let identity = tls.load()?;
     let trusted_ca_pem = read_bounded(ca, 1 << 20)?;
+    connections_with_ca(members, tls, &trusted_ca_pem)
+}
+
+/// Build exact pinned routes using the CA bytes already checked against an
+/// immutable recovery binding. No path reread can substitute trust at dispatch.
+pub(crate) fn connections_with_ca(
+    members: &BTreeMap<u64, AuthorityEndpoint>,
+    tls: &TlsFiles,
+    trusted_ca_pem: &[u8],
+) -> Result<BTreeMap<u64, KasumiClientConfig>> {
+    validate(members)?;
+    tls.validate()?;
+    let identity = tls.load()?;
     members
         .iter()
         .map(|(id, member)| {
@@ -51,7 +63,7 @@ pub(crate) fn connections(
                 KasumiClientConfig {
                     endpoint: member.endpoint.clone(),
                     identity: identity.clone(),
-                    trusted_ca_pem: trusted_ca_pem.clone(),
+                    trusted_ca_pem: trusted_ca_pem.to_vec(),
                     server_certificate_pins: member
                         .certificate_pins
                         .iter()

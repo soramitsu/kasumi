@@ -1,0 +1,7 @@
+{
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/counterfactual-01/harness.rs": "679c873b2b83112febcc7c5ad36ccf87f81c67168f5322740c8cd5d958e7deb4",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/counterfactual-01/lease-extracted.rs": "9e045180270d3409f139d18a6b606d001caceaefa9b38363d5821e696894f5c3",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/counterfactual-01/provider-extracted.rs": "d257dcf697f7b23c273d86a48f7bfed591ea6d380f2717015e8406127c5d9e3e",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/proposed/crates/kasumi-store/src/allocation_tests.rs": "2c5d9a7df0ad3642dc71143d139578ed26e40cf7a2d5f90c45da4ca06494e036",
+  "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/proposed/crates/kasumi-store/src/disk_memory_tests.rs": "4d20d4e8ebaa076bf31c2834d15787ee1727a6e5902e99eaa313999cfa92480d"
+}

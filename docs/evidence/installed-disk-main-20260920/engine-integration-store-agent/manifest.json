@@ -1,0 +1,43 @@
+{
+  "status": "target-only prepared, not compiled/applied",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "patch_sha256": "2b89e57670ab195966f8fc76fc6250d57a946e41ee4c5635742bf460c8403ecc",
+  "incoming_followup_sha256": "2b89e57670ab195966f8fc76fc6250d57a946e41ee4c5635742bf460c8403ecc",
+  "dependencies": {
+    "store_metadata": "10ebc1c6ee2a0df7c65b67302757b537ddedcb000008ea5391a82d030fab5259",
+    "synthetic_backend_followup": "2c9971827a928bd3dd412e944f4f55df2c235e5e9edf723514d5411b2ee53b84",
+    "root_integration_common": "ec254c91921d0b33f8f11b7bd63315e225fa01cb8f3aecfdb6fbe3f557d57f83"
+  },
+  "files": [
+    {
+      "path": "crates/kasumi-engine/tests/backup_checkpoint.rs",
+      "actual_before_sha256": "338773beb1d53b2ca960e09fca32e79a9fe14ced685d6582dfc8df6ce20daf0d",
+      "incoming_proposed_sha256": "338773beb1d53b2ca960e09fca32e79a9fe14ced685d6582dfc8df6ce20daf0d",
+      "proposed_sha256": "82ea651f0d6e14e666d1e6789045970facab37fea62b9fa6736fa4e0279faa50"
+    },
+    {
+      "path": "crates/kasumi-engine/tests/embedded_audit.rs",
+      "actual_before_sha256": "aa8732f7af8a2e0c940057a100b6759c4a2870448cafc4c99515f0022ba630a9",
+      "incoming_proposed_sha256": "aa8732f7af8a2e0c940057a100b6759c4a2870448cafc4c99515f0022ba630a9",
+      "proposed_sha256": "1592d72869ce87f78ea59cf012f344963ac8c04f4e3d1695971bcd25dbd9f65b"
+    },
+    {
+      "path": "crates/kasumi-engine/tests/lifecycle.rs",
+      "actual_before_sha256": "a0ba7701341720a22b2d84d8687c3d42971a266593553e60318c51469b0c3a6c",
+      "incoming_proposed_sha256": "a0ba7701341720a22b2d84d8687c3d42971a266593553e60318c51469b0c3a6c",
+      "proposed_sha256": "e443d720e697aa8b51bd6655a5148011b31c006df3905f476fb01dfc5082c014"
+    },
+    {
+      "path": "crates/kasumi-engine/tests/replicated.rs",
+      "actual_before_sha256": "88d2761cb1c1eeeecdb1faa885c8f62f9ac0474a2ea5ce3eee1b0f6433053a0e",
+      "incoming_proposed_sha256": "88d2761cb1c1eeeecdb1faa885c8f62f9ac0474a2ea5ce3eee1b0f6433053a0e",
+      "proposed_sha256": "0551471d7a75add87cbe419132911373e82d642681fc210823d5f8cdde6294de"
+    },
+    {
+      "path": "crates/kasumi-engine/tests/retirement.rs",
+      "actual_before_sha256": "2af0be7c21ae38005b3f01df5c0ecd9d980e68862c3fc71e4245435102e283db",
+      "incoming_proposed_sha256": "2af0be7c21ae38005b3f01df5c0ecd9d980e68862c3fc71e4245435102e283db",
+      "proposed_sha256": "acc5f344dfb7fa1ecb1c033bef3ac2a81c0ab41558412f46a41c78db456ddc63"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "before": "target/installed-disk-validation/file-owner-custody-revision1/candidate-01/proposed",
+  "after": "target/installed-disk-validation/file-owner-custody-revision1/candidate-02/proposed",
+  "patch_sha256": "2703670a31e297dcfe2c886505781aab40d33c4d6ac6ead49a1c812d3d89f432",
+  "files": [
+    {
+      "path": "crates/kasumi-store/src/node_disk/file.rs",
+      "before_sha256": "a8f58af8e9c4ea35e635ebfcf2eb33c2fe1fb675b1651a50bde6649cc0b11897",
+      "after_sha256": "e9674de40f9433c83881ebc65e0efcf337333124a710c02038b475eaf2ec454f",
+      "before_bytes": 80658,
+      "after_bytes": 81027
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/native_file.rs",
+      "before_sha256": "73f15a145a13b4bea56701398f8a3a5754a37263eec2c47039351ad4159539e7",
+      "after_sha256": "094675c132b74c3bcd75842810a212a0c715dca25b15485bfc523fa27398b8e7",
+      "before_bytes": 4404,
+      "after_bytes": 4519
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "before_sha256": "b5869f80ed24cf8112dd2d268f40dc30e19c709bafb9482453e0a9c1325508b1",
+      "after_sha256": "cc9f05813370469df6847db5944d9a54e76489a7df841bd72fdd00b3e36a189e",
+      "before_bytes": 115443,
+      "after_bytes": 116471
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk.rs",
+      "before_sha256": "58ee040fd04a0d69b05cd96f3c013cad93f459c0c308356fab8d0f6ed418e271",
+      "after_sha256": "6e2c9ace4c6379f2210410a0c48215374de86ffff4c40be480b9609ab70dc614",
+      "before_bytes": 41363,
+      "after_bytes": 41451
+    }
+  ]
+}

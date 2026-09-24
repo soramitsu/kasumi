@@ -1,0 +1,38 @@
+{
+  "status": "Two-file composition preserves both frozen inputs; inherited namespace test issue requires correction before full qualification",
+  "scope": [
+    "crates/kasumi-store/src/lib.rs",
+    "crates/kasumi-store/src/node_disk/tests.rs"
+  ],
+  "combined_manifest_sha256": "86aab58bf781ad6f6eb84873f1f0c958efe476e8c342aed578a922ea7cb7a2d4",
+  "combined_patch_sha256": "6cad8de6cbb02335ab15271bb70b46259a0ac8ec4fc4cf7b3b42c755d362f8e8",
+  "composition_sha256": "91c95be8c82c356ad3755544011186389b5a2d8ca0ba03cfaf92c00ac513a738",
+  "namespace_to_combined_delta_sha256": "a14e5b89b889482f30ece2de69a48b1df60ed153f163ff802ca36d13c2462516",
+  "census_to_combined_delta_sha256": "310154b94bd15e30fd0060cb3462d7ede7c5cf62333c9c41a9aa8803147d77d9",
+  "checks": [
+    {
+      "path": "crates/kasumi-store/src/lib.rs",
+      "base_sha256": "88f45bae174564f5496dff8bba211ca46ff28597c7e97501fac0a7dbe3c19225",
+      "namespace_sha256": "efafe5e511f4bdefbd9330c2229d5911bfa03eed383aa84ad09a112050f031aa",
+      "census_sha256": "f532ad0ea1918de7f0ac7058e00f4e54aeb67f4b233530993092e8c50f411d69",
+      "combined_sha256": "b495ec2f8f34e5861a7b7cbc558204bd133724f9ba1452d17cdaf8be3515875c",
+      "independent_merge_readback": true
+    },
+    {
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "base_sha256": "9825a52cea3a3392bf16a5dd5f7f737370c64b833bc8a50026a073071c8cf1f4",
+      "namespace_sha256": "fb16dae6a29c87d8b2ba5fb200740e9e7fcd6cfd2aa15236c494af3803f447ad",
+      "census_sha256": "0ad50f09806aa6880afd1117674055461dbeb4e7ac6cfa0feed6c6639f4f4ff8",
+      "combined_sha256": "48665cefb2570502e64f2dae6e4ad5ed5746aa6c03ecbe780b173358c40053b6",
+      "independent_merge_readback": true
+    }
+  ],
+  "findings": [
+    {
+      "kind": "inherited predecessor test bug; not composition regression",
+      "path": "crates/kasumi-store/src/node_disk/tests.rs",
+      "description": "shrink failure observed_len assertion incorrectly adds namespace_charge to file EOF. Only aggregate charged-byte assertions should include directory charges. Frozen namespace revision4 already contains this expression; preserve trial and correct separately."
+    }
+  ],
+  "approval_limit": "No full cumulative implementation review, no native/Cargo execution, and no claim that all tests pass. Module/export union and exact test bookkeeping base addition preserve both inputs; EOF assertion must be corrected in a separate successor."
+}

@@ -1,15 +1,18 @@
 # Kasumi physical admission prerequisite
 
-This fork is a prerequisite for G02. It is excluded from the Kasumi workspace and
-is **not selected by Kasumi's production dependency graph**. It does not constitute
-G02 acceptance or a production NodeDisk installation. Integration must construct
-the backend and admission capability from the same retained physical file owner.
+This fork is selected by Kasumi's production dependency graph through the root
+Cargo patch, while remaining excluded from the workspace member list. It is a G02
+prerequisite, not G02 acceptance. The installed NodeDisk adapter supplies backend
+and admission access from the same retained physical file owner. Complete storage
+owner census, retained opening/writer adoption, and total workspace admission remain
+unfinished; selecting the fork does not establish those contracts.
 
 ## Source provenance
 
 The base is the unmodified locally cached published `redb-4.2.0.crate`, whose
 SHA-256 is `de6c3b63e007e90ce536ec2ae4690826136a20ec8dbbbb400daef1bb999d2e36`.
-That checksum matches Kasumi's root Cargo.lock. The package's retained
+That checksum identifies the original registry package; the current root Cargo.lock
+selects this local patched package. The package's retained
 `.cargo_vcs_info.json` identifies upstream commit
 `23b6ba05473b13e69ed4db82f4b5bc07f0c33be9` at
 <https://github.com/cberner/redb>.
@@ -32,6 +35,21 @@ The subsequent canonical-format cleanup has separate provenance and validation i
 immutable record of the earlier checkpoint.
 
 ## Canonical API
+
+`StorageBackend::close` now requires an explicit `BackendCloseOutcome`, with no
+default implementation. Logical errors and native-resource drain are separate.
+The retained database/opening owners keep their original errors through explicit
+failed operational disposal; unknown native closure cannot authorize that path.
+FileBackend invokes native close once and never retries an uncertain raw handle.
+The NodeDisk adapter additionally requires an exact terminal owner witness and a
+later accepted whole-owner census before its storage registration can retire.
+The scratch-spool adapter uses one observed native close and retains the exact
+spool on failed sync, unwind, or uncertain native closure. Positive drain precedes
+key/buffer retirement and charge release. An uncertain native result also retains
+its file/extent/pending accounting after aggregate destruction. Spool construction still allocates
+buffers after descriptor acquisition, and inherited destruction can bypass this
+explicit protocol; constructor/destructor custody, consuming caller adoption,
+and total error/panic/RSS admission remain required G02 work, not accepted exceptions.
 
 Every writable or read-only constructor requires `Arc<dyn StorageAdmission>`.
 There is no optional admission hook, default owner, unlimited production owner, or
@@ -62,9 +80,26 @@ Stored table identities must match exactly. The inherited legacy classification
 metadata and matching rules have been removed; unsupported type tags cannot select
 a decoder even through an untyped table open. One-phase headers are rejected before
 mutation, and the reader never substitutes a secondary root for the winning root.
-The current canonical writer still emits slot version 3, a mandatory two-phase bit,
-and type tags 1/2/4. Byte-identical canonical data remains canonical regardless of
-its producer; there is no alternative decoder or migration selected for it.
+The canonical writer emits slot version 4, a mandatory two-phase bit, and type tags
+1/2/4. Older slot versions and removed system-history tables are rejected before
+mutation. Allocator keys have exactly five bytes: tag 3 with a little-endian region
+index, or tags 4/5 with zero padding for tracker/stamp. Tags 0–2 have no decoder or
+writer. A mandatory raw tree walk checks key encoding, ordering, branch routing,
+page geometry, ancestor cycles and stamp lengths before typed allocator traversal
+or repair. Borrowed payload checks validate nested bitmap geometry, summaries,
+buddy overlap/merging and a complete contiguous snapshot. They accept retained
+tracker capacity and snapshots saved before shrink; a matching winner cannot
+discard allocated pages. Complete correspondence to reachable root pages and
+total traversal resources remain open. No alternative decoder, migration, or
+backward compatibility exists.
+
+Deferred allocation history is reclaimed in a bounded prefix of at most 400 rows
+before eligible DATA history, also limited to 400 rows. DATA reclamation waits when
+an eligible allocation prefix remains. Readers and savepoints still determine
+eligibility, and live frees remain deferred until the winning header. Nested
+bitmap, buddy and region serialization validates exact geometry before writing
+directly into one destination buffer. These changes do not bound the full prepared
+allocator copy, output buffer, maintenance page demand, or whole-database scans.
 
 `Database::close` and `ReadOnlyDatabase::close` return `CloseError<T>`. A busy error
 returns the original database for retry after all borrowed handles drain. Stored
@@ -73,6 +108,18 @@ and settles its clean header; read-only close only releases its backend. Destruc
 perform no checkpoint or trim. Backend close runs once, including failed construction
 and explicit-close failures. Dropped writes roll back transaction allocations and
 settle physical growth without an allocating checkpoint.
+
+The borrowed `RetainedDatabase`, `RetainedWriteTransaction`, and
+`RetainedDatabaseOpening` APIs retain original attempts and their outcomes across
+separate observation and disposal calls. Opening installs partial backend/cache,
+memory, database and bootstrap transaction owners before their respective fallible
+effects. It preserves the original opening/body error or panic separately from
+terminal, rollback, disposal and close outcomes; failed phases cannot expose a
+ready database. The admission proxy latches failure before a once-only owner
+callback and retains a callback panic without replacing the original storage
+error. Repair callbacks require `Fn + Send + Sync`. Kasumi must still precharge and
+register these owners before effects and retain them independently of public
+facade cancellation; the vendor API alone does not install that production census.
 
 `compact(NonZeroUsize)` requires an old/new relocation-buffer byte allowance. A call
 retains at most 64 candidate paths and performs at most one relocation batch and a
@@ -112,11 +159,36 @@ ignored to bypass those failures.
 is not installed. Podman, cargo-deny, and cargo-fuzz were also unavailable during
 initial inventory. Direct host Rust validation is recorded separately and does
 not substitute for a successful required upstream container/audit/fuzz run.
-The evidence README distinguishes the broad-run attempts, fixture corrections, and
-checkpoint checks; the input JSON manifests identify their source hashes. The unavailable upstream container,
-audit, and fuzz workflows remain unpassed gates. This commit is a component
-prerequisite, not G02 acceptance or authorization to ship.
+The evidence README distinguishes broad-run attempts, fixture corrections and
+checkpoint checks; input manifests identify their source hashes. Later integrated
+development evidence is in `../../docs/evidence/installed-disk-main-20260920/`.
+Attempts 157–161 record 204 all-feature vendor unit tests, strict vendor and
+workspace Clippy, workspace/vendor formatting, and 296 tests across all ten public
+vendor integration targets. Those are source-specific component results, not a
+final release qualification. The unavailable upstream container, audit and fuzz
+workflows remain unpassed gates. The reviewed vendor inventory must also be
+refreshed and verified for the final source state before release.
+Attempt 162 adds allocator payload and branch-routing validation and passes all
+211 vendor unit tests; attempt 163 passes strict vendor Clippy on those bytes.
+Successful borrowed-helper checks allocate no heap collections; their coverage
+does not establish total database or process memory bounds.
 
 The first-release no-compatibility contract supersedes upstream's instruction to
 preserve older file interpretations. Unsupported inputs are rejected; no migration
 or fallback is provided.
+
+## Canonical page-number representation
+
+The sole raw page-number decoder rejects every reserved bit and unsupported order
+before creating a typed page number. Table definitions stay borrowed raw metadata
+until checked conversion; branch access validates the complete child vector;
+used reclamation entries and multimap/savepoint roots use the same decoder.
+Relocation and merge paths preflight pointer vectors before changing their output.
+An unused checksum-invalid transaction slot remains opaque and is serialized
+verbatim until a new commit replaces it; it never supplies a decoded root.
+Supported region/order geometry and canonical writer bytes are unchanged.
+
+This prerequisite does not establish complete reachable-root allocation ownership,
+maintenance extension reserves or total workspace admission. Its target-only
+validation package records the exact checks performed; prior checkpoint results
+do not qualify the changed source.

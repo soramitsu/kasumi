@@ -637,7 +637,7 @@ impl SecurityAudit {
 mod tests {
     use super::*;
     use kasumi_store::{
-        AuditArchiveDestination, FilesystemAuditArchive, NodeStore, test_utils::LocalKeyProvider,
+        AuditArchiveDestination, FilesystemAuditArchive, test_utils::LocalKeyProvider,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -690,12 +690,26 @@ mod tests {
     async fn uncertain_publication_survives_restart_and_repeated_hot_budget_crossings_preserve_complete_history()
      {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-        let path = directory.path().join("security.redb");
-        let persistent = kasumi_store::NodeDisk::fixture_for_path(&path).unwrap();
+        let (persistent_config, scratch_config) =
+            crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
+        let metadata =
+            crate::test_utils::isolated_disk_metadata_bytes(&persistent_config, &scratch_config)
+                .unwrap();
+        let storage = crate::test_utils::FixtureStorage::open(
+            &persistent_config,
+            &scratch_config,
+            Default::default(),
+        )
+        .unwrap();
+        let path = directory.path().join("persistent/security.redb");
+        let persistent = storage.persistent.clone();
         let provider = Arc::new(LocalKeyProvider::new([181; 32]));
         let archive = Arc::new(UncertainArchive {
-            inner: FilesystemAuditArchive::open(directory.path().join("archives"), persistent)
-                .unwrap(),
+            inner: FilesystemAuditArchive::open(
+                directory.path().join("persistent/archives"),
+                persistent,
+            )
+            .unwrap(),
             uncertain: AtomicBool::new(true),
             pause: AtomicBool::new(false),
             entered: tokio::sync::Notify::new(),
@@ -705,14 +719,15 @@ mod tests {
             hot_bytes: 128 << 10,
             archive_bytes: 128 << 20,
         };
-        let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
+        let admission = storage.admission.clone();
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            metadata
+        );
         let store = TenantStore::initialize_catalog_fixture(
-            NodeStore::create_new_fixture(
-                &path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-            .unwrap(),
+            storage
+                .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+                .unwrap(),
             SECURITY_TENANT.into(),
             provider.clone(),
         )
@@ -743,12 +758,9 @@ mod tests {
         drop(store);
 
         let store = TenantStore::open_existing_fixture(
-            NodeStore::open_existing_fixture(
-                &path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-            .unwrap(),
+            storage
+                .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+                .unwrap(),
             SECURITY_TENANT.into(),
             provider,
         )
@@ -847,6 +859,11 @@ mod tests {
         archive.release.add_permits(1);
         shutdown.await.unwrap();
         assert!(store.check_access().is_err());
-        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+        // Strong installed disk owners and their eight metadata leases survive
+        // audit shutdown; every operation and maintenance charge has drained.
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            metadata
+        );
     }
 }

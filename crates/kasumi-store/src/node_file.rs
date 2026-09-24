@@ -1,10 +1,11 @@
 //! One canonical node-file envelope. The discriminator and checksum are not
 //! authentication: the caller supplies the expected installed identity before
 //! redb may repair the recognized payload. Tenant authentication follows later.
+pub(crate) use crate::node_disk::{FailedCloseReport, FailedFileTransfer, FailedFileWitness};
 use crate::{DiskWork, NodeDisk, NodeDiskFile, private_files::FileIdentity};
 use anyhow::{Result, ensure};
 use parking_lot::RwLock;
-use redb::{AdmissionError, OwnerFailed, StorageAdmission, StorageBackend};
+use redb::{AdmissionError, BackendCloseOutcome, OwnerFailed, StorageAdmission, StorageBackend};
 use sha2::{Digest, Sha256};
 use std::{
     io,
@@ -47,11 +48,34 @@ impl NodeFileCleanup {
     pub fn delete(self) -> Result<()> {
         let owner = Arc::try_unwrap(self.owner)
             .map_err(|_| anyhow::anyhow!("node cleanup owner is still retained"))?;
-        let file = owner
-            .file
-            .into_inner()
-            .ok_or_else(|| anyhow::anyhow!("node cleanup descriptor is closed"))?;
+        let file = owner.file.into_inner();
+        let FileState::Owned(file) = file else {
+            anyhow::bail!("node cleanup descriptor is not owned");
+        };
         Ok(owner.disk.delete_file(file)?)
+    }
+}
+
+enum FileState {
+    Prepared,
+    Acquiring,
+    Owned(NodeDiskFile),
+    Closed,
+    Transferring(NodeDiskFile),
+    FailedTransferred,
+}
+impl FileState {
+    fn owned(&self) -> Option<&NodeDiskFile> {
+        match self {
+            Self::Owned(file) => Some(file),
+            _ => None,
+        }
+    }
+    fn owned_mut(&mut self) -> Option<&mut NodeDiskFile> {
+        match self {
+            Self::Owned(file) => Some(file),
+            _ => None,
+        }
     }
 }
 
@@ -59,7 +83,7 @@ pub(crate) struct NodeFile {
     // Closing redb removes the actual descriptor even if an internal reader
     // retains its backend Arc. Already-running descriptor operations drain
     // under this lock before exclusive file ownership is released.
-    file: RwLock<Option<NodeDiskFile>>,
+    file: RwLock<FileState>,
     disk: Arc<NodeDisk>,
     path: PathBuf,
     id: Uuid,
@@ -68,6 +92,95 @@ pub(crate) struct NodeFile {
 }
 
 impl NodeFile {
+    /// Concrete backing charged by the fixed storage registration before this
+    /// prepared NodeFile and its path/backend allocations are constructed.
+    pub(crate) fn prepared_backing_bytes(path: &Path) -> io::Result<u64> {
+        use crate::disk_memory::{add, allocation, arc};
+        add(
+            add(
+                arc::<Self>()?,
+                allocation::<u8>(
+                    u64::try_from(path.as_os_str().len())
+                        .map_err(|_| io::ErrorKind::InvalidInput)?,
+                )?,
+            )?,
+            allocation::<NodeBackend>(1)?,
+        )
+    }
+
+    /// Allocation only. The exact empty descriptor owner is published in the
+    /// storage census before `acquire_prepared` may perform any filesystem I/O.
+    pub(crate) fn retained_prepared(path: &Path, id: Uuid, disk: Arc<NodeDisk>) -> Arc<Self> {
+        Arc::new(Self {
+            file: RwLock::new(FileState::Prepared),
+            disk,
+            path: path.to_owned(),
+            id,
+            #[cfg(test)]
+            after_write_check: Default::default(),
+        })
+    }
+
+    pub(crate) fn acquire_prepared(
+        &self,
+        mode: &crate::storage_opening::NodeOpeningMode,
+    ) -> Result<()> {
+        use crate::storage_opening::NodeOpeningMode;
+        ensure!(!self.id.is_nil(), "node store identity is nil");
+        let mut guard = self
+            .file
+            .try_write()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::WouldBlock))?;
+        ensure!(
+            matches!(*guard, FileState::Prepared),
+            "node file acquisition already entered"
+        );
+        // The state changes before any descriptor effect. Failure or unwind
+        // cannot make an absent descriptor authorize a second acquisition.
+        *guard = FileState::Acquiring;
+        let (root, relative) = self.disk.binding(&self.path)?;
+        let file = match mode {
+            NodeOpeningMode::Create => {
+                self.disk
+                    .create_file(root, relative, DiskWork::Foreground)?
+            }
+            NodeOpeningMode::OwnedEmpty(_) | NodeOpeningMode::Existing => {
+                self.disk.open_file(root, relative)?
+            }
+        };
+        // No validation, callback or envelope operation precedes actual custody.
+        *guard = FileState::Owned(file);
+        drop(guard);
+        {
+            let guard = self.file.read();
+            let file = present(&guard)?;
+            file.check_owner()?;
+            match mode {
+                NodeOpeningMode::OwnedEmpty(identity) => {
+                    ensure!(
+                        &file.identity()? == identity,
+                        "prepared node file identity differs"
+                    );
+                    ensure!(file.observed_len()? == 0, "prepared node file is not empty");
+                }
+                NodeOpeningMode::Existing => {
+                    let length = file.observed_len()?;
+                    ensure!(
+                        length > HEADER_BYTES as u64 && length <= i64::MAX as u64,
+                        "existing node payload length is invalid"
+                    );
+                    let mut bytes = [0; HEADER_BYTES];
+                    file.read_exact_at(&mut bytes, 0)?;
+                    validate_header(&bytes, self.id, HeaderUse::Reopen)?;
+                }
+                NodeOpeningMode::Create => {}
+            }
+        }
+        if !matches!(mode, NodeOpeningMode::Existing) {
+            self.prepare()?;
+        }
+        Ok(())
+    }
     pub(crate) fn create_new(path: &Path, id: Uuid, disk: Arc<NodeDisk>) -> Result<Arc<Self>> {
         ensure!(!id.is_nil(), "node store identity is nil");
         let (root, relative) = disk.binding(path)?;
@@ -151,7 +264,7 @@ impl NodeFile {
         // Envelope validation and all redb I/O retain that same physical owner.
         file.check_owner()?;
         Ok(Arc::new(Self {
-            file: RwLock::new(Some(file)),
+            file: RwLock::new(FileState::Owned(file)),
             disk,
             path: path.to_owned(),
             id,
@@ -198,6 +311,67 @@ impl NodeFile {
         &self.disk
     }
 
+    #[cfg(test)]
+    pub(crate) fn retained_file_custody(&self) -> Option<(usize, Option<usize>)> {
+        let guard = self.file.read();
+        let file = guard.owned()?;
+        Some((file.close_owner_address()?, file.close_error_address()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_native_close(errno: i32) {
+        NodeDiskFile::fail_next_native_close(errno);
+    }
+    #[cfg(test)]
+    pub(crate) fn native_close_attempts() -> u64 {
+        NodeDiskFile::native_close_attempts()
+    }
+    pub(crate) fn failed_close_witness(&self) -> io::Result<FailedFileWitness> {
+        let guard = self.file.try_read().ok_or(io::ErrorKind::WouldBlock)?;
+        present(&guard)?.failed_close_witness()
+    }
+
+    pub(crate) fn with_failed_close_report<R>(
+        &self,
+        witness: &FailedFileWitness,
+        observe: impl FnOnce(&FailedCloseReport<'_>) -> R,
+    ) -> io::Result<R> {
+        let guard = self.file.try_read().ok_or(io::ErrorKind::WouldBlock)?;
+        present(&guard)?.with_failed_close_report(witness, observe)
+    }
+
+    pub(crate) fn transfer_failed(
+        &self,
+        witness: &FailedFileWitness,
+    ) -> io::Result<Option<FailedFileTransfer>> {
+        let Some(mut guard) = self.file.try_write() else {
+            return Ok(None);
+        };
+        ensure_owned(&guard)?;
+        let FileState::Owned(file) = std::mem::replace(&mut *guard, FileState::Acquiring) else {
+            unreachable!("validated file owner");
+        };
+        *guard = FileState::Transferring(file);
+        let FileState::Transferring(file) = &mut *guard else {
+            unreachable!()
+        };
+        match file.transfer_failed(witness) {
+            Ok(Some(receipt)) => {
+                *guard = FileState::FailedTransferred;
+                Ok(Some(receipt))
+            }
+            pending_or_error => {
+                let FileState::Transferring(file) =
+                    std::mem::replace(&mut *guard, FileState::Acquiring)
+                else {
+                    unreachable!()
+                };
+                *guard = FileState::Owned(file);
+                pending_or_error
+            }
+        }
+    }
+
     pub(crate) fn backend(self: &Arc<Self>) -> NodeBackend {
         NodeBackend(self.clone())
     }
@@ -234,9 +408,12 @@ fn validate_header(bytes: &[u8; HEADER_BYTES], expected: Uuid, use_for: HeaderUs
     Ok(())
 }
 
-fn present(file: &Option<NodeDiskFile>) -> io::Result<&NodeDiskFile> {
-    file.as_ref()
-        .ok_or_else(|| io::ErrorKind::BrokenPipe.into())
+fn ensure_owned(file: &FileState) -> io::Result<()> {
+    present(file).map(|_| ())
+}
+
+fn present(file: &FileState) -> io::Result<&NodeDiskFile> {
+    file.owned().ok_or_else(|| io::ErrorKind::BrokenPipe.into())
 }
 
 fn physical_end(offset: u64, length: u64) -> io::Result<u64> {
@@ -263,6 +440,36 @@ impl StorageAdmission for NodeFile {
         present(&guard)
             .and_then(NodeDiskFile::check_owner)
             .map_err(|_| OwnerFailed)
+    }
+
+    fn reserve_workspace(
+        &self,
+        bytes: u64,
+    ) -> std::result::Result<Box<dyn redb::ResidentLease>, AdmissionError> {
+        self.check_owner()
+            .map_err(|_| AdmissionError::OwnerFailed)?;
+        // The provider accounts for its own reservation token. This addition
+        // admits the returned trait-object box before constructing it.
+        let bytes = crate::disk_memory::add(
+            bytes,
+            crate::disk_memory::allocation::<crate::DiskMemoryLease>(1)
+                .map_err(|_| AdmissionError::CapacityDenied)?,
+        )
+        .map_err(|_| AdmissionError::CapacityDenied)?;
+        let lease = self
+            .disk
+            .memory()
+            .clone()
+            .reserve_installed(bytes)
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::OutOfMemory {
+                    AdmissionError::CapacityDenied
+                } else {
+                    self.disk.fail();
+                    AdmissionError::OwnerFailed
+                }
+            })?;
+        Ok(Box::new(lease))
     }
 
     fn reserve_growth(
@@ -342,7 +549,7 @@ impl StorageBackend for NodeBackend {
         // shared lock permits shrink between a write's range check and pwrite,
         // after which that write can silently extend the truncated payload.
         let mut guard = self.0.file.write();
-        let file = guard.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
+        let file = guard.owned_mut().ok_or(io::ErrorKind::BrokenPipe)?;
         let current = file.observed_len()?;
         if physical < current {
             // redb has already made the reduced extent's winning header
@@ -374,9 +581,37 @@ impl StorageBackend for NodeBackend {
         file.write_all_at(bytes, physical_end(offset, 0)?)
     }
 
-    fn close(&self) -> io::Result<()> {
-        drop(self.0.file.write().take());
-        Ok(())
+    fn close(&self) -> BackendCloseOutcome {
+        let Some(mut guard) = self.0.file.try_write() else {
+            return BackendCloseOutcome::retained(io::ErrorKind::WouldBlock.into());
+        };
+        match &mut *guard {
+            FileState::Owned(file) => match file.close() {
+                Ok(()) => {
+                    *guard = FileState::Closed;
+                    BackendCloseOutcome::drained(Ok(()))
+                }
+                Err(error) => {
+                    // Logical failure is independent of physical native drain.
+                    // Only the exact terminal owner can attest the latter.
+                    if file.failed_close_witness().is_ok() {
+                        BackendCloseOutcome::drained(Err(error))
+                    } else {
+                        BackendCloseOutcome::retained(error)
+                    }
+                }
+            },
+            FileState::Prepared | FileState::Closed => {
+                *guard = FileState::Closed;
+                BackendCloseOutcome::drained(Ok(()))
+            }
+            FileState::FailedTransferred => {
+                BackendCloseOutcome::drained(Err(io::ErrorKind::BrokenPipe.into()))
+            }
+            FileState::Acquiring | FileState::Transferring(_) => {
+                BackendCloseOutcome::retained(io::ErrorKind::Other.into())
+            }
+        }
     }
 }
 

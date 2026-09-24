@@ -1,0 +1,13 @@
+{
+  "status": "READ_ONLY_REVIEW_COMPLETE_NO_BUILD",
+  "reviewed_patch_sha256": "9ccd9cec1c2e991ea2e52c71c05e22976f66b33e0edc4021a56472410dbeaa71",
+  "review_sha256": "b1c9bc2e8fe93543dd1fc619a62ad146f87c9b8763309a5e694a77d02ecef30c",
+  "source_head": "b2876ef782f0f5afde2d60edd234559fc6ce600f",
+  "actual_source_edited": false,
+  "actionable": [
+    "restore_local unresolved stores identifier",
+    "public running-group composition remains unchecked until constructor replacement",
+    "README initialize_replicated signature inaccurate",
+    "constructor caller inventory now ten plus clock case"
+  ]
+}

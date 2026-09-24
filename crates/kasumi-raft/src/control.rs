@@ -157,14 +157,25 @@ impl LogHeader {
     }
 }
 
-pub(crate) fn load<T: DeserializeOwned>(
+/// Durable control JSON has exactly the current writer's byte spelling.
+/// Semantic equivalence cannot make an alternate on-disk record authoritative.
+pub(crate) fn decode_canonical<T: DeserializeOwned + Serialize>(bytes: &[u8]) -> Result<T> {
+    let record: T = serde_json::from_slice(bytes).context("invalid raft control record")?;
+    ensure!(
+        serde_json::to_vec(&record)? == bytes,
+        "noncanonical raft control record"
+    );
+    Ok(record)
+}
+
+pub(crate) fn load<T: DeserializeOwned + Serialize>(
     store: &TenantStore,
     namespace: &str,
     key: &[u8],
 ) -> Result<Option<T>> {
     store
         .get_bounded(namespace, key, 2 << 20)?
-        .map(|bytes| serde_json::from_slice(&bytes).context("invalid raft control record"))
+        .map(|bytes| decode_canonical(&bytes))
         .transpose()
 }
 
@@ -307,7 +318,7 @@ impl ControlLog {
                 .is_none_or(|id| id.index < committed.log_id.index),
             "applied source lacks its atomic retirement boundary"
         );
-        let floor = load::<crate::storage::SnapshotCoverage>(store, META, b"snapshot_coverage")?;
+        let floor = crate::storage::load_snapshot_coverage(store)?;
         let mut membership = floor
             .as_ref()
             .map(|floor| floor.meta.last_membership.clone())
@@ -334,7 +345,7 @@ impl ControlLog {
                 "retirement recovery header work budget exceeded"
             );
             let key: [u8; 8] = key.try_into().context("invalid control header index")?;
-            let header: LogHeader = serde_json::from_slice(bytes)?;
+            let header: LogHeader = decode_canonical(bytes)?;
             header.validate()?;
             ensure!(
                 header.log_id.index == u64::from_be_bytes(key),

@@ -143,7 +143,7 @@ impl TargetJournal {
             bytes.len() <= MAX_RECORD - 4096,
             "activation projection exceeds reservation"
         );
-        let p: ActivationProjection = serde_json::from_slice(bytes)?;
+        let p: ActivationProjection = decode_current(bytes)?;
         self.validate_intent(&p.intent)?;
         let i = &p.intent.intent;
         ensure!(
@@ -203,7 +203,7 @@ impl TargetJournal {
             )?
             .context("projection generation reservation missing")?;
         ensure!(
-            serde_json::from_slice::<GenerationBinding>(&generation)? == binding,
+            decode_current::<GenerationBinding>(&generation)? == binding,
             "projection generation binding changed"
         );
         let retained = self
@@ -211,7 +211,7 @@ impl TargetJournal {
             .get_bounded(NS, &intent_key(i.request.command_id), MAX_RECORD)?
             .context("projection original phase reservation missing")?;
         ensure!(
-            serde_json::from_slice::<TargetJournalIntent>(&retained)? == p.intent,
+            decode_current::<TargetJournalIntent>(&retained)? == p.intent,
             "projection original intent differs"
         );
         Ok(p)
@@ -318,7 +318,7 @@ impl TargetJournal {
             bytes.len() <= 4096,
             "serving candidate exceeds reserved metadata"
         );
-        let c: ServingCandidate = serde_json::from_slice(bytes)?;
+        let c: ServingCandidate = decode_current(bytes)?;
         kasumi_types::validate_name(&c.tenant)?;
         kasumi_types::validate_sha256(&c.projection_sha256)?;
         ensure!(

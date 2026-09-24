@@ -1,0 +1,97 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption/native-01/assembly/vendor/redb-4.2.0)
+   Compiling kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-census-adoption/native-01/assembly/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.81s
+     Running unittests src/lib.rs (/Users/mtakemiya/dev/kasumi/target/debug/deps/kasumi_store-ef9210ce8cf70872)
+
+running 8 tests
+test storage_census::tests::constructor_unwind_is_classified_before_dispatch_and_keeps_exact_payload ... ok
+test storage_census::tests::facade_cancellation_preserves_actual_owner_and_census_drives_later_retirement ... ok
+test storage_census::tests::fixed_census_is_precharged_and_bound_to_the_exact_provider ... ok
+test storage_census::tests::hard_capacity_and_byte_denial_precede_owner_construction ... ok
+test storage_census::tests::payload_destructor_panic_keeps_original_and_charge_and_never_replays ... 
+thread 'storage_census::tests::payload_destructor_panic_keeps_original_and_charge_and_never_replays' (5906375) panicked at crates/kasumi-store/src/storage_census_tests.rs:187:9:
+Box<dyn Any>
+stack backtrace:
+   0: std::panicking::begin_panic::<u64>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:761:5
+   1: std::panic::panic_any::<u64>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:260:5
+   2: <kasumi_store::storage_census::tests::DestructorPanic as core::ops::drop::Drop>::drop
+             at ./src/storage_census_tests.rs:187:9
+   3: core::ptr::drop_glue::<kasumi_store::storage_census::tests::DestructorPanic>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ptr/mod.rs:825:1
+   4: core::mem::drop::<kasumi_store::storage_census::tests::DestructorPanic>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/mem/mod.rs:1004:1
+   5: <kasumi_store::storage_census::tests::DestructorPanic as kasumi_store::storage_census::ErasedPayload>::try_dispose::{closure#0}
+             at ./src/storage_census.rs:79:56
+   6: <core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::storage_census::tests::DestructorPanic as kasumi_store::storage_census::ErasedPayload>::try_dispose::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+   7: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::storage_census::tests::DestructorPanic as kasumi_store::storage_census::ErasedPayload>::try_dispose::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+   8: ___rust_try
+   9: std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::storage_census::tests::DestructorPanic as kasumi_store::storage_census::ErasedPayload>::try_dispose::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  10: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::storage_census::tests::DestructorPanic as kasumi_store::storage_census::ErasedPayload>::try_dispose::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  11: <kasumi_store::storage_census::tests::DestructorPanic as kasumi_store::storage_census::ErasedPayload>::try_dispose
+             at ./src/storage_census.rs:79:23
+  12: <kasumi_store::storage_census::StorageCensus>::drain_owner
+             at ./src/storage_census.rs:420:37
+  13: <kasumi_store::storage_census::StorageRegistration<kasumi_store::storage_census::tests::DestructorPanic>>::retire
+             at ./src/storage_census.rs:547:35
+  14: kasumi_store::storage_census::tests::payload_destructor_panic_keeps_original_and_charge_and_never_replays
+             at ./src/storage_census_tests.rs:203:29
+  15: kasumi_store::storage_census::tests::payload_destructor_panic_keeps_original_and_charge_and_never_replays::{closure#0}
+             at ./src/storage_census_tests.rs:191:74
+  16: <kasumi_store::storage_census::tests::payload_destructor_panic_keeps_original_and_charge_and_never_replays::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  17: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test storage_census::tests::post_drive_metadata_contention_keeps_completion_in_fixed_slot_without_waiting ... ok
+test storage_census::tests::retained_original_observation_never_holds_metadata_or_stalls_another_owner ... 
+thread 'storage_census::tests::retained_original_observation_never_holds_metadata_or_stalls_another_owner' (5906402) panicked at crates/kasumi-store/src/storage_census_tests.rs:187:9:
+Box<dyn Any>
+stack backtrace:
+   0: std::panicking::begin_panic::<u64>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:761:5
+   1: std::panic::panic_any::<u64>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:260:5
+   2: <kasumi_store::storage_census::tests::DestructorPanic as core::ops::drop::Drop>::drop
+             at ./src/storage_census_tests.rs:187:9
+   3: core::ptr::drop_glue::<kasumi_store::storage_census::tests::DestructorPanic>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ptr/mod.rs:825:1
+   4: core::mem::drop::<kasumi_store::storage_census::tests::DestructorPanic>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/mem/mod.rs:1004:1
+   5: <kasumi_store::storage_census::tests::DestructorPanic as kasumi_store::storage_census::ErasedPayload>::try_dispose::{closure#0}
+             at ./src/storage_census.rs:79:56
+   6: <core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::storage_census::tests::DestructorPanic as kasumi_store::storage_census::ErasedPayload>::try_dispose::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+   7: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::storage_census::tests::DestructorPanic as kasumi_store::storage_census::ErasedPayload>::try_dispose::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+   8: ___rust_try
+   9: std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::storage_census::tests::DestructorPanic as kasumi_store::storage_census::ErasedPayload>::try_dispose::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  10: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::storage_census::tests::DestructorPanic as kasumi_store::storage_census::ErasedPayload>::try_dispose::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  11: <kasumi_store::storage_census::tests::DestructorPanic as kasumi_store::storage_census::ErasedPayload>::try_dispose
+             at ./src/storage_census.rs:79:23
+  12: <kasumi_store::storage_census::StorageCensus>::drain_owner
+             at ./src/storage_census.rs:420:37
+  13: <kasumi_store::storage_census::StorageRegistration<kasumi_store::storage_census::tests::DestructorPanic>>::retire
+             at ./src/storage_census.rs:547:35
+  14: kasumi_store::storage_census::tests::retained_original_observation_never_holds_metadata_or_stalls_another_owner
+             at ./src/storage_census_tests.rs:293:20
+  15: kasumi_store::storage_census::tests::retained_original_observation_never_holds_metadata_or_stalls_another_owner::{closure#0}
+             at ./src/storage_census_tests.rs:283:80
+  16: <kasumi_store::storage_census::tests::retained_original_observation_never_holds_metadata_or_stalls_another_owner::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  17: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test storage_census::tests::settlement_unwind_keeps_the_actual_owner_and_exact_original_payload ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 234 filtered out; finished in 0.47s
+

@@ -1,0 +1,6 @@
+{
+  "external_inventory_only": [],
+  "native_input_inventory_pairs": [],
+  "policy": "No native or dependency bytes copied. No paths outside repository opened. Original failures retained.",
+  "selected_binary_omissions": []
+}

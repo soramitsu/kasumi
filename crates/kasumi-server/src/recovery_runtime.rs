@@ -1,6 +1,6 @@
 //! Installed Control recovery dispatch. Request bodies name durable semantic
-//! identities; endpoints, trust and resource-specific credentials come only from
-//! the installed route whose complete configuration digest was frozen at start.
+//! identities; endpoints and trust come from the installed route's frozen semantic
+//! digest, while each Control member supplies locally authorized credentials.
 use crate::{
     runtime::{
         AdminClientConfig, RuntimeConfig, credential_path, parse_certificate_pin, read_bounded,
@@ -12,11 +12,19 @@ use kasumi_client::{
     KasumiAuthorityPool, KasumiClientConfig, KasumiRetirementPool, KasumiTargetClient,
 };
 use kasumi_engine::{Database, LifecycleSigner, VerifiedRecoveryPhase, VerifiedRecoveryStatus};
-use kasumi_serving::{AuthorityTrust, ControlTrust};
-use kasumi_transport::credentials::{FileCredentialSource, token};
+use kasumi_serving::{AuthorityManifest, AuthorityTrust, ControlTrust};
+use kasumi_transport::{
+    CertificatePin,
+    credentials::{FileCredentialSource, token},
+};
 use kasumi_types::*;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -47,9 +55,9 @@ impl RecoverySource {
         credential_path(&self.token_file)?;
         Ok(())
     }
-    fn connections(&self) -> Result<BTreeMap<u64, KasumiClientConfig>> {
+    fn connections(&self, trusted_ca_pem: &[u8]) -> Result<BTreeMap<u64, KasumiClientConfig>> {
         self.validate()?;
-        crate::installed_clients::connections(&self.members, &self.identity, &self.server_ca)
+        crate::installed_clients::connections_with_ca(&self.members, &self.identity, trusted_ca_pem)
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -71,6 +79,92 @@ pub struct RecoveryRoute {
 #[serde(deny_unknown_fields)]
 pub struct RecoveryRuntimeConfig {
     pub routes: BTreeMap<String, RecoveryRoute>,
+}
+
+// A route's immutable trust bytes are loaded once for a digest comparison and
+// then handed to the very connection that performs the effect. Local credential
+// files can rotate, but a changed CA cannot substitute trust after admission.
+struct RouteTrust {
+    issuer_ca: Vec<u8>,
+    target_cas: BTreeMap<u64, Vec<u8>>,
+    source_ca: Option<Vec<u8>>,
+    custody_ca: Option<Vec<u8>>,
+}
+impl RouteTrust {
+    fn load(route: &RecoveryRoute, authority: &ServingAuthorityConfig) -> Result<Self> {
+        Ok(Self {
+            issuer_ca: read_bounded(&authority.server_ca, 1 << 20)?,
+            target_cas: route
+                .targets
+                .iter()
+                .map(|(id, member)| Ok((*id, read_bounded(&member.client.server_ca, 1 << 20)?)))
+                .collect::<Result<_>>()?,
+            source_ca: route
+                .source
+                .as_ref()
+                .map(|source| read_bounded(&source.server_ca, 1 << 20))
+                .transpose()?,
+            custody_ca: route
+                .source_custody
+                .as_ref()
+                .map(|source| read_bounded(&source.server_ca, 1 << 20))
+                .transpose()?,
+        })
+    }
+}
+#[derive(Serialize)]
+struct TargetRouteBinding<'a> {
+    node: &'a LifecycleNode,
+    replication: &'a TargetPeer,
+    endpoint: &'a str,
+    server_certificate_pins: BTreeSet<CertificatePin>,
+    server_ca_sha256: String,
+}
+#[derive(Serialize)]
+struct SourceRouteBinding<'a> {
+    members: BTreeMap<u64, PinnedRouteEndpoint<'a>>,
+    server_ca_sha256: String,
+}
+#[derive(Serialize)]
+struct PinnedRouteEndpoint<'a> {
+    endpoint: &'a str,
+    certificate_pins: BTreeSet<CertificatePin>,
+}
+#[derive(Serialize)]
+struct DispatchRouteBinding<'a> {
+    tenant: &'a str,
+    source_incarnation: Uuid,
+    source_purpose_sha256: &'a str,
+    targets: BTreeMap<u64, TargetRouteBinding<'a>>,
+    source: Option<SourceRouteBinding<'a>>,
+    source_custody: Option<SourceRouteBinding<'a>>,
+    issuer_manifest: &'a AuthorityManifest,
+    issuer_endpoints: BTreeMap<u16, BTreeMap<u64, PinnedRouteEndpoint<'a>>>,
+    issuer_ca_sha256: String,
+}
+fn sha256(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+fn parsed_pins<'a>(pins: impl IntoIterator<Item = &'a str>) -> Result<BTreeSet<CertificatePin>> {
+    pins.into_iter().map(parse_certificate_pin).collect()
+}
+fn endpoint_bindings(
+    members: &BTreeMap<u64, crate::serving_runtime::AuthorityEndpoint>,
+) -> Result<BTreeMap<u64, PinnedRouteEndpoint<'_>>> {
+    members
+        .iter()
+        .map(|(id, member)| {
+            Ok((
+                *id,
+                PinnedRouteEndpoint {
+                    endpoint: &member.endpoint,
+                    certificate_pins: parsed_pins(
+                        member.certificate_pins.iter().map(String::as_str),
+                    )?,
+                },
+            ))
+        })
+        .collect()
 }
 impl RecoveryRuntimeConfig {
     pub(crate) fn validate(&self, runtime: &RuntimeConfig) -> Result<()> {
@@ -165,12 +259,99 @@ impl RecoveryRuntimeConfig {
 }
 impl RecoveryRoute {
     pub fn digest(&self, authority: &ServingAuthorityConfig) -> Result<String> {
-        Ok(staged_digest(&("kasumi.recovery-dispatch-configuration.v1", self, authority))?.0)
+        let trust = RouteTrust::load(self, authority)?;
+        self.digest_with_trust(authority, &trust)
     }
-    fn accepts(&self, request: &RecoveryStart, authority: &ServingAuthorityConfig) -> Result<()> {
+    fn digest_with_trust(
+        &self,
+        authority: &ServingAuthorityConfig,
+        trust: &RouteTrust,
+    ) -> Result<String> {
+        // Bind semantic endpoints, pins and actual CA bytes. Client TLS
+        // identities, token paths and the local issuer alias may legitimately
+        // differ across Control members; remote authorization remains live.
+        let targets = self
+            .targets
+            .iter()
+            .map(|(id, member)| {
+                let ca = trust
+                    .target_cas
+                    .get(id)
+                    .context("target route CA snapshot absent")?;
+                Ok((
+                    *id,
+                    TargetRouteBinding {
+                        node: &member.node,
+                        replication: &member.replication,
+                        endpoint: &member.client.endpoint,
+                        server_certificate_pins: parsed_pins(
+                            member
+                                .client
+                                .server_certificate_pins
+                                .iter()
+                                .map(String::as_str),
+                        )?,
+                        server_ca_sha256: sha256(ca),
+                    },
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let source = self
+            .source
+            .as_ref()
+            .map(|source| {
+                Ok::<_, anyhow::Error>(SourceRouteBinding {
+                    members: endpoint_bindings(&source.members)?,
+                    server_ca_sha256: sha256(
+                        trust
+                            .source_ca
+                            .as_deref()
+                            .context("source CA snapshot absent")?,
+                    ),
+                })
+            })
+            .transpose()?;
+        let source_custody = self
+            .source_custody
+            .as_ref()
+            .map(|source| {
+                Ok::<_, anyhow::Error>(SourceRouteBinding {
+                    members: endpoint_bindings(&source.members)?,
+                    server_ca_sha256: sha256(
+                        trust
+                            .custody_ca
+                            .as_deref()
+                            .context("custody CA snapshot absent")?,
+                    ),
+                })
+            })
+            .transpose()?;
+        let binding = DispatchRouteBinding {
+            tenant: &self.tenant,
+            source_incarnation: self.source_incarnation,
+            source_purpose_sha256: &self.source_purpose_sha256,
+            targets,
+            source,
+            source_custody,
+            issuer_manifest: &authority.manifest,
+            issuer_endpoints: authority
+                .endpoints
+                .iter()
+                .map(|(partition, members)| Ok((*partition, endpoint_bindings(members)?)))
+                .collect::<Result<_>>()?,
+            issuer_ca_sha256: sha256(&trust.issuer_ca),
+        };
+        Ok(staged_digest(&("kasumi.recovery-dispatch-configuration.v3", binding))?.0)
+    }
+    fn accepts(
+        &self,
+        request: &RecoveryStart,
+        authority: &ServingAuthorityConfig,
+        digest: &str,
+    ) -> Result<()> {
         request.validate()?;
         ensure!(
-            self.digest(authority)? == request.dispatch_configuration_sha256
+            digest == request.dispatch_configuration_sha256
                 && self.tenant == request.tenant
                 && self.source_incarnation == request.source_incarnation
                 && self.source_purpose_sha256 == request.source_purpose_sha256
@@ -205,6 +386,7 @@ pub(crate) struct ControlRecoveryCoordinator {
     configured: RecoveryRuntimeConfig,
     authorities: BTreeMap<String, ServingAuthorityConfig>,
     trusts: BTreeMap<String, AuthorityTrust>,
+    installed_digests: BTreeMap<String, String>,
 }
 impl ControlRecoveryCoordinator {
     pub(crate) fn new(
@@ -229,12 +411,23 @@ impl ControlRecoveryCoordinator {
                 "recovery issuer verifier installation differs"
             );
         }
+        let installed_digests = configured
+            .routes
+            .iter()
+            .map(|(name, route)| {
+                Ok((
+                    name.clone(),
+                    route.digest(&runtime.serving_authorities[&route.authority])?,
+                ))
+            })
+            .collect::<Result<_>>()?;
         Ok(Arc::new(Self {
             database,
             signer,
             configured,
             authorities: runtime.serving_authorities.clone(),
             trusts,
+            installed_digests,
         }))
     }
     pub(crate) fn control_incarnation(&self) -> Uuid {
@@ -243,12 +436,29 @@ impl ControlRecoveryCoordinator {
     fn route(
         &self,
         request: &RecoveryStart,
-    ) -> Result<(&RecoveryRoute, &ServingAuthorityConfig, &AuthorityTrust)> {
-        for route in self.configured.routes.values() {
+    ) -> Result<(
+        &RecoveryRoute,
+        &ServingAuthorityConfig,
+        &AuthorityTrust,
+        RouteTrust,
+    )> {
+        for (name, route) in &self.configured.routes {
+            if route.tenant != request.tenant
+                || route.source_incarnation != request.source_incarnation
+                || route.source_purpose_sha256 != request.source_purpose_sha256
+            {
+                continue;
+            }
             let authority = &self.authorities[&route.authority];
-            if route.digest(authority)? == request.dispatch_configuration_sha256 {
-                route.accepts(request, authority)?;
-                return Ok((route, authority, &self.trusts[&route.authority]));
+            let trust = RouteTrust::load(route, authority)?;
+            let digest = route.digest_with_trust(authority, &trust)?;
+            if digest == request.dispatch_configuration_sha256 {
+                ensure!(
+                    self.installed_digests.get(name) == Some(&digest),
+                    "installed recovery route trust changed after startup"
+                );
+                route.accepts(request, authority, &digest)?;
+                return Ok((route, authority, &self.trusts[&route.authority], trust));
             }
         }
         anyhow::bail!("exact recovery dispatch configuration is not installed")
@@ -356,7 +566,7 @@ impl ControlRecoveryCoordinator {
         head: &RecoveryRecord,
         prepared: &VerifiedRecoveryPhase,
     ) -> Result<RecoveryDispatchOutcome> {
-        let (route, authority, trust) = self.route(&head.request)?;
+        let (route, authority, trust, trusted_cas) = self.route(&head.request)?;
         prepared.release().await?;
         let duration = Duration::from_millis(head.request.phase_timeout_ms);
         match &prepared.record().input {
@@ -366,7 +576,12 @@ impl ControlRecoveryCoordinator {
                     trust.clone(),
                     &head.request.tenant,
                     &route.issuer_admin_bearer_file,
+                    &trusted_cas.issuer_ca,
                 )?;
+                let command_begun = prepared
+                    .record()
+                    .effect_attempts
+                    .contains_key(&RecoveryEffect::AuthorityCommand);
                 if let Some(receipt) = pool
                     .receipt(&command.tenant, command.command_id, duration)
                     .await?
@@ -375,49 +590,98 @@ impl ControlRecoveryCoordinator {
                         receipt.receipt.command == **command,
                         "original issuer receipt differs"
                     );
+                    ensure!(
+                        command_begun,
+                        "issuer receipt has no prior committed recovery effect"
+                    );
                     prepared.release().await?;
                     return Ok(RecoveryDispatchOutcome::Authority(Box::new(receipt)));
                 }
+                if command_begun {
+                    return Err(unknown_recovery_effect());
+                }
                 prepared.admit_dispatch().await?;
                 if let AuthorityAction::ActivateCommitted { control, .. } = &command.action {
-                    let accepted = pool
-                        .read_lifecycle_receipt(&control.reference, duration)
+                    let current = self
+                        .database
+                        .recovery_phase(
+                            context.clone(),
+                            head.request.operation_id,
+                            prepared.record().phase_id,
+                        )
                         .await?;
-                    if let Some(accepted) = accepted {
-                        ensure!(
-                            accepted.receipt.reference == control.reference
-                                && accepted.receipt.request_sha256 == control.intent_sha256,
-                            "retained issuer activation intent differs"
-                        );
-                    } else {
-                        let LifecycleAuthorityIdentity::Intent(id) = control.reference.identity
-                        else {
-                            anyhow::bail!("activation intent reference differs")
-                        };
-                        let observed = self
-                            .database
-                            .observe_lifecycle_intent(context.clone(), id)
+                    let acceptance_attempt = current
+                        .record()
+                        .effect_attempts
+                        .get(&RecoveryEffect::ActivationIntentAcceptance)
+                        .map(|attempt| attempt.attempt_id);
+                    if current.record().activation_acceptance.is_none() {
+                        let accepted = pool
+                            .read_lifecycle_receipt(&control.reference, duration)
                             .await?;
-                        let signed = self.signer.sign_intent(&observed).await?;
-                        let acceptance = kasumi_serving::LifecycleAuthorityRequest::AcceptIntent(
-                            Box::new(signed),
-                        );
-                        ensure!(
-                            acceptance.reference() == control.reference
-                                && acceptance.digest()? == control.intent_sha256,
-                            "fresh issuer observation changed immutable activation identity"
-                        );
-                        prepared.admit_dispatch().await?;
-                        let accepted = pool.execute_lifecycle(&acceptance, duration).await?;
+                        let (accepted, attempt_id) = if let Some(accepted) = accepted {
+                            let attempt_id =
+                                acceptance_attempt.ok_or_else(unknown_recovery_effect)?;
+                            (accepted, attempt_id)
+                        } else {
+                            if acceptance_attempt.is_some() {
+                                return Err(unknown_recovery_effect());
+                            }
+                            let LifecycleAuthorityIdentity::Intent(id) = control.reference.identity
+                            else {
+                                anyhow::bail!("activation intent reference differs")
+                            };
+                            let observed = self
+                                .database
+                                .observe_lifecycle_intent(context.clone(), id)
+                                .await?;
+                            let signed = self.signer.sign_intent(&observed).await?;
+                            let acceptance =
+                                kasumi_serving::LifecycleAuthorityRequest::AcceptIntent(Box::new(
+                                    signed,
+                                ));
+                            ensure!(
+                                acceptance.reference() == control.reference
+                                    && acceptance.digest()? == control.intent_sha256,
+                                "fresh issuer observation changed immutable activation identity"
+                            );
+                            let ticket = current
+                                .begin_effect(RecoveryEffect::ActivationIntentAcceptance)
+                                .await?;
+                            let attempt_id = ticket.attempt_id();
+                            ticket.consume(&prepared.record().input).await?;
+                            let accepted = pool.execute_lifecycle(&acceptance, duration).await?;
+                            observed.release().await?;
+                            (accepted, attempt_id)
+                        };
                         ensure!(
                             accepted.receipt.reference == control.reference
                                 && accepted.receipt.request_sha256 == control.intent_sha256,
                             "issuer returned another activation acceptance"
                         );
-                        observed.release().await?;
+                        self.database
+                            .commit_recovery_activation_acceptance(
+                                context.clone(),
+                                head.request.operation_id,
+                                prepared.record().phase_id,
+                                attempt_id,
+                                accepted,
+                            )
+                            .await?;
                     }
-                    prepared.admit_dispatch().await?;
                 }
+                let current = self
+                    .database
+                    .recovery_phase(
+                        context.clone(),
+                        head.request.operation_id,
+                        prepared.record().phase_id,
+                    )
+                    .await?;
+                let ticket = current
+                    .begin_effect(RecoveryEffect::AuthorityCommand)
+                    .await?;
+                ticket.consume(&prepared.record().input).await?;
                 let result = pool.execute(command, duration).await?;
                 prepared.release().await?;
                 Ok(RecoveryDispatchOutcome::Authority(Box::new(result)))
@@ -439,17 +703,33 @@ impl ControlRecoveryCoordinator {
                         intent.request == **command,
                         "original Control commitment differs"
                     );
+                    ensure!(
+                        prepared
+                            .record()
+                            .effect_attempts
+                            .contains_key(&RecoveryEffect::ControlIntent),
+                        "Control intent has no prior committed recovery effect"
+                    );
                     return Ok(RecoveryDispatchOutcome::ControlIntent(intent.clone()));
                 }
                 ensure!(
                     status.command.is_none(),
                     "Control phase ID is used for another command"
                 );
+                if prepared
+                    .record()
+                    .effect_attempts
+                    .contains_key(&RecoveryEffect::ControlIntent)
+                {
+                    return Err(unknown_recovery_effect());
+                }
                 prepared.admit_dispatch().await?;
                 let mut limited = context.clone();
                 limited.authorization = context
                     .authorization
                     .with_expiry_limit(prepared.dispatch_limit().await?)?;
+                let ticket = prepared.begin_effect(RecoveryEffect::ControlIntent).await?;
+                ticket.consume(&prepared.record().input).await?;
                 self.database
                     .lifecycle_control(
                         limited,
@@ -469,6 +749,22 @@ impl ControlRecoveryCoordinator {
                 Ok(RecoveryDispatchOutcome::ControlIntent(intent))
             }
             RecoveryDispatch::Target { node_id, request } => {
+                let first_membership = matches!(
+                    request.step,
+                    TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
+                        | TargetRuntimeStep::Initialize(_)
+                );
+                // A committed BeginEffect may already have reached the target.
+                // Historical status is the only valid continuation; the current
+                // bare target protocol has no such reader yet.
+                if first_membership
+                    && prepared
+                        .record()
+                        .effect_attempts
+                        .contains_key(&RecoveryEffect::TargetCommand)
+                {
+                    return Err(unknown_recovery_effect());
+                }
                 prepared.admit_dispatch().await?;
                 let phase = self
                     .database
@@ -481,7 +777,11 @@ impl ControlRecoveryCoordinator {
                     .targets
                     .get(node_id)
                     .context("target route not installed")?;
-                let config = connection(&target.client)?;
+                let target_ca = trusted_cas
+                    .target_cas
+                    .get(node_id)
+                    .context("target CA snapshot absent")?;
+                let config = connection(&target.client, target_ca)?;
                 let credential = FileCredentialSource::new(&target.client.token_file)?;
                 let bearer = token(&credential)?;
                 // An unreachable installed voter must not consume the entire
@@ -495,11 +795,49 @@ impl ControlRecoveryCoordinator {
                         KasumiTargetClient::connect(&config, control, trust.clone(), *node_id)
                             .await?;
                     prepared.admit_dispatch().await?;
-                    Ok::<_, anyhow::Error>(client.execute(&bearer, &verified, request).await?)
+                    if first_membership {
+                        // A failed or cancelled BeginEffect can have committed.
+                        // Never send a second packet or infer absence from its
+                        // reply; the exact retained phase remains unresolved.
+                        let ticket = prepared
+                            .begin_effect(RecoveryEffect::TargetCommand)
+                            .await
+                            .map_err(|_| unknown_recovery_effect())?;
+                        ticket
+                            .consume(&prepared.record().input)
+                            .await
+                            .map_err(|_| unknown_recovery_effect())?;
+                    }
+                    let acknowledgement = client.execute(&bearer, &verified, request).await;
+                    let acknowledgement = if first_membership {
+                        acknowledgement.map_err(|_| unknown_recovery_effect())?
+                    } else {
+                        acknowledgement?
+                    };
+                    Ok::<_, anyhow::Error>(acknowledgement)
                 })
-                .await??;
-                prepared.release().await?;
-                phase.release().await?;
+                .await
+                .map_err(|elapsed| {
+                    if first_membership {
+                        unknown_recovery_effect()
+                    } else {
+                        elapsed.into()
+                    }
+                })??;
+                prepared.release().await.map_err(|error| {
+                    if first_membership {
+                        unknown_recovery_effect()
+                    } else {
+                        error.into()
+                    }
+                })?;
+                phase.release().await.map_err(|error| {
+                    if first_membership {
+                        unknown_recovery_effect()
+                    } else {
+                        error.into()
+                    }
+                })?;
                 Ok(RecoveryDispatchOutcome::Target(Box::new(
                     acknowledgement.response().clone(),
                 )))
@@ -531,23 +869,82 @@ impl ControlRecoveryCoordinator {
                     .source_custody
                     .as_ref()
                     .context("planned custody source is absent")?;
-                let custody_config = custody.connections()?;
+                let source_ca = trusted_cas
+                    .source_ca
+                    .as_deref()
+                    .context("source CA snapshot absent")?;
+                let custody_ca = trusted_cas
+                    .custody_ca
+                    .as_deref()
+                    .context("custody CA snapshot absent")?;
+                let custody_config = custody.connections(custody_ca)?;
                 let custody_bearer = token(&FileCredentialSource::new(&custody.token_file)?)?;
+                let begun = prepared
+                    .record()
+                    .effect_attempts
+                    .contains_key(&RecoveryEffect::SourceRetirement);
                 let verified = dispatch_planned_retirement(
                     || {
                         Ok((
-                            source.connections()?,
+                            source.connections(source_ca)?,
                             token(&FileCredentialSource::new(&source.token_file)?)?,
                         ))
                     },
                     &custody_config,
                     &custody_bearer,
                     request,
+                    begun,
                     duration,
-                    async { prepared.admit_dispatch().await.map_err(Into::into) },
+                    async {
+                        let ticket = prepared
+                            .begin_effect(RecoveryEffect::SourceRetirement)
+                            .await?;
+                        ticket.consume(&prepared.record().input).await?;
+                        Ok(())
+                    },
                 )
-                .await?;
-                prepared.release().await?;
+                .await;
+                let verified = match verified {
+                    Ok(proof) => proof,
+                    Err(cause) => {
+                        return Err(source_retirement_failure(
+                            &self.database,
+                            context,
+                            head.request.operation_id,
+                            prepared.record().phase_id,
+                            cause,
+                        )
+                        .await);
+                    }
+                };
+                let current = self
+                    .database
+                    .recovery_phase(
+                        context.clone(),
+                        head.request.operation_id,
+                        prepared.record().phase_id,
+                    )
+                    .await
+                    .map_err(|_| unknown_source_retirement())?;
+                if !current
+                    .record()
+                    .effect_attempts
+                    .contains_key(&RecoveryEffect::SourceRetirement)
+                {
+                    return Err(kasumi_types::Error::new(
+                        ErrorCode::Conflict,
+                        "retirement proof predates its committed BeginEffect marker",
+                    )
+                    .into());
+                }
+                current
+                    .release()
+                    .await
+                    .map_err(|_| unknown_source_retirement())?;
+                prepared
+                    .release()
+                    .await
+                    .map_err(|_| unknown_source_retirement())?;
                 Ok(RecoveryDispatchOutcome::SourceRetired(Box::new(
                     verified.receipt().clone(),
                 )))
@@ -594,6 +991,7 @@ pub(crate) async fn dispatch_planned_retirement<S, F>(
     custody: &BTreeMap<u64, KasumiClientConfig>,
     custody_bearer: &str,
     request: &RetireSourceRequest,
+    marker_begun: bool,
     duration: Duration,
     admit: F,
 ) -> Result<kasumi_client::VerifiedRetirementReceipt>
@@ -651,9 +1049,15 @@ where
         remaining()?;
         let proof = match observed {
             Ok(None) => {
-                admit.await?;
-                // Exact original identity and nonrenewed admission survive ambiguity.
-                let mutation = application.retire_source(request, remaining()?).await;
+                // A retained BeginEffect permits read-only resolution only.
+                // No negative status can grant a second mutating RPC.
+                let attempt_wait = remaining()?;
+                let mutation = retire_after_absent_status(
+                    marker_begun,
+                    admit,
+                    application.retire_source(request, attempt_wait),
+                )
+                .await;
                 let proof = custody
                     .verify_retirement_receipt(&reference, remaining()?)
                     .await;
@@ -693,12 +1097,73 @@ where
     .await?
 }
 
-fn connection(config: &AdminClientConfig) -> Result<KasumiClientConfig> {
+fn unknown_source_retirement() -> anyhow::Error {
+    kasumi_types::Error::new(
+        ErrorCode::UnknownOutcome,
+        "source retirement may be committed; resolve its exact receipt without another dispatch",
+    )
+    .into()
+}
+
+fn unknown_recovery_effect() -> anyhow::Error {
+    kasumi_types::Error::new(
+        ErrorCode::UnknownOutcome,
+        "recovery effect may be committed; resolve its exact retained outcome without another dispatch",
+    )
+    .into()
+}
+
+async fn source_retirement_failure(
+    database: &Arc<Database>,
+    context: &RequestContext,
+    operation_id: Uuid,
+    phase_id: Uuid,
+    cause: anyhow::Error,
+) -> anyhow::Error {
+    match database
+        .recovery_phase(context.clone(), operation_id, phase_id)
+        .await
+    {
+        Ok(current) => {
+            let marked = current
+                .record()
+                .effect_attempts
+                .contains_key(&RecoveryEffect::SourceRetirement);
+            if current.release().await.is_err() || marked {
+                unknown_source_retirement()
+            } else {
+                cause
+            }
+        }
+        Err(_) => unknown_source_retirement(),
+    }
+}
+
+/// This exact branch sits between a negative application status and the only
+/// source mutation. A committed marker forbids both a fresh Begin and the RPC.
+pub(crate) async fn retire_after_absent_status<A, M, T, E>(
+    marker_begun: bool,
+    admit: A,
+    mutate: M,
+) -> Result<T>
+where
+    A: std::future::Future<Output = Result<()>>,
+    M: std::future::Future<Output = std::result::Result<T, E>>,
+    E: Into<anyhow::Error>,
+{
+    if marker_begun {
+        return Err(unknown_source_retirement());
+    }
+    admit.await?;
+    mutate.await.map_err(Into::into)
+}
+
+fn connection(config: &AdminClientConfig, trusted_ca_pem: &[u8]) -> Result<KasumiClientConfig> {
     config.validate()?;
     Ok(KasumiClientConfig {
         endpoint: config.endpoint.clone(),
         identity: config.identity.load()?,
-        trusted_ca_pem: read_bounded(&config.server_ca, 1 << 20)?,
+        trusted_ca_pem: trusted_ca_pem.to_vec(),
         server_certificate_pins: config
             .server_certificate_pins
             .iter()
@@ -711,10 +1176,10 @@ fn authority_pool(
     trust: AuthorityTrust,
     tenant: &str,
     credential: &str,
+    trusted_ca_pem: &[u8],
 ) -> Result<KasumiAuthorityPool> {
     let partition = config.manifest.partition(tenant)?;
     let identity = config.tls.load()?;
-    let ca = read_bounded(&config.server_ca, 1 << 20)?;
     let endpoints = config.endpoints[&partition]
         .iter()
         .map(|(id, endpoint)| {
@@ -723,7 +1188,7 @@ fn authority_pool(
                 KasumiClientConfig {
                     endpoint: endpoint.endpoint.clone(),
                     identity: identity.clone(),
-                    trusted_ca_pem: ca.clone(),
+                    trusted_ca_pem: trusted_ca_pem.to_vec(),
                     server_certificate_pins: endpoint
                         .certificate_pins
                         .iter()

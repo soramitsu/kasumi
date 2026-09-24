@@ -1,0 +1,13 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED",
+  "stack_after": "engine-integration-store-agent2b89e576",
+  "reason": "Pause exact drained owner before simulated stopped namespace unlink, following independent review. Original unlink/reopen/dependency checks unchanged.",
+  "patch_sha256": "f8bec7aa2a549eff1f84f88ccb806a517be7f6e8e3f0861f8546efba79a6810c",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/tests/backup_checkpoint.rs",
+      "baseline_sha256": "82ea651f0d6e14e666d1e6789045970facab37fea62b9fa6736fa4e0279faa50",
+      "proposed_sha256": "3f2ceecbb87c732e8f5a0ad7cdb860ebfa80ed5807f954e1be7657f3a6633e21"
+    }
+  ]
+}

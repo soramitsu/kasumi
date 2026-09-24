@@ -6,19 +6,38 @@ use std::time::Duration;
 const NODE_STORE_ID: uuid::Uuid = uuid::Uuid::from_u128(0xa1f9_93e5_2727_480a_9e7c_6e39_eb51_5f01);
 
 struct Replica {
-    directory: tempfile::TempDir,
+    storage: crate::test_utils::FixtureStorage,
     node: Arc<NodeStore>,
     stores: Arc<TenantStorageSet>,
     audit: Arc<SecurityAudit>,
+    directory: tempfile::TempDir,
 }
 impl Replica {
     async fn new() -> anyhow::Result<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
-        let node = NodeStore::create_new_fixture(
-            directory.path().join("node.redb"),
-            NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+        let (persistent_config, scratch_config) =
+            crate::test_utils::fixture_disk_configs(directory.path())?;
+        // The original fixed 2 GiB source resolves Default to a 256 MiB total.
+        // Add only the new physical metadata; do not resolve against host RAM.
+        let config = crate::admission::AdmissionConfig {
+            max_inflight_bytes: Some(
+                (256_u64 << 20)
+                    .checked_add(crate::test_utils::isolated_disk_metadata_bytes(
+                        &persistent_config,
+                        &scratch_config,
+                    )?)
+                    .ok_or_else(|| anyhow::anyhow!("fixture metadata budget overflow"))?,
+            ),
+            ..Default::default()
+        };
+        let admission = crate::admission::NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
+        let storage = crate::test_utils::FixtureStorage::with_admission(
+            &persistent_config,
+            &scratch_config,
+            admission.clone(),
         )?;
+        let node =
+            storage.create_new(directory.path().join("persistent/node.redb"), NODE_STORE_ID)?;
         let stores = TenantStorageSet::initialize_catalogs_fixture(
             node.clone(),
             "replica".into(),
@@ -26,20 +45,20 @@ impl Replica {
             Arc::new(LocalKeyProvider::new([32; 32])),
         )
         .await?;
-        let audit = Self::audit(node.clone(), false).await?;
+        let audit = Self::audit(node.clone(), false, storage.admission.clone()).await?;
         Ok(Self {
             directory,
+            storage,
             node,
             stores,
             audit,
         })
     }
-    async fn existing(directory: tempfile::TempDir) -> anyhow::Result<Self> {
-        let node = NodeStore::open_existing_fixture(
-            directory.path().join("node.redb"),
-            NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )?;
+    async fn existing(
+        (directory, storage): (tempfile::TempDir, crate::test_utils::FixtureStorage),
+    ) -> anyhow::Result<Self> {
+        let node =
+            storage.open_existing(directory.path().join("persistent/node.redb"), NODE_STORE_ID)?;
         let stores = TenantStorageSet::open_existing_fixture(
             node.clone(),
             "replica".into(),
@@ -47,15 +66,20 @@ impl Replica {
             Arc::new(LocalKeyProvider::new([32; 32])),
         )
         .await?;
-        let audit = Self::audit(node.clone(), true).await?;
+        let audit = Self::audit(node.clone(), true, storage.admission.clone()).await?;
         Ok(Self {
             directory,
+            storage,
             node,
             stores,
             audit,
         })
     }
-    async fn audit(node: Arc<NodeStore>, existing: bool) -> anyhow::Result<Arc<SecurityAudit>> {
+    async fn audit(
+        node: Arc<NodeStore>,
+        existing: bool,
+        admission: Arc<crate::admission::NodeAdmission>,
+    ) -> anyhow::Result<Arc<SecurityAudit>> {
         let provider = Arc::new(LocalKeyProvider::new([33; 32]));
         let store = if existing {
             TenantStore::open_existing_fixture(node, crate::SECURITY_TENANT.into(), provider)
@@ -64,19 +88,18 @@ impl Replica {
             TenantStore::initialize_catalog_fixture(node, crate::SECURITY_TENANT.into(), provider)
                 .await?
         };
-        let admission =
-            crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?;
         if existing {
             SecurityAudit::open(store, Default::default(), admission)
         } else {
             SecurityAudit::initialize(store, Default::default(), admission)
         }
     }
-    async fn close(self) -> tempfile::TempDir {
+    async fn close(self) -> (tempfile::TempDir, crate::test_utils::FixtureStorage) {
         self.stores.shutdown().await.unwrap();
         self.audit.shutdown().await.unwrap();
         let Self {
             directory,
+            storage,
             stores,
             audit,
             node,
@@ -84,7 +107,7 @@ impl Replica {
         drop(stores);
         drop(audit);
         drop(node);
-        directory
+        (directory, storage)
     }
     fn seed(
         &self,
@@ -399,7 +422,19 @@ async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descri
         replace(&serde_json::to_vec(&("replicated", &invalid))?)?;
         fixture.reject(1, expected, diagnostic).await?;
     }
+    let mut whitespace = binding.clone();
+    whitespace.push(b' ');
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&whitespace)?,
+        serde_json::from_slice::<serde_json::Value>(&binding)?
+    );
+    replace(&whitespace)?;
+    fixture
+        .reject(1, expected, "noncanonical replicated deployment binding")
+        .await?;
     replace(&binding)?;
+    let restored = installed_replicated_bootstrap(&fixture.stores, expected)?;
+    assert_eq!(serde_json::to_vec(&("replicated", &restored))?, binding);
     let mut substituted = installed.clone();
     substituted.voters.get_mut(&1).unwrap().address = "tampered-domain".into();
     fixture
@@ -422,6 +457,89 @@ async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descri
     fixture
         .reject(1, expected, "required deployment binding")
         .await?;
+    drop(fixture.close().await);
+    Ok(())
+}
+
+#[tokio::test]
+async fn target_deployment_requires_bounded_paired_current_writer_bytes() -> anyhow::Result<()> {
+    let fixture = Replica::new().await?;
+    let installed = bootstrap();
+    let binding = serde_json::to_vec(&("replicated", &installed))?;
+    bind_deployment(&fixture.stores, &binding)?;
+    let custody = fixture
+        .stores
+        .custody()
+        .store()
+        .get_bounded("engine.deployment", b"mode", 256 << 10)?
+        .expect("installed custody deployment");
+    assert_eq!(custody, binding);
+    let decoded = decode_current_target_deployment(&fixture.stores, &custody)?;
+    assert_eq!(serde_json::to_vec(&("replicated", &decoded))?, binding);
+
+    let mut alternate = binding.clone();
+    alternate.push(b' ');
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&alternate)?,
+        serde_json::from_slice::<serde_json::Value>(&binding)?
+    );
+    fixture.stores.application().write_batch(&[WriteOp::put(
+        "engine.deployment",
+        b"mode",
+        alternate.as_slice(),
+    )])?;
+    let before = retained(&fixture.stores)?;
+    let Err(error) = decode_current_target_deployment(&fixture.stores, &custody) else {
+        panic!("target reader accepted divergent deployment copies");
+    };
+    assert!(
+        format!("{error:#}").contains("differs across domains"),
+        "{error:#}"
+    );
+    assert_eq!(retained(&fixture.stores)?, before);
+
+    fixture.stores.write_batch(
+        &[WriteOp::put(
+            "engine.deployment",
+            b"mode",
+            alternate.as_slice(),
+        )],
+        &[WriteOp::put(
+            "engine.deployment",
+            b"mode",
+            alternate.as_slice(),
+        )],
+    )?;
+    let altered_custody = fixture
+        .stores
+        .custody()
+        .store()
+        .get_bounded("engine.deployment", b"mode", 256 << 10)?
+        .expect("installed custody deployment");
+    let before = retained(&fixture.stores)?;
+    let Err(error) = decode_current_target_deployment(&fixture.stores, &altered_custody) else {
+        panic!("target reader accepted equivalent alternate deployment bytes");
+    };
+    assert!(
+        format!("{error:#}").contains("noncanonical replicated deployment binding"),
+        "{error:#}"
+    );
+    assert_eq!(retained(&fixture.stores)?, before);
+
+    fixture.stores.write_batch(
+        &[WriteOp::put(
+            "engine.deployment",
+            b"mode",
+            binding.as_slice(),
+        )],
+        &[WriteOp::put(
+            "engine.deployment",
+            b"mode",
+            binding.as_slice(),
+        )],
+    )?;
+    let restored = decode_current_target_deployment(&fixture.stores, &binding)?;
+    assert_eq!(serde_json::to_vec(&("replicated", &restored))?, binding);
     drop(fixture.close().await);
     Ok(())
 }

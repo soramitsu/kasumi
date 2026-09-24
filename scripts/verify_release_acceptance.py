@@ -26,10 +26,11 @@ from release_gate import TOOLCHAIN, functional_gates, sha256
 SCHEMA = "kasumi-release-acceptance-v1"
 # Registrations must be reviewed code in the frozen source: each adapter owns a
 # fixed runner path, reconstructs its exact command from verified inputs, and
-# validates the runner's domain-specific outcomes. No current runner implements
-# the complete final-release domain contracts. Deliberately accept none until
-# those adapters exist; an opaque report and asserted scenario labels cannot
-# certify a release. There is no CLI/manifest switch to override this registry.
+# validates the runner's domain-specific outcomes. The repeatable-assembly
+# bridge below remains unregistered pending native qualification. Deliberately
+# accept no domain until its complete contract is validated; an opaque report
+# and asserted scenario labels cannot certify a release. There is no
+# CLI/manifest switch to override this registry.
 DOMAIN_ADAPTERS = {}
 OBSERVATIONS = contextvars.ContextVar("release_acceptance_observations", default=None)
 PLATFORMS = tuple(sorted(package.TARGETS))
@@ -353,7 +354,15 @@ def check_host(root, host, target, started, finished):
             and host["execution_machine"] == machine and host["emulated"] is False,
             "native host architecture is missing or emulated")
     preflight = json_reference(root, host["preflight"])
-    require(preflight.get("schema") == 1 and preflight.get("requested_target") == target
+    native_os, native_machine = preflight.get("os"), preflight.get("machine")
+    require(isinstance(native_os, str) and isinstance(native_machine, str),
+            "native host preflight platform differs from claimed target")
+    native_target = {("Linux", "x86_64"): "x86_64-unknown-linux-gnu",
+                     ("Linux", "aarch64"): "aarch64-unknown-linux-gnu",
+                     ("Darwin", "arm64"): "aarch64-apple-darwin"}.get((native_os, native_machine))
+    require(native_target == target,
+            "native host preflight platform differs from claimed target")
+    require(preflight.get("schema") == 2 and preflight.get("requested_target") == target
             and preflight.get("errors") == [] and preflight.get("translated") in (None, False),
             "native host preflight failed")
     require(uint(preflight.get("effective_memory_bytes"), "host memory") >= 15 << 30,
@@ -387,9 +396,15 @@ def check_processes(root, processes, elapsed, passed=True):
                 and command[0] == executable["path"], "process command differs from executed identity")
         require(record.get("status") in ("passed", "failed") and record.get("outputs_stable") is True,
                 "process is not terminal with stable output")
-        cleanup = record.get("cleanup", {})
-        require(cleanup.get("drained") is True and cleanup.get("after") == []
-                and cleanup.get("errors") == [] and type(cleanup.get("process_returncode")) is int,
+        cleanup = record.get("cleanup")
+        group = record.get("process_group")
+        require(type(group) is int and group > 0 and isinstance(cleanup, dict)
+                and type(cleanup.get("group")) is int and cleanup["group"] == group
+                and cleanup.get("drained") is True
+                and cleanup.get("after") == [] and cleanup.get("errors") == []
+                and type(cleanup.get("process_returncode")) is int
+                and type(record.get("process_exit_code")) is int
+                and record.get("process_exit_code") == cleanup["process_returncode"],
                 "process ownership has not drained")
         if passed:
             gate = {"command": command, "process": process["receipt"]["path"],
@@ -622,7 +637,45 @@ def verify_artifacts(root, manifest, source_files, candidates, binaries):
     return artifacts
 
 
-def verify_gate(root, gate, identity, files, configs, binaries, artifacts):
+def check_repeatable_assembly_primary(root, domain, candidate):
+    """Bind the consumed functional receipt to the selected native primary."""
+    details = domain["details"]
+    exact(details, {"launcher", "report", "second_package", "second_source"},
+          "repeated assembly")
+    selected = candidate["primary"]["functional"]
+    selected_path = reference(root, selected)
+    require(selected_path.name == "evidence.json", "selected primary functional receipt is misplaced")
+    launcher_path = reference(root, details["launcher"])
+    report_path = reference(root, details["report"])
+    require(launcher_path.name == "launcher.json" and
+            report_path == launcher_path.parent / "assembly" / "attempt.json",
+            "repeatable assembly report is not the owned launcher's original report")
+    report = read_json(report_path)
+    frozen = json_reference(report_path.parent, report["frozen_inputs"])
+    require(isinstance(frozen, dict) and "evidence.json" in frozen,
+            "repeatable assembly omitted consumed functional evidence")
+    consumed = frozen["evidence.json"]
+    exact(consumed, {"identity", "file"}, "consumed functional evidence")
+    exact(consumed["identity"], {"sha256", "bytes", "executable"},
+          "consumed functional identity")
+    reference(report_path.parent, consumed["file"])
+    require(consumed["identity"] == {"sha256": selected["sha256"],
+                                     "bytes": selected["bytes"], "executable": False}
+            and consumed["file"]["sha256"] == selected["sha256"]
+            and consumed["file"]["bytes"] == selected["bytes"],
+            "repeatable assembly consumed another primary functional receipt")
+
+
+def repeatable_assembly_adapter(root, domain, files, configs, artifacts, candidates):
+    """Acceptance bridge; enable only after the complete native gate qualifies."""
+    import repeatable_assembly
+
+    repeatable_assembly.domain_adapter(root, domain, files, configs, artifacts)
+    target = domain["id"].split(":", 1)[1]
+    check_repeatable_assembly_primary(root, domain, candidates[target])
+
+
+def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candidates):
     exact(gate, {"id", "evidence"}, "acceptance gate")
     kind, target = gate["id"].split(":", 1)
     adapter = DOMAIN_ADAPTERS.get(kind)
@@ -643,7 +696,7 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts):
     # A future registered adapter must additionally bind its exact invocation
     # and independently validate semantic outcomes. This cannot be replaced by
     # checking that some arbitrary file happens to be in the source inventory.
-    adapter(root, record, files, configs, artifacts)
+    adapter(root, record, files, configs, artifacts, candidates)
     started, finished = timestamp(record["started_at"]), timestamp(record["finished_at"])
     elapsed = (finished - started).total_seconds()
     require(elapsed > 0, "domain gate elapsed time missing")
@@ -693,7 +746,9 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts):
             require(work["measurement"].get("name") == work["name"], "concurrent sample binding differs")
             check_samples(root, work["measurement"], minimum=1000)
     elif kind == "repeatable-assembly":
-        exact(details, {"second_package", "second_source"}, "repeated assembly")
+        exact(details, {"launcher", "report", "second_package", "second_source"}, "repeated assembly")
+        reference(root, details["launcher"])
+        reference(root, details["report"])
         for field, artifact_id in (("second_package", "package:" + target), ("second_source", "source")):
             reference(root, details[field])
             require(details[field]["path"] != artifacts[artifact_id]["file"]["path"] and
@@ -811,7 +866,7 @@ def verify_inputs(manifest_path, repository):
     candidates, binaries = verify_candidates(root, manifest, identity)
     artifacts = verify_artifacts(root, manifest, files, candidates, binaries)
     for gate in gates.values():
-        verify_gate(root, gate, identity, files, configs, binaries, artifacts)
+        verify_gate(root, gate, identity, files, configs, binaries, artifacts, candidates)
     selected = {gate["evidence"]["path"] for gate in gates.values()}
     selected |= {candidate["primary"]["functional"]["path"] for candidate in candidates.values()}
     selected |= {candidate["independent"]["path"] for candidate in candidates.values()}

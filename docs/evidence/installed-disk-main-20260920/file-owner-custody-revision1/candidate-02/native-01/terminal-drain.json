@@ -1,0 +1,12 @@
+{
+  "groups_drained": {
+    "28634": true,
+    "28654": true,
+    "28656": true,
+    "28670": true
+  },
+  "source_inventories_equal": true,
+  "results_sha256": "3856cfe1d2bc6869b82d1f519303b6c926abd43e61f2f69d065ea39d09fd8914",
+  "status": "TEST_COMPILE_FAILED",
+  "tests_executed": false
+}

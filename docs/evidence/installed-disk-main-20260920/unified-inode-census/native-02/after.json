@@ -1,0 +1,20 @@
+{
+  "target/installed-disk-validation/unified-inode-census/proposed/docs/standalone.md": "3d1b79be1c96c8594960fed6c2be36b117328a0fcc2c5c9210f98d70c4efc57b",
+  "target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/lib.rs": "3430167ab6cc9eb2c4ed6cec66af4ca0fd54aa1c57721d91ea30fb87c368fd98",
+  "target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk.rs": "f46f7c038a70fe23cbb5e20bb9c8407939e8a415715c6c741b72d4b177987d77",
+  "target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/ledger.rs": "3e5edb1147075d259bea145c459b31aa7d4f1359e0881540e80a999718ac2628",
+  "target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/census.rs": "b1015b4ea05422b08bd54908ffcd61a7fc8a7ddbadf8451be5745c13772a6d0c",
+  "target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/memory.rs": "844c7de2b993dce56a1dc0db93682b425ed38108d06d49a9ad4b54bd8101e561",
+  "target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/directory.rs": "cb978daf500cc6184a28bff343064d2b3f78d1c55d7e9f727cb7cb37e95eb6bf",
+  "target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs": "1b76be70bc7093070d0d245cec2607221436c9385527fb306a67a84997cb03aa",
+  "target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs": "b93e632245faf77e2d31fe4a6e2298ca2f2bd966e7c8612346af142fbffea5eb",
+  "target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/ledger/tests.rs": "f66da202774e96d984e080c0c73bdc15648e71577fc588eb803da2f85b375cf6",
+  "target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/directory/tests.rs": "149a6a36e432bc0301173ce22ea12a81ae2a1089a7231cf853758334712fcd4e",
+  "target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-server/src/runtime_memory.rs": "84e3d72d1e453844a2f57026965770c8adbc62e1ea35c8f666a1adffee53e219",
+  "target/installed-disk-validation/unified-inode-census/proposed/crates/kasumi-server/src/persistent_disk.rs": "dac6f223fe43e4149a0669938cecedf821f53d9003f8140344fed1e388efae1c",
+  "target/installed-disk-validation/unified-inode-census/native-02/ledger_tests.rs": "30c2d32afe688050d2d228d7aff106effd35de031b348489b374c47ba71f41f1",
+  "target/installed-disk-validation/unified-inode-census/native-02/metadata_formula.rs": "1ff25bcbf03de5f42270a60b462a58abf585f0c2a45fb09545024a6e33731710",
+  "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+  "crates/kasumi-store/src/disk_memory.rs": "7795b70e22e97faff5d7e7448a6e743606fcb038d465602cb8a616873d642ea3",
+  "crates/kasumi-store/src/device_disk.rs": "64ad6aa02bff422877c71185f3f84bd3614b001d1fdae9a6427c65b515737da9"
+}

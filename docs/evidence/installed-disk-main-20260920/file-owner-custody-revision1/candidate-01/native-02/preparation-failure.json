@@ -1,0 +1,5 @@
+{
+  "status": "PREPARATION_FAILED_BEFORE_NATIVE",
+  "reason": "Source-only ast.parse caught an incorrectly escaped newline in the generated binary-inventory write. No compiler/native process was started.",
+  "runner_sha256": "2012e2251ca64c15499e57ca4256224eaa0279467c4c25fb67c5df3c1d7567a9"
+}

@@ -1,0 +1,54 @@
+{
+  "status": "FROZEN_DERIVED_COMPONENT_NOT_TOTAL_WORKSPACE_OR_NATIVE_RSS_MEASUREMENT",
+  "inputs": [
+    {
+      "path": "target/installed-disk-validation/redb-workspace-estimator/native/geometry.rs",
+      "sha256": "f3767c0cf1b218c3aac95c2c006cefb7a150c0a759a55394bfb8ffdcaef7a873"
+    },
+    {
+      "path": "target/installed-disk-validation/redb-workspace-estimator/run-debug.log",
+      "sha256": "15c730222abf594f0655e878b24c505239403f740fac6ece59f725d1fa0aaa77"
+    },
+    {
+      "path": "target/installed-disk-validation/redb-workspace-estimator/manifest.json",
+      "sha256": "def7a8efb3276fefc63c350a97a3b6553d6f8f153c25540c417bafe249d550ef"
+    },
+    {
+      "path": "target/installed-disk-validation/redb-fixed-cache-capacity-revision2/cache.patch",
+      "sha256": "3f2548f12aad8c27f72a8645162296ec85079d9cdc9a2adf6363f5c9a1e4bcdc"
+    },
+    {
+      "path": "target/installed-disk-validation/redb-fixed-cache-capacity-revision2/proposed/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+      "sha256": "712705a50997d9e586f6008d1a2a3fe00e1a3f333797d8f289ff3e039cb3e6ef"
+    },
+    {
+      "path": "crates/kasumi-store/src/scratch_table.rs",
+      "sha256": "c099e1652bf36951dd57a100922c4d6b4cac669c73375086978b981c03f49961"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/header.rs",
+      "sha256": "e0d967f8dfc9d238f0099159809163dc982094d0bb13ba9acd81558b4816ab93"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+      "sha256": "313bdd7fa068257d1ffae6f13ba56dd26fa105d00e2fdc571263d50c764b2e4a"
+    }
+  ],
+  "outputs": [
+    {
+      "path": "README.md",
+      "sha256": "a41c6bf01de2412a112433296d0ebc18dbfee543fc557e0ccd57c97ab8743fdd"
+    },
+    {
+      "path": "calculate.py",
+      "sha256": "a68f7bdaad6dd2ca4733688263851886da5edb2287aa467420b7bf890d0c4b4d"
+    },
+    {
+      "path": "components.json",
+      "sha256": "d625d0eccad9c39a390984d0bc84aa95fa92c817a8bfd8c9f5159d6562841ba6"
+    }
+  ],
+  "arithmetic_assertions": "PASS",
+  "cargo_or_rustc_run": false,
+  "actual_source_edits": false
+}

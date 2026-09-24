@@ -1,4 +1,5 @@
-use kasumi_engine::TenantEngine;
+mod common;
+use common::FixtureEngine;
 use kasumi_engine::test_utils::SnapshotFixture;
 use kasumi_types::*;
 use serde_json::json;
@@ -13,8 +14,9 @@ fn context() -> RequestContext {
         request_id: "request".into(),
     }
 }
-fn engine(limit: u64) -> TenantEngine {
-    TenantEngine::new(
+fn engine(limit: u64) -> FixtureEngine {
+    FixtureEngine::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
         "tenant".into(),
         "incarnation".into(),
         Policy {
@@ -55,13 +57,14 @@ fn batch(key: &str, id: &str, size: usize) -> Operation {
     })
 }
 fn apply(
-    db: &TenantEngine,
+    db: &FixtureEngine,
     revision: u64,
     time: u64,
     operation: Operation,
 ) -> Result<WriteReceipt> {
     let result = db
         .apply_command(
+            &db.disk,
             revision,
             Command {
                 context: context(),
@@ -70,7 +73,7 @@ fn apply(
             },
         )
         .unwrap();
-    let snapshot = db.fixture_snapshot().unwrap();
+    let snapshot = db.fixture_snapshot(&db.disk).unwrap();
     let generation = db.generation().unwrap();
     let resident = db.snapshot_bytes().unwrap() as u64;
     assert_eq!(
@@ -132,10 +135,13 @@ fn exact_incremental_accounting_covers_documents_permanent_receipts_schemas_poli
     apply(&db, 33, 86_400_103, Operation::SetPolicy(policy)).unwrap();
     apply(&db, 34, 86_400_104, Operation::Suspend(true)).unwrap();
     apply(&db, 35, 86_400_105, Operation::Suspend(false)).unwrap();
-    let snapshot = db.fixture_snapshot().unwrap();
+    let snapshot = db.fixture_snapshot(&db.disk).unwrap();
     let recovered = engine(1 << 20);
     recovered.fixture_restore(&snapshot).unwrap();
-    assert_eq!(recovered.fixture_snapshot().unwrap(), snapshot);
+    assert_eq!(
+        recovered.fixture_snapshot(&recovered.disk).unwrap(),
+        snapshot
+    );
     apply(
         &recovered,
         36,
@@ -203,23 +209,26 @@ fn replay_with_only_rejection_audit_headroom_keeps_the_original_receipt() {
     let source = engine(16 << 10);
     apply(&source, 1, 1, schema()).unwrap();
     let original = apply(&source, 2, 2, batch("original", "id", 3000)).unwrap();
-    let mut before =
-        kasumi_engine::test_utils::decode_snapshot_candidate(&source.fixture_snapshot().unwrap())
-            .unwrap();
+    let mut before = kasumi_engine::test_utils::decode_snapshot_candidate(
+        &source.fixture_snapshot(&source.disk).unwrap(),
+    )
+    .unwrap();
     apply(&source, 3, 3, batch("original", "id", 3000)).unwrap();
-    let mut after =
-        kasumi_engine::test_utils::decode_snapshot_candidate(&source.fixture_snapshot().unwrap())
-            .unwrap();
+    let mut after = kasumi_engine::test_utils::decode_snapshot_candidate(
+        &source.fixture_snapshot(&source.disk).unwrap(),
+    )
+    .unwrap();
     // A committed replay audit is exactly one byte larger than a rejection
     // audit. Account for changing the serialized quota's own decimal digits.
     loop {
-        let limit = kasumi_engine::test_utils::encode_snapshot_candidate(&after, 64 << 20)
-            .unwrap()
-            .len()
-            - after.mutation_receipt_head.encoded_bytes
-            - after.target_resolution_head.encoded_bytes
-            + 19
-            - 1;
+        let limit =
+            kasumi_engine::test_utils::encode_snapshot_candidate(&source.disk, &after, 64 << 20)
+                .unwrap()
+                .len()
+                - after.mutation_receipt_head.encoded_bytes
+                - after.target_resolution_head.encoded_bytes
+                + 19
+                - 1;
         if after.limits.max_snapshot_bytes == limit {
             break;
         }
@@ -228,7 +237,8 @@ fn replay_with_only_rejection_audit_headroom_keeps_the_original_receipt() {
     before.limits.max_snapshot_bytes = after.limits.max_snapshot_bytes;
     let db = engine(16 << 10);
     db.fixture_restore(
-        &kasumi_engine::test_utils::encode_snapshot_candidate(&before, 64 << 20).unwrap(),
+        &kasumi_engine::test_utils::encode_snapshot_candidate(&source.disk, &before, 64 << 20)
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -261,13 +271,15 @@ fn recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant
     let db = engine(16 << 10);
     apply(&db, 1, 1, schema()).unwrap();
     apply(&db, 2, 2, batch("large", "id", 5000)).unwrap();
-    let mut state =
-        kasumi_engine::test_utils::decode_snapshot_candidate(&db.fixture_snapshot().unwrap())
-            .unwrap();
+    let mut state = kasumi_engine::test_utils::decode_snapshot_candidate(
+        &db.fixture_snapshot(&db.disk).unwrap(),
+    )
+    .unwrap();
     state.limits.max_snapshot_bytes = 4096;
     assert!(
         db.fixture_restore(
-            &kasumi_engine::test_utils::encode_snapshot_candidate(&state, 64 << 20).unwrap()
+            &kasumi_engine::test_utils::encode_snapshot_candidate(&db.disk, &state, 64 << 20)
+                .unwrap()
         )
         .is_err()
     );
@@ -285,13 +297,15 @@ fn recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant
             .code,
         ErrorCode::InvalidArgument
     );
-    let mut state =
-        kasumi_engine::test_utils::decode_snapshot_candidate(&db.fixture_snapshot().unwrap())
-            .unwrap();
+    let mut state = kasumi_engine::test_utils::decode_snapshot_candidate(
+        &db.fixture_snapshot(&db.disk).unwrap(),
+    )
+    .unwrap();
     state.limits.max_document_bytes = 1024;
     assert!(
         db.fixture_restore(
-            &kasumi_engine::test_utils::encode_snapshot_candidate(&state, 64 << 20).unwrap()
+            &kasumi_engine::test_utils::encode_snapshot_candidate(&db.disk, &state, 64 << 20)
+                .unwrap()
         )
         .is_err()
     );

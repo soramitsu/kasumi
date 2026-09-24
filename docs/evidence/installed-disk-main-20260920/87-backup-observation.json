@@ -1,0 +1,18 @@
+{
+  "scope": "read-only one-second native progress observation during run87, not terminal or release evidence",
+  "command": [
+    "sample",
+    "80490",
+    "1",
+    "1",
+    "-file",
+    "target/installed-disk-validation/87-backup-observation-sample.txt"
+  ],
+  "sample_exit_code": 0,
+  "observed_test_pid": 80490,
+  "observed_process_group": 80339,
+  "sample_sha256": "e0bc75c09eaee74b2f4546469003d16ba3a2061378458aca23045bcde5b89706",
+  "test_log_last_case": "captured_and_historical_backup_verification_fit_fixed_production_workspace",
+  "observed_stack": "backup_checkpoint.rs78 historical verification; EncryptedTable::insert -> WriteTransaction::commit and actual write/sync",
+  "interpretation": "actual durable work was present in this sample; no completed test result inferred"
+}

@@ -1,0 +1,77 @@
+100154a78: 97fde256    	bl	0x1000cd3d0 <lifecycle::recovery_control::prepare_completion>
+100154ae4: 9488f150    	bl	0x102391024 <dyld_stub_binder+0x102391024>
+100154b1c: 97faf942    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+100154b44: 97fd52a9    	bl	0x1000a95e8 <core::ptr::drop_glue::<lifecycle::recovery_control::prepare_completion::{closure#0}>>
+100154b4c: 9488efca    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100154b88: 9488f1e4    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100154ba8: 97fe00be    	bl	0x1000d4ea0 <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>> as core::future::into_future::IntoFuture>::into_future>
+100154be4: 9488f0a6    	bl	0x102390e7c <core::panicking::panic_const::panic_const_async_fn_resumed>
+100154bf0: 9488f0aa    	bl	0x102390e98 <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+100154bfc: 97fd1438    	bl	0x100099cdc <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>>>>
+100154c20: 97fe0138    	bl	0x1000d5100 <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>> as core::future::future::Future>::poll>
+100154c80: 9488f1a6    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100154c8c: 97fd1414    	bl	0x100099cdc <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>>>>
+100154cb4: 9488f199    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100154ce4: 9488f18d    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100154d2c: 9488f17b    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100154db0: 97fddf95    	bl	0x1000ccc04 <lifecycle::recovery_control::resolve_phase>
+100154de0: 9488f14e    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100154e1c: 97fde1a4    	bl	0x1000cd4ac <lifecycle::recovery_control::resolve_expired_completion>
+100154e90: 97faf865    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+100154eb0: 97fd45e3    	bl	0x1000a663c <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_phase::{closure#0}>>
+100154eb8: 9488eeef    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100154eec: 9488f10b    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100154f00: 97fdffde    	bl	0x1000d4e78 <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_phase::{closure#0}>> as core::future::into_future::IntoFuture>::into_future>
+100154f44: 97faf838    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+100154f68: 97fd5fe1    	bl	0x1000aceec <core::ptr::drop_glue::<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>>
+100154f70: 9488eec1    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100154fac: 9488f0db    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100154fc4: 97fdffc1    	bl	0x1000d4ec8 <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>> as core::future::into_future::IntoFuture>::into_future>
+100154ff8: 9488ee9f    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100155004: 97fd1348    	bl	0x100099d24 <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>>>>
+100155024: 97fe005b    	bl	0x1000d5190 <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>> as core::future::future::Future>::poll>
+100155080: 97fd1329    	bl	0x100099d24 <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>>>>
+1001550a8: 9488f09c    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001550dc: 9488f08f    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001550f4: 9488f089    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100155110: 9488f082    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100155150: 97fde070    	bl	0x1000cd310 <lifecycle::recovery_control::complete_recovery>
+100155160: 97fd12cd    	bl	0x100099c94 <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_phase::{closure#0}>>>>
+100155188: 97fdffb8    	bl	0x1000d5068 <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_phase::{closure#0}>> as core::future::future::Future>::poll>
+1001551f8: 9488f048    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+10015520c: 9488f043    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100155218: 97fd129f    	bl	0x100099c94 <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_phase::{closure#0}>>>>
+100155228: 97fd750f    	bl	0x1000b2664 <core::ptr::drop_glue::<kasumi_engine::service::recovery_service::VerifiedRecoveryStatus>>
+100155240: 97faf779    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+100155264: 97fd4539    	bl	0x1000a6748 <core::ptr::drop_glue::<lifecycle::recovery_control::complete_recovery::{closure#0}>>
+10015526c: 9488ee02    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+1001552a8: 9488f01c    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001552c4: 97fdfef2    	bl	0x1000d4e8c <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>> as core::future::into_future::IntoFuture>::into_future>
+100155300: 97fd126e    	bl	0x100099cb8 <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>>>>
+100155328: 97fdff63    	bl	0x1000d50b4 <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>> as core::future::future::Future>::poll>
+100155398: 9488efe0    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001553ac: 9488efdb    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+1001553b8: 97fd1240    	bl	0x100099cb8 <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>>>>
+1001553ec: 9488efcb    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100155420: 9488efbe    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100155440: 97fde00c    	bl	0x1000cd470 <lifecycle::recovery_control::exercise_route_publication>
+100155458: 940b1ffb    	bl	0x10041d444 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryStart>>
+100155494: 97faf6e4    	bl	0x100013024 <alloc::boxed::box_new_uninit>
+1001554bc: 97fd5a98    	bl	0x1000abf1c <core::ptr::drop_glue::<lifecycle::recovery_control::exercise_route_publication::{closure#0}>>
+1001554c4: 9488ed6c    	bl	0x102390a74 <core::panicking::panic_in_cleanup>
+100155500: 9488ef86    	bl	0x102391318 <dyld_stub_binder+0x102391318>
+100155518: 97fdfe67    	bl	0x1000d4eb4 <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>> as core::future::into_future::IntoFuture>::into_future>
+100155574: 97fd11e3    	bl	0x100099d00 <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>>>>
+100155594: 97fdfeee    	bl	0x1000d514c <<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>> as core::future::future::Future>::poll>
+1001555f4: 97fd11c3    	bl	0x100099d00 <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>>>>
+100155608: 940b1f8f    	bl	0x10041d444 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryStart>>
+100155618: 97fd71cf    	bl	0x1000b1d54 <core::ptr::drop_glue::<lifecycle::Fixture>>
+100155638: 97fd71c7    	bl	0x1000b1d54 <core::ptr::drop_glue::<lifecycle::Fixture>>
+10015566c: 940b20d7    	bl	0x10041d9c8 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatchOutcome>>
+1001556e0: 9483f051    	bl	0x102251824 <core::ptr::drop_glue::<kasumi_types::target::TargetCompletionFact>>
+100155714: 940b20ad    	bl	0x10041d9c8 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryDispatchOutcome>>
+100155724: 9483f040    	bl	0x102251824 <core::ptr::drop_glue::<kasumi_types::target::TargetCompletionFact>>
+100155748: 97fd1e46    	bl	0x10009d060 <core::ptr::drop_glue::<alloc::collections::btree::map::BTreeMap<u64, ring::ec::curve25519::ed25519::signing::Ed25519KeyPair>>>
+10015576c: 940b1f36    	bl	0x10041d444 <core::ptr::drop_glue::<kasumi_types::recovery::RecoveryStart>>
+100155790: 940a427f    	bl	0x1003e618c <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::service::Database>>>
+1001557a8: 97fd716b    	bl	0x1000b1d54 <core::ptr::drop_glue::<lifecycle::Fixture>>

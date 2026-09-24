@@ -49,6 +49,47 @@ fn retained(
         .intents
         .get(&command_id)
         .expect("receiver fixture must retain the exact original Control intent");
+    let input_sha256 = staged_digest(&input).unwrap().0;
+    let committed_control = matches!(
+        (&input, &outcome),
+        (
+            RecoveryDispatch::ControlIntent(_),
+            Some(RecoveryDispatchOutcome::ControlIntent(_))
+        )
+    );
+    let committed_initial_target = matches!(
+        (&input, &outcome),
+        (
+            RecoveryDispatch::Target { request, .. },
+            Some(RecoveryDispatchOutcome::Target(_))
+        ) if matches!(
+            request.step,
+            TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
+                | TargetRuntimeStep::Initialize(_)
+        )
+    );
+    let prepared_revision = if committed_control || committed_initial_target {
+        revision.saturating_sub(1).max(1)
+    } else {
+        revision
+    };
+    let effect_attempts = if committed_control || committed_initial_target {
+        BTreeMap::from([(
+            if committed_control {
+                RecoveryEffect::ControlIntent
+            } else {
+                RecoveryEffect::TargetCommand
+            },
+            RecoveryEffectAttempt {
+                attempt_id: Uuid::new_v4(),
+                input_sha256: input_sha256.clone(),
+                admitted_at_ms: authority.accepted_at_ms,
+                begun_revision: revision.max(2),
+            },
+        )])
+    } else {
+        BTreeMap::new()
+    };
     let value = RecoveryPhaseRecord {
         operation_id: operation.request.operation_id,
         phase_id: id,
@@ -56,13 +97,15 @@ fn retained(
         phase,
         completion_scope,
         previous_phase: None,
-        input_sha256: staged_digest(&input).unwrap().0,
+        input_sha256,
         input,
         principal: "operator".into(),
         admitted_at_ms: authority.accepted_at_ms,
         original_credential_expires_at_ms: authority.original_credential_expires_at_ms,
-        prepared_revision: revision,
-        resolved_revision: outcome.as_ref().map(|_| revision + 1),
+        prepared_revision,
+        effect_attempts,
+        activation_acceptance: None,
+        resolved_revision: outcome.as_ref().map(|_| (revision + 1).max(3)),
         outcome,
     };
     value.validate().unwrap();
@@ -1441,20 +1484,25 @@ fn pending_linked_birth_retains_exact_input_when_stop_clears_pending_without_com
 
 #[test]
 fn linked_completion_history_roundtrips_in_native_stream_and_incremental_byte_accounting() {
-    fn image(state: &TenantState) -> kasumi_store::SnapshotImage {
-        kasumi_store::SnapshotImage::capture(
-            &kasumi_store::ScratchDisk::fixture(),
-            16 << 20,
-            |writer| {
-                crate::snapshot_codec::write(
-                    state,
-                    &crate::mutation_receipt::View::empty(&state.tenant, &state.incarnation)?,
-                    &crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)?,
-                    &crate::target_resolution::View::empty(&state.tenant, &state.incarnation)?,
-                    writer,
-                )
-            },
-        )
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+    )
+    .unwrap();
+    let disk = &scratch.disk;
+    fn image(
+        disk: &Arc<kasumi_store::ScratchDisk>,
+        state: &TenantState,
+    ) -> kasumi_store::SnapshotImage {
+        kasumi_store::SnapshotImage::capture(disk, 16 << 20, |writer| {
+            crate::snapshot_codec::write(
+                state,
+                &crate::mutation_receipt::View::empty(&state.tenant, &state.incarnation)?,
+                &crate::backup_binding::View::empty(&state.incarnation)?,
+                &crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)?,
+                &crate::target_resolution::View::empty(&state.tenant, &state.incarnation)?,
+                writer,
+            )
+        })
         .unwrap()
     }
     // These partial signed fixtures qualify codec/accounting and exact history
@@ -1466,7 +1514,7 @@ fn linked_completion_history_roundtrips_in_native_stream_and_incremental_byte_ac
     let accounting = old_accounting
         .updated(&before, &state, &Default::default(), &Default::default())
         .unwrap();
-    let source = image(&state);
+    let source = image(disk, &state);
     assert_eq!(accounting.bytes(&state).unwrap() as u64, source.len());
     assert_eq!(
         accounting.bytes(&state).unwrap(),
@@ -1503,7 +1551,7 @@ fn linked_completion_history_roundtrips_in_native_stream_and_incremental_byte_ac
         .unwrap();
     assert_eq!(
         smaller.bytes(&removed).unwrap() as u64,
-        image(&removed).len()
+        image(disk, &removed).len()
     );
     assert!(smaller.bytes(&removed).unwrap() < accounting.bytes(&state).unwrap());
     assert!(super::super::validate_successor(&state, &removed).is_err());

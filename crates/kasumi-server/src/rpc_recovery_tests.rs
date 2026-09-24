@@ -167,8 +167,240 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         source: None,
         source_custody: None,
     };
-    request.dispatch_configuration_sha256 = route.digest(&configured).unwrap();
-    let mut runtime = crate::runtime::example_config();
+    let frozen_digest = route.digest(&configured).unwrap();
+    let mut second_pin = pin;
+    second_pin[0] = if pin[0] == 0xab { 0xcd } else { 0xab };
+    let second_pin = hex::encode(second_pin);
+    let mut third_pin = pin;
+    third_pin[0] = if pin[0] == 0xef { 0x12 } else { 0xef };
+    let third_pin = hex::encode(third_pin);
+    let mut multi_pin_target = route.clone();
+    multi_pin_target
+        .targets
+        .get_mut(&1)
+        .unwrap()
+        .client
+        .server_certificate_pins = vec![hex::encode(pin), second_pin.clone()];
+    let multi_pin_digest = multi_pin_target.digest(&configured).unwrap();
+    let mut reordered_target = multi_pin_target.clone();
+    reordered_target
+        .targets
+        .get_mut(&1)
+        .unwrap()
+        .client
+        .server_certificate_pins = vec![
+        second_pin.to_ascii_uppercase(),
+        hex::encode(pin).to_ascii_uppercase(),
+        second_pin.clone(),
+    ];
+    assert_eq!(
+        reordered_target.digest(&configured).unwrap(),
+        multi_pin_digest
+    );
+    reordered_target
+        .targets
+        .get_mut(&1)
+        .unwrap()
+        .client
+        .server_certificate_pins[0] = third_pin.clone();
+    assert_ne!(
+        reordered_target.digest(&configured).unwrap(),
+        multi_pin_digest
+    );
+    let mut invalid_target_pin = route.clone();
+    invalid_target_pin
+        .targets
+        .get_mut(&1)
+        .unwrap()
+        .client
+        .server_certificate_pins = vec!["zz".repeat(32)];
+    assert!(invalid_target_pin.digest(&configured).is_err());
+    let mut multi_pin_issuer = configured.clone();
+    multi_pin_issuer
+        .endpoints
+        .get_mut(&0)
+        .unwrap()
+        .get_mut(&1)
+        .unwrap()
+        .certificate_pins
+        .insert(second_pin.clone());
+    let multi_issuer_digest = route.digest(&multi_pin_issuer).unwrap();
+    let mut textual_issuer = multi_pin_issuer.clone();
+    textual_issuer
+        .endpoints
+        .get_mut(&0)
+        .unwrap()
+        .get_mut(&1)
+        .unwrap()
+        .certificate_pins
+        .insert(second_pin.to_ascii_uppercase());
+    assert_eq!(route.digest(&textual_issuer).unwrap(), multi_issuer_digest);
+    textual_issuer
+        .endpoints
+        .get_mut(&0)
+        .unwrap()
+        .get_mut(&1)
+        .unwrap()
+        .certificate_pins
+        .insert(third_pin.clone());
+    assert_ne!(route.digest(&textual_issuer).unwrap(), multi_issuer_digest);
+    let copied_ca = dir.join("copied-ca.pem");
+    private_files::publish(&copied_ca, ca.pem().as_bytes()).unwrap();
+    let changed_ca = dir.join("changed-ca.pem");
+    private_files::publish(&changed_ca, server_cert.as_bytes()).unwrap();
+    let mut replacement = configured.clone();
+    replacement.tls = TlsFiles {
+        certificate: dir.join("replacement-client.pem"),
+        private_key: dir.join("replacement-client-key.pem"),
+    };
+    replacement
+        .bearer_files
+        .insert(0, dir.join("replacement-issuer.jwt").display().to_string());
+    replacement.principal = "replacement-control-member".into();
+    replacement.server_ca = copied_ca.clone();
+    let mut replacement_route = route.clone();
+    replacement_route.authority = "replacement-local-issuer-alias".into();
+    replacement_route.issuer_admin_bearer_file =
+        dir.join("replacement-admin.jwt").display().to_string();
+    for member in replacement_route.targets.values_mut() {
+        member.client.identity = replacement.tls.clone();
+        member.client.server_ca = copied_ca.clone();
+        member.client.token_file = dir.join("replacement-target.jwt").display().to_string();
+    }
+    assert_eq!(
+        replacement_route.digest(&replacement).unwrap(),
+        frozen_digest
+    );
+    let mut changed_endpoint = replacement_route.clone();
+    changed_endpoint
+        .targets
+        .get_mut(&1)
+        .unwrap()
+        .client
+        .endpoint = "https://other-target.example:9443".into();
+    assert_ne!(
+        changed_endpoint.digest(&replacement).unwrap(),
+        frozen_digest
+    );
+    let mut changed_target_ca = replacement_route.clone();
+    changed_target_ca
+        .targets
+        .get_mut(&1)
+        .unwrap()
+        .client
+        .server_ca = changed_ca.clone();
+    assert_ne!(
+        changed_target_ca.digest(&replacement).unwrap(),
+        frozen_digest
+    );
+    let mut changed_issuer = replacement.clone();
+    changed_issuer.server_ca = changed_ca.clone();
+    assert_ne!(
+        replacement_route.digest(&changed_issuer).unwrap(),
+        frozen_digest
+    );
+    let source = RecoverySource {
+        members: configured.endpoints[&0].clone(),
+        identity: configured.tls.clone(),
+        server_ca: configured.server_ca.clone(),
+        token_file: dir.join("source-a.jwt").display().to_string(),
+    };
+    let mut planned = route.clone();
+    planned.source = Some(source.clone());
+    let mut custody_source = source;
+    custody_source.token_file = dir.join("custody-a.jwt").display().to_string();
+    planned.source_custody = Some(custody_source);
+    let planned_digest = planned.digest(&configured).unwrap();
+    for custody in [false, true] {
+        let mut multi_pin_source = planned.clone();
+        let source = if custody {
+            multi_pin_source.source_custody.as_mut().unwrap()
+        } else {
+            multi_pin_source.source.as_mut().unwrap()
+        };
+        source
+            .members
+            .get_mut(&1)
+            .unwrap()
+            .certificate_pins
+            .insert(second_pin.clone());
+        let multi_source_digest = multi_pin_source.digest(&configured).unwrap();
+        let mut textual_source = multi_pin_source.clone();
+        {
+            let source = if custody {
+                textual_source.source_custody.as_mut().unwrap()
+            } else {
+                textual_source.source.as_mut().unwrap()
+            };
+            source
+                .members
+                .get_mut(&1)
+                .unwrap()
+                .certificate_pins
+                .insert(second_pin.to_ascii_uppercase());
+        }
+        assert_eq!(
+            textual_source.digest(&configured).unwrap(),
+            multi_source_digest
+        );
+        {
+            let source = if custody {
+                textual_source.source_custody.as_mut().unwrap()
+            } else {
+                textual_source.source.as_mut().unwrap()
+            };
+            source
+                .members
+                .get_mut(&1)
+                .unwrap()
+                .certificate_pins
+                .insert(third_pin.clone());
+        }
+        assert_ne!(
+            textual_source.digest(&configured).unwrap(),
+            multi_source_digest
+        );
+    }
+    let mut replacement_planned = planned.clone();
+    for (index, source) in [
+        replacement_planned.source.as_mut().unwrap(),
+        replacement_planned.source_custody.as_mut().unwrap(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        source.identity = replacement.tls.clone();
+        source.server_ca = copied_ca.clone();
+        source.token_file = dir
+            .join(format!("replacement-source-{index}.jwt"))
+            .display()
+            .to_string();
+    }
+    assert_eq!(
+        replacement_planned.digest(&configured).unwrap(),
+        planned_digest
+    );
+    let mut changed_source_endpoint = replacement_planned.clone();
+    changed_source_endpoint
+        .source
+        .as_mut()
+        .unwrap()
+        .members
+        .get_mut(&1)
+        .unwrap()
+        .endpoint = "https://other-source.example:9443".into();
+    assert_ne!(
+        changed_source_endpoint.digest(&configured).unwrap(),
+        planned_digest
+    );
+    replacement_planned.source.as_mut().unwrap().server_ca = changed_ca;
+    assert_ne!(
+        replacement_planned.digest(&configured).unwrap(),
+        planned_digest
+    );
+    request.dispatch_configuration_sha256 = frozen_digest;
+    let mut runtime =
+        crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
     runtime.control.lifecycle = Some(crate::lifecycle_runtime::LifecycleRuntimeConfig {
         command_id: Uuid::new_v4(),
         installation: f.installation.clone(),
@@ -260,7 +492,58 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         operation_id: operation,
         max_steps: 2,
     };
-    let materialize = client.resume(f.control_admin, &advance).await.unwrap();
+    let materialize = match client.resume(f.control_admin, &advance).await {
+        Ok(record) => record,
+        Err(kasumi_client::ClientError::Transport(status))
+            if serde_json::from_slice::<kasumi_types::Error>(status.details())
+                .is_ok_and(|error| error.code == ErrorCode::UnknownOutcome) =>
+        {
+            // The proposal can outlive its finite response deadline. Resolve
+            // the original operation by read-only status; never dispatch a
+            // second resume merely because the first reply was uncertain.
+            tokio::time::timeout(Duration::from_secs(45), async {
+                loop {
+                    match client
+                        .status(
+                            f.control_admin,
+                            &RecoveryStatusRequest {
+                                operation_id: operation,
+                            },
+                        )
+                        .await
+                    {
+                        Ok(record) => {
+                            assert_eq!(record.request, request);
+                            if record.phase == RecoveryPhase::Materialize
+                                && record.issuer_preparation.is_some()
+                            {
+                                break record;
+                            }
+                            assert!(
+                                matches!(
+                                    record.phase,
+                                    RecoveryPhase::Prepare | RecoveryPhase::Materialize
+                                ),
+                                "uncertain preparation advanced to an unexpected phase: {record:?}"
+                            );
+                        }
+                        Err(kasumi_client::ClientError::Transport(status))
+                            if matches!(
+                                status.code(),
+                                tonic::Code::Unavailable
+                                    | tonic::Code::DeadlineExceeded
+                                    | tonic::Code::Unknown
+                            ) => {}
+                        Err(error) => panic!("exact recovery status was rejected: {error:?}"),
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("uncertain recovery proposal did not become observable")
+        }
+        Err(error) => panic!("recovery proposal was definitively rejected: {error:?}"),
+    };
     assert_eq!(materialize.phase, RecoveryPhase::Materialize);
     let issuer_phase = client
         .read_phase(
@@ -278,7 +561,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
     ));
     let intent = client.resume(f.control_admin, &advance).await.unwrap();
     assert!(intent.current_intent.is_some());
-    let prepared = client
+    let prepared = match client
         .resume(
             f.control_admin,
             &RecoveryResume {
@@ -287,7 +570,53 @@ pub(super) async fn exercise(f: Fixture<'_>) {
             },
         )
         .await
-        .unwrap();
+    {
+        Ok(record) => record,
+        Err(kasumi_client::ClientError::Transport(status))
+            if serde_json::from_slice::<kasumi_types::Error>(status.details())
+                .is_ok_and(|error| error.code == ErrorCode::UnknownOutcome) =>
+        {
+            // A prepared target phase can commit before its response release.
+            // Observe only the original operation; replaying resume here could
+            // prepare or dispatch a different phase with a fresh identity.
+            tokio::time::timeout(Duration::from_secs(45), async {
+                loop {
+                    match client
+                        .status(
+                            f.control_admin,
+                            &RecoveryStatusRequest {
+                                operation_id: operation,
+                            },
+                        )
+                        .await
+                    {
+                        Ok(record) => {
+                            assert_eq!(record.request, request);
+                            assert_eq!(record.phase, RecoveryPhase::Materialize);
+                            assert_eq!(record.current_intent, intent.current_intent);
+                            if record.pending_phase.is_some() {
+                                break record;
+                            }
+                        }
+                        Err(kasumi_client::ClientError::Transport(status))
+                            if matches!(
+                                status.code(),
+                                tonic::Code::Unavailable
+                                    | tonic::Code::DeadlineExceeded
+                                    | tonic::Code::Unknown
+                            ) => {}
+                        Err(error) => panic!("exact recovery status was rejected: {error:?}"),
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("uncertain target preparation did not become observable")
+        }
+        Err(error) => panic!("target preparation was definitively rejected: {error:?}"),
+    };
+    assert_eq!(prepared.phase, RecoveryPhase::Materialize);
+    assert_eq!(prepared.current_intent, intent.current_intent);
     let pending = prepared.pending_phase.unwrap();
     assert!(
         client

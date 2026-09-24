@@ -1,0 +1,9 @@
+
+running 4 tests
+test ledger::tests::peak_cardinality_overflow_fails_before_allocation ... ok
+test ledger::tests::retained_and_replacement_bounds_preserve_independent_file_capacity ... ok
+test ledger::tests::typed_entries_never_reinterpret_another_inode_kind ... ok
+test ledger::tests::unified_identity_rejects_cross_kind_double_enrollment ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

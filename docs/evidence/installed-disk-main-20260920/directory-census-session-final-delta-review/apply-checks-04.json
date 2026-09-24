@@ -1,0 +1,29 @@
+{
+  "base_and_proposed_files_verified": 15,
+  "commands": [
+    {
+      "argv": [
+        "git",
+        "apply",
+        "--check",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/review-snapshot-04/successor.patch"
+      ],
+      "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session-final-delta-review/apply-check-04",
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "argv": [
+        "git",
+        "apply",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session/review-snapshot-04/successor.patch"
+      ],
+      "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-census-session-final-delta-review/apply-check-04",
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": ""
+    }
+  ],
+  "exact_applied_outputs_verified": 15
+}

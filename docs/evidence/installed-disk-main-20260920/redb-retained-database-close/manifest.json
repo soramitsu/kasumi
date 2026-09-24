@@ -1,0 +1,37 @@
+{
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "status": "TARGET_ONLY_UNCOMPILED_REVIEW_REQUIRED",
+  "dependency_patch_sha256": "ff27c9b3f303e3bc6ca42bc48ccd78c41a7db519b9f7be0e419cc6de66e71c1f",
+  "patch_sha256": "e4be9659b7616d2762c904da23fc00a9466ede3a1516e65511c048a052db7be8",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/db.rs",
+      "before_sha256": "dda1792fa3a15d09bb4d5a83c279cc9203dc970b562f010aebdd00feb8e54481",
+      "proposed_sha256": "8f9c67448d351808bab99f0389bcf9a7a21bcc7c55aa81f810a566329575754f"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/lib.rs",
+      "before_sha256": "5f587febd53cccaf8b10be5bed3d0f60fdd46d5b3c3fbd536460d90f1d208d06",
+      "proposed_sha256": "f55ea9cba2e2d33d159e49e1d8bf43da809db5547351c911b3b3ddcd34e46d30"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_database.rs",
+      "before_sha256": null,
+      "proposed_sha256": "f1c1a9034563460925b4b359fe33166a7c8ed58a755148b27ca8bd9e491aeadd"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_database_tests.rs",
+      "before_sha256": null,
+      "proposed_sha256": "f1f010b9e0a2d051abd0a24cb49c5884f9403f112dc4fbe3f1914126c2750715"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "before_sha256": "5266543540be85283f87fbed76d38e57a85334c728349c7e7002740b3336815d",
+      "proposed_sha256": "18b9ce3ad0f872557950838d11f92c408d1b984902add06b5f154e2c7fb9696b"
+    }
+  ],
+  "actual_source_modified": false,
+  "cargo_executed": false,
+  "prepared_tests": 5
+}

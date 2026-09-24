@@ -1,0 +1,88 @@
+diff --git a/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs b/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
+@@ -215,7 +215,7 @@
+         self.io(self.file.read(offset, out))
+     }
+ 
+-    fn reserve_workspace(&self, bytes: u64) -> core::result::Result<Box<dyn crate::ResidentLease>> {
++    fn reserve_workspace(&self, bytes: u64) -> Result<Box<dyn crate::ResidentLease>> {
+         self.check_failure()?;
+         match self.admission.reserve_workspace(bytes) {
+             Ok(lease) => Ok(lease),
+@@ -715,6 +715,7 @@
+         })
+     }
+ 
++    #[cfg(test)]
+     pub(super) fn read_direct(&self, offset: u64, len: usize) -> Result<AdmittedBytes> {
+         let credit = self.reserve_direct_read(len)?;
+         self.read_direct_reserved(offset, credit)
+diff --git a/vendor/redb-4.2.0/src/db.rs b/vendor/redb-4.2.0/src/db.rs
+--- a/vendor/redb-4.2.0/src/db.rs
++++ b/vendor/redb-4.2.0/src/db.rs
+@@ -392,7 +392,7 @@
+         }
+     }
+ 
+-    /// Release the tracked snapshot while the owning ReadTransaction remains
++    /// Release the tracked snapshot while the owning `ReadTransaction` remains
+     /// installed. A failed tracker lock/invariant leaves this guard armed and
+     /// the exact transaction available to its retained owner. The caller must
+     /// first prove no table has cloned this Arc.
+diff --git a/vendor/redb-4.2.0/src/multimap_table.rs b/vendor/redb-4.2.0/src/multimap_table.rs
+--- a/vendor/redb-4.2.0/src/multimap_table.rs
++++ b/vendor/redb-4.2.0/src/multimap_table.rs
+@@ -1151,6 +1151,8 @@
+ }
+ 
+ impl ReadOnlyUntypedMultimapTable {
++    // Persisted layout fields are positional; the extra guard pins the read root.
++    #[allow(clippy::too_many_arguments)]
+     pub(crate) fn new(
+         name: &str,
+         root: Option<BtreeHeader>,
+diff --git a/vendor/redb-4.2.0/src/transaction_tracker.rs b/vendor/redb-4.2.0/src/transaction_tracker.rs
+--- a/vendor/redb-4.2.0/src/transaction_tracker.rs
++++ b/vendor/redb-4.2.0/src/transaction_tracker.rs
+@@ -208,7 +208,7 @@
+ 
+     /// The retained reader releases its tracker registration before allowing
+     /// physical transaction disposal. A poisoned lock or missing count returns
+-    /// without consuming the caller's exact ReadTransaction.
++    /// without consuming the caller's exact `ReadTransaction`.
+     pub(crate) fn try_deallocate_read_transaction(&self, id: TransactionId) -> Result {
+         let mut state = self.state.lock()?;
+         let Some(ref_count) = state.live_read_transactions.get_mut(&id) else {
+diff --git a/vendor/redb-4.2.0/src/retained_read_transaction.rs b/vendor/redb-4.2.0/src/retained_read_transaction.rs
+--- a/vendor/redb-4.2.0/src/retained_read_transaction.rs
++++ b/vendor/redb-4.2.0/src/retained_read_transaction.rs
+@@ -3,7 +3,7 @@
+ use super::ReadTransaction;
+ use crate::db::TransactionGuard;
+ use crate::{
+-    ReadableTable, RetainedDatabase, StorageError, TableDefinition, TableError, TableHandle,
++    RetainedDatabase, StorageError, TableDefinition, TableError, TableHandle,
+     TerminalObservation,
+ };
+ use std::{
+@@ -125,7 +125,7 @@
+ 
+ impl ReadTransaction {
+     /// Transfer the actual snapshot to caller-owned retained custody.
+-    /// Only Database::begin_read_retained may invoke this constructor; public
++    /// Only `Database::begin_read_retained` may invoke this constructor; public
+     /// callers never receive the raw transaction before retained admission.
+     pub(crate) fn retain(self) -> RetainedReadTransaction {
+         RetainedReadTransaction {
+@@ -217,8 +217,8 @@
+             .open_table(definition)
+             .map_err(BoundedReadError::Table)?;
+         let start = after.unwrap_or(prefix);
+-        let mut range = table.range(start..).map_err(BoundedReadError::Storage)?;
+-        while let Some(entry) = range.next() {
++        let range = table.range(start..).map_err(BoundedReadError::Storage)?;
++        for entry in range {
+             let (key, value) = entry.map_err(BoundedReadError::Storage)?;
+             let key_bytes = key.value();
+             if after.is_some_and(|after| key_bytes <= after) {

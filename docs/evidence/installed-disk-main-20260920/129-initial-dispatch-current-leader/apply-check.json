@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "apply",
+    "--check",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/129-initial-dispatch-current-leader/fixture.patch"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/129-initial-dispatch-current-leader/apply-check",
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": ""
+}

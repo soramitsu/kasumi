@@ -8,6 +8,7 @@ use reqwest::{
     header::{HeaderMap, HeaderValue},
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
 /// An owned fixed-size key. Deliberately not Clone, Debug, or Serialize.
@@ -36,6 +37,66 @@ pub struct WrappedKey {
     pub ciphertext: String,
     pub version: u64,
     pub context: Option<String>,
+}
+
+/// The fixed security properties of one installed historical wrapping source.
+/// Credentials and local file paths are deliberately absent: they may refresh
+/// without redirecting the accepted key resource or changing its TLS trust.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HistoricalSourceSecurityDescriptor {
+    File {
+        key_ref: String,
+    },
+    Transit {
+        key_ref: String,
+        canonical_origin: String,
+        namespace: Option<String>,
+        mount: String,
+        key_name: String,
+        derived: bool,
+        ca_trust_sha256: [u8; 32],
+    },
+    #[cfg(test)]
+    Fixture {
+        key_ref: String,
+    },
+}
+
+impl HistoricalSourceSecurityDescriptor {
+    /// Bind a file source to the identity read from its opened keyring, not its
+    /// installation path. A subsequent unwrap still checks that identity.
+    pub fn file(provider: &crate::FileKeyProvider) -> Self {
+        Self::File {
+            key_ref: provider.key_ref().to_owned(),
+        }
+    }
+
+    /// Construct from the exact opened Transit client and its snapshotted CA.
+    /// System roots have no pinned trust content and cannot be accepted as a
+    /// historical source in the first release.
+    pub fn transit(provider: &TransitKeyProvider) -> Result<Self> {
+        Ok(Self::Transit {
+            key_ref: provider.key_ref.clone(),
+            canonical_origin: provider.endpoint.origin().ascii_serialization(),
+            namespace: provider.namespace.clone(),
+            mount: provider.mount.clone(),
+            key_name: provider.key_name.clone(),
+            derived: provider.derived,
+            ca_trust_sha256: provider
+                .pinned_ca_sha256
+                .context("historical Transit source requires a pinned CA certificate")?,
+        })
+    }
+
+    pub fn dispatch_identity(&self) -> (&'static str, &str) {
+        match self {
+            Self::File { key_ref } => ("file", key_ref),
+            Self::Transit { key_ref, .. } => ("transit", key_ref),
+            #[cfg(test)]
+            Self::Fixture { key_ref } => ("test-only", key_ref),
+        }
+    }
 }
 
 pub struct GeneratedKey {
@@ -80,7 +141,9 @@ pub struct TransitKeyProvider {
     mount: String,
     key_name: String,
     key_ref: String,
+    namespace: Option<String>,
     derived: bool,
+    pinned_ca_sha256: Option<[u8; 32]>,
     credential: std::sync::Arc<dyn kasumi_transport::credentials::CredentialSource>,
 }
 
@@ -117,9 +180,24 @@ impl TransitKeyProvider {
             .min_tls_version(reqwest::tls::Version::TLS_1_3)
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(5));
-        if let Some(ca) = config.ca_pem {
-            builder = builder.add_root_certificate(reqwest::Certificate::from_pem(&ca)?);
-        }
+        let pinned_ca_sha256 = if let Some(ca) = config.ca_pem {
+            ensure!(
+                !ca.is_empty() && ca.len() <= 1 << 20,
+                "Transit CA certificate outside first-release bounds"
+            );
+            let certificates = reqwest::Certificate::from_pem_bundle(&ca)?;
+            ensure!(
+                !certificates.is_empty(),
+                "Transit CA bundle contains no certificates"
+            );
+            builder = builder.tls_built_in_root_certs(false);
+            for certificate in certificates {
+                builder = builder.add_root_certificate(certificate);
+            }
+            Some(Sha256::digest(&ca).into())
+        } else {
+            None
+        };
         let key_ref = format!(
             "{}|{}|{}|{}",
             endpoint,
@@ -133,7 +211,9 @@ impl TransitKeyProvider {
             mount: config.mount,
             key_name: config.key_name,
             key_ref,
+            namespace: config.namespace,
             derived: config.derived,
+            pinned_ca_sha256,
             credential: config.credential,
         })
     }
@@ -292,6 +372,182 @@ fn version(ciphertext: &str) -> Result<u64> {
         .context("invalid Transit key version")?;
     ensure!(version > 0, "invalid Transit key version");
     Ok(version)
+}
+
+/// The canonical wrapping resource reported by a constructed provider. The
+/// version and tenant context remain exact fields of each wrapped key, while
+/// one installed resource is responsible for all of its retained versions.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WrappingIdentity {
+    provider: String,
+    key_ref: String,
+}
+
+impl WrappingIdentity {
+    fn constructed(provider: &str, key_ref: &str) -> Result<Self> {
+        ensure!(
+            !provider.is_empty()
+                && provider.len() <= 16
+                && !key_ref.is_empty()
+                && key_ref.len() <= 2048,
+            "wrapping identity outside first-release bounds"
+        );
+        Ok(Self {
+            provider: provider.into(),
+            key_ref: key_ref.into(),
+        })
+    }
+
+    fn wrapped(key: &WrappedKey) -> Result<Self> {
+        ensure!(key.version > 0, "invalid historical wrapping version");
+        Self::constructed(&key.provider, &key.key_ref)
+    }
+
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+    pub fn key_ref(&self) -> &str {
+        &self.key_ref
+    }
+}
+
+#[async_trait]
+trait HistoricalUnwrapper: Send + Sync {
+    async fn unwrap_historical(&self, tenant: &str, wrapped: &WrappedKey) -> Result<SecretKey>;
+}
+
+#[async_trait]
+impl<T: KeyProvider> HistoricalUnwrapper for T {
+    async fn unwrap_historical(&self, tenant: &str, wrapped: &WrappedKey) -> Result<SecretKey> {
+        KeyProvider::unwrap_key(self, tenant, wrapped).await
+    }
+}
+
+/// A historical binding can only be made from a constructed provider. The
+/// erased capability exposes only unwrap, never generation or rewrap.
+pub struct HistoricalKeySource {
+    identity: WrappingIdentity,
+    descriptor: HistoricalSourceSecurityDescriptor,
+    provider: std::sync::Arc<dyn HistoricalUnwrapper>,
+}
+
+impl HistoricalKeySource {
+    fn constructed(
+        descriptor: HistoricalSourceSecurityDescriptor,
+        provider: std::sync::Arc<dyn HistoricalUnwrapper>,
+    ) -> Result<Self> {
+        let (kind, key_ref) = descriptor.dispatch_identity();
+        let identity = WrappingIdentity::constructed(kind, key_ref)?;
+        Ok(Self {
+            identity,
+            descriptor,
+            provider,
+        })
+    }
+
+    pub fn file(provider: std::sync::Arc<crate::FileKeyProvider>) -> Result<Self> {
+        Self::constructed(
+            HistoricalSourceSecurityDescriptor::file(&provider),
+            provider,
+        )
+    }
+
+    pub fn transit(provider: std::sync::Arc<TransitKeyProvider>) -> Result<Self> {
+        Self::constructed(
+            HistoricalSourceSecurityDescriptor::transit(&provider)?,
+            provider,
+        )
+    }
+
+    #[cfg(test)]
+    fn fixture(provider: std::sync::Arc<crate::test_utils::LocalKeyProvider>) -> Self {
+        Self::constructed(
+            HistoricalSourceSecurityDescriptor::Fixture {
+                key_ref: provider.key_ref().to_owned(),
+            },
+            provider,
+        )
+        .expect("bounded test fixture identity")
+    }
+
+    pub fn identity(&self) -> &WrappingIdentity {
+        &self.identity
+    }
+
+    pub fn descriptor(&self) -> &HistoricalSourceSecurityDescriptor {
+        &self.descriptor
+    }
+}
+
+/// Immutable, exact unwrap dispatch for installed historical providers.
+/// A missing identity or a failed selected provider is terminal: no current
+/// primary fallback and no decryption trials against other providers occur.
+pub struct HistoricalKeyResolver {
+    sources: std::collections::BTreeMap<WrappingIdentity, std::sync::Arc<dyn HistoricalUnwrapper>>,
+    descriptors: std::collections::BTreeSet<HistoricalSourceSecurityDescriptor>,
+}
+
+impl HistoricalKeyResolver {
+    /// First-release installed source-set bound, separate from retention page size.
+    pub const MAX_SOURCES: usize = 64;
+
+    pub fn new(sources: Vec<HistoricalKeySource>) -> Result<Self> {
+        ensure!(
+            (1..=Self::MAX_SOURCES).contains(&sources.len()),
+            "historical wrapping source count outside first-release bounds"
+        );
+        let mut installed = std::collections::BTreeMap::new();
+        let mut descriptors = std::collections::BTreeSet::new();
+        for source in sources {
+            ensure!(
+                !installed.contains_key(&source.identity),
+                "duplicate or ambiguous historical wrapping identity"
+            );
+            ensure!(
+                descriptors.insert(source.descriptor),
+                "duplicate historical source security descriptor"
+            );
+            installed.insert(source.identity, source.provider);
+        }
+        Ok(Self {
+            sources: installed,
+            descriptors,
+        })
+    }
+
+    pub fn identities(&self) -> impl Iterator<Item = &WrappingIdentity> {
+        self.sources.keys()
+    }
+
+    pub fn descriptors(&self) -> impl Iterator<Item = &HistoricalSourceSecurityDescriptor> {
+        self.descriptors.iter()
+    }
+
+    pub async fn unwrap_key(&self, tenant: &str, wrapped: &WrappedKey) -> Result<SecretKey> {
+        let identity = WrappingIdentity::wrapped(wrapped)?;
+        let source = self
+            .sources
+            .get(&identity)
+            .context("historical wrapping identity is not installed")?;
+        source.unwrap_historical(tenant, wrapped).await
+    }
+}
+
+/// Generation and rewrap are denied; an unwrap result remains a key capability.
+/// Callers must still separate historical reads from primary-backed writes.
+#[async_trait]
+impl KeyProvider for HistoricalKeyResolver {
+    async fn generate_key(&self, _tenant: &str) -> Result<GeneratedKey> {
+        bail!("historical wrapping resolver cannot generate keys")
+    }
+
+    async fn unwrap_key(&self, tenant: &str, wrapped: &WrappedKey) -> Result<SecretKey> {
+        HistoricalKeyResolver::unwrap_key(self, tenant, wrapped).await
+    }
+
+    async fn rewrap_key(&self, _tenant: &str, _wrapped: &WrappedKey) -> Result<WrappedKey> {
+        bail!("historical wrapping resolver cannot rewrap keys")
+    }
 }
 
 #[cfg(test)]
@@ -485,6 +741,10 @@ mod tests {
 
     #[tokio::test]
     async fn transit_tls_generation_fresh_decrypt_rewrap_context_and_revocation() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
         let state = Service::new();
         let fixture = TlsFixture::spawn(router(state.clone())).await;
         let provider = Arc::new(TransitKeyProvider::new(config(&fixture)).unwrap());
@@ -493,7 +753,8 @@ mod tests {
             NodeStore::create_new_fixture(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
-                crate::ScratchDisk::fixture(),
+                fixture_memory.clone(),
+                fixture_scratch.clone(),
             )
             .unwrap(),
             "tenant".into(),
@@ -577,6 +838,10 @@ mod tests {
 
     #[tokio::test]
     async fn transit_timeout_is_bounded_and_seals_existing_plaintext() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
         let state = Service::new();
         let fixture = TlsFixture::spawn(router(state.clone())).await;
         let provider = Arc::new(TransitKeyProvider::new(config(&fixture)).unwrap());
@@ -585,7 +850,8 @@ mod tests {
             NodeStore::create_new_fixture(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
-                crate::ScratchDisk::fixture(),
+                fixture_memory.clone(),
+                fixture_scratch.clone(),
             )
             .unwrap(),
             "tenant".into(),
@@ -640,5 +906,398 @@ mod tests {
         ] {
             assert!(version(bad).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod historical_resolver_tests {
+    use super::*;
+    use crate::{file_keys::FileKeyProvider, private_files, test_utils::LocalKeyProvider};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn exact_source_only_and_no_missing_or_failed_source_fallback() {
+        let first = Arc::new(LocalKeyProvider::new([61; 32]));
+        let second = Arc::new(LocalKeyProvider::new([62; 32]));
+        let absent = Arc::new(LocalKeyProvider::new([63; 32]));
+        let first_key = first.generate_key("tenant").await.unwrap();
+        let second_key = second.generate_key("tenant").await.unwrap();
+        let absent_key = absent.generate_key("tenant").await.unwrap();
+        let resolver = HistoricalKeyResolver::new(vec![
+            HistoricalKeySource::fixture(first.clone()),
+            HistoricalKeySource::fixture(second.clone()),
+        ])
+        .unwrap();
+
+        let read_only: &dyn KeyProvider = &resolver;
+        assert!(read_only.generate_key("tenant").await.is_err());
+        assert!(
+            read_only
+                .rewrap_key("tenant", &first_key.wrapped)
+                .await
+                .is_err()
+        );
+        assert_eq!(first.probe_count(), 0);
+        assert_eq!(second.probe_count(), 0);
+
+        assert_eq!(
+            resolver
+                .unwrap_key("tenant", &first_key.wrapped)
+                .await
+                .unwrap()
+                .as_bytes(),
+            first_key.plaintext.as_bytes()
+        );
+        assert_eq!(first.probe_count(), 1);
+        assert_eq!(second.probe_count(), 0);
+
+        let mut unbounded = first_key.wrapped.clone();
+        unbounded.key_ref = "x".repeat(2049);
+        assert!(resolver.unwrap_key("tenant", &unbounded).await.is_err());
+        assert_eq!(first.probe_count(), 1);
+        assert_eq!(second.probe_count(), 0);
+        assert!(
+            resolver
+                .unwrap_key("tenant", &absent_key.wrapped)
+                .await
+                .is_err()
+        );
+        assert_eq!(first.probe_count(), 1);
+        assert_eq!(second.probe_count(), 0);
+
+        let mut wrong_context = first_key.wrapped.clone();
+        wrong_context.context = Some("another-tenant".into());
+        assert!(resolver.unwrap_key("tenant", &wrong_context).await.is_err());
+        assert_eq!(first.probe_count(), 2);
+        assert_eq!(second.probe_count(), 0);
+
+        let mut invalid_version = first_key.wrapped.clone();
+        invalid_version.version = 0;
+        assert!(
+            resolver
+                .unwrap_key("tenant", &invalid_version)
+                .await
+                .is_err()
+        );
+        assert_eq!(first.probe_count(), 2);
+
+        first.revoke();
+        assert!(
+            resolver
+                .unwrap_key("tenant", &first_key.wrapped)
+                .await
+                .is_err()
+        );
+        assert_eq!(first.probe_count(), 3);
+        assert_eq!(second.probe_count(), 0);
+        assert_eq!(
+            resolver
+                .unwrap_key("tenant", &second_key.wrapped)
+                .await
+                .unwrap()
+                .as_bytes(),
+            second_key.plaintext.as_bytes()
+        );
+        assert_eq!(second.probe_count(), 1);
+    }
+
+    #[test]
+    fn duplicate_identity_is_rejected_even_when_providers_are_distinct_objects() {
+        let first = Arc::new(LocalKeyProvider::new([64; 32]));
+        let duplicate = Arc::new(LocalKeyProvider::new([64; 32]));
+        assert!(
+            HistoricalKeyResolver::new(vec![
+                HistoricalKeySource::fixture(first),
+                HistoricalKeySource::fixture(duplicate),
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn installed_descriptor_set_is_unique_and_order_independent() {
+        let first = Arc::new(LocalKeyProvider::new([65; 32]));
+        let second = Arc::new(LocalKeyProvider::new([66; 32]));
+        let forward = HistoricalKeyResolver::new(vec![
+            HistoricalKeySource::fixture(first.clone()),
+            HistoricalKeySource::fixture(second.clone()),
+        ])
+        .unwrap();
+        let reverse = HistoricalKeyResolver::new(vec![
+            HistoricalKeySource::fixture(second),
+            HistoricalKeySource::fixture(first),
+        ])
+        .unwrap();
+        let descriptors = forward.descriptors().cloned().collect::<Vec<_>>();
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(
+            descriptors,
+            reverse.descriptors().cloned().collect::<Vec<_>>()
+        );
+        assert_eq!(forward.identities().count(), descriptors.len());
+    }
+
+    #[test]
+    fn historical_set_must_be_present_and_bounded() {
+        assert!(HistoricalKeyResolver::new(Vec::new()).is_err());
+        let oversized = (0..=HistoricalKeyResolver::MAX_SOURCES)
+            .map(|n| HistoricalKeySource::fixture(Arc::new(LocalKeyProvider::new([n as u8; 32]))))
+            .collect();
+        assert!(HistoricalKeyResolver::new(oversized).is_err());
+    }
+
+    #[test]
+    fn file_source_identity_comes_from_installed_keyring_not_path() {
+        let root = crate::test_utils::private_tempdir().unwrap();
+        let directory = root.path().join("keys");
+        private_files::create_directory(&directory).unwrap();
+        let path = directory.join("app.json");
+        let first = Arc::new(FileKeyProvider::initialize(&path, "application").unwrap());
+        let reopened = Arc::new(FileKeyProvider::open(&path).unwrap());
+        let same = HistoricalKeySource::file(reopened).unwrap();
+        assert_eq!(
+            HistoricalKeySource::file(first.clone()).unwrap().identity(),
+            same.identity()
+        );
+        assert!(
+            HistoricalKeyResolver::new(vec![HistoricalKeySource::file(first).unwrap(), same])
+                .is_err()
+        );
+        let other_path = directory.join("replacement.json");
+        let other = Arc::new(FileKeyProvider::initialize(&other_path, "application").unwrap());
+        assert_ne!(
+            HistoricalKeySource::file(Arc::new(FileKeyProvider::open(&path).unwrap()))
+                .unwrap()
+                .identity(),
+            HistoricalKeySource::file(other).unwrap().identity()
+        );
+    }
+
+    #[test]
+    fn transit_identity_ignores_credential_rotation_but_not_key_resource() {
+        let ca = rcgen::generate_simple_self_signed(vec!["localhost".into()])
+            .unwrap()
+            .cert
+            .pem()
+            .into_bytes();
+        let config = |key_name: &str, token: &str, derived: bool| TransitConfig {
+            endpoint: "https://EXAMPLE.com:443".into(),
+            mount: "transit".into(),
+            key_name: key_name.into(),
+            credential: Arc::new({
+                let token = token.to_owned();
+                move || Ok(Zeroizing::new(token.clone()))
+            }),
+            namespace: Some("team".into()),
+            ca_pem: Some(ca.clone()),
+            derived,
+        };
+        let original = HistoricalKeySource::transit(Arc::new(
+            TransitKeyProvider::new(config("archive", "old-token", true)).unwrap(),
+        ))
+        .unwrap();
+        let rotated = HistoricalKeySource::transit(Arc::new(
+            TransitKeyProvider::new(config("archive", "new-token", true)).unwrap(),
+        ))
+        .unwrap();
+        let ambiguous = HistoricalKeySource::transit(Arc::new(
+            TransitKeyProvider::new(config("archive", "new-token", false)).unwrap(),
+        ))
+        .unwrap();
+        let different = HistoricalKeySource::transit(Arc::new(
+            TransitKeyProvider::new(config("other", "new-token", true)).unwrap(),
+        ))
+        .unwrap();
+        let mut changed_trust = config("archive", "new-token", true);
+        changed_trust.ca_pem = Some(
+            rcgen::generate_simple_self_signed(vec!["localhost".into()])
+                .unwrap()
+                .cert
+                .pem()
+                .into_bytes(),
+        );
+        let changed_trust =
+            HistoricalKeySource::transit(Arc::new(TransitKeyProvider::new(changed_trust).unwrap()))
+                .unwrap();
+        assert_eq!(original.identity(), rotated.identity());
+        assert_eq!(original.descriptor(), rotated.descriptor());
+        assert_eq!(original.identity(), ambiguous.identity());
+        assert_ne!(original.descriptor(), ambiguous.descriptor());
+        assert_eq!(original.identity(), changed_trust.identity());
+        assert_ne!(original.descriptor(), changed_trust.descriptor());
+        assert_ne!(original.identity(), different.identity());
+        assert!(HistoricalKeyResolver::new(vec![original, rotated]).is_err());
+        assert!(
+            HistoricalKeyResolver::new(vec![
+                ambiguous,
+                HistoricalKeySource::transit(Arc::new(
+                    TransitKeyProvider::new(config("archive", "old-token", true)).unwrap()
+                ))
+                .unwrap()
+            ])
+            .is_err()
+        );
+        assert!(
+            HistoricalKeyResolver::new(vec![
+                changed_trust,
+                HistoricalKeySource::transit(Arc::new(
+                    TransitKeyProvider::new(config("archive", "old-token", true)).unwrap()
+                ))
+                .unwrap()
+            ])
+            .is_err()
+        );
+        let mut unpinned = config("archive", "token", true);
+        unpinned.ca_pem = None;
+        assert!(
+            HistoricalKeySource::transit(Arc::new(TransitKeyProvider::new(unpinned).unwrap()))
+                .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
+mod historical_source_descriptor_tests {
+    use super::*;
+    use crate::{FileKeyProvider, private_files};
+    use std::sync::Arc;
+
+    fn ca_pem() -> Vec<u8> {
+        rcgen::generate_simple_self_signed(vec!["localhost".into()])
+            .unwrap()
+            .cert
+            .pem()
+            .into_bytes()
+    }
+
+    fn config(ca: Option<Vec<u8>>, token: &str) -> TransitConfig {
+        let token = token.to_owned();
+        TransitConfig {
+            endpoint: "https://EXAMPLE.com:443".into(),
+            mount: "teams/transit".into(),
+            key_name: "archive".into(),
+            credential: Arc::new(move || Ok(Zeroizing::new(token.clone()))),
+            namespace: Some("team".into()),
+            ca_pem: ca,
+            derived: true,
+        }
+    }
+
+    fn transit(config: TransitConfig) -> (String, HistoricalSourceSecurityDescriptor) {
+        let provider = TransitKeyProvider::new(config).unwrap();
+        (
+            provider.key_ref.clone(),
+            HistoricalSourceSecurityDescriptor::transit(&provider).unwrap(),
+        )
+    }
+
+    #[test]
+    fn transit_descriptor_tracks_exact_resource_mode_and_pinned_trust() {
+        let ca = ca_pem();
+        let (key_ref, original) = transit(config(Some(ca.clone()), "old-token"));
+        let mut rotated = config(Some(ca.clone()), "new-token");
+        rotated.endpoint = "https://example.com".into();
+        assert_eq!(original, transit(rotated).1);
+        assert_eq!(original.dispatch_identity(), ("transit", key_ref.as_str()));
+        let HistoricalSourceSecurityDescriptor::Transit {
+            canonical_origin,
+            ca_trust_sha256,
+            ..
+        } = &original
+        else {
+            panic!("Transit provider produced a non-Transit descriptor")
+        };
+        assert_eq!(canonical_origin, "https://example.com");
+        let expected: [u8; 32] = Sha256::digest(&ca).into();
+        assert_eq!(ca_trust_sha256, &expected);
+
+        let mut changed = config(Some(ca.clone()), "new-token");
+        changed.derived = false;
+        assert_eq!(key_ref, transit(changed).0);
+        assert_ne!(
+            original,
+            transit(config_with_change(&ca, |c| c.derived = false)).1
+        );
+        assert_ne!(
+            original,
+            transit(config_with_change(&ca, |c| c.namespace = Some("other".into()))).1
+        );
+        assert_ne!(
+            original,
+            transit(config_with_change(&ca, |c| c.mount = "other".into())).1
+        );
+        assert_ne!(
+            original,
+            transit(config_with_change(&ca, |c| c.key_name = "other".into())).1
+        );
+        assert_ne!(
+            original,
+            transit(config_with_change(&ca, |c| c.endpoint = "https://other.example".into())).1
+        );
+        let replacement_ca = ca_pem();
+        let (same_key_ref, changed_trust) = transit(config(Some(replacement_ca), "new-token"));
+        assert_eq!(key_ref, same_key_ref);
+        assert_ne!(original, changed_trust);
+
+        let encoded = serde_json::to_vec(&original).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<HistoricalSourceSecurityDescriptor>(&encoded).unwrap(),
+            original
+        );
+        let mut incomplete: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        incomplete
+            .as_object_mut()
+            .unwrap()
+            .remove("ca_trust_sha256");
+        assert!(serde_json::from_value::<HistoricalSourceSecurityDescriptor>(incomplete).is_err());
+    }
+
+    fn config_with_change(ca: &[u8], change: impl FnOnce(&mut TransitConfig)) -> TransitConfig {
+        let mut config = config(Some(ca.to_vec()), "new-token");
+        change(&mut config);
+        config
+    }
+
+    #[test]
+    fn unpinned_transit_source_cannot_get_historical_descriptor() {
+        let provider = TransitKeyProvider::new(config(None, "token")).unwrap();
+        assert!(HistoricalSourceSecurityDescriptor::transit(&provider).is_err());
+        assert!(TransitKeyProvider::new(config(Some(Vec::new()), "token")).is_err());
+        assert!(
+            TransitKeyProvider::new(config(Some(b"garbage but nonempty".to_vec()), "token"))
+                .is_err()
+        );
+        assert!(
+            TransitKeyProvider::new(config(
+                Some(b"-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n".to_vec()),
+                "token"
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn file_descriptor_comes_from_opened_keyring_identity_not_path_or_generation() {
+        let root = crate::test_utils::private_tempdir().unwrap();
+        let directory = root.path().join("keys");
+        private_files::create_directory(&directory).unwrap();
+        let first_path = directory.join("first.json");
+        let first = FileKeyProvider::initialize(&first_path, "application").unwrap();
+        let original = HistoricalSourceSecurityDescriptor::file(&first);
+        assert_eq!(original.dispatch_identity(), ("file", first.key_ref()));
+        first.rotate().unwrap();
+        assert_eq!(
+            original,
+            HistoricalSourceSecurityDescriptor::file(&FileKeyProvider::open(&first_path).unwrap())
+        );
+        let alias = directory.join("same-keyring.json");
+        private_files::create(&alias, &private_files::read(&first_path, 1 << 20).unwrap()).unwrap();
+        assert_eq!(
+            original,
+            HistoricalSourceSecurityDescriptor::file(&FileKeyProvider::open(alias).unwrap())
+        );
+        let other =
+            FileKeyProvider::initialize(&directory.join("other.json"), "application").unwrap();
+        assert_ne!(original, HistoricalSourceSecurityDescriptor::file(&other));
     }
 }

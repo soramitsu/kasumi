@@ -1,0 +1,89 @@
+{
+  "status": "EXTRACTED_EXACT_LRU_MODULE_TEST_ONLY_NOT_VENDOR_OR_WORKSPACE_GATE",
+  "source_inputs": {
+    "target/installed-disk-validation/redb-staging-workspace/native-input/before/lru_cache.rs": "c61a425f2d444cedcdf54e466660315c59ca8e9d0751aa594c681040df6deb84",
+    "target/installed-disk-validation/redb-staging-workspace/native-input/before/main.rs": "71fef37072721c59069e54829e0d5530f138479631b36bb7cb7ba111456bdca0",
+    "target/installed-disk-validation/redb-staging-workspace/native-input/proposed/lru_cache.rs": "3dad9116b06284f993544620885cc57ef7b382f0fc77152eb88e363e68450189",
+    "target/installed-disk-validation/redb-staging-workspace/native-input/proposed/main.rs": "496e04ff61a981529c24ffadc71d17c6dfcced9e52c00742bdcf7575391e2f36",
+    "target/installed-disk-validation/redb-staging-workspace/native-input/vendor/redb-4.2.0/src/tree_store/page_store/fast_hash.rs": "aad4660f34971d858c55016cf1b6d88ce49804be2b3d42e24f59f37e58bdca78"
+  },
+  "actual_before_sha256": {
+    "vendor/redb-4.2.0/src/tree_store/page_store/lru_cache.rs": "d17a92a700a492dbbb3a8989722d1e43c2da7c1df6d7e742a3de8c90f797bac8",
+    "vendor/redb-4.2.0/src/tree_store/page_store/fast_hash.rs": "aad4660f34971d858c55016cf1b6d88ce49804be2b3d42e24f59f37e58bdca78"
+  },
+  "actual_after_sha256": {
+    "vendor/redb-4.2.0/src/tree_store/page_store/lru_cache.rs": "d17a92a700a492dbbb3a8989722d1e43c2da7c1df6d7e742a3de8c90f797bac8",
+    "vendor/redb-4.2.0/src/tree_store/page_store/fast_hash.rs": "aad4660f34971d858c55016cf1b6d88ce49804be2b3d42e24f59f37e58bdca78"
+  },
+  "actual_sources_unchanged": true,
+  "rustc_version_sha256": "e794146d99fad54562fdcbd4a7c8b22b0240d2b0312ff6d879d67939b3131850",
+  "runs": [
+    {
+      "name": "compile-before",
+      "command": [
+        "rustc",
+        "--test",
+        "--edition=2024",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-staging-workspace/native-input/before/main.rs",
+        "-o",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-staging-workspace/lru-before-tests"
+      ],
+      "process_group": 15257,
+      "exit_code": 0,
+      "timed_out": false,
+      "deadline_seconds": 60,
+      "elapsed_seconds": 0.20249687499999997,
+      "process_group_drained": true,
+      "log_sha256": "3ffbfaa833711f2f6f84c5520269f5c2c7a746ced4a635f9dad4e192bca3fac7"
+    },
+    {
+      "name": "run-before",
+      "command": [
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-staging-workspace/lru-before-tests",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "process_group": 15260,
+      "exit_code": 101,
+      "timed_out": false,
+      "deadline_seconds": 60,
+      "elapsed_seconds": 0.21761425,
+      "process_group_drained": true,
+      "log_sha256": "97081539e6d64581c7ab62aa2228c46f6e90159bc7abc2aeb83f056bf11c6afd"
+    },
+    {
+      "name": "compile-proposed",
+      "command": [
+        "rustc",
+        "--test",
+        "--edition=2024",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-staging-workspace/native-input/proposed/main.rs",
+        "-o",
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-staging-workspace/lru-proposed-tests"
+      ],
+      "process_group": 15261,
+      "exit_code": 0,
+      "timed_out": false,
+      "deadline_seconds": 60,
+      "elapsed_seconds": 0.18119320800000005,
+      "process_group_drained": true,
+      "log_sha256": "f673a11e778bd65263ad8cea1f6fadceca963bf51df48b84436551f1b3bfd0be"
+    },
+    {
+      "name": "run-proposed",
+      "command": [
+        "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/redb-staging-workspace/lru-proposed-tests",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "process_group": 15265,
+      "exit_code": 0,
+      "timed_out": false,
+      "deadline_seconds": 60,
+      "elapsed_seconds": 0.22266825,
+      "process_group_drained": true,
+      "log_sha256": "06d213a70284ceb2ca17c49a2c7f9382a6930a081458d25c320c87a64f699c52"
+    }
+  ],
+  "scope_note": "Exact actual/proposed LRU modules and exact vendored fast_hash; unused PageNumber aliases use a stub because this isolated module only stores u64 cache keys. Native allocator test is harness-only; ordinary proposed vendor patch includes the two behavioral regressions."
+}

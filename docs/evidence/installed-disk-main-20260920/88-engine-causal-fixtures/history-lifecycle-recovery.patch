@@ -1,0 +1,302 @@
+--- a/crates/kasumi-engine/tests/common/recovery_control.rs
++++ b/crates/kasumi-engine/tests/common/recovery_control.rs
+@@ -1395,40 +1395,42 @@
+     .expect("original topology read did not acquire its durable release fence")
+ }
+ async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request: &RecoveryStart) {
+-    use kasumi_engine::control::{
+-        ControlNode, ControlPlane, ControlTopology, DeploymentMode, TenantRoute,
+-    };
++    use kasumi_engine::control::{ControlNode, ControlPlane, DeploymentMode, TenantRoute};
+     let plane = ControlPlane::new(db.clone()).unwrap();
+-    plane.initialize(f.context("owner")).await.unwrap();
+-    let mut topology = ControlTopology {
+-        nodes: request
+-            .target_nodes
+-            .iter()
+-            .map(|(node, identity)| {
+-                (
+-                    *node,
+-                    ControlNode {
+-                        endpoint: request.materialization.voters[node].endpoint.clone(),
+-                        failure_domain: request.materialization.voters[node].failure_domain.clone(),
+-                        certificate_pins: BTreeSet::from([identity.certificate_sha256.clone()]),
+-                    },
+-                )
+-            })
+-            .collect(),
+-        tenants: BTreeMap::from([(
+-            request.tenant.clone(),
+-            TenantRoute {
+-                incarnation: request.source_incarnation.to_string(),
+-                mode: DeploymentMode::Replicated,
+-                voters: request.target_nodes.keys().copied().collect(),
++    plane
++        .require_initialized(&f.context("owner"))
++        .await
++        .unwrap();
++    let installed = read_topology(f).await;
++    let mut topology = installed.topology;
++    for (node, identity) in &request.target_nodes {
++        topology.nodes.insert(
++            *node,
++            ControlNode {
++                endpoint: request.materialization.voters[node].endpoint.clone(),
++                failure_domain: request.materialization.voters[node].failure_domain.clone(),
++                certificate_pins: BTreeSet::from([identity.certificate_sha256.clone()]),
+             },
+-        )]),
+-    };
++        );
++    }
++    assert!(
++        topology
++            .tenants
++            .insert(
++                request.tenant.clone(),
++                TenantRoute {
++                    incarnation: request.source_incarnation.to_string(),
++                    mode: DeploymentMode::Replicated,
++                    voters: request.target_nodes.keys().copied().collect(),
++                },
++            )
++            .is_none()
++    );
+     plane
+         .replace_topology(
+             f.context("owner"),
+             topology.clone(),
+-            Precondition::Absent,
++            Precondition::Version(installed.version),
+             "recovery-source-topology".into(),
+         )
+         .await
+@@ -1683,8 +1685,12 @@
+     let RecoveryDispatch::ControlIntent(command) = input else {
+         panic!("committed Control phase required")
+     };
++    // Preparation follows the current leader; the caller's cached handle can
++    // now be a follower. Pin one original read credential before reacquiring it.
++    let phase_context = f.context("owner");
++    let db = f.leader().await;
+     let prepared = db
+-        .recovery_phase(f.context("owner"), operation, phase_id)
++        .recovery_phase(phase_context, operation, phase_id)
+         .await
+         .unwrap();
+     let mut context = f.context("owner");
+@@ -2054,8 +2060,12 @@
+     let RecoveryDispatch::ControlIntent(command) = input else {
+         panic!("Control phase required")
+     };
++    // Keep the same prepared command and dispatch limit through leadership
++    // changes; this selects a current route before the single phase read.
++    let phase_context = f.context("owner");
++    let db = f.leader().await;
+     let phase = db
+-        .recovery_phase(f.context("owner"), operation, phase_id)
++        .recovery_phase(phase_context, operation, phase_id)
+         .await
+         .unwrap();
+     let mut context = f.context_for("owner", duration);
+--- a/crates/kasumi-engine/tests/history.rs
++++ b/crates/kasumi-engine/tests/history.rs
+@@ -615,6 +615,16 @@
+ 
+ #[tokio::test]
+ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects() {
++    // Deliberate offline corruption starts before the next managed census.
++    // Never reconcile an owner that already failed during an admitted read.
++    fn external_change(disk: &kasumi_store::NodeDisk, change: impl FnOnce()) {
++        assert_eq!(disk.snapshot().phase, kasumi_store::NodeDiskPhase::Open);
++        disk.pause().unwrap();
++        change();
++        disk.reconcile(&kasumi_store::CensusCancellation::default())
++            .unwrap();
++        assert_eq!(disk.snapshot().phase, kasumi_store::NodeDiskPhase::Open);
++    }
+     let root = kasumi_store::test_utils::private_tempdir().unwrap();
+     let physical =
+         common::PhysicalFixture::new(&root.path().join("source.redb"), Default::default());
+@@ -791,7 +801,9 @@
+     audit.shutdown().await.unwrap();
+     drop(db);
+     drop(audit);
+-    std::fs::remove_dir_all(&cold_path).unwrap();
++    external_change(&physical.storage.persistent, || {
++        std::fs::remove_dir_all(&cold_path).unwrap();
++    });
+     let node = physical
+         .storage
+         .create_new(
+@@ -916,9 +928,13 @@
+             let mut corrupt = valid_dependency.clone();
+             let last = corrupt.len() - 1;
+             corrupt[last] ^= 1;
+-            std::fs::write(&dependency_path, corrupt).unwrap();
++            external_change(&physical.storage.persistent, || {
++                std::fs::write(&dependency_path, corrupt).unwrap();
++            });
+         } else if suffix == "missing" {
+-            std::fs::remove_file(&dependency_path).unwrap();
++            external_change(&physical.storage.persistent, || {
++                std::fs::remove_file(&dependency_path).unwrap();
++            });
+         }
+         let node = physical
+             .storage
+@@ -929,7 +945,7 @@
+             .unwrap();
+         let audit = common::security_audit(node.clone(), physical.storage.admission.clone()).await;
+         let target = TenantStore::initialize_catalog_fixture(
+-            node,
++            node.clone(),
+             "history".into(),
+             Arc::new(LocalKeyProvider::new(
+                 [if suffix == "wrong-keys" { 0xD4 } else { 0xD3 }; 32],
+@@ -937,15 +953,16 @@
+         )
+         .await
+         .unwrap();
++        let domains = kasumi_store::test_utils::initialize_custody_fixture(
++            target.clone(),
++            Arc::new(LocalKeyProvider::new([241; 32])),
++        )
++        .await
++        .unwrap();
+         assert!(
+             kasumi_engine::restore_local(
+                 &restore_source,
+-                kasumi_store::test_utils::initialize_custody_fixture(
+-                    target.clone(),
+-                    std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))
+-                )
+-                .await
+-                .unwrap(),
++                domains.clone(),
+                 common::local_restore_request(
+                     context(),
+                     &kasumi_types::FullBackupCheckpoint {
+@@ -966,22 +983,30 @@
+                 .unwrap()
+                 .is_none()
+         );
++        let reopened = kasumi_store::test_utils::open_existing_custody_fixture(
++            target.clone(),
++            Arc::new(LocalKeyProvider::new([241; 32])),
++        )
++        .await
++        .unwrap();
+         assert!(
+-            kasumi_store::test_utils::open_existing_custody_fixture(
+-                target.clone(),
+-                Arc::new(LocalKeyProvider::new([241; 32])),
+-            )
+-            .await
+-            .unwrap()
+-            .custody()
+-            .store()
+-            .get("raft.meta", b"node_id")
+-            .unwrap()
+-            .is_none()
++            reopened
++                .custody()
++                .store()
++                .get("raft.meta", b"node_id")
++                .unwrap()
++                .is_none()
+         );
++        reopened.custody().store().shutdown().await.unwrap();
++        reopened.application().shutdown().await.unwrap();
++        domains.custody().store().shutdown().await.unwrap();
++        target.shutdown().await.unwrap();
+         audit.shutdown().await.unwrap();
++        node.shutdown().await.unwrap();
+         if suffix == "corrupt" {
+-            std::fs::write(&dependency_path, &valid_dependency).unwrap();
++            external_change(&physical.storage.persistent, || {
++                std::fs::write(&dependency_path, &valid_dependency).unwrap();
++            });
+         }
+     }
+ }
+--- a/crates/kasumi-engine/tests/lifecycle.rs
++++ b/crates/kasumi-engine/tests/lifecycle.rs
+@@ -992,13 +992,70 @@
+     let db = f.leader().await;
+     let epoch = db.engine().generation().unwrap().state.policy_epoch;
+     let change = f.change(epoch);
+-    db.lifecycle_control(
+-        f.context("owner"),
+-        LifecycleControlCommand::BeginPolicyChange(change.clone()),
+-    )
+-    .await
+-    .unwrap();
+-    assert_eq!(db.engine().generation().unwrap().state.audits.len(), 2);
++    let before = db.engine().generation().unwrap();
++    // Initialization checks the installed topology through a strict read and
++    // replays its exact genesis lifecycle installation, both durably audited.
++    assert_eq!(
++        before
++            .state
++            .audits
++            .iter()
++            .map(|event| (
++                event.action.as_str(),
++                event.collection.as_deref(),
++                event.outcome.as_str()
++            ))
++            .collect::<Vec<_>>(),
++        vec![
++            ("read", Some("topology"), "authorized_release"),
++            ("lifecycle_control", None, "committed"),
++        ]
++    );
++    let before_audits = serde_json::to_value(&before.state.audits).unwrap();
++    let before_count = before.state.audits.len();
++    let before_sequence = before.state.audit_retention.next_sequence;
++    let before_pruned = before.state.audit_retention.pruned_before;
++    drop(before);
++    let begin_context = f.context("owner");
++    let begin = db
++        .lifecycle_control(
++            begin_context.clone(),
++            LifecycleControlCommand::BeginPolicyChange(change.clone()),
++        )
++        .await
++        .unwrap();
++    let after = db.engine().generation().unwrap();
++    assert_eq!(after.state.audits.len(), before_count + 1);
++    assert_eq!(
++        after.state.audit_retention.next_sequence,
++        before_sequence + 1
++    );
++    assert_eq!(after.state.audit_retention.pruned_before, before_pruned);
++    assert_eq!(
++        serde_json::to_value(
++            after
++                .state
++                .audits
++                .iter()
++                .take(before_count)
++                .collect::<Vec<_>>()
++        )
++        .unwrap(),
++        before_audits
++    );
++    let event = after.state.audits.back().unwrap();
++    assert_eq!(
++        event.event_id,
++        format!("{}:{}", after.state.incarnation, begin.revision)
++    );
++    assert_eq!(event.principal, begin_context.principal);
++    assert_eq!(event.request_id, begin_context.request_id);
++    assert_eq!(event.action, "lifecycle_control");
++    assert_eq!(event.outcome, "committed");
++    assert_eq!(event.data_revision, Some(begin.revision));
++    assert!(event.timestamp_ms > 0);
++    assert!(event.collection.is_none());
++    drop(after);
+     // Use two bounded large records to bring the real byte budget near full.
+     // The following denied lifecycle commands exercise the reserved remainder
+     // without making this capacity test depend on hundreds of elections.

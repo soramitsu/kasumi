@@ -1,0 +1,153 @@
+--- a/crates/kasumi-engine/src/admission/disk_memory.rs
++++ b/crates/kasumi-engine/src/admission/disk_memory.rs
+@@ -3,6 +3,20 @@
+ use std::{io, sync::Arc};
+ 
+ impl MemoryCore {
++    /// Bind an engine owner to the exact lower-layer governor before any work.
++    pub(crate) fn require_store_memory(
++        self: &Arc<Self>,
++        store: &kasumi_store::TenantStore,
++    ) -> anyhow::Result<()> {
++        let expected: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> = self.clone();
++        anyhow::ensure!(
++            Arc::ptr_eq(&expected, store.persistent_disk().memory())
++                && Arc::ptr_eq(&expected, store.scratch_disk().memory()),
++            "engine and physical storage memory owners differ"
++        );
++        Ok(())
++    }
++
+     /// Disk workspace plus this provider's real opaque lease allocation.
+     /// This checked planning helper allocates neither workspace nor a charge.
+     pub fn required_installed_reservation_bytes(workspace: u64) -> anyhow::Result<u64> {
+--- a/crates/kasumi-engine/src/security_audit.rs
++++ b/crates/kasumi-engine/src/security_audit.rs
+@@ -154,6 +154,7 @@
+         budget: AuditRetentionBudget,
+         admission: Arc<crate::admission::NodeAdmission>,
+     ) -> Result<Arc<Self>> {
++        admission.memory().require_store_memory(&store)?;
+         let root = store.durable_directory()?.join("audit-archives");
+         let destination = Arc::new(kasumi_store::FilesystemAuditArchive::open(
+             root,
+@@ -178,6 +179,7 @@
+         budget: AuditRetentionBudget,
+         admission: Arc<crate::admission::NodeAdmission>,
+     ) -> Result<Arc<Self>> {
++        admission.memory().require_store_memory(&store)?;
+         let root = store.durable_directory()?.join("audit-archives");
+         let destination = Arc::new(kasumi_store::FilesystemAuditArchive::open(
+             root,
+@@ -202,6 +204,7 @@
+         admission: Arc<crate::admission::NodeAdmission>,
+         mode: AuditOpen,
+     ) -> Result<Arc<Self>> {
++        admission.memory().require_store_memory(&store)?;
+         budget.validate()?;
+         ensure!(
+             store.tenant() == SECURITY_TENANT,
+--- a/crates/kasumi-engine/src/bootstrap_target_quorum.rs
++++ b/crates/kasumi-engine/src/bootstrap_target_quorum.rs
+@@ -144,6 +144,10 @@
+     security_audit: Arc<SecurityAudit>,
+ ) -> anyhow::Result<TargetReplica> {
+     security_audit.require_admission(&config.admission)?;
++    config
++        .admission
++        .memory()
++        .require_store_memory(stores.application())?;
+     operation.check()?;
+     let invocation = operation.invocation().clone();
+     let lease = invocation.gate().current()?;
+--- a/crates/kasumi-engine/src/bootstrap_target_serving.rs
++++ b/crates/kasumi-engine/src/bootstrap_target_serving.rs
+@@ -87,6 +87,10 @@
+     audit: Arc<SecurityAudit>,
+ ) -> anyhow::Result<TargetServingReplica> {
+     audit.require_admission(&config.admission)?;
++    config
++        .admission
++        .memory()
++        .require_store_memory(stores.application())?;
+     let gate = stores
+         .application()
+         .storage_access()
+--- a/crates/kasumi-engine/src/custody_service.rs
++++ b/crates/kasumi-engine/src/custody_service.rs
+@@ -163,6 +163,7 @@
+         audit: Arc<SecurityAudit>,
+     ) -> anyhow::Result<Arc<Self>> {
+         audit.require_admission(&admission)?;
++        admission.memory().require_store_memory(custody.store())?;
+         let group = CustodyRaftGroup::open(
+             node_id,
+             group,
+--- a/crates/kasumi-engine/src/bootstrap.rs
++++ b/crates/kasumi-engine/src/bootstrap.rs
+@@ -104,6 +104,10 @@
+     security_audit: Arc<SecurityAudit>,
+ ) -> anyhow::Result<PreparedReplicaRestore> {
+     security_audit.require_admission(&replica.admission)?;
++    replica
++        .admission
++        .memory()
++        .require_store_memory(targets.application())?;
+     let target = targets.application().clone();
+     if let Some(gate) = target.storage_access().serving_gate() {
+         anyhow::ensure!(
+@@ -419,6 +423,10 @@
+     security_audit: Arc<SecurityAudit>,
+     runtime: ReplicaRuntime<'a>,
+ ) -> anyhow::Result<(Arc<Database>, Cow<'a, ReplicatedBootstrap>)> {
++    security_audit
++        .admission()
++        .memory()
++        .require_store_memory(stores.application())?;
+     let store = stores.application().clone();
+     anyhow::ensure!(
+         store.storage_access().lifecycle_gate().is_none(),
+@@ -681,6 +689,10 @@
+     security_audit: Arc<SecurityAudit>,
+     expected_incarnation: uuid::Uuid,
+ ) -> anyhow::Result<Arc<Database>> {
++    security_audit
++        .admission()
++        .memory()
++        .require_store_memory(stores.application())?;
+     anyhow::ensure!(!expected_incarnation.is_nil(), "nil local incarnation");
+     anyhow::ensure!(
+         stores
+@@ -781,6 +793,10 @@
+     incarnation: Option<uuid::Uuid>,
+     runtime: LocalRuntime,
+ ) -> anyhow::Result<Arc<Database>> {
++    security_audit
++        .admission()
++        .memory()
++        .require_store_memory(stores.application())?;
+     let store = stores.application().clone();
+     anyhow::ensure!(
+         store.storage_access().serving_gate().is_none(),
+@@ -846,6 +862,10 @@
+     runtime: LocalRuntime,
+     security_audit: Arc<SecurityAudit>,
+ ) -> anyhow::Result<Arc<Database>> {
++    security_audit
++        .admission()
++        .memory()
++        .require_store_memory(stores.application())?;
+     let store = stores.application().clone();
+     engine.install_storage_access(&store)?;
+     let admission = security_audit.admission().clone();
+@@ -896,6 +916,10 @@
+     admission: Arc<crate::admission::NodeAdmission>,
+     security_audit: Arc<SecurityAudit>,
+ ) -> anyhow::Result<Arc<Database>> {
++    security_audit
++        .admission()
++        .memory()
++        .require_store_memory(targets.application())?;
+     request.checkpoint.validate()?;
+     security_audit.require_admission(&admission)?;
+     let incarnation = request.target_incarnation;

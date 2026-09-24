@@ -1,0 +1,127 @@
+name: Frozen release candidate
+
+# Trusted, ephemeral acceptance hosts only. This workflow does not publish a
+# release or run unreviewed fork code on a machine holding deployment secrets.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kasumi-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  functional:
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: [self-hosted, linux, x64, kasumi-acceptance]
+            target: x86_64-unknown-linux-gnu
+          - runner: [self-hosted, linux, arm64, kasumi-acceptance]
+            target: aarch64-unknown-linux-gnu
+          - runner: [self-hosted, macOS, arm64, kasumi-acceptance]
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    env:
+      KASUMI_TARGET: ${{ matrix.target }}
+      KASUMI_RUN_NAME: kasumi-release-${{ github.run_id }}-${{ github.run_attempt }}
+      PYTHONDONTWRITEBYTECODE: "1"
+      KASUMI_ASSEMBLY_INPUTS_DIR: ${{ vars.KASUMI_ASSEMBLY_INPUTS_DIR }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check native acceptance host
+        shell: bash
+        run: |
+          set -euo pipefail
+          KASUMI_RUN="$RUNNER_TEMP/$KASUMI_RUN_NAME"
+          printf 'KASUMI_RUN=%s\n' "$KASUMI_RUN" >> "$GITHUB_ENV"
+          mkdir "$KASUMI_RUN"
+          test -n "$KASUMI_ASSEMBLY_INPUTS_DIR"
+          test -f "$KASUMI_ASSEMBLY_INPUTS_DIR/inputs.json"
+          python3 scripts/release_host.py --output "$KASUMI_RUN/host.json" --target "$KASUMI_TARGET"
+      - name: Linux frozen gates and candidate assembly
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --iidfile "$KASUMI_RUN/build-image-id" \
+            --file scripts/linux-validation.Dockerfile scripts \
+            > "$KASUMI_RUN/image-build.log" 2>&1
+          image="$(cat "$KASUMI_RUN/build-image-id")"
+          docker image inspect "$image" > "$KASUMI_RUN/build-image.json"
+          docker run --rm --network none "$image" dpkg-query -W \
+            > "$KASUMI_RUN/build-packages.txt"
+          container=$(docker create --init --name "$KASUMI_RUN_NAME" \
+            --cpus 2 --memory 15g --memory-swap 15g \
+            --env PYTHONDONTWRITEBYTECODE=1 \
+            --env KASUMI_TARGET="$KASUMI_TARGET" \
+            --env GIT_CONFIG_COUNT=1 --env GIT_CONFIG_KEY_0=safe.directory \
+            --env GIT_CONFIG_VALUE_0=/workspace \
+            --volume "$KASUMI_ASSEMBLY_INPUTS_DIR:/assembly-inputs:ro" \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --volume "$KASUMI_RUN:/evidence" "$image" bash -euc '
+              python3 /workspace/scripts/release_host.py \
+                --output /evidence/container-host.json --target "$KASUMI_TARGET"
+              python3 /workspace/scripts/release_gate.py --repository /workspace \
+                --output /evidence/run --jobs 2 \
+                --execution-description "Native Linux acceptance host; two CPUs and 15 GiB container ceiling; host.json, container-host.json, container-created.json and build-image.json record the environment"
+              python3 -B -S /evidence/run/source/scripts/repeatable_assembly.py \
+                --evidence /evidence/run --native-inputs /assembly-inputs/inputs.json \
+                --output /evidence/repeatable-assembly
+            ')
+          # Keep actual resource settings, exit state and OOM status even when
+          # a gate fails or this shell is interrupted. Stop only this container.
+          finish_container() {
+            result=$?
+            trap - EXIT INT TERM
+            if ! docker stop --time 30 "$container" > "$KASUMI_RUN/container-stop.log" 2>&1; then
+              if test "$result" = 0; then result=1; fi
+            fi
+            if ! docker inspect "$container" > "$KASUMI_RUN/container-terminal.json"; then
+              if test "$result" = 0; then result=1; fi
+            fi
+            exit "$result"
+          }
+          trap finish_container EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          docker inspect "$container" > "$KASUMI_RUN/container-created.json"
+          docker start --attach "$container" > "$KASUMI_RUN/runner.log" 2>&1
+          test "$(docker inspect --format '{{.State.Running}}' "$container")" = false
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0
+      - name: macOS frozen gates and development candidate
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy \
+            > "$KASUMI_RUN/toolchain-install.log" 2>&1
+          python3 scripts/release_gate.py --output "$KASUMI_RUN/run" --jobs 2 \
+            --execution-description 'Native macOS ARM64 development acceptance; host.json records the environment' \
+            > "$KASUMI_RUN/runner.log" 2>&1
+          python3 -B -S "$KASUMI_RUN/run/source/scripts/repeatable_assembly.py" \
+            --evidence "$KASUMI_RUN/run" --native-inputs "$KASUMI_ASSEMBLY_INPUTS_DIR/inputs.json" \
+            --output "$KASUMI_RUN/repeatable-assembly"
+      - name: Preserve candidate and failed or successful evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
+          retention-days: 90
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/*.json
+            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/*.log
+            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/*.txt
+            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/build-image-id
+            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/*.json
+            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/*.log
+            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/source.tar
+            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/repeatable-assembly/**

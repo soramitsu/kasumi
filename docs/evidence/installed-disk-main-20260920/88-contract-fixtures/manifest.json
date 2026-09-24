@@ -1,0 +1,12 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED",
+  "patch_sha256": "0b2eab851aa995e780d5410a52b8ea7479edfc362b150ece2ac014ee52bb031a",
+  "includes_prepared_crash_patch_sha256": "008925297b0431007b2a03e3cd697287fdb38572521d0b4521f619728a63c3a5",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/tests/contracts.rs",
+      "before_sha256": "f82024c4574e8b64777947d0e37f86f3964eba9144d020dd9f67b3674f9870ea",
+      "proposed_sha256": "3e486fa30c102550020b3d33a0db6ae2b9bf75baaf6550db306df678e0bdf10e"
+    }
+  ]
+}

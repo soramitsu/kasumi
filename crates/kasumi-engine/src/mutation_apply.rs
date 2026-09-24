@@ -146,6 +146,7 @@ impl TenantEngine {
         command: &Command,
         batch: &MutationBatch,
         applied: &crate::staged_terminal::AppliedIdentity,
+        scope: &ApplyScope,
     ) -> Result<Result<WriteReceipt>> {
         let revision = applied.revision;
         let state = &previous.state;
@@ -208,15 +209,13 @@ impl TenantEngine {
             };
             return self.publish_mutation_observation(previous, command, revision, result);
         }
-        let owner = previous.receipts.clone();
-        #[cfg(any(test, feature = "test-utils"))]
-        let owner = if matches!(
-            applied.origin,
-            crate::staged_terminal::AppliedOrigin::Fixture
-        ) {
-            owner.fixture_owner(state).map_err(terminal_error)?
-        } else {
-            owner
+        let owner = match scope {
+            ApplyScope::Committed => previous.receipts.clone(),
+            #[cfg(any(test, feature = "test-utils"))]
+            ApplyScope::Fixture(disk) => previous
+                .receipts
+                .fixture_owner(disk, state)
+                .map_err(terminal_error)?,
         };
         let mut baseline = state.clone();
         baseline.revision = revision;
@@ -295,6 +294,7 @@ impl TenantEngine {
                 self.publish_generation(Some(Arc::new(Generation {
                     state: next,
                     receipts,
+                    backup_bindings: previous.backup_bindings.clone(),
                     terminals: previous.terminals.clone(),
                     target_resolutions: previous.target_resolutions.clone(),
                     indexes: indexes.clone(),
@@ -336,6 +336,7 @@ impl TenantEngine {
         self.publish_generation(Some(Arc::new(Generation {
             state: rejected,
             receipts,
+            backup_bindings: previous.backup_bindings.clone(),
             terminals: previous.terminals.clone(),
             target_resolutions: previous.target_resolutions.clone(),
             indexes: previous.indexes.clone(),
@@ -406,6 +407,7 @@ impl TenantEngine {
         self.publish_generation(Some(Arc::new(Generation {
             state: next,
             receipts: previous.receipts.clone(),
+            backup_bindings: previous.backup_bindings.clone(),
             terminals: previous.terminals.clone(),
             target_resolutions: previous.target_resolutions.clone(),
             indexes: previous.indexes.clone(),

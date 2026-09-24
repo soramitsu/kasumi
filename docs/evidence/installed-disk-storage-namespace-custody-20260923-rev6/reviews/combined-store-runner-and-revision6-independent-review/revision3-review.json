@@ -1,0 +1,32 @@
+{
+  "status": "SCOPED_STATIC_APPROVAL_OF_RUNNER_REVISION3_DELTA",
+  "at_utc": "2026-09-22T10:29:30.972234+00:00",
+  "initial_review_sha256": "180891ddceaff3e84b36f4d186fcb83cb3e2c0caa689a000179ecbecd973e5e3",
+  "reviewed": {
+    "runner_sha256": "a66fdce777db0d0ed9130649755a9a1dc26ec2b807859d2e19743f07a8f5a70a",
+    "manifest_sha256": "bb5c1d753e57d1adc9044fbb19e3f63fcc173c67a9c0c068ac3ae08ce2286d4a",
+    "correction_sha256": "33107ad52f63e77fadb125be4757fa8d4c8f9b403857792eb9e63352c5786cc8"
+  },
+  "resolved": [
+    "dispatch refuses an expired deadline before Popen",
+    "qualified_stage rejects timeout and every forced-cleanup signal even when exit_code is zero",
+    "continuation uses qualified_stage",
+    "final gate requires complete stages, all qualified and original whole-cohort deadline",
+    "cleanup grace recorded separately; cleanup still occurs after qualification failure"
+  ],
+  "preserved": [
+    "source and executable inventories",
+    "exact326 executable-listed inventory",
+    "nonfresh source-selected copied binary",
+    "unfiltered store runtime and bundled Python3.12 full script stage",
+    "original1200second bound"
+  ],
+  "limitations": [
+    "static delta review only; no native dispatched",
+    "existing revision2 trial requires independent conservative evidence audit before acceptance",
+    "processes escaping their original process group are not covered by this runner",
+    "OS process/kill races may abort report generation; no false success inferred because the runner then terminates without an accepted complete result"
+  ],
+  "source_edits": false,
+  "native_execution": false
+}

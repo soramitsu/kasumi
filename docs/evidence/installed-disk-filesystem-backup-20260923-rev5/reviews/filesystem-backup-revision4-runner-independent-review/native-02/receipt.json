@@ -1,0 +1,41 @@
+{
+  "at_utc": "2026-09-22T23:55:44.666839+00:00",
+  "status": "SCOPED_SOURCE_REVIEW_PASS; no native dispatch or implementation/source qualification",
+  "input_hashes": {
+    "target/installed-disk-validation/filesystem-backup-admission-revision4/native-02/run.py": "231eb56a1abb2e7e89068cac8cb9bf14a36a80a00219f135bbdf46cc5ed97ebd",
+    "target/installed-disk-validation/filesystem-backup-admission-revision4/prepare_native_revision2.py": "f699492520ffb1b5f3bdcedf6a7528a6a858b7f8fa8e59545306f33c444c75af",
+    "target/installed-disk-validation/filesystem-backup-admission-revision4/check_runner_gates_revision2.py": "c30d2d51d21802d88c7865d000a281e43035675d47519e82b170ba1c58d21aab",
+    "target/installed-disk-validation/filesystem-backup-admission-revision4/native-02/runner-gate-tests.json": "0f9b6ff2e84a2ccd60dce482aabc424aa07fb1dadc8f7dc39436568e5e681f4a"
+  },
+  "resolved_findings": [
+    "R1: retained compiled binary hash/path/size are enforced before every STORE_BINARY Popen and final acceptance, independently of within-stage equality. Artifact records are rehashed after all stages.",
+    "R2: exact nonselected source path/hash/byte/mode maps include Cargo.toml/Cargo.lock/rust-toolchain.toml; separate selected hashes/modes remain required. Runner rechecks current complete root source set against preparation before dispatch."
+  ],
+  "independent_pure_semantic_checks": [
+    "same compiled binary accepted",
+    "binary path mismatch rejected",
+    "binary sha256 mismatch rejected",
+    "binary bytes mismatch rejected",
+    "missing compilation rejected",
+    "stage equal before-after cannot override compiled mismatch",
+    "matching qualified stage accepted",
+    "equal source set accepted",
+    "source added drift rejected",
+    "source removed drift rejected",
+    "source hash drift rejected",
+    "source mode drift rejected",
+    "source cargo drift rejected"
+  ],
+  "author_pure_checks_bound": 42,
+  "original_native01_runner_preserved": true,
+  "unchanged_acceptance": [
+    "Exact345 names before full run;343 passed/0 failed/2 ignored/0 measured/0 filtered.",
+    "No timeout/signals; group drain and all stages required; positive budget before dispatch and final1200-second bound.",
+    "Actual/proposed/assembly inventored source and pinned stage executable hashes must remain unchanged."
+  ],
+  "scope_limits": [
+    "No native run performed. The revision5 source base is currently awaiting an archive fixture successor after its actual full-store failure; this runner must be rebound to the subsequently qualified base before dispatch.",
+    "Artifact stability does not prove registry dependency source-tree or complete toolchain source inventories.",
+    "Preparation/native serial window authorization remains with parent/opening; this source review does not grant native ownership."
+  ]
+}

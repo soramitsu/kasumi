@@ -1,0 +1,5 @@
+# Root review of attempt128 native poll frames
+
+Verified frozen manifest, unchanged source/binary inventories and the exact compiled lifecycle binary. Read actual ARM64 prologues for outer orchestration, preparation and probe construction; the measured stack reservations agree with the reported110144,629232 and35664 bytes. Outer call edges still separately poll preparation, expiry, continuation and publication through64-byte Box adapters. Outer+expiry+adapter is422464 bytes. The probe constructor has bounded inline-array copies; it does not rebuild its32-slot array in send. This is a focused static comparison, not a whole-thread bound or runtime acceptance.
+
+No new static blocker prevents the original14-case lifecycle cohort. Run129 requires this exact binary before launch and records its hash after completion. All five separately owned fixed-map native commands have terminal successful drain receipts and are absent from fresh process-group census before launch. No test timeout, election setting or stack size is increased.

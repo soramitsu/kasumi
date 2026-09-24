@@ -102,18 +102,24 @@ impl StateMachineBackend for Backend {
     }
 }
 
-pub async fn store(path: &Path, create: bool) -> Result<Arc<kasumi_store::TenantStorageSet>> {
+pub async fn store(
+    path: &Path,
+    create: bool,
+    fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+) -> Result<Arc<kasumi_store::TenantStorageSet>> {
     let node = if create {
         NodeStore::create_new_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+            fixture_scratch.memory().clone(),
+            fixture_scratch.clone(),
         )?
     } else {
         NodeStore::open_existing_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+            fixture_scratch.memory().clone(),
+            fixture_scratch.clone(),
         )?
     };
     if create {

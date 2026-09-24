@@ -1,0 +1,42 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000cbac4 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation>:
+1000cbac4: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1000cbac8: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1000cbacc: 910043fd    	add	x29, sp, #0x10
+1000cbad0: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+1000cbad4: f90003ff    	str	xzr, [sp]
+1000cbad8: d11f03ff    	sub	sp, sp, #0x7c0
+1000cbadc: f90003ff    	str	xzr, [sp]
+1000cbae0: 910063e1    	add	x1, sp, #0x18
+1000cbae4: 392c03ff    	strb	wzr, [sp, #0xb00]
+1000cbae8: 912c23e0    	add	x0, sp, #0xb08
+1000cbaec: f9000be0    	str	x0, [sp, #0x10]
+1000cbaf0: 52815e08    	mov	w8, #0xaf0              ; =2800
+1000cbaf4: aa0803e2    	mov	x2, x8
+1000cbaf8: 948aea51    	bl	0x10238643c <dyld_stub_binder+0x10238643c>
+1000cbafc: f9400be8    	ldr	x8, [sp, #0x10]
+1000cbb00: f81e83a8    	stur	x8, [x29, #-0x18]
+1000cbb04: 14000008    	b	0x1000cbb24 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation+0x60>
+1000cbb08: 912c23e0    	add	x0, sp, #0xb08
+1000cbb0c: 97ff877b    	bl	0x1000ad8f8 <core::ptr::drop_glue::<lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation::{closure#0}>>
+1000cbb10: 14000057    	b	0x1000cbc6c <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation+0x1a8>
+1000cbb14: f81c03a0    	stur	x0, [x29, #-0x40]
+1000cbb18: aa0103e8    	mov	x8, x1
+1000cbb1c: b81c83a8    	stur	w8, [x29, #-0x38]
+1000cbb20: 17fffffa    	b	0x1000cbb08 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation+0x44>
+1000cbb24: 912c23e8    	add	x8, sp, #0xb08
+1000cbb28: aa0803e9    	mov	x9, x8
+1000cbb2c: f81d03a9    	stur	x9, [x29, #-0x30]
+1000cbb30: f81d83a8    	stur	x8, [x29, #-0x28]
+1000cbb34: d002e548    	adrp	x8, 0x105d75000 <dyld_stub_binder+0x105d75000>
+1000cbb38: 9138c108    	add	x8, x8, #0xe30
+1000cbb3c: f81e03a8    	stur	x8, [x29, #-0x20]
+1000cbb40: 914007e8    	add	x8, sp, #0x1, lsl #12   ; =0x1000
+1000cbb44: 911a6108    	add	x8, x8, #0x698
+1000cbb48: 94805504    	bl	0x1020e0f58 <<tokio::runtime::builder::Builder>::new_multi_thread>
+1000cbb4c: 14000001    	b	0x1000cbb50 <lifecycle::recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation+0x8c>
+1000cbb50: 914007e0    	add	x0, sp, #0x1, lsl #12   ; =0x1000

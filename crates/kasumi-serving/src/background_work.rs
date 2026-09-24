@@ -120,7 +120,7 @@ pub(crate) struct SpawnPause {
 struct Custody {
     id: Uuid,
     cell: Arc<BackgroundWork>,
-    task: AsyncMutex<Option<JoinHandle<()>>>,
+    task: AsyncMutex<Option<JoinHandle<Result<()>>>>,
 }
 fn custody() -> &'static Mutex<BTreeMap<Uuid, Arc<Custody>>> {
     static OWNERS: OnceLock<Mutex<BTreeMap<Uuid, Arc<Custody>>>> = OnceLock::new();
@@ -129,14 +129,22 @@ fn custody() -> &'static Mutex<BTreeMap<Uuid, Arc<Custody>>> {
 impl Custody {
     fn publish(
         &self,
-        task: &mut Option<JoinHandle<()>>,
-        result: std::result::Result<(), tokio::task::JoinError>,
+        task: &mut Option<JoinHandle<Result<()>>>,
+        result: std::result::Result<Result<()>, tokio::task::JoinError>,
     ) -> DrainResult {
         // The exact handle has just returned Ready. Preserve its original error
         // and publish its terminal state synchronously, before any later await.
         let mut state = self.cell.state.lock().unwrap_or_else(|p| p.into_inner());
-        if let Err(error) = result {
-            state.report.record("background worker", 0, error.into());
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                state.report.record("background work result", 0, error);
+                self.cell.closed.store(true, Ordering::Release);
+            }
+            Err(error) => {
+                state.report.record("background worker", 0, error.into());
+                self.cell.closed.store(true, Ordering::Release);
+            }
         }
         task.take();
         state.phase = Phase::Joined;
@@ -206,6 +214,30 @@ impl BackgroundWork {
         task: impl Future<Output = ()> + Send + 'static,
         budget: &BackgroundWorkBudget,
     ) -> Result<()> {
+        self.start_child(
+            |executor| {
+                executor.spawn(async move {
+                    task.await;
+                    Ok(())
+                })
+            },
+            budget,
+        )
+    }
+    /// The retained custody entry stores the actual blocking JoinHandle, not a
+    /// supervisor future that owns a separately detachable blocking task.
+    pub fn start_blocking_result(
+        self: &Arc<Self>,
+        task: impl FnOnce() -> Result<()> + Send + 'static,
+        budget: &BackgroundWorkBudget,
+    ) -> Result<()> {
+        self.start_child(|executor| executor.spawn_blocking(task), budget)
+    }
+    fn start_child(
+        self: &Arc<Self>,
+        launch: impl FnOnce(&tokio::runtime::Handle) -> JoinHandle<Result<()>>,
+        budget: &BackgroundWorkBudget,
+    ) -> Result<()> {
         let executor = tokio::runtime::Handle::try_current()?;
         let mut owners = custody().lock().unwrap_or_else(|p| p.into_inner());
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -227,7 +259,7 @@ impl BackgroundWork {
         let owner = Arc::new(Custody {
             id,
             cell: self.clone(),
-            task: AsyncMutex::new(Some(executor.spawn(task))),
+            task: AsyncMutex::new(Some(launch(&executor))),
         });
         state.phase = Phase::Running;
         state.custody = Some(id);

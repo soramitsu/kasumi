@@ -37,15 +37,16 @@ impl Fixture {
     }
     async fn add_fourth_with_budget(&mut self, resource_budget_bytes: u64) {
         let id = 4;
+        let storage = PhysicalFixture::new().unwrap();
         let mut settings = self.settings.clone();
         settings.resource_budget_bytes = resource_budget_bytes;
         let stores = TenantStorageSet::initialize_catalogs(
-            NodeStore::create_new_fixture(
-                self._dir.path().join("authority-4.redb"),
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-            .unwrap(),
+            storage
+                .create_new(
+                    storage.path("authority-4.redb"),
+                    kasumi_store::test_utils::NODE_STORE_ID,
+                )
+                .unwrap(),
             self.installation.tenant(),
             Arc::new(LocalKeyProvider::new([4; 32])),
             Arc::new(LocalKeyProvider::new([14; 32])),
@@ -80,8 +81,8 @@ impl Fixture {
                 election_timeout_max: 1000,
                 ..Config::default()
             },
-            request_budget(),
-            kasumi_raft::SnapshotBufferOwner::fixture(),
+            request_budget(&storage.admission),
+            storage.admission.snapshot_buffer_owner().unwrap(),
             self.epoch.clone(),
         )
         .await
@@ -97,6 +98,7 @@ impl Fixture {
             .unwrap();
         self.services.push(service);
         self.stores.push(stores);
+        self.physical.insert(id, storage);
     }
 }
 
@@ -527,8 +529,11 @@ async fn maintenance_store_cannot_reopen_as_another_member_identity() {
         fixture.settings.clone(),
         fixture.router.clone(),
         Config::default(),
-        request_budget(),
-        kasumi_raft::SnapshotBufferOwner::fixture(),
+        request_budget(&fixture.physical[&1].admission),
+        fixture.physical[&1]
+            .admission
+            .snapshot_buffer_owner()
+            .unwrap(),
         fixture.epoch.clone(),
     )
     .await;
@@ -629,8 +634,11 @@ async fn maintenance_resource_acknowledgement_survives_lost_reply_before_admissi
         smaller,
         fixture.router.clone(),
         Config::default(),
-        request_budget(),
-        kasumi_raft::SnapshotBufferOwner::fixture(),
+        request_budget(&fixture.physical[&1].admission),
+        fixture.physical[&1]
+            .admission
+            .snapshot_buffer_owner()
+            .unwrap(),
         fixture.epoch.clone(),
     )
     .await;
@@ -782,8 +790,11 @@ async fn authority_signer_cannot_substitute_another_physical_verifier_with_the_s
         fixture.settings.clone(),
         fixture.router.clone(),
         Config::default(),
-        request_budget(),
-        kasumi_raft::SnapshotBufferOwner::fixture(),
+        request_budget(&fixture.physical[&1].admission),
+        fixture.physical[&1]
+            .admission
+            .snapshot_buffer_owner()
+            .unwrap(),
         fixture.epoch.clone(),
     )
     .await;

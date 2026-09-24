@@ -41,14 +41,19 @@ fn literal_marker_documents_schema_and_staged_records_survive_canonical_snapshot
             archived_document_bytes: 0,
         },
     );
-    let disk = kasumi_store::ScratchDisk::fixture();
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+    )
+    .unwrap();
+    let disk = &scratch.disk;
     let terminals = crate::staged_terminal::View::empty(&state.tenant, &state.incarnation).unwrap();
     let target_resolutions =
         crate::target_resolution::View::empty(&state.tenant, &state.incarnation).unwrap();
-    let image = kasumi_store::SnapshotImage::capture(&disk, 64 << 20, |writer| {
+    let image = kasumi_store::SnapshotImage::capture(disk, 64 << 20, |writer| {
         write(
             &state,
             &crate::mutation_receipt::View::empty(&state.tenant, &state.incarnation)?,
+            &crate::backup_binding::View::empty(&state.incarnation)?,
             &terminals,
             &target_resolutions,
             writer,

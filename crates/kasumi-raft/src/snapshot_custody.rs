@@ -13,6 +13,7 @@ use openraft::{Entry, EntryPayload, SnapshotMeta};
 use serde::{Deserialize, Serialize};
 
 const MAX_SNAPSHOT_CUSTODY_BYTES: usize = 2 << 20;
+pub(crate) const MAX_PROJECTION_BYTES: usize = 2 << 20;
 const PROJECTION: &[u8] = b"snapshot_retirement";
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -35,6 +36,51 @@ struct Projection {
     meta: SnapshotMeta<u64, BasicNode>,
     snapshot_sha256: String,
     retirement: SnapshotRetirement,
+}
+
+fn encode_projection(value: &Projection) -> Result<Vec<u8>> {
+    ensure!(
+        crate::storage::current_snapshot_id(&value.meta.snapshot_id),
+        "invalid snapshot retirement projection identity"
+    );
+    kasumi_types::validate_sha256(&value.snapshot_sha256)?;
+    let bytes = serde_json::to_vec(value)?;
+    ensure!(
+        bytes.len() <= MAX_PROJECTION_BYTES,
+        "snapshot retirement projection exceeds byte limit"
+    );
+    Ok(bytes)
+}
+
+/// Refuse an unpublishable projection before application snapshot staging
+/// writes a pending manifest or any encrypted chunks. This uses only finalized
+/// snapshot inputs; publication rechecks the same encoding under its gate.
+pub(crate) fn preflight_projection(
+    meta: &SnapshotMeta<u64, BasicNode>,
+    retirement: Option<&SnapshotRetirement>,
+    snapshot_sha256: &str,
+) -> Result<()> {
+    if let Some(retirement) = retirement {
+        encode_projection(&Projection {
+            meta: meta.clone(),
+            snapshot_sha256: snapshot_sha256.into(),
+            retirement: retirement.clone(),
+        })?;
+    }
+    Ok(())
+}
+
+fn load_projection(store: &TenantStore) -> Result<Option<Projection>> {
+    let Some(bytes) = store.get_bounded(META, PROJECTION, MAX_PROJECTION_BYTES)? else {
+        return Ok(None);
+    };
+    let value: Projection =
+        serde_json::from_slice(&bytes).context("invalid snapshot retirement projection")?;
+    ensure!(
+        encode_projection(&value)? == bytes,
+        "noncanonical snapshot retirement projection"
+    );
+    Ok(Some(value))
 }
 
 impl PartialEq for SnapshotRetirement {
@@ -296,7 +342,7 @@ pub(crate) fn installation_writes(
             writes.push(WriteOp::put(
                 META,
                 PROJECTION,
-                serde_json::to_vec(&Projection {
+                encode_projection(&Projection {
                     meta: meta.clone(),
                     snapshot_sha256: snapshot_sha256.into(),
                     retirement: retirement.clone(),
@@ -364,7 +410,7 @@ pub(crate) fn installation_writes(
             // Backends can encode the same logical image differently (e.g.
             // randomized persistent map order after restore). Each image keeps
             // its own exact digest; custody identity at this position cannot vary.
-            let existing = load::<Projection>(control, META, PROJECTION)?;
+            let existing = load_projection(control)?;
             ensure!(
                 old.last_membership == meta.last_membership,
                 "snapshot membership differs at the same applied position"
@@ -397,8 +443,8 @@ pub(crate) fn check_published(
     if let Some(retirement) = retirement {
         retirement.validate(meta)?;
         retirement.check_installation(custody)?;
-        let projection: Projection = load(custody.store(), META, PROJECTION)?
-            .context("snapshot custody projection absent")?;
+        let projection =
+            load_projection(custody.store())?.context("snapshot custody projection absent")?;
         ensure!(
             projection.meta == *meta
                 && projection.snapshot_sha256 == snapshot_sha256
@@ -418,12 +464,12 @@ pub(crate) fn check_published(
 /// Coverage for a replica that installed the seed through a snapshot rather
 /// than receiving and then purging its original log header.
 pub(crate) fn covers_seed(store: &TenantStore, record: &RetainedSeed) -> Result<bool> {
-    let Some(projection) = load::<Projection>(store, META, PROJECTION)? else {
+    let Some(projection) = load_projection(store)? else {
         return Ok(false);
     };
     projection.retirement.validate(&projection.meta)?;
-    let coverage: crate::storage::SnapshotCoverage =
-        load(store, META, b"snapshot_coverage")?.context("snapshot custody coverage absent")?;
+    let coverage = crate::storage::load_snapshot_coverage(store)?
+        .context("snapshot custody coverage absent")?;
     ensure!(
         coverage.meta == projection.meta && coverage.snapshot_sha256 == projection.snapshot_sha256,
         "retirement projection snapshot coverage differs"
@@ -438,13 +484,8 @@ pub(crate) fn covers_seed(store: &TenantStore, record: &RetainedSeed) -> Result<
 /// log store's committed cursor so a crash before Raft's log purge does not
 /// fabricate physical log entries or change the log-store recovery contract.
 pub(crate) fn committed_snapshot(store: &TenantStore) -> Result<Option<crate::LogId<u64>>> {
-    let Some(coverage) =
-        load::<crate::storage::SnapshotCoverage>(store, META, b"snapshot_coverage")?
-    else {
+    let Some(coverage) = crate::storage::load_snapshot_coverage(store)? else {
         return Ok(None);
     };
-    kasumi_types::validate_sha256(&coverage.snapshot_sha256)?;
-    kasumi_types::validate_sha256(&coverage.backend_sha256)?;
-    uuid::Uuid::parse_str(&coverage.manifest_id)?;
     Ok(coverage.meta.last_log_id)
 }

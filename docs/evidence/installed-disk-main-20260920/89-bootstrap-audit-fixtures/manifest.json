@@ -1,0 +1,26 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "patch_sha256": "2b71bc51e8428b55f10b29f89f24ef53ed5669b63609e50a73da94284827853c",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/bootstrap_fixtures.rs",
+      "before_sha256": "5c1557d653db9aeee243ab67765f2240d2737fbc81a2e7cf3cee170d785c16d4",
+      "proposed_sha256": "dea51fd6d5ceb65933ae61aedeee802457120b736098f9faa21065c40196d804"
+    },
+    {
+      "path": "crates/kasumi-engine/src/tenant_audit.rs",
+      "before_sha256": "2059cbf360f55b6e9c1e589706ba924d7421bf145411f88c78ac443e36ceb27c",
+      "proposed_sha256": "b8d9700ee567611e58dc59f58d11287f56510c194df5d1f73540dc0085f72074"
+    }
+  ],
+  "failure_evidence": {
+    "path": "target/installed-disk-validation/89-engine-callers.log",
+    "sha256": "0c35b5da718c232bf07c6a4205dc09f5ed5a73534ec25b1f9f37d57bb3f96f49"
+  },
+  "apply_check": {
+    "exit_code": 0,
+    "stderr": ""
+  },
+  "rustfmt_stdin": "passed"
+}

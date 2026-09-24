@@ -1,0 +1,34 @@
+{
+  "kind": "target-only test-only registered-opening failure-retention correction revision2; native pending",
+  "created_utc": "2026-09-23T00:03:26.386841+00:00",
+  "base_package": "storage-namespace-custody-integration-revision5",
+  "base_manifest_sha256": "64a8b440408c734c05b442aafbb9fa969862d78662178b8029a287dd66578b2e",
+  "predecessor_manifest_sha256": "375fa32de5ce07386a0050db4d779b7c0a3566d81f3437911cfcaedbcc219650",
+  "predecessor_patch_sha256": "25e8cceae34cbbcc0b08dfcbe5ecdb79b80b01a426c228e92773b4e3df89ce02",
+  "files": [
+    {
+      "path": "crates/kasumi-store/src/node_file.rs",
+      "before": "47f330f5ba8b407fa110e0e375ef8327d8324e802ba2c328f658f9459149324a",
+      "after": "1dc4b7a73dd928b94ac44fe636bc5d2be07809bdd91dae52a9ff76a54c3c95c4"
+    },
+    {
+      "path": "crates/kasumi-store/src/storage_opening_tests.rs",
+      "before": "e20e38d74fa3339dd6df3a2de21817627b6668950cde19094f78b40fa802d666",
+      "after": "eb27ef8112d26c0771cdd76ad8c4e016d61557c6bb01b1fb2155776e523118c0"
+    }
+  ],
+  "patch_sha256": "e0b442426e43491e141f61e8cb457d810ae2b45c9149b18208ce16d5a4c61352",
+  "revision1_delta_sha256": "b8490f5f6af6535ed20a7aeaf5c77a3a59428afcf95eb4a98c491e1b0d2dfc97",
+  "test_names_added": [],
+  "test_names_removed": [],
+  "expected_store_count": 338,
+  "evidence": {
+    "README.md": "f44e13de3c459326f64ee672731529054d5dceb65697752c55a866129ff355d2",
+    "apply-readback.json": "69c17106b1d1cc2c97b6c408fb4abd0d9422a40a1bf511a8dec3c2d6ff9719e0",
+    "scan-classification.json": "3530fa1e7de8e6b15dfdc0753b814ecb0100b139a945ba9ae1c54d466d98dbcd",
+    "closed-expectations-scan.txt": "7810449f1aec2cfcff96ebf19d9a65ddac71ef3c1115c2dd04acdb5df68f1308"
+  },
+  "production_behavior_change": false,
+  "native_runs": [],
+  "remaining_gap": "Explicit verified failed-owner disposal and original-outcome acknowledgement/recovery protocol remains unimplemented; indefinite retention is not release acceptance."
+}

@@ -1,0 +1,2906 @@
+[
+  {
+    "path": "crates/kasumi-server/src/persistent_disk.rs",
+    "line": 208,
+    "text": "        policy.insert(\"max_census_entries\".into(), 1_000_000.into());",
+    "overlay": true
+  },
+  {
+    "path": "crates/kasumi-server/src/persistent_disk.rs",
+    "line": 211,
+    "text": "        mixed[\"persistent_disk\"][\"max_census_entries\"] = 1_000_000.into();",
+    "overlay": true
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/node-disk-namespace-README.md",
+    "line": 13,
+    "text": "All lookups are bounded by the existing `max_census_entries`. The proposal scans the existing ledger to find a binding instead of allocating a second index. This adds O(enrolled files) work on create, publish, and final-leaf ENOENT. A different performance index would require separately admitted retained capacity; it is not smuggled into this correctness slice.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/README.md",
+    "line": 312,
+    "text": "creation checks the file count against `max_census_entries`, while census consumes",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/prepare_native.py",
+    "line": 31,
+    "text": "    let config=NodeDiskConfig {roots:BTreeMap::from([(\"data\".into(),root.clone())]),max_bytes:64<<20,maintenance_reserve_bytes:1<<20,min_free_bytes:0,max_open_files:16,max_open_directories:1,directory_policy:DirectoryPolicy::new(1<<20,32768).unwrap(),max_census_entries:16384,max_depth:64,max_name_bytes:255};",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/prepare_native.py",
+    "line": 53,
+    "text": "    let mut production=config.clone();production.max_census_entries=1_000_000;production.max_open_files=4096;production.max_open_directories=4096;production.roots=BTreeMap::from([(\"data\".into(),PathBuf::from(\"/var/lib/kasumi/data\"))]);",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-02/driver.rs",
+    "line": 19,
+    "text": "    let config=NodeDiskConfig {roots:BTreeMap::from([(\"data\".into(),root.clone())]),max_bytes:64<<20,maintenance_reserve_bytes:1<<20,min_free_bytes:0,max_open_files:16,max_open_directories:1,directory_policy:DirectoryPolicy::new(1<<20,32768).unwrap(),max_census_entries:16384,max_depth:64,max_name_bytes:255};",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-02/driver.rs",
+    "line": 41,
+    "text": "    let mut production=config.clone();production.max_census_entries=1_000_000;production.max_open_files=4096;production.max_open_directories=4096;production.roots=BTreeMap::from([(\"data\".into(),PathBuf::from(\"/var/lib/kasumi/data\"))]);",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-02/node_disk.rs",
+    "line": 53,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-02/node_disk.rs",
+    "line": 112,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-02/node_disk.rs",
+    "line": 551,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-02/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-02/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-02/node_disk/tests.rs",
+    "line": 19,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-02/node_disk/tests.rs",
+    "line": 405,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-02/node_disk/tests.rs",
+    "line": 1272,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-02/node_disk/tests.rs",
+    "line": 2328,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-02/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-02/node_disk/directory/tests.rs",
+    "line": 277,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/driver.rs",
+    "line": 20,
+    "text": "    let config=NodeDiskConfig {roots:BTreeMap::from([(\"data\".into(),root.clone())]),max_bytes:64<<20,maintenance_reserve_bytes:1<<20,min_free_bytes:0,max_open_files:16,max_open_directories:1,directory_policy:DirectoryPolicy::new(1<<20,32768).unwrap(),max_census_entries:16384,max_depth:64,max_name_bytes:255};",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/driver.rs",
+    "line": 42,
+    "text": "    let mut production=config.clone();production.max_census_entries=1_000_000;production.max_open_files=4096;production.max_open_directories=4096;production.roots=BTreeMap::from([(\"data\".into(),PathBuf::from(\"/var/lib/kasumi/data\"))]);",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/node_disk.rs",
+    "line": 53,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/node_disk.rs",
+    "line": 112,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/node_disk.rs",
+    "line": 551,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 53,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 112,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 551,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 19,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 405,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1272,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 2328,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 277,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 81,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 153,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/proposal-at-run/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/node_disk/tests.rs",
+    "line": 19,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/node_disk/tests.rs",
+    "line": 405,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/node_disk/tests.rs",
+    "line": 1272,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/node_disk/tests.rs",
+    "line": 2328,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-05/node_disk/directory/tests.rs",
+    "line": 277,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-04/driver.rs",
+    "line": 20,
+    "text": "    let config=NodeDiskConfig {roots:BTreeMap::from([(\"data\".into(),root.clone())]),max_bytes:64<<20,maintenance_reserve_bytes:1<<20,min_free_bytes:0,max_open_files:16,max_open_directories:1,directory_policy:DirectoryPolicy::new(1<<20,32768).unwrap(),max_census_entries:16384,max_depth:64,max_name_bytes:255};",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-04/driver.rs",
+    "line": 42,
+    "text": "    let mut production=config.clone();production.max_census_entries=1_000_000;production.max_open_files=4096;production.max_open_directories=4096;production.roots=BTreeMap::from([(\"data\".into(),PathBuf::from(\"/var/lib/kasumi/data\"))]);",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-04/node_disk.rs",
+    "line": 53,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-04/node_disk.rs",
+    "line": 112,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-04/node_disk.rs",
+    "line": 551,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-04/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-04/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-04/node_disk/tests.rs",
+    "line": 19,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-04/node_disk/tests.rs",
+    "line": 405,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-04/node_disk/tests.rs",
+    "line": 1272,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-04/node_disk/tests.rs",
+    "line": 2328,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-04/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-04/node_disk/directory/tests.rs",
+    "line": 277,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-03/driver.rs",
+    "line": 20,
+    "text": "    let config=NodeDiskConfig {roots:BTreeMap::from([(\"data\".into(),root.clone())]),max_bytes:64<<20,maintenance_reserve_bytes:1<<20,min_free_bytes:0,max_open_files:16,max_open_directories:1,directory_policy:DirectoryPolicy::new(1<<20,32768).unwrap(),max_census_entries:16384,max_depth:64,max_name_bytes:255};",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-03/driver.rs",
+    "line": 42,
+    "text": "    let mut production=config.clone();production.max_census_entries=1_000_000;production.max_open_files=4096;production.max_open_directories=4096;production.roots=BTreeMap::from([(\"data\".into(),PathBuf::from(\"/var/lib/kasumi/data\"))]);",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-03/node_disk.rs",
+    "line": 53,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-03/node_disk.rs",
+    "line": 112,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-03/node_disk.rs",
+    "line": 551,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-03/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-03/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-03/node_disk/tests.rs",
+    "line": 19,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-03/node_disk/tests.rs",
+    "line": 405,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-03/node_disk/tests.rs",
+    "line": 1272,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-03/node_disk/tests.rs",
+    "line": 2328,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-03/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-03/node_disk/directory/tests.rs",
+    "line": 277,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 53,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 112,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 551,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 19,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 405,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1272,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 2328,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 277,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 81,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 153,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-01/proposal-at-run/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-01/driver.rs",
+    "line": 19,
+    "text": "    let config=NodeDiskConfig {roots:BTreeMap::from([(\"data\".into(),root.clone())]),max_bytes:64<<20,maintenance_reserve_bytes:1<<20,min_free_bytes:0,max_open_files:16,max_open_directories:1,directory_policy:DirectoryPolicy::new(1<<20,32768).unwrap(),max_census_entries:16384,max_depth:64,max_name_bytes:255};",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/native-01/driver.rs",
+    "line": 41,
+    "text": "    let mut production=config.clone();production.max_census_entries=1_000_000;production.max_open_files=4096;production.max_open_directories=4096;production.roots=BTreeMap::from([(\"data\".into(),PathBuf::from(\"/var/lib/kasumi/data\"))]);",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/cumulative-base/crates/kasumi-store/src/node_disk.rs",
+    "line": 42,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/cumulative-base/crates/kasumi-store/src/node_disk.rs",
+    "line": 61,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/cumulative-base/crates/kasumi-store/src/node_disk.rs",
+    "line": 473,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/cumulative-base/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 333,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/cumulative-base/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 25,
+    "text": "            table::<(Identity, AccountedFile)>(config.max_census_entries)?,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/cumulative-base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 17,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/cumulative-base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 358,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/cumulative-base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1176,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/cumulative-base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 2188,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/cumulative-base/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 545,
+    "text": "            if state.accounted.len() as u64 >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/cumulative-base/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/cumulative-base/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 75,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/cumulative-base/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 143,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/cumulative-base/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/crates/kasumi-store/src/node_disk.rs",
+    "line": 50,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/crates/kasumi-store/src/node_disk.rs",
+    "line": 73,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/crates/kasumi-store/src/node_disk.rs",
+    "line": 508,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 346,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 18,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 359,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1177,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 2200,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 554,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 269,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 76,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 144,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/base/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 53,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 112,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 551,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 19,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 405,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1272,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 2328,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 277,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 81,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 153,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/proposed/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 53,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 112,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 551,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 19,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 405,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1272,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 2328,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 277,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 81,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 153,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-parent-transitions/python-02/proposal-at-run/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/production-directory-callers/census-restart-policy.md",
+    "line": 3,
+    "text": "Current source conflates `max_census_entries` with a total census-entry budget and retained file admission. `node_disk/census.rs` increments work before skipping `.` and `..`, while file admission can still allow fewer than that numerical limit. Let F be regular file entries, D be nonroot directory entries and R be configured roots, assuming every admitted directory is traversed once, dot entries are returned once each, and depth/name/identity validation succeeds. Returned entries including dots but excluding EOF are:",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/finish_transform.py",
+    "line": 16,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/finish_transform.py",
+    "line": 39,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/prepare_probes.py",
+    "line": 47,
+    "text": "        let config=NodeDiskConfig{roots:roots.iter().map(|(k,v)|(k.to_string(),PathBuf::from(v))).collect(),max_bytes:128<<30,maintenance_reserve_bytes:1<<30,min_free_bytes:1<<30,max_open_files:handles,max_open_directories:handles,max_census_entries:entries,max_depth:64,max_name_bytes:255};",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/README.md",
+    "line": 9,
+    "text": "Let N be max_census_entries and R be the configured root count. The traversal increments work before considering the name, and rejects above N. Each enrolled non-root inode therefore consumes at least one work unit, regardless of whether readdir returns dot entries. A complete fresh census has at most N+R total entries, including configured roots. Its shared map uses that replacement bound.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/transform.py",
+    "line": 65,
+    "text": "edit(file,[('    AccountedFile, DiskWork, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase, State, census,','    AccountedFile, AccountedInode, DiskWork, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase, State, census,'),('                        .values()\\n                        .any(|entry| entry.binding == self.binding)','                        .values()\\n                        .filter_map(AccountedInode::file)\\n                        .any(|entry| entry.binding == self.binding)'),('.is_some_and(|entry| entry.binding != self.binding)','.is_some_and(|entry| entry.binding() != self.binding)'),('                AccountedFile {\\n                    settled: false,\\n                    ..enrolled\\n                },','                AccountedInode::File(AccountedFile {\\n                    settled: false,\\n                    ..enrolled\\n                }),'),('                .get_mut(&identity)\\n                .expect(\"new enrolled inode\")','                .get_mut(&identity)\\n                .and_then(AccountedInode::file_mut)\\n                .expect(\"new enrolled inode\")'),('self.state.accounted.get(&identity) != Some(&enrolled)','self.state.accounted.get(&identity).and_then(AccountedInode::file) != Some(&enrolled)'),('                .get_mut(&owner.identity)\\n                .expect(\"validated publication enrollment\")','                .get_mut(&owner.identity)\\n                .and_then(AccountedInode::file_mut)\\n                .expect(\"validated publication enrollment\")'),('state.accounted.len() as u64 >= self.config.max_census_entries','state.files >= self.config.max_census_entries'),('                                        .get_mut(&owner.identity)\\n                                        .expect(\"validated reclaimed inode\")','                                        .get_mut(&owner.identity)\\n                                        .and_then(AccountedInode::file_mut)\\n                                        .expect(\"validated reclaimed inode\")'),('        .iter()\\n        .find(|(_, entry)| entry.binding == binding)','        .iter()\\n        .filter_map(|(identity, entry)| entry.file().map(|file| (identity, file)))\\n        .find(|(_, entry)| entry.binding == binding)'),('state.accounted.get(&self.identity) != Some(&budget.accounted(self.binding))','state.accounted.get(&self.identity).and_then(AccountedInode::file) != Some(&budget.accounted(self.binding))'),('            .get_mut(&self.identity)\\n            .expect(\"validated enrolled inode\")','            .get_mut(&self.identity)\\n            .and_then(AccountedInode::file_mut)\\n            .expect(\"validated enrolled inode\")'),('state.accounted.get_mut(&self.identity) {','state.accounted.get_mut(&self.identity).and_then(AccountedInode::file_mut) {')])",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/native-02/metadata_formula.rs",
+    "line": 60,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/native-02/metadata_formula.rs",
+    "line": 193,
+    "text": "        let config=NodeDiskConfig{roots:roots.iter().map(|(k,v)|(k.to_string(),PathBuf::from(v))).collect(),max_bytes:128<<30,maintenance_reserve_bytes:1<<30,min_free_bytes:1<<30,max_open_files:handles,max_open_directories:handles,max_census_entries:entries,max_depth:64,max_name_bytes:255};",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/native-01/metadata_formula.rs",
+    "line": 60,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/native-01/metadata_formula.rs",
+    "line": 193,
+    "text": "        let config=NodeDiskConfig{roots:roots.iter().map(|(k,v)|(k.to_string(),PathBuf::from(v))).collect(),max_bytes:128<<30,maintenance_reserve_bytes:1<<30,min_free_bytes:1<<30,max_open_files:handles,max_open_directories:handles,max_census_entries:entries,max_depth:64,max_name_bytes:255};",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/base/crates/kasumi-store/src/node_disk.rs",
+    "line": 42,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/base/crates/kasumi-store/src/node_disk.rs",
+    "line": 61,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/base/crates/kasumi-store/src/node_disk.rs",
+    "line": 473,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/base/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 333,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/base/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 25,
+    "text": "            table::<(Identity, AccountedFile)>(config.max_census_entries)?,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 17,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 358,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1176,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 2188,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/base/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 545,
+    "text": "            if state.accounted.len() as u64 >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/base/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/base/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 75,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/base/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 143,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/base/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 50,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 73,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 508,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 346,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 18,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 359,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1177,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 2200,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 554,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 269,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 76,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 144,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/unified-inode-census/proposed/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/driver.rs",
+    "line": 9,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/driver.rs",
+    "line": 20,
+    "text": "    println!(\"baseline N={} admitted_files={} before_reconcile_bytes={} pending={}\",config.max_census_entries,before.persistent_files,before.charged_bytes,before.pending_bytes);",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/node_disk.rs",
+    "line": 57,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/node_disk.rs",
+    "line": 116,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/node_disk.rs",
+    "line": 570,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 57,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 116,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 570,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/proposal-at-run/crates/kasumi-store/src/node_disk/ledger.rs",
+    "line": 63,
+    "text": "        capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/proposal-at-run/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 366,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/proposal-at-run/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/proposal-at-run/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 296,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/proposal-at-run/crates/kasumi-store/src/node_disk/fixed_map/tests.rs",
+    "line": 287,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/node_disk/ledger.rs",
+    "line": 63,
+    "text": "        capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/node_disk/census.rs",
+    "line": 366,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/node_disk/directory/cursor.rs",
+    "line": 302,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/namespace-census-contract-gap/native-baseline-01/node_disk/fixed_map/tests.rs",
+    "line": 287,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/current-caller-searches.json",
+    "line": 8,
+    "text": "      \"max_census_entries\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/current-caller-searches.json",
+    "line": 26,
+    "text": "    \"stdout\": \"{\\\"type\\\":\\\"begin\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-server/src/persistent_disk.rs\\\"}}}\\n{\\\"type\\\":\\\"match\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-server/src/persistent_disk.rs\\\"},\\\"lines\\\":{\\\"text\\\":\\\"        max_census_entries: 1_000_000,\\\\n\\\"},\\\"line_number\\\":75,\\\"absolute_offset\\\":2455,\\\"submatches\\\":[{\\\"match\\\":{\\\"text\\\":\\\"max_census_entries\\\"},\\\"start\\\":8,\\\"end\\\":26}]}}\\n{\\\"type\\\":\\\"match\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-server/src/persistent_disk.rs\\\"},\\\"lines\\\":{\\\"text\\\":\\\"    config.max_census_entries = 16_384;\\\\n\\\"},\\\"line_number\\\":143,\\\"absolute_offset\\\":5015,\\\"submatches\\\":[{\\\"match\\\":{\\\"text\\\":\\\"max_census_entries\\\"},\\\"start\\\":11,\\\"end\\\":29}]}}\\n{\\\"type\\\":\\\"end\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-server/src/persistent_disk.rs\\\"},\\\"binary_offset\\\":null,\\\"stats\\\":{\\\"elapsed\\\":{\\\"secs\\\":0,\\\"nanos\\\":28042,\\\"human\\\":\\\"0.000028s\\\"},\\\"searches\\\":1,\\\"searches_with_match\\\":1,\\\"bytes_searched\\\":7789,\\\"bytes_printed\\\":615,\\\"matched_lines\\\":2,\\\"matches\\\":2}}}\\n{\\\"type\\\":\\\"begin\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"docs/standalone.md\\\"}}}\\n{\\\"type\\\":\\\"match\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"docs/standalone.md\\\"},\\\"lines\\\":{\\\"text\\\":\\\"`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.\\\\n\\\"},\\\"line_number\\\":34,\\\"absolute_offset\\\":2859,\\\"submatches\\\":[{\\\"match\\\":{\\\"text\\\":\\\"max_census_entries\\\"},\\\"start\\\":1,\\\"end\\\":19}]}}\\n{\\\"type\\\":\\\"end\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"docs/standalone.md\\\"},\\\"binary_offset\\\":null,\\\"stats\\\":{\\\"elapsed\\\":{\\\"secs\\\":0,\\\"nanos\\\":18000,\\\"human\\\":\\\"0.000018s\\\"},\\\"searches\\\":1,\\\"searches_with_match\\\":1,\\\"bytes_searched\\\":16784,\\\"bytes_printed\\\":336,\\\"matched_lines\\\":1,\\\"matches\\\":1}}}\\n{\\\"type\\\":\\\"begin\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk.rs\\\"}}}\\n{\\\"type\\\":\\\"match\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk.rs\\\"},\\\"lines\\\":{\\\"text\\\":\\\"    pub max_census_entries: u64,\\\\n\\\"},\\\"line_number\\\":42,\\\"absolute_offset\\\":1343,\\\"submatches\\\":[{\\\"match\\\":{\\\"text\\\":\\\"max_census_entries\\\"},\\\"start\\\":8,\\\"end\\\":26}]}}\\n{\\\"type\\\":\\\"match\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk.rs\\\"},\\\"lines\\\":{\\\"text\\\":\\\"        ensure!(self.max_census_entries > 0, \\\\\\\"census work budget is zero\\\\\\\");\\\\n\\\"},\\\"line_number\\\":61,\\\"absolute_offset\\\":2111,\\\"submatches\\\":[{\\\"match\\\":{\\\"text\\\":\\\"max_census_entries\\\"},\\\"start\\\":21,\\\"end\\\":39}]}}\\n{\\\"type\\\":\\\"match\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk.rs\\\"},\\\"lines\\\":{\\\"text\\\":\\\"            max_census_entries: 16_384,\\\\n\\\"},\\\"line_number\\\":473,\\\"absolute_offset\\\":17244,\\\"submatches\\\":[{\\\"match\\\":{\\\"text\\\":\\\"max_census_entries\\\"},\\\"start\\\":12,\\\"end\\\":30}]}}\\n{\\\"type\\\":\\\"end\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk.rs\\\"},\\\"binary_offset\\\":null,\\\"stats\\\":{\\\"elapsed\\\":{\\\"secs\\\":0,\\\"nanos\\\":14458,\\\"human\\\":\\\"0.000014s\\\"},\\\"searches\\\":1,\\\"searches_with_match\\\":1,\\\"bytes_searched\\\":24293,\\\"bytes_printed\\\":884,\\\"matched_lines\\\":3,\\\"matches\\\":3}}}\\n{\\\"type\\\":\\\"begin\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/file.rs\\\"}}}\\n{\\\"type\\\":\\\"match\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/file.rs\\\"},\\\"lines\\\":{\\\"text\\\":\\\"            if state.accounted.len() as u64 >= self.config.max_census_entries {\\\\n\\\"},\\\"line_number\\\":545,\\\"absolute_offset\\\":19365,\\\"submatches\\\":[{\\\"match\\\":{\\\"text\\\":\\\"max_census_entries\\\"},\\\"start\\\":59,\\\"end\\\":77}]}}\\n{\\\"type\\\":\\\"end\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/file.rs\\\"},\\\"binary_offset\\\":null,\\\"stats\\\":{\\\"elapsed\\\":{\\\"secs\\\":0,\\\"nanos\\\":13333,\\\"human\\\":\\\"0.000013s\\\"},\\\"searches\\\":1,\\\"searches_with_match\\\":1,\\\"bytes_searched\\\":59546,\\\"bytes_printed\\\":390,\\\"matched_lines\\\":1,\\\"matches\\\":1}}}\\n{\\\"type\\\":\\\"begin\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/tests.rs\\\"}}}\\n{\\\"type\\\":\\\"match\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/tests.rs\\\"},\\\"lines\\\":{\\\"text\\\":\\\"        max_census_entries: 10_000,\\\\n\\\"},\\\"line_number\\\":17,\\\"absolute_offset\\\":541,\\\"submatches\\\":[{\\\"match\\\":{\\\"text\\\":\\\"max_census_entries\\\"},\\\"start\\\":8,\\\"end\\\":26}]}}\\n{\\\"type\\\":\\\"match\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/tests.rs\\\"},\\\"lines\\\":{\\\"text\\\":\\\"    bounded.max_census_entries = 2;\\\\n\\\"},\\\"line_number\\\":358,\\\"absolute_offset\\\":13510,\\\"submatches\\\":[{\\\"match\\\":{\\\"text\\\":\\\"max_census_entries\\\"},\\\"start\\\":12,\\\"end\\\":30}]}}\\n{\\\"type\\\":\\\"match\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/tests.rs\\\"},\\\"lines\\\":{\\\"text\\\":\\\"    config.max_census_entries = 3;\\\\n\\\"},\\\"line_number\\\":1176,\\\"absolute_offset\\\":48196,\\\"submatches\\\":[{\\\"match\\\":{\\\"text\\\":\\\"max_census_entries\\\"},\\\"start\\\":11,\\\"end\\\":29}]}}\\n{\\\"type\\\":\\\"match\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/tests.rs\\\"},\\\"lines\\\":{\\\"text\\\":\\\"    config.max_census_entries = u64::MAX;\\\\n\\\"},\\\"line_number\\\":2188,\\\"absolute_offset\\\":91620,\\\"submatches\\\":[{\\\"match\\\":{\\\"text\\\":\\\"max_census_entries\\\"},\\\"start\\\":11,\\\"end\\\":29}]}}\\n{\\\"type\\\":\\\"end\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/tests.rs\\\"},\\\"binary_offset\\\":null,\\\"stats\\\":{\\\"elapsed\\\":{\\\"secs\\\":0,\\\"nanos\\\":25167,\\\"human\\\":\\\"0.000025s\\\"},\\\"searches\\\":1,\\\"searches_with_match\\\":1,\\\"bytes_searched\\\":101881,\\\"bytes_printed\\\":1134,\\\"matched_lines\\\":4,\\\"matches\\\":4}}}\\n{\\\"type\\\":\\\"begin\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/memory.rs\\\"}}}\\n{\\\"type\\\":\\\"match\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/memory.rs\\\"},\\\"lines\\\":{\\\"text\\\":\\\"            table::<(Identity, AccountedFile)>(config.max_census_entries)?,\\\\n\\\"},\\\"line_number\\\":25,\\\"absolute_offset\\\":1126,\\\"submatches\\\":[{\\\"match\\\":{\\\"text\\\":\\\"max_census_entries\\\"},\\\"start\\\":54,\\\"end\\\":72}]}}\\n{\\\"type\\\":\\\"end\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/memory.rs\\\"},\\\"binary_offset\\\":null,\\\"stats\\\":{\\\"elapsed\\\":{\\\"secs\\\":0,\\\"nanos\\\":4250,\\\"human\\\":\\\"0.000004s\\\"},\\\"searches\\\":1,\\\"searches_with_match\\\":1,\\\"bytes_searched\\\":2871,\\\"bytes_printed\\\":388,\\\"matched_lines\\\":1,\\\"matches\\\":1}}}\\n{\\\"type\\\":\\\"begin\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/census.rs\\\"}}}\\n{\\\"type\\\":\\\"match\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/census.rs\\\"},\\\"lines\\\":{\\\"text\\\":\\\"                work <= config.max_census_entries,\\\\n\\\"},\\\"line_number\\\":333,\\\"absolute_offset\\\":11198,\\\"submatches\\\":[{\\\"match\\\":{\\\"text\\\":\\\"max_census_entries\\\"},\\\"start\\\":31,\\\"end\\\":49}]}}\\n{\\\"type\\\":\\\"end\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-store/src/node_disk/census.rs\\\"},\\\"binary_offset\\\":null,\\\"stats\\\":{\\\"elapsed\\\":{\\\"secs\\\":0,\\\"nanos\\\":6709,\\\"human\\\":\\\"0.000007s\\\"},\\\"searches\\\":1,\\\"searches_with_match\\\":1,\\\"bytes_searched\\\":13764,\\\"bytes_printed\\\":365,\\\"matched_lines\\\":1,\\\"matches\\\":1}}}\\n{\\\"type\\\":\\\"begin\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-server/src/runtime_memory.rs\\\"}}}\\n{\\\"type\\\":\\\"match\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-server/src/runtime_memory.rs\\\"},\\\"lines\\\":{\\\"text\\\":\\\"            max_census_entries: 16_384,\\\\n\\\"},\\\"line_number\\\":115,\\\"absolute_offset\\\":4502,\\\"submatches\\\":[{\\\"match\\\":{\\\"text\\\":\\\"max_census_entries\\\"},\\\"start\\\":12,\\\"end\\\":30}]}}\\n{\\\"type\\\":\\\"end\\\",\\\"data\\\":{\\\"path\\\":{\\\"text\\\":\\\"crates/kasumi-server/src/runtime_memory.rs\\\"},\\\"binary_offset\\\":null,\\\"stats\\\":{\\\"elapsed\\\":{\\\"secs\\\":0,\\\"nanos\\\":7792,\\\"human\\\":\\\"0.000008s\\\"},\\\"searches\\\":1,\\\"searches_with_match\\\":1,\\\"bytes_searched\\\":5394,\\\"bytes_printed\\\":351,\\\"matched_lines\\\":1,\\\"matches\\\":1}}}\\n{\\\"data\\\":{\\\"elapsed_total\\\":{\\\"human\\\":\\\"0.021233s\\\",\\\"nanos\\\":21232583,\\\"secs\\\":0},\\\"stats\\\":{\\\"bytes_printed\\\":4463,\\\"bytes_searched\\\":9525472,\\\"elapsed\\\":{\\\"human\\\":\\\"0.004930s\\\",\\\"nanos\\\":4929926,\\\"secs\\\":0},\\\"matched_lines\\\":14,\\\"matches\\\":14,\\\"searches\\\":630,\\\"searches_with_match\\\":8}},\\\"type\\\":\\\"summary\\\"}\\n\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 7,
+    "text": "      \"text\": \"policy.insert(\\\"max_census_entries\\\".into(), 1_000_000.into());\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 13,
+    "text": "      \"text\": \"mixed[\\\"persistent_disk\\\"][\\\"max_census_entries\\\"] = 1_000_000.into();\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 19,
+    "text": "      \"text\": \"pub max_census_entries: u64,\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 25,
+    "text": "      \"text\": \"ensure!(self.max_census_entries > 0, \\\"census work budget is zero\\\");\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 31,
+    "text": "      \"text\": \"max_census_entries: 16_384,\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 37,
+    "text": "      \"text\": \"work <= config.max_census_entries,\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 43,
+    "text": "      \"text\": \"if self.work > disk.config.max_census_entries {\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 49,
+    "text": "      \"text\": \"config.max_census_entries = 8;\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 55,
+    "text": "      \"text\": \"if state.files >= self.config.max_census_entries {\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 61,
+    "text": "      \"text\": \"max_census_entries: 1_000_000,\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 67,
+    "text": "      \"text\": \"capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 73,
+    "text": "      \"text\": \"max_census_entries: 10_000,\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 79,
+    "text": "      \"text\": \"bounded.max_census_entries = 2;\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 85,
+    "text": "      \"text\": \"config.max_census_entries = 3;\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/virtual-caller-scan.json",
+    "line": 91,
+    "text": "      \"text\": \"config.max_census_entries = u64::MAX;\",",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/apply-check/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 208,
+    "text": "        policy.insert(\"max_census_entries\".into(), 1_000_000.into());",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/apply-check/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 211,
+    "text": "        mixed[\"persistent_disk\"][\"max_census_entries\"] = 1_000_000.into();",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/base/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/base/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 81,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/base/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 153,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/base/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/proposed/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 208,
+    "text": "        policy.insert(\"max_census_entries\".into(), 1_000_000.into());",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-policy-callers/proposed/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 211,
+    "text": "        mixed[\"persistent_disk\"][\"max_census_entries\"] = 1_000_000.into();",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-successor/crates/kasumi-store/src/node_disk.rs",
+    "line": 53,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-successor/crates/kasumi-store/src/node_disk.rs",
+    "line": 112,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-successor/crates/kasumi-store/src/node_disk.rs",
+    "line": 551,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-successor/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-02/node_disk.rs",
+    "line": 56,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-02/node_disk.rs",
+    "line": 115,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-02/node_disk.rs",
+    "line": 563,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-02/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 56,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-02/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 115,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-02/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 563,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-02/proposal-at-run/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-02/proposal-at-run/crates/kasumi-store/src/node_disk/directory/cursor.rs",
+    "line": 298,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-02/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-02/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-02/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-02/node_disk/directory/cursor.rs",
+    "line": 298,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-02/node_disk/directory/tests.rs",
+    "line": 277,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-05/node_disk.rs",
+    "line": 56,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-05/node_disk.rs",
+    "line": 115,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-05/node_disk.rs",
+    "line": 563,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-05/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 56,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-05/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 115,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-05/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 563,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-05/proposal-at-run/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-05/proposal-at-run/crates/kasumi-store/src/node_disk/directory/cursor.rs",
+    "line": 302,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-05/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-05/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-05/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-05/node_disk/directory/cursor.rs",
+    "line": 302,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-04/node_disk.rs",
+    "line": 56,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-04/node_disk.rs",
+    "line": 115,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-04/node_disk.rs",
+    "line": 563,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-04/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 56,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-04/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 115,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-04/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 563,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-04/proposal-at-run/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-04/proposal-at-run/crates/kasumi-store/src/node_disk/directory/cursor.rs",
+    "line": 299,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-04/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-04/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-04/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-04/node_disk/directory/cursor.rs",
+    "line": 299,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-03/node_disk.rs",
+    "line": 56,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-03/node_disk.rs",
+    "line": 115,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-03/node_disk.rs",
+    "line": 563,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-03/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 56,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-03/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 115,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-03/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 563,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-03/proposal-at-run/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-03/proposal-at-run/crates/kasumi-store/src/node_disk/directory/cursor.rs",
+    "line": 299,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-03/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-03/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-03/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-03/node_disk/directory/cursor.rs",
+    "line": 299,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-03/node_disk/directory/tests.rs",
+    "line": 277,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-cumulative/crates/kasumi-store/src/node_disk.rs",
+    "line": 42,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-cumulative/crates/kasumi-store/src/node_disk.rs",
+    "line": 61,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-cumulative/crates/kasumi-store/src/node_disk.rs",
+    "line": 473,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-cumulative/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 333,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-cumulative/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 25,
+    "text": "            table::<(Identity, AccountedFile)>(config.max_census_entries)?,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-cumulative/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 17,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-cumulative/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 358,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-cumulative/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1176,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-cumulative/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 2188,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-cumulative/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 545,
+    "text": "            if state.accounted.len() as u64 >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-cumulative/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-cumulative/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 75,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-cumulative/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 143,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/apply-check-cumulative/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-06/node_disk.rs",
+    "line": 56,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-06/node_disk.rs",
+    "line": 115,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-06/node_disk.rs",
+    "line": 563,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-06/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 56,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-06/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 115,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-06/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 563,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-06/proposal-at-run/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-06/proposal-at-run/crates/kasumi-store/src/node_disk/directory/cursor.rs",
+    "line": 302,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-06/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-06/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-06/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-06/node_disk/directory/cursor.rs",
+    "line": 302,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-01/node_disk.rs",
+    "line": 55,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-01/node_disk.rs",
+    "line": 114,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-01/node_disk.rs",
+    "line": 562,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-01/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 55,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-01/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 114,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-01/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 562,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-01/proposal-at-run/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-01/proposal-at-run/crates/kasumi-store/src/node_disk/directory/cursor.rs",
+    "line": 264,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-01/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-01/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-01/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-01/node_disk/directory/cursor.rs",
+    "line": 264,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/native-01/node_disk/directory/tests.rs",
+    "line": 277,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 56,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 115,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 563,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 19,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 405,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1272,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 2328,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-store/src/node_disk/directory/cursor.rs",
+    "line": 302,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 277,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 81,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 153,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-proposed/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-base/crates/kasumi-store/src/node_disk.rs",
+    "line": 42,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-base/crates/kasumi-store/src/node_disk.rs",
+    "line": 61,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-base/crates/kasumi-store/src/node_disk.rs",
+    "line": 473,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-base/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 333,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-base/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 25,
+    "text": "            table::<(Identity, AccountedFile)>(config.max_census_entries)?,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 17,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 358,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1176,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 2188,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-base/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 545,
+    "text": "            if state.accounted.len() as u64 >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-base/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-base/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 75,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-base/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 143,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/cumulative-base/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/base/crates/kasumi-store/src/node_disk.rs",
+    "line": 53,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/base/crates/kasumi-store/src/node_disk.rs",
+    "line": 112,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/base/crates/kasumi-store/src/node_disk.rs",
+    "line": 551,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/base/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 56,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 115,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 563,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/proposed/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-cursor/proposed/crates/kasumi-store/src/node_disk/directory/cursor.rs",
+    "line": 302,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-successor-audit/design.md",
+    "line": 13,
+    "text": "* `node_disk/census.rs::census` visits/syncs directories but inserts only regular files into `accounted`; configured root extents are also omitted. `max_census_entries` currently bounds traversal work, including dot entries, rather than an exact inode count.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/wire_maps.py",
+    "line": 7,
+    "text": "    let (retained, census) = capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/prepare_native.py",
+    "line": 33,
+    "text": "    let config=NodeDiskConfig { roots:BTreeMap::from([(\"data\".into(),PathBuf::from(\"/var/lib/kasumi/data\"))]),max_bytes:64<<30,maintenance_reserve_bytes:8<<30,min_free_bytes:0,max_open_files:4096,max_open_directories:4096,directory_policy:DirectoryPolicy::new(1<<20,32768).unwrap(),max_census_entries:1_000_000,max_depth:64,max_name_bytes:255};",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-successor/crates/kasumi-store/src/node_disk.rs",
+    "line": 56,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-successor/crates/kasumi-store/src/node_disk.rs",
+    "line": 115,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-successor/crates/kasumi-store/src/node_disk.rs",
+    "line": 563,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-successor/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-successor/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-successor/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-successor/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 277,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/driver.rs",
+    "line": 12,
+    "text": "    let config=NodeDiskConfig { roots:BTreeMap::from([(\"data\".into(),PathBuf::from(\"/var/lib/kasumi/data\"))]),max_bytes:64<<30,maintenance_reserve_bytes:8<<30,min_free_bytes:0,max_open_files:4096,max_open_directories:4096,directory_policy:DirectoryPolicy::new(1<<20,32768).unwrap(),max_census_entries:1_000_000,max_depth:64,max_name_bytes:255};",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/node_disk.rs",
+    "line": 57,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/node_disk.rs",
+    "line": 116,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/node_disk.rs",
+    "line": 570,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 57,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 116,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 570,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/proposal-at-run/crates/kasumi-store/src/node_disk/ledger.rs",
+    "line": 63,
+    "text": "        capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/proposal-at-run/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 366,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/proposal-at-run/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/proposal-at-run/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 296,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/proposal-at-run/crates/kasumi-store/src/node_disk/fixed_map/tests.rs",
+    "line": 287,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/node_disk/ledger.rs",
+    "line": 63,
+    "text": "        capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/node_disk/census.rs",
+    "line": 366,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/node_disk/directory/cursor.rs",
+    "line": 302,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-02/node_disk/fixed_map/tests.rs",
+    "line": 287,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/driver.rs",
+    "line": 12,
+    "text": "    let config=NodeDiskConfig { roots:BTreeMap::from([(\"data\".into(),PathBuf::from(\"/var/lib/kasumi/data\"))]),max_bytes:64<<30,maintenance_reserve_bytes:8<<30,min_free_bytes:0,max_open_files:4096,max_open_directories:4096,directory_policy:DirectoryPolicy::new(1<<20,32768).unwrap(),max_census_entries:1_000_000,max_depth:64,max_name_bytes:255};",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/node_disk.rs",
+    "line": 57,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/node_disk.rs",
+    "line": 116,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/node_disk.rs",
+    "line": 570,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 57,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 116,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 570,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/proposal-at-run/crates/kasumi-store/src/node_disk/ledger.rs",
+    "line": 63,
+    "text": "        capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/proposal-at-run/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 366,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/proposal-at-run/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/proposal-at-run/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 296,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/proposal-at-run/crates/kasumi-store/src/node_disk/fixed_map/tests.rs",
+    "line": 287,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/node_disk/ledger.rs",
+    "line": 63,
+    "text": "        capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/node_disk/census.rs",
+    "line": 366,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/node_disk/directory/cursor.rs",
+    "line": 302,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-03/node_disk/fixed_map/tests.rs",
+    "line": 287,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-cumulative/crates/kasumi-store/src/node_disk.rs",
+    "line": 42,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-cumulative/crates/kasumi-store/src/node_disk.rs",
+    "line": 61,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-cumulative/crates/kasumi-store/src/node_disk.rs",
+    "line": 473,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-cumulative/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 333,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-cumulative/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 25,
+    "text": "            table::<(Identity, AccountedFile)>(config.max_census_entries)?,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-cumulative/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 17,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-cumulative/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 358,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-cumulative/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1176,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-cumulative/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 2188,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-cumulative/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 545,
+    "text": "            if state.accounted.len() as u64 >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-cumulative/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-cumulative/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 75,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-cumulative/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 143,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/apply-check-cumulative/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/driver.rs",
+    "line": 12,
+    "text": "    let config=NodeDiskConfig { roots:BTreeMap::from([(\"data\".into(),PathBuf::from(\"/var/lib/kasumi/data\"))]),max_bytes:64<<30,maintenance_reserve_bytes:8<<30,min_free_bytes:0,max_open_files:4096,max_open_directories:4096,directory_policy:DirectoryPolicy::new(1<<20,32768).unwrap(),max_census_entries:1_000_000,max_depth:64,max_name_bytes:255};",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/node_disk.rs",
+    "line": 57,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/node_disk.rs",
+    "line": 116,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/node_disk.rs",
+    "line": 570,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 57,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 116,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/proposal-at-run/crates/kasumi-store/src/node_disk.rs",
+    "line": 570,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/proposal-at-run/crates/kasumi-store/src/node_disk/ledger.rs",
+    "line": 63,
+    "text": "        capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/proposal-at-run/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 366,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/proposal-at-run/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/proposal-at-run/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 296,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/proposal-at-run/crates/kasumi-store/src/node_disk/fixed_map/tests.rs",
+    "line": 283,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/node_disk/ledger.rs",
+    "line": 63,
+    "text": "        capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/node_disk/census.rs",
+    "line": 366,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/node_disk/directory/cursor.rs",
+    "line": 302,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/native-01/node_disk/fixed_map/tests.rs",
+    "line": 283,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 57,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 116,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 570,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-store/src/node_disk/ledger.rs",
+    "line": 63,
+    "text": "        capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 366,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 19,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 405,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1272,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 2328,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-store/src/node_disk/directory/cursor.rs",
+    "line": 302,
+    "text": "                if self.work > disk.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 296,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-store/src/node_disk/fixed_map/tests.rs",
+    "line": 287,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 81,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 153,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-proposed/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-base/crates/kasumi-store/src/node_disk.rs",
+    "line": 42,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-base/crates/kasumi-store/src/node_disk.rs",
+    "line": 61,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-base/crates/kasumi-store/src/node_disk.rs",
+    "line": 473,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-base/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 333,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-base/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 25,
+    "text": "            table::<(Identity, AccountedFile)>(config.max_census_entries)?,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 17,
+    "text": "        max_census_entries: 10_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 358,
+    "text": "    bounded.max_census_entries = 2;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 1176,
+    "text": "    config.max_census_entries = 3;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-base/crates/kasumi-store/src/node_disk/tests.rs",
+    "line": 2188,
+    "text": "    config.max_census_entries = u64::MAX;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-base/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 545,
+    "text": "            if state.accounted.len() as u64 >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-base/crates/kasumi-server/src/runtime_memory.rs",
+    "line": 115,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-base/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 75,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-base/crates/kasumi-server/src/persistent_disk.rs",
+    "line": 143,
+    "text": "    config.max_census_entries = 16_384;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/cumulative-base/docs/standalone.md",
+    "line": 34,
+    "text": "`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/base/crates/kasumi-store/src/node_disk.rs",
+    "line": 56,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/base/crates/kasumi-store/src/node_disk.rs",
+    "line": 115,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/base/crates/kasumi-store/src/node_disk.rs",
+    "line": 563,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/base/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 347,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/base/crates/kasumi-store/src/node_disk/memory.rs",
+    "line": 27,
+    "text": "            config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/base/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/base/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 277,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 57,
+    "text": "    pub max_census_entries: u64,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 116,
+    "text": "        ensure!(self.max_census_entries > 0, \"census work budget is zero\");",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/proposed/crates/kasumi-store/src/node_disk.rs",
+    "line": 570,
+    "text": "            max_census_entries: 16_384,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/proposed/crates/kasumi-store/src/node_disk/ledger.rs",
+    "line": 63,
+    "text": "        capacities(config.max_census_entries, roots).ok_or_else(crate::disk_memory::overflow)?;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/proposed/crates/kasumi-store/src/node_disk/census.rs",
+    "line": 366,
+    "text": "                work <= config.max_census_entries,",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/proposed/crates/kasumi-store/src/node_disk/file.rs",
+    "line": 662,
+    "text": "            if state.files >= self.config.max_census_entries {",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/proposed/crates/kasumi-store/src/node_disk/directory/tests.rs",
+    "line": 296,
+    "text": "    config.max_census_entries = 8;",
+    "overlay": false
+  },
+  {
+    "path": "docs/evidence/installed-disk-main-20260920/directory-fixed-maps/proposed/crates/kasumi-store/src/node_disk/fixed_map/tests.rs",
+    "line": 287,
+    "text": "        max_census_entries: 1_000_000,",
+    "overlay": false
+  }
+]

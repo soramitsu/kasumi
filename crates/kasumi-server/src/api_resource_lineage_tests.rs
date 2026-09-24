@@ -46,16 +46,19 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         "tenant-a",
         "kasumi:admin kasumi:read kasumi:write",
     );
-    let backup_dir = kasumi_store::test_utils::private_tempdir().unwrap();
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new_fixture(backup_dir.path(), 16 << 20)
-            .unwrap(),
+        kasumi_store::FilesystemBackupDestination::new(
+            fixture._dir.path().join("persistent/lineage-backup"),
+            16 << 20,
+            fixture.physical.persistent.clone(),
+        )
+        .unwrap(),
     );
     let mut current = fixture.db.clone();
     let mut current_key = Arc::new(LocalKeyProvider::new([3; 32]));
     let mut current_context = owner;
     let mut targets = Vec::new();
-    let mut dirs = Vec::new();
+    let mut nodes = Vec::new();
     let mut last_links = Vec::new();
     for hop in 1..=2 {
         current
@@ -110,17 +113,19 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
                 .await
                 .is_err()
         );
-        let dir = kasumi_store::test_utils::private_tempdir().unwrap();
-        let node = NodeStore::create_new_fixture(
-            dir.path().join("node.redb"),
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap();
-        let key = Arc::new(LocalKeyProvider::new([20 + hop as u8; 32]));
-        let store = TenantStore::initialize_catalog_fixture(node, "tenant-a".into(), key.clone())
-            .await
+        let path = fixture
+            ._dir
+            .path()
+            .join(format!("persistent/lineage-{hop}.redb"));
+        let node = fixture
+            .physical
+            .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
+        let key = Arc::new(LocalKeyProvider::new([20 + hop as u8; 32]));
+        let store =
+            TenantStore::initialize_catalog_fixture(node.clone(), "tenant-a".into(), key.clone())
+                .await
+                .unwrap();
         let stores = kasumi_store::test_utils::initialize_custody_fixture(
             store,
             Arc::new(LocalKeyProvider::new([240 - hop as u8; 32])),
@@ -161,7 +166,10 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
             .administer(embedded, Operation::Suspend(false))
             .await
             .unwrap();
-        let snapshot = restored.engine().fixture_snapshot().unwrap();
+        let snapshot = restored
+            .engine()
+            .fixture_snapshot(&fixture.physical.scratch)
+            .unwrap();
         let mut substituted =
             kasumi_engine::test_utils::decode_snapshot_candidate(&snapshot).unwrap();
         substituted.restore_lineage[0].checkpoint.resident_sha256 =
@@ -185,28 +193,35 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
             restored
                 .engine()
                 .fixture_restore(
-                    &kasumi_engine::test_utils::encode_snapshot_candidate(&substituted, 64 << 20)
-                        .unwrap()
+                    &kasumi_engine::test_utils::encode_snapshot_candidate(
+                        &fixture.physical.scratch,
+                        &substituted,
+                        64 << 20
+                    )
+                    .unwrap()
                 )
                 .is_err(),
             "shape-valid immutable history substitution must be rejected"
         );
-        assert_eq!(restored.engine().fixture_snapshot().unwrap(), snapshot);
+        assert_eq!(
+            restored
+                .engine()
+                .fixture_snapshot(&fixture.physical.scratch)
+                .unwrap(),
+            snapshot
+        );
         restored.shutdown().await.unwrap();
         drop(restored);
         drop(stores);
-        let reopened_store = TenantStore::open_existing_fixture(
-            NodeStore::open_existing_fixture(
-                dir.path().join("node.redb"),
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-            .unwrap(),
-            "tenant-a".into(),
-            key.clone(),
-        )
-        .await
-        .unwrap();
+        node.shutdown().await.unwrap();
+        let node = fixture
+            .physical
+            .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap();
+        let reopened_store =
+            TenantStore::open_existing_fixture(node.clone(), "tenant-a".into(), key.clone())
+                .await
+                .unwrap();
         let reopened_stores = kasumi_store::test_utils::open_existing_custody_fixture(
             reopened_store,
             Arc::new(LocalKeyProvider::new([240 - hop as u8; 32])),
@@ -225,7 +240,13 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         )
         .await
         .unwrap();
-        assert_eq!(restored.engine().fixture_snapshot().unwrap(), snapshot);
+        assert_eq!(
+            restored
+                .engine()
+                .fixture_snapshot(&fixture.physical.scratch)
+                .unwrap(),
+            snapshot
+        );
 
         let registry = DatabaseRegistry::default();
         registry.insert(restored.clone()).unwrap();
@@ -345,7 +366,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         current = restored.clone();
         current_key = key;
         targets.push(restored);
-        dirs.push(dir);
+        nodes.push(node);
     }
     assert_eq!(
         last_links[0].source_incarnation,
@@ -355,5 +376,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         db.shutdown().await.unwrap();
     }
     fixture.close().await;
-    drop(dirs);
+    for node in nodes {
+        node.shutdown().await.unwrap();
+    }
 }

@@ -1,0 +1,348 @@
+--- original/crates/kasumi-store/src/storage_opening.rs
++++ revision2/crates/kasumi-store/src/storage_opening.rs
+@@ -77,6 +77,7 @@
+     phase: NodeOpeningPhase,
+     acquisition: Observation<anyhow::Error>,
+     opening_outer: Observation<std::convert::Infallible>,
++    outcomes_released: bool,
+ }
+ fn observed_failure<E>(observation: TerminalObservation<'_, E>) -> bool {
+     matches!(
+@@ -107,7 +108,6 @@
+ }
+ struct DatabaseOwner {
+     stopped: AtomicBool,
+-    outcomes_released: AtomicBool,
+     serial: Mutex<()>,
+     state: Mutex<OpeningState>,
+ }
+@@ -119,8 +119,15 @@
+             return false;
+         };
+         state.phase = NodeOpeningPhase::Closing;
+-        let closed = state.redb.close().settlement() == DatabaseOpenSettlement::Closed;
+-        closed && (self.outcomes_released.load(Ordering::Acquire) || !state.has_failures())
++        if state.redb.report().settlement() != DatabaseOpenSettlement::Closed {
++            // A caller can relinquish only outcomes that already existed.
++            // This attempt may produce a new shutdown/backend error, even if
++            // backend release subsequently returns a positive Closed witness.
++            state.outcomes_released = false;
++            let _ = state.redb.close();
++        }
++        state.redb.report().settlement() == DatabaseOpenSettlement::Closed
++            && (state.outcomes_released || !state.has_failures())
+     }
+ }
+ /// Every facade is secondary to the actual installed census owner.
+@@ -162,7 +169,6 @@
+                         .retain_backend(Box::new(file.backend()), redb_mode);
+                     DatabaseOwner {
+                         stopped: AtomicBool::new(false),
+-                        outcomes_released: AtomicBool::new(false),
+                         serial: Mutex::new(()),
+                         state: Mutex::new(OpeningState {
+                             mode,
+@@ -171,6 +177,7 @@
+                             phase: NodeOpeningPhase::Prepared,
+                             acquisition: Observation::NotEntered,
+                             opening_outer: Observation::NotEntered,
++                            outcomes_released: false,
+                         }),
+                     }
+                 })?;
+@@ -236,13 +243,13 @@
+             .storage_census()
+             .register(provider.clone(), 0, || NodeTablesRequest {
+                 database,
+-                outcomes_released: AtomicBool::new(false),
+                 state: Mutex::new(WriterState {
+                     phase: NodeWriterPhase::Queued,
+                     transaction: None,
+                     begin: Observation::NotEntered,
+                     body: Observation::NotEntered,
+                     outer: Observation::NotEntered,
++                    outcomes_released: false,
+                     #[cfg(test)]
+                     fail_owner_before_terminal: false,
+                 }),
+@@ -252,10 +259,11 @@
+     /// Relinquish this caller's outcomes after inspection. Physical uncertainty
+     /// still prevents retirement; other real facades still retain the owner.
+     pub fn retire(self) -> StorageCensusDisposition {
+-        self.registration
+-            .owner()
+-            .outcomes_released
+-            .store(true, Ordering::Release);
++        let owner = self.registration.owner();
++        owner.stopped.store(true, Ordering::Release);
++        if let Some(mut state) = owner.state.try_lock() {
++            state.outcomes_released = true;
++        }
+         self.registration.retire()
+     }
+ }
+@@ -285,6 +293,7 @@
+     begin: Observation<redb::TransactionError>,
+     body: Observation<NodeTablesBodyError>,
+     outer: Observation<std::convert::Infallible>,
++    outcomes_released: bool,
+     #[cfg(test)]
+     fail_owner_before_terminal: bool,
+ }
+@@ -301,7 +310,6 @@
+ }
+ struct NodeTablesRequest {
+     database: StorageRegistration<DatabaseOwner>,
+-    outcomes_released: AtomicBool,
+     state: Mutex<WriterState>,
+ }
+ impl NodeTablesRequest {
+@@ -310,6 +318,14 @@
+             return !matches!(state.outer, Observation::Panicked(_))
+                 && !matches!(state.begin, Observation::Entered);
+         };
++        if transaction.report().disposal_complete() {
++            // This actual disposal proof remains valid after the matching
++            // database becomes Closed and its borrowed witness is gated away.
++            return true;
++        }
++        // Abort/disposal can create a new original outcome. An earlier report
++        // release never acknowledges that future operation.
++        state.outcomes_released = false;
+         let Some(database) = self.database.owner().state.try_lock() else {
+             return false;
+         };
+@@ -393,8 +409,7 @@
+         if state.phase == NodeWriterPhase::Queued {
+             state.phase = NodeWriterPhase::Cancelled;
+         }
+-        self.dispose(&mut state)
+-            && (self.outcomes_released.load(Ordering::Acquire) || !state.has_failures())
++        self.dispose(&mut state) && (state.outcomes_released || !state.has_failures())
+     }
+ }
+ pub struct RegisteredNodeTables {
+@@ -416,6 +431,7 @@
+         if state.phase != NodeWriterPhase::Queued {
+             return state.phase;
+         }
++        state.outcomes_released = false;
+         state.outer = Observation::Entered;
+         match catch_unwind(AssertUnwindSafe(|| request.execute(&mut state))) {
+             Ok(()) => state.outer = Observation::Returned(Ok(())),
+@@ -441,10 +457,15 @@
+     /// Relinquish this caller's outcomes after inspection. Physical uncertainty
+     /// still prevents retirement; other real facades still retain the owner.
+     pub fn retire(self) -> StorageCensusDisposition {
+-        self.registration
+-            .owner()
+-            .outcomes_released
+-            .store(true, Ordering::Release);
++        let owner = self.registration.owner();
++        if let Some(mut state) = owner.state.try_lock() {
++            // A second facade may still call run. Seal this queued request
++            // before acknowledging it; never acknowledge an active worker.
++            if state.phase == NodeWriterPhase::Queued {
++                state.phase = NodeWriterPhase::Cancelled;
++            }
++            state.outcomes_released = true;
++        }
+         self.registration.retire()
+     }
+ }
+--- original/crates/kasumi-store/src/storage_opening_tests.rs
++++ revision2/crates/kasumi-store/src/storage_opening_tests.rs
+@@ -8,6 +8,35 @@
+ fn disk(path: &Path, memory: &Arc<TestDiskMemory>) -> Arc<NodeDisk> {
+     retry_disk_registry(|| NodeDisk::fixture_for_path(path, memory.clone())).unwrap()
+ }
++// Every assertion failure releases the actual serial gate and joins the
++// worker; the fixture never leaves a detached accepted writer behind.
++struct HeldQueue<'a> {
++    serial: Option<MutexGuard<'a, ()>>,
++    worker: Option<std::thread::JoinHandle<NodeWriterPhase>>,
++}
++impl<'a> HeldQueue<'a> {
++    fn start(opening: &'a RegisteredNodeOpening, queued: RegisteredNodeTables) -> Self {
++        let serial = opening.registration.owner().serial.lock();
++        let worker = std::thread::spawn(move || queued.run());
++        Self {
++            serial: Some(serial),
++            worker: Some(worker),
++        }
++    }
++    fn finish(mut self) -> NodeWriterPhase {
++        drop(self.serial.take());
++        self.worker.take().unwrap().join().unwrap()
++    }
++}
++impl Drop for HeldQueue<'_> {
++    fn drop(&mut self) {
++        drop(self.serial.take());
++        if let Some(worker) = self.worker.take() {
++            let _ = worker.join();
++        }
++    }
++}
++
+ const ID: Uuid = Uuid::from_u128(0x38a5_c9c5_6a88_41f0_a1a3_a723_fe68_4535);
+ 
+ #[test]
+@@ -117,8 +146,7 @@
+     let queued = RegisteredNodeTables {
+         registration: writer.registration.clone(),
+     };
+-    let serial = opening.registration.owner().serial.lock();
+-    let worker = std::thread::spawn(move || queued.run());
++    let paused = HeldQueue::start(&opening, queued);
+     let deadline = Instant::now() + Duration::from_secs(5);
+     while !writer.registration.owner().state.is_locked() {
+         assert!(
+@@ -141,8 +169,7 @@
+         "close waited for queued writer"
+     );
+     assert_eq!(memory.storage_census().snapshot().writers, 1);
+-    drop(serial);
+-    assert_eq!(worker.join().unwrap(), NodeWriterPhase::Cancelled);
++    assert_eq!(paused.finish(), NodeWriterPhase::Cancelled);
+     assert!(matches!(
+         writer.report().begin(),
+         TerminalObservation::NotEntered
+@@ -338,3 +365,137 @@
+     assert_eq!(retained.retire(), StorageCensusDisposition::Retired);
+     assert_eq!(memory.storage_census().snapshot().databases, 0);
+ }
++
++#[test]
++fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("new-close-error.kasumi");
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = disk(&path, &memory);
++    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
++    assert_eq!(opening.open(), NodeOpeningPhase::Open);
++    let id = opening.id();
++    let actual = std::ptr::from_ref(opening.registration.owner());
++    // The new error is returned by the real retained shutdown protocol; the
++    // borrowed backend close still releases the actual descriptor successfully.
++    opening.registration.owner().state.lock().file.disk().fail();
++    assert_eq!(opening.retire(), StorageCensusDisposition::Retained);
++    let retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
++    assert_eq!(std::ptr::from_ref(retained.registration.owner()), actual);
++    let original = {
++        let report = retained.report();
++        let redb = report.redb();
++        assert_eq!(redb.settlement(), DatabaseOpenSettlement::Closed);
++        let close = redb.database_close().unwrap();
++        assert!(matches!(
++            close.backend(),
++            TerminalObservation::Returned(Ok(()))
++        ));
++        let TerminalObservation::Returned(Err(error)) = close.shutdown() else {
++            panic!("new original shutdown failure absent");
++        };
++        std::ptr::from_ref(error)
++    };
++    drop(retained);
++    let charged = memory.snapshot();
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retained
++    );
++    assert_eq!(memory.snapshot(), charged);
++    let observed = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
++    {
++        let report = observed.report();
++        let redb = report.redb();
++        let close = redb.database_close().unwrap();
++        let TerminalObservation::Returned(Err(error)) = close.shutdown() else {
++            panic!("close original was erased");
++        };
++        assert_eq!(std::ptr::from_ref(error), original);
++    }
++    assert_eq!(observed.retire(), StorageCensusDisposition::Retired);
++}
++
++#[test]
++fn queued_relinquishment_seals_the_request_before_another_facade_can_run() {
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("sealed-queue.kasumi");
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = disk(&path, &memory);
++    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
++    assert_eq!(opening.open(), NodeOpeningPhase::Open);
++    let first = opening.queue_node_tables().unwrap();
++    let second = RegisteredNodeTables::retained(memory.clone(), first.id()).unwrap();
++    assert_eq!(first.retire(), StorageCensusDisposition::Retained);
++    assert_eq!(second.run(), NodeWriterPhase::Cancelled);
++    assert!(matches!(
++        second.report().begin(),
++        TerminalObservation::NotEntered
++    ));
++    assert!(second.report().terminal().is_none());
++    assert_eq!(second.retire(), StorageCensusDisposition::Retired);
++    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
++}
++
++#[test]
++fn busy_worker_cannot_acknowledge_the_body_error_that_it_has_not_produced_yet() {
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("busy-report-release.kasumi");
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = disk(&path, &memory);
++    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
++    assert_eq!(opening.open(), NodeOpeningPhase::Open);
++    {
++        let state = opening.registration.owner().state.lock();
++        let tx = state.redb.database().unwrap().begin_write().unwrap();
++        tx.open_table(redb::TableDefinition::<u64, u64>::new("wrapped_keys_v1"))
++            .unwrap();
++        tx.commit().unwrap();
++    }
++    let first = opening.queue_node_tables().unwrap();
++    let id = first.id();
++    let observer = RegisteredNodeTables::retained(memory.clone(), id).unwrap();
++    let queued = RegisteredNodeTables::retained(memory.clone(), id).unwrap();
++    let paused = HeldQueue::start(&opening, queued);
++    let deadline = Instant::now() + Duration::from_secs(5);
++    while !observer.registration.owner().state.is_locked() {
++        assert!(
++            Instant::now() < deadline,
++            "worker did not enter the real serial queue"
++        );
++        std::thread::yield_now();
++    }
++    let started = Instant::now();
++    assert_eq!(first.retire(), StorageCensusDisposition::Retained);
++    assert!(
++        started.elapsed() < Duration::from_secs(1),
++        "relinquishment waited for an active worker"
++    );
++    assert_eq!(paused.finish(), NodeWriterPhase::Finished);
++    let original = {
++        let report = observer.report();
++        let TerminalObservation::Returned(Err(NodeTablesBodyError::Catalog(error))) = report.body()
++        else {
++            panic!("actual body failure absent");
++        };
++        assert!(report.terminal().unwrap().disposal_complete());
++        std::ptr::from_ref(error)
++    };
++    drop(observer);
++    drop(opening);
++    let snapshot = memory.storage_census().drain().unwrap();
++    assert_eq!(snapshot.writers, 1);
++    let retained = RegisteredNodeTables::retained(memory.clone(), id).unwrap();
++    {
++        let report = retained.report();
++        let TerminalObservation::Returned(Err(NodeTablesBodyError::Catalog(error))) = report.body()
++        else {
++            panic!("unacknowledged original lost");
++        };
++        assert_eq!(std::ptr::from_ref(error), original);
++    }
++    assert_eq!(retained.retire(), StorageCensusDisposition::Retired);
++    let final_snapshot = memory.storage_census().drain().unwrap();
++    assert_eq!(final_snapshot.writers, 0);
++    assert_eq!(final_snapshot.databases, 0);
++}

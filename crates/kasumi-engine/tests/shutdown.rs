@@ -1,7 +1,7 @@
 mod common;
 
 use kasumi_engine::open_local;
-use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
+use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
 use std::{collections::BTreeSet, sync::Arc};
@@ -10,6 +10,7 @@ use std::{collections::BTreeSet, sync::Arc};
 async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = directory.path().join("node.redb");
+    let physical = common::PhysicalFixture::new(&path, Default::default());
     let provider = Arc::new(LocalKeyProvider::new([29; 32]));
     let context = RequestContext {
         authorization: kasumi_types::RequestAuthorization::service_identity(),
@@ -29,23 +30,19 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
     for round in 0..4 {
         // Reopening is immediate: no sleep, lock retry, or ignored open error.
         let node = (if round == 0 {
-            NodeStore::create_new_fixture(
-                &path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
+            physical
+                .storage
+                .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
         } else {
-            NodeStore::open_existing_fixture(
-                &path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
+            physical
+                .storage
+                .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
         })
         .unwrap();
         let audit = if round == 0 {
-            common::security_audit(node.clone()).await
+            common::security_audit(node.clone(), physical.storage.admission.clone()).await
         } else {
-            common::existing_security_audit(node.clone()).await
+            common::existing_security_audit(node.clone(), physical.storage.admission.clone()).await
         };
         let store = (if round == 0 {
             TenantStore::initialize_catalog_fixture(
@@ -165,13 +162,13 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
         drop(store);
         audit.shutdown().await.unwrap();
         drop(audit);
+        node.shutdown().await.unwrap();
         drop(node);
-        let reopened = NodeStore::open_existing_fixture(
-            &path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap();
+        let reopened = physical
+            .storage
+            .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap();
+        reopened.shutdown().await.unwrap();
         drop(reopened);
     }
 }

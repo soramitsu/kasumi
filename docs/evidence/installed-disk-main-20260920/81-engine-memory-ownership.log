@@ -1,0 +1,72 @@
+   Compiling kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 31s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_engine-d4dda2ec4274de51)
+
+running 45 tests
+test admission::disk_memory::tests::installed_box_stays_charged_after_facade_drop_with_operation_slots_full ... ok
+test admission::disk_memory::tests::lease_overhead_is_admitted_before_boxing_and_denial_preserves_counters ... ok
+test admission::installed::tests::concurrent_selection_is_denied_without_publishing_an_independent_core ... ok
+test admission::installed::tests::conflicting_policy_never_replaces_or_charges_the_retained_core ... ok
+test admission::installed::tests::failed_sampler_denies_reuse_and_keeps_original_core_and_panic ... ok
+test admission::installed::tests::retained_registry_reuses_core_across_sealed_runtime_facades ... ok
+test admission::startup::tests::actual_children_and_original_errors_survive_cancelled_drain_and_caller_drop ... ok
+test admission::startup::tests::capacity_and_budget_denial_precede_inert_builder_and_preserve_existing_owner ... ok
+test admission::startup_integration_tests::cancelled_local_startup_and_node_census_keep_actual_group_and_charges_until_join ... ok
+test admission::tests::cancelled_detached_worker_keeps_semaphore_and_reservation_until_exit ... ok
+test admission::tests::completed_failure_keeps_original_report_and_inventory_charge_until_facade_drop ... ok
+test admission::tests::empty_inventory_capacity_is_charged_until_actual_sealed_drain ... ok
+test admission::tests::exhausted_startup_inventory_denies_before_charging_another_owner ... ok
+test admission::tests::explicit_high_water_cannot_bypass_detected_memory_capacity ... ok
+test admission::tests::fixed_bookkeeping_is_denied_before_its_allocation_when_budget_is_too_small ... ok
+test admission::tests::fixed_charge_slots_reuse_capacity_without_forgetting_live_owners ... ok
+test admission::tests::fixture_total_resolution_preserves_the_original_runtime_payload_boundary ... ok
+test admission::tests::identifier_exhaustion_preserves_existing_charge_and_free_slot ... ok
+test admission::tests::initial_bookkeeping_obeys_the_existing_low_water_startup_fence ... ok
+test admission::tests::last_reservation_waits_for_paused_sampler_and_actual_source_destruction ... ok
+test admission::tests::new_inventory_policies_are_required_without_legacy_aliases ... ok
+test admission::tests::pressure_cancels_queries_but_never_changes_write_work_and_uses_hysteresis ... ok
+test admission::tests::queued_rebuild_expands_its_existing_slot_and_rejects_growth_without_losing_charge ... ok
+test admission::tests::real_process_rss_and_physical_capacity_are_measured ... ok
+test admission::tests::replacement_facade_preserves_resident_charge_and_has_fresh_startup_fence ... ok
+test admission::tests::reserved_audit_workspace_remains_usable_under_rss_pressure ... ok
+test admission::tests::resident_admission_never_consumes_an_operation_slot ... ok
+test admission::tests::result_release_rechecks_pressure_after_suspend_even_for_completed_work ... ok
+test admission::tests::retained_cursor_releases_operation_slot_but_keeps_bytes_until_last_owner ... ok
+test admission::tests::sampler_panic_fences_fresh_admission_and_preserves_original_join_outcome ... ok
+test admission::tests::shutdown_drain_waits_for_detached_work_to_release_its_registration ... ok
+test admission::tests::snapshot_startup_inventory_is_charged_without_a_governor_cycle ... ok
+test admission::tests::suspend_invalidates_old_measurement_and_slow_or_failed_probe_denies ... ok
+test admission::tests::workspace_handoff_preserves_slot_owner_and_checks_only_replacement_growth ... ok
+test service::database_worker_outcome_tests::aborted_database_monitor_retains_its_blocking_child_and_distinct_panic ... ok
+test service::database_worker_outcome_tests::cancelled_database_drain_keeps_monitor_panic_before_pending_audit_child ... ok
+test service::database_worker_outcome_tests::database_audit_blocking_panic_is_terminal_and_retained ... ok
+test service::database_worker_outcome_tests::database_shutdown_cancels_undispatched_shared_permit_wait_before_other_tenant_drain ... ok
+test snapshot_codec::tests::archived_audit_prefix_preserves_absolute_sequences_and_head ... ok
+test snapshot_codec::tests::authenticated_duplicate_header_is_rejected ... ok
+test snapshot_codec::tests::canonical_stream_requires_terminal_counts_digest_and_exact_eof ... ok
+test snapshot_codec::tests::oversized_record_is_rejected_before_payload_read_or_allocation ... ok
+test state::snapshot_bundle::tests::public_capture_and_restore_preparation_are_complete_admitted_and_never_publish ... ok
+test test_utils::physical_fixture_tests::configured_total_planning_preserves_existing_bookkeeping_and_limits ... ok
+test test_utils::physical_fixture_tests::installed_metadata_preserves_the_exact_original_payload_allowance ... ok
+
+test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 168 filtered out; finished in 18.39s
+
+     Running tests/admission.rs (target/debug/deps/admission-b48208283c872cd0)
+
+running 2 tests
+test explicit_local_bootstrap_reads_the_complete_committed_generation ... ok
+test reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work_still_applies ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.26s
+
+     Running tests/fixture_epoch_clock.rs (target/debug/deps/fixture_epoch_clock-33ece40ab1eecda6)
+
+running 3 tests
+test fixture_epoch_rejects_a_different_audit_facade_before_bootstrap ... ok
+test fixture_epoch_rejects_production_storage_before_bootstrap ... ok
+test one_epoch_expires_leases_and_credentials_but_preserves_permanent_command_identity ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.74s
+

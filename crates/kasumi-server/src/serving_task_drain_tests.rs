@@ -18,18 +18,17 @@ async fn cancelled_serving_drain_retains_joined_panic_and_exact_pending_owner() 
     .unwrap();
 
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let path = directory.path().join("serving-task.redb");
-    let node = kasumi_store::NodeStore::create_new_fixture(
-        &path,
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
+    let physical =
+        crate::runtime_storage_fixtures::physical(directory.path(), Default::default()).unwrap();
+    let path = directory.path().join("persistent/serving-task.redb");
+    let node = physical
+        .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+        .unwrap();
     let weak = Arc::downgrade(&node);
     let (release, waiting) = tokio::sync::oneshot::channel();
     let pending = tasks.listeners.spawn(async move {
-        let _node = node;
         waiting.await?;
+        node.shutdown().await?;
         Ok(())
     });
     let pending_id = pending.id();
@@ -45,12 +44,9 @@ async fn cancelled_serving_drain_retains_joined_panic_and_exact_pending_owner() 
     assert!(!pending.is_finished());
     assert!(weak.upgrade().is_some());
     assert!(
-        kasumi_store::NodeStore::open_existing_fixture(
-            &path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .is_err()
+        physical
+            .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .is_err()
     );
     let issue = tasks.report.issues()[0].clone();
     let error = issue
@@ -81,13 +77,10 @@ async fn cancelled_serving_drain_retains_joined_panic_and_exact_pending_owner() 
     let repeated = tasks.shutdown().await.unwrap_err();
     assert!(Arc::ptr_eq(&issue, &repeated.issues()[0]));
     assert_eq!(tasks.failed_tasks.len(), 1);
-    let reopened = kasumi_store::NodeStore::open_existing_fixture(
-        &path,
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    drop(reopened);
+    let reopened = physical
+        .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+        .unwrap();
+    reopened.shutdown().await.unwrap();
 }
 
 #[derive(Debug)]
@@ -109,18 +102,17 @@ async fn required_listener_failure_interrupts_pending_startup_before_retained_ow
     });
 
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let path = directory.path().join("pending-startup.redb");
-    let node = kasumi_store::NodeStore::create_new_fixture(
-        &path,
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
+    let physical =
+        crate::runtime_storage_fixtures::physical(directory.path(), Default::default()).unwrap();
+    let path = directory.path().join("persistent/pending-startup.redb");
+    let node = physical
+        .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+        .unwrap();
     let weak = Arc::downgrade(&node);
     let (release, retained) = tokio::sync::oneshot::channel();
     tasks.maintenance.spawn(async move {
-        let _node = node;
         retained.await?;
+        node.shutdown().await?;
         Ok(())
     });
 
@@ -159,12 +151,9 @@ async fn required_listener_failure_interrupts_pending_startup_before_retained_ow
     drop(drain);
     assert!(weak.upgrade().is_some());
     assert!(
-        kasumi_store::NodeStore::open_existing_fixture(
-            &path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .is_err()
+        physical
+            .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .is_err()
     );
     release.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(5), tasks.shutdown())
@@ -173,12 +162,10 @@ async fn required_listener_failure_interrupts_pending_startup_before_retained_ow
         .unwrap();
     assert!(weak.upgrade().is_none());
     assert!(error.is::<ListenerFailure>());
-    let _reopened = kasumi_store::NodeStore::open_existing_fixture(
-        &path,
-        kasumi_store::test_utils::NODE_STORE_ID,
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
+    let reopened = physical
+        .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+        .unwrap();
+    reopened.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -291,17 +278,18 @@ async fn aborted_listener_retains_http1_and_http2_requests_until_exact_nested_jo
             .send(())
             .unwrap();
         request.release.notified().await;
+        request._node.shutdown().await.unwrap();
         "joined request"
     }
     for http2 in [false, true] {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-        let path = directory.path().join("nested-listener.redb");
-        let node = kasumi_store::NodeStore::create_new_fixture(
-            &path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap();
+        let physical =
+            crate::runtime_storage_fixtures::physical(directory.path(), Default::default())
+                .unwrap();
+        let path = directory.path().join("persistent/nested-listener.redb");
+        let node = physical
+            .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap();
         let weak = Arc::downgrade(&node);
         let rcgen::CertifiedKey { cert, signing_key } =
             rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
@@ -370,12 +358,9 @@ async fn aborted_listener_retains_http1_and_http2_requests_until_exact_nested_jo
         drop(first);
         assert!(weak.upgrade().is_some());
         assert!(
-            kasumi_store::NodeStore::open_existing_fixture(
-                &path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture()
-            )
-            .is_err()
+            physical
+                .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+                .is_err()
         );
         let issue = tasks.report.issues()[0].clone();
         assert!(
@@ -400,11 +385,9 @@ async fn aborted_listener_retains_http1_and_http2_requests_until_exact_nested_jo
             "joined request"
         );
         assert!(weak.upgrade().is_none());
-        let _reopened = kasumi_store::NodeStore::open_existing_fixture(
-            &path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap();
+        let reopened = physical
+            .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap();
+        reopened.shutdown().await.unwrap();
     }
 }

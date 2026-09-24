@@ -1,0 +1,27 @@
+{
+  "scope": "development complete authority mandatory disk-memory caller regression, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-authority",
+    "--all-features",
+    "--lib",
+    "--tests",
+    "--",
+    "--test-threads=1"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 52567,
+  "exit_code": -15,
+  "timeout": true,
+  "signals": [
+    "SIGTERM"
+  ],
+  "drained": true,
+  "elapsed_seconds": 1200.124745130539,
+  "inventoried_source_unchanged": true
+}

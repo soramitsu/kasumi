@@ -81,8 +81,11 @@ impl StateMachineBackend for RestoreFailureBackend {
 }
 
 async fn cancelled_publication_failure(panic: bool) -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = FaultBackend::new();
-    let store = new_fault_store(disk.clone()).await?;
+    let store = new_fault_store(disk.clone(), fixture_scratch.clone()).await?;
     let domains = kasumi_store::test_utils::initialize_custody_fixture(
         store.clone(),
         Arc::new(LocalKeyProvider::new([241; 32])),
@@ -106,7 +109,7 @@ async fn cancelled_publication_failure(panic: bool) -> Result<()> {
     )
     .await?;
     let failed = machine.failure_flag();
-    let expected = envelope(b"new-generation".to_vec());
+    let expected = envelope(b"new-generation".to_vec(), fixture_scratch.clone());
     let checkpoint = crate::SnapshotRestoreContext {
         mode: crate::SnapshotRestoreMode::Install,
         backend_sha256: expected.backend.sha256().into(),
@@ -147,7 +150,7 @@ async fn cancelled_publication_failure(panic: bool) -> Result<()> {
     // The flag is independent of, and visible before waiting on, actual storage
     // ownership drain. The panic path must not lock the poisoned applied mutex.
     tokio::time::timeout(Duration::from_secs(10), drain.wait()).await?;
-    let recovered_store = existing_fault_store(disk.crash()).await?;
+    let recovered_store = existing_fault_store(disk.crash(), fixture_scratch.clone()).await?;
     let recovered = Arc::new(BytesBackend::default());
     let mut reopened = StateMachine::open(
         kasumi_store::test_utils::open_existing_custody_fixture(

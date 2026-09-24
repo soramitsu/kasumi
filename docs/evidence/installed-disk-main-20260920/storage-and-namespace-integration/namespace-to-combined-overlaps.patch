@@ -1,0 +1,107 @@
+--- namespace/crates/kasumi-store/src/lib.rs
++++ combined/crates/kasumi-store/src/lib.rs
+@@ -24,8 +24,18 @@
+ mod allocation_tests;
+ mod device_disk;
+ mod disk_memory;
++mod storage_census;
++mod storage_opening;
+ pub use disk_memory::{
+     DiskMemoryLease, DiskMemoryRequirements, DiskOpenError, NodeDiskMemoryAdmission,
++};
++pub use storage_census::{
++    StorageCensus, StorageCensusDisposition, StorageCensusObservation, StorageCensusPanicPhase,
++    StorageCensusSnapshot, StorageOwnerId, StorageOwnerKind,
++};
++pub use storage_opening::{
++    NodeOpeningMode, NodeOpeningPhase, NodeOpeningReport, NodeTablesBodyError, NodeTablesReport,
++    NodeWriterPhase, RegisteredNodeOpening, RegisteredNodeTables,
+ };
+ mod keys;
+ mod node_database;
+--- namespace/crates/kasumi-store/src/node_disk/tests.rs
++++ combined/crates/kasumi-store/src/node_disk/tests.rs
+@@ -2130,7 +2130,10 @@
+     let cap = crate::test_utils::TestDiskMemory::required_reservation_bytes(required.owner_bytes)
+         .unwrap()
+         - 1;
+-    let memory = crate::test_utils::TestDiskMemory::new(cap, 4);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + cap,
++        4,
++    );
+     let crate::DiskOpenError::Failed(error) = crate::test_utils::retry_disk_registry(|| {
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     })
+@@ -2152,7 +2155,10 @@
+     for slots in [1, 2, 3] {
+         let (_directory, config) = installation();
+         let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+-        let memory = crate::test_utils::TestDiskMemory::new(total, slots);
++        let memory = crate::test_utils::TestDiskMemory::new(
++            crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(slots).unwrap() + total,
++            slots,
++        );
+         assert!(
+             crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+                 &config,
+@@ -2174,7 +2180,10 @@
+ fn installed_metadata_reuse_keeps_one_exact_core_and_one_retained_envelope() {
+     let (_directory, config) = installation();
+     let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+-    let memory = crate::test_utils::TestDiskMemory::new(total, 4);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total,
++        4,
++    );
+     let disk = crate::test_utils::retry_disk_registry(|| {
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     })
+@@ -2188,7 +2197,10 @@
+     .unwrap();
+     assert!(Arc::ptr_eq(&disk, &same));
+     assert_eq!(memory.snapshot(), held);
+-    let foreign = crate::test_utils::TestDiskMemory::new(total, 4);
++    let foreign = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total,
++        4,
++    );
+     assert!(
+         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+             &config,
+@@ -2222,7 +2234,10 @@
+     let (_directory, config) = installation();
+     symlink("missing", config.roots["data"].join("invalid")).unwrap();
+     let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+-    let memory = crate::test_utils::TestDiskMemory::new(total, 4);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total,
++        4,
++    );
+     assert!(
+         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+             &config,
+@@ -2251,7 +2266,10 @@
+     let (_directory, config) = installation();
+     seed(&config, "owned-empty", 0);
+     let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+-    let memory = crate::test_utils::TestDiskMemory::new(total, 4);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total,
++        4,
++    );
+     let disk = crate::test_utils::retry_disk_registry(|| {
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     })
+@@ -2305,7 +2323,10 @@
+ #[test]
+ fn registry_busy_precedes_memory_acquisition_without_allocating() {
+     let (_directory, config) = installation();
+-    let memory = crate::test_utils::TestDiskMemory::new(1, 1);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(1).unwrap() + 1,
++        1,
++    );
+     let guard = registry().lock();
+     let (result, allocations) = crate::allocation_tests::measure(|| {
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())

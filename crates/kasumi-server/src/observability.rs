@@ -10,7 +10,7 @@ use axum::{
 };
 use kasumi_engine::{EncodedResponseFence, admission::AdmissionSnapshot};
 use kasumi_store::TenantStore;
-use kasumi_types::{Action, Error, ErrorCode};
+use kasumi_types::{Action, AuditRetentionBudget, Error, ErrorCode, RecoveryPhase};
 use serde::Serialize;
 use std::{
     fmt::Write,
@@ -19,6 +19,7 @@ use std::{
         atomic::{AtomicU8, Ordering},
     },
 };
+use uuid::Uuid;
 
 const MAX_RESPONSE_BYTES: usize = 1 << 20;
 
@@ -136,8 +137,22 @@ pub(crate) struct RetentionObservation {
     pub archive_bytes: u64,
     pub archive_segments: u64,
     pub draining: bool,
+    pub archive_backlog_bytes: u64,
     pub hot_budget_bytes: u64,
     pub archive_budget_bytes: u64,
+}
+/// Bytes above the drain target only when archive maintenance is due.
+pub(crate) fn archive_backlog_bytes(
+    hot_bytes: u64,
+    budget: &AuditRetentionBudget,
+    draining: bool,
+    eligible: bool,
+) -> u64 {
+    if eligible && (draining || hot_bytes >= budget.starts_at()) {
+        hot_bytes.saturating_sub(budget.drains_to())
+    } else {
+        0
+    }
 }
 #[derive(Serialize)]
 pub(crate) struct CapacityObservation {
@@ -162,6 +177,7 @@ pub(crate) struct GroupObservation {
     pub authority_required: bool,
     pub authority_remaining_seconds: Option<f64>,
     pub retention: Option<RetentionObservation>,
+    pub audit_maintenance: Option<kasumi_engine::AuditMaintenanceStatus>,
     pub capacity: Option<CapacityObservation>,
 }
 impl GroupObservation {
@@ -206,6 +222,16 @@ struct Observation {
     backup_requests: std::collections::BTreeMap<&'static str, RequestCounts>,
 }
 
+/// One durable Control operation, deliberately excluding request and dispatch inputs.
+#[derive(Serialize)]
+struct RecoveryStatusObservation {
+    operation_id: Uuid,
+    phase: RecoveryPhase,
+    updated_revision: u64,
+    phase_pending: bool,
+    terminal: bool,
+}
+
 #[derive(Clone)]
 struct Service {
     auth: Arc<Authenticator>,
@@ -221,6 +247,7 @@ pub(crate) fn router(
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/metrics", get(metrics))
+        .route("/recovery/{operation_id}", get(recovery_status))
         .with_state(Service {
             auth,
             management,
@@ -242,12 +269,36 @@ async fn ready(State(service): State<Service>, request: axum::extract::Request) 
 async fn metrics(State(service): State<Service>, request: axum::extract::Request) -> Response {
     service.response(request, Endpoint::Metrics).await
 }
+async fn recovery_status(
+    State(service): State<Service>,
+    request: axum::extract::Request,
+) -> Response {
+    match service.observe_recovery(request).await {
+        Ok(response) => response,
+        Err(error) => failure_response(error, true),
+    }
+}
 
 fn error(code: ErrorCode) -> Error {
     Error::new(code, "protected node observation unavailable")
 }
 fn storage_error(_: anyhow::Error) -> Error {
     error(ErrorCode::Unavailable)
+}
+fn failure_response(error: Error, recovery_status: bool) -> Response {
+    let status = match error.code {
+        ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
+        ErrorCode::Forbidden => StatusCode::FORBIDDEN,
+        ErrorCode::InvalidArgument if recovery_status => StatusCode::BAD_REQUEST,
+        ErrorCode::NotFound if recovery_status => StatusCode::NOT_FOUND,
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    let mut response = (status, "protected node observation unavailable\n").into_response();
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        "no-store".parse().unwrap(),
+    );
+    response
 }
 fn bearer(headers: &HeaderMap) -> &str {
     let mut values = headers.get_all(axum::http::header::AUTHORIZATION).iter();
@@ -265,6 +316,23 @@ struct Fence<'a> {
     coverage_epoch: crate::readiness::Epoch,
     coverage_token: Option<crate::readiness::Token>,
     _workspace: kasumi_engine::admission::Reservation,
+}
+/// The exact status route needs no all-group readiness sample. Retain the
+/// original Control response and audit-store owners through final encoding.
+struct RecoveryFence<'a> {
+    control: kasumi_engine::ResponseFence<'a>,
+    audit: Arc<kasumi_engine::SecurityAudit>,
+    telemetry: Arc<Telemetry>,
+    _workspace: kasumi_engine::admission::Reservation,
+}
+impl EncodedResponseFence for RecoveryFence<'_> {
+    fn check(&self) -> kasumi_types::Result<()> {
+        if self.telemetry.lifecycle() != Lifecycle::Serving {
+            return Err(error(ErrorCode::Unavailable));
+        }
+        self.audit.store().check_access().map_err(storage_error)?;
+        self.control.check()
+    }
 }
 impl EncodedResponseFence for Fence<'_> {
     fn check(&self) -> kasumi_types::Result<()> {
@@ -309,36 +377,26 @@ impl Service {
     async fn response(&self, request: axum::extract::Request, endpoint: Endpoint) -> Response {
         match self.observe(request, endpoint).await {
             Ok(response) => response,
-            Err(error) => {
-                let status = match error.code {
-                    ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
-                    ErrorCode::Forbidden => StatusCode::FORBIDDEN,
-                    _ => StatusCode::SERVICE_UNAVAILABLE,
-                };
-                let mut response =
-                    (status, "protected node observation unavailable\n").into_response();
-                response.headers_mut().insert(
-                    axum::http::header::CACHE_CONTROL,
-                    "no-store".parse().unwrap(),
-                );
-                response
-            }
+            Err(error) => failure_response(error, false),
         }
     }
-    async fn observe(
+    /// Keep the same mTLS, bearer, Control identity and quorum authorization
+    /// boundary for aggregate observations and exact recovery observations.
+    async fn authorized_control(
         &self,
         request: axum::extract::Request,
-        endpoint: Endpoint,
-    ) -> kasumi_types::Result<Response> {
-        if !request
+    ) -> kasumi_types::Result<(kasumi_types::RequestContext, Arc<kasumi_engine::Database>)> {
+        let authenticated_peer = request
             .extensions()
             .get::<crate::tls::AuthenticatedTlsPeer>()
-            .is_some_and(|peer| peer.certificate_pin().is_some())
-        {
+            .is_some_and(|peer| peer.certificate_pin().is_some());
+        let bearer = bearer(request.headers()).to_owned();
+        drop(request);
+        if !authenticated_peer {
             self.auth.anonymous_denial().await;
             return Err(error(ErrorCode::Unauthorized));
         }
-        let context = self.auth.authenticate(bearer(request.headers())).await?;
+        let context = self.auth.authenticate(&bearer).await?;
         self.auth
             .audit_result(
                 &context,
@@ -356,6 +414,101 @@ impl Service {
                 self.management.authorized_database(&context).await,
             )
             .await?;
+        Ok((context, database))
+    }
+    async fn observe_recovery(
+        &self,
+        request: axum::extract::Request,
+    ) -> kasumi_types::Result<Response> {
+        let path = request.uri().path().to_owned();
+        let (context, database) = self.authorized_control(request).await?;
+        // URI validation happens only after the protected authorization boundary.
+        // The fixed-length UUID prevents unbounded parsing or path-derived output.
+        let operation = path
+            .as_str()
+            .strip_prefix("/recovery/")
+            .filter(|value| value.len() == 36)
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .filter(|value| !value.is_nil())
+            .ok_or_else(|| error(ErrorCode::InvalidArgument))?;
+        let control = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await?;
+        let workspace = self
+            .auth
+            .audit_result(&context, self.management.security_audit_workspace())
+            .await?;
+        if self.telemetry.lifecycle() != Lifecycle::Serving {
+            return Err(error(ErrorCode::Unavailable));
+        }
+        // This call performs the point-addressed current-quorum read, audit, and
+        // first release check; it owns its bounded record reservation until return.
+        let proof = self
+            .auth
+            .audit_result(
+                &context,
+                database.recovery_status(context.clone(), operation).await,
+            )
+            .await?;
+        let record = proof.record();
+        let status = RecoveryStatusObservation {
+            operation_id: operation,
+            phase: record.phase,
+            updated_revision: record.updated_revision,
+            phase_pending: record.pending_phase.is_some(),
+            terminal: record.phase.terminal(),
+        };
+        let body = serde_json::to_string(&status).map_err(|_| error(ErrorCode::Unavailable))?;
+        if body.len() > MAX_RESPONSE_BYTES {
+            return Err(error(ErrorCode::ResourceExhausted));
+        }
+        let response = (
+            StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, "application/json"),
+                (axum::http::header::CACHE_CONTROL, "no-store"),
+            ],
+            body,
+        )
+            .into_response();
+        #[cfg(test)]
+        let gate = self.telemetry.release_gate.lock().await.take();
+        #[cfg(test)]
+        if let Some(gate) = gate {
+            gate.entered.notify_one();
+            gate.release.notified().await;
+        }
+        // Recheck the original recovery proof after encoding or a held response.
+        self.auth
+            .audit_result(&context, proof.release().await)
+            .await?;
+        self.auth
+            .audit_result(
+                &context,
+                database.engine().authorize(&context, None, Action::Admin),
+            )
+            .await?;
+        crate::api::release_response(
+            &self.auth,
+            &context,
+            RecoveryFence {
+                control,
+                audit: self.management.security_audit().clone(),
+                telemetry: self.telemetry.clone(),
+                _workspace: workspace,
+            },
+            response,
+            false,
+        )
+        .await
+    }
+    async fn observe(
+        &self,
+        request: axum::extract::Request,
+        endpoint: Endpoint,
+    ) -> kasumi_types::Result<Response> {
+        let (context, database) = self.authorized_control(request).await?;
         let control = self
             .auth
             .audit_result(&context, database.response_fence(&context))
@@ -406,6 +559,12 @@ impl Service {
                     archive_bytes: service_audit.archived_bytes,
                     archive_segments: service_audit.archive_segments,
                     draining: service_audit.draining,
+                    archive_backlog_bytes: archive_backlog_bytes(
+                        service_audit.position.hot_bytes,
+                        &service_audit.budget,
+                        service_audit.draining,
+                        true,
+                    ),
                     hot_budget_bytes: service_audit.budget.hot_bytes,
                     archive_budget_bytes: service_audit.budget.archive_bytes,
                 },
@@ -582,6 +741,12 @@ impl Observation {
         if let Some(available) = self.persistent_disk.filesystem_available_bytes {
             gauge!("persistent_disk_filesystem_available_bytes", available);
         }
+        if let Some(total) = self.persistent_disk.filesystem_total_bytes {
+            gauge!("persistent_disk_filesystem_total_bytes", total);
+        }
+        if let Some(used) = self.persistent_disk.filesystem_used_bytes {
+            gauge!("persistent_disk_filesystem_used_bytes", used);
+        }
         gauge!("scratch_disk_max_bytes", self.scratch_disk.max_bytes);
         gauge!(
             "scratch_disk_min_free_bytes",
@@ -598,6 +763,12 @@ impl Observation {
         );
         if let Some(available) = self.scratch_disk.filesystem_available_bytes {
             gauge!("scratch_disk_filesystem_available_bytes", available);
+        }
+        if let Some(total) = self.scratch_disk.filesystem_total_bytes {
+            gauge!("scratch_disk_filesystem_total_bytes", total);
+        }
+        if let Some(used) = self.scratch_disk.filesystem_used_bytes {
+            gauge!("scratch_disk_filesystem_used_bytes", used);
         }
         gauge!("admission_reserved_bytes", self.admission.reserved_bytes);
         gauge!(
@@ -638,6 +809,10 @@ impl Observation {
         gauge!("service_audit_pruned_before", audit.pruned_before);
         gauge!("service_audit_draining", u8::from(audit.draining));
         gauge!(
+            "service_audit_archive_backlog_bytes",
+            audit.archive_backlog_bytes
+        );
+        gauge!(
             "service_audit_hot_bytes_above_drain_target",
             audit.hot_bytes.saturating_sub(audit.hot_budget_bytes / 2)
         );
@@ -646,6 +821,7 @@ impl Observation {
             u8::from(self.service_audit.persistence_failed)
         );
         writeln!(out, "# TYPE kasumi_service_audit_maintenance_failures_total counter\nkasumi_service_audit_maintenance_failures_total {}", self.service_audit.maintenance_failures).unwrap();
+        writeln!(out, "# TYPE kasumi_local_group_audit_maintenance_failures_total counter\n# TYPE kasumi_local_group_audit_maintenance_committed_segments_total counter").unwrap();
         for group in &self.groups {
             let tenant = label(&group.tenant);
             macro_rules! group_gauge {
@@ -677,11 +853,24 @@ impl Observation {
                 group_gauge!("audit_pruned_before", retention.pruned_before);
                 group_gauge!("audit_draining", u8::from(retention.draining));
                 group_gauge!(
+                    "audit_archive_backlog_bytes",
+                    retention.archive_backlog_bytes
+                );
+                group_gauge!(
                     "audit_hot_bytes_above_drain_target",
                     retention
                         .hot_bytes
                         .saturating_sub(retention.hot_budget_bytes / 2)
                 );
+            }
+            if let Some(maintenance) = &group.audit_maintenance {
+                writeln!(
+                    out,
+                    "kasumi_local_group_audit_maintenance_failures_total{{tenant=\"{tenant}\"}} {}",
+                    maintenance.failures
+                )
+                .unwrap();
+                writeln!(out, "kasumi_local_group_audit_maintenance_committed_segments_total{{tenant=\"{tenant}\"}} {}", maintenance.committed_segments).unwrap();
             }
             if let Some(capacity) = &group.capacity {
                 group_gauge!("documents", capacity.documents);
@@ -739,6 +928,24 @@ fn label(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archive_backlog_follows_start_drain_and_eligibility_boundaries() {
+        let budget = AuditRetentionBudget::default();
+        let start = budget.starts_at();
+        let target = budget.drains_to();
+        assert_eq!(archive_backlog_bytes(start - 1, &budget, false, true), 0);
+        assert_eq!(
+            archive_backlog_bytes(start, &budget, false, true),
+            start - target
+        );
+        assert_eq!(
+            archive_backlog_bytes(start - 1, &budget, true, true),
+            start - 1 - target
+        );
+        assert_eq!(archive_backlog_bytes(target, &budget, true, true), 0);
+        assert_eq!(archive_backlog_bytes(start, &budget, false, false), 0);
+    }
 
     #[tokio::test]
     async fn cancelled_backup_request_releases_inflight_without_claiming_an_abort() {

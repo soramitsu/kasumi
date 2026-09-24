@@ -1,0 +1,8 @@
+{
+  "purge.patch": "78a204853988603b83b3e18ef04f2c433a0c42687701fe7c4040963ac717150a",
+  "manifest.json": "dd1162c8f780f2cd2c96d924ab2471d7de5c506aaa075ee85fc52e4d347efaa6",
+  "README.md": "fd234ecde3e0682fec86d11f715c6cdaa7e30af081eb4eab877eeeb06e1634db",
+  "working-inputs.json": "68a2c5d36b77695f4ab2bdde2b084af570fd6f11d37e875d59b1c6ccf898fbcd",
+  "target-apply-check.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "target-apply-check.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

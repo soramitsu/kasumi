@@ -1,0 +1,36 @@
+{
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "scope": "single fixture current-route observation correction; no actual source edits or execution",
+  "base_sha256": "df389a1f5903728287ed45d01281119b797a3778b50d1d60adc17c62f2548eb3",
+  "proposed_sha256": "089a1b8ddc699b94e38e67166932fc9f9b3dbc3a6ea261ce65c946684e3fc72e",
+  "patch_sha256": "bec8b619b4a76eadfbecdc17f35164eec514d27669b8af11cf77e8ab96e3aca8",
+  "source_before": {
+    "crates/kasumi-engine/tests/lifecycle.rs": "b39feadc979cbab5a4646a687fd44552cfe4687220e36ada287b72e94db3004c",
+    "crates/kasumi-engine/tests/common/recovery_control.rs": "df389a1f5903728287ed45d01281119b797a3778b50d1d60adc17c62f2548eb3",
+    "crates/kasumi-engine/src/recovery_service.rs": "4bb07d3d50e666deb39bfe25acebc5783ab0d5415db344c09f14b0ee2536da7a",
+    "crates/kasumi-engine/src/lifecycle_service.rs": "3b7fa036dcc84e502fd5ef06e230318374fe06e29cf7b83ed1bd2bdd8812d621"
+  },
+  "source_after": {
+    "crates/kasumi-engine/tests/lifecycle.rs": "b39feadc979cbab5a4646a687fd44552cfe4687220e36ada287b72e94db3004c",
+    "crates/kasumi-engine/tests/common/recovery_control.rs": "df389a1f5903728287ed45d01281119b797a3778b50d1d60adc17c62f2548eb3",
+    "crates/kasumi-engine/src/recovery_service.rs": "4bb07d3d50e666deb39bfe25acebc5783ab0d5415db344c09f14b0ee2536da7a",
+    "crates/kasumi-engine/src/lifecycle_service.rs": "3b7fa036dcc84e502fd5ef06e230318374fe06e29cf7b83ed1bd2bdd8812d621"
+  },
+  "sources_unchanged": true,
+  "apply_check_passed": true,
+  "tests_run": false,
+  "prefix_suffix_preserved": true,
+  "files": {
+    "README.md": "67be269c29b20e2dae5f39ac17e68ef29b3dceee4e41e067ace53c816f5e1391",
+    "apply-check/crates/kasumi-engine/tests/common/recovery_control.rs": "df389a1f5903728287ed45d01281119b797a3778b50d1d60adc17c62f2548eb3",
+    "apply-check.json": "cbc20898aba9d6b6385f8f2b6c255a45da1ed7d43deff0e0e3864b0df44ef74b",
+    "base/crates/kasumi-engine/tests/common/recovery_control.rs": "df389a1f5903728287ed45d01281119b797a3778b50d1d60adc17c62f2548eb3",
+    "evidence/129-lifecycle-handoff.log": "1d2e4716591fc49331201d4a244eb55781e17debcf237d0fcaeb20cc80b635a6",
+    "evidence/129-result.json": "4cf37d06093b46782b925f9ae953b1a2f111b882e28cb830a0ce0bd57fafa79d",
+    "evidence/129-source-after.json": "e10f99c9f28baad5300d16d38a39c26399c7587daf09390b7be4c324bf91b6d8",
+    "evidence/129-source-before.json": "e10f99c9f28baad5300d16d38a39c26399c7587daf09390b7be4c324bf91b6d8",
+    "fixture.patch": "bec8b619b4a76eadfbecdc17f35164eec514d27669b8af11cf77e8ab96e3aca8",
+    "proposed/crates/kasumi-engine/tests/common/recovery_control.rs": "089a1b8ddc699b94e38e67166932fc9f9b3dbc3a6ea261ce65c946684e3fc72e"
+  }
+}

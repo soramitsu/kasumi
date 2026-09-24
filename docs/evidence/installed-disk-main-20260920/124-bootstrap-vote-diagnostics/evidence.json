@@ -1,0 +1,15 @@
+{
+  "log_status": "124 terminal and drained before hashes frozen",
+  "hashes": {
+    "target/installed-disk-validation/124-lifecycle-handoff.log": "06cb10cecc469d6b34f48831436e1ba5cd290f598c23f5441f1e21f2bc16df64",
+    "target/installed-disk-validation/124-result.json": "74d4be69352a36bef2e3406dabc3c2c9da966a4d348ef003fac98edad592a7f8",
+    "crates/kasumi-engine/src/bootstrap.rs": "28bb4938ec9bbbd1a49950bb1041f2d23e8ff3c342328d51e60f8a5581e5c011",
+    "crates/kasumi-engine/src/bootstrap_fixtures.rs": "dea51fd6d5ceb65933ae61aedeee802457120b736098f9faa21065c40196d804",
+    "crates/kasumi-raft/src/network.rs": "b656cdd593dcec4b02693e1b985260050172443963cc6bb25997abf9da971e31",
+    "crates/kasumi-raft/src/storage.rs": "9b6a202216c3a53d1f46beafbe511e6282181c0f098fb45afcdca5d3706b5123",
+    "crates/kasumi-raft/src/lib.rs": "c4e9fbff404df3fa9ec93810b8f8bfff8e07b1cc3dac0b4070f32f6172e879a2",
+    "vendor/openraft-0.9.25/openraft/src/core/raft_core.rs": "b13dc47370be3cfe79193f744fc2c1910f55b256c5c1aba48172b2e8eaefcbe3",
+    "vendor/openraft-0.9.25/openraft/src/engine/engine_impl.rs": "dfde04437172a6ae8361aebe0c4196109efd145cfdb448a743e061a78ec45536",
+    "vendor/openraft-0.9.25/openraft/src/raft/message/vote.rs": "feb675aa79f477ea6887a9182178a0e47c7869d708e28e6448913bfa6c093942"
+  }
+}

@@ -1,0 +1,4795 @@
+--- a/crates/kasumi-engine/tests/backup_checkpoint.rs
++++ b/crates/kasumi-engine/tests/backup_checkpoint.rs
+@@ -251,6 +251,10 @@
+                 result.map_err(std::io::Error::other)?;
+             }
+             self.inner.write(offset, bytes)
++        }
++
++        fn close(&self) -> redb::BackendCloseOutcome {
++            self.inner.close()
+         }
+     }
+     let fixture = Fixture::with_admission(Limits::default(), Default::default(), true).await;
+--- a/crates/kasumi-store/src/audit_archive_owned.rs
++++ b/crates/kasumi-store/src/audit_archive_owned.rs
+@@ -216,17 +216,22 @@
+             let failure = store.node.shutdown().await.unwrap_err();
+             assert_eq!(
+                 failure.completion(),
+-                kasumi_types::drain::DrainCompletion::Complete
++                kasumi_types::drain::DrainCompletion::Retained
+             );
+             assert!(!failure.issues().is_empty());
+             let repeated = store.node.shutdown().await.unwrap_err();
++            assert_eq!(
++                repeated.completion(),
++                kasumi_types::drain::DrainCompletion::Retained
++            );
+             assert_eq!(failure.issues().len(), repeated.issues().len());
+             for (original, repeated) in failure.issues().iter().zip(repeated.issues()) {
+                 assert!(Arc::ptr_eq(original, repeated));
+             }
+             assert!(store.node.db.begin_read().is_err());
+-            // This shutdown report's completion does not release the
+-            // installed FileOwner: explicit backend close retained its failure.
++            // The consuming close API cannot prove physical drain on a storage
++            // failure. Its sticky Retained report preserves the original issues;
++            // the installed FileOwner remains for explicit census recovery.
+             assert_eq!(disk.snapshot().open_files, 1);
+             assert_eq!(
+                 disk.snapshot().retained_file_attempts,
+--- a/crates/kasumi-store/src/lib.rs
++++ b/crates/kasumi-store/src/lib.rs
+@@ -34,8 +34,9 @@
+     StorageCensusSnapshot, StorageOwnerId, StorageOwnerKind,
+ };
+ pub use storage_opening::{
+-    NodeOpeningMode, NodeOpeningPhase, NodeOpeningReport, NodeTablesBodyError, NodeTablesReport,
+-    NodeWriterPhase, RegisteredNodeOpening, RegisteredNodeTables,
++    FailedOpeningAcknowledgement, FailedOpeningRecovery, NodeOpeningMode, NodeOpeningPhase,
++    NodeOpeningReport, NodeTablesBodyError, NodeTablesReport, NodeWriterPhase,
++    RegisteredNodeOpening, RegisteredNodeTables,
+ };
+ mod keys;
+ mod node_database;
+--- a/crates/kasumi-store/src/node_database.rs
++++ b/crates/kasumi-store/src/node_database.rs
+@@ -97,8 +97,10 @@
+             Ok(database) => match std::panic::catch_unwind(AssertUnwindSafe(|| database.close())) {
+                 Ok(Ok(())) => return state.terminal.complete(),
+                 Ok(Err(redb::CloseError::Storage(error))) => {
+-                    state.terminal.record(self.component, 0, error.into());
+-                    return state.terminal.complete();
++                    let issue = state.terminal.record(self.component, 0, error.into());
++                    let failure = DrainFailure::retained(issue);
++                    state.interrupted = Some(failure.clone());
++                    return Err(failure);
+                 }
+                 Ok(Err(redb::CloseError::Busy(database))) => Arc::new(database),
+                 Err(payload) => {
+@@ -210,7 +212,7 @@
+         fn write(&self, at: u64, bytes: &[u8]) -> std::io::Result<()> {
+             self.0.write(at, bytes)
+         }
+-        fn close(&self) -> std::io::Result<()> {
++        fn close(&self) -> redb::BackendCloseOutcome {
+             std::panic::panic_any(OriginalClosePanic(41))
+         }
+     }
+@@ -241,4 +243,51 @@
+         assert!(database.begin_read().is_err());
+         assert!(database.begin_write().is_err());
+     }
+-}
++    #[derive(Debug)]
++    struct UnprovedCloseBackend(redb::backends::InMemoryBackend);
++    impl StorageBackend for UnprovedCloseBackend {
++        fn len(&self) -> std::io::Result<u64> {
++            self.0.len()
++        }
++        fn read(&self, at: u64, bytes: &mut [u8]) -> std::io::Result<()> {
++            self.0.read(at, bytes)
++        }
++        fn set_len(&self, len: u64) -> std::io::Result<()> {
++            self.0.set_len(len)
++        }
++        fn sync_data(&self) -> std::io::Result<()> {
++            self.0.sync_data()
++        }
++        fn write(&self, at: u64, bytes: &[u8]) -> std::io::Result<()> {
++            self.0.write(at, bytes)
++        }
++        fn close(&self) -> redb::BackendCloseOutcome {
++            redb::BackendCloseOutcome::retained_result(Ok(()))
++        }
++    }
++    #[test]
++    fn logical_close_success_without_native_evidence_never_becomes_complete_on_retry() {
++        let database = NodeDatabase::new(
++            Database::builder(crate::test_utils::storage_admission())
++                .create_with_backend(UnprovedCloseBackend(redb::backends::InMemoryBackend::new()))
++                .unwrap(),
++            "unproved native drain",
++        );
++        let first = database.close().unwrap_err();
++        assert_eq!(
++            first.completion(),
++            kasumi_types::drain::DrainCompletion::Retained
++        );
++        let second = database.close().unwrap_err();
++        assert_eq!(
++            second.completion(),
++            kasumi_types::drain::DrainCompletion::Retained
++        );
++        assert!(Arc::ptr_eq(&first.issues()[0], &second.issues()[0]));
++        assert!(database.begin_read().is_err());
++        assert!(database.begin_write().is_err());
++        // This legacy consuming facade retains only its report on error. Actual
++        // owner custody requires the RegisteredNodeOpening consumer migration.
++        assert!(database.state.lock().database.is_none());
++    }
++}
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -40,6 +40,7 @@
+     NodeDiskDirectoryOperationKind, NodeDiskDirectoryOperationStep, NodeDiskEntryKind,
+ };
+ pub use file::NodeDiskFile;
++pub(crate) use file::{FailedCloseReport, FailedFileTransfer, FailedFileWitness};
+ use ledger::AccountedInode;
+ 
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+@@ -348,6 +349,9 @@
+     open_directory_cursors: u32,
+     census_streams: census::Streams,
+     namespace_generation: u64,
++    file_close_generation: u64,
++    accepted_census_generation: u64,
++    census_retirement_panic: Option<Box<dyn std::any::Any + Send>>,
+     pending_directory: Option<directory::PendingDirectory>,
+     namespace_batch: Option<batch::BatchRecord>,
+     namespace_claim: Option<batch::ClaimRecord>,
+@@ -712,6 +716,9 @@
+                 open_directory_cursors: 0,
+                 census_streams: census::Streams::default(),
+                 namespace_generation: 0,
++                file_close_generation: 0,
++                accepted_census_generation: 0,
++                census_retirement_panic: None,
+                 pending_directory: None,
+                 namespace_batch: None,
+                 namespace_claim: None,
+@@ -885,6 +892,14 @@
+             "poisoned persistent ownership requires process restart"
+         );
+         let mut state = self.lock_state();
++        ensure!(
++            state.census_retirement_panic.is_none(),
++            "persistent outcome retirement panicked; original panic remains retained"
++        );
++        let accepted_generation = state
++            .accepted_census_generation
++            .checked_add(1)
++            .ok_or_else(|| anyhow::anyhow!("persistent accepted census generation exhausted"))?;
+         if state.phase != NodeDiskPhase::Failed {
+             state.phase = NodeDiskPhase::Paused;
+         }
+@@ -974,18 +989,31 @@
+         state.files = totals.files;
+         state.directory_bytes = totals.directory_bytes;
+         state.directories = totals.directories;
+-        state.file_custody.retire_after_census();
+-        state.live.clear();
++        let retired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            state.file_custody.retire_after_census();
++            state.live.clear();
++            // No registration or operational capacity is published while any
++            // old outcome, path, ancestry, Arc or namespace backing remains.
++            drop(state.pending_directory.take());
++            drop(state.namespace_batch.take());
++            state.namespace_claim = None;
++        }));
++        if let Err(payload) = retired {
++            // This inline slot is part of State's preadmitted geometry. The
++            // actual opaque panic remains owned; its payload size is not a
++            // proved bounded allocator/RSS allowance. Never retry retirement.
++            state.census_retirement_panic = Some(payload);
++            state.phase = NodeDiskPhase::Failed;
++            promises.fail_owner();
++            anyhow::bail!("persistent original outcome retirement panicked");
++        }
+         state.open_files = 0;
+-        // The candidate has accepted physical absence/presence after every
+-        // internal FD closed. Retire retained names, ancestry and Arc backing
+-        // before publishing the operational slot as available again.
+-        drop(state.pending_directory.take());
+-        drop(state.namespace_batch.take());
+-        state.namespace_claim = None;
+         state.open_directories = 0;
++        promises.reconcile_owner();
++        // A receipt is observable only after every required physical/backing
++        // retirement and shared promise publication completed under this gate.
++        state.accepted_census_generation = accepted_generation;
+         state.phase = NodeDiskPhase::Open;
+-        promises.reconcile_owner();
+         Ok(())
+     }
+ 
+@@ -995,6 +1023,12 @@
+             .pending_directory
+             .as_ref()
+             .map(|operation| operation.observed())
++    }
++
++    #[cfg(test)]
++    pub(crate) fn with_state_locked_for_test<R>(&self, work: impl FnOnce() -> R) -> R {
++        let _guard = self.lock_state();
++        work()
+     }
+ 
+     pub(crate) fn fail(&self) {
+--- a/crates/kasumi-store/src/node_disk/file.rs
++++ b/crates/kasumi-store/src/node_disk/file.rs
+@@ -36,6 +36,234 @@
+             reserved_len: self.reserved_len,
+             settled: self.settled,
+         }
++    }
++}
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum CloseAttempt {
++    Unattempted,
++    Executing,
++    Failed(u64),
++}
++
++/// A terminal, positively drained attempt on one exact installed file owner.
++/// It contains no fabricated native status and cannot be cloned or constructed
++/// by a caller. Keeping it does not acknowledge any original outcome.
++pub(crate) struct FailedFileWitness {
++    disk: Arc<NodeDisk>,
++    registration: usize,
++    slot: usize,
++    attempt: u64,
++    identity: Identity,
++}
++
++/// Receipt of a transfer into the already admitted fixed custody bank. Transfer
++/// releases no registration, physical extent, original outcome or memory charge.
++pub(crate) struct FailedFileTransfer {
++    disk: Arc<NodeDisk>,
++    registration: usize,
++    slot: usize,
++    attempt: u64,
++    after_census: u64,
++}
++
++impl PartialEq for FailedFileWitness {
++    fn eq(&self, other: &Self) -> bool {
++        Arc::ptr_eq(&self.disk, &other.disk)
++            && self.registration == other.registration
++            && self.slot == other.slot
++            && self.attempt == other.attempt
++            && self.identity == other.identity
++    }
++}
++impl Eq for FailedFileWitness {}
++impl std::fmt::Debug for FailedFileWitness {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("FailedFileWitness")
++            .field("disk", &Arc::as_ptr(&self.disk))
++            .field("registration", &self.registration)
++            .field("slot", &self.slot)
++            .field("attempt", &self.attempt)
++            .field("identity", &self.identity)
++            .finish()
++    }
++}
++impl std::fmt::Debug for FailedFileTransfer {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("FailedFileTransfer")
++            .field("disk", &Arc::as_ptr(&self.disk))
++            .field("registration", &self.registration)
++            .field("slot", &self.slot)
++            .field("attempt", &self.attempt)
++            .field("after_census", &self.after_census)
++            .finish()
++    }
++}
++
++/// Original logical outcomes, borrowed only while the terminal file stays live.
++/// Native close outcomes must be absent for a known-drained witness.
++pub(crate) struct FailedCloseReport<'a> {
++    original: std::sync::MutexGuard<'a, Option<io::Error>>,
++    parent: Option<namespace::ParentFailureReport<'a>>,
++    retiring_parent: Option<namespace::ParentFailureReport<'a>>,
++}
++impl FailedCloseReport<'_> {
++    pub(crate) fn visit_errors(&self, mut visit: impl FnMut(&io::Error)) {
++        if let Some(error) = self.original.as_ref() {
++            visit(error);
++        }
++        for parent in [&self.parent, &self.retiring_parent].into_iter().flatten() {
++            parent.visit_errors(&mut visit);
++        }
++    }
++}
++
++impl NodeDiskFile {
++    fn failed_witness_locked(&self, state: &State) -> io::Result<FailedFileWitness> {
++        let owner = self.0.0.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
++        let CloseAttempt::Failed(attempt) = owner.close_attempt else {
++            return Err(io::ErrorKind::WouldBlock.into());
++        };
++        if state.phase != NodeDiskPhase::Failed
++            || owner.registration == 0
++            || !state
++                .live
++                .get(&owner.identity)
++                .is_some_and(|entry| entry.as_ptr() as usize == owner.registration)
++            || Arc::strong_count(owner) != 1
++            || Arc::weak_count(owner) != 1
++            || !state.file_custody.reserved_empty(owner.custody_slot)
++            || !owner.resources.completed_native_drain()
++        {
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
++        Ok(FailedFileWitness {
++            disk: owner.disk.clone(),
++            registration: owner.registration,
++            slot: owner.custody_slot,
++            attempt,
++            identity: owner.identity,
++        })
++    }
++
++    pub(crate) fn failed_close_witness(&self) -> io::Result<FailedFileWitness> {
++        let owner = self.0.0.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
++        let state = owner
++            .disk
++            .state
++            .try_lock()
++            .map_err(|_| io::ErrorKind::WouldBlock)?;
++        self.failed_witness_locked(&state)
++    }
++
++    pub(crate) fn with_failed_close_report<R>(
++        &self,
++        witness: &FailedFileWitness,
++        observe: impl FnOnce(&FailedCloseReport<'_>) -> R,
++    ) -> io::Result<R> {
++        if &self.failed_close_witness()? != witness {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        // No State guard crosses the callback. The enclosing NodeFile read
++        // guard prevents transfer; originals cannot change on a sealed attempt.
++        let owner = self.0.0.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
++        let original = owner
++            .original_error
++            .as_ref()
++            .ok_or(io::ErrorKind::InvalidData)?
++            .try_lock()
++            .map_err(|_| io::ErrorKind::WouldBlock)?;
++        let parent = owner
++            .parent
++            .as_ref()
++            .map(RetainedParent::failure_report)
++            .transpose()?;
++        let retiring_parent = owner
++            .retiring_parent
++            .as_ref()
++            .map(RetainedParent::failure_report)
++            .transpose()?;
++        Ok(observe(&FailedCloseReport {
++            original,
++            parent,
++            retiring_parent,
++        }))
++    }
++
++    pub(crate) fn transfer_failed(
++        &mut self,
++        witness: &FailedFileWitness,
++    ) -> io::Result<Option<FailedFileTransfer>> {
++        let disk = self
++            .0
++            .0
++            .as_ref()
++            .ok_or(io::ErrorKind::BrokenPipe)?
++            .disk
++            .clone();
++        let mut state = match disk.state.try_lock() {
++            Ok(state) => state,
++            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
++            Err(std::sync::TryLockError::Poisoned(_)) => return Err(io::ErrorKind::Other.into()),
++        };
++        if &self.failed_witness_locked(&state)? != witness {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        state
++            .accepted_census_generation
++            .checked_add(1)
++            .ok_or(io::ErrorKind::Other)?;
++        let transfer = FailedFileTransfer {
++            disk: witness.disk.clone(),
++            registration: witness.registration,
++            slot: witness.slot,
++            attempt: witness.attempt,
++            after_census: state.accepted_census_generation,
++        };
++        drop(std::mem::replace(
++            state
++                .live
++                .get_mut(&witness.identity)
++                .expect("validated registration"),
++            std::sync::Weak::new(),
++        ));
++        let mut guarded = ExplicitClose {
++            owner: &mut self.0,
++            state,
++            identity: witness.identity,
++            executing: true,
++        };
++        let owner = Arc::get_mut(&mut *guarded.owner).expect("sole terminal owner");
++        let resources = std::mem::replace(&mut owner.resources, FileResources::empty());
++        // This entry was validated under the same State guard; the move neither
++        // allocates nor drops any original diagnostic or admitted backing.
++        guarded.state.file_custody.retain(resources);
++        *guarded
++            .state
++            .live
++            .get_mut(&witness.identity)
++            .expect("occupied registration") = Arc::downgrade(guarded.owner);
++        // The original Weak retains the original Arc allocation until census.
++        drop(guarded.owner.0.take());
++        guarded.executing = false;
++        Ok(Some(transfer))
++    }
++}
++
++impl NodeDisk {
++    pub(crate) fn accepted_failure_transfer(&self, transfer: &FailedFileTransfer) -> bool {
++        if !std::ptr::eq(self, Arc::as_ptr(&transfer.disk)) {
++            return false;
++        }
++        let Ok(state) = self.state.try_lock() else {
++            return false;
++        };
++        // Every accepted generation retires all entries installed before its
++        // State-held start. No new transfer can interleave with that census.
++        state.accepted_census_generation > transfer.after_census
++            && transfer.registration != 0
++            && transfer.slot != usize::MAX
++            && transfer.attempt != 0
+     }
+ }
+ 
+@@ -67,6 +295,7 @@
+     provisional_file: Option<File>,
+     provisional_close: Option<super::native_file::CloseOutcome>,
+     original_error: Option<Mutex<Option<io::Error>>>,
++    close_attempt: CloseAttempt,
+ }
+ impl std::ops::Deref for FileOwner {
+     type Target = FileResources;
+@@ -1004,6 +1233,7 @@
+             provisional_file: None,
+             provisional_close: None,
+             original_error: Some(original_error),
++            close_attempt: CloseAttempt::Unattempted,
+         };
+         resources.custody_slot = state.file_custody.reserve()?;
+         let mut prepared = FilePreparation {
+@@ -1086,6 +1316,7 @@
+             provisional_file: None,
+             provisional_close: None,
+             original_error: Some(original_error),
++            close_attempt: CloseAttempt::Unattempted,
+         };
+         resources.custody_slot = state.file_custody.reserve()?;
+         let prepared = FilePreparation {
+@@ -1610,6 +1841,9 @@
+             return Ok(());
+         };
+         let disk = owner.disk.clone();
++        if disk.state.is_poisoned() {
++            return Err(io::ErrorKind::Other.into());
++        }
+         let mut state = disk.lock_state();
+         let identity = owner.identity;
+         let registration = owner.registration;
+@@ -1645,6 +1879,15 @@
+         let failed =
+             close.state.phase == NodeDiskPhase::Failed || !disk.device.lock().admission_ready();
+         let owner = Arc::get_mut(&mut *close.owner).expect("exclusive original owner");
++        if let CloseAttempt::Failed(_) = owner.close_attempt {
++            return Err(owner
++                .resources
++                .failure_projection()
++                .unwrap_or_else(|| io::ErrorKind::Other.into()));
++        }
++        if matches!(owner.close_attempt, CloseAttempt::Executing) {
++            return Err(io::ErrorKind::Other.into());
++        }
+         if let Some(error) = owner.resources.close_projection() {
+             return Err(error);
+         }
+@@ -1660,7 +1903,16 @@
+             let budget = mutex.get_mut().unwrap_or_else(|poison| poison.into_inner());
+             !poisoned && budget.settled
+         });
++        // Re-observing a completed or interrupted attempt consumes no new
++        // generation. Check capacity only at a genuinely new effect boundary.
++        let attempt = close
++            .state
++            .file_close_generation
++            .checked_add(1)
++            .ok_or(io::ErrorKind::Other)?;
+         close.executing = true;
++        close.state.file_close_generation = attempt;
++        owner.close_attempt = CloseAttempt::Executing;
+         if failed || !settled || owner.resources.has_failure() {
+             if !owner.resources.has_failure() {
+                 let _projected = owner.record_error(if settled {
+@@ -1679,6 +1931,7 @@
+                 enrolled.settled = false;
+             }
+             let native = owner.resources.close_descriptors();
++            owner.close_attempt = CloseAttempt::Failed(attempt);
+             return Err(owner
+                 .resources
+                 .failure_projection()
+@@ -1704,6 +1957,7 @@
+         }
+         let slot = owner.custody_slot;
+         if let Err(projected) = owner.retire_resources() {
++            owner.close_attempt = CloseAttempt::Failed(attempt);
+             return Err(owner.resources.failure_projection().unwrap_or(projected));
+         }
+         assert_eq!(
+@@ -1747,6 +2001,16 @@
+         })
+     }
+     #[cfg(test)]
++    pub(crate) fn native_close_attempts() -> u64 {
++        super::native_file::close_attempts()
++    }
++    #[cfg(test)]
++    pub(super) fn replace_original_close_error(&self, error: io::Error) {
++        let owner = self.0.0.as_ref().unwrap();
++        assert!(matches!(owner.close_attempt, CloseAttempt::Failed(_)));
++        *owner.original_error.as_ref().unwrap().lock().unwrap() = Some(error);
++    }
++    #[cfg(test)]
+     pub(crate) fn fail_next_native_close(errno: i32) {
+         super::native_file::fail_next_close(errno);
+     }
+@@ -1755,7 +2019,7 @@
+         PARENT_CLOSE_FAILURE.with(|failure| assert!(failure.replace(Some(errno)).is_none()));
+     }
+     #[cfg(test)]
+-    pub(super) fn data_descriptor(&self) -> std::os::fd::RawFd {
++    pub(crate) fn data_descriptor(&self) -> std::os::fd::RawFd {
+         self.0
+             .lock_budget()
+             .unwrap()
+--- a/crates/kasumi-store/src/node_disk/file/custody.rs
++++ b/crates/kasumi-store/src/node_disk/file/custody.rs
+@@ -107,10 +107,13 @@
+     }
+     pub(in crate::node_disk) fn retire_after_census(&mut self) {
+         for slot in &mut self.slots {
+-            if let Some(resources) = slot.resources.take() {
++            if let Some(resources) = slot.resources.as_mut() {
+                 assert!(resources.drained(), "census requires actual native drain");
+-                // Actual heap backing and original outcomes retire before the slot.
+-                drop(resources);
++                // Drop opaque diagnostics while all remaining real resources
++                // stay in their admitted slot. The census retains any original
++                // destructor panic and never publishes acceptance on unwind.
++                resources.retire_outcomes();
++                drop(slot.resources.take());
+                 slot.reserved = false;
+             }
+         }
+@@ -118,6 +121,23 @@
+ }
+ 
+ impl FileResources {
++    fn retire_outcomes(&mut self) {
++        if let Some(mutex) = &mut self.original_error {
++            drop(
++                mutex
++                    .get_mut()
++                    .unwrap_or_else(|poison| poison.into_inner())
++                    .take(),
++            );
++        }
++        for parent in [&mut self.parent, &mut self.retiring_parent]
++            .into_iter()
++            .flatten()
++        {
++            parent.retire_failure();
++        }
++    }
++
+     pub(super) fn empty() -> Self {
+         Self {
+             root: String::new(),
+@@ -136,6 +156,7 @@
+             provisional_file: None,
+             provisional_close: None,
+             original_error: None,
++            close_attempt: CloseAttempt::Unattempted,
+         }
+     }
+     pub(super) fn record_error(&self, error: io::Error) -> io::Error {
+@@ -231,6 +252,34 @@
+         }
+         first.map_or(Ok(()), Err)
+     }
++    pub(super) fn completed_native_drain(&self) -> bool {
++        let Some(original) = &self.original_error else {
++            return false;
++        };
++        let Some(budget) = &self.budget else {
++            return false;
++        };
++        let Ok(_original) = original.try_lock() else {
++            return false;
++        };
++        let Ok(budget) = budget.try_lock() else {
++            return false;
++        };
++        budget.file.is_none()
++            && budget.close_outcome.is_none()
++            && self
++                .parent
++                .as_ref()
++                .is_some_and(RetainedParent::known_drained)
++            && self
++                .retiring_parent
++                .as_ref()
++                .is_none_or(RetainedParent::known_drained)
++            && self.retired_parent.is_none()
++            && self.allocation.is_none()
++            && self.provisional_file.is_none()
++            && self.provisional_close.is_none()
++    }
+     pub(super) fn drained(&self) -> bool {
+         self.provisional_file.is_none()
+             && self.provisional_close.is_none()
+--- a/crates/kasumi-store/src/node_disk/namespace.rs
++++ b/crates/kasumi-store/src/node_disk/namespace.rs
+@@ -19,7 +19,46 @@
+     close_outcome: Option<CloseOutcome>,
+     walk: Mutex<Walk>,
+ }
++pub(super) struct ParentFailureReport<'a> {
++    walk: std::sync::MutexGuard<'a, Walk>,
++}
++impl ParentFailureReport<'_> {
++    pub(super) fn visit_errors(&self, visit: &mut impl FnMut(&io::Error)) {
++        if let Some(error) = &self.walk.failure {
++            visit(error);
++        }
++    }
++}
+ impl RetainedParent {
++    pub(super) fn retire_failure(&mut self) {
++        // Native outcomes have already been rejected by the caller's positive
++        // drained gate. Keep the parent and every other field installed if the
++        // actual logical error's destructor panics.
++        drop(
++            self.walk
++                .get_mut()
++                .unwrap_or_else(|poison| poison.into_inner())
++                .failure
++                .take(),
++        );
++    }
++    pub(super) fn known_drained(&self) -> bool {
++        let Ok(walk) = self.walk.try_lock() else {
++            return false;
++        };
++        self.file.is_none() && self.close_outcome.is_none() && walk.drained()
++    }
++    pub(super) fn failure_report(&self) -> io::Result<ParentFailureReport<'_>> {
++        let walk = self
++            .walk
++            .try_lock()
++            .map_err(|_| io::ErrorKind::WouldBlock)?;
++        if self.file.is_some() || self.close_outcome.is_some() || !walk.drained() {
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
++        Ok(ParentFailureReport { walk })
++    }
++
+     pub(super) fn prepare_storage(
+         disk: &NodeDisk,
+         root: &str,
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -3084,6 +3084,7 @@
+         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+         let repeated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| file.close()));
+         assert!(repeated.unwrap().is_err());
++        assert!(file.failed_close_witness().is_err());
+         assert_eq!(file.close_owner_address(), Some(owner));
+         assert_eq!(
+             disk.lock_state().live.values().next().unwrap().as_ptr() as usize,
+@@ -3093,3 +3094,169 @@
+         assert!(file.check_owner().is_err());
+     }
+ }
++
++#[test]
++fn acknowledged_outcome_drop_panic_withholds_census_receipt_and_retains_original_panic() {
++    #[derive(Debug)]
++    struct DropFailure {
++        count: Arc<std::sync::atomic::AtomicUsize>,
++        payload: Option<Box<usize>>,
++    }
++    impl std::fmt::Display for DropFailure {
++        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++            f.write_str("fixture original logical failure")
++        }
++    }
++    impl std::error::Error for DropFailure {}
++    impl Drop for DropFailure {
++        fn drop(&mut self) {
++            self.count.fetch_add(1, Ordering::SeqCst);
++            std::panic::panic_any(self.payload.take().unwrap());
++        }
++    }
++    let (_directory, disk, mut file) = explicit_close_fixture();
++    let before = disk.snapshot();
++    disk.fail();
++    assert!(file.close().is_err());
++    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
++    let payload = Box::new(773_usize);
++    let payload_address = std::ptr::from_ref(&*payload) as usize;
++    file.replace_original_close_error(io::Error::other(DropFailure {
++        count: count.clone(),
++        payload: Some(payload),
++    }));
++    let transfer = file
++        .transfer_failed(&file.failed_close_witness().unwrap())
++        .unwrap()
++        .unwrap();
++    assert_eq!(count.load(Ordering::SeqCst), 0);
++    assert_eq!(disk.snapshot().open_files, 1);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    let generation = disk.lock_state().accepted_census_generation;
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    assert!(!disk.accepted_failure_transfer(&transfer));
++    let address = {
++        let state = disk.lock_state();
++        let payload = state
++            .census_retirement_panic
++            .as_ref()
++            .unwrap()
++            .downcast_ref::<Box<usize>>()
++            .unwrap();
++        assert_eq!(**payload, 773);
++        assert_eq!(std::ptr::from_ref(&**payload) as usize, payload_address);
++        assert_eq!(state.accepted_census_generation, generation);
++        assert_eq!(state.open_files, 1);
++        assert_eq!(state.file_custody.retained_attempts(), 1);
++        std::ptr::from_ref(&**payload) as usize
++    };
++    assert_eq!(count.load(Ordering::SeqCst), 1);
++    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    assert_eq!(count.load(Ordering::SeqCst), 1);
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
++    let state = disk.lock_state();
++    let payload = state
++        .census_retirement_panic
++        .as_ref()
++        .unwrap()
++        .downcast_ref::<Box<usize>>()
++        .unwrap();
++    assert_eq!(std::ptr::from_ref(&**payload) as usize, address);
++}
++
++#[test]
++fn transfer_receipt_retains_exact_disk_and_exhausted_generation_refuses_before_transfer() {
++    let (_directory, disk, mut file) = explicit_close_fixture();
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let (_other_directory, config) = installation();
++    let other = open(config, memory);
++    disk.fail();
++    assert!(file.close().is_err());
++    let owner = file.close_owner_address();
++    disk.lock_state().accepted_census_generation = u64::MAX;
++    assert!(
++        file.transfer_failed(&file.failed_close_witness().unwrap())
++            .is_err()
++    );
++    assert_eq!(file.close_owner_address(), owner);
++    assert_eq!(disk.snapshot().retained_file_attempts, 0);
++    assert_eq!(disk.snapshot().open_files, 1);
++    disk.lock_state().accepted_census_generation = 0;
++    let transfer = file
++        .transfer_failed(&file.failed_close_witness().unwrap())
++        .unwrap()
++        .unwrap();
++    assert!(!other.accepted_failure_transfer(&transfer));
++    let weak = Arc::downgrade(&disk);
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    assert!(disk.accepted_failure_transfer(&transfer));
++    drop(file);
++    drop(disk);
++    let retained = weak
++        .upgrade()
++        .expect("receipt keeps exact disk allocation alive");
++    assert!(retained.accepted_failure_transfer(&transfer));
++    assert!(!other.accepted_failure_transfer(&transfer));
++}
++
++#[test]
++fn acknowledged_transfer_preserves_same_witness_across_real_state_contention() {
++    let (_directory, disk, mut file) = explicit_close_fixture();
++    disk.fail();
++    assert!(file.close().is_err());
++    let witness = file.failed_close_witness().unwrap();
++    let owner = file.close_owner_address();
++    let original = file.close_error_address();
++    let before = disk.snapshot();
++    let attempts = native_file::close_attempts();
++    disk.with_state_locked_for_test(|| {
++        for _ in 0..2 {
++            let (pending, allocations) =
++                crate::allocation_tests::measure(|| file.transfer_failed(&witness));
++            assert!(pending.unwrap().is_none());
++            assert_eq!(allocations, 0);
++            assert_eq!(file.close_owner_address(), owner);
++            assert_eq!(file.close_error_address(), original);
++            assert_eq!(native_file::close_attempts(), attempts);
++        }
++    });
++    assert_eq!(disk.snapshot().open_files, before.open_files);
++    assert_eq!(disk.snapshot().retained_file_attempts, 0);
++    let receipt = file.transfer_failed(&witness).unwrap().unwrap();
++    assert_eq!(native_file::close_attempts(), attempts);
++    assert_eq!(disk.snapshot().open_files, before.open_files);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(disk.snapshot().retained_file_attempts, 1);
++    assert!(!disk.accepted_failure_transfer(&receipt));
++    disk.reconcile(&CensusCancellation::default()).unwrap();
++    assert!(disk.accepted_failure_transfer(&receipt));
++    assert_eq!(disk.snapshot().open_files, 0);
++}
++
++#[test]
++fn exhausted_close_generation_denies_new_effects_but_preserves_terminal_native_observation() {
++    let (_directory, disk, mut file) = explicit_close_fixture();
++    let owner = file.close_owner_address();
++    let before = disk.snapshot();
++    let attempts = native_file::close_attempts();
++    disk.lock_state().file_close_generation = u64::MAX;
++    assert_eq!(file.close().unwrap_err().kind(), io::ErrorKind::Other);
++    assert_eq!(native_file::close_attempts(), attempts);
++    assert_eq!(file.close_owner_address(), owner);
++    assert!(file.close_error_address().is_none());
++    assert_eq!(disk.snapshot().open_files, before.open_files);
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(file.observed_len().unwrap(), 32 << 10);
++    disk.lock_state().file_close_generation = 0;
++    NodeDiskFile::fail_next_native_close(libc::EIO);
++    assert_eq!(file.close().unwrap_err().raw_os_error(), Some(libc::EIO));
++    let original = file.close_error_address().unwrap();
++    let attempts = native_file::close_attempts();
++    disk.lock_state().file_close_generation = u64::MAX;
++    for _ in 0..2 {
++        assert_eq!(file.close().unwrap_err().raw_os_error(), Some(libc::EIO));
++        assert_eq!(file.close_error_address(), Some(original));
++        assert_eq!(file.close_owner_address(), owner);
++        assert_eq!(native_file::close_attempts(), attempts);
++    }
++}
+--- a/crates/kasumi-store/src/node_file.rs
++++ b/crates/kasumi-store/src/node_file.rs
+@@ -1,10 +1,11 @@
+ //! One canonical node-file envelope. The discriminator and checksum are not
+ //! authentication: the caller supplies the expected installed identity before
+ //! redb may repair the recognized payload. Tenant authentication follows later.
++pub(crate) use crate::node_disk::{FailedCloseReport, FailedFileTransfer, FailedFileWitness};
+ use crate::{DiskWork, NodeDisk, NodeDiskFile, private_files::FileIdentity};
+ use anyhow::{Result, ensure};
+ use parking_lot::RwLock;
+-use redb::{AdmissionError, OwnerFailed, StorageAdmission, StorageBackend};
++use redb::{AdmissionError, BackendCloseOutcome, OwnerFailed, StorageAdmission, StorageBackend};
+ use sha2::{Digest, Sha256};
+ use std::{
+     io,
+@@ -47,11 +48,34 @@
+     pub fn delete(self) -> Result<()> {
+         let owner = Arc::try_unwrap(self.owner)
+             .map_err(|_| anyhow::anyhow!("node cleanup owner is still retained"))?;
+-        let file = owner
+-            .file
+-            .into_inner()
+-            .ok_or_else(|| anyhow::anyhow!("node cleanup descriptor is closed"))?;
++        let file = owner.file.into_inner();
++        let FileState::Owned(file) = file else {
++            anyhow::bail!("node cleanup descriptor is not owned");
++        };
+         Ok(owner.disk.delete_file(file)?)
++    }
++}
++
++enum FileState {
++    Prepared,
++    Acquiring,
++    Owned(NodeDiskFile),
++    Closed,
++    Transferring(NodeDiskFile),
++    FailedTransferred,
++}
++impl FileState {
++    fn owned(&self) -> Option<&NodeDiskFile> {
++        match self {
++            Self::Owned(file) => Some(file),
++            _ => None,
++        }
++    }
++    fn owned_mut(&mut self) -> Option<&mut NodeDiskFile> {
++        match self {
++            Self::Owned(file) => Some(file),
++            _ => None,
++        }
+     }
+ }
+ 
+@@ -59,7 +83,7 @@
+     // Closing redb removes the actual descriptor even if an internal reader
+     // retains its backend Arc. Already-running descriptor operations drain
+     // under this lock before exclusive file ownership is released.
+-    file: RwLock<Option<NodeDiskFile>>,
++    file: RwLock<FileState>,
+     disk: Arc<NodeDisk>,
+     path: PathBuf,
+     id: Uuid,
+@@ -88,7 +112,7 @@
+     /// storage census before `acquire_prepared` may perform any filesystem I/O.
+     pub(crate) fn retained_prepared(path: &Path, id: Uuid, disk: Arc<NodeDisk>) -> Arc<Self> {
+         Arc::new(Self {
+-            file: RwLock::new(None),
++            file: RwLock::new(FileState::Prepared),
+             disk,
+             path: path.to_owned(),
+             id,
+@@ -103,6 +127,17 @@
+     ) -> Result<()> {
+         use crate::storage_opening::NodeOpeningMode;
+         ensure!(!self.id.is_nil(), "node store identity is nil");
++        let mut guard = self
++            .file
++            .try_write()
++            .ok_or_else(|| io::Error::from(io::ErrorKind::WouldBlock))?;
++        ensure!(
++            matches!(*guard, FileState::Prepared),
++            "node file acquisition already entered"
++        );
++        // The state changes before any descriptor effect. Failure or unwind
++        // cannot make an absent descriptor authorize a second acquisition.
++        *guard = FileState::Acquiring;
+         let (root, relative) = self.disk.binding(&self.path)?;
+         let file = match mode {
+             NodeOpeningMode::Create => {
+@@ -114,7 +149,8 @@
+             }
+         };
+         // No validation, callback or envelope operation precedes actual custody.
+-        *self.file.write() = Some(file);
++        *guard = FileState::Owned(file);
++        drop(guard);
+         {
+             let guard = self.file.read();
+             let file = present(&guard)?;
+@@ -228,7 +264,7 @@
+         // Envelope validation and all redb I/O retain that same physical owner.
+         file.check_owner()?;
+         Ok(Arc::new(Self {
+-            file: RwLock::new(Some(file)),
++            file: RwLock::new(FileState::Owned(file)),
+             disk,
+             path: path.to_owned(),
+             id,
+@@ -278,8 +314,62 @@
+     #[cfg(test)]
+     pub(crate) fn retained_file_custody(&self) -> Option<(usize, Option<usize>)> {
+         let guard = self.file.read();
+-        let file = guard.as_ref()?;
++        let file = guard.owned()?;
+         Some((file.close_owner_address()?, file.close_error_address()))
++    }
++
++    #[cfg(test)]
++    pub(crate) fn fail_next_native_close(errno: i32) {
++        NodeDiskFile::fail_next_native_close(errno);
++    }
++    #[cfg(test)]
++    pub(crate) fn native_close_attempts() -> u64 {
++        NodeDiskFile::native_close_attempts()
++    }
++    pub(crate) fn failed_close_witness(&self) -> io::Result<FailedFileWitness> {
++        let guard = self.file.try_read().ok_or(io::ErrorKind::WouldBlock)?;
++        present(&guard)?.failed_close_witness()
++    }
++
++    pub(crate) fn with_failed_close_report<R>(
++        &self,
++        witness: &FailedFileWitness,
++        observe: impl FnOnce(&FailedCloseReport<'_>) -> R,
++    ) -> io::Result<R> {
++        let guard = self.file.try_read().ok_or(io::ErrorKind::WouldBlock)?;
++        present(&guard)?.with_failed_close_report(witness, observe)
++    }
++
++    pub(crate) fn transfer_failed(
++        &self,
++        witness: &FailedFileWitness,
++    ) -> io::Result<Option<FailedFileTransfer>> {
++        let Some(mut guard) = self.file.try_write() else {
++            return Ok(None);
++        };
++        ensure_owned(&guard)?;
++        let FileState::Owned(file) = std::mem::replace(&mut *guard, FileState::Acquiring) else {
++            unreachable!("validated file owner");
++        };
++        *guard = FileState::Transferring(file);
++        let FileState::Transferring(file) = &mut *guard else {
++            unreachable!()
++        };
++        match file.transfer_failed(witness) {
++            Ok(Some(receipt)) => {
++                *guard = FileState::FailedTransferred;
++                Ok(Some(receipt))
++            }
++            pending_or_error => {
++                let FileState::Transferring(file) =
++                    std::mem::replace(&mut *guard, FileState::Acquiring)
++                else {
++                    unreachable!()
++                };
++                *guard = FileState::Owned(file);
++                pending_or_error
++            }
++        }
+     }
+ 
+     pub(crate) fn backend(self: &Arc<Self>) -> NodeBackend {
+@@ -318,9 +408,12 @@
+     Ok(())
+ }
+ 
+-fn present(file: &Option<NodeDiskFile>) -> io::Result<&NodeDiskFile> {
+-    file.as_ref()
+-        .ok_or_else(|| io::ErrorKind::BrokenPipe.into())
++fn ensure_owned(file: &FileState) -> io::Result<()> {
++    present(file).map(|_| ())
++}
++
++fn present(file: &FileState) -> io::Result<&NodeDiskFile> {
++    file.owned().ok_or_else(|| io::ErrorKind::BrokenPipe.into())
+ }
+ 
+ fn physical_end(offset: u64, length: u64) -> io::Result<u64> {
+@@ -426,7 +519,7 @@
+         // shared lock permits shrink between a write's range check and pwrite,
+         // after which that write can silently extend the truncated payload.
+         let mut guard = self.0.file.write();
+-        let file = guard.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
++        let file = guard.owned_mut().ok_or(io::ErrorKind::BrokenPipe)?;
+         let current = file.observed_len()?;
+         if physical < current {
+             // redb has already made the reduced extent's winning header
+@@ -458,15 +551,37 @@
+         file.write_all_at(bytes, physical_end(offset, 0)?)
+     }
+ 
+-    fn close(&self) -> io::Result<()> {
+-        let mut guard = self.0.file.write();
+-        if let Some(file) = guard.as_mut() {
+-            // Failure or unwind keeps the exact FileOwner in this same slot.
+-            // The I/O error is a projection; its original stays in file custody.
+-            file.close()?;
+-        }
+-        drop(guard.take());
+-        Ok(())
++    fn close(&self) -> BackendCloseOutcome {
++        let Some(mut guard) = self.0.file.try_write() else {
++            return BackendCloseOutcome::retained(io::ErrorKind::WouldBlock.into());
++        };
++        match &mut *guard {
++            FileState::Owned(file) => match file.close() {
++                Ok(()) => {
++                    *guard = FileState::Closed;
++                    BackendCloseOutcome::drained(Ok(()))
++                }
++                Err(error) => {
++                    // Logical failure is independent of physical native drain.
++                    // Only the exact terminal owner can attest the latter.
++                    if file.failed_close_witness().is_ok() {
++                        BackendCloseOutcome::drained(Err(error))
++                    } else {
++                        BackendCloseOutcome::retained(error)
++                    }
++                }
++            },
++            FileState::Prepared | FileState::Closed => {
++                *guard = FileState::Closed;
++                BackendCloseOutcome::drained(Ok(()))
++            }
++            FileState::FailedTransferred => {
++                BackendCloseOutcome::drained(Err(io::ErrorKind::BrokenPipe.into()))
++            }
++            FileState::Acquiring | FileState::Transferring(_) => {
++                BackendCloseOutcome::retained(io::ErrorKind::Other.into())
++            }
++        }
+     }
+ }
+ 
+--- a/crates/kasumi-store/src/node_file/tests.rs
++++ b/crates/kasumi-store/src/node_file/tests.rs
+@@ -197,7 +197,7 @@
+         .write(0, b"partly initialized payload")
+         .unwrap();
+     owner.backend().sync_data().unwrap();
+-    owner.backend().close().unwrap();
++    owner.backend().close().into_result().unwrap();
+     let before = std::fs::read(&path).unwrap();
+     assert!(
+         NodeStore::open_existing_fixture(
+@@ -368,8 +368,8 @@
+     assert!(resize(&backend, 0).is_err());
+     assert!(backend.sync_data().is_err());
+     assert_eq!(std::fs::read(&path).unwrap(), header_before);
+-    assert!(backend.close().is_err());
+-    assert!(owner.file.read().is_some());
++    assert!(backend.close().into_result().is_err());
++    assert!(matches!(*owner.file.read(), FileState::Owned(_)));
+     assert_eq!(owner.disk.snapshot().open_files, 1);
+     assert!(backend.len().is_err());
+     assert!(backend.read(0, &mut read).is_err());
+@@ -428,10 +428,20 @@
+         redb::TerminalObservation::Returned(Err(error)) => std::ptr::from_ref(error),
+         _ => panic!("substituted descriptor opening must retain its original error"),
+     };
++    // Opening records the failure but cannot attest drain before explicit close.
+     assert_eq!(
+         opening.report().settlement(),
+         redb::DatabaseOpenSettlement::Retained
+     );
++    assert!(matches!(
++        opening.report().partial_close(),
++        redb::TerminalObservation::NotEntered
++    ));
++    assert_eq!(
++        opening.report().native_disposition(),
++        redb::BackendNativeDisposition::Retained
++    );
++    assert!(owner.failed_close_witness().is_err());
+     assert_eq!(original, std::fs::read(&moved).unwrap());
+     assert_eq!(unrelated, std::fs::read(&path).unwrap());
+     assert_eq!(private_files::file_identity(&moved).unwrap(), expected);
+@@ -443,10 +453,10 @@
+     // its known descriptors closed. Both original opening error and actual
+     // file owner remain retained until this test explicitly drops them.
+     assert_eq!(disk.snapshot().open_files, 1);
+-    let file_owner = owner.file.read().as_ref().unwrap().close_owner_address();
++    let file_owner = owner.file.read().owned().unwrap().close_owner_address();
+     assert_eq!(
+         opening.close().settlement(),
+-        redb::DatabaseOpenSettlement::Retained
++        redb::DatabaseOpenSettlement::DrainedWithFailure
+     );
+     {
+         let report = opening.report();
+@@ -460,7 +470,7 @@
+         ));
+     }
+     assert_eq!(
+-        owner.file.read().as_ref().unwrap().close_owner_address(),
++        owner.file.read().owned().unwrap().close_owner_address(),
+         file_owner
+     );
+     assert_eq!(disk.snapshot().open_files, 1);
+@@ -676,7 +686,7 @@
+     resize(&backend, 0).unwrap();
+     assert!(backend.read(0, &mut []).is_ok());
+     assert!(backend.read(1, &mut []).is_err());
+-    backend.close().unwrap();
++    backend.close().into_result().unwrap();
+ }
+ 
+ #[test]
+@@ -730,7 +740,7 @@
+     });
+     assert_eq!(backend.len().unwrap(), 0);
+     assert_eq!(std::fs::read(&path).unwrap(), expected_header);
+-    backend.close().unwrap();
++    backend.close().into_result().unwrap();
+ }
+ 
+ #[test]
+@@ -741,23 +751,23 @@
+     let owner = create_node(&path, ID, memory);
+     let backend = owner.backend();
+     let before = std::fs::read(&path).unwrap();
+-    let held = owner.file.read().as_ref().unwrap().clone();
++    let held = owner.file.read().owned().unwrap().clone();
+     let address = held.close_owner_address();
+     assert_eq!(
+-        backend.close().unwrap_err().kind(),
++        backend.close().into_result().unwrap_err().kind(),
+         io::ErrorKind::WouldBlock
+     );
+     assert_eq!(
+-        owner.file.read().as_ref().unwrap().close_owner_address(),
++        owner.file.read().owned().unwrap().close_owner_address(),
+         address
+     );
+     assert_eq!(owner.disk.snapshot().open_files, 1);
+     assert_eq!(backend.len().unwrap(), 0);
+     drop(held);
+-    backend.close().unwrap();
+-    assert!(owner.file.read().is_none());
++    backend.close().into_result().unwrap();
++    assert!(matches!(*owner.file.read(), FileState::Closed));
+     assert_eq!(owner.disk.snapshot().open_files, 0);
+-    backend.close().unwrap();
++    backend.close().into_result().unwrap();
+     assert!(backend.len().is_err());
+     assert!(backend.read(0, &mut []).is_err());
+     assert!(backend.write(0, &[]).is_err());
+@@ -774,22 +784,28 @@
+     let path = directory.path().join("failed-explicit-close");
+     let owner = create_node(&path, ID, memory);
+     let backend = owner.backend();
+-    let address = owner.file.read().as_ref().unwrap().close_owner_address();
++    let address = owner.file.read().owned().unwrap().close_owner_address();
+     let before = owner.disk.snapshot();
+     let bytes = std::fs::read(&path).unwrap();
+     NodeDiskFile::fail_next_native_close(libc::EIO);
+-    assert_eq!(backend.close().unwrap_err().raw_os_error(), Some(libc::EIO));
++    assert_eq!(
++        backend.close().into_result().unwrap_err().raw_os_error(),
++        Some(libc::EIO)
++    );
+     let original = owner
+         .file
+         .read()
+-        .as_ref()
++        .owned()
+         .unwrap()
+         .close_error_address()
+         .unwrap();
+     for _ in 0..2 {
+-        assert_eq!(backend.close().unwrap_err().raw_os_error(), Some(libc::EIO));
++        assert_eq!(
++            backend.close().into_result().unwrap_err().raw_os_error(),
++            Some(libc::EIO)
++        );
+         let file = owner.file.read();
+-        let file = file.as_ref().unwrap();
++        let file = file.owned().unwrap();
+         assert_eq!(file.close_owner_address(), address);
+         assert_eq!(file.close_error_address(), Some(original));
+         assert_eq!(owner.disk.snapshot().open_files, 1);
+@@ -809,3 +825,205 @@
+     assert!(backend.sync_data().is_err());
+     assert_eq!(std::fs::read(&path).unwrap(), bytes);
+ }
++
++#[test]
++fn acknowledged_known_drained_file_waits_for_accepted_census_without_reopening() {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let directory = directory();
++    let path = directory.path().join("acknowledged-failure");
++    let owner = create_node(&path, ID, memory);
++    let backend = owner.backend();
++    let identity = private_files::file_identity(&path).unwrap();
++    let bytes = std::fs::read(&path).unwrap();
++    owner.disk.fail();
++    let closed = backend.close();
++    assert_eq!(
++        closed.native_disposition(),
++        redb::BackendNativeDisposition::Drained
++    );
++    assert!(closed.into_result().is_err());
++    let original = owner.retained_file_custody().unwrap().1.unwrap();
++    let before = owner.disk.snapshot();
++    let witness = owner.failed_close_witness().unwrap();
++    let mut originals = 0;
++    owner
++        .with_failed_close_report(&witness, |report| {
++            // A diagnostic borrower must never retain the NodeDisk State gate.
++            assert_eq!(owner.disk.snapshot().open_files, 1);
++            report.visit_errors(|error| {
++                assert_eq!(std::ptr::from_ref(error) as usize, original);
++                originals += 1;
++            });
++        })
++        .unwrap();
++    assert_eq!(originals, 1);
++    let stale = owner.failed_close_witness().unwrap();
++    let attempts = NodeFile::native_close_attempts();
++    let (transferred, allocations) =
++        crate::allocation_tests::measure(|| owner.transfer_failed(&witness));
++    let transferred = transferred.unwrap().unwrap();
++    assert_eq!(allocations, 0);
++    assert_eq!(NodeFile::native_close_attempts(), attempts);
++    assert!(matches!(*owner.file.read(), FileState::FailedTransferred));
++    assert!(owner.transfer_failed(&stale).is_err());
++    assert!(
++        owner
++            .acquire_prepared(&crate::storage_opening::NodeOpeningMode::Create)
++            .is_err()
++    );
++    assert!(backend.len().is_err());
++    assert!(backend.write(0, b"forbidden").is_err());
++    assert_eq!(owner.disk.snapshot().open_files, before.open_files);
++    assert_eq!(owner.disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(owner.disk.snapshot().pending_bytes, before.pending_bytes);
++    assert_eq!(owner.disk.snapshot().retained_file_attempts, 1);
++    assert!(!owner.disk.accepted_failure_transfer(&transferred));
++    let cancel = crate::CensusCancellation::default();
++    cancel.cancel();
++    assert!(owner.disk.reconcile(&cancel).is_err());
++    assert!(!owner.disk.accepted_failure_transfer(&transferred));
++    assert_eq!(owner.disk.snapshot().open_files, 1);
++    assert_eq!(owner.disk.snapshot().retained_file_attempts, 1);
++    assert_eq!(owner.disk.snapshot().charged_bytes, before.charged_bytes);
++    owner
++        .disk
++        .reconcile(&crate::CensusCancellation::default())
++        .unwrap();
++    assert!(owner.disk.accepted_failure_transfer(&transferred));
++    assert_eq!(owner.disk.snapshot().open_files, 0);
++    assert_eq!(owner.disk.snapshot().retained_file_attempts, 0);
++    assert_eq!(private_files::file_identity(&path).unwrap(), identity);
++    assert_eq!(std::fs::read(&path).unwrap(), bytes);
++    assert!(
++        owner
++            .acquire_prepared(&crate::storage_opening::NodeOpeningMode::Existing)
++            .is_err()
++    );
++    let (root, relative) = owner.disk.binding(&path).unwrap();
++    owner
++        .disk
++        .open_file(root, relative)
++        .unwrap()
++        .close()
++        .unwrap();
++}
++
++#[test]
++fn failed_file_report_blocks_transfer_and_foreign_witnesses_do_not_move_custody() {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let directory = directory();
++    let first = create_node(&directory.path().join("first"), ID, memory.clone());
++    let second = create_node(&directory.path().join("second"), ID, memory);
++    assert!(Arc::ptr_eq(&first.disk, &second.disk));
++    first.disk.fail();
++    assert!(first.backend().close().into_result().is_err());
++    assert!(second.backend().close().into_result().is_err());
++    let original = first.retained_file_custody().unwrap();
++    assert!(
++        first
++            .transfer_failed(&second.failed_close_witness().unwrap())
++            .is_err()
++    );
++    assert_eq!(first.retained_file_custody().unwrap(), original);
++    let report = first.failed_close_witness().unwrap();
++    let racing = first.failed_close_witness().unwrap();
++    first
++        .with_failed_close_report(&report, |borrowed| {
++            let mut count = 0;
++            borrowed.visit_errors(|_| count += 1);
++            assert_eq!(count, 1);
++            assert!(first.transfer_failed(&racing).unwrap().is_none());
++        })
++        .unwrap();
++    let one = first.transfer_failed(&racing).unwrap().unwrap();
++    assert!(
++        first
++            .disk
++            .reconcile(&crate::CensusCancellation::default())
++            .is_err()
++    );
++    assert!(!first.disk.accepted_failure_transfer(&one));
++    let two = second
++        .transfer_failed(&second.failed_close_witness().unwrap())
++        .unwrap()
++        .unwrap();
++    first
++        .disk
++        .reconcile(&crate::CensusCancellation::default())
++        .unwrap();
++    assert!(first.disk.accepted_failure_transfer(&one));
++    assert!(first.disk.accepted_failure_transfer(&two));
++}
++
++#[test]
++fn unknown_native_close_cannot_mint_recovery_witness_or_retry_a_reused_descriptor() {
++    use std::os::fd::AsRawFd;
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let directory = directory();
++    let path = directory.path().join("unknown-close");
++    let owner = create_node(&path, ID, memory);
++    let backend = owner.backend();
++    let descriptor = owner.file.read().owned().unwrap().data_descriptor();
++    NodeFile::fail_next_native_close(libc::EIO);
++    let closed = backend.close();
++    assert_eq!(
++        closed.native_disposition(),
++        redb::BackendNativeDisposition::Retained
++    );
++    assert_eq!(
++        closed.into_result().unwrap_err().raw_os_error(),
++        Some(libc::EIO)
++    );
++    let original = owner.retained_file_custody().unwrap();
++    let attempts = NodeFile::native_close_attempts();
++    let sentinel = options()
++        .create_new(true)
++        .open(directory.path().join("sentinel"))
++        .unwrap();
++    assert_eq!(
++        sentinel.as_raw_fd(),
++        descriptor,
++        "fixture reuses the diagnostic descriptor integer"
++    );
++    sentinel.write_all_at(b"still owned", 0).unwrap();
++    for _ in 0..2 {
++        assert!(owner.failed_close_witness().is_err());
++        let repeated = backend.close();
++        assert_eq!(
++            repeated.native_disposition(),
++            redb::BackendNativeDisposition::Retained
++        );
++        assert_eq!(
++            repeated.into_result().unwrap_err().raw_os_error(),
++            Some(libc::EIO)
++        );
++        assert_eq!(NodeFile::native_close_attempts(), attempts);
++        assert_eq!(owner.retained_file_custody().unwrap(), original);
++        let mut bytes = [0; 11];
++        sentinel.read_exact_at(&mut bytes, 0).unwrap();
++        assert_eq!(&bytes, b"still owned");
++    }
++}
++
++#[test]
++fn closed_prepared_node_file_cannot_acquire_a_new_descriptor() {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let directory = directory();
++    let path = directory.path().join("never-acquired");
++    let disk = NodeDisk::fixture_for_path(&path, memory).unwrap();
++    let owner = NodeFile::retained_prepared(&path, ID, disk);
++    let closed = owner.backend().close();
++    assert_eq!(
++        closed.native_disposition(),
++        redb::BackendNativeDisposition::Drained
++    );
++    closed.into_result().unwrap();
++    assert!(matches!(*owner.file.read(), FileState::Closed));
++    assert!(
++        owner
++            .acquire_prepared(&crate::storage_opening::NodeOpeningMode::Create)
++            .is_err()
++    );
++    assert!(!path.exists());
++    assert_eq!(owner.disk.snapshot().open_files, 0);
++}
+--- a/crates/kasumi-store/src/retained_spool.rs
++++ b/crates/kasumi-store/src/retained_spool.rs
+@@ -1,5 +1,6 @@
+ //! Borrowed scratch close with one authoritative outcome in the caller's owner.
+ use super::EncryptedSpool;
++use redb::{BackendCloseOutcome, BackendNativeDisposition};
+ use std::io;
+ 
+ /// The original error or panic belongs to the aggregate that invoked close.
+@@ -15,6 +16,8 @@
+     DisposalEntered,
+     /// Disposal unwound. It must never be replayed or labeled complete.
+     DisposalInterrupted,
++    /// One native close failed. Its descriptor is diagnostic, never retried.
++    NativeUncertain,
+     /// Successful sync preceded actual physical and allocation disposal.
+     Complete,
+ }
+@@ -76,36 +79,45 @@
+     /// Close once by borrow. A retry after uncertainty returns only an inline
+     /// fence; consult the aggregate's original outcome, never that retry error.
+     /// Complete retries succeed without performing any physical operation.
+-    pub fn close(&mut self) -> io::Result<()> {
++    pub fn close(&mut self) -> BackendCloseOutcome {
+         self.close_with(EncryptedSpool::sync_all)
+     }
+-    fn close_with(
++    pub(super) fn close_with(
+         &mut self,
+         sync: impl FnOnce(&mut EncryptedSpool) -> io::Result<()>,
+-    ) -> io::Result<()> {
++    ) -> BackendCloseOutcome {
+         match self.phase {
+-            SpoolClosePhase::Complete => return Ok(()),
++            SpoolClosePhase::Complete => return BackendCloseOutcome::drained(Ok(())),
+             SpoolClosePhase::Open => {}
+-            _ => return Err(io::ErrorKind::BrokenPipe.into()),
++            _ => return BackendCloseOutcome::retained(io::ErrorKind::BrokenPipe.into()),
+         }
+         self.phase = SpoolClosePhase::SyncEntered;
+         let attempt = SyncAttempt(&mut self.phase);
+         let spool = self.spool.as_mut().expect("open spool retained");
+-        let result = sync(spool);
++        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sync(spool))) {
++            Ok(result) => result,
++            Err(payload) => {
++                spool.owner_failed();
++                std::panic::resume_unwind(payload)
++            }
++        };
+         match result {
+             Err(error) => {
+                 *attempt.0 = SpoolClosePhase::FailedTransferred;
+-                Err(error)
++                BackendCloseOutcome::retained(error)
+             }
+             Ok(()) => {
+-                // Only a successful sync enters disposal. These concrete fields
+-                // contain no callbacks: File, byte/key buffers, digest and the
+-                // retained disk charge. Field order retires the backing before
+-                // the charge can make its extent available again.
++                // Native closure is independently observed before the charge
++                // may become available. Unknown closure keeps the actual spool.
+                 *attempt.0 = SpoolClosePhase::DisposalEntered;
+-                drop(self.spool.take());
+-                *attempt.0 = SpoolClosePhase::Complete;
+-                Ok(())
++                let outcome = spool.close_native_after_sync();
++                if outcome.native_disposition() == BackendNativeDisposition::Drained {
++                    drop(self.spool.take());
++                    *attempt.0 = SpoolClosePhase::Complete;
++                } else {
++                    *attempt.0 = SpoolClosePhase::NativeUncertain;
++                }
++                outcome
+             }
+         }
+     }
+--- a/crates/kasumi-store/src/retained_spool_tests.rs
++++ b/crates/kasumi-store/src/retained_spool_tests.rs
+@@ -101,7 +101,7 @@
+     fn sync_data(&self) -> io::Result<()> {
+         self.0.with(EncryptedSpool::sync_all)
+     }
+-    fn close(&self) -> io::Result<()> {
++    fn close(&self) -> redb::BackendCloseOutcome {
+         self.0.closes.fetch_add(1, Ordering::SeqCst);
+         let mut retained = self.0.spool.lock().unwrap_or_else(|p| p.into_inner());
+         retained.close_with(|spool| {
+@@ -184,6 +184,10 @@
+     let before = fixture.disk.snapshot();
+     let report = fixture.database.close();
+     assert_eq!(report.settlement(), DatabaseCloseSettlement::Retained);
++    assert_eq!(
++        report.native_disposition(),
++        redb::BackendNativeDisposition::Retained
++    );
+     assert!(matches!(
+         report.shutdown(),
+         TerminalObservation::Returned(Ok(()))
+@@ -237,10 +241,9 @@
+             .len()
+             > 0
+     );
+-    assert_eq!(
+-        retained.close().unwrap_err().kind(),
+-        io::ErrorKind::BrokenPipe
+-    );
++    let (result, native) = retained.close().into_parts();
++    assert_eq!(native, redb::BackendNativeDisposition::Retained);
++    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+     drop(retained);
+     assert_eq!(fixture.backend.closes.load(Ordering::SeqCst), 1);
+     assert_eq!(fixture.backend.terminal_syncs.load(Ordering::SeqCst), 1);
+@@ -260,6 +263,10 @@
+     let before = fixture.disk.snapshot();
+     let report = fixture.database.close();
+     assert_eq!(report.settlement(), DatabaseCloseSettlement::Retained);
++    assert_eq!(
++        report.native_disposition(),
++        redb::BackendNativeDisposition::Retained
++    );
+     let TerminalObservation::Panicked(original) = report.backend() else {
+         panic!("original unwind missing");
+     };
+@@ -291,10 +298,9 @@
+             > 0
+     );
+     assert!(retained.spool().is_none());
+-    assert_eq!(
+-        retained.close().unwrap_err().kind(),
+-        io::ErrorKind::BrokenPipe
+-    );
++    let (result, native) = retained.close().into_parts();
++    assert_eq!(native, redb::BackendNativeDisposition::Retained);
++    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+     drop(retained);
+     assert_eq!(fixture.backend.closes.load(Ordering::SeqCst), 1);
+     assert_eq!(fixture.backend.terminal_syncs.load(Ordering::SeqCst), 1);
+@@ -342,6 +348,8 @@
+                     retained.close()
+                 })
+             });
++            let (result, native) = result.into_parts();
++            assert_eq!(native, redb::BackendNativeDisposition::Drained);
+             result.unwrap();
+             assert_eq!(allocations, 0);
+             retained
+@@ -382,7 +390,9 @@
+         assert_eq!(retained.phase(), SpoolClosePhase::Complete);
+         assert!(retained.spool.is_none());
+         assert!(retained.spool().is_none());
+-        let (result, allocations) = measure(|| retained.close());
++        let (outcome, allocations) = measure(|| retained.close());
++        let (result, native) = outcome.into_parts();
++        assert_eq!(native, redb::BackendNativeDisposition::Drained);
+         result.unwrap();
+         assert_eq!(allocations, 0);
+         assert_eq!(disk.snapshot().charged_bytes, 0);
+--- a/crates/kasumi-store/src/scratch_disk.rs
++++ b/crates/kasumi-store/src/scratch_disk.rs
+@@ -363,6 +363,10 @@
+                 identity,
+                 bytes: 0,
+                 allocated: 0,
++                // Legacy implicit File destruction still lacks observed native
++                // retirement. Explicit native close marks uncertainty before
++                // consuming the File and may only restore this on success.
++                release_on_drop: true,
+             },
+         ))
+     }
+@@ -404,6 +408,7 @@
+     identity: (u64, u64),
+     bytes: u64,
+     allocated: u64,
++    release_on_drop: bool,
+ }
+ impl Charge {
+     pub(crate) fn disk(&self) -> &Arc<ScratchDisk> {
+@@ -411,6 +416,17 @@
+     }
+     pub(crate) fn fail_owner(&self) {
+         self.disk.device.lock().fail_owner();
++    }
++
++    /// A consumed native descriptor with an unobserved result may never return
++    /// its file or extent credit, even if the enclosing aggregate is dropped.
++    pub(crate) fn native_close_entered(&mut self) {
++        self.release_on_drop = false;
++    }
++
++    /// Only the observed successful native close restores credit retirement.
++    pub(crate) fn native_close_drained(&mut self) {
++        self.release_on_drop = true;
+     }
+ 
+     pub(crate) fn check_owner(&self, file: &File) -> io::Result<()> {
+@@ -525,6 +541,13 @@
+ }
+ impl Drop for Charge {
+     fn drop(&mut self) {
++        if !self.release_on_drop {
++            // The installed ScratchDisk remains strongly registered. Its file,
++            // extent and pending counts conservatively retain this debt while
++            // the physical device is fenced; no allocation is made on drop.
++            self.fail_owner();
++            return;
++        }
+         let mut state = self.disk.lock_state();
+         let mut pending = self.disk.device.lock();
+         let bytes = state.bytes.checked_sub(self.bytes);
+--- a/crates/kasumi-store/src/scratch_table.rs
++++ b/crates/kasumi-store/src/scratch_table.rs
+@@ -98,7 +98,7 @@
+             spool.write_all(bytes)
+         })
+     }
+-    fn close(&self) -> io::Result<()> {
++    fn close(&self) -> redb::BackendCloseOutcome {
+         let mut owner = self.0.0.lock().unwrap_or_else(|poisoned| {
+             let owner = poisoned.into_inner();
+             if let Some(spool) = owner.as_ref() {
+@@ -106,7 +106,17 @@
+             }
+             owner
+         });
+-        owner.take().map_or(Ok(()), EncryptedSpool::close)
++        let Some(spool) = owner.as_mut() else {
++            // Only a positively drained prior call removes this exact spool.
++            return redb::BackendCloseOutcome::drained(Ok(()));
++        };
++        let outcome = spool.close_once();
++        if outcome.native_disposition() == redb::BackendNativeDisposition::Drained {
++            // Native retirement precedes key/buffer retirement and its charge.
++            // An uncertain close keeps the original spool installed here.
++            drop(owner.take());
++        }
++        outcome
+     }
+ }
+ pub struct EncryptedTable {
+--- a/crates/kasumi-store/src/scratch_table_tests.rs
++++ b/crates/kasumi-store/src/scratch_table_tests.rs
+@@ -29,14 +29,21 @@
+         backend.set_len(31)?;
+         backend.sync_data()?;
+         owner.settle_growth(31).unwrap();
+-        backend.close()
++        let outcome = backend.close();
++        assert_eq!(
++            outcome.native_disposition(),
++            redb::BackendNativeDisposition::Drained
++        );
++        outcome.into_result()
+     });
+     result.unwrap();
+     assert_eq!(allocations, 0);
+     assert_eq!(output, input);
+     assert_eq!(disk.snapshot().charged_bytes, 0);
+     assert_eq!(disk.snapshot().live_files, 0);
+-    backend.close().unwrap();
++    let (result, native) = backend.close().into_parts();
++    assert_eq!(native, redb::BackendNativeDisposition::Drained);
++    result.unwrap();
+     assert!(owner.check_owner().is_err());
+ }
+ 
+@@ -65,7 +72,9 @@
+         owner.reserve_growth(64 << 10, 192 << 10),
+         Err(AdmissionError::CapacityDenied)
+     );
+-    backend.close().unwrap();
++    let (result, native) = backend.close().into_parts();
++    assert_eq!(native, redb::BackendNativeDisposition::Drained);
++    result.unwrap();
+ }
+ 
+ #[test]
+@@ -79,6 +88,10 @@
+     backend.set_len(64 << 10).unwrap();
+     backend.sync_data().unwrap();
+     let charged = disk.snapshot().charged_bytes;
++    let address = {
++        let retained = owner.0.lock().unwrap();
++        std::ptr::from_ref(retained.as_ref().unwrap())
++    };
+     let (outcome, allocations) = measure(|| owner.settle_growth(0));
+     assert_eq!(outcome, Err(OwnerFailed));
+     assert_eq!(allocations, 0);
+@@ -89,10 +102,30 @@
+         Err(AdmissionError::OwnerFailed)
+     );
+     let (closed, allocations) = measure(|| backend.close());
++    assert_eq!(
++        closed.native_disposition(),
++        redb::BackendNativeDisposition::Retained
++    );
++    let closed = closed.into_result();
+     assert!(closed.is_err());
+     assert_eq!(allocations, 0);
+-    assert_eq!(disk.snapshot().live_files, 0);
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().live_files, 1);
++    assert_eq!(disk.snapshot().charged_bytes, charged);
++    for _ in 0..2 {
++        let (outcome, allocations) = measure(|| backend.close());
++        let (result, native) = outcome.into_parts();
++        assert_eq!(native, redb::BackendNativeDisposition::Retained);
++        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
++        assert_eq!(allocations, 0);
++        let retained = owner.0.lock().unwrap();
++        assert_eq!(std::ptr::from_ref(retained.as_ref().unwrap()), address);
++        assert_eq!(disk.snapshot().live_files, 1);
++        assert_eq!(disk.snapshot().charged_bytes, charged);
++    }
++    // This deliberately failed owner has no disposal proof. Keep it installed
++    // for the process lifetime instead of using Drop as credit evidence.
++    static RETAINED: std::sync::Mutex<Option<Arc<Owner>>> = std::sync::Mutex::new(None);
++    *RETAINED.lock().unwrap() = Some(owner);
+ }
+ 
+ #[test]
+@@ -132,12 +165,48 @@
+     let table = EncryptedTable {
+         database: crate::node_database::NodeDatabase::new(database, "encrypted scratch table"),
+     };
++    let before = disk.snapshot();
++    let address = {
++        let retained = owner.0.lock().unwrap();
++        std::ptr::from_ref(retained.as_ref().unwrap())
++    };
+     owner.owner_failed();
+     let first = table.close().unwrap_err();
+     let second = table.close().unwrap_err();
+-    assert_eq!(first.completion(), DrainCompletion::Complete);
++    assert_eq!(first.completion(), DrainCompletion::Retained);
+     assert!(Arc::ptr_eq(&first.issues()[0], &second.issues()[0]));
+     assert!(table.get(b"key").is_err());
++    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
++    assert_eq!(disk.snapshot().live_files, before.live_files);
++    {
++        let retained = owner.0.lock().unwrap();
++        assert_eq!(std::ptr::from_ref(retained.as_ref().unwrap()), address);
++    }
++    // The consuming NodeDatabase still lacks installed failed-owner custody.
++    // This test supplies explicit owner custody without claiming that migration.
++    static RETAINED: std::sync::Mutex<Option<Arc<Owner>>> = std::sync::Mutex::new(None);
++    *RETAINED.lock().unwrap() = Some(owner);
++}
++
++#[test]
++fn actual_spool_close_reports_native_drain_before_retiring_adapter_owner() {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let directory = crate::test_utils::private_tempdir().unwrap();
++    let disk = ScratchDisk::isolated_fixture(directory.path(), 8 << 20, memory);
++    let (owner, backend) = owner(&disk, 4 << 20);
++    owner.reserve_growth(0, 128 << 10).unwrap();
++    backend.set_len(128 << 10).unwrap();
++    backend.write(0, b"actual ciphertext").unwrap();
++    assert!(disk.snapshot().charged_bytes > 0);
++    let (outcome, allocations) = measure(|| backend.close());
++    let (result, native) = outcome.into_parts();
++    assert_eq!(native, redb::BackendNativeDisposition::Drained);
++    result.unwrap();
++    assert_eq!(allocations, 0);
++    assert!(owner.0.lock().unwrap().is_none());
++    assert_eq!(disk.snapshot().live_files, 0);
+     assert_eq!(disk.snapshot().charged_bytes, 0);
+-    assert_eq!(disk.snapshot().live_files, 0);
+-}
++    let (result, native) = backend.close().into_parts();
++    assert_eq!(native, redb::BackendNativeDisposition::Drained);
++    result.unwrap();
++}
+--- a/crates/kasumi-store/src/spool.rs
++++ b/crates/kasumi-store/src/spool.rs
+@@ -2,16 +2,54 @@
+ //! the temporary file; the random key dies with the final spool owner.
+ use crate::{ScratchDisk, SecretKey};
+ use chacha20poly1305::{KeyInit, Tag, XChaCha20Poly1305, XNonce, aead::AeadInPlace};
++use redb::BackendCloseOutcome;
+ use sha2::{Digest, Sha256};
+ use std::io::{self, Read, Seek, SeekFrom, Write};
++use std::ops::{Deref, DerefMut};
++use std::os::fd::IntoRawFd;
+ use std::sync::{Arc, Mutex};
+ use zeroize::Zeroizing;
+ 
+ const BLOCK: usize = 64 << 10;
+ const SLOT: u64 = BLOCK as u64 + 40;
+ 
++/// The File must leave Rust ownership before its one observable native close.
++/// A missing value means no subsequent destructor may retry the descriptor.
++struct NativeFile(Option<std::fs::File>);
++impl Deref for NativeFile {
++    type Target = std::fs::File;
++
++    fn deref(&self) -> &Self::Target {
++        self.0.as_ref().expect("open spool descriptor")
++    }
++}
++impl DerefMut for NativeFile {
++    fn deref_mut(&mut self) -> &mut Self::Target {
++        self.0.as_mut().expect("open spool descriptor")
++    }
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum NativeClosePhase {
++    Open,
++    Attempting,
++    Drained,
++    Unknown(i32),
++}
++
++struct FenceOnNativeUnwind<'a>(&'a crate::scratch_disk::Charge, bool);
++impl Drop for FenceOnNativeUnwind<'_> {
++    fn drop(&mut self) {
++        if self.1 {
++            self.0.fail_owner();
++        }
++    }
++}
++
+ pub struct EncryptedSpool {
+-    file: std::fs::File,
++    file: NativeFile,
++    native_close: NativeClosePhase,
++    close_entered: bool,
+     key: SecretKey,
+     id: [u8; 16],
+     length: u64,
+@@ -44,14 +82,18 @@
+                 "spool limit exceeds supported file offsets",
+             ));
+         }
++        let key = SecretKey::random().map_err(io::Error::other)?;
++        let id = *uuid::Uuid::new_v4().as_bytes();
+         let (file, charge) = disk.file()?;
+         // Unnamed temporary files have owner-only permissions and cannot be
+         // reopened after a crash. No key or pathname is persisted.
+         Ok(Self {
+-            file,
++            file: NativeFile(Some(file)),
++            native_close: NativeClosePhase::Open,
++            close_entered: false,
+             charge,
+-            key: SecretKey::random().map_err(io::Error::other)?,
+-            id: *uuid::Uuid::new_v4().as_bytes(),
++            key,
++            id,
+             length: 0,
+             position: 0,
+             limit,
+@@ -76,7 +118,10 @@
+     }
+ 
+     pub(crate) fn check_owner(&self) -> io::Result<()> {
+-        self.charge.check_owner(&self.file)
++        let Some(file) = self.file.0.as_ref() else {
++            return Err(io::ErrorKind::BrokenPipe.into());
++        };
++        self.charge.check_owner(file)
+     }
+ 
+     pub(crate) fn owner_failed(&self) {
+@@ -118,12 +163,70 @@
+         self.file.sync_all().inspect_err(|_| self.owner_failed())
+     }
+ 
+-    pub(crate) fn close(mut self) -> io::Result<()> {
+-        // The anonymous inode is physically released by the actual final file
+-        // close even when sync failed; field order releases its charge afterward.
+-        let result = self.sync_all();
+-        drop(self);
+-        result
++    /// Enter sync and native closure once without consuming the exact spool.
++    /// The caller may dispose it only after Drained is positively observed.
++    pub(crate) fn close_once(&mut self) -> BackendCloseOutcome {
++        self.close_once_with(Self::sync_all)
++    }
++
++    fn close_once_with(
++        &mut self,
++        sync: impl FnOnce(&mut Self) -> io::Result<()>,
++    ) -> BackendCloseOutcome {
++        if self.close_entered {
++            return BackendCloseOutcome::retained(io::ErrorKind::BrokenPipe.into());
++        }
++        self.close_entered = true;
++        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sync(self))) {
++            Ok(result) => result,
++            Err(payload) => {
++                self.owner_failed();
++                std::panic::resume_unwind(payload)
++            }
++        };
++        match result {
++            Ok(()) => self.close_native_after_sync(),
++            Err(error) => BackendCloseOutcome::retained(error),
++        }
++    }
++
++    /// The authenticated ciphertext has already synchronized. Consume the
++    /// actual descriptor before calling close; a failed syscall is uncertain
++    /// and its numeric descriptor must never be retried or rewrapped as File.
++    fn close_native_after_sync(&mut self) -> BackendCloseOutcome {
++        self.close_native_with(|descriptor| {
++            // SAFETY: the File owner is consumed by close_native_with.
++            if unsafe { libc::close(descriptor) } == 0 {
++                Ok(())
++            } else {
++                Err(io::Error::last_os_error())
++            }
++        })
++    }
++
++    fn close_native_with(
++        &mut self,
++        closer: impl FnOnce(i32) -> io::Result<()>,
++    ) -> BackendCloseOutcome {
++        if self.native_close != NativeClosePhase::Open {
++            return BackendCloseOutcome::retained(io::ErrorKind::BrokenPipe.into());
++        }
++        self.native_close = NativeClosePhase::Attempting;
++        self.charge.native_close_entered();
++        let file = self.file.0.take().expect("open spool descriptor");
++        let descriptor = file.into_raw_fd();
++        self.native_close = NativeClosePhase::Unknown(descriptor);
++        let mut fence = FenceOnNativeUnwind(&self.charge, true);
++        match closer(descriptor) {
++            Ok(()) => {
++                fence.1 = false;
++                drop(fence);
++                self.charge.native_close_drained();
++                self.native_close = NativeClosePhase::Drained;
++                BackendCloseOutcome::drained(Ok(()))
++            }
++            Err(error) => BackendCloseOutcome::retained(error),
++        }
+     }
+ 
+     pub(crate) fn resize(&mut self, length: u64) -> io::Result<()> {
+@@ -454,8 +557,21 @@
+ pub use retained_spool::{RetainedSpool, SpoolClosePhase};
+ 
+ #[cfg(test)]
++#[path = "spool_native_close_tests.rs"]
++mod native_close_tests;
++
++#[cfg(test)]
+ mod tests {
+     use super::*;
++
++    fn close_and_dispose(spool: &mut EncryptedSpool) {
++        let outcome = spool.close_once();
++        assert_eq!(
++            outcome.native_disposition(),
++            redb::BackendNativeDisposition::Drained
++        );
++        outcome.into_result().unwrap();
++    }
+ 
+     #[test]
+     fn unused_reservation_and_denied_growth_preserve_authenticated_physical_extent() {
+@@ -500,7 +616,8 @@
+         let mut plaintext = [0; 8];
+         spool.read_exact(&mut plaintext).unwrap();
+         assert_eq!(&plaintext, b"original");
+-        spool.close().unwrap();
++        close_and_dispose(&mut spool);
++        drop(spool);
+         assert_eq!(disk.snapshot().charged_bytes, 0);
+         assert!(disk.snapshot().filesystem_admission_ready);
+     }
+@@ -556,8 +673,8 @@
+         assert!(audit.len() > 2 << 20);
+         verify(&mut commands, 4200);
+         verify(&mut audit, 8400);
+-        commands.close().unwrap();
+-        audit.close().unwrap();
++        close_and_dispose(&mut commands);
++        close_and_dispose(&mut audit);
+     }
+ 
+     #[test]
+--- /dev/null
++++ b/crates/kasumi-store/src/spool_native_close_tests.rs
+@@ -0,0 +1,222 @@
++use super::*;
++use redb::BackendNativeDisposition;
++use std::os::fd::AsRawFd;
++use std::os::unix::fs::MetadataExt;
++
++#[derive(Debug)]
++struct Marker(Arc<u64>);
++impl std::fmt::Display for Marker {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("original sync error")
++    }
++}
++impl std::error::Error for Marker {}
++
++fn fixture() -> (tempfile::TempDir, Arc<ScratchDisk>, EncryptedSpool) {
++    let directory = crate::test_utils::private_tempdir().unwrap();
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let disk = ScratchDisk::isolated_fixture(directory.path(), 8 << 20, memory);
++    let spool = EncryptedSpool::new(&disk, 1 << 20).unwrap();
++    (directory, disk, spool)
++}
++
++#[test]
++fn retained_spool_retires_actual_descriptor_before_releasing_its_charge() {
++    let (_directory, disk, spool) = fixture();
++    let mut retained = spool.retain();
++    assert_eq!(disk.snapshot().live_files, 1);
++    let (descriptor, identity) = {
++        let file = &retained.spool().unwrap().file;
++        let metadata = file.metadata().unwrap();
++        (file.as_raw_fd(), (metadata.dev(), metadata.ino()))
++    };
++    let outcome = retained.close();
++    assert_eq!(
++        outcome.native_disposition(),
++        BackendNativeDisposition::Drained
++    );
++    outcome.into_result().unwrap();
++    assert_eq!(retained.phase(), SpoolClosePhase::Complete);
++    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
++    if unsafe { libc::fstat(descriptor, &mut stat) } == 0 {
++        assert_ne!((stat.st_dev as u64, stat.st_ino as u64), identity);
++    } else {
++        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
++    }
++    assert_eq!(disk.snapshot().live_files, 0);
++    assert_eq!(
++        retained.close().native_disposition(),
++        BackendNativeDisposition::Drained
++    );
++}
++
++#[test]
++fn uncertain_native_close_retains_one_attempt_and_fences_scratch_owner() {
++    let (_directory, disk, mut spool) = fixture();
++    spool.sync_all().unwrap();
++    let original_descriptor = spool.file.as_raw_fd();
++    let outcome = spool.close_native_with(|descriptor| {
++        assert_eq!(descriptor, original_descriptor);
++        // The OS has actually retired the descriptor. EINTR is injected after
++        // that syscall so a second close could hit an unrelated reused number.
++        assert_eq!(unsafe { libc::close(descriptor) }, 0);
++        Err(io::Error::from_raw_os_error(libc::EINTR))
++    });
++    assert_eq!(
++        outcome.native_disposition(),
++        BackendNativeDisposition::Retained
++    );
++    assert_eq!(
++        outcome.into_result().unwrap_err().raw_os_error(),
++        Some(libc::EINTR)
++    );
++    assert_eq!(
++        spool.native_close,
++        NativeClosePhase::Unknown(original_descriptor)
++    );
++    assert!(spool.file.0.is_none());
++    assert_eq!(
++        spool.check_owner().unwrap_err().kind(),
++        io::ErrorKind::BrokenPipe
++    );
++    assert!(!disk.snapshot().filesystem_admission_ready);
++
++    let mut replayed = false;
++    let repeat = spool.close_native_with(|_| {
++        replayed = true;
++        Ok(())
++    });
++    assert_eq!(
++        repeat.native_disposition(),
++        BackendNativeDisposition::Retained
++    );
++    assert!(!replayed, "an uncertain descriptor must never be retried");
++    assert_eq!(disk.snapshot().live_files, 1);
++    assert!(!disk.snapshot().filesystem_admission_ready);
++}
++
++#[test]
++fn native_close_unwind_retains_original_payload_and_never_retries_number() {
++    let (_directory, disk, mut spool) = fixture();
++    spool
++        .write_all(b"panic path holds an allocated extent")
++        .unwrap();
++    spool.sync_all().unwrap();
++    spool.reserve_growth(spool.len(), 2 * BLOCK as u64).unwrap();
++    let before = disk.snapshot();
++    assert!(before.charged_bytes > 0);
++    assert!(before.filesystem_pending_bytes > 0);
++    let descriptor = spool.file.as_raw_fd();
++    let marker = Arc::new(53_u64);
++    let original = marker.clone();
++    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        let _ = spool.close_native_with(|number| {
++            assert_eq!(number, descriptor);
++            // Model an unwind after the native syscall has already retired it.
++            assert_eq!(unsafe { libc::close(number) }, 0);
++            std::panic::panic_any(original);
++        });
++    }))
++    .unwrap_err();
++    assert!(Arc::ptr_eq(
++        unwind.downcast_ref::<Arc<u64>>().unwrap(),
++        &marker
++    ));
++    assert_eq!(spool.native_close, NativeClosePhase::Unknown(descriptor));
++    assert!(spool.file.0.is_none());
++    assert!(!disk.snapshot().filesystem_admission_ready);
++    let repeat = spool.close_native_with(|_| panic!("native close replayed"));
++    assert_eq!(
++        repeat.native_disposition(),
++        BackendNativeDisposition::Retained
++    );
++    let ((), allocations) = crate::allocation_tests::measure(|| drop(spool));
++    assert_eq!(allocations, 0);
++    let after = disk.snapshot();
++    assert_eq!(after.charged_bytes, before.charged_bytes);
++    assert_eq!(after.live_files, before.live_files);
++    assert_eq!(
++        after.filesystem_pending_bytes,
++        before.filesystem_pending_bytes
++    );
++    assert!(!after.filesystem_admission_ready);
++}
++
++#[test]
++fn sync_unwind_fences_owner_and_preserves_original_payload_without_native_entry() {
++    let (_directory, disk, mut spool) = fixture();
++    let descriptor = spool.file.as_raw_fd();
++    let marker = Arc::new(67_u64);
++    let original = marker.clone();
++    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        let _ = spool.close_once_with(|_| std::panic::panic_any(original));
++    }))
++    .unwrap_err();
++    assert!(Arc::ptr_eq(
++        unwind.downcast_ref::<Arc<u64>>().unwrap(),
++        &marker
++    ));
++    assert_eq!(spool.native_close, NativeClosePhase::Open);
++    assert_eq!(spool.file.as_raw_fd(), descriptor);
++    assert!(!disk.snapshot().filesystem_admission_ready);
++    let repeat = spool.close_once_with(|_| panic!("sync retried"));
++    assert_eq!(
++        repeat.native_disposition(),
++        BackendNativeDisposition::Retained
++    );
++}
++
++#[test]
++fn original_sync_error_retains_open_spool_without_claiming_native_drain() {
++    let (_directory, disk, spool) = fixture();
++    let mut retained = spool.retain();
++    let marker = std::sync::Arc::new(41_u64);
++    let original = io::Error::other(Marker(marker.clone()));
++    let error = retained
++        .close_with(|_| Err(original))
++        .into_result()
++        .unwrap_err();
++    assert!(std::sync::Arc::ptr_eq(
++        &error.get_ref().unwrap().downcast_ref::<Marker>().unwrap().0,
++        &marker
++    ));
++    assert_eq!(retained.phase(), SpoolClosePhase::FailedTransferred);
++    assert_eq!(disk.snapshot().live_files, 1);
++    assert_eq!(
++        retained.close().native_disposition(),
++        BackendNativeDisposition::Retained
++    );
++}
++
++#[test]
++fn unknown_native_close_keeps_charge_after_aggregate_owner_drop() {
++    let (_directory, disk, mut spool) = fixture();
++    spool.write_all(b"charged ciphertext").unwrap();
++    spool.sync_all().unwrap();
++    spool.reserve_growth(spool.len(), 2 * BLOCK as u64).unwrap();
++    let before = disk.snapshot();
++    assert!(before.charged_bytes > 0);
++    assert!(before.filesystem_pending_bytes > 0);
++    let outcome = spool.close_native_with(|descriptor| {
++        assert_eq!(unsafe { libc::close(descriptor) }, 0);
++        Err(io::Error::from_raw_os_error(libc::EINTR))
++    });
++    assert_eq!(
++        outcome.native_disposition(),
++        BackendNativeDisposition::Retained
++    );
++    assert_eq!(
++        outcome.into_result().unwrap_err().raw_os_error(),
++        Some(libc::EINTR)
++    );
++    let ((), allocations) = crate::allocation_tests::measure(|| drop(spool));
++    assert_eq!(allocations, 0);
++    let snapshot = disk.snapshot();
++    assert_eq!(snapshot.charged_bytes, before.charged_bytes);
++    assert_eq!(snapshot.live_files, before.live_files);
++    assert_eq!(
++        snapshot.filesystem_pending_bytes,
++        before.filesystem_pending_bytes
++    );
++    assert!(!snapshot.filesystem_admission_ready);
++}
+--- a/crates/kasumi-store/src/storage_opening.rs
++++ b/crates/kasumi-store/src/storage_opening.rs
+@@ -5,7 +5,7 @@
+ //! remain mandatory before this boundary can be the production NodeDatabase.
+ use crate::{
+     NodeDisk, NodeDiskMemoryAdmission, StorageCensusDisposition, StorageOwnerId,
+-    node_file::NodeFile,
++    node_file::{FailedFileTransfer, FailedFileWitness, NodeFile},
+     private_files::FileIdentity,
+     storage_census::{StorageOwnerKind, StoragePayload, StorageRegistration},
+ };
+@@ -26,6 +26,18 @@
+ };
+ use uuid::Uuid;
+ 
++// Fund the private redb proxy before register invokes any allocation-only
++// constructor. The public plan includes its Arc header and payload alignment;
++// disk_memory adds the same existing allocator allowance used by other owners.
++fn opening_backing_bytes(path: &Path) -> io::Result<u64> {
++    let layout = redb::Builder::retained_opening_allocation_layout()
++        .map_err(|_| io::ErrorKind::InvalidInput)?;
++    let allocation = crate::disk_memory::allocation::<u8>(
++        u64::try_from(layout.size()).map_err(|_| io::ErrorKind::InvalidInput)?,
++    )?;
++    crate::disk_memory::add(NodeFile::prepared_backing_bytes(path)?, allocation)
++}
++
+ pub enum NodeOpeningMode {
+     Create,
+     OwnedEmpty(FileIdentity),
+@@ -78,6 +90,11 @@
+     acquisition: Observation<anyhow::Error>,
+     opening_outer: Observation<std::convert::Infallible>,
+     outcomes_released: bool,
++    failed_transfer: Option<FailedFileTransfer>,
++    pending_transfer: Option<FailedFileWitness>,
++    #[cfg(test)]
++    after_failed_disposal: Option<Box<dyn FnOnce() + Send>>,
++    failed_recovery: Observation<io::Error>,
+ }
+ fn observed_failure<E>(observation: TerminalObservation<'_, E>) -> bool {
+     matches!(
+@@ -93,15 +110,57 @@
+         || observed_failure(report.disposal())
+ }
+ impl OpeningState {
++    fn transfer_failed(&mut self) -> FailedOpeningRecovery {
++        if self.failed_transfer.is_some() {
++            return FailedOpeningRecovery::AwaitingDiskCensus;
++        }
++        if self.redb.report().settlement() != DatabaseOpenSettlement::FailedDisposed
++            || !matches!(self.failed_recovery, Observation::NotEntered)
++        {
++            return FailedOpeningRecovery::Retained;
++        }
++        let Some(witness) = self.pending_transfer.as_ref() else {
++            return FailedOpeningRecovery::Retained;
++        };
++        self.failed_recovery = Observation::Entered;
++        match catch_unwind(AssertUnwindSafe(|| self.file.transfer_failed(witness))) {
++            Ok(Ok(Some(transfer))) => {
++                self.failed_transfer = Some(transfer);
++                self.pending_transfer = None;
++                self.failed_recovery = Observation::Returned(Ok(()));
++                self.outcomes_released = true;
++                FailedOpeningRecovery::AwaitingDiskCensus
++            }
++            Ok(Ok(None)) => {
++                // Typed pre-effect contention enters no transfer operation and
++                // produces no new original failure. Keep the exact prior ack;
++                // a later nonblocking attempt never repeats redb disposal.
++                self.failed_recovery = Observation::NotEntered;
++                FailedOpeningRecovery::PendingTransfer
++            }
++            Ok(Err(error)) => {
++                self.failed_recovery = Observation::Returned(Err(error));
++                FailedOpeningRecovery::Retained
++            }
++            Err(payload) => {
++                self.failed_recovery = Observation::Panicked(payload);
++                FailedOpeningRecovery::Retained
++            }
++        }
++    }
+     fn has_failures(&self) -> bool {
+         let report = self.redb.report();
+         observed_failure(self.acquisition.borrow())
+             || observed_failure(self.opening_outer.borrow())
+             || observed_failure(report.opening())
+             || observed_failure(report.partial_close())
++            || observed_failure(report.failed_disposal())
++            || observed_failure(self.failed_recovery.borrow())
+             || report.bootstrap().as_ref().is_some_and(transaction_failure)
+             || report.database_close().is_some_and(|close| {
+-                observed_failure(close.shutdown()) || observed_failure(close.backend())
++                observed_failure(close.shutdown())
++                    || observed_failure(close.backend())
++                    || observed_failure(close.failed_disposal())
+             })
+             || report.fence().observation().is_none_or(observed_failure)
+     }
+@@ -119,6 +178,23 @@
+             return false;
+         };
+         state.phase = NodeOpeningPhase::Closing;
++        if state.pending_transfer.is_some() {
++            let _ = state.transfer_failed();
++        }
++        if let Some(transfer) = &state.failed_transfer {
++            return state.redb.report().settlement() == DatabaseOpenSettlement::FailedDisposed
++                && state.failed_recovery.success()
++                && state.outcomes_released
++                && state.file.disk().accepted_failure_transfer(transfer);
++        }
++        if matches!(
++            state.redb.report().settlement(),
++            DatabaseOpenSettlement::DrainedWithFailure | DatabaseOpenSettlement::FailedDisposed
++        ) {
++            // Ordinary retirement cannot acknowledge a failed close or turn
++            // operational disposal into a disk-census acceptance receipt.
++            return false;
++        }
+         if state.redb.report().settlement() != DatabaseOpenSettlement::Closed {
+             // A caller can relinquish only outcomes that already existed.
+             // This attempt may produce a new shutdown/backend error, even if
+@@ -154,7 +230,7 @@
+             return Err(io::ErrorKind::InvalidInput.into());
+         }
+         let provider = disk.memory().clone();
+-        let known_backing = NodeFile::prepared_backing_bytes(path)?;
++        let known_backing = opening_backing_bytes(path)?;
+         let registration =
+             provider
+                 .storage_census()
+@@ -178,6 +254,11 @@
+                             acquisition: Observation::NotEntered,
+                             opening_outer: Observation::NotEntered,
+                             outcomes_released: false,
++                            failed_transfer: None,
++                            pending_transfer: None,
++                            #[cfg(test)]
++                            after_failed_disposal: None,
++                            failed_recovery: Observation::NotEntered,
+                         }),
+                     }
+                 })?;
+@@ -222,6 +303,7 @@
+     }
+     pub fn report(&self) -> NodeOpeningReport<'_> {
+         NodeOpeningReport {
++            registration: &self.registration,
+             state: self.registration.owner().state.lock(),
+         }
+     }
+@@ -256,21 +338,113 @@
+             })?;
+         Ok(RegisteredNodeTables { registration })
+     }
++    /// Explicitly retire failed operational backing and transfer its exact
++    /// already-drained FileOwner into installed custody. A later accepted disk
++    /// census is required before storage-census retirement can release reports.
++    pub fn recover_failed_close(
++        &self,
++        acknowledgement: FailedOpeningAcknowledgement,
++    ) -> io::Result<FailedOpeningRecovery> {
++        if !std::ptr::eq(acknowledgement.owner.owner(), self.registration.owner()) {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        let owner = self.registration.owner();
++        let Some(mut state) = owner.state.try_lock() else {
++            return Err(io::ErrorKind::WouldBlock.into());
++        };
++        if state.redb.report().settlement() != DatabaseOpenSettlement::DrainedWithFailure
++            || !matches!(state.failed_recovery, Observation::NotEntered)
++        {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        // Revalidate the exact file generation and all original report guards
++        // before operational disposal or any acknowledgement mutation.
++        state
++            .file
++            .with_failed_close_report(&acknowledgement.file, |_| ())?;
++        owner.stopped.store(true, Ordering::Release);
++        state.outcomes_released = false;
++        state.pending_transfer = Some(acknowledgement.file);
++        // Any disposal error/panic is a new outcome, never covered by the
++        // earlier acknowledgement. The actual redb report owner stays installed.
++        if state.redb.dispose_failed().settlement() != DatabaseOpenSettlement::FailedDisposed {
++            return Ok(FailedOpeningRecovery::Retained);
++        }
++        #[cfg(test)]
++        if let Some(hook) = state.after_failed_disposal.take() {
++            hook();
++        }
++        Ok(state.transfer_failed())
++    }
++    /// Resume only an already acknowledged, operationally disposed owner.
++    /// Contention never replays disposal or acknowledges a newly produced error.
++    pub fn resume_failed_recovery(&self) -> io::Result<FailedOpeningRecovery> {
++        let owner = self.registration.owner();
++        let Some(mut state) = owner.state.try_lock() else {
++            return Err(io::ErrorKind::WouldBlock.into());
++        };
++        if state.pending_transfer.is_none() && state.failed_transfer.is_none() {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        Ok(state.transfer_failed())
++    }
+     /// Relinquish this caller's outcomes after inspection. Physical uncertainty
+     /// still prevents retirement; other real facades still retain the owner.
+     pub fn retire(self) -> StorageCensusDisposition {
+         let owner = self.registration.owner();
+         owner.stopped.store(true, Ordering::Release);
+-        if let Some(mut state) = owner.state.try_lock() {
++        if let Some(mut state) = owner.state.try_lock()
++            && state.redb.report().settlement() == DatabaseOpenSettlement::Closed
++        {
+             state.outcomes_released = true;
+         }
+         self.registration.retire()
+     }
+ }
++/// A caller's explicit acknowledgement of one already-terminal failed owner.
++/// Private, non-Clone fields retain the actual registration, preventing address
++/// reuse and cross-memory-core substitution even when public IDs coincide.
++pub struct FailedOpeningAcknowledgement {
++    owner: StorageRegistration<DatabaseOwner>,
++    file: FailedFileWitness,
++}
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum FailedOpeningRecovery {
++    PendingTransfer,
++    AwaitingDiskCensus,
++    Retained,
++}
+ pub struct NodeOpeningReport<'a> {
++    registration: &'a StorageRegistration<DatabaseOwner>,
+     state: MutexGuard<'a, OpeningState>,
+ }
+ impl NodeOpeningReport<'_> {
++    /// Explicitly acknowledge the terminal redb report and inspect the actual
++    /// FileOwner logical errors. The callback borrows the original objects;
++    /// returning projections or telemetry never constitutes this witness.
++    /// Unknown native close, unfinished work and disposal are ineligible.
++    pub fn acknowledge_failed_close(
++        &self,
++        mut inspect_file_error: impl FnMut(&io::Error),
++    ) -> io::Result<FailedOpeningAcknowledgement> {
++        if self.state.redb.report().settlement() != DatabaseOpenSettlement::DrainedWithFailure
++            || !matches!(self.state.failed_recovery, Observation::NotEntered)
++        {
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
++        let file = self.state.file.failed_close_witness()?;
++        self.state.file.with_failed_close_report(&file, |report| {
++            report.visit_errors(&mut inspect_file_error);
++        })?;
++        Ok(FailedOpeningAcknowledgement {
++            owner: self.registration.clone(),
++            file,
++        })
++    }
++    pub fn failed_recovery(&self) -> TerminalObservation<'_, io::Error> {
++        self.state.failed_recovery.borrow()
++    }
++
+     pub fn acquisition(&self) -> TerminalObservation<'_, anyhow::Error> {
+         self.state.acquisition.borrow()
+     }
+--- a/crates/kasumi-store/src/storage_opening_tests.rs
++++ b/crates/kasumi-store/src/storage_opening_tests.rs
+@@ -399,7 +399,10 @@
+             "first close must invalidate relinquishment before producing either error"
+         );
+         let redb = report.redb();
+-        assert_eq!(redb.settlement(), DatabaseOpenSettlement::Retained);
++        assert_eq!(
++            redb.settlement(),
++            DatabaseOpenSettlement::DrainedWithFailure
++        );
+         let close = redb.database_close().unwrap();
+         let TerminalObservation::Returned(Err(shutdown)) = close.shutdown() else {
+             panic!("new original shutdown failure absent");
+@@ -442,7 +445,10 @@
+             let report = observed.report();
+             assert!(!report.state.outcomes_released);
+             let redb = report.redb();
+-            assert_eq!(redb.settlement(), DatabaseOpenSettlement::Retained);
++            assert_eq!(
++                redb.settlement(),
++                DatabaseOpenSettlement::DrainedWithFailure
++            );
+             let close = redb.database_close().unwrap();
+             let TerminalObservation::Returned(Err(error)) = close.shutdown() else {
+                 panic!("close original was erased");
+@@ -484,9 +490,9 @@
+         assert!(disk.open_file(root, relative).is_err());
+         assert_eq!(std::fs::read(&path).unwrap(), physical);
+     }
+-    // No disposal/recovery API currently supplies a positive release witness
+-    // for this failed live backend. Keep the installed owner after every facade
+-    // has gone; a future explicit acknowledgement protocol must resolve it.
++    // Ordinary retirement never acknowledges the failed-close generation.
++    // Without explicit recovery the installed owner remains after all facades
++    // disappear, even though native closure is now separately proved.
+     assert_eq!(memory.storage_census().snapshot().databases, 1);
+     assert_eq!(memory.storage_census().snapshot().writers, 0);
+     assert_eq!(disk.snapshot().open_files, 1);
+@@ -576,3 +582,425 @@
+     assert_eq!(final_snapshot.writers, 0);
+     assert_eq!(final_snapshot.databases, 0);
+ }
++
++#[test]
++fn explicit_failed_close_requires_original_acknowledgement_then_accepted_disk_census_before_retirement()
++ {
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("explicit-failed-recovery.kasumi");
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = disk(&path, &memory);
++    let opening =
++        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
++    assert_eq!(opening.open(), NodeOpeningPhase::Open);
++    assert!(
++        opening
++            .report()
++            .acknowledge_failed_close(|_| panic!("no outcome exists"))
++            .is_err()
++    );
++    let id = opening.id();
++    let physical = std::fs::read(&path).unwrap();
++    disk.fail();
++    assert_eq!(opening.retire(), StorageCensusDisposition::Retained);
++    let retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
++    let (shutdown, backend, original_native, acknowledgement) = {
++        let report = retained.report();
++        let redb = report.redb();
++        let close = redb.database_close().unwrap();
++        let TerminalObservation::Returned(Err(shutdown)) = close.shutdown() else {
++            panic!("shutdown error absent")
++        };
++        let TerminalObservation::Returned(Err(backend)) = close.backend() else {
++            panic!("backend error absent")
++        };
++        let (_, native) = report.state.file.retained_file_custody().unwrap();
++        let mut seen = None;
++        let (ack, allocations) = crate::allocation_tests::measure(|| {
++            report.acknowledge_failed_close(|error| {
++                assert!(seen.replace(std::ptr::from_ref(error) as usize).is_none());
++            })
++        });
++        let ack = ack.unwrap();
++        assert_eq!(allocations, 0);
++        assert_eq!(seen, native);
++        assert!(!report.state.outcomes_released);
++        (
++            std::ptr::from_ref(shutdown),
++            std::ptr::from_ref(backend),
++            native,
++            ack,
++        )
++    };
++    assert!(original_native.is_some());
++    let before_transfer = disk.snapshot();
++    let (recovery, allocations) =
++        crate::allocation_tests::measure(|| retained.recover_failed_close(acknowledgement));
++    assert_eq!(recovery.unwrap(), FailedOpeningRecovery::AwaitingDiskCensus);
++    assert_eq!(allocations, 0);
++    assert_eq!(disk.snapshot().charged_bytes, before_transfer.charged_bytes);
++    assert_eq!(disk.snapshot().open_files, 1);
++    {
++        let report = retained.report();
++        assert_eq!(
++            report.redb().settlement(),
++            DatabaseOpenSettlement::FailedDisposed
++        );
++        let redb = report.redb();
++        let close = redb.database_close().unwrap();
++        let TerminalObservation::Returned(Err(error)) = close.shutdown() else {
++            panic!("original shutdown lost")
++        };
++        assert_eq!(std::ptr::from_ref(error), shutdown);
++        let TerminalObservation::Returned(Err(error)) = close.backend() else {
++            panic!("original backend lost")
++        };
++        assert_eq!(std::ptr::from_ref(error), backend);
++        assert!(report.acknowledge_failed_close(|_| ()).is_err());
++        assert!(report.state.file.failed_close_witness().is_err());
++    }
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retained
++    );
++    let cancelled = crate::CensusCancellation::default();
++    cancelled.cancel();
++    assert!(disk.reconcile(&cancelled).is_err());
++    assert_eq!(disk.snapshot().open_files, 1);
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retained
++    );
++    assert_eq!(std::fs::read(&path).unwrap(), physical);
++    disk.reconcile(&crate::CensusCancellation::default())
++        .unwrap();
++    assert_eq!(disk.snapshot().open_files, 0);
++    assert_eq!(disk.snapshot().charged_bytes, before_transfer.charged_bytes);
++    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
++    // The accepted native/namespace census does not erase higher-level errors.
++    // The actual facade still prevents StorageCensus from dropping their owner.
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retained
++    );
++    {
++        let report = retained.report();
++        let redb = report.redb();
++        let close = redb.database_close().unwrap();
++        let TerminalObservation::Returned(Err(error)) = close.backend() else {
++            panic!("error released before final facade")
++        };
++        assert_eq!(std::ptr::from_ref(error), backend);
++    }
++    assert_eq!(retained.retire(), StorageCensusDisposition::Retired);
++    assert_eq!(memory.storage_census().snapshot().databases, 0);
++    assert_eq!(std::fs::read(&path).unwrap(), physical);
++}
++
++#[test]
++fn failed_acknowledgement_cannot_cross_memory_cores_with_equal_public_owner_ids() {
++    let first_dir = private_tempdir().unwrap();
++    let second_dir = private_tempdir().unwrap();
++    let first_path = first_dir.path().join("first.kasumi");
++    let second_path = second_dir.path().join("second.kasumi");
++    let first_memory = TestDiskMemory::new(256 << 20, 4096);
++    let second_memory = TestDiskMemory::new(256 << 20, 4096);
++    let first_disk = disk(&first_path, &first_memory);
++    let second_disk = disk(&second_path, &second_memory);
++    let first = RegisteredNodeOpening::prepare(
++        &first_path,
++        ID,
++        first_disk.clone(),
++        NodeOpeningMode::Create,
++    )
++    .unwrap();
++    let second = RegisteredNodeOpening::prepare(
++        &second_path,
++        ID,
++        second_disk.clone(),
++        NodeOpeningMode::Create,
++    )
++    .unwrap();
++    assert_eq!(first.open(), NodeOpeningPhase::Open);
++    assert_eq!(second.open(), NodeOpeningPhase::Open);
++    assert_eq!(
++        first.id(),
++        second.id(),
++        "regression requires equal per-core public IDs"
++    );
++    first_disk.fail();
++    second_disk.fail();
++    let first_id = first.id();
++    let second_id = second.id();
++    assert_eq!(first.retire(), StorageCensusDisposition::Retained);
++    assert_eq!(second.retire(), StorageCensusDisposition::Retained);
++    let first = RegisteredNodeOpening::retained(first_memory.clone(), first_id).unwrap();
++    let second = RegisteredNodeOpening::retained(second_memory.clone(), second_id).unwrap();
++    let wrong = first.report().acknowledge_failed_close(|_| ()).unwrap();
++    let second_custody = second.report().state.file.retained_file_custody();
++    assert_eq!(
++        second.recover_failed_close(wrong).unwrap_err().kind(),
++        io::ErrorKind::InvalidInput
++    );
++    assert_eq!(
++        second.report().redb().settlement(),
++        DatabaseOpenSettlement::DrainedWithFailure
++    );
++    assert_eq!(
++        second.report().state.file.retained_file_custody(),
++        second_custody
++    );
++    for (opening, disk, memory) in [
++        (first, first_disk, first_memory),
++        (second, second_disk, second_memory),
++    ] {
++        let acknowledgement = opening.report().acknowledge_failed_close(|_| ()).unwrap();
++        assert_eq!(
++            opening.recover_failed_close(acknowledgement).unwrap(),
++            FailedOpeningRecovery::AwaitingDiskCensus
++        );
++        disk.reconcile(&crate::CensusCancellation::default())
++            .unwrap();
++        assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
++        assert_eq!(memory.storage_census().snapshot().databases, 0);
++    }
++}
++
++#[test]
++fn disposed_failed_owner_resumes_after_actual_transfer_contention_without_replaying_disposal() {
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("transfer-contention.kasumi");
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = disk(&path, &memory);
++    let opening =
++        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
++    assert_eq!(opening.open(), NodeOpeningPhase::Open);
++    let id = opening.id();
++    disk.fail();
++    assert_eq!(opening.retire(), StorageCensusDisposition::Retained);
++    let retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
++    let acknowledgement = retained.report().acknowledge_failed_close(|_| ()).unwrap();
++    let physical_owner = retained.report().state.file.retained_file_custody();
++    let (start_send, start_receive) = std::sync::mpsc::sync_channel(0);
++    let (ready_send, ready_receive) = std::sync::mpsc::sync_channel(0);
++    let (release_send, release_receive) = std::sync::mpsc::sync_channel(0);
++    std::thread::scope(|scope| {
++        let holder_disk = disk.clone();
++        let holder = scope.spawn(move || {
++            start_receive.recv().unwrap();
++            holder_disk.with_state_locked_for_test(|| {
++                ready_send.send(()).unwrap();
++                let _ = release_receive.recv();
++            });
++        });
++        retained
++            .registration
++            .owner()
++            .state
++            .lock()
++            .after_failed_disposal = Some(Box::new(move || {
++            start_send.send(()).unwrap();
++            ready_receive.recv().unwrap();
++        }));
++        assert_eq!(
++            retained.recover_failed_close(acknowledgement).unwrap(),
++            FailedOpeningRecovery::PendingTransfer
++        );
++        let originals = {
++            let report = retained.report();
++            assert_eq!(
++                report.redb().settlement(),
++                DatabaseOpenSettlement::FailedDisposed
++            );
++            assert!(matches!(
++                report.redb().failed_disposal(),
++                TerminalObservation::Returned(Ok(()))
++            ));
++            let redb = report.redb();
++            let close = redb.database_close().unwrap();
++            let TerminalObservation::Returned(Err(shutdown)) = close.shutdown() else {
++                panic!("shutdown original missing")
++            };
++            let TerminalObservation::Returned(Err(backend)) = close.backend() else {
++                panic!("backend original missing")
++            };
++            assert!(!report.state.outcomes_released);
++            assert!(report.state.pending_transfer.is_some());
++            (std::ptr::from_ref(shutdown), std::ptr::from_ref(backend))
++        };
++        assert_eq!(
++            retained.resume_failed_recovery().unwrap(),
++            FailedOpeningRecovery::PendingTransfer
++        );
++        assert_eq!(
++            memory.storage_census().drain_owner(id),
++            StorageCensusDisposition::Retained
++        );
++        release_send.send(()).unwrap();
++        holder.join().unwrap();
++        assert_eq!(
++            retained.report().state.file.retained_file_custody(),
++            physical_owner
++        );
++        assert_eq!(
++            retained.resume_failed_recovery().unwrap(),
++            FailedOpeningRecovery::AwaitingDiskCensus
++        );
++        let report = retained.report();
++        let redb = report.redb();
++        let close = redb.database_close().unwrap();
++        let TerminalObservation::Returned(Err(shutdown)) = close.shutdown() else {
++            panic!("shutdown original changed")
++        };
++        let TerminalObservation::Returned(Err(backend)) = close.backend() else {
++            panic!("backend original changed")
++        };
++        assert_eq!(
++            (std::ptr::from_ref(shutdown), std::ptr::from_ref(backend)),
++            originals
++        );
++        assert!(matches!(
++            redb.failed_disposal(),
++            TerminalObservation::Returned(Ok(()))
++        ));
++    });
++    disk.reconcile(&crate::CensusCancellation::default())
++        .unwrap();
++    assert_eq!(retained.retire(), StorageCensusDisposition::Retired);
++    assert_eq!(memory.storage_census().snapshot().databases, 0);
++}
++
++#[test]
++fn unknown_native_opening_close_vetoes_acknowledgement_and_never_retries_the_handle() {
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("unknown-native-close.kasumi");
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = disk(&path, &memory);
++    let opening =
++        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
++    assert_eq!(opening.open(), NodeOpeningPhase::Open);
++    let id = opening.id();
++    let physical = std::fs::read(&path).unwrap();
++    // Fence shutdown first so the injected close belongs to backend retirement,
++    // rather than a preceding temporary verification walk.
++    disk.fail();
++    NodeFile::fail_next_native_close(libc::EIO);
++    assert_eq!(opening.retire(), StorageCensusDisposition::Retained);
++    let attempts = NodeFile::native_close_attempts();
++    let retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
++    let (backend, native_owner) = {
++        let report = retained.report();
++        let redb = report.redb();
++        assert_eq!(redb.settlement(), DatabaseOpenSettlement::Retained);
++        assert_eq!(
++            redb.native_disposition(),
++            redb::BackendNativeDisposition::Retained
++        );
++        let close = redb.database_close().unwrap();
++        let TerminalObservation::Returned(Err(error)) = close.backend() else {
++            panic!("original native close error absent")
++        };
++        assert!(
++            report
++                .acknowledge_failed_close(|_| panic!("unknown close cannot be acknowledged"))
++                .is_err()
++        );
++        (
++            std::ptr::from_ref(error),
++            report.state.file.retained_file_custody(),
++        )
++    };
++    let charged = disk.snapshot().charged_bytes;
++    for _ in 0..2 {
++        assert!(retained.resume_failed_recovery().is_err());
++        assert_eq!(
++            memory.storage_census().drain_owner(id),
++            StorageCensusDisposition::Retained
++        );
++        assert!(
++            disk.reconcile(&crate::CensusCancellation::default())
++                .is_err()
++        );
++        let report = retained.report();
++        let redb = report.redb();
++        let close = redb.database_close().unwrap();
++        let TerminalObservation::Returned(Err(error)) = close.backend() else {
++            panic!("original error erased")
++        };
++        assert_eq!(std::ptr::from_ref(error), backend);
++        assert_eq!(report.state.file.retained_file_custody(), native_owner);
++        assert!(matches!(
++            redb.failed_disposal(),
++            TerminalObservation::NotEntered
++        ));
++        assert!(!report.state.outcomes_released);
++        assert_eq!(NodeFile::native_close_attempts(), attempts);
++        assert_eq!(disk.snapshot().charged_bytes, charged);
++        assert_eq!(std::fs::read(&path).unwrap(), physical);
++    }
++    drop(retained);
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retained
++    );
++    assert_eq!(disk.snapshot().open_files, 1);
++    assert_eq!(NodeFile::native_close_attempts(), attempts);
++}
++
++#[test]
++fn private_opening_arc_is_admitted_before_any_prepared_owner_allocation() {
++    use crate::disk_memory::{add, allocation, arc};
++    const MAX_BYTES: u64 = 256 << 20;
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("proxy-admission.kasumi");
++    let memory = TestDiskMemory::new(MAX_BYTES, 4096);
++    let disk = disk(&path, &memory);
++    let baseline = memory.snapshot();
++    let former_backing = add(
++        arc::<DatabaseOwner>().unwrap(),
++        NodeFile::prepared_backing_bytes(&path).unwrap(),
++    )
++    .unwrap();
++    let former_charge = TestDiskMemory::required_reservation_bytes(former_backing).unwrap();
++    let layout = redb::Builder::retained_opening_allocation_layout().unwrap();
++    let proxy_charge = allocation::<u8>(u64::try_from(layout.size()).unwrap()).unwrap();
++    let complete_charge =
++        TestDiskMemory::required_reservation_bytes(add(former_backing, proxy_charge).unwrap())
++            .unwrap();
++    assert!(complete_charge > former_charge);
++    let fill_charge = MAX_BYTES - baseline.bookkeeping_bytes - baseline.used_bytes - former_charge;
++    let held = memory
++        .clone()
++        .reserve_installed(fill_charge - TestDiskMemory::required_reservation_bytes(0).unwrap())
++        .unwrap();
++    let full = memory.snapshot();
++    let (denied, allocations) = crate::allocation_tests::measure(|| {
++        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create)
++    });
++    assert!(matches!(denied, Err(error) if error.kind() == io::ErrorKind::OutOfMemory));
++    assert_eq!(
++        allocations, 0,
++        "denial precedes NodeFile, path, backend and proxy allocations"
++    );
++    assert_eq!(memory.snapshot().used_bytes, full.used_bytes);
++    assert_eq!(memory.storage_census().snapshot().databases, 0);
++    assert_eq!(disk.snapshot().open_files, 0);
++    assert!(!path.exists());
++    drop(held);
++    let opening =
++        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
++    let id = opening.id();
++    assert_eq!(
++        memory.snapshot().used_bytes - baseline.used_bytes,
++        complete_charge
++    );
++    assert!(!path.exists());
++    drop(opening);
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retired
++    );
++    assert_eq!(memory.snapshot().used_bytes, baseline.used_bytes);
++    assert_eq!(disk.snapshot().open_files, 0);
++    assert!(!path.exists());
++}
+--- a/crates/kasumi-store/src/test_utils.rs
++++ b/crates/kasumi-store/src/test_utils.rs
+@@ -501,6 +501,9 @@
+ }
+ 
+ impl redb::StorageBackend for FaultBackend {
++    fn close(&self) -> redb::BackendCloseOutcome {
++        redb::BackendCloseOutcome::drained(Ok(()))
++    }
+     fn len(&self) -> std::io::Result<u64> {
+         Ok(self.0.lock().volatile.len() as u64)
+     }
+@@ -695,7 +698,7 @@
+         fn write(&self, _: u64, _: &[u8]) -> std::io::Result<()> {
+             panic!("foreign-core backend was written")
+         }
+-        fn close(&self) -> std::io::Result<()> {
++        fn close(&self) -> redb::BackendCloseOutcome {
+             panic!("foreign-core backend was acquired")
+         }
+     }
+--- a/vendor/redb-4.2.0/CHANGELOG.md
++++ b/vendor/redb-4.2.0/CHANGELOG.md
+@@ -3,6 +3,7 @@
+ ## Kasumi admission prerequisite (unreleased)
+ * Reject noncanonical page-number encodings in roots, branch children and used reclamation records before page access or mutation; preserve opaque unused torn transaction slots.
+ * Validate every raw table definition before mutable page visitation or highest-page output changes.
++* Require explicit backend native-close outcomes and retain failed-close diagnostics through separately acknowledged operational disposal.
+ * Require physical admission at construction and report recoverable capacity denial separately from owner failure.
+ * Use immediately durable commits with prepared allocator snapshots; remove durability selection and post-commit metadata publication.
+ * Add explicit fallible close, retained busy handles, and non-allocating destructor fallback.
+--- a/vendor/redb-4.2.0/Cargo.toml
++++ b/vendor/redb-4.2.0/Cargo.toml
+@@ -55,6 +55,10 @@
+ [[example]]
+ name = "special_values"
+ path = "examples/special_values.rs"
++
++[[test]]
++name = "retained_opening_admission"
++path = "tests/retained_opening_admission.rs"
+ 
+ [[test]]
+ name = "canonical_format"
+--- a/vendor/redb-4.2.0/KASUMI_PATCH.md
++++ b/vendor/redb-4.2.0/KASUMI_PATCH.md
+@@ -35,6 +35,21 @@
+ immutable record of the earlier checkpoint.
+ 
+ ## Canonical API
++
++`StorageBackend::close` now requires an explicit `BackendCloseOutcome`, with no
++default implementation. Logical errors and native-resource drain are separate.
++The retained database/opening owners keep their original errors through explicit
++failed operational disposal; unknown native closure cannot authorize that path.
++FileBackend invokes native close once and never retries an uncertain raw handle.
++The NodeDisk adapter additionally requires an exact terminal owner witness and a
++later accepted whole-owner census before its storage registration can retire.
++The scratch-spool adapter uses one observed native close and retains the exact
++spool on failed sync, unwind, or uncertain native closure. Positive drain precedes
++key/buffer retirement and charge release. An uncertain native result also retains
++its file/extent/pending accounting after aggregate destruction. Spool construction still allocates
++buffers after descriptor acquisition, and inherited destruction can bypass this
++explicit protocol; constructor/destructor custody, consuming caller adoption,
++and total error/panic/RSS admission remain required G02 work, not accepted exceptions.
+ 
+ Every writable or read-only constructor requires `Arc<dyn StorageAdmission>`.
+ There is no optional admission hook, default owner, unlimited production owner, or
+--- a/vendor/redb-4.2.0/src/admission/tests.rs
++++ b/vendor/redb-4.2.0/src/admission/tests.rs
+@@ -252,13 +252,21 @@
+         }
+         self.file.sync_data()
+     }
+-    fn close(&self) -> std::io::Result<()> {
++    fn close(&self) -> crate::BackendCloseOutcome {
+         self.faults.closes.fetch_add(1, Ordering::Relaxed);
+-        self.file.close()?;
+-        if self.faults.fail_close.load(Ordering::Relaxed) {
+-            return Err(std::io::Error::from(std::io::ErrorKind::Other));
+-        }
+-        Ok(())
++        let outcome = self.file.close();
++        if self.faults.fail_close.load(Ordering::Relaxed)
++            && matches!(
++                outcome.native_disposition(),
++                crate::BackendNativeDisposition::Drained
++            )
++        {
++            let (result, _) = outcome.into_parts();
++            return crate::BackendCloseOutcome::drained(
++                result.and_then(|()| Err(std::io::ErrorKind::Other.into())),
++            );
++        }
++        outcome
+     }
+ }
+ fn fault_database(
+--- a/vendor/redb-4.2.0/src/allocator_state_key_tests.rs
++++ b/vendor/redb-4.2.0/src/allocator_state_key_tests.rs
+@@ -142,7 +142,7 @@
+             if clean {
+                 database.close().unwrap();
+             } else {
+-                database.get_memory().abandon().unwrap();
++                database.get_memory().abandon().0.unwrap();
+                 drop(database);
+             }
+             let before = std::fs::read(file.path()).unwrap();
+@@ -197,7 +197,7 @@
+     let before = std::fs::read(file.path()).unwrap();
+     assert_corrupted(database.check_integrity());
+     assert_eq!(std::fs::read(file.path()).unwrap(), before);
+-    database.get_memory().abandon().unwrap();
++    database.get_memory().abandon().0.unwrap();
+     drop(database);
+     assert_eq!(std::fs::read(file.path()).unwrap(), before);
+ }
+@@ -267,7 +267,7 @@
+             if clean {
+                 database.close().unwrap();
+             } else {
+-                database.get_memory().abandon().unwrap();
++                database.get_memory().abandon().0.unwrap();
+                 drop(database);
+             }
+             let before = std::fs::read(file.path()).unwrap();
+--- a/vendor/redb-4.2.0/src/db.rs
++++ b/vendor/redb-4.2.0/src/db.rs
+@@ -51,6 +51,70 @@
+ #[cfg(feature = "logging")]
+ use log::{debug, warn};
+ 
++/// Native-resource knowledge returned by the exact backend close attempt.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum BackendNativeDisposition {
++    /// Every native resource positively retired; retained diagnostics may remain.
++    Drained,
++    /// Native retirement is unproved; retain the exact owner and observations.
++    Retained,
++}
++
++/// The original logical outcome and independent native-resource disposition.
++/// An error with positive native drain is never a successful logical close.
++#[derive(Debug)]
++#[must_use = "retain the original error and inspect native-resource disposition"]
++pub struct BackendCloseOutcome {
++    result: core::result::Result<(), io::Error>,
++    native: BackendNativeDisposition,
++}
++impl BackendCloseOutcome {
++    pub fn drained(result: core::result::Result<(), io::Error>) -> Self {
++        Self {
++            result,
++            native: BackendNativeDisposition::Drained,
++        }
++    }
++    /// Logical completion without proof that native resources drained.
++    pub fn retained_result(result: core::result::Result<(), io::Error>) -> Self {
++        Self {
++            result,
++            native: BackendNativeDisposition::Retained,
++        }
++    }
++    pub fn retained(error: io::Error) -> Self {
++        Self {
++            result: Err(error),
++            native: BackendNativeDisposition::Retained,
++        }
++    }
++    pub fn native_disposition(&self) -> BackendNativeDisposition {
++        self.native
++    }
++    pub fn into_parts(
++        self,
++    ) -> (
++        core::result::Result<(), io::Error>,
++        BackendNativeDisposition,
++    ) {
++        (self.result, self.native)
++    }
++    /// Project only the logical outcome; this is not native-drain evidence.
++    pub fn into_result(self) -> core::result::Result<(), io::Error> {
++        self.result
++    }
++}
++
++pub(crate) fn require_native_drain(
++    (result, native): (crate::Result, BackendNativeDisposition),
++) -> crate::Result {
++    result?;
++    match native {
++        BackendNativeDisposition::Drained => Ok(()),
++        BackendNativeDisposition::Retained => Err(StorageError::OwnerFailed),
++    }
++}
++
+ #[allow(clippy::len_without_is_empty)]
+ /// Implements persistent storage for a database.
+ ///
+@@ -78,14 +142,13 @@
+     /// Writes the specified array to the storage.
+     fn write(&self, offset: u64, data: &[u8]) -> core::result::Result<(), io::Error>;
+ 
+-    /// Release any resources held by the backend
++    /// Attempt release once and return both the original logical result and
++    /// independent native-resource knowledge. No default success is provided.
+     ///
+     /// Note: redb will not access the backend after calling this method and will call it exactly
+     /// once: when the [`Database`] is dropped, or, if a [`WriteTransaction`] was live at that
+     /// point, when that transaction completes, or if opening the database fails
+-    fn close(&self) -> core::result::Result<(), io::Error> {
+-        Ok(())
+-    }
++    fn close(&self) -> BackendCloseOutcome;
+ }
+ 
+ pub trait TableHandle: Sealed {
+@@ -484,7 +547,7 @@
+         if Arc::strong_count(&self.transaction_tracker) != 1 {
+             return Err(crate::CloseError::Busy(self));
+         }
+-        self.mem.abandon().map_err(crate::CloseError::Storage)
++        require_native_drain(self.mem.abandon()).map_err(crate::CloseError::Storage)
+     }
+ 
+     /// Opens an existing redb database.
+@@ -1567,6 +1630,9 @@
+     }
+ 
+     impl StorageBackend for FailingBackend {
++        fn close(&self) -> crate::BackendCloseOutcome {
++            self.inner.close()
++        }
+         fn len(&self) -> Result<u64, std::io::Error> {
+             self.inner.len()
+         }
+--- a/vendor/redb-4.2.0/src/lib.rs
++++ b/vendor/redb-4.2.0/src/lib.rs
+@@ -73,9 +73,9 @@
+ #[cfg(not(redb_no_std))]
+ pub use db::ReadOnlyDatabase;
+ pub use db::{
+-    Builder, CacheStats, Database, MultimapTableDefinition, MultimapTableHandle, ReadableDatabase,
+-    RepairSession, StorageBackend, TableDefinition, TableHandle, UntypedMultimapTableHandle,
+-    UntypedTableHandle,
++    BackendCloseOutcome, BackendNativeDisposition, Builder, CacheStats, Database,
++    MultimapTableDefinition, MultimapTableHandle, ReadableDatabase, RepairSession, StorageBackend,
++    TableDefinition, TableHandle, UntypedMultimapTableHandle, UntypedTableHandle,
+ };
+ #[cfg(all(not(redb_no_std), panic = "unwind"))]
+ pub use db::{
+--- a/vendor/redb-4.2.0/src/page_list_tests.rs
++++ b/vendor/redb-4.2.0/src/page_list_tests.rs
+@@ -220,7 +220,7 @@
+             Ok(())
+         }
+     }
+-    fn close(&self) -> std::io::Result<()> {
++    fn close(&self) -> crate::BackendCloseOutcome {
+         self.file.close()
+     }
+ }
+@@ -661,7 +661,7 @@
+     tx.completed = true;
+     drop(tx);
+     // abandon does not try to normalize/repair this deliberately invalid root.
+-    database.get_memory().abandon().unwrap();
++    database.get_memory().abandon().0.unwrap();
+     drop(database);
+     let original = std::fs::read(file.path()).unwrap();
+     let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+--- a/vendor/redb-4.2.0/src/retained_database.rs
++++ b/vendor/redb-4.2.0/src/retained_database.rs
+@@ -16,6 +16,12 @@
+     /// Both phases returned and the backend positively reported successful close.
+     /// Original shutdown errors and database allocations still belong to this owner.
+     Settled,
++    /// Native resources drained, but the backend returned its original error.
++    /// Operational allocations and all original outcomes are still retained.
++    DrainedWithFailure,
++    /// Explicit failed disposal retired operational allocations. Original close
++    /// outcomes remain here until the embedding owner accepts acknowledgement.
++    FailedDisposed,
+     /// A phase unwound or backend close failed. Preserve this exact owner.
+     Retained,
+ }
+@@ -55,9 +61,11 @@
+ /// owner and treat its destructor as proof of cleanup.
+ #[must_use = "retain the exact database while physical close is unproved"]
+ pub struct RetainedDatabase {
+-    database: Database,
++    database: Option<Database>,
+     shutdown: Observation,
+     backend: Observation,
++    native: crate::BackendNativeDisposition,
++    disposal: Observation,
+     settlement: DatabaseCloseSettlement,
+ }
+ 
+@@ -73,6 +81,12 @@
+     pub fn shutdown(&self) -> TerminalObservation<'_, StorageError> {
+         self.owner.shutdown.borrow()
+     }
++    pub fn native_disposition(&self) -> crate::BackendNativeDisposition {
++        self.owner.native
++    }
++    pub fn failed_disposal(&self) -> TerminalObservation<'_, StorageError> {
++        self.owner.disposal.borrow()
++    }
+     pub fn backend(&self) -> TerminalObservation<'_, StorageError> {
+         self.owner.backend.borrow()
+     }
+@@ -82,9 +96,11 @@
+     /// Transfer the exact database to inline close custody, before effects.
+     pub fn retain(self) -> RetainedDatabase {
+         RetainedDatabase {
+-            database: self,
++            database: Some(self),
+             shutdown: Observation::NotEntered,
+             backend: Observation::NotEntered,
++            native: crate::BackendNativeDisposition::Retained,
++            disposal: Observation::NotEntered,
+             settlement: DatabaseCloseSettlement::Open,
+         }
+     }
+@@ -94,7 +110,9 @@
+     /// Access is available only before the first close request. Existing
+     /// transactions already own their handles and remain independently tracked.
+     pub fn database(&self) -> Option<&Database> {
+-        (self.settlement == DatabaseCloseSettlement::Open).then_some(&self.database)
++        (self.settlement == DatabaseCloseSettlement::Open)
++            .then_some(self.database.as_ref())
++            .flatten()
+     }
+     pub fn report(&self) -> DatabaseCloseReport<'_> {
+         DatabaseCloseReport { owner: self }
+@@ -110,8 +128,9 @@
+         matches!(
+             self.settlement,
+             DatabaseCloseSettlement::Open | DatabaseCloseSettlement::WaitingForTransactions
+-        ) && Arc::ptr_eq(&self.database.transaction_tracker, tracker)
+-            && Arc::ptr_eq(&self.database.mem, mem)
++        ) && self.database.as_ref().is_some_and(|database| {
++            Arc::ptr_eq(&database.transaction_tracker, tracker) && Arc::ptr_eq(&database.mem, mem)
++        })
+     }
+     pub fn close(&mut self) -> DatabaseCloseReport<'_> {
+         if matches!(
+@@ -119,19 +138,51 @@
+             DatabaseCloseSettlement::Open | DatabaseCloseSettlement::WaitingForTransactions
+         ) {
+             self.settlement = DatabaseCloseSettlement::WaitingForTransactions;
+-            if Arc::strong_count(&self.database.transaction_tracker) != 1 {
++            let database = self
++                .database
++                .as_ref()
++                .expect("operational database before close");
++            if Arc::strong_count(&database.transaction_tracker) != 1 {
+                 return self.report();
+             }
+             self.settlement = DatabaseCloseSettlement::Retained;
+-            self.shutdown.observe(|| self.database.mem.prepare_close());
++            self.shutdown.observe(|| database.mem.prepare_close());
+             // Backend release is attempted separately even after a shutdown
+             // failure. Never combine these outcomes with Result::and: it drops
+             // the secondary original error. Both calls borrow the exact owner.
+-            self.backend.observe(|| self.database.mem.abandon());
++            let native = &mut self.native;
++            self.backend.observe(|| {
++                let (result, disposition) = database.mem.abandon();
++                *native = disposition;
++                result
++            });
+             if matches!(self.shutdown, Observation::Returned(_))
+-                && matches!(self.backend, Observation::Returned(Ok(())))
++                && self.native == crate::BackendNativeDisposition::Drained
++                && matches!(self.backend, Observation::Returned(_))
+             {
+-                self.settlement = DatabaseCloseSettlement::Settled;
++                self.settlement = if matches!(self.backend, Observation::Returned(Ok(()))) {
++                    DatabaseCloseSettlement::Settled
++                } else {
++                    DatabaseCloseSettlement::DrainedWithFailure
++                };
++            }
++        }
++        self.report()
++    }
++    /// Explicitly retire operational backing after a known-drained failed close.
++    /// This does not acknowledge or drop either original close outcome. It may
++    /// enter only once; any disposal unwind remains in this same report owner.
++    pub fn dispose_failed(&mut self) -> DatabaseCloseReport<'_> {
++        if self.settlement == DatabaseCloseSettlement::DrainedWithFailure
++            && matches!(self.disposal, Observation::NotEntered)
++        {
++            self.settlement = DatabaseCloseSettlement::Retained;
++            self.disposal.observe(|| {
++                drop(self.database.take());
++                Ok(())
++            });
++            if matches!(self.disposal, Observation::Returned(Ok(()))) {
++                self.settlement = DatabaseCloseSettlement::FailedDisposed;
+             }
+         }
+         self.report()
+--- a/vendor/redb-4.2.0/src/retained_database_tests.rs
++++ b/vendor/redb-4.2.0/src/retained_database_tests.rs
+@@ -25,6 +25,7 @@
+     syncs: AtomicUsize,
+     closes: AtomicUsize,
+     drops: AtomicUsize,
++    drop_panics: AtomicU8,
+     shutdown_marker: Arc<Marker>,
+     close_marker: Arc<Marker>,
+ }
+@@ -36,6 +37,9 @@
+ impl Drop for Backend {
+     fn drop(&mut self) {
+         self.control.drops.fetch_add(1, Ordering::SeqCst);
++        if self.control.drop_panics.load(Ordering::SeqCst) != 0 {
++            std::panic::panic_any(self.control.close_marker.clone());
++        }
+     }
+ }
+ impl StorageBackend for Backend {
+@@ -61,13 +65,24 @@
+             _ => self.file.sync_data(),
+         }
+     }
+-    fn close(&self) -> std::io::Result<()> {
++    fn close(&self) -> crate::BackendCloseOutcome {
+         self.control.closes.fetch_add(1, Ordering::SeqCst);
+         match self.control.close_mode.load(Ordering::SeqCst) {
+-            1 => Err(std::io::Error::other(OriginalIo(
++            1 => crate::BackendCloseOutcome::retained(std::io::Error::other(OriginalIo(
+                 self.control.close_marker.clone(),
+             ))),
+             2 => std::panic::panic_any(self.control.close_marker.clone()),
++            3 => {
++                let outcome = self.file.close();
++                assert_eq!(
++                    outcome.native_disposition(),
++                    crate::BackendNativeDisposition::Drained
++                );
++                outcome.into_result().unwrap();
++                crate::BackendCloseOutcome::drained(Err(std::io::Error::other(OriginalIo(
++                    self.control.close_marker.clone(),
++                ))))
++            }
+             _ => self.file.close(),
+         }
+     }
+@@ -86,6 +101,7 @@
+             syncs: AtomicUsize::new(0),
+             closes: AtomicUsize::new(0),
+             drops: AtomicUsize::new(0),
++            drop_panics: AtomicU8::new(0),
+             shutdown_marker: Arc::new(Marker),
+             close_marker: Arc::new(Marker),
+         });
+@@ -313,3 +329,106 @@
+     ));
+     retain(2, fixture);
+ }
++
++#[test]
++fn known_native_drain_disposes_operational_database_but_retains_both_original_errors() {
++    let mut fixture = Fixture::new();
++    fixture.control.sync_mode.store(1, Ordering::SeqCst);
++    fixture.control.close_mode.store(3, Ordering::SeqCst);
++    let report = fixture.owner.close();
++    assert_eq!(
++        report.settlement(),
++        DatabaseCloseSettlement::DrainedWithFailure
++    );
++    assert_eq!(
++        report.native_disposition(),
++        crate::BackendNativeDisposition::Drained
++    );
++    let shutdown = error_pointer(report.shutdown());
++    let backend = error_pointer(report.backend());
++    original_io(report.shutdown(), &fixture.control.shutdown_marker);
++    original_io(report.backend(), &fixture.control.close_marker);
++    assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 0);
++    let report = fixture.owner.close();
++    assert_eq!(
++        report.settlement(),
++        DatabaseCloseSettlement::DrainedWithFailure
++    );
++    assert_eq!(error_pointer(report.shutdown()), shutdown);
++    assert_eq!(error_pointer(report.backend()), backend);
++    assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 1);
++    let report = fixture.owner.dispose_failed();
++    assert_eq!(report.settlement(), DatabaseCloseSettlement::FailedDisposed);
++    assert!(matches!(
++        report.failed_disposal(),
++        TerminalObservation::Returned(Ok(()))
++    ));
++    assert_eq!(error_pointer(report.shutdown()), shutdown);
++    assert_eq!(error_pointer(report.backend()), backend);
++    assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 1);
++    assert!(fixture.owner.database.is_none());
++    assert_eq!(
++        fixture.owner.dispose_failed().settlement(),
++        DatabaseCloseSettlement::FailedDisposed
++    );
++    assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 1);
++}
++
++#[test]
++fn unknown_native_close_cannot_enter_failed_disposal_or_retry_backend() {
++    let mut fixture = Fixture::new();
++    fixture.control.close_mode.store(1, Ordering::SeqCst);
++    let report = fixture.owner.close();
++    let original = error_pointer(report.backend());
++    assert_eq!(
++        report.native_disposition(),
++        crate::BackendNativeDisposition::Retained
++    );
++    for _ in 0..2 {
++        let report = fixture.owner.dispose_failed();
++        assert_eq!(report.settlement(), DatabaseCloseSettlement::Retained);
++        assert!(matches!(
++            report.failed_disposal(),
++            TerminalObservation::NotEntered
++        ));
++        assert_eq!(error_pointer(report.backend()), original);
++        assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 1);
++        assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 0);
++    }
++    // Actual backend still owns its unclosed descriptor; retain it explicitly.
++    // This test's owner is not evidence that a caller/census budget is complete.
++    static UNKNOWN: Mutex<Option<Fixture>> = Mutex::new(None);
++    *UNKNOWN.lock().unwrap() = Some(fixture);
++}
++
++#[test]
++fn failed_disposal_unwind_retains_original_close_errors_and_never_replays_drop() {
++    let mut fixture = Fixture::new();
++    fixture.control.sync_mode.store(1, Ordering::SeqCst);
++    fixture.control.close_mode.store(3, Ordering::SeqCst);
++    let report = fixture.owner.close();
++    let shutdown = error_pointer(report.shutdown());
++    let backend = error_pointer(report.backend());
++    fixture.control.drop_panics.store(1, Ordering::SeqCst);
++    let mut panic_address = None;
++    for _ in 0..2 {
++        let report = fixture.owner.dispose_failed();
++        assert_eq!(report.settlement(), DatabaseCloseSettlement::Retained);
++        assert_eq!(error_pointer(report.shutdown()), shutdown);
++        assert_eq!(error_pointer(report.backend()), backend);
++        let TerminalObservation::Panicked(payload) = report.failed_disposal() else {
++            panic!("actual destructor panic lost")
++        };
++        let marker = payload.downcast_ref::<Arc<Marker>>().unwrap();
++        assert!(Arc::ptr_eq(marker, &fixture.control.close_marker));
++        let address = std::ptr::from_ref(marker);
++        if let Some(previous) = panic_address {
++            assert_eq!(address, previous);
++        }
++        panic_address = Some(address);
++        assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 1);
++        assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 1);
++    }
++    static DISPOSAL_PANIC: Mutex<Option<Fixture>> = Mutex::new(None);
++    *DISPOSAL_PANIC.lock().unwrap() = Some(fixture);
++}
+--- a/vendor/redb-4.2.0/src/retained_opening.rs
++++ b/vendor/redb-4.2.0/src/retained_opening.rs
+@@ -55,6 +55,10 @@
+     WaitingForTransactions,
+     /// Physical release returned successfully. Diagnostics and allocations remain.
+     Closed,
++    /// Native closure is proved, but a failed logical outcome remains retained.
++    DrainedWithFailure,
++    /// Explicit operational disposal completed; original diagnostics remain.
++    FailedDisposed,
+ }
+ 
+ enum Observation<E> {
+@@ -201,7 +205,7 @@
+     builder: Builder,
+     admission: Arc<OpeningAdmission>,
+     mode: DatabaseOpenMode,
+-    partial: TransactionalMemoryOpening,
++    partial: Option<TransactionalMemoryOpening>,
+     memory: Option<Arc<TransactionalMemory>>,
+     database: Option<RetainedDatabase>,
+     bootstrap: Option<RetainedWriteTransaction>,
+@@ -211,6 +215,8 @@
+     settlement: DatabaseOpenSettlement,
+     opening: Observation<DatabaseError>,
+     partial_close: Observation<StorageError>,
++    partial_native: crate::BackendNativeDisposition,
++    failed_disposal: Observation<StorageError>,
+ }
+ 
+ #[must_use = "inspect the opening, bootstrap, disposal and close observations"]
+@@ -242,6 +248,17 @@
+         self.owner.database.as_ref().map(RetainedDatabase::report)
+     }
+     /// Used only before a Database exists; it never checkpoints partial state.
++    pub fn native_disposition(&self) -> crate::BackendNativeDisposition {
++        self.owner
++            .database
++            .as_ref()
++            .map_or(self.owner.partial_native, |database| {
++                database.report().native_disposition()
++            })
++    }
++    pub fn failed_disposal(&self) -> TerminalObservation<'_, StorageError> {
++        self.owner.failed_disposal.borrow()
++    }
+     pub fn partial_close(&self) -> TerminalObservation<'_, StorageError> {
+         self.owner.partial_close.borrow()
+     }
+@@ -252,6 +269,22 @@
+ }
+ 
+ impl Builder {
++    /// Checked allocator request for the private retained-opening admission Arc.
++    /// Query this before constructing a builder or registering its owner. The
++    /// caller funds this allocation in addition to the owner's inline storage.
++    ///
++    /// The pinned Rust Arc layout consists of two atomic reference counts and
++    /// the aligned private payload. Qualification tests bind this plan to the
++    /// actual allocator request on each supported target/toolchain. This plan
++    /// does not include caches, transaction workspaces, native mutex backing,
++    /// caller stacks or arbitrary error/panic payload allocations.
++    pub fn retained_opening_allocation_layout()
++    -> Result<std::alloc::Layout, std::alloc::LayoutError> {
++        let (layout, _) = std::alloc::Layout::new::<[std::sync::atomic::AtomicUsize; 2]>()
++            .extend(std::alloc::Layout::new::<OpeningAdmission>())?;
++        Ok(layout.pad_to_align())
++    }
++
+     /// Move existing resources into pre-effect opening custody. Register this
+     /// owner before calling `open`; no backend operation runs here. The proxy's
+     /// Arc allocation/control block must be admitted before this constructor.
+@@ -270,7 +303,7 @@
+             builder: self,
+             admission,
+             mode,
+-            partial: TransactionalMemoryOpening::new(backend),
++            partial: Some(TransactionalMemoryOpening::new(backend)),
+             memory: None,
+             database: None,
+             bootstrap: None,
+@@ -280,6 +313,8 @@
+             settlement: DatabaseOpenSettlement::Prepared,
+             opening: Observation::NotEntered,
+             partial_close: Observation::NotEntered,
++            partial_native: crate::BackendNativeDisposition::Retained,
++            failed_disposal: Observation::NotEntered,
+         }
+     }
+ }
+@@ -372,16 +407,21 @@
+ 
+     fn open_body(&mut self) -> Result<(), DatabaseError> {
+         self.phase = DatabaseOpenPhase::MemoryInitialization;
+-        self.memory = Some(Arc::new(self.partial.initialize(
+-            self.builder.admission.clone(),
+-            self.mode == DatabaseOpenMode::Create,
+-            self.builder.page_size,
+-            match self.mode {
+-                DatabaseOpenMode::Create => self.builder.region_size,
+-                DatabaseOpenMode::Existing => None,
+-            },
+-            self.builder.cache_size,
+-        )?));
++        self.memory = Some(Arc::new(
++            self.partial
++                .as_mut()
++                .expect("partial owner before opening")
++                .initialize(
++                    self.builder.admission.clone(),
++                    self.mode == DatabaseOpenMode::Create,
++                    self.builder.page_size,
++                    match self.mode {
++                        DatabaseOpenMode::Create => self.builder.region_size,
++                        DatabaseOpenMode::Existing => None,
++                    },
++                    self.builder.cache_size,
++                )?,
++        ));
+         self.phase = DatabaseOpenPhase::WinningRootVerification;
+         let memory = self
+             .memory
+@@ -455,7 +495,15 @@
+     /// Busy database close may be re-observed after actual external handles drain.
+     pub fn close(&mut self) -> DatabaseOpenReport<'_> {
+         self.phase = DatabaseOpenPhase::Closing;
+-        if self.settlement == DatabaseOpenSettlement::Closed {
++        if !matches!(self.failed_disposal, Observation::NotEntered) {
++            return self.report();
++        }
++        if matches!(
++            self.settlement,
++            DatabaseOpenSettlement::Closed
++                | DatabaseOpenSettlement::DrainedWithFailure
++                | DatabaseOpenSettlement::FailedDisposed
++        ) {
+             return self.report();
+         }
+         self.settlement = DatabaseOpenSettlement::Retained;
+@@ -473,6 +521,10 @@
+         if let Some(database) = self.database.as_mut() {
+             self.settlement = match database.close().settlement() {
+                 DatabaseCloseSettlement::Settled => DatabaseOpenSettlement::Closed,
++                DatabaseCloseSettlement::DrainedWithFailure => {
++                    DatabaseOpenSettlement::DrainedWithFailure
++                }
++                DatabaseCloseSettlement::FailedDisposed => DatabaseOpenSettlement::FailedDisposed,
+                 DatabaseCloseSettlement::WaitingForTransactions => {
+                     DatabaseOpenSettlement::WaitingForTransactions
+                 }
+@@ -483,13 +535,25 @@
+         } else if matches!(self.partial_close, Observation::NotEntered) {
+             let memory = &self.memory;
+             let partial = &self.partial;
+-            self.partial_close.observe(|| match memory {
+-                Some(memory) => memory.abandon(),
+-                None => partial.abandon(),
++            let native = &mut self.partial_native;
++            self.partial_close.observe(|| {
++                let (result, disposition) = match memory {
++                    Some(memory) => memory.abandon(),
++                    None => partial.as_ref().expect("partial close owner").abandon(),
++                };
++                *native = disposition;
++                result
+             });
+-            if self.partial_close.succeeded() {
+-                self.settlement = DatabaseOpenSettlement::Closed;
+-            } else {
++            if self.partial_native == crate::BackendNativeDisposition::Drained
++                && matches!(self.partial_close, Observation::Returned(_))
++            {
++                self.settlement = if self.partial_close.succeeded() {
++                    DatabaseOpenSettlement::Closed
++                } else {
++                    DatabaseOpenSettlement::DrainedWithFailure
++                };
++            }
++            if self.settlement != DatabaseOpenSettlement::Closed {
+                 // Preserve the close outcome first. A faulty admission callback
+                 // cannot overwrite its original I/O error or panic payload.
+                 self.builder.admission.owner_failed();
+@@ -497,6 +561,30 @@
+         }
+         self.report()
+     }
++    /// Explicitly dispose known-drained operational backing while preserving all
++    /// original observations. This does not authorize outcome release or reuse.
++    pub fn dispose_failed(&mut self) -> DatabaseOpenReport<'_> {
++        if self.settlement != DatabaseOpenSettlement::DrainedWithFailure
++            || !matches!(self.failed_disposal, Observation::NotEntered)
++        {
++            return self.report();
++        }
++        self.settlement = DatabaseOpenSettlement::Retained;
++        if let Some(database) = self.database.as_mut()
++            && database.dispose_failed().settlement() != DatabaseCloseSettlement::FailedDisposed
++        {
++            return self.report();
++        }
++        self.failed_disposal.observe(|| {
++            drop(self.memory.take());
++            drop(self.partial.take());
++            Ok(())
++        });
++        if self.failed_disposal.succeeded() {
++            self.settlement = DatabaseOpenSettlement::FailedDisposed;
++        }
++        self.report()
++    }
+ }
+ 
+ #[cfg(test)]
+--- a/vendor/redb-4.2.0/src/retained_opening_tests.rs
++++ b/vendor/redb-4.2.0/src/retained_opening_tests.rs
+@@ -95,13 +95,24 @@
+         )?;
+         self.file.sync_data()
+     }
+-    fn close(&self) -> std::io::Result<()> {
++    fn close(&self) -> crate::BackendCloseOutcome {
+         self.control.closes.fetch_add(1, Ordering::SeqCst);
+-        self.control.fault(
+-            self.control.close_mode.load(Ordering::SeqCst),
+-            &self.control.secondary,
+-        )?;
+-        self.file.close()
++        let mode = self.control.close_mode.load(Ordering::SeqCst);
++        if mode == 3 {
++            let outcome = self.file.close();
++            assert_eq!(
++                outcome.native_disposition(),
++                crate::BackendNativeDisposition::Drained
++            );
++            outcome.into_result().unwrap();
++            return crate::BackendCloseOutcome::drained(
++                self.control.fault(1, &self.control.secondary),
++            );
++        }
++        match self.control.fault(mode, &self.control.secondary) {
++            Ok(()) => self.file.close(),
++            Err(error) => crate::BackendCloseOutcome::retained(error),
++        }
+     }
+ }
+ struct Fixture {
+@@ -747,3 +758,56 @@
+     assert!(fixture.owner.retained_database().is_none());
+     assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 1);
+ }
++
++#[test]
++fn failed_partial_and_complete_opening_dispose_only_known_drained_backing_and_keep_originals() {
++    for complete in [false, true] {
++        let mut fixture = Fixture::new();
++        if complete {
++            assert_eq!(
++                fixture.owner.open().settlement(),
++                DatabaseOpenSettlement::Ready
++            );
++        }
++        fixture.control.close_mode.store(3, Ordering::SeqCst);
++        let report = fixture.owner.close();
++        assert_eq!(
++            report.settlement(),
++            DatabaseOpenSettlement::DrainedWithFailure
++        );
++        let original = if complete {
++            original_io(
++                report.database_close().unwrap().backend(),
++                &fixture.control.secondary,
++            )
++        } else {
++            original_io(report.partial_close(), &fixture.control.secondary)
++        };
++        assert_eq!(
++            report.native_disposition(),
++            crate::BackendNativeDisposition::Drained
++        );
++        assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 0);
++        let report = fixture.owner.dispose_failed();
++        assert_eq!(report.settlement(), DatabaseOpenSettlement::FailedDisposed);
++        assert!(matches!(
++            report.failed_disposal(),
++            TerminalObservation::Returned(Ok(()))
++        ));
++        let retained = if complete {
++            original_io(
++                report.database_close().unwrap().backend(),
++                &fixture.control.secondary,
++            )
++        } else {
++            original_io(report.partial_close(), &fixture.control.secondary)
++        };
++        assert_eq!(retained, original);
++        assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 1);
++        assert_eq!(
++            fixture.owner.close().settlement(),
++            DatabaseOpenSettlement::FailedDisposed
++        );
++        assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 1);
++    }
++}
+--- a/vendor/redb-4.2.0/src/retained_transaction_tests.rs
++++ b/vendor/redb-4.2.0/src/retained_transaction_tests.rs
+@@ -105,13 +105,21 @@
+             _ => Ok(()),
+         }
+     }
+-    fn close(&self) -> std::io::Result<()> {
++    fn close(&self) -> crate::BackendCloseOutcome {
+         self.control.closes.fetch_add(1, Ordering::SeqCst);
+-        self.file.close()?;
+-        if self.control.mode.load(Ordering::SeqCst) == 3 {
++        let (result, native) = self.file.close().into_parts();
++        if result.is_ok()
++            && matches!(native, crate::BackendNativeDisposition::Drained)
++            && self.control.mode.load(Ordering::SeqCst) == 3
++        {
+             std::panic::panic_any(self.control.marker.clone());
+         }
+-        Ok(())
++        match native {
++            crate::BackendNativeDisposition::Drained => crate::BackendCloseOutcome::drained(result),
++            crate::BackendNativeDisposition::Retained => {
++                crate::BackendCloseOutcome::retained_result(result)
++            }
++        }
+     }
+ }
+ 
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/backends.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/backends.rs
+@@ -1,8 +1,8 @@
+-use crate::StorageBackend;
+ use crate::io;
+ #[cfg(not(redb_no_std))]
+ use crate::io::Error;
+ use crate::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
++use crate::{BackendCloseOutcome, StorageBackend};
+ #[cfg(not(redb_no_std))]
+ use alloc::boxed::Box;
+ use alloc::vec::Vec;
+@@ -42,7 +42,7 @@
+         unreachable!()
+     }
+ 
+-    fn close(&self) -> Result<(), Error> {
++    fn close(&self) -> BackendCloseOutcome {
+         self.inner.close()
+     }
+ }
+@@ -111,4 +111,8 @@
+             Err(Self::out_of_range())
+         }
+     }
++
++    fn close(&self) -> BackendCloseOutcome {
++        BackendCloseOutcome::drained(Ok(()))
++    }
+ }
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
+@@ -120,8 +120,11 @@
+ 
+ impl Drop for CheckedBackend {
+     fn drop(&mut self) {
+-        if !self.closed.swap(true, Ordering::AcqRel) && self.file.close().is_err() {
+-            self.fail_owner();
++        if !self.closed.swap(true, Ordering::AcqRel) {
++            let (result, native) = self.file.close().into_parts();
++            if result.is_err() || native != crate::BackendNativeDisposition::Drained {
++                self.fail_owner();
++            }
+         }
+     }
+ }
+@@ -165,11 +168,17 @@
+         })
+     }
+ 
+-    fn close(&self) -> Result {
++    fn close(&self) -> (Result, crate::BackendNativeDisposition) {
+         if self.closed.swap(true, Ordering::AcqRel) {
+-            return Ok(());
+-        }
+-        self.io(self.file.close())
++            // The first caller owns the original outcome. Re-observation must
++            // never manufacture positive native evidence or replay the call.
++            return (
++                Err(StorageError::DatabaseClosed),
++                crate::BackendNativeDisposition::Retained,
++            );
++        }
++        let (result, native) = self.file.close().into_parts();
++        (self.io(result), native)
+     }
+ 
+     fn len(&self) -> Result<u64> {
+@@ -399,7 +408,7 @@
+         }
+     }
+ 
+-    pub(crate) fn close(&self) -> Result {
++    pub(crate) fn close(&self) -> (Result, crate::BackendNativeDisposition) {
+         self.file.close()
+     }
+ 
+@@ -994,6 +1003,9 @@
+     }
+ 
+     impl StorageBackend for CountingBackend {
++        fn close(&self) -> crate::BackendCloseOutcome {
++            self.inner.close()
++        }
+         fn len(&self) -> Result<u64, std::io::Error> {
+             self.inner.len()
+         }
+@@ -1395,6 +1407,9 @@
+             marker: Arc<()>,
+         }
+         impl StorageBackend for Failing {
++            fn close(&self) -> crate::BackendCloseOutcome {
++                self.inner.close()
++            }
+             fn len(&self) -> std::io::Result<u64> {
+                 self.inner.len()
+             }
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/checked_backend_tests.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/checked_backend_tests.rs
+@@ -110,9 +110,11 @@
+         self.fault.enter(Method::Sync)?;
+         self.inner.sync_data()
+     }
+-    fn close(&self) -> io::Result<()> {
+-        self.fault.enter(Method::Close)?;
+-        self.inner.close()
++    fn close(&self) -> crate::BackendCloseOutcome {
++        match self.fault.enter(Method::Close) {
++            Ok(()) => self.inner.close(),
++            Err(error) => crate::BackendCloseOutcome::retained(error),
++        }
+     }
+ }
+ 
+@@ -123,7 +125,7 @@
+         Method::SetLen => backend.set_len(128),
+         Method::Write => backend.write(0, &[1]),
+         Method::Sync => backend.sync_data(),
+-        Method::Close => backend.close(),
++        Method::Close => backend.close().0,
+     }
+ }
+ 
+@@ -184,8 +186,17 @@
+         assert_eq!(fault.counts(), calls, "fenced retries touched the backend");
+         // Explicit close must still drain the physical backend after a data I/O
+         // failure. An already attempted close is observed without replay.
+-        backend.close().unwrap();
+-        backend.close().unwrap();
++        let (first, native) = backend.close();
++        if method == Method::Close {
++            assert!(matches!(first, Err(StorageError::DatabaseClosed)));
++            assert!(matches!(native, crate::BackendNativeDisposition::Retained));
++        } else {
++            first.unwrap();
++            assert!(matches!(native, crate::BackendNativeDisposition::Drained));
++        }
++        let (repeated, native) = backend.close();
++        assert!(matches!(repeated, Err(StorageError::DatabaseClosed)));
++        assert!(matches!(native, crate::BackendNativeDisposition::Retained));
+         assert_eq!(
+             fault.calls[Method::Close as usize].load(Ordering::SeqCst),
+             1
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/file_backend/fallback.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/file_backend/fallback.rs
+@@ -1,4 +1,8 @@
+-use crate::{DatabaseError, Result, StorageBackend};
++// This target has no supported primitive that reports the native File close
++// outcome. The first release requires explicit proof before disposal.
++compile_error!("redb FileBackend requires a supported native close primitive on this target");
++
++use crate::{BackendCloseOutcome, DatabaseError, Result, StorageBackend};
+ use std::fs::File;
+ use std::io;
+ use std::io::{Read, Seek, SeekFrom, Write};
+@@ -48,4 +52,8 @@
+         file.seek(SeekFrom::Start(offset))?;
+         file.write_all(data)
+     }
++
++    fn close(&self) -> BackendCloseOutcome {
++        BackendCloseOutcome::retained(io::ErrorKind::Unsupported.into())
++    }
+ }
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/file_backend/optimized.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/file_backend/optimized.rs
+@@ -1,6 +1,13 @@
+-use crate::{DatabaseError, Result, StorageBackend};
++use crate::{BackendCloseOutcome, DatabaseError, Result, StorageBackend};
+ use std::fs::{File, TryLockError};
+ use std::io;
++use std::sync::RwLock;
++
++#[cfg(any(unix, target_os = "wasi"))]
++use std::os::fd::IntoRawFd;
++
++#[cfg(windows)]
++use std::os::windows::io::IntoRawHandle;
+ 
+ #[cfg(feature = "logging")]
+ use log::warn;
+@@ -14,8 +21,75 @@
+ /// Stores a database as a file on-disk.
+ #[derive(Debug)]
+ pub struct FileBackend {
+-    lock_supported: bool,
+-    file: File,
++    file: RwLock<CloseState>,
++}
++
++#[derive(Debug)]
++enum CloseState {
++    Open(File),
++    // This phase is conservative if a close callback unwinds.
++    Attempting,
++    Drained,
++    // The raw handle is diagnostic only. It must never be retried after an
++    // uncertain native close result, even when its integer is later reused.
++    Unknown { native_handle: usize },
++}
++
++#[cfg(any(unix, target_os = "wasi"))]
++type NativeHandle = i32;
++
++#[cfg(windows)]
++type NativeHandle = *mut std::ffi::c_void;
++
++#[cfg(any(unix, target_os = "wasi"))]
++unsafe extern "C" {
++    #[link_name = "close"]
++    fn raw_close(fd: i32) -> i32;
++}
++
++#[cfg(windows)]
++#[link(name = "kernel32")]
++unsafe extern "system" {
++    #[link_name = "CloseHandle"]
++    fn raw_close(handle: NativeHandle) -> i32;
++}
++
++fn into_native_handle(file: File) -> NativeHandle {
++    #[cfg(any(unix, target_os = "wasi"))]
++    {
++        file.into_raw_fd()
++    }
++    #[cfg(windows)]
++    {
++        file.into_raw_handle()
++    }
++}
++
++#[cfg(any(unix, target_os = "wasi"))]
++fn native_handle_number(handle: NativeHandle) -> usize {
++    // A File's raw descriptor is nonnegative. Keep an impossible negative
++    // value diagnostic without panicking across the native-close boundary.
++    usize::try_from(handle).unwrap_or(usize::MAX)
++}
++
++#[cfg(windows)]
++fn native_handle_number(handle: NativeHandle) -> usize {
++    handle.addr()
++}
++
++fn close_native_handle(handle: NativeHandle) -> io::Result<()> {
++    // File has relinquished ownership through into_raw_fd/into_raw_handle.
++    // A failed close is uncertain: this call is never retried or replaced by
++    // File's infallible destructor.
++    #[cfg(any(unix, target_os = "wasi"))]
++    let closed = unsafe { raw_close(handle) } == 0;
++    #[cfg(windows)]
++    let closed = unsafe { raw_close(handle) } != 0;
++    if closed {
++        Ok(())
++    } else {
++        Err(io::Error::last_os_error())
++    }
+ }
+ 
+ impl FileBackend {
+@@ -33,8 +107,7 @@
+ 
+         match result {
+             Ok(()) => Ok(Self {
+-                file,
+-                lock_supported: true,
++                file: RwLock::new(CloseState::Open(file)),
+             }),
+             Err(TryLockError::WouldBlock) => Err(DatabaseError::DatabaseAlreadyOpen),
+             Err(TryLockError::Error(err)) if err.kind() == io::ErrorKind::Unsupported => {
+@@ -44,86 +117,143 @@
+                 );
+ 
+                 Ok(Self {
+-                    file,
+-                    lock_supported: false,
++                    file: RwLock::new(CloseState::Open(file)),
+                 })
+             }
+             Err(TryLockError::Error(err)) => Err(err.into()),
++        }
++    }
++
++    fn with_open<T>(&self, operation: impl FnOnce(&File) -> io::Result<T>) -> io::Result<T> {
++        let state = self
++            .file
++            .read()
++            .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
++        match &*state {
++            CloseState::Open(file) => operation(file),
++            CloseState::Attempting | CloseState::Drained | CloseState::Unknown { .. } => {
++                Err(io::Error::from(io::ErrorKind::NotConnected))
++            }
++        }
++    }
++
++    /// The handle number retained after an uncertain native close. It is only
++    /// diagnostic; calling close on this integer again would be unsafe.
++    pub fn unknown_close_handle(&self) -> Option<usize> {
++        let state = match self.file.read() {
++            Ok(state) => state,
++            Err(poisoned) => poisoned.into_inner(),
++        };
++        match &*state {
++            CloseState::Unknown { native_handle } => Some(*native_handle),
++            _ => None,
++        }
++    }
++
++    fn close_with(
++        &self,
++        closer: impl FnOnce(NativeHandle) -> io::Result<()>,
++    ) -> BackendCloseOutcome {
++        let mut state = match self.file.write() {
++            Ok(state) => state,
++            Err(_) => return BackendCloseOutcome::retained(io::ErrorKind::Other.into()),
++        };
++        match std::mem::replace(&mut *state, CloseState::Attempting) {
++            CloseState::Open(file) => {
++                let handle = into_native_handle(file);
++                *state = CloseState::Unknown {
++                    native_handle: native_handle_number(handle),
++                };
++                match closer(handle) {
++                    Ok(()) => {
++                        *state = CloseState::Drained;
++                        BackendCloseOutcome::drained(Ok(()))
++                    }
++                    Err(error) => BackendCloseOutcome::retained(error),
++                }
++            }
++            CloseState::Drained => {
++                *state = CloseState::Drained;
++                BackendCloseOutcome::drained(Err(io::ErrorKind::AlreadyExists.into()))
++            }
++            CloseState::Unknown { native_handle } => {
++                *state = CloseState::Unknown { native_handle };
++                BackendCloseOutcome::retained(io::ErrorKind::AlreadyExists.into())
++            }
++            CloseState::Attempting => BackendCloseOutcome::retained(io::ErrorKind::Other.into()),
+         }
+     }
+ }
+ 
+ impl StorageBackend for FileBackend {
+     fn len(&self) -> Result<u64, io::Error> {
+-        Ok(self.file.metadata()?.len())
++        self.with_open(|file| Ok(file.metadata()?.len()))
+     }
+ 
+     #[cfg(unix)]
+     fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), io::Error> {
+-        self.file.read_exact_at(out, offset)?;
+-        Ok(())
++        self.with_open(|file| file.read_exact_at(out, offset))
+     }
+ 
+     #[cfg(target_os = "wasi")]
+     fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), io::Error> {
+-        read_exact_at(&self.file, out, offset)?;
+-        Ok(())
++        self.with_open(|file| read_exact_at(file, out, offset))
+     }
+ 
+     #[cfg(windows)]
+     fn read(&self, mut offset: u64, out: &mut [u8]) -> Result<(), io::Error> {
+-        let mut data_offset = 0;
+-        while data_offset < out.len() {
+-            let read = self.file.seek_read(&mut out[data_offset..], offset)?;
+-            // seek_read returns Ok(0) at EOF; treat a short read as an error so that reading
+-            // past the end of the file fails instead of looping forever.
+-            if read == 0 {
+-                return Err(io::Error::new(
+-                    io::ErrorKind::UnexpectedEof,
+-                    "failed to fill whole buffer",
+-                ));
+-            }
+-            offset += read as u64;
+-            data_offset += read;
+-        }
+-        Ok(())
++        self.with_open(|file| {
++            let mut data_offset = 0;
++            while data_offset < out.len() {
++                let read = file.seek_read(&mut out[data_offset..], offset)?;
++                // seek_read returns Ok(0) at EOF; treat a short read as an error so that reading
++                // past the end of the file fails instead of looping forever.
++                if read == 0 {
++                    return Err(io::Error::new(
++                        io::ErrorKind::UnexpectedEof,
++                        "failed to fill whole buffer",
++                    ));
++                }
++                offset += read as u64;
++                data_offset += read;
++            }
++            Ok(())
++        })
+     }
+ 
+     fn set_len(&self, len: u64) -> Result<(), io::Error> {
+-        self.file.set_len(len)
++        self.with_open(|file| file.set_len(len))
+     }
+ 
+     fn sync_data(&self) -> Result<(), io::Error> {
+-        self.file.sync_data()
++        self.with_open(File::sync_data)
+     }
+ 
+     #[cfg(unix)]
+     fn write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {
+-        self.file.write_all_at(data, offset)
++        self.with_open(|file| file.write_all_at(data, offset))
+     }
+ 
+     #[cfg(target_os = "wasi")]
+     fn write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {
+-        write_all_at(&self.file, data, offset)
++        self.with_open(|file| write_all_at(file, data, offset))
+     }
+ 
+     #[cfg(windows)]
+     fn write(&self, mut offset: u64, data: &[u8]) -> Result<(), io::Error> {
+-        let mut data_offset = 0;
+-        while data_offset < data.len() {
+-            let written = self.file.seek_write(&data[data_offset..], offset)?;
+-            offset += written as u64;
+-            data_offset += written;
+-        }
+-        Ok(())
+-    }
+-
+-    fn close(&self) -> Result<(), io::Error> {
+-        if self.lock_supported {
+-            self.file.unlock()?;
+-        }
+-
+-        Ok(())
++        self.with_open(|file| {
++            let mut data_offset = 0;
++            while data_offset < data.len() {
++                let written = file.seek_write(&data[data_offset..], offset)?;
++                offset += written as u64;
++                data_offset += written;
++            }
++            Ok(())
++        })
++    }
++
++    fn close(&self) -> BackendCloseOutcome {
++        self.close_with(close_native_handle)
+     }
+ }
+ 
+@@ -197,3 +327,58 @@
+     }
+     Ok(())
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::BackendNativeDisposition;
++
++    #[test]
++    fn explicit_close_drains_the_native_file_once_and_fences_io() {
++        let backend = FileBackend::new(tempfile::tempfile().unwrap()).unwrap();
++        assert_eq!(backend.len().unwrap(), 0);
++
++        let (result, native) = backend.close().into_parts();
++        result.unwrap();
++        assert!(matches!(native, BackendNativeDisposition::Drained));
++        assert!(backend.len().is_err());
++        assert!(backend.unknown_close_handle().is_none());
++
++        let (duplicate, native) = backend.close().into_parts();
++        assert!(duplicate.is_err());
++        assert!(matches!(native, BackendNativeDisposition::Drained));
++    }
++
++    #[test]
++    fn uncertain_native_close_retains_its_number_without_retry() {
++        let backend = FileBackend::new(tempfile::tempfile().unwrap()).unwrap();
++        let mut attempts = 0;
++        let mut original_handle = None;
++        let (result, native) = backend
++            .close_with(|handle| {
++                attempts += 1;
++                original_handle = Some(native_handle_number(handle));
++                // Model an interrupted close whose descriptor really was closed.
++                // A retry could now close a reused descriptor in production.
++                close_native_handle(handle).unwrap();
++                Err(io::ErrorKind::Interrupted.into())
++            })
++            .into_parts();
++        assert_eq!(attempts, 1);
++        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
++        assert!(matches!(native, BackendNativeDisposition::Retained));
++        assert_eq!(backend.unknown_close_handle(), original_handle);
++        assert!(backend.len().is_err());
++
++        let (duplicate, native) = backend
++            .close_with(|_| {
++                attempts += 1;
++                panic!("an uncertain native handle must never be retried")
++            })
++            .into_parts();
++        assert_eq!(attempts, 1);
++        assert!(duplicate.is_err());
++        assert!(matches!(native, BackendNativeDisposition::Retained));
++        assert_eq!(backend.unknown_close_handle(), original_handle);
++    }
++}
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/header.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/header.rs
+@@ -565,7 +565,7 @@
+     use core::mem::size_of;
+     use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+     use std::fs::OpenOptions;
+-    use std::io::{Error, ErrorKind, Read, Seek, SeekFrom, Write};
++    use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+ 
+     const X: TableDefinition<&str, &str> = TableDefinition::new("x");
+ 
+@@ -705,7 +705,7 @@
+             Ok(())
+         }
+ 
+-        fn close(&self) -> Result<(), Error> {
++        fn close(&self) -> crate::BackendCloseOutcome {
+             self.inner.close()
+         }
+     }
+@@ -1124,6 +1124,10 @@
+             }
+             data[offset..offset + src.len()].copy_from_slice(src);
+             Ok(())
++        }
++
++        fn close(&self) -> crate::BackendCloseOutcome {
++            crate::BackendCloseOutcome::drained(Ok(()))
+         }
+     }
+ 
+@@ -1571,7 +1575,7 @@
+             self.mutations.fetch_add(1, Ordering::Relaxed);
+             self.inner.sync_data()
+         }
+-        fn close(&self) -> std::io::Result<()> {
++        fn close(&self) -> crate::BackendCloseOutcome {
+             self.inner.close()
+         }
+     }
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs
+@@ -388,11 +388,12 @@
+         )
+     }
+     #[cfg(all(not(redb_no_std), panic = "unwind"))]
+-    pub(crate) fn abandon(&self) -> Result {
++    pub(crate) fn abandon(&self) -> (Result, crate::BackendNativeDisposition) {
+         if let Some(storage) = &self.storage {
+             storage.close()
+         } else if let Some(file) = &self.file {
+-            file.close().map_err(StorageError::Io)
++            let (result, native) = file.close().into_parts();
++            (result.map_err(StorageError::Io), native)
+         } else {
+             // A fully constructed memory owner has already taken the cache.
+             unreachable!("partial close requires an actual opening resource")
+@@ -421,7 +422,7 @@
+     pub(crate) fn settle_growth(&self) -> Result {
+         self.storage.settle_growth()
+     }
+-    pub(crate) fn abandon(&self) -> Result {
++    pub(crate) fn abandon(&self) -> (Result, crate::BackendNativeDisposition) {
+         self.storage.close()
+     }
+ 
+@@ -1407,7 +1408,7 @@
+         let shutdown_result = self.prepare_close();
+         // The backend's close() contract guarantees it is called exactly once, so it must be
+         // called even if the shutdown writes above failed
+-        let close_result = self.storage.close();
++        let close_result = crate::db::require_native_drain(self.storage.close());
+         shutdown_result.and(close_result)
+     }
+ 
+--- a/vendor/redb-4.2.0/tests/basic_tests.rs
++++ b/vendor/redb-4.2.0/tests/basic_tests.rs
+@@ -3697,6 +3697,10 @@
+                 data: data.to_vec(),
+             });
+             self.inner.write(offset, data)
++        }
++
++        fn close(&self) -> redb::BackendCloseOutcome {
++            self.inner.close()
+         }
+     }
+ 
+--- a/vendor/redb-4.2.0/tests/check_integrity_admitted.rs
++++ b/vendor/redb-4.2.0/tests/check_integrity_admitted.rs
+@@ -78,6 +78,10 @@
+         guard[offset..offset + data.len()].copy_from_slice(data);
+         Ok(())
+     }
++
++    fn close(&self) -> redb::BackendCloseOutcome {
++        redb::BackendCloseOutcome::drained(Ok(()))
++    }
+ }
+ 
+ fn make_db(backend: PatchBackend, n: u64) -> Database {
+--- a/vendor/redb-4.2.0/tests/check_integrity_failure.rs
++++ b/vendor/redb-4.2.0/tests/check_integrity_failure.rs
+@@ -72,6 +72,10 @@
+         guard[offset..offset + data.len()].copy_from_slice(data);
+         Ok(())
+     }
++
++    fn close(&self) -> redb::BackendCloseOutcome {
++        redb::BackendCloseOutcome::drained(Ok(()))
++    }
+ }
+ 
+ // Corruption introduced after explicit clean close is discovered by a live integrity
+--- a/vendor/redb-4.2.0/tests/crash_consistency.rs
++++ b/vendor/redb-4.2.0/tests/crash_consistency.rs
+@@ -104,6 +104,10 @@
+         }
+         Ok(())
+     }
++
++    fn close(&self) -> redb::BackendCloseOutcome {
++        redb::BackendCloseOutcome::drained(Ok(()))
++    }
+ }
+ 
+ // Runs a small workload that commits a baseline durably and then commits a transaction large
+--- a/vendor/redb-4.2.0/tests/integration_tests.rs
++++ b/vendor/redb-4.2.0/tests/integration_tests.rs
+@@ -127,7 +127,7 @@
+         self.inner.write(offset, data)
+     }
+ 
+-    fn close(&self) -> Result<(), std::io::Error> {
++    fn close(&self) -> redb::BackendCloseOutcome {
+         self.inner.close()
+     }
+ }
+@@ -177,6 +177,10 @@
+         guard[offset..end].copy_from_slice(data);
+         Ok(())
+     }
++
++    fn close(&self) -> redb::BackendCloseOutcome {
++        redb::BackendCloseOutcome::drained(Ok(()))
++    }
+ }
+ 
+ #[derive(Debug)]
+@@ -209,6 +213,10 @@
+             self.header_writes.fetch_add(1, Ordering::SeqCst);
+         }
+         self.inner.write(offset, data)
++    }
++
++    fn close(&self) -> redb::BackendCloseOutcome {
++        self.inner.close()
+     }
+ }
+ 
+@@ -269,6 +277,10 @@
+ 
+     fn write(&self, offset: u64, data: &[u8]) -> Result<(), std::io::Error> {
+         self.inner.write(offset, data)
++    }
++
++    fn close(&self) -> redb::BackendCloseOutcome {
++        self.inner.close()
+     }
+ }
+ 
+@@ -478,9 +490,9 @@
+             self.inner.write(offset, data)
+         }
+ 
+-        fn close(&self) -> Result<(), std::io::Error> {
++        fn close(&self) -> redb::BackendCloseOutcome {
+             self.close_calls.fetch_add(1, Ordering::SeqCst);
+-            Ok(())
++            self.inner.close()
+         }
+     }
+ 
+@@ -563,9 +575,9 @@
+             Ok(())
+         }
+ 
+-        fn close(&self) -> Result<(), std::io::Error> {
++        fn close(&self) -> redb::BackendCloseOutcome {
+             self.close_calls.fetch_add(1, Ordering::SeqCst);
+-            Ok(())
++            redb::BackendCloseOutcome::drained(Ok(()))
+         }
+     }
+ 
+--- /dev/null
++++ b/vendor/redb-4.2.0/tests/retained_opening_admission.rs
+@@ -0,0 +1,149 @@
++//! Observe the production library's private opening allocation through public
++//! APIs. The redb dependency is compiled without cfg(test); no fixture-only
++//! field or proxy replaces the actual OpeningAdmission allocation.
++use redb::{
++    AdmissionError, BackendCloseOutcome, Builder, DatabaseOpenMode, DatabaseOpenSettlement,
++    OwnerFailed, StorageAdmission, StorageBackend,
++};
++use std::{
++    alloc::{GlobalAlloc, Layout, System},
++    cell::Cell,
++    io,
++    sync::{
++        Arc,
++        atomic::{AtomicUsize, Ordering},
++    },
++};
++
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++struct Allocations {
++    count: usize,
++    first: Option<(usize, usize)>,
++}
++thread_local! {
++    static OBSERVING: Cell<bool> = const { Cell::new(false) };
++    static OBSERVED: Cell<Allocations> = const { Cell::new(Allocations { count: 0, first: None }) };
++}
++struct ObservedAllocator;
++#[global_allocator]
++static ALLOCATOR: ObservedAllocator = ObservedAllocator;
++
++fn record(size: usize, alignment: usize) {
++    let _ = OBSERVING.try_with(|observing| {
++        if observing.get() {
++            let _ = OBSERVED.try_with(|observed| {
++                let mut value = observed.get();
++                if value.count == 0 {
++                    value.first = Some((size, alignment));
++                }
++                value.count += 1;
++                observed.set(value);
++            });
++        }
++    });
++}
++unsafe impl GlobalAlloc for ObservedAllocator {
++    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++        record(layout.size(), layout.align());
++        unsafe { System.alloc(layout) }
++    }
++    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
++        record(layout.size(), layout.align());
++        unsafe { System.alloc_zeroed(layout) }
++    }
++    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
++        record(size, layout.align());
++        unsafe { System.realloc(pointer, layout, size) }
++    }
++    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
++        unsafe { System.dealloc(pointer, layout) }
++    }
++}
++struct Observation;
++impl Drop for Observation {
++    fn drop(&mut self) {
++        OBSERVING.with(|observing| observing.set(false));
++    }
++}
++fn measure<T>(operation: impl FnOnce() -> T) -> (T, Allocations) {
++    OBSERVED.with(|observed| observed.set(Allocations::default()));
++    OBSERVING.with(|observing| assert!(!observing.replace(true)));
++    let guard = Observation;
++    let value = operation();
++    drop(guard);
++    (value, OBSERVED.with(Cell::get))
++}
++
++#[derive(Debug, Default)]
++struct Calls {
++    operations: AtomicUsize,
++    closes: AtomicUsize,
++}
++#[derive(Debug)]
++struct Backend(Arc<Calls>);
++impl Backend {
++    fn unexpected<T>(&self) -> io::Result<T> {
++        self.0.operations.fetch_add(1, Ordering::SeqCst);
++        Err(io::ErrorKind::Other.into())
++    }
++}
++impl StorageBackend for Backend {
++    fn len(&self) -> io::Result<u64> {
++        self.unexpected()
++    }
++    fn read(&self, _: u64, _: &mut [u8]) -> io::Result<()> {
++        self.unexpected()
++    }
++    fn set_len(&self, _: u64) -> io::Result<()> {
++        self.unexpected()
++    }
++    fn sync_data(&self) -> io::Result<()> {
++        self.unexpected()
++    }
++    fn write(&self, _: u64, _: &[u8]) -> io::Result<()> {
++        self.unexpected()
++    }
++    fn close(&self) -> BackendCloseOutcome {
++        self.0.closes.fetch_add(1, Ordering::SeqCst);
++        BackendCloseOutcome::drained(Ok(()))
++    }
++}
++#[derive(Debug)]
++struct Admission;
++impl StorageAdmission for Admission {
++    fn check_owner(&self) -> Result<(), OwnerFailed> {
++        Ok(())
++    }
++    fn reserve_growth(&self, _: u64, _: u64) -> Result<(), AdmissionError> {
++        Err(AdmissionError::CapacityDenied)
++    }
++    fn settle_growth(&self, _: u64) -> Result<(), OwnerFailed> {
++        Ok(())
++    }
++    fn owner_failed(&self) {}
++}
++
++#[test]
++fn production_opening_plan_matches_actual_arc_request_before_backend_effects() {
++    let (plan, query_allocations) = measure(Builder::retained_opening_allocation_layout);
++    let plan = plan.unwrap();
++    assert_eq!(query_allocations, Allocations::default());
++
++    for mode in [DatabaseOpenMode::Create, DatabaseOpenMode::Existing] {
++        let calls = Arc::new(Calls::default());
++        let builder = Builder::new(Arc::new(Admission));
++        let backend = Box::new(Backend(calls.clone()));
++        let (mut opening, allocations) = measure(|| builder.retain_backend(backend, mode));
++        assert_eq!(allocations.count, 1);
++        assert_eq!(allocations.first, Some((plan.size(), plan.align())));
++        assert_eq!(calls.operations.load(Ordering::SeqCst), 0);
++        assert_eq!(calls.closes.load(Ordering::SeqCst), 0);
++        assert_eq!(
++            opening.report().settlement(),
++            DatabaseOpenSettlement::Prepared
++        );
++        assert_eq!(opening.close().settlement(), DatabaseOpenSettlement::Closed);
++        assert_eq!(calls.operations.load(Ordering::SeqCst), 0);
++        assert_eq!(calls.closes.load(Ordering::SeqCst), 1);
++    }
++}

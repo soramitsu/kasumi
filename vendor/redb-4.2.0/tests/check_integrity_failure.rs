@@ -72,6 +72,10 @@ impl StorageBackend for PatchBackend {
         guard[offset..offset + data.len()].copy_from_slice(data);
         Ok(())
     }
+
+    fn close(&self) -> redb::BackendCloseOutcome {
+        redb::BackendCloseOutcome::drained(Ok(()))
+    }
 }
 
 // Corruption introduced after explicit clean close is discovered by a live integrity

@@ -1,0 +1,46 @@
+test_build_provenance_rejects_unknown_features_tests_and_mismatched_sources (test_small_native_smoke.SmokeTests.test_build_provenance_rejects_unknown_features_tests_and_mismatched_sources) ... ok
+test_cleanup_failure_preserves_original_command_failure_and_retries_owner (test_small_native_smoke.SmokeTests.test_cleanup_failure_preserves_original_command_failure_and_retries_owner) ... ok
+test_descendant_forced_drain_waits_for_the_owned_group_and_retains_failure (test_small_native_smoke.SmokeTests.test_descendant_forced_drain_waits_for_the_owned_group_and_retains_failure) ... ok
+test_driver_failure_requires_an_actual_auth_denial_before_any_verified_prefix (test_small_native_smoke.SmokeTests.test_driver_failure_requires_an_actual_auth_denial_before_any_verified_prefix) ... ok
+test_driver_success_is_bound_to_exact_binary_config_counts_and_digest (test_small_native_smoke.SmokeTests.test_driver_success_is_bound_to_exact_binary_config_counts_and_digest) ... ok
+test_duplicate_gate_or_ambiguous_artifact_is_not_an_exact_build (test_small_native_smoke.SmokeTests.test_duplicate_gate_or_ambiguous_artifact_is_not_an_exact_build) ... ok
+test_failed_workspace_may_supply_proven_builds_without_becoming_a_release_candidate (test_small_native_smoke.SmokeTests.test_failed_workspace_may_supply_proven_builds_without_becoming_a_release_candidate) ... ok
+test_independent_python_corpus_matches_published_rust_vectors (test_small_native_smoke.SmokeTests.test_independent_python_corpus_matches_published_rust_vectors) ... ok
+test_local_restore_requires_finished_exact_input_and_local_fencing_scope (test_small_native_smoke.SmokeTests.test_local_restore_requires_finished_exact_input_and_local_fencing_scope) ... ok
+test_log_sync_failure_closes_every_log_and_retains_cleanup_failure (test_small_native_smoke.SmokeTests.test_log_sync_failure_closes_every_log_and_retains_cleanup_failure) ... ok
+test_mcp_request_has_exact_stateless_metadata_and_distinct_request_identity (test_small_native_smoke.SmokeTests.test_mcp_request_has_exact_stateless_metadata_and_distinct_request_identity) ... ok
+test_pending_or_unknown_build_outcome_cannot_supply_binary_evidence (test_small_native_smoke.SmokeTests.test_pending_or_unknown_build_outcome_cannot_supply_binary_evidence) ... ok
+test_prepare_copies_only_exact_build_artifacts_and_preserves_failed_baseline (test_small_native_smoke.SmokeTests.test_prepare_copies_only_exact_build_artifacts_and_preserves_failed_baseline) ... 
+  test_prepare_copies_only_exact_build_artifacts_and_preserves_failed_baseline (test_small_native_smoke.SmokeTests.test_prepare_copies_only_exact_build_artifacts_and_preserves_failed_baseline) (changed=False) ... ERROR
+  test_prepare_copies_only_exact_build_artifacts_and_preserves_failed_baseline (test_small_native_smoke.SmokeTests.test_prepare_copies_only_exact_build_artifacts_and_preserves_failed_baseline) (changed=True) ... ERROR
+test_private_atomic_output_rejects_symlink_without_overwriting_unrelated_file (test_small_native_smoke.SmokeTests.test_private_atomic_output_rejects_symlink_without_overwriting_unrelated_file) ... ok
+test_protected_readiness_rejects_a_tcp_live_but_unready_service (test_small_native_smoke.SmokeTests.test_protected_readiness_rejects_a_tcp_live_but_unready_service) ... ok
+test_required_directory_policy_preserves_exact_bytes_and_rejects_old_or_invalid_fields (test_small_native_smoke.SmokeTests.test_required_directory_policy_preserves_exact_bytes_and_rejects_old_or_invalid_fields) ... ok
+test_timeout_retains_failure_logs_and_drains_only_the_owned_process_group (test_small_native_smoke.SmokeTests.test_timeout_retains_failure_logs_and_drains_only_the_owned_process_group) ... ok
+
+======================================================================
+ERROR: test_prepare_copies_only_exact_build_artifacts_and_preserves_failed_baseline (test_small_native_smoke.SmokeTests.test_prepare_copies_only_exact_build_artifacts_and_preserves_failed_baseline) (changed=False)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/scripts/test_small_native_smoke.py", line 127, in test_prepare_copies_only_exact_build_artifacts_and_preserves_failed_baseline
+    runner.prepare()
+  File "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/scripts/small_native_smoke.py", line 405, in prepare
+    directory_policy_bytes, directory_policy = load_directory_policy(self.args.directory_policy)
+                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute 'directory_policy'
+
+======================================================================
+ERROR: test_prepare_copies_only_exact_build_artifacts_and_preserves_failed_baseline (test_small_native_smoke.SmokeTests.test_prepare_copies_only_exact_build_artifacts_and_preserves_failed_baseline) (changed=True)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/scripts/test_small_native_smoke.py", line 125, in test_prepare_copies_only_exact_build_artifacts_and_preserves_failed_baseline
+    runner.prepare()
+  File "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-parent-transitions/proposed/scripts/small_native_smoke.py", line 405, in prepare
+    directory_policy_bytes, directory_policy = load_directory_policy(self.args.directory_policy)
+                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute 'directory_policy'
+
+----------------------------------------------------------------------
+Ran 17 tests in 0.034s
+
+FAILED (errors=2)

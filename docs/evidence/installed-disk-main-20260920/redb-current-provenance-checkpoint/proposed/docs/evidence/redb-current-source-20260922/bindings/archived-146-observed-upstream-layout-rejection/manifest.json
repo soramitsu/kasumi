@@ -1,0 +1,16 @@
+{
+  "status": "TARGET ONLY; native pending",
+  "patch_sha256": "c895f39b5790ffcee6db875ac1de7d83db552e024cddc770a92a0204cb627d1a",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/tests/canonical_format.rs",
+      "before_sha256": "28469877aea8a9af67498ee08b2ad27777f7a8810b17878539aaca83545c5b53",
+      "proposed_sha256": "73747213371f9f2ee05c5f8bdafb18758d4646465ac25c8035df381d4bec47bb"
+    }
+  ],
+  "observed_evidence": {
+    "146_log_sha256": "dad240127454c484c6775a4f09597072ef90e8e373676bb34edf43b7a1560042",
+    "error": "Storage(Corrupted(\"Noncanonical region header page count: 130\"))",
+    "explanation": "Actual upstream producer has two-phase flag and130 region header pages; this explicit canonical geometry fence precedes transaction version parse. Fixture asserts exact observed class/message for actual positive region count and unchanged fullbytes for both open modes. Sole format4 version rejection remains separately exercised by original unit tests with valid canonical geometry."
+  }
+}

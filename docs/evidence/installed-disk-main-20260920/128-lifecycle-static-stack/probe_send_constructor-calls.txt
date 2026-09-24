@@ -1,0 +1,8 @@
+1000e91a8: 948a995c    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+1000e91d8: 97fca798    	bl	0x100013038 <alloc::boxed::box_new_uninit>
+1000e91e0: 1400000a    	b	0x1000e9208 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send+0xbc>
+1000e91f4: 97ff221f    	bl	0x1000b1a70 <core::ptr::drop_glue::<<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}>>
+1000e91f8: 14000002    	b	0x1000e9200 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send+0xb4>
+1000e91fc: 948a971e    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+1000e9204: 948a9888    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>
+1000e9220: 948a993e    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>

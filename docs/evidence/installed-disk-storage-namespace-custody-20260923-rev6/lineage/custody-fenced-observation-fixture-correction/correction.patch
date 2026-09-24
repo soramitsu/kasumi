@@ -1,0 +1,65 @@
+diff --git a/crates/kasumi-store/src/node_disk/tests.rs b/crates/kasumi-store/src/node_disk/tests.rs
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -653,6 +653,7 @@
+ fn unknown_filesystem_observation_fences_scratch_until_a_drained_census() {
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     let (directory, config) = installation();
++    let physical_path = config.roots["data"].join("file");
+     let disk = open(config, fixture_memory.clone());
+     let scratch = crate::ScratchDisk::test_with_device(
+         directory.path().join("scratch"),
+@@ -662,13 +663,21 @@
+     let file = disk
+         .create_file("data", Path::new("file"), DiskWork::Foreground)
+         .unwrap();
++    let original_identity = Identity::of(&std::fs::metadata(&physical_path).unwrap());
+     let (scratch_file, mut charge) = scratch.file().unwrap();
+     disk.available_error.store(true, Ordering::Relaxed);
+     assert!(
+         file.reserve_growth(0, disk.unit, DiskWork::Foreground)
+             .is_err()
+     );
+-    assert_eq!(file.observed_len().unwrap(), 0);
++    let (observation, allocations) = crate::allocation_tests::measure(|| file.observed_len());
++    assert_eq!(observation.unwrap_err().kind(), io::ErrorKind::Other);
++    assert_eq!(allocations, 0, "fenced observation allocated");
++    // Probe the fixture externally: the failed managed owner must not begin a
++    // verification walk merely to inspect the unchanged physical inode.
++    let physical = std::fs::metadata(&physical_path).unwrap();
++    assert_eq!(Identity::of(&physical), original_identity);
++    assert_eq!(physical.len(), 0);
+     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk));
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     assert!(charge.grow(disk.unit).is_err());
+@@ -835,6 +844,7 @@
+     ] {
+         let (directory, config) = installation();
+         seed(&config, "data", 128 << 10);
++        let physical_path = config.roots["data"].join("data");
+         let disk = open(config, fixture_memory.clone());
+         let scratch = crate::ScratchDisk::test_with_device(
+             directory.path().join("scratch"),
+@@ -845,13 +855,21 @@
+         let mut file = disk.open_file("data", Path::new("data")).unwrap();
+         file.write_all_at(b"retained encrypted payload", 0).unwrap();
+         file.sync_all().unwrap();
++        let original_identity = Identity::of(&std::fs::metadata(&physical_path).unwrap());
+         let before = disk.snapshot();
+         *disk.shrink_failure.lock().unwrap() = Some(failure);
+         let (result, allocations) = crate::allocation_tests::measure(|| file.shrink(32 << 10));
+         assert!(result.is_err());
+         assert_eq!(allocations, 0, "uncertain shrink allocated: {failure:?}");
++        let (observation, allocations) = crate::allocation_tests::measure(|| file.observed_len());
++        assert_eq!(observation.unwrap_err().kind(), io::ErrorKind::Other);
++        assert_eq!(allocations, 0, "fenced observation allocated: {failure:?}");
++        // Read fixture metadata outside the fenced owner so each original
++        // truncate/sync fault still proves its exact physical EOF.
++        let physical = std::fs::metadata(&physical_path).unwrap();
++        assert_eq!(Identity::of(&physical), original_identity);
+         assert_eq!(
+-            file.observed_len().unwrap(),
++            physical.len(),
+             if failure == file::ShrinkFailure::Truncate {
+                 128 << 10
+             } else {

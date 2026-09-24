@@ -26,8 +26,7 @@ use core::convert::TryInto;
 use core::marker::PhantomData;
 use core::mem;
 
-// The region header is optional in the v3 file format
-// It's an artifact of the v2 file format, so we initialize new databases without headers to save space
+// Canonical format4 never contains obsolete region headers.
 const NO_HEADER: u32 = 0;
 
 // Regions have a maximum size of 4GiB. A `4GiB - overhead` value is the largest that can be represented,
@@ -43,18 +42,11 @@ const MIN_DESIRED_USABLE_BYTES: u64 = 1024 * 1024;
 
 pub(super) const INITIAL_REGIONS: u32 = 1000; // Enough for a 4TiB database
 
-// Original file format. No lengths stored with btrees
-pub(crate) const FILE_FORMAT_VERSION1: u8 = 1;
-// New file format. All btrees have a separate length stored in their header for constant time access
-pub(crate) const FILE_FORMAT_VERSION2: u8 = 2;
-// New file format:
-// * Allocator state is stored in a system table, instead of in the region headers
-// * Freed tree split into two system tables: one for the data tables, and one for the system tables
-//   It is no longer stored in a separate tree
-// * New "allocated pages table" which tracks the pages allocated, in the data tree, by a transaction.
-//   This is a system table. It is only written when a savepoint exists
-// * New persistent savepoint format
-pub(crate) const FILE_FORMAT_VERSION3: u8 = 3;
+// The sole canonical format: data deferred frees use fixed PageList records;
+// obsolete system pages are excluded from the prepared winning allocator and
+// returned to the live allocator only after that header is durable. Formats
+// 1, 2 and 3 are rejected; no upgrade or historical-system-table decoder exists.
+pub(crate) const FILE_FORMAT_VERSION4: u8 = 4;
 
 #[derive(Copy, Clone)]
 pub(crate) enum ShrinkPolicy {
@@ -103,6 +95,16 @@ impl PageResolver {
     pub(crate) fn count_allocated_pages(&self) -> Result<u64> {
         self.mem.count_allocated_pages()
     }
+
+    pub(crate) fn allocator_snapshot_validation(
+        &self,
+    ) -> Result<super::AllocatorSnapshotValidation> {
+        let state = self.mem.state.lock()?;
+        Ok(super::AllocatorSnapshotValidation::new(
+            state.header.layout(),
+            state.latest_slot().transaction_id,
+        ))
+    }
 }
 
 // Shards for `UncommittedPages`, padded to a cache line: the contention being removed is cores
@@ -137,7 +139,7 @@ impl UncommittedPages {
     }
 
     fn shard(&self, page: PageNumber) -> &Mutex<PageNumberHashSet> {
-        &self.shards[page.page_index as usize % UNCOMMITTED_SHARDS].0
+        &self.shards[page.page_index() as usize % UNCOMMITTED_SHARDS].0
     }
 
     fn insert(&self, page: PageNumber) {
@@ -340,6 +342,65 @@ pub(crate) struct TransactionalMemory {
     region_header_with_padding_size: u64,
 }
 
+/// Partial opening resources remain in this slot through every fallible call.
+/// Its caller observes outcomes and must retain the slot on uncertain close.
+pub(crate) struct TransactionalMemoryOpening {
+    file: Option<Box<dyn StorageBackend>>,
+    storage: Option<PagedCachedFile>,
+}
+impl TransactionalMemoryOpening {
+    pub(crate) fn new(file: Box<dyn StorageBackend>) -> Self {
+        Self {
+            file: Some(file),
+            storage: None,
+        }
+    }
+    pub(crate) fn initialize(
+        &mut self,
+        admission: Arc<dyn crate::StorageAdmission>,
+        allow_initialize: bool,
+        page_size: usize,
+        requested_region_size: Option<u64>,
+        cache_size: usize,
+    ) -> Result<TransactionalMemory, DatabaseError> {
+        assert!(self.storage.is_none());
+        assert!(page_size.is_power_of_two() && page_size >= DB_HEADER_SIZE);
+        let region_size = requested_region_size.unwrap_or(MAX_USABLE_REGION_SPACE);
+        assert!(
+            min(
+                region_size,
+                (u64::from(MAX_PAGE_INDEX) + 1) * page_size as u64
+            )
+            .is_power_of_two()
+        );
+        admission.check_owner().map_err(StorageError::from)?;
+        self.storage = Some(PagedCachedFile::new_retained(
+            &mut self.file,
+            admission,
+            page_size as u64,
+            cache_size,
+        )?);
+        TransactionalMemory::initialize_retained_storage(
+            &mut self.storage,
+            allow_initialize,
+            page_size,
+            requested_region_size,
+        )
+    }
+    #[cfg(all(not(redb_no_std), panic = "unwind"))]
+    pub(crate) fn abandon(&self) -> (Result, crate::BackendNativeDisposition) {
+        if let Some(storage) = &self.storage {
+            storage.close()
+        } else if let Some(file) = &self.file {
+            let (result, native) = file.close().into_parts();
+            (result.map_err(StorageError::Io), native)
+        } else {
+            // A fully constructed memory owner has already taken the cache.
+            unreachable!("partial close requires an actual opening resource")
+        }
+    }
+}
+
 impl TransactionalMemory {
     pub(crate) fn opened_unclean(&self) -> bool {
         self.opened_unclean
@@ -347,51 +408,63 @@ impl TransactionalMemory {
     pub(crate) fn begin_transaction(&self) {
         self.storage.begin_transaction();
     }
-    pub(crate) fn capacity_denied(&self) -> bool {
-        self.storage.capacity_denied()
+    pub(crate) fn capacity_error(&self) -> Option<StorageError> {
+        self.storage.capacity_error()
+    }
+    #[cfg(test)]
+    pub(crate) fn set_write_entry_capacity_for_test(&self, capacity: usize) {
+        self.storage.set_write_entry_capacity_for_test(capacity);
     }
     pub(crate) fn check_transaction_admission(&self) -> Result {
         self.check_io_errors()?;
-        if self.capacity_denied() {
-            Err(StorageError::CapacityDenied)
-        } else {
-            Ok(())
-        }
+        self.capacity_error().map_or(Ok(()), Err)
     }
     pub(crate) fn settle_growth(&self) -> Result {
         self.storage.settle_growth()
     }
-    pub(crate) fn abandon(&self) -> Result {
+    pub(crate) fn abandon(&self) -> (Result, crate::BackendNativeDisposition) {
         self.storage.close()
     }
 
     pub(crate) fn new(
         file: Box<dyn StorageBackend>,
         admission: Arc<dyn crate::StorageAdmission>,
-        // Allow initializing a new database in an empty file
         allow_initialize: bool,
         page_size: usize,
         requested_region_size: Option<u64>,
         cache_size: usize,
-        read_only: bool,
+    ) -> Result<Self, DatabaseError> {
+        let mut opening = TransactionalMemoryOpening::new(file);
+        opening.initialize(
+            admission,
+            allow_initialize,
+            page_size,
+            requested_region_size,
+            cache_size,
+        )
+    }
+
+    fn initialize_retained_storage(
+        storage_owner: &mut Option<PagedCachedFile>,
+        allow_initialize: bool,
+        page_size: usize,
+        requested_region_size: Option<u64>,
     ) -> Result<Self, DatabaseError> {
         assert!(page_size.is_power_of_two() && page_size >= DB_HEADER_SIZE);
-
         let region_size = requested_region_size.unwrap_or(MAX_USABLE_REGION_SPACE);
         let region_size = min(
             region_size,
             (u64::from(MAX_PAGE_INDEX) + 1) * page_size as u64,
         );
         assert!(region_size.is_power_of_two());
-
-        let storage = PagedCachedFile::new(file, admission, page_size as u64, cache_size)?;
-
+        let storage = storage_owner.as_ref().expect("prepared cache retained");
         let initial_storage_len = storage.raw_file_len()?;
-
         let magic_number: [u8; MAGICNUMBER.len()] =
             if initial_storage_len >= MAGICNUMBER.len() as u64 {
+                let magic_credit = storage.reserve_direct_read(MAGICNUMBER.len())?;
                 storage
-                    .read_direct(0, MAGICNUMBER.len())?
+                    .read_direct_reserved(0, magic_credit)?
+                    .as_ref()
                     .try_into()
                     .unwrap()
             } else {
@@ -416,6 +489,10 @@ impl TransactionalMemory {
             }
         }
 
+        // Validate the existing file before asking for header workspace. For
+        // creation, reserve before any growth or header publication. An empty
+        // file never needs a magic-read reservation.
+        let header_credit = storage.reserve_direct_read(DB_HEADER_SIZE)?;
         if magic_number != MAGICNUMBER {
             let region_tracker_required_bytes =
                 RegionTracker::new(INITIAL_REGIONS, MAX_MAX_PAGE_ORDER + 1)
@@ -466,51 +543,52 @@ impl TransactionalMemory {
                 .copy_from_slice(&header.to_bytes(true));
             storage.flush()?;
         }
-        let header_bytes = storage.read_direct(0, DB_HEADER_SIZE)?;
+        let header_bytes = storage.read_direct_reserved(0, header_credit)?;
         let unrepaired =
             UnrepairedDatabaseHeader::from_bytes(&header_bytes, page_size.try_into().unwrap())?;
         let file_len = storage.raw_file_len()?;
         let needs_recovery = unrepaired.recovery_required(file_len);
-        if needs_recovery && read_only {
-            return Err(DatabaseError::RepairAborted);
-        }
         let (header, _) = unrepaired.finalize(file_len)?;
-        if needs_recovery {
-            storage
-                .write(0, DB_HEADER_SIZE, true)?
-                .mem_mut()
-                .copy_from_slice(&header.to_bytes(true));
-            storage.flush()?;
-        }
+        // Normalize only in memory here. Database validates the sole canonical
+        // system namespace before repair/begin_writable may rewrite this header.
 
         let layout = header.layout();
         assert_eq!(layout.len(), storage.raw_file_len()?);
         let region_size = layout.full_region_layout().len();
         let region_header_size = layout.full_region_layout().data_section().start;
-        let state = InMemoryState::new(header);
+        let state = Mutex::new(InMemoryState::new(header));
 
         assert!(page_size >= DB_HEADER_SIZE);
 
+        #[cfg(debug_assertions)]
+        let open_dirty_pages = Arc::new(Mutex::new(PageNumberHashSet::default()));
+        #[cfg(debug_assertions)]
+        let read_page_ref_counts = Arc::new(Mutex::new(PageNumberHashMap::default()));
+        #[cfg(debug_assertions)]
+        let allocated_pages = Arc::new(Mutex::new(PageNumberHashSet::default()));
+        let page_size = u32::try_from(page_size).unwrap();
+
         Ok(Self {
             opened_unclean: needs_recovery,
-            storage,
-            state: Mutex::new(state),
+            state,
             #[cfg(debug_assertions)]
-            open_dirty_pages: Arc::new(Mutex::new(PageNumberHashSet::default())),
+            open_dirty_pages,
             #[cfg(debug_assertions)]
-            read_page_ref_counts: Arc::new(Mutex::new(PageNumberHashMap::default())),
+            read_page_ref_counts,
             #[cfg(debug_assertions)]
-            allocated_pages: Arc::new(Mutex::new(PageNumberHashSet::default())),
-            page_size: page_size.try_into().unwrap(),
+            allocated_pages,
+            page_size,
             region_size,
             region_header_with_padding_size: region_header_size,
+            // No fallible operation or external callback follows this transfer.
+            storage: storage_owner.take().expect("prepared cache retained"),
         })
     }
 
     // An order read from a corrupted file would otherwise size a multi-terabyte read buffer, whose
     // failed allocation aborts the process instead of returning an error.
     fn check_page_order(page: PageNumber) -> Result<()> {
-        if page.page_order > MAX_MAX_PAGE_ORDER {
+        if page.page_order() > MAX_MAX_PAGE_ORDER {
             return Err(StorageError::Corrupted(format!(
                 "Page {page:?} has order greater than the maximum of {MAX_MAX_PAGE_ORDER}"
             )));
@@ -563,7 +641,7 @@ impl TransactionalMemory {
         let allocators = state.allocators();
         let mut region_pages = vec![vec![]; allocators.region_allocators.len()];
         for p in self.allocated_pages.lock().unwrap().iter() {
-            region_pages[p.region as usize].push(*p);
+            region_pages[p.region() as usize].push(*p);
         }
         for (i, allocator) in allocators.region_allocators.iter().enumerate() {
             allocator.check_allocated_pages(i.try_into().unwrap(), &region_pages[i]);
@@ -575,6 +653,7 @@ impl TransactionalMemory {
     }
 
     pub(crate) fn clear_cache_and_reload(&mut self) -> Result<bool, DatabaseError> {
+        let header_credit = self.storage.reserve_direct_read(DB_HEADER_SIZE)?;
         // The in-memory state is being discarded for the on-disk state, so buffered writes --
         // which can only belong to the discarded state -- are dropped rather than written out;
         // after an external truncation, writing them could even fail beyond the end of the file.
@@ -584,16 +663,11 @@ impl TransactionalMemory {
         self.storage.invalidate_cache_all();
         self.storage.sync_file()?;
 
-        let header_bytes = self.storage.read_direct(0, DB_HEADER_SIZE)?;
+        let header_bytes = self.storage.read_direct_reserved(0, header_credit)?;
         let unrepaired = UnrepairedDatabaseHeader::from_bytes(&header_bytes, self.page_size)?;
         let (header, was_clean) = unrepaired.finalize(self.storage.raw_file_len()?)?;
-        if !was_clean {
-            self.storage
-                .write(0, DB_HEADER_SIZE, true)?
-                .mem_mut()
-                .copy_from_slice(&header.to_bytes(true));
-            self.storage.flush()?;
-        }
+        // Integrity validation must reject obsolete namespaces before any
+        // normalization write. Its successful repair path publishes this state.
 
         {
             let mut state = self.state.lock().unwrap();
@@ -669,24 +743,24 @@ impl TransactionalMemory {
         // Unlike the read path, this is only reached while rebuilding the allocator state, and the
         // state lock is already held, so validating against the layout costs nothing here
         let layout = state.header.layout();
-        if page_number.region >= layout.num_regions() {
+        if page_number.region() >= layout.num_regions() {
             return Err(StorageError::Corrupted(format!(
                 "Page {page_number:?} is in region {}, but the database has {} region(s)",
-                page_number.region,
+                page_number.region(),
                 layout.num_regions()
             )));
         }
-        let region_pages = u64::from(layout.region_layout(page_number.region).num_pages());
+        let region_pages = u64::from(layout.region_layout(page_number.region()).num_pages());
         // Cannot overflow: page_index is at most 2^32, and the order was bounded above
-        let end_page = (u64::from(page_number.page_index) + 1) << page_number.page_order;
+        let end_page = (u64::from(page_number.page_index()) + 1) << page_number.page_order();
         if end_page > region_pages {
             return Err(StorageError::Corrupted(format!(
                 "Page {page_number:?} extends past the end of its region, which has {region_pages} pages"
             )));
         }
 
-        let allocator = state.get_region_mut(page_number.region);
-        if !allocator.record_alloc(page_number.page_index, page_number.page_order) {
+        let allocator = state.get_region_mut(page_number.region());
+        if !allocator.record_alloc(page_number.page_index(), page_number.page_order()) {
             return Err(StorageError::Corrupted(format!(
                 "Page {page_number:?} overlaps a page that is already allocated"
             )));
@@ -724,12 +798,25 @@ impl TransactionalMemory {
         let layout = state.header.layout();
         let num_regions = layout.num_regions();
         let allocators = state.allocators();
-        let region_tracker_len = allocators.region_tracker.to_vec().len();
+        // Check every encoded length before changing the allocator-state tree.
+        // This retains only the existing per-region scalar inventory, never
+        // serialized bitmap/allocator copies merely to measure their lengths.
+        let invalid_geometry = || {
+            StorageError::Corrupted("Allocator encoded length overflow or invalid geometry".into())
+        };
+        if u32::try_from(allocators.region_allocators.len()).ok() != Some(num_regions) {
+            return Err(invalid_geometry());
+        }
+        let region_tracker_len = allocators
+            .region_tracker
+            .checked_encoded_len()
+            .ok_or_else(invalid_geometry)?;
         let region_lens: Vec<usize> = allocators
             .region_allocators
             .iter()
-            .map(|x| x.to_vec().len())
-            .collect();
+            .map(BuddyAllocator::checked_encoded_len)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(invalid_geometry)?;
         drop(state);
 
         for i in 0..num_regions {
@@ -759,6 +846,7 @@ impl TransactionalMemory {
         tree: &mut AllocatorStateTreeMut,
         num_regions: u32,
         deferred_reclaim: &[PageNumber],
+        current_system_reclaim: &[PageNumber],
     ) -> Result<bool> {
         // Has the number of regions changed since reserve_allocator_state() was called?
         let state = self.state.lock().unwrap();
@@ -777,10 +865,15 @@ impl TransactionalMemory {
                 .map(|region| BuddyAllocator::from_bytes(&region.to_vec()))
                 .collect(),
         };
-        for page in deferred_reclaim {
-            let order = allocators.region_allocators[page.region as usize]
-                .free(page.page_index, page.page_order);
-            allocators.region_tracker.mark_free(order, page.region);
+        // Neither slice is returned to the live allocator here. Current system
+        // pages are writer-private, and the caller guarantees no system-tree
+        // allocation/free after this snapshot completes. The winning header
+        // therefore names this prepared allocator; failure preserves old-root
+        // ownership and the existing retained transaction collections.
+        for page in deferred_reclaim.iter().chain(current_system_reclaim) {
+            let order = allocators.region_allocators[page.region() as usize]
+                .free(page.page_index(), page.page_order());
+            allocators.region_tracker.mark_free(order, page.region());
         }
         for i in 0..num_regions {
             let region_bytes = &allocators.region_allocators[i as usize].to_vec();
@@ -824,7 +917,9 @@ impl TransactionalMemory {
             return Ok(false);
         };
         let transaction_id =
-            TransactionId::new(u64::from_le_bytes(value.value().try_into().unwrap()));
+            TransactionId::new(u64::from_le_bytes(value.value().try_into().map_err(
+                |_| StorageError::Corrupted("Invalid allocator-state transaction stamp".into()),
+            )?));
 
         Ok(transaction_id == self.get_last_committed_transaction_id()?)
     }
@@ -1041,12 +1136,12 @@ impl TransactionalMemory {
         }
         allocated.remove(page);
         let mut state = self.state.lock().unwrap();
-        let region_index = page.region;
+        let region_index = page.region();
         // Free in the regional allocator. free() returns the order of the resulting block, which is
         // larger than page_order when buddies merged.
         let freed_order = state
             .get_region_mut(region_index)
-            .free(page.page_index, page.page_order);
+            .free(page.page_index(), page.page_order());
         // Mark the region free at the merged order, not just page_order: leaving the tracker's
         // higher-order bits stale after a merge would hide the reclaimed space from find_free.
         state
@@ -1110,7 +1205,28 @@ impl TransactionalMemory {
             .unwrap();
 
         #[allow(unused_mut)]
-        let mut mem = self.storage.write(address_range.start, len, true)?;
+        let mut mem = match self.storage.write(address_range.start, len, true) {
+            Ok(page) => page,
+            Err(StorageError::CacheCapacityDenied) => {
+                // The cache has not created a buffer or changed this candidate's
+                // cache state. It is not yet in PageTracker/UncommittedPages.
+                // Undo exactly its allocation while retaining any independently
+                // admitted file growth and layout until the real abort settles.
+                #[cfg(debug_assertions)]
+                {
+                    assert!(self.allocated_pages.lock().unwrap().remove(&page_number));
+                    assert!(!self.open_dirty_pages.lock().unwrap().contains(&page_number));
+                }
+                let freed_order = state
+                    .get_region_mut(page_number.region())
+                    .free(page_number.page_index(), page_number.page_order());
+                state
+                    .get_region_tracker_mut()
+                    .mark_free(freed_order, page_number.region());
+                return Err(StorageError::CacheCapacityDenied);
+            }
+            Err(error) => return Err(error),
+        };
         debug_assert!(mem.mem().len() >= allocation_size);
 
         #[cfg(debug_assertions)]
@@ -1289,13 +1405,16 @@ impl TransactionalMemory {
         self.page_size.try_into().unwrap()
     }
 
+    pub(crate) fn prepare_close(&self) -> Result {
+        self.flush_shutdown_header()
+            .and_then(|()| self.settle_growth())
+    }
+
     pub(crate) fn close(&self) -> Result {
-        let shutdown_result = self
-            .flush_shutdown_header()
-            .and_then(|()| self.settle_growth());
+        let shutdown_result = self.prepare_close();
         // The backend's close() contract guarantees it is called exactly once, so it must be
         // called even if the shutdown writes above failed
-        let close_result = self.storage.close();
+        let close_result = crate::db::require_native_drain(self.storage.close());
         shutdown_result.and(close_result)
     }
 
@@ -1304,7 +1423,10 @@ impl TransactionalMemory {
             let mut state = self.state.lock()?;
             // Clearing the flag asserts that this process left the file consistent, which requires
             // an allocator state describing what it wrote. Without one there is nothing to assert.
-            if state.allocators.is_some() && self.storage.flush().is_ok() {
+            if state.allocators.is_some() {
+                // Preserve a new physical failure; a failed flush cannot be
+                // replaced by the subsequent already-fenced settlement error.
+                self.storage.flush()?;
                 state.header.recovery_required = false;
                 self.write_header(&state.header)?;
                 self.storage.flush()?;
@@ -1386,7 +1508,6 @@ mod test {
             4096,
             None,
             0,
-            false,
         )
         .unwrap();
         mem.reset_allocator_state().unwrap();
@@ -1429,7 +1550,6 @@ mod test {
             page_size,
             Some(64 * page_size as u64),
             0,
-            false,
         )
         .unwrap();
         mem.reset_allocator_state().unwrap();
@@ -1439,8 +1559,6 @@ mod test {
             PageNumber::new(MAX_REGIONS - 1, 0, 0),
             // Past the end of its region, which the bitmap asserts on
             PageNumber::new(0, MAX_PAGE_INDEX, 0),
-            // An order no region can have
-            PageNumber::from_le_bytes((31u64 << 59).to_le_bytes()),
         ];
         for page in corrupt {
             assert!(
@@ -1478,7 +1596,6 @@ mod test {
             page_size,
             Some(64 * page_size as u64),
             0,
-            false,
         )
         .unwrap();
         mem.reset_allocator_state().unwrap();
@@ -1488,16 +1605,18 @@ mod test {
         drop(valid);
 
         // order = 31, which would be read as a 2^31 page (8TiB) allocation
-        let bad_order = PageNumber::from_le_bytes((31u64 << 59).to_le_bytes());
-
+        let bad_order = (31u64 << 59).to_le_bytes();
+        let before = mem.count_allocated_pages().unwrap();
         assert!(matches!(
-            mem.get_page(bad_order, PageHint::None),
+            PageNumber::from_le_bytes(bad_order)
+                .and_then(|page| mem.get_page(page, PageHint::None)),
             Err(StorageError::Corrupted(_))
         ));
         assert!(matches!(
-            mem.mark_page_allocated(bad_order),
+            PageNumber::from_le_bytes(bad_order).and_then(|page| mem.mark_page_allocated(page)),
             Err(StorageError::Corrupted(_))
         ));
+        assert_eq!(mem.count_allocated_pages().unwrap(), before);
         mem.get_page(valid_page, PageHint::None).unwrap();
 
         mem.free(valid_page, &PageTracker::ignore());
@@ -1522,7 +1641,6 @@ mod test {
             page_size,
             Some(region_size),
             0,
-            false,
         )
         .unwrap();
         mem.reset_allocator_state().unwrap();
@@ -1536,7 +1654,7 @@ mod test {
             let page = mem.allocate_helper(1, false).unwrap();
             let number = page.get_page_number();
             drop(page);
-            if number.region == 0 {
+            if number.region() == 0 {
                 region0_pages.push(number);
             } else {
                 // First page past region 0: it has done its job of forcing region 0 full. Give it
@@ -1562,7 +1680,7 @@ mod test {
         // higher region.
         let reused = mem.allocate_helper(2 * page_size, false).unwrap();
         assert_eq!(
-            reused.get_page_number().region,
+            reused.get_page_number().region(),
             0,
             "order-1 allocation should reuse the merged free block in region 0"
         );

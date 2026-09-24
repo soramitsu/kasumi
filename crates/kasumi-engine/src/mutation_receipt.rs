@@ -219,6 +219,7 @@ impl View {
             .bytes(&ordinal_key(ordinal))?
             .context("receipt ordinal missing")?;
         let entry: Ordinal = serde_json::from_slice(&bytes)?;
+        crate::current_json::require_current_writer_bytes(&bytes, &entry, "receipt ordinal")?;
         ensure!(
             digest(&entry.key) && digest(&entry.sha256),
             "invalid receipt ordinal index"
@@ -277,6 +278,7 @@ impl View {
         if row.ordinal > self.head.count {
             return Ok(None);
         }
+        crate::current_json::require_current_writer_bytes(&bytes, &row, "receipt point")?;
         ensure!(
             row.key == key && row.ordinal > 0,
             "receipt point identity differs"
@@ -438,7 +440,14 @@ impl View {
         self.check_head(&state.tenant)?;
         let selected = store
             .get_bounded(CATALOG, checkpoint_sha256.as_bytes(), 64 << 10)?
-            .map(|bytes| serde_json::from_slice::<NamespaceBinding>(&bytes))
+            .map(|bytes| {
+                let binding: NamespaceBinding = serde_json::from_slice(&bytes)?;
+                ensure!(
+                    serde_json::to_vec(&binding)? == bytes,
+                    "noncanonical receipt checkpoint binding"
+                );
+                Ok::<NamespaceBinding, anyhow::Error>(binding)
+            })
             .transpose()?;
         if reopen {
             let binding = selected.context("authoritative receipt checkpoint binding missing")?;
@@ -665,13 +674,17 @@ impl Pending {
 
 #[cfg(any(test, feature = "test-utils"))]
 impl View {
-    pub(crate) fn fixture_owner(&self, state: &TenantState) -> Result<Self> {
+    pub(crate) fn fixture_owner(
+        &self,
+        disk: &Arc<ScratchDisk>,
+        state: &TenantState,
+    ) -> Result<Self> {
         if self.source.is_some() {
             return Ok(self.clone());
         }
         ensure!(self.head.count == 0, "fixture receipt prefix has no owner");
         let table = Arc::new(EncryptedTable::new(
-            &ScratchDisk::fixture(),
+            disk,
             scratch_limit(state.limits.max_mutation_receipt_bytes)?,
         )?);
         Ok(Self {

@@ -1,0 +1,25 @@
+[
+  {
+    "argv": [
+      "git",
+      "apply",
+      "--check",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/134-selected-local-activation-confirmation/fixture.patch"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/134-selected-local-activation-independent-review/apply-check",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "apply",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/134-selected-local-activation-confirmation/fixture.patch"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/134-selected-local-activation-independent-review/apply-check",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  }
+]

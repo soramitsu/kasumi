@@ -1,0 +1,62 @@
+{
+  "actual_source_or_release_docs_edited": false,
+  "append_receipt": "page-list-cursor-append-receipts/9d1a2d9ef84c99a99ec3.json",
+  "attempts_without_terminal_receipts_excluded": [
+    134
+  ],
+  "completed_attempts_archived": [
+    125,
+    126,
+    127,
+    128,
+    129,
+    130,
+    131,
+    132,
+    133
+  ],
+  "cursor_raw_entries_verified": 409,
+  "entries_verified": 2774,
+  "external_binary_inventory_only_entries": 416,
+  "failure_bytes_preserved": true,
+  "frozen_package_controls": {
+    "116-stopped-epoch-exact-drain-diagnostics/manifest.json": "0e30b8a5982afe30c7f63313ae22c9da7a78285f1fb87e8225744c39f8a5d2c4",
+    "116-stopped-epoch-exact-drain-root-review/receipt.json": "be8da8b0a7da640ead838ea52d3fcba2ab8594e317ca05049d76ae99ea92b449",
+    "124-bootstrap-vote-diagnostics/manifest.json": "ac78fd1f0407c9f9da67b30407f377b924269cdd9701796c4dafb07ddaf6bc86",
+    "124-bootstrap-vote-root-review/receipt.json": "fa3be7b87faf07777d66b4ec36751f71dfd2d38b7998a912da4f8b7b39cdc257",
+    "124-recovery-observation-current-leader/manifest.json": "b0ee34b84f87f2a14c45344cccc77552c8e29cdc38f9754ca411ac16b2ecce8e",
+    "124-recovery-observation-independent-review/receipt.json": "45a5037b9e9c9d780e9aa60f82c5715c07e7932fe4c090e6390bbe4a31e09751",
+    "125-stopped-epoch-bounded-resolution/manifest.json": "5f5e58b7662368c52581fdf251d016e8d7ceaa374e2ec221b1e658411aa08a33",
+    "125-stopped-epoch-root-review/review.md": "7db97e16c996b44ca43518e83e6ce992697ccbccd7680d488cb3f4549f786d88",
+    "126-page-list-compile-corrections/manifest.json": "e325d9e2b7d92c9df38cd86de243ae42d45ce4069e399afa8e47926418e06c77",
+    "directory-cursor-independent-review/receipt.json": "3c97fe7f03b0949c005e86987e7715e4f90f5af4197c2e6a89ff2066a9a553ca",
+    "directory-cursor/manifest.json": "ac89bc7f26311438bca9ef018533f9fdc1a3cfb92cc904ebef543905666075d0",
+    "redb-page-list-key-copy-followup/manifest.json": "c38e85f78c447e6e1dbb507bb263d18f22818ea340030d332d883f6479b2bf7c",
+    "redb-page-list-prerequisites-authority-review/receipt.json": "798af5730dd6295b61bdf2b264a36fbbcbc82c99459dd96762c720b8316b2291",
+    "redb-page-list-prerequisites-root-review/review.md": "68ee42ae1fbaf7c537cc39b28fceae66e5098caef29f79d36fe2b417d3adfb03",
+    "redb-page-list-prerequisites/manifest.json": "e429fcbf0d1dfec0980bbfaafa2b537a3f58ba57e584ff309b485db8228acc95"
+  },
+  "new_entries": 16,
+  "new_files": {
+    "129-lifecycle-handoff.log": "1d2e4716591fc49331201d4a244eb55781e17debcf237d0fcaeb20cc80b635a6",
+    "129-result.json": "4cf37d06093b46782b925f9ae953b1a2f111b882e28cb830a0ce0bd57fafa79d",
+    "129-source-after.json": "e10f99c9f28baad5300d16d38a39c26399c7587daf09390b7be4c324bf91b6d8",
+    "129-source-before.json": "e10f99c9f28baad5300d16d38a39c26399c7587daf09390b7be4c324bf91b6d8",
+    "130-result.json": "ea78076066f3e8ed0e8d6618d38f719a72aa9e03e94e177fb242637db87ce7ec",
+    "130-source-after.json": "e10f99c9f28baad5300d16d38a39c26399c7587daf09390b7be4c324bf91b6d8",
+    "130-source-before.json": "e10f99c9f28baad5300d16d38a39c26399c7587daf09390b7be4c324bf91b6d8",
+    "130-workspace-clippy.log": "04cf2b5f4b9a36dfacdd0b92d7109af8bcda074e244347a9a92c7b43f6f74365",
+    "131-result.json": "3db5f51d86d818caecb6b2d6ab0aadc1af744eb43a172006199246f250cf681a",
+    "131-source-after.json": "e10f99c9f28baad5300d16d38a39c26399c7587daf09390b7be4c324bf91b6d8",
+    "131-source-before.json": "e10f99c9f28baad5300d16d38a39c26399c7587daf09390b7be4c324bf91b6d8",
+    "131-workspace-format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "run129.py": "39ab502ec3ec603564fa9e0044834075d074b05b1d7969476517e17dc69f810d",
+    "run130.py": "f1f44c7f8647702149505f3abbd0c17b3229631379a331de53ad796c4cb5851b",
+    "run131.py": "571cf47619637875462d79add16d9bc8be1b5fb6e8a35bb63a9bea99fcc7ae66"
+  },
+  "preserved_old_entry_count": 2758,
+  "previous_entries_verified": 2758,
+  "previous_raw_manifest_sha256": "1a3ae2898ae94a8ca401ab89d00e1ef07c2941c3e86aacf8d93dabb0ed554a0b",
+  "rust_build_or_test_invoked": false,
+  "selected_native_binaries_omitted": 7
+}

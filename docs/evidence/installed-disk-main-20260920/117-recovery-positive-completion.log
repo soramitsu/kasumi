@@ -1,0 +1,12 @@
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.04s
+     Running tests/lifecycle.rs (target/debug/deps/lifecycle-377b80b89ca111b0)
+
+running 1 test
+test recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation ... 
+thread 'recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation' (4300761) has overflowed its stack
+fatal runtime error: stack overflow, aborting
+error: test failed, to rerun pass `-p kasumi-engine --test lifecycle`
+
+Caused by:
+  process didn't exit successfully: `/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0 --test-threads=1 --nocapture --exact 'recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation'` (signal: 6, SIGABRT: process abort signal)

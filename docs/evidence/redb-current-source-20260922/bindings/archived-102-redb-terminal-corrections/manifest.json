@@ -1,0 +1,43 @@
+{
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "status": "TARGET_ONLY_REVIEWABLE_UNCOMPILED",
+  "patch_sha256": "ff27c9b3f303e3bc6ca42bc48ccd78c41a7db519b9f7be0e419cc6de66e71c1f",
+  "readme_sha256": "1742d7dba6aab355465a1130f9176caab8db9885e6fac2d9dc59914810ccb0db",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/admission/tests.rs",
+      "before_sha256": "ccea4be7b866f1002e0eb419e1c0a01e5a4fe064ae9637356e6bd9717d77ff74",
+      "proposed_sha256": "2d4581f62015ea68b09a4f5bd79709c06a28e1263c0f56a25b4c022788e825fc",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/db.rs",
+      "before_sha256": "3e19185c6f93a25fe5f28a76e05c34dfff4210df54b88c279adbaccbdc6e5b14",
+      "proposed_sha256": "dda1792fa3a15d09bb4d5a83c279cc9203dc970b562f010aebdd00feb8e54481",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/retained_transaction_tests.rs",
+      "before_sha256": "47d8917f9b36919ae4c6d4046bda6621ba28485bfe1adcffd1ffa939da23dbc3",
+      "proposed_sha256": "77df073be144489dad365603bd200f7eb54b107cab41a95ef3d937c9a00c1a09",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+      "before_sha256": "acb378c1b912b049f7e580adb809c79dee352fd7ecc7d4941ca0b780e56a9d55",
+      "proposed_sha256": "18b42bf9c2d434f8d205d2088dc352af2cd8a40e3e0ddc0edfeff4390f349b72",
+      "new_file": false
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/checked_backend_tests.rs",
+      "before_sha256": null,
+      "proposed_sha256": "c80a43742a7fbf93b7fe8be8778db7555c9da1652558596ce0b160d5125d2fc7",
+      "new_file": true
+    }
+  ],
+  "actual_source_modified": false,
+  "cargo_or_rust_tests_run": false,
+  "evidence": "target/installed-disk-validation/102-retained-redb-terminal.log"
+}

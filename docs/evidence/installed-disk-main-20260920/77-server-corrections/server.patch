@@ -1,0 +1,14 @@
+--- a/crates/kasumi-server/src/standalone.rs
++++ b/crates/kasumi-server/src/standalone.rs
+@@ -19,9 +19,9 @@
+     path::{Path, PathBuf},
+     sync::Arc,
+ };
++#[cfg(test)]
++pub(crate) use tenant_staging::stage_tenant_with_storage;
+ pub use tenant_staging::{StageTenantRequest, StagedTenant, stage_tenant, tenant_stage_status};
+-#[cfg(test)]
+-pub(crate) use tenant_staging::{stage_tenant_with_storage, tenant_stage_status_with_storage};
+ use uuid::Uuid;
+ 
+ #[derive(PartialEq, Eq, Serialize, Deserialize)]

@@ -1,0 +1,230 @@
+diff --git a/crates/kasumi-engine/src/snapshot_codec.rs b/crates/kasumi-engine/src/snapshot_codec.rs
+--- a/crates/kasumi-engine/src/snapshot_codec.rs
++++ b/crates/kasumi-engine/src/snapshot_codec.rs
+@@ -556,12 +556,14 @@
+         Ok(())
+     }
+     /// Resident semantic records and fixed stream framing, excluding encrypted
+-    /// permanent point rows. This is not an allocator or hard-RSS measurement.
++    /// permanent point rows. Recovery completion history (kind 23) is resident.
++    /// This is not an allocator or hard-RSS measurement; the snapshot quota
++    /// separately includes staged terminal rows, which remain permanent here.
+     pub(crate) fn resident_bytes(&self) -> anyhow::Result<u64> {
+-        self.kinds[..21]
++        self.kinds
+             .iter()
+             .enumerate()
+-            .filter(|(kind, _)| *kind != 5)
++            .filter(|(kind, _)| !matches!(*kind, 5 | 21 | 22))
+             .try_fold(64u64, |total, (_, kind)| {
+                 total
+                     .checked_add(kind.framed_bytes)
+diff --git a/crates/kasumi-engine/src/snapshot_recovery_tests.rs b/crates/kasumi-engine/src/snapshot_recovery_tests.rs
+--- a/crates/kasumi-engine/src/snapshot_recovery_tests.rs
++++ b/crates/kasumi-engine/src/snapshot_recovery_tests.rs
+@@ -294,3 +294,89 @@
+     let wrong_key = image(disk, &wrong_key);
+     assert!(read(wrong_key.disk(), &mut wrong_key.reader()).is_err());
+ }
++
++#[test]
++fn completion_history_stream_is_resident_and_counts_in_snapshot_admission_and_quota() {
++    let scratch = crate::codec_fixture::ScratchScope::new(
++        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
++    )
++    .unwrap();
++    let disk = &scratch.disk;
++    let previous = coordinator();
++    let previous_image = image(disk, &previous);
++    let before_summary = inspect(&mut previous_image.reader()).unwrap();
++    let before = crate::accounting::SnapshotAccounting::rebuild(&previous).unwrap();
++    let mut state = previous.clone();
++    let operation_id = state
++        .recovery_control
++        .operations
++        .get_min()
++        .unwrap()
++        .1
++        .request
++        .operation_id;
++    // This is an actual canonical closed-history record belonging to the
++    // existing coordinator operation. This codec test does not assert phase
++    // protocol validity of the individually non-nil historical point IDs.
++    let history = RecoveryCompletionHistory {
++        operation_id,
++        scope: RecoveryCompletionScope {
++            intent: Uuid::new_v4(),
++            predecessor: None,
++        },
++        current_intent: Uuid::new_v4(),
++        preparation_attempt: Uuid::new_v4(),
++        preparation: Uuid::new_v4(),
++        resolution_attempt: Uuid::new_v4(),
++        terminal: Uuid::new_v4(),
++        attempted_completion: Some(Uuid::new_v4()),
++        successor_intent: Uuid::new_v4(),
++    };
++    history.validate().unwrap();
++    let key = history.scope.intent.to_string();
++    let framed_bytes = (serde_json::to_vec(&Record::RecoveryCompletionHistory(
++        key.clone(),
++        Box::new(history.clone()),
++    ))
++    .unwrap()
++    .len()
++        + FRAME_HEADER_BYTES) as u64;
++    state
++        .recovery_control
++        .completion_history
++        .insert(key.clone(), history.clone());
++    let source = image(disk, &state);
++    let summary = inspect(&mut source.reader()).unwrap();
++    let verified = visit(&mut source.reader(), |_, _| Ok(())).unwrap();
++    assert_eq!(summary, verified);
++    assert_eq!(summary.kinds[23].records, 1);
++    assert_eq!(summary.kinds[23].framed_bytes, framed_bytes);
++    assert_eq!(summary.resident_bytes().unwrap(), source.len());
++    assert_eq!(
++        summary.resident_bytes().unwrap(),
++        before_summary.resident_bytes().unwrap() + framed_bytes
++    );
++    assert_eq!(
++        summary.materialization_workspace().unwrap(),
++        3 * source.len() + summary.maximum_decode_work() + (64 << 20)
++    );
++    let decoded = read(source.disk(), &mut source.reader()).unwrap();
++    assert_eq!(decoded.state.recovery_control, state.recovery_control);
++    assert_eq!(
++        decoded.state.recovery_control.completion_history[&key],
++        history
++    );
++    let incremental = before
++        .updated(&previous, &state, &Default::default(), &Default::default())
++        .unwrap();
++    let rebuilt = crate::accounting::SnapshotAccounting::rebuild(&state).unwrap();
++    assert_eq!(
++        incremental.bytes(&state).unwrap(),
++        rebuilt.bytes(&state).unwrap()
++    );
++    assert_eq!(incremental.bytes(&state).unwrap() as u64, source.len());
++    assert_eq!(
++        crate::test_utils::snapshot_accounted_bytes(&source).unwrap(),
++        incremental.bytes(&state).unwrap() as u64
++    );
++}
+diff --git a/crates/kasumi-engine/src/test_utils.rs b/crates/kasumi-engine/src/test_utils.rs
+--- a/crates/kasumi-engine/src/test_utils.rs
++++ b/crates/kasumi-engine/src/test_utils.rs
+@@ -276,11 +276,17 @@
+         .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))
+ }
+ /// Authenticate the complete snapshot framing, digest and EOF before selecting
+-/// resident semantic bytes. Permanent receipt/terminal rows remain in the image
+-/// and are excluded by the same inspected stream model used for admission.
+-pub fn snapshot_resident_bytes(candidate: &SnapshotImage) -> Result<u64> {
++/// bytes charged by SnapshotAccounting. Staged terminal rows count toward that
++/// quota even though their permanent table bodies do not occupy resident state.
++/// Ordinary receipt and target-resolution rows retain separate byte budgets.
++pub fn snapshot_accounted_bytes(candidate: &SnapshotImage) -> Result<u64> {
+     crate::snapshot_codec::inspect(&mut candidate.reader())
+-        .and_then(|summary| summary.resident_bytes())
++        .and_then(|summary| {
++            summary
++                .resident_bytes()?
++                .checked_add(summary.kinds[21].framed_bytes)
++                .ok_or_else(|| anyhow::anyhow!("accounted snapshot byte overflow"))
++        })
+         .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))
+ }
+ pub fn decode_snapshot_candidate(candidate: &SnapshotImage) -> Result<SnapshotCandidate> {
+diff --git a/crates/kasumi-engine/tests/guarded_staging.rs b/crates/kasumi-engine/tests/guarded_staging.rs
+--- a/crates/kasumi-engine/tests/guarded_staging.rs
++++ b/crates/kasumi-engine/tests/guarded_staging.rs
+@@ -1,5 +1,5 @@
+ //! Guarded stop behavior against actual encrypted Kasumi execution and restart.
+-use kasumi_engine::test_utils::{SnapshotFixture, snapshot_resident_bytes};
++use kasumi_engine::test_utils::{SnapshotFixture, snapshot_accounted_bytes};
+ mod common;
+ use kasumi_engine::{Database, SecurityAudit};
+ use kasumi_store::{TenantStorageSet, test_utils::LocalKeyProvider};
+@@ -680,7 +680,7 @@
+     assert!(generation.state.active_staged_transactions.is_empty());
+     assert_eq!(
+         db.engine().snapshot_bytes().unwrap() as u64,
+-        snapshot_resident_bytes(
++        snapshot_accounted_bytes(
+             &db.engine()
+                 .fixture_snapshot(&physical.storage.scratch)
+                 .unwrap(),
+diff --git a/crates/kasumi-engine/tests/history.rs b/crates/kasumi-engine/tests/history.rs
+--- a/crates/kasumi-engine/tests/history.rs
++++ b/crates/kasumi-engine/tests/history.rs
+@@ -1,4 +1,4 @@
+-use kasumi_engine::test_utils::{SnapshotFixture, snapshot_resident_bytes};
++use kasumi_engine::test_utils::{SnapshotFixture, snapshot_accounted_bytes};
+ mod common;
+ use kasumi_engine::{Database, SecurityAudit};
+ use kasumi_store::BackupDestination;
+@@ -198,7 +198,7 @@
+     assert!(caught_up);
+     assert_eq!(
+         db.engine().snapshot_bytes().unwrap() as u64,
+-        snapshot_resident_bytes(
++        snapshot_accounted_bytes(
+             &db.engine()
+                 .fixture_snapshot(&physical.storage.scratch)
+                 .unwrap(),
+@@ -316,7 +316,7 @@
+     );
+     assert_eq!(
+         db.engine().snapshot_bytes().unwrap() as u64,
+-        snapshot_resident_bytes(
++        snapshot_accounted_bytes(
+             &db.engine()
+                 .fixture_snapshot(&physical.storage.scratch)
+                 .unwrap(),
+@@ -523,7 +523,7 @@
+         .unwrap();
+     assert_eq!(
+         db.engine().snapshot_bytes().unwrap() as u64,
+-        snapshot_resident_bytes(
++        snapshot_accounted_bytes(
+             &db.engine()
+                 .fixture_snapshot(&physical.storage.scratch)
+                 .unwrap(),
+diff --git a/crates/kasumi-engine/tests/schema_activation.rs b/crates/kasumi-engine/tests/schema_activation.rs
+--- a/crates/kasumi-engine/tests/schema_activation.rs
++++ b/crates/kasumi-engine/tests/schema_activation.rs
+@@ -1,4 +1,4 @@
+-use kasumi_engine::test_utils::{SnapshotFixture, snapshot_resident_bytes};
++use kasumi_engine::test_utils::{SnapshotFixture, snapshot_accounted_bytes};
+ mod common;
+ use common::FixtureEngine;
+ use kasumi_engine::{Database, SecurityAudit, TenantEngine};
+@@ -82,7 +82,7 @@
+         )
+         .unwrap();
+     assert_eq!(
+-        snapshot_resident_bytes(&db.fixture_snapshot(&db.disk).unwrap()).unwrap(),
++        snapshot_accounted_bytes(&db.fixture_snapshot(&db.disk).unwrap()).unwrap(),
+         db.snapshot_bytes().unwrap() as u64
+     );
+     result
+diff --git a/crates/kasumi-engine/tests/staged_transactions.rs b/crates/kasumi-engine/tests/staged_transactions.rs
+--- a/crates/kasumi-engine/tests/staged_transactions.rs
++++ b/crates/kasumi-engine/tests/staged_transactions.rs
+@@ -1,4 +1,4 @@
+-use kasumi_engine::test_utils::{SnapshotFixture, snapshot_resident_bytes};
++use kasumi_engine::test_utils::{SnapshotFixture, snapshot_accounted_bytes};
+ mod common;
+ use common::FixtureEngine;
+ use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
+@@ -114,7 +114,7 @@
+         .unwrap();
+     assert_eq!(
+         db.snapshot_bytes().unwrap() as u64,
+-        snapshot_resident_bytes(&db.fixture_snapshot(&db.disk).unwrap()).unwrap(),
++        snapshot_accounted_bytes(&db.fixture_snapshot(&db.disk).unwrap()).unwrap(),
+         "canonical resident stage accounting after revision {revision}"
+     );
+     result

@@ -4,7 +4,11 @@ use super::*;
 fn installed_markers_share_the_lock_owner_and_release_only_after_managed_delete() -> Result<()> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let config = crate::persistent_disk::fixture_config(directory.path());
-    let disk = crate::persistent_disk::open(&config)?;
+    let storage = crate::runtime_memory::RuntimeStorage::isolated_persistent_fixture(
+        Default::default(),
+        &config,
+    )?;
+    let disk = crate::persistent_disk::open(&config, &storage)?;
     let initial = disk.snapshot();
     let lock_path = directory.path().join("installation.lock");
     let lock = create_installed_file(&config, &disk, &lock_path, &[], 0)?;
@@ -37,13 +41,14 @@ fn installed_markers_share_the_lock_owner_and_release_only_after_managed_delete(
 #[test]
 fn installed_marker_pair_cannot_recreate_a_missing_installation_lock() -> Result<()> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
-    let mut config = example_config();
+    let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
     config.mode = DeploymentMode::Standalone;
     config.database_path = directory.path().join("node.redb");
     config.persistent_disk = crate::persistent_disk::fixture_config(directory.path());
     let installation = Installation {
-        format: 3,
+        format: 4,
         installation_id: Uuid::new_v4(),
+        origin_node_id: STANDALONE_ORIGIN_NODE_ID,
         control_incarnation: Uuid::new_v4(),
         database_id: config.database_id,
         database_path: config.database_path.clone(),
@@ -54,7 +59,12 @@ fn installed_marker_pair_cannot_recreate_a_missing_installation_lock() -> Result
             installation_id: installation.installation_id,
         };
     }
-    let disk = crate::persistent_disk::open(&config.persistent_disk)?;
+    let storage = crate::runtime_memory::RuntimeStorage::isolated_persistent_fixture(
+        Default::default(),
+        &config.persistent_disk,
+    )?;
+    config.admission = storage.policy().clone();
+    let disk = crate::persistent_disk::open(&config.persistent_disk, &storage)?;
     for name in ["initialization.json", "installation.json"] {
         create_installed_file(
             &config.persistent_disk,

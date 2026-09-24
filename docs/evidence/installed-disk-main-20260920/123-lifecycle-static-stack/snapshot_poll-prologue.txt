@@ -1,0 +1,32 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010014fffc <lifecycle::recovery_control::snapshot::{closure#0}>:
+10014fffc: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+100150000: a9017bfd    	stp	x29, x30, [sp, #0x10]
+100150004: 910043fd    	add	x29, sp, #0x10
+100150008: d12d83ff    	sub	sp, sp, #0xb60
+10015000c: f90003ff    	str	xzr, [sp]
+100150010: f90047e0    	str	x0, [sp, #0x88]
+100150014: aa0003e8    	mov	x8, x0
+100150018: f81703a8    	stur	x8, [x29, #-0x90]
+10015001c: f81783a1    	stur	x1, [x29, #-0x88]
+100150020: aa0003e8    	mov	x8, x0
+100150024: f81803a8    	stur	x8, [x29, #-0x80]
+100150028: 39402008    	ldrb	w8, [x0, #0x8]
+10015002c: b90097e8    	str	w8, [sp, #0x94]
+100150030: 340000e8    	cbz	w8, 0x10015004c <lifecycle::recovery_control::snapshot::{closure#0}+0x50>
+100150034: 14000001    	b	0x100150038 <lifecycle::recovery_control::snapshot::{closure#0}+0x3c>
+100150038: b94097e8    	ldr	w8, [sp, #0x94]
+10015003c: 71000508    	subs	w8, w8, #0x1
+100150040: 54000140    	b.eq	0x100150068 <lifecycle::recovery_control::snapshot::{closure#0}+0x6c>
+100150044: 14000001    	b	0x100150048 <lifecycle::recovery_control::snapshot::{closure#0}+0x4c>
+100150048: 1400000b    	b	0x100150074 <lifecycle::recovery_control::snapshot::{closure#0}+0x78>
+10015004c: f94047e8    	ldr	x8, [sp, #0x88]
+100150050: f9400108    	ldr	x8, [x8]
+100150054: f90043e8    	str	x8, [sp, #0x80]
+100150058: f81883a8    	stur	x8, [x29, #-0x78]
+10015005c: 910263e8    	add	x8, sp, #0x98
+100150060: 9451090e    	bl	0x101592498 <<alloc::vec::Vec<u8>>::new>

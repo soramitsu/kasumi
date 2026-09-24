@@ -1,0 +1,473 @@
+--- a/crates/kasumi-engine/src/admission/disk_memory.rs
++++ b/crates/kasumi-engine/src/admission/disk_memory.rs
+@@ -26,13 +26,17 @@
+     }
+ }
+ impl kasumi_store::NodeDiskMemoryAdmission for MemoryCore {
+-    fn reserve_installed(self: Arc<Self>, workspace: u64) -> io::Result<Box<dyn Send + Sync>> {
++    fn reserve_installed(
++        self: Arc<Self>,
++        workspace: u64,
++    ) -> io::Result<kasumi_store::DiskMemoryLease> {
+         let bytes =
+             Self::required_installed_reservation_bytes(workspace).map_err(io::Error::other)?;
+         // Admission covers the opaque box before allocating it. The actual
+-        // Reservation keeps the shared core alive until this box is destroyed.
++        // Reservation keeps the shared core alive until its actual box is destroyed
++        // and only then releases the resident byte/slot credit.
+         let charge = self.reserve_resident(bytes).map_err(io::Error::other)?;
+-        Ok(Box::new(charge))
++        Ok(kasumi_store::DiskMemoryLease::new(charge))
+     }
+ }
+ 
+--- a/crates/kasumi-store/src/allocation_tests.rs
++++ b/crates/kasumi-store/src/allocation_tests.rs
+@@ -2,11 +2,14 @@
+ use std::{
+     alloc::{GlobalAlloc, Layout, System},
+     cell::Cell,
++    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+ };
+ 
+ thread_local! {
+     static ACTIVE: Cell<bool> = const { Cell::new(false) };
+     static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
++    static DEALLOCATION_ADDRESS: Cell<*const ()> = const { Cell::new(std::ptr::null()) };
++    static DEALLOCATION_OBSERVER: Cell<*const DeallocationObservation> = const { Cell::new(std::ptr::null()) };
+ }
+ struct ObservedSystem;
+ #[global_allocator]
+@@ -32,7 +35,15 @@
+         unsafe { System.realloc(pointer, layout, size) }
+     }
+     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+-        unsafe { System.dealloc(pointer, layout) }
++        let observation = observe_before_deallocation(pointer, layout);
++        unsafe { System.dealloc(pointer, layout) };
++        if let Some(observation) = observation {
++            // SAFETY: observe_deallocation retains its borrowed observer for
++            // this entire synchronous allocator call, including a blocked gate.
++            unsafe { &*observation }
++                .finished
++                .store(true, Ordering::Release);
++        }
+     }
+ }
+ 
+@@ -50,3 +61,98 @@
+     drop(reset);
+     (result, ALLOCATIONS.with(Cell::get))
+ }
++
++/// One exact Box allocation's real System.dealloc boundary. The observer never
++/// invokes callbacks, formats messages, allocates, or takes application locks.
++/// A paused boundary permits another thread to challenge early credit reuse.
++pub(crate) struct DeallocationObservation {
++    block: bool,
++    entered: AtomicBool,
++    released: AtomicBool,
++    finished: AtomicBool,
++    count: AtomicUsize,
++    bytes: AtomicUsize,
++}
++impl DeallocationObservation {
++    pub(crate) fn new(block: bool) -> Self {
++        Self {
++            block,
++            entered: AtomicBool::new(false),
++            released: AtomicBool::new(false),
++            finished: AtomicBool::new(false),
++            count: AtomicUsize::new(0),
++            bytes: AtomicUsize::new(0),
++        }
++    }
++    pub(crate) fn entered(&self) -> bool {
++        self.entered.load(Ordering::Acquire)
++    }
++    pub(crate) fn finished(&self) -> bool {
++        self.finished.load(Ordering::Acquire)
++    }
++    pub(crate) fn release(&self) {
++        self.released.store(true, Ordering::Release);
++    }
++    pub(crate) fn count(&self) -> usize {
++        self.count.load(Ordering::Acquire)
++    }
++    pub(crate) fn bytes(&self) -> usize {
++        self.bytes.load(Ordering::Acquire)
++    }
++}
++
++fn observe_before_deallocation(
++    pointer: *mut u8,
++    layout: Layout,
++) -> Option<*const DeallocationObservation> {
++    let observed = DEALLOCATION_ADDRESS
++        .try_with(|address| {
++            if address.get() == pointer.cast::<()>() {
++                address.set(std::ptr::null());
++                true
++            } else {
++                false
++            }
++        })
++        .unwrap_or(false);
++    if !observed {
++        return None;
++    }
++    let observer = DEALLOCATION_OBSERVER.try_with(Cell::get).ok()?;
++    if observer.is_null() {
++        return None;
++    }
++    // SAFETY: observe_deallocation installs this thread-local pointer from a
++    // live borrow and resets it before returning/unwinding. Deallocation and
++    // this observer are synchronous on that same thread. No pointer escapes.
++    let state = unsafe { &*observer };
++    state.count.fetch_add(1, Ordering::AcqRel);
++    state.bytes.store(layout.size(), Ordering::Release);
++    state.entered.store(true, Ordering::Release);
++    while state.block && !state.released.load(Ordering::Acquire) {
++        std::thread::yield_now();
++    }
++    Some(observer)
++}
++
++pub(crate) fn observe_deallocation<T>(
++    address: *const (),
++    observation: &DeallocationObservation,
++    work: impl FnOnce() -> T,
++) -> T {
++    assert!(!address.is_null());
++    DEALLOCATION_OBSERVER.with(|current| {
++        assert!(current.get().is_null(), "nested deallocation observation");
++    });
++    struct Reset;
++    impl Drop for Reset {
++        fn drop(&mut self) {
++            DEALLOCATION_ADDRESS.with(|address| address.set(std::ptr::null()));
++            DEALLOCATION_OBSERVER.with(|observer| observer.set(std::ptr::null()));
++        }
++    }
++    DEALLOCATION_OBSERVER.with(|current| current.set(std::ptr::from_ref(observation)));
++    DEALLOCATION_ADDRESS.with(|current| current.set(address));
++    let _reset = Reset;
++    work()
++}
+--- a/crates/kasumi-store/src/disk_memory.rs
++++ b/crates/kasumi-store/src/disk_memory.rs
+@@ -6,8 +6,54 @@
+ /// allocating that lease. Acquisition consumes no inflight operation slot.
+ /// An installed owner is identified by this exact Arc, not equivalent policy.
+ pub trait NodeDiskMemoryAdmission: Send + Sync {
+-    fn reserve_installed(self: Arc<Self>, bytes: u64) -> io::Result<Box<dyn Send + Sync>>;
+-}
++    fn reserve_installed(self: Arc<Self>, bytes: u64) -> io::Result<DiskMemoryLease>;
++}
++
++/// Opaque installed resident lease with allocation-before-credit retirement.
++///
++/// The provider admits the concrete reservation token's Box allocation before
++/// constructing this lease. Dropping the lease retires that actual allocation
++/// before invoking the token's destructor, which can then return byte credit.
++/// No reference, raw Box, or alternate retirement path is exposed.
++pub struct DiskMemoryLease(Option<Box<dyn RetireLease>>);
++trait RetireLease: Send + Sync {
++    fn retire(self: Box<Self>);
++}
++impl<T: Send + Sync + 'static> RetireLease for T {
++    fn retire(self: Box<Self>) {
++        // Moving out of the named self parameter alone would leave its Box
++        // allocated until this function exits. Transfer it into an inner scope:
++        // that scope retires the allocation before the token destructor runs.
++        let reservation = {
++            let allocation = self;
++            *allocation
++        };
++        drop(reservation);
++    }
++}
++impl DiskMemoryLease {
++    /// Wrap the concrete, already-admitted reservation token directly. The
++    /// caller must fund `size_of::<T>()` and the existing allocator allowance
++    /// before this method allocates; this method never acquires admission.
++    pub fn new<T: Send + Sync + 'static>(reservation: T) -> Self {
++        Self(Some(Box::new(reservation)))
++    }
++}
++impl Drop for DiskMemoryLease {
++    fn drop(&mut self) {
++        if let Some(reservation) = self.0.take() {
++            reservation.retire();
++        }
++    }
++}
++// Existing owner/registry planning charges one opaque fat pointer inline. This
++// replacement must preserve that layout on every supported compilation target.
++const _: () = {
++    assert!(std::mem::size_of::<DiskMemoryLease>() == std::mem::size_of::<Box<dyn Send + Sync>>());
++    assert!(
++        std::mem::align_of::<DiskMemoryLease>() == std::mem::align_of::<Box<dyn Send + Sync>>()
++    );
++};
+ 
+ /// Registry contention is returned inline before any resident acquisition.
+ /// Other constructor failures preserve their original diagnostic chain.
+@@ -66,7 +112,7 @@
+     pub registration_bytes: u64,
+ }
+ 
+-pub(crate) type Lease = Box<dyn Send + Sync>;
++pub(crate) type Lease = DiskMemoryLease;
+ pub(crate) const ALLOCATION_ALLOWANCE: u64 = 4096;
+ 
+ pub(crate) fn overflow() -> io::Error {
+@@ -155,3 +201,7 @@
+         }
+     }
+ }
++
++#[cfg(test)]
++#[path = "disk_memory_tests.rs"]
++mod tests;
+--- /dev/null
++++ b/crates/kasumi-store/src/disk_memory_tests.rs
+@@ -0,0 +1,178 @@
++use super::*;
++use crate::{
++    allocation_tests::{DeallocationObservation, observe_deallocation},
++    test_utils::TestDiskMemory,
++};
++use std::{
++    panic::{AssertUnwindSafe, catch_unwind},
++    sync::atomic::{AtomicUsize, Ordering},
++    time::{Duration, Instant},
++};
++
++fn allocation_address(lease: &DiskMemoryLease) -> *const () {
++    std::ptr::from_ref::<dyn RetireLease>(lease.0.as_deref().expect("live lease")).cast::<()>()
++}
++
++// Release before joining even on an assertion panic, so this test cannot leave
++// an allocator thread parked or silently detach the actual watched destructor.
++struct PausedRetirement {
++    observation: Arc<DeallocationObservation>,
++    worker: Option<std::thread::JoinHandle<()>>,
++}
++impl PausedRetirement {
++    fn start(lease: DiskMemoryLease) -> Self {
++        let observation = Arc::new(DeallocationObservation::new(true));
++        let worker_observation = observation.clone();
++        let worker = std::thread::spawn(move || {
++            let address = allocation_address(&lease);
++            observe_deallocation(address, &worker_observation, || drop(lease));
++        });
++        Self {
++            observation,
++            worker: Some(worker),
++        }
++    }
++    fn entered(&self) {
++        let deadline = Instant::now() + Duration::from_secs(5);
++        while !self.observation.entered() {
++            assert!(
++                Instant::now() < deadline,
++                "actual deallocation was not observed"
++            );
++            std::thread::yield_now();
++        }
++    }
++    fn finish(&mut self) {
++        self.observation.release();
++        self.worker.take().unwrap().join().unwrap();
++    }
++}
++impl Drop for PausedRetirement {
++    fn drop(&mut self) {
++        self.observation.release();
++        if let Some(worker) = self.worker.take() {
++            let _ = worker.join();
++        }
++    }
++}
++
++#[test]
++fn installed_lease_cannot_return_bytes_or_slot_before_actual_box_deallocation() {
++    let workspace = 1234;
++    let required = TestDiskMemory::required_reservation_bytes(workspace).unwrap();
++    let memory = TestDiskMemory::new(required, 1);
++    let lease = memory.clone().reserve_installed(workspace).unwrap();
++    assert_eq!(memory.snapshot().used_bytes, required);
++    assert_eq!(memory.snapshot().live_reservations, 1);
++    let mut retirement = PausedRetirement::start(lease);
++    retirement.entered();
++    assert!(!retirement.observation.finished());
++    assert_eq!(memory.snapshot().used_bytes, required);
++    assert_eq!(memory.snapshot().live_reservations, 1);
++    assert!(memory.clone().reserve_installed(workspace).is_err());
++    retirement.finish();
++    assert!(retirement.observation.finished());
++    assert_eq!(retirement.observation.count(), 1);
++    assert_eq!(
++        u64::try_from(retirement.observation.bytes()).unwrap(),
++        required - workspace - ALLOCATION_ALLOWANCE,
++        "provider still admits exactly one concrete token allocation"
++    );
++    assert_eq!(memory.snapshot().used_bytes, 0);
++    assert_eq!(memory.snapshot().live_reservations, 0);
++    let successor = memory.clone().reserve_installed(workspace).unwrap();
++    assert_eq!(memory.snapshot().used_bytes, required);
++    drop(successor);
++    assert_eq!(memory.snapshot().used_bytes, 0);
++}
++
++struct Credit {
++    observation: Arc<DeallocationObservation>,
++    live: Arc<AtomicUsize>,
++    drops: Arc<AtomicUsize>,
++}
++impl Drop for Credit {
++    fn drop(&mut self) {
++        assert!(
++            self.observation.finished(),
++            "actual Box backing must be freed before credit destructor"
++        );
++        assert_eq!(self.live.fetch_sub(1, Ordering::AcqRel), 1);
++        self.drops.fetch_add(1, Ordering::AcqRel);
++    }
++}
++struct PanickingToken {
++    _credit: Credit,
++}
++impl Drop for PanickingToken {
++    fn drop(&mut self) {
++        panic!("original token destructor panic");
++    }
++}
++
++#[test]
++fn panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind() {
++    let observation = Arc::new(DeallocationObservation::new(false));
++    let live = Arc::new(AtomicUsize::new(1));
++    let drops = Arc::new(AtomicUsize::new(0));
++    let lease = DiskMemoryLease::new(PanickingToken {
++        _credit: Credit {
++            observation: observation.clone(),
++            live: live.clone(),
++            drops: drops.clone(),
++        },
++    });
++    let address = allocation_address(&lease);
++    let error = catch_unwind(AssertUnwindSafe(|| {
++        observe_deallocation(address, &observation, || drop(lease));
++    }))
++    .unwrap_err();
++    assert_eq!(
++        error.downcast_ref::<&'static str>(),
++        Some(&"original token destructor panic")
++    );
++    assert!(observation.finished());
++    assert_eq!(observation.count(), 1);
++    assert_eq!(observation.bytes(), std::mem::size_of::<PanickingToken>());
++    assert_eq!(live.load(Ordering::Acquire), 0);
++    assert_eq!(drops.load(Ordering::Acquire), 1);
++
++    // Unwinding resets the thread-local observer before another independent
++    // lease uses the same allocator on this thread.
++    let successor_observation = Arc::new(DeallocationObservation::new(false));
++    live.store(1, Ordering::Release);
++    let successor = DiskMemoryLease::new(Credit {
++        observation: successor_observation.clone(),
++        live: live.clone(),
++        drops: drops.clone(),
++    });
++    observe_deallocation(
++        allocation_address(&successor),
++        &successor_observation,
++        || drop(successor),
++    );
++    assert!(successor_observation.finished());
++    assert_eq!(successor_observation.count(), 1);
++    assert_eq!(live.load(Ordering::Acquire), 0);
++    assert_eq!(drops.load(Ordering::Acquire), 2);
++}
++
++#[test]
++fn mandatory_opaque_lease_preserves_inline_layout_and_provider_denial_accounting() {
++    assert_eq!(
++        std::mem::size_of::<DiskMemoryLease>(),
++        std::mem::size_of::<Box<dyn Send + Sync>>()
++    );
++    assert_eq!(
++        std::mem::align_of::<DiskMemoryLease>(),
++        std::mem::align_of::<Box<dyn Send + Sync>>()
++    );
++    let required = TestDiskMemory::required_reservation_bytes(1234).unwrap();
++    let memory = TestDiskMemory::new(required - 1, 1);
++    assert!(memory.clone().reserve_installed(1234).is_err());
++    let after = memory.snapshot();
++    assert_eq!(after.used_bytes, 0);
++    assert_eq!(after.live_reservations, 0);
++    assert_eq!(after.attempts, 1);
++    assert!(TestDiskMemory::required_reservation_bytes(u64::MAX).is_err());
++}
+--- a/crates/kasumi-store/src/lib.rs
++++ b/crates/kasumi-store/src/lib.rs
+@@ -24,7 +24,9 @@
+ mod allocation_tests;
+ mod device_disk;
+ mod disk_memory;
+-pub use disk_memory::{DiskMemoryRequirements, DiskOpenError, NodeDiskMemoryAdmission};
++pub use disk_memory::{
++    DiskMemoryLease, DiskMemoryRequirements, DiskOpenError, NodeDiskMemoryAdmission,
++};
+ mod keys;
+ mod node_database;
+ mod node_disk;
+--- a/crates/kasumi-store/src/test_utils.rs
++++ b/crates/kasumi-store/src/test_utils.rs
+@@ -85,7 +85,7 @@
+     fn reserve_installed(
+         self: std::sync::Arc<Self>,
+         bytes: u64,
+-    ) -> std::io::Result<Box<dyn Send + Sync>> {
++    ) -> std::io::Result<crate::DiskMemoryLease> {
+         let bytes = Self::required_reservation_bytes(bytes)?;
+         let mut state = self.state.lock().map_err(|_| std::io::ErrorKind::Other)?;
+         state.attempts = state
+@@ -102,7 +102,10 @@
+         state.used_bytes = next;
+         state.live_reservations += 1;
+         drop(state);
+-        Ok(Box::new(TestDiskLease { owner: self, bytes }))
++        Ok(crate::DiskMemoryLease::new(TestDiskLease {
++            owner: self,
++            bytes,
++        }))
+     }
+ }
+ impl Drop for TestDiskLease {
+--- a/docs/installed-storage-admission-plan.md
++++ b/docs/installed-storage-admission-plan.md
+@@ -88,12 +88,19 @@
+     fn reserve_installed(
+         self: std::sync::Arc<Self>,
+         bytes: u64,
+-    ) -> std::io::Result<Box<dyn Send + Sync>>;
++    ) -> std::io::Result<DiskMemoryLease>;
+ }
+ ```
+ 
+ `NodeDisk::open` must require `Arc<dyn NodeDiskMemoryAdmission>`. The opaque returned
+-object owns the real reservation, rather than copying its byte count. Store keeps
++object owns the real reservation, rather than copying its byte count. Its required
++`DiskMemoryLease` consumes a private erased token and retires the concrete Box
++allocation before the token destructor returns resident credit. A consuming
++inner scope moves the token across the Box's scope boundary; moving it into a local
++and immediately dropping it inside the same named-Box scope is insufficient.
++The opaque lease preserves the previous fat-pointer inline layout, and providers
++still preadmit exactly the concrete token allocation plus the existing 4096-byte
++allowance. Store keeps
+ both the governor identity and the charge. A store `test-utils` implementation may
+ provide an explicitly bounded deterministic governor with observable charge
+ lifetime; it must not be selectable by production configuration.

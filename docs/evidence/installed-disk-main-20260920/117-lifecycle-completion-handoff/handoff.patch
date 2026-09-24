@@ -1,0 +1,121 @@
+--- a/crates/kasumi-engine/tests/common/recovery_control.rs
++++ b/crates/kasumi-engine/tests/common/recovery_control.rs
+@@ -108,9 +108,9 @@
+ async fn recovery_expired_completion_resolves_its_exact_positive_fact_before_activation() {
+     exercise_completed_recovery(false, Some(true), true).await;
+ }
+-/// Transfer the exact live fixture only after the completion/activation future
+-/// has returned. Polling route publication inside that large future composes
+-/// both debug poll frames on the same thread and can exhaust its normal stack.
++/// Transfer the exact live fixture only after a phase future has returned.
++/// Polling large phases inside another composes their debug poll frames on the
++/// same thread and can exhaust its normal stack.
+ struct RoutePublicationFixture {
+     fixture: Fixture,
+     database: Arc<Database>,
+@@ -121,11 +121,47 @@
+     activation_outcome: Option<bool>,
+     inspect_completion: bool,
+ ) {
++    let CompletionFixture {
++        live:
++            RoutePublicationFixture {
++                fixture: f,
++                database: db,
++                request,
++            },
++        attestation,
++        complete_phase,
++        completed,
++        outcome,
++    } = {
++        let prepared = Box::pin(prepare_completion(planned, inspect_completion));
++        prepared.await
++    };
++    // The preparation poll frame has returned before resolving the original
++    // completion. Keep the same live owners, signed fact, phase, and deadlines.
++    let id = request.operation_id;
++    if inspect_completion {
++        Box::pin(resolve_expired_completion(
++            &f,
++            &db,
++            id,
++            complete_phase,
++            completed,
++            &attestation,
++        ))
++        .await;
++    } else {
++        Box::pin(resolve_phase(&f, id, complete_phase, outcome)).await;
++    }
+     let route = {
+         let completed = Box::pin(complete_recovery(
++            RoutePublicationFixture {
++                fixture: f,
++                database: db,
++                request,
++            },
++            attestation,
+             planned,
+             activation_outcome,
+-            inspect_completion,
+         ));
+         completed.await
+     };
+@@ -141,11 +177,16 @@
+         Box::pin(exercise_route_publication(&mut fixture, database, &request)).await;
+     }
+ }
+-async fn complete_recovery(
+-    planned: bool,
+-    activation_outcome: Option<bool>,
+-    inspect_completion: bool,
+-) -> Option<RoutePublicationFixture> {
++// Carry the exact prepared completion out of the preparation future before
++// polling either completion resolution or the activation/retirement continuation.
++struct CompletionFixture {
++    live: RoutePublicationFixture,
++    attestation: BTreeMap<u64, Ed25519KeyPair>,
++    complete_phase: Uuid,
++    completed: TargetCompletionFact,
++    outcome: RecoveryDispatchOutcome,
++}
++async fn prepare_completion(planned: bool, inspect_completion: bool) -> CompletionFixture {
+     let mut f = Fixture::new().await;
+     let mut request = request(&f);
+     let mut attestation = BTreeMap::new();
+@@ -653,11 +694,30 @@
+         node_id,
+         outcome: TargetRuntimeOutcome::Completed(Box::new(signed)),
+     }));
+-    if inspect_completion {
+-        resolve_expired_completion(&f, &db, id, complete_phase, completed, &attestation).await;
+-    } else {
+-        resolve_phase(&f, id, complete_phase, outcome).await;
++    CompletionFixture {
++        live: RoutePublicationFixture {
++            fixture: f,
++            database: db,
++            request,
++        },
++        attestation,
++        complete_phase,
++        completed,
++        outcome,
+     }
++}
++async fn complete_recovery(
++    live: RoutePublicationFixture,
++    attestation: BTreeMap<u64, Ed25519KeyPair>,
++    planned: bool,
++    activation_outcome: Option<bool>,
++) -> Option<RoutePublicationFixture> {
++    let RoutePublicationFixture {
++        fixture: mut f,
++        database: db,
++        request,
++    } = live;
++    let id = request.operation_id;
+     let retirement_phase = if planned {
+         let status = db.recovery_status(f.context("owner"), id).await.unwrap();
+         assert_eq!(status.record().phase, RecoveryPhase::RetireSource);

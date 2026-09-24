@@ -1,0 +1,84 @@
+diff --git a/crates/kasumi-store/src/node_disk/file.rs b/crates/kasumi-store/src/node_disk/file.rs
+--- a/crates/kasumi-store/src/node_disk/file.rs
++++ b/crates/kasumi-store/src/node_disk/file.rs
+@@ -1495,9 +1495,14 @@
+     }
+ 
+     fn check(&self, file: &File) -> io::Result<()> {
+-        self.verify(file).inspect_err(|_| {
+-            self.disk.fail();
+-        })
++        // Keep the same State gate through the complete temporary-descriptor
++        // walk. A sealed owner cannot begin another verification acquisition.
++        let mut state = self.disk.lock_state();
++        if state.phase == NodeDiskPhase::Failed || !self.disk.device.lock().admission_ready() {
++            return Err(io::ErrorKind::Other.into());
++        }
++        self.verify(file)
++            .inspect_err(|_| self.disk.fail_locked(&mut state))
+     }
+ 
+     fn observe(&self, budget: &mut Budget) -> io::Result<()> {
+diff --git a/crates/kasumi-store/src/node_disk/native_file.rs b/crates/kasumi-store/src/node_disk/native_file.rs
+--- a/crates/kasumi-store/src/node_disk/native_file.rs
++++ b/crates/kasumi-store/src/node_disk/native_file.rs
+@@ -120,3 +120,8 @@
+ pub(super) fn close_attempts() -> u64 {
+     CLOSE_ATTEMPTS.with(std::cell::Cell::get)
+ }
++
++#[cfg(test)]
++pub(super) fn clear_close_failure() -> Option<i32> {
++    CLOSE_FAILURE.with(std::cell::Cell::take)
++}
+diff --git a/crates/kasumi-store/src/node_disk/tests.rs b/crates/kasumi-store/src/node_disk/tests.rs
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -2807,3 +2807,27 @@
+     assert!(disk.lock_state().live.is_empty());
+     clean(&disk, &["file"]);
+ }
++
++#[test]
++fn failed_file_owner_rejects_before_verification_descriptor_acquisition() {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let (_directory, config) = installation();
++    crate::private_files::create_directory(&config.roots["data"].join("child")).unwrap();
++    seed(&config, "child/file", 32 << 10);
++    let disk = open(config, memory);
++    let file = disk.open_file("data", Path::new("child/file")).unwrap();
++    disk.fail();
++    native_file::fail_next_close(libc::EIO);
++    let attempts = native_file::close_attempts();
++    let (result, allocations) = crate::allocation_tests::measure(|| file.check_owner());
++    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
++    assert_eq!(allocations, 0);
++    assert_eq!(native_file::close_attempts(), attempts);
++    assert_eq!(
++        native_file::clear_close_failure(),
++        Some(libc::EIO),
++        "verification must not consume a native close effect after the fence"
++    );
++    drop(file);
++    clean(&disk, &["child/file"]);
++}
+diff --git a/crates/kasumi-store/src/node_disk.rs b/crates/kasumi-store/src/node_disk.rs
+--- a/crates/kasumi-store/src/node_disk.rs
++++ b/crates/kasumi-store/src/node_disk.rs
+@@ -628,6 +628,8 @@
+         let registry_charge = memory
+             .clone()
+             .reserve_installed(requirement.registry_bytes)?;
++        // The new fixed bank has no failure path after configured-root FD acquisition.
++        let file_custody = file::CustodySlots::new(config.max_open_files)?;
+         let roots = open_roots(config)?;
+         for entry in installed.iter() {
+             disk_memory::require(
+@@ -647,7 +649,6 @@
+         let live = fixed_map::Banks::new(
+             usize::try_from(config.max_open_files).map_err(|_| disk_memory::overflow())?,
+         )?;
+-        let file_custody = file::CustodySlots::new(config.max_open_files)?;
+         let identity = roots.values().next().expect("validated roots").identity;
+         // Fund and publish actual initial-census custody before fdopendir. A
+         // failed/uncertain constructor remains represented in this same node.

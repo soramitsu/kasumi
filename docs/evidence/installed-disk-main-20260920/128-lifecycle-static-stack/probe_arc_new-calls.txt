@@ -1,0 +1,8 @@
+1000719f8: 948c7748    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100071a0c: 97fe858b    	bl	0x100013038 <alloc::boxed::box_new_uninit>
+100071a14: 1400000a    	b	0x100071a3c <<alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>>::new+0x9c>
+100071a28: 9400a516    	bl	0x10009ae80 <core::ptr::drop_glue::<alloc::sync::ArcInner<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>>>
+100071a2c: 14000002    	b	0x100071a34 <<alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>>::new+0x94>
+100071a30: 948c7511    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+100071a38: 948c767b    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>
+100071a54: 948c7731    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>

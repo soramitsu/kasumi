@@ -1,0 +1,37 @@
+{
+  "status": "PASS scoped native module cohort; unapplied target-only candidate",
+  "branch": "master",
+  "candidate_manifest_sha256": "bdea7417d9a73f86dff25a1d76e3b8bfb7cd2ef783ea12edbc0f347198620fde",
+  "delta_patch_sha256": "4b3941ae5383e58ae9c6b5019a53e681dd5cb923b0edbd2cb859a10d0c8d4471",
+  "successor_patch_sha256": "6c918e171f8f6da11c55dc859448cb5a469e9a4b48f2de29965321ba5159c205",
+  "predecessor_results_sha256": "5aa980589cd17941c66a19089046e296b87d465eb3d83f35fd88340b41666523",
+  "results_sha256": "0634ed1de20da6928603475995f3dfa24ff5c6509b97dbfe9691049b53eef60a",
+  "terminal_drain_sha256": "1ea06846a92beb572b1c17fde859e5bc1843f2075528209903e4e1856174017e",
+  "native_source_manifest_files": 93,
+  "native_sources_match_freeze": true,
+  "all_65_predecessor_tests_retained": true,
+  "new_tests": [
+    "backup_sessions::filesystem::session_admission_tests::session_claim_acquires_or_rejects_without_owned_path_allocations",
+    "node_disk::batch::tests::descendant_claim_uses_retained_prefix_and_exact_component_limits"
+  ],
+  "test_count": 67,
+  "scope": "Actual proposed NodeDisk modules plus exact filesystem open/put/get and terminal modules. Original 49 node_disk tests plus eight batch regressions; actual existing two filesystem ownership regressions, six new filesystem/session regressions including subprocess restart and paused classification race, and two terminal codec regressions. Exact unchanged wire definitions are extracted from session-definitions-source-at-run.rs. Three authenticated GC methods (aborted_objects/list/delete) are explicitly omitted and hashed; there is no authority proof or StorageAccess stub. Full store/server compilation, backup/audit destination constructors, authenticated GC integration, whole RSS, inherited file-helper native close gaps, and supported-filesystem pre-effect directory bounds remain unqualified. Same three unrelated module test exclusions and disk_memory exclusions as prior native cohort. Five inherited device tests compile but are filtered.",
+  "open_requirements": [
+    "Full store/backup-audit constructor/authenticated GC compilation and integration",
+    "Strict lint and actual-source coherent caller adoption",
+    "Whole caller ciphertext/async-worker/stack/returned-diagnostic admission",
+    "Inherited generic file preparation and ordinary file/directory close-outcome custody",
+    "Remaining directory callers and supported-filesystem pre-effect physical bounds",
+    "Complete allocator and RSS qualification"
+  ],
+  "prior_parser_failure": "native-01/terminal-drain-parser-attempt1.json omitted the geometry test whose success line follows its printed observation; exact name inventory corrected without rerunning native",
+  "independent_review": {
+    "scope": "six-file claim-path correction only; broad cumulative57 not re-reviewed",
+    "receipt": "target/installed-disk-validation/backup-namespace-admission-revision4-independent-review/receipt.json",
+    "sha256": "cf8b3e802ec479ef46a4f33444923148e89427321a58c7b258d02c693bff202e",
+    "readme_sha256": "3a0e2cd664f03e73ef49a9c1d2a1e36d52e712fe4c6f5b798dd214f172a5fb26",
+    "result": "No blocking finding in the frozen correction; reviewer independently verified frozen hashes, exact apply/readback and completed native67 evidence without native dispatch"
+  },
+  "cumulative_manifest_sha256": "d89051bae6169975ec12c7f1213e4b7383ff74b59d7d9e2ebe2b1257198ec790",
+  "composition_notes_sha256": "b29a2dcb7d88b350af03b118b6bfaec06561646513bfce4428702646325671d6"
+}

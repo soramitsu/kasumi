@@ -1,0 +1,67 @@
+{
+  "status": "RUNNER_REQUIRES_SUCCESSOR; REVISION6_THREE_FIXTURE_SCOPES_STATIC_APPROVAL",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "at_utc": "2026-09-22T10:25:45.305948+00:00",
+  "source_edits": false,
+  "native_execution": false,
+  "findings": [
+    {
+      "id": "timeout-is-not-a-failure-gate",
+      "code": "run.py records timed_out but continuation/all_passed never reject it; after deadline max(.01, remaining) still dispatches another stage",
+      "consequence": "A timed out child that exits zero after SIGTERM can qualify.",
+      "required_fix": "Reject dispatch after deadline; stop/fail after timeout; gate final success on all work within the original 1200-second bound. Record cleanup grace separately."
+    },
+    {
+      "id": "forced-child-drain-can-qualify",
+      "code": "After parent exits zero, remaining members are killed; final all_passed checks only eventual drain and exit code",
+      "consequence": "Unfinished owned work can be forcibly stopped yet report success.",
+      "required_fix": "Unexpected leftover group members or cleanup signals cause failure, while cleanup must still drain the actual group."
+    }
+  ],
+  "preserved_checks": [
+    "326 exact executable-listed names equal frozen source dry readback, including original quota-name mapping and one added fixture",
+    "nonfresh compiler artifact selected by exact assembly lib.rs source path, copied binary pinned before/after stages",
+    "frozen candidate source/binary/tool/script inventories before and after execution",
+    "full unfiltered store test command followed by bundled Python3.12 full smoke-script tests",
+    "exact supplied runner/manifest/correction hashes verified"
+  ],
+  "revision6_static_approval": {
+    "correction_patch_sha256": "411ec2365a68f4ce771d530fad30271d5de6106a08fe5f057fccb918b3ff5cf1",
+    "scope": [
+      "archive preserves denied census while one operational directory remains, charge and Failed state; drops that actual owner, reconciles and reopens using same Arc<NodeDisk> and original inode",
+      "session checks retained reserve identity and full extent, canonical decoder exact ciphertext without consuming injected durable-read fault; original failure/retry/cleanup assertions remain and durable verification preserves physical bytes",
+      "new decode_outcome is cfg(test) only and delegates to the current canonical decoder"
+    ],
+    "test_names_limits_changed": false,
+    "runtime_claim": false
+  },
+  "existing_trials": "No invalidation inferred for a completed trial whose exact evidence independently proves timeout=false, no cleanup signals, all stages/drain/source/executable/inventory checks passed within the original bound. This review did not execute or accept the live revision6 trial.",
+  "successor_review": "Pending author runner revision3 hash and static reread. Original runner retained.",
+  "evidence": [
+    {
+      "path": "combined-full-store-qualification-runner-revision2/run.py",
+      "sha256": "93b321d96f9998075856f3b8db99240ba72da7a519d79f98a2ef40d9aaa850c7"
+    },
+    {
+      "path": "combined-full-store-qualification-runner-revision2/manifest.json",
+      "sha256": "13b9052fe6d584f18b2e3ba8cf0fe48d728119ebac72ec0c9d55e9a3b2c3df64"
+    },
+    {
+      "path": "combined-full-store-qualification-runner-revision2/baseline-store-tests.json",
+      "sha256": "128f9ad89d659ff91fa74eb0aa8f307373a31714f7162329b9d3d5fe04a65594"
+    },
+    {
+      "path": "combined-full-store-qualification-runner-revision2/source-inventory-dry-readback.json",
+      "sha256": "a6ab9f77fdc57c4b461a36b18914da87c8f6d1c528f164ad65f44453403eaa50"
+    },
+    {
+      "path": "storage-and-namespace-integration-revision6/manifest.json",
+      "sha256": "2b3f0ef55c95be88eb086b7cdfd9793406123d7efcf4f0a0f8396e883625d24f"
+    },
+    {
+      "path": "storage-and-namespace-integration-revision6/correction.patch",
+      "sha256": "411ec2365a68f4ce771d530fad30271d5de6106a08fe5f057fccb918b3ff5cf1"
+    }
+  ]
+}

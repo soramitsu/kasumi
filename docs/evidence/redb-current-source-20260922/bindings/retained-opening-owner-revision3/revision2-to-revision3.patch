@@ -1,0 +1,191 @@
+--- a/vendor/redb-4.2.0/src/retained_opening.rs
++++ b/vendor/redb-4.2.0/src/retained_opening.rs
+@@ -104,7 +104,7 @@
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+         f.debug_struct("OpeningAdmission")
+             .field("failed", &self.failed.load(Ordering::Acquire))
+-            .finish()
++            .finish_non_exhaustive()
+     }
+ }
+ impl crate::StorageAdmission for OpeningAdmission {
+--- a/vendor/redb-4.2.0/src/retained_opening_tests.rs
++++ b/vendor/redb-4.2.0/src/retained_opening_tests.rs
+@@ -253,7 +253,7 @@
+         payload.downcast_ref::<Arc<Marker>>().unwrap(),
+         &fixture.control.primary
+     ));
+-    let original = payload as *const (dyn Any + Send);
++    let original = std::ptr::from_ref(payload);
+     assert!(fixture.owner.memory.is_none());
+     assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 0);
+     let report = fixture.owner.close();
+@@ -417,7 +417,7 @@
+             payload.downcast_ref::<Arc<Marker>>().unwrap(),
+             &admission.marker
+         ));
+-        payload as *const (dyn Any + Send)
++        std::ptr::from_ref(payload)
+     };
+     assert_eq!(admission.calls.load(Ordering::SeqCst), 1);
+     assert!(fixture.owner.builder.admission.check_owner().is_err());
+@@ -569,7 +569,7 @@
+         panic!("rollback outcome missing")
+     };
+     assert!(matches!(error, StorageError::OwnerFailed));
+-    let rollback = error as *const StorageError;
++    let rollback = std::ptr::from_ref(error);
+     assert_eq!(bootstrap.settlement(), WriteTerminalSettlement::Retained);
+     assert!(!bootstrap.disposal_complete());
+     let calls = fixture.control.calls.load(Ordering::SeqCst);
+@@ -581,7 +581,7 @@
+     let TerminalObservation::Returned(Err(error)) = bootstrap.rollback() else {
+         panic!("rollback original erased")
+     };
+-    assert_eq!(error as *const StorageError, rollback);
++    assert_eq!(std::ptr::from_ref(error), rollback);
+     assert_eq!(fixture.control.calls.load(Ordering::SeqCst), calls);
+     assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 0);
+     assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 0);
+@@ -619,7 +619,7 @@
+             .0,
+         &fixture.control.primary
+     ));
+-    let original = error as *const crate::WriteTerminalError;
++    let original = std::ptr::from_ref(error);
+     assert!(matches!(
+         bootstrap.rollback(),
+         TerminalObservation::NotEntered
+@@ -637,7 +637,7 @@
+     let TerminalObservation::Returned(Err(error)) = bootstrap.terminal() else {
+         panic!("terminal original erased")
+     };
+-    assert_eq!(error as *const crate::WriteTerminalError, original);
++    assert_eq!(std::ptr::from_ref(error), original);
+     assert_eq!(fixture.control.calls.load(Ordering::SeqCst), calls);
+     assert_eq!(fixture.control.closes.load(Ordering::SeqCst), 0);
+     assert_eq!(fixture.control.drops.load(Ordering::SeqCst), 0);
+@@ -688,7 +688,7 @@
+         panic!("original body error missing")
+     };
+     assert_eq!(message, "Corrupted savepoint record");
+-    let original = error as *const DatabaseError;
++    let original = std::ptr::from_ref(error);
+     assert_eq!(
+         report.bootstrap().unwrap().settlement(),
+         WriteTerminalSettlement::Unstarted
+@@ -701,7 +701,7 @@
+     let TerminalObservation::Returned(Err(error)) = report.opening() else {
+         panic!("original body error erased")
+     };
+-    assert_eq!(error as *const DatabaseError, original);
++    assert_eq!(std::ptr::from_ref(error), original);
+     let bootstrap = report.bootstrap().unwrap();
+     assert_eq!(bootstrap.operation(), Some(WriteTerminalOperation::Abort));
+     assert!(matches!(
+--- a/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
++++ b/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs
+@@ -301,9 +301,11 @@
+         if page_size_usize == 0 {
+             return Err(StorageError::CacheCapacityDenied.into());
+         }
++        let lock_stripes =
++            usize::try_from(Self::lock_stripes()).map_err(|_| StorageError::CacheCapacityDenied)?;
+         let read_entry_capacity = max_cache_size
+             .div_ceil(page_size_usize)
+-            .div_ceil(Self::lock_stripes() as usize)
++            .div_ceil(lock_stripes)
+             .max(1);
+         // A depth-bounded internal mutation can retain ancestor PageMut values
+         // plus a leaf, split siblings and direct-header preparation. This is a
+@@ -424,10 +426,9 @@
+     fn write_entry_capacity(&self) -> usize {
+         #[cfg(test)]
+         {
+-            return self
+-                .write_entry_capacity_override
++            self.write_entry_capacity_override
+                 .load(Ordering::Acquire)
+-                .min(self.write_entry_capacity);
++                .min(self.write_entry_capacity)
+         }
+         #[cfg(not(test))]
+         {
+@@ -1306,16 +1307,22 @@
+             PagedCachedFile::new(Box::new(backend), crate::test_admission(), page_size, 4096)
+                 .unwrap();
+         cache.set_write_entry_capacity_for_test(2);
+-        let mut borrowed = cache.write(0, page_size as usize, true).unwrap();
++        let mut borrowed = cache
++            .write(0, usize::try_from(page_size).unwrap(), true)
++            .unwrap();
+         borrowed.mem_mut().fill(11);
+         // With only A borrowed, an attempted flush cannot select a page. The
+         // former remove/reinsert selector left A's flag false in this state.
+         assert_eq!(cache.flush_buffered_pages(1).unwrap(), 0);
+-        let mut available = cache.write(stride, page_size as usize, true).unwrap();
++        let mut available = cache
++            .write(stride, usize::try_from(page_size).unwrap(), true)
++            .unwrap();
+         available.mem_mut().fill(22);
+         drop(available); // Returning B gives it a second chance.
+         let before = cache.write_buffer_bytes.load(Ordering::Acquire);
+-        let mut new_page = cache.write(stride * 2, page_size as usize, true).unwrap();
++        let mut new_page = cache
++            .write(stride * 2, usize::try_from(page_size).unwrap(), true)
++            .unwrap();
+         new_page.mem_mut().fill(33);
+         assert_eq!(writes.load(Ordering::Acquire), 1);
+         assert_eq!(cache.write_buffer_stripe(0).lock().unwrap().cache.len(), 2);
+@@ -1327,7 +1334,7 @@
+         cache.flush().unwrap();
+         for (offset, byte) in [(0, 11), (stride, 22), (stride * 2, 33)] {
+             let value = cache
+-                .read(offset, page_size as usize, PageHint::Clean)
++                .read(offset, usize::try_from(page_size).unwrap(), PageHint::Clean)
+                 .unwrap();
+             assert!(value.iter().all(|actual| *actual == byte));
+         }
+@@ -1345,18 +1352,26 @@
+         cache.set_write_entry_capacity_for_test(1);
+         for index in 0..128u64 {
+             let mut page = cache
+-                .write(index * stride, page_size as usize, true)
++                .write(index * stride, usize::try_from(page_size).unwrap(), true)
+                 .unwrap();
+-            page.mem_mut().fill(index as u8);
++            page.mem_mut().fill(u8::try_from(index).unwrap());
+             drop(page);
+             assert!(cache.write_buffer_stripe(0).lock().unwrap().cache.len() <= 1);
+         }
+         cache.flush().unwrap();
+         for index in 0..128u64 {
+             let value = cache
+-                .read(index * stride, page_size as usize, PageHint::Clean)
++                .read(
++                    index * stride,
++                    usize::try_from(page_size).unwrap(),
++                    PageHint::Clean,
++                )
+                 .unwrap();
+-            assert!(value.iter().all(|byte| *byte == index as u8));
++            assert!(
++                value
++                    .iter()
++                    .all(|byte| *byte == u8::try_from(index).unwrap())
++            );
+             assert!(cache.read_cache[0].read().unwrap().len() <= cache.read_entry_capacity);
+         }
+         assert_eq!(cache.write_buffer_bytes.load(Ordering::Acquire), 0);
+@@ -1419,9 +1434,8 @@
+         drop(cache.write(0, 128, true).unwrap());
+         let bytes = cache.write_buffer_bytes.load(Ordering::Acquire);
+         fail.store(true, Ordering::Release);
+-        let error = match cache.write(128 * 131, 128, true) {
+-            Err(error) => error,
+-            Ok(_) => panic!("eviction should fail"),
++        let Err(error) = cache.write(128 * 131, 128, true) else {
++            panic!("eviction should fail")
+         };
+         let crate::StorageError::Io(error) = error else {
+             panic!("original I/O became capacity")

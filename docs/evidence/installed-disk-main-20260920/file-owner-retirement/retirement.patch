@@ -1,0 +1,894 @@
+--- a/crates/kasumi-store/src/node_disk/file.rs
++++ b/crates/kasumi-store/src/node_disk/file.rs
+@@ -43,17 +43,26 @@
+     // Parent path names are validated and allocated once during acquisition.
+     // I/O verifies every current ancestor using these original names.
+     parent_names: Box<[CString]>,
+-    parent: File,
+-    name: CString,
++    parent: Option<File>,
++    name: Option<CString>,
+     identity: Identity,
+     binding: NamespaceBinding,
+-    budget: Mutex<Budget>,
++    budget: Option<Mutex<Budget>>,
++    registration: usize,
+ }
+ 
+ #[cfg(test)]
+ pub(super) struct ClosePause {
++    pub(super) stage: CloseStage,
+     pub(super) entered: std::sync::mpsc::Sender<()>,
+     pub(super) release: std::sync::mpsc::Receiver<()>,
++}
++
++#[cfg(test)]
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(super) enum CloseStage {
++    DataClosed,
++    ResourcesClosed,
+ }
+ 
+ #[cfg(test)]
+@@ -67,7 +76,39 @@
+ /// An opaque descriptor owner. There is no raw File/fd escape: every clone keeps
+ /// the registration live, and mutation validates the physical path binding.
+ #[derive(Clone)]
+-pub struct NodeDiskFile(Arc<FileOwner>);
++pub struct NodeDiskFile(OwnedFileArc);
++
++/// Every private strong reference uses this retirement protocol. In particular,
++/// publication abandonment and failed exclusive unwrap must not let a raw Arc
++/// run FileOwner::drop while its backing allocation is still held implicitly.
++#[derive(Clone)]
++struct OwnedFileArc(Option<Arc<FileOwner>>);
++impl OwnedFileArc {
++    fn new(owner: Arc<FileOwner>) -> Self {
++        Self(Some(owner))
++    }
++    fn try_unwrap(mut self) -> Result<FileOwner, Self> {
++        Arc::try_unwrap(self.0.take().expect("live file custody")).map_err(Self::new)
++    }
++}
++impl std::ops::Deref for OwnedFileArc {
++    type Target = Arc<FileOwner>;
++    fn deref(&self) -> &Self::Target {
++        self.0.as_ref().expect("live file custody")
++    }
++}
++impl std::ops::DerefMut for OwnedFileArc {
++    fn deref_mut(&mut self) -> &mut Self::Target {
++        self.0.as_mut().expect("live file custody")
++    }
++}
++impl Drop for OwnedFileArc {
++    fn drop(&mut self) {
++        if let Some(owner) = self.0.take().and_then(Arc::into_inner) {
++            drop(owner);
++        }
++    }
++}
+ 
+ impl std::fmt::Debug for NodeDiskFile {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+@@ -84,7 +125,6 @@
+ // owner's registration destructor while the state mutex is held.
+ pub(super) struct PreparedFile<'a> {
+     disk: &'a Arc<NodeDisk>,
+-    state: std::sync::MutexGuard<'a, State>,
+     allocation: Arc<std::mem::MaybeUninit<FileOwner>>,
+     root: String,
+     relative: PathBuf,
+@@ -95,9 +135,14 @@
+     binding: NamespaceBinding,
+     create: bool,
+     budget: Mutex<Budget>,
++    state: std::sync::MutexGuard<'a, State>,
+ }
+ 
+ impl PreparedFile<'_> {
++    #[cfg(test)]
++    pub(super) fn parent_descriptor(&self) -> std::os::fd::RawFd {
++        self.parent.as_raw_fd()
++    }
+     pub(super) fn execute(mut self) -> io::Result<NodeDiskFile> {
+         if self.create {
+             let result = verify_parent(
+@@ -175,12 +220,7 @@
+             {
+                 return Err(io::ErrorKind::InvalidData.into());
+             }
+-            if self
+-                .state
+-                .live
+-                .get(&identity)
+-                .is_some_and(|owner| owner.strong_count() != 0)
+-            {
++            if self.state.live.contains_key(&identity) {
+                 // This is an exclusive open, never an implicit owner clone.
+                 already_owned = true;
+                 return Err(io::ErrorKind::WouldBlock.into());
+@@ -265,41 +305,52 @@
+                 root: self.root,
+                 relative: self.relative,
+                 parent_names: self.parent_names,
+-                parent: self.parent,
+-                name: self.name,
++                parent: Some(self.parent),
++                name: Some(self.name),
+                 identity,
+                 binding: self.binding,
+-                budget: self.budget,
++                budget: Some(self.budget),
++                registration: 0,
+             });
+         // SAFETY: the sole allocation was initialized exactly once above. No
+         // fallible work remains between initialization and live registration.
+-        let owner = unsafe { self.allocation.assume_init() };
++        let mut owner = unsafe { self.allocation.assume_init() };
++        let registration = Arc::as_ptr(&owner) as usize;
++        Arc::get_mut(&mut owner)
++            .expect("unregistered file owner")
++            .registration = registration;
+         self.state.open_files += 1;
+         self.state.live.insert(identity, Arc::downgrade(&owner));
+-        Ok(NodeDiskFile(owner))
+-    }
+-}
+-
+-// Keep the state guard before the registered Arc: abandoning prepared work must
+-// unlock the registry before FileOwner::drop can retire the actual descriptor.
++        Ok(NodeDiskFile(OwnedFileArc::new(owner)))
++    }
++}
++
++// Abandoned target paths/FDs retire under serialization first. The guard then
++// unlocks before registered custody runs its recursive retirement protocol.
+ pub(super) struct PreparedPublication<'a> {
+     disk: &'a Arc<NodeDisk>,
+-    state: std::sync::MutexGuard<'a, State>,
+-    retained: Arc<FileOwner>,
++    allocation: Arc<std::mem::MaybeUninit<FileOwner>>,
+     parent: File,
+     name: CString,
+     root: String,
+     relative: PathBuf,
+     parent_names: Box<[CString]>,
+     binding: NamespaceBinding,
++    state: std::sync::MutexGuard<'a, State>,
++    retained: FileOwner,
+ }
+ 
+ impl PreparedPublication<'_> {
++    #[cfg(test)]
++    pub(super) fn parent_descriptor(&self) -> std::os::fd::RawFd {
++        self.parent.as_raw_fd()
++    }
+     pub(super) fn execute(self) -> io::Result<NodeDiskFile> {
+         let Self {
+             disk,
++            mut retained,
+             mut state,
+-            mut retained,
++            mut allocation,
+             parent,
+             name,
+             root,
+@@ -309,13 +360,13 @@
+         } = self;
+         let mut renamed = false;
+         let result = (|| -> io::Result<()> {
+-            let owner = Arc::get_mut(&mut retained).expect("sole prepared publication owner");
++            let owner = &mut retained;
+             if state.phase != NodeDiskPhase::Open || !disk.device.lock().admission_ready() {
+                 return Err(io::ErrorKind::Other.into());
+             }
+             {
+                 let budget = owner
+-                    .budget
++                    .budget()
+                     .lock()
+                     .map_err(|_| io::ErrorKind::InvalidData)?;
+                 owner.check_enrollment(&mut state, &budget)?;
+@@ -345,8 +396,8 @@
+             #[cfg(target_os = "linux")]
+             let status = unsafe {
+                 libc::renameat2(
+-                    owner.parent.as_raw_fd(),
+-                    owner.name.as_ptr(),
++                    owner.parent().as_raw_fd(),
++                    owner.name().as_ptr(),
+                     parent.as_raw_fd(),
+                     name.as_ptr(),
+                     libc::RENAME_NOREPLACE,
+@@ -355,8 +406,8 @@
+             #[cfg(target_os = "macos")]
+             let status = unsafe {
+                 libc::renameatx_np(
+-                    owner.parent.as_raw_fd(),
+-                    owner.name.as_ptr(),
++                    owner.parent().as_raw_fd(),
++                    owner.name().as_ptr(),
+                     parent.as_raw_fd(),
+                     name.as_ptr(),
+                     libc::RENAME_EXCL,
+@@ -366,11 +417,14 @@
+                 return Err(io::Error::last_os_error());
+             }
+             renamed = true;
+-            let old_parent = std::mem::replace(&mut owner.parent, parent);
++            let old_parent = owner
++                .parent
++                .replace(parent)
++                .expect("live publication parent");
+             owner.root = root;
+             owner.relative = relative;
+             owner.parent_names = parent_names;
+-            owner.name = name;
++            owner.name = Some(name);
+             owner.binding = binding;
+             // The source name stopped owning this inode at the rename. Update
+             // the retained slot before any fallible durability step.
+@@ -386,11 +440,11 @@
+             old_parent.sync_all()?;
+             #[cfg(test)]
+             disk.namespace_checkpoint(NamespaceFailure::PublishDestinationSync)?;
+-            owner.parent.sync_all()?;
++            owner.parent().sync_all()?;
+             #[cfg(test)]
+             disk.namespace_checkpoint(NamespaceFailure::PublishVerify)?;
+             let budget = owner
+-                .budget
++                .budget()
+                 .lock()
+                 .expect("exclusive verified publication budget");
+             let actual = budget.file.as_ref().expect("live publication descriptor");
+@@ -408,10 +462,21 @@
+             if renamed || error.kind() != io::ErrorKind::AlreadyExists {
+                 disk.fail_locked(&mut state);
+             }
++            drop(allocation);
+             drop(state);
+             drop(retained);
+             return Err(error);
+         }
++        Arc::get_mut(&mut allocation)
++            .expect("unpublished publication allocation")
++            .write(retained);
++        // SAFETY: physical publication succeeded and the prepared allocation was
++        // fully initialized exactly once. Nothing fallible follows registration.
++        let mut retained = OwnedFileArc::new(unsafe { allocation.assume_init() });
++        let registration = Arc::as_ptr(&retained) as usize;
++        Arc::get_mut(&mut retained)
++            .expect("unregistered publication Arc")
++            .registration = registration;
+         *state
+             .live
+             .get_mut(&retained.identity)
+@@ -471,7 +536,8 @@
+         if state.phase != NodeDiskPhase::Open {
+             return Err(io::ErrorKind::Other.into());
+         }
+-        state.live.retain(|_, owner| owner.strong_count() != 0);
++        // Retiring registrations remain exclusive until BOTH descriptors and
++        // their metadata backing are gone; strong_count == 0 is not drain.
+         if state.open_files >= self.config.max_open_files {
+             return Err(io::ErrorKind::StorageFull.into());
+         }
+@@ -558,6 +624,7 @@
+         }
+         // The installed envelope includes one publication preparation. Hold
+         // serialization before allocating any replacement paths or owner storage.
++        let retained;
+         let mut state = self.lock_state();
+         let selected = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
+         // Hold this same admission guard through physical path validation. On
+@@ -570,9 +637,10 @@
+             })?;
+         let root = root.to_owned();
+         let relative = relative.to_owned();
+-        let owner = match Arc::try_unwrap(file.0) {
++        retained = match file.0.try_unwrap() {
+             Ok(owner) => owner,
+             Err(owner) => {
++                drop((parent_names, parent, name, root, relative));
+                 drop(state);
+                 drop(owner);
+                 return Err(io::ErrorKind::WouldBlock.into());
+@@ -580,9 +648,10 @@
+         };
+         // The old weak slot stays registered under this mutex; moving its value
+         // after rename does not allocate or admit an intervening reopen.
+-        let retained = Arc::new(owner);
++        let allocation = Arc::<FileOwner>::new_uninit();
+         Ok(PreparedPublication {
+             disk: self,
++            allocation,
+             state,
+             retained,
+             parent,
+@@ -598,8 +667,9 @@
+         if !std::ptr::eq(self, Arc::as_ptr(&file.0.disk)) {
+             return Err(io::ErrorKind::InvalidInput.into());
+         }
++        let mut owner;
+         let mut state = self.lock_state();
+-        let owner = match Arc::try_unwrap(file.0) {
++        owner = match file.0.try_unwrap() {
+             Ok(owner) => owner,
+             Err(owner) => {
+                 drop(state);
+@@ -607,7 +677,7 @@
+                 return Err(io::ErrorKind::WouldBlock.into());
+             }
+         };
+-        if owner.budget.is_poisoned()
++        if owner.budget().is_poisoned()
+             || state.phase == NodeDiskPhase::Failed
+             || !self.device.lock().admission_ready()
+         {
+@@ -617,7 +687,7 @@
+             return Err(io::ErrorKind::Other.into());
+         }
+         let mut budget = owner
+-            .budget
++            .budget()
+             .lock()
+             .expect("exclusive unpoisoned file owner");
+         if let Err(error) = owner.check_enrollment(&mut state, &budget) {
+@@ -649,38 +719,48 @@
+                 }
+                 #[cfg(test)]
+                 self.namespace_checkpoint(NamespaceFailure::ReclaimParentSync)?;
+-                owner.parent.sync_all()?;
++                owner.parent().sync_all()?;
+                 extent(&actual.metadata()?, self.unit)
+             } else {
+                 actual.sync_all()?;
+-                if unsafe { libc::unlinkat(owner.parent.as_raw_fd(), owner.name.as_ptr(), 0) } != 0
++                if unsafe { libc::unlinkat(owner.parent().as_raw_fd(), owner.name().as_ptr(), 0) }
++                    != 0
+                 {
+                     return Err(io::Error::last_os_error());
+                 }
+                 #[cfg(test)]
+                 self.namespace_checkpoint(NamespaceFailure::ReclaimParentSync)?;
+-                owner.parent.sync_all()?;
++                owner.parent().sync_all()?;
+                 Ok((0, 0))
+             }
+         })();
+         // Close before advertising ownership drain or credit. Even failed
+         // reclamation retains its ledger entry and original capacity charge.
+         drop(actual);
+-        state.open_files -= 1;
+-        state.live.remove(&owner.identity);
++        let old_bytes = budget.bytes;
++        let old_pending = budget.pending;
++        drop(budget);
++        owner.retire_resources();
++        if !owner.retire_registration(&mut state) {
++            self.fail_locked(&mut state);
++            return match result {
++                Err(error) => Err(error),
++                Ok(_) => Err(io::ErrorKind::InvalidData.into()),
++            };
++        }
+         let outcome = match result {
+-            Ok((bytes, pending)) if bytes <= budget.bytes => {
++            Ok((bytes, pending)) if bytes <= old_bytes => {
+                 let mut promises = self.device.lock();
+                 let next = promises
+-                    .checked_sub(budget.pending)
++                    .checked_sub(old_pending)
+                     .and_then(|n| n.checked_add(pending));
+                 let own_next = state
+                     .pending
+-                    .checked_sub(budget.pending)
++                    .checked_sub(old_pending)
+                     .and_then(|n| n.checked_add(pending));
+                 let owned = state
+                     .bytes
+-                    .checked_sub(budget.bytes)
++                    .checked_sub(old_bytes)
+                     .and_then(|n| n.checked_add(bytes));
+                 let files = if len.is_none() {
+                     state.files.checked_sub(1)
+@@ -727,7 +807,6 @@
+                 Err(error)
+             }
+         };
+-        drop(budget);
+         drop(owner);
+         outcome
+     }
+@@ -813,6 +892,16 @@
+ }
+ 
+ impl FileOwner {
++    fn name(&self) -> &CString {
++        self.name.as_ref().expect("live file name")
++    }
++    fn parent(&self) -> &File {
++        self.parent.as_ref().expect("live parent descriptor")
++    }
++    fn budget(&self) -> &Mutex<Budget> {
++        self.budget.as_ref().expect("live file budget")
++    }
++
+     fn check_enrollment(&self, state: &mut State, budget: &Budget) -> io::Result<()> {
+         if state.accounted.get(&self.identity) != Some(&budget.accounted(self.binding)) {
+             self.disk.fail_locked(state);
+@@ -841,7 +930,7 @@
+     }
+ 
+     fn lock_budget(&self) -> io::Result<std::sync::MutexGuard<'_, Budget>> {
+-        self.budget.lock().map_err(|_| {
++        self.budget().lock().map_err(|_| {
+             self.disk.fail();
+             io::Error::from(io::ErrorKind::InvalidData)
+         })
+@@ -850,10 +939,13 @@
+         verify_parent(
+             &self.disk.roots[&self.root],
+             &self.parent_names,
+-            &self.parent,
++            self.parent(),
+         )?;
+-        let observed =
+-            census::open_at(&self.parent, &self.name, libc::O_RDONLY | libc::O_NONBLOCK)?;
++        let observed = census::open_at(
++            self.parent(),
++            self.name(),
++            libc::O_RDONLY | libc::O_NONBLOCK,
++        )?;
+         let metadata = observed.metadata()?;
+         census::regular_nonallocating(&metadata, self.identity.0)?;
+         if Identity::of(&metadata) != self.identity
+@@ -933,6 +1025,11 @@
+ }
+ 
+ impl NodeDiskFile {
++    #[cfg(test)]
++    pub(super) fn parent_descriptor(&self) -> std::os::fd::RawFd {
++        self.0.parent().as_raw_fd()
++    }
++
+     /// The installed redb adapter uses this before every physical operation.
+     /// Failure is represented without allocating an error payload.
+     pub fn check_owner(&self) -> io::Result<()> {
+@@ -1060,7 +1157,7 @@
+         // Exclusive &mut plus the sole Arc and registration mutex guarantee
+         // that no other file operation can wait for this budget while holding
+         // an older reference. General file I/O takes budget before disk state.
+-        let mut budget = match owner.budget.lock() {
++        let mut budget = match owner.budget().lock() {
+             Ok(budget) => budget,
+             Err(_) => {
+                 owner.disk.fail_locked(&mut state);
+@@ -1108,7 +1205,7 @@
+             }
+             #[cfg(test)]
+             owner.shrink_checkpoint(ShrinkFailure::DirectorySync)?;
+-            owner.parent.sync_all()?;
++            owner.parent().sync_all()?;
+             // A new path observation after directory sync must still identify
+             // the same physical file before any capacity is released.
+             owner.verify(file)?;
+@@ -1352,7 +1449,7 @@
+             {
+                 return Err(io::ErrorKind::Other.into());
+             }
+-            self.0.parent.sync_all()?;
++            self.0.parent().sync_all()?;
+             self.0.verify(file)
+         })();
+         if let Err(error) = outcome {
+@@ -1364,48 +1461,93 @@
+     }
+ }
+ 
++impl FileOwner {
++    // This value is outside its original Arc. The live-map Weak is the last
++    // admitted backing reference, and remains in place until resources retire.
++    fn retire_resources(&mut self) {
++        let Some(mut mutex) = self.budget.take() else {
++            return;
++        };
++        let budget = mutex.get_mut().unwrap_or_else(|p| p.into_inner());
++        drop(budget.file.take());
++        #[cfg(test)]
++        self.close_checkpoint(CloseStage::DataClosed);
++        drop(self.parent.take());
++        drop(std::mem::take(&mut self.root));
++        drop(std::mem::take(&mut self.relative));
++        drop(std::mem::replace(&mut self.parent_names, Box::new([])));
++        drop(self.name.take());
++        // Includes the lazily initialized native mutex backing on Darwin.
++        drop(mutex);
++        #[cfg(test)]
++        self.close_checkpoint(CloseStage::ResourcesClosed);
++    }
++
++    #[cfg(test)]
++    fn close_checkpoint(&self, stage: CloseStage) {
++        let pause = {
++            let mut slot = self.disk.after_file_close.lock().unwrap();
++            if slot.as_ref().is_some_and(|pause| pause.stage == stage) {
++                slot.take()
++            } else {
++                None
++            }
++        };
++        if let Some(pause) = pause {
++            let _ = pause.entered.send(());
++            pause
++                .release
++                .recv_timeout(std::time::Duration::from_secs(5))
++                .expect("release file retirement fixture");
++        }
++    }
++
++    fn retire_registration(&mut self, state: &mut State) -> bool {
++        if self.registration == 0
++            || !state
++                .live
++                .get(&self.identity)
++                .is_some_and(|entry| entry.as_ptr() as usize == self.registration)
++        {
++            return false;
++        }
++        let Some(next) = state.open_files.checked_sub(1) else {
++            return false;
++        };
++        // Dropping the exact last Weak frees the original Arc allocation before
++        // the slot can fund another handle. No strong/weak reference escapes.
++        drop(state.live.remove(&self.identity));
++        self.registration = 0;
++        state.open_files = next;
++        true
++    }
++}
++
+ impl Drop for FileOwner {
+     fn drop(&mut self) {
+-        let this = self as *const Self;
+-        let budget = self.budget.get_mut().unwrap_or_else(|p| {
++        let Some(mutex) = self.budget.as_mut() else {
++            return;
++        };
++        let budget = mutex.get_mut().unwrap_or_else(|p| {
+             let budget = p.into_inner();
+             budget.settled = false;
+             budget
+         });
+-        if let Some(file) = budget.file.take() {
+-            if !budget.settled {
+-                // Seal before closing the descriptor: a concurrent reopen must
+-                // not bind a fresh budget while this owner is still uncertain.
+-                self.disk.fail();
+-            }
+-            drop(file);
+-            #[cfg(test)]
+-            {
+-                let pause = self.disk.after_file_close.lock().unwrap().take();
+-                if let Some(pause) = pause {
+-                    let _ = pause.entered.send(());
+-                    pause
+-                        .release
+-                        .recv_timeout(std::time::Duration::from_secs(5))
+-                        .expect("release closed-file fixture");
+-                }
+-            }
+-            let mut state = self.disk.lock_state();
+-            // This decrement follows actual fd close, not Weak::strong_count.
+-            state.open_files -= 1;
+-            if state
+-                .live
+-                .get(&self.identity)
+-                .is_some_and(|entry| entry.as_ptr() == this)
+-            {
+-                state.live.remove(&self.identity);
+-            }
+-            if !budget.settled {
+-                if let Some(enrolled) = state.accounted.get_mut(&self.identity) {
+-                    enrolled.settled = false;
+-                }
+-                self.disk.fail_locked(&mut state);
+-            }
+-        }
+-    }
+-}
++        let settled = budget.settled;
++        if !settled {
++            self.disk.fail();
++        }
++        self.retire_resources();
++        let disk = self.disk.clone();
++        let mut state = disk.lock_state();
++        if !settled {
++            if let Some(enrolled) = state.accounted.get_mut(&self.identity) {
++                enrolled.settled = false;
++            }
++            disk.fail_locked(&mut state);
++        }
++        if !self.retire_registration(&mut state) {
++            disk.fail_locked(&mut state);
++        }
++    }
++}
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -540,7 +540,7 @@
+ }
+ 
+ #[test]
+-fn a_closed_predecessor_cannot_unregister_the_new_owner_of_the_same_inode() {
++fn a_retiring_predecessor_keeps_exclusive_registration_until_all_resources_close() {
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     let (_directory, config) = installation();
+     seed(&config, "file", 32 << 10);
+@@ -549,6 +549,7 @@
+     let (entered, observation) = std::sync::mpsc::channel();
+     let (release, resumed) = std::sync::mpsc::channel();
+     *disk.after_file_close.lock().unwrap() = Some(file::ClosePause {
++        stage: file::CloseStage::DataClosed,
+         entered,
+         release: resumed,
+     });
+@@ -556,9 +557,16 @@
+     observation
+         .recv_timeout(std::time::Duration::from_secs(5))
+         .unwrap();
+-    let current = disk.open_file("data", Path::new("file")).unwrap();
++    assert_eq!(
++        disk.open_file("data", Path::new("file"))
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::WouldBlock
++    );
++    assert_eq!(disk.snapshot().open_files, 1);
+     release.send(()).unwrap();
+     closing.join().unwrap();
++    let current = disk.open_file("data", Path::new("file")).unwrap();
+     assert!(disk.open_file("data", Path::new("file")).is_err());
+     // A missing/newly unregistered entry would instead reach flock, fail, and
+     // poison admission. The new owner must still have its exclusive slot.
+@@ -2181,3 +2189,237 @@
+     assert!(NodeDisk::memory_requirements(&config).is_err());
+     assert!(!config.roots["data"].exists());
+ }
++
++#[test]
++fn retiring_file_cannot_lend_handle_or_metadata_credit_before_parent_and_backing_release() {
++    for stage in [
++        file::CloseStage::DataClosed,
++        file::CloseStage::ResourcesClosed,
++    ] {
++        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++        let (_directory, mut config) = installation();
++        config.max_open_files = 1;
++        seed(&config, "file", 32 << 10);
++        let disk = open(config.clone(), memory.clone());
++        let file = disk.open_file("data", Path::new("file")).unwrap();
++        let parent = file.parent_descriptor();
++        let identity = Identity::of(&std::fs::metadata(config.roots["data"].join("file")).unwrap());
++        let before_memory = memory.snapshot();
++        let before_disk = disk.snapshot();
++        let (entered, observed) = std::sync::mpsc::channel();
++        let (release, resumed) = std::sync::mpsc::channel();
++        *disk.after_file_close.lock().unwrap() = Some(file::ClosePause {
++            stage,
++            entered,
++            release: resumed,
++        });
++        let closing = std::thread::spawn(move || drop(file));
++        observed
++            .recv_timeout(std::time::Duration::from_secs(5))
++            .unwrap();
++        if stage == file::CloseStage::DataClosed {
++            // The data FD is gone, but the parent's real FD is still live here.
++            assert_ne!(unsafe { libc::fcntl(parent, libc::F_GETFD) }, -1);
++        } else {
++            retired_descriptor_no_longer_names(parent, disk.roots["data"].identity);
++        }
++        let state = disk.lock_state();
++        assert_eq!(state.open_files, 1);
++        assert_eq!(state.live[&identity].strong_count(), 0);
++        drop(state);
++        let (result, allocations) = crate::allocation_tests::measure(|| {
++            disk.create_file("data", Path::new("replacement"), DiskWork::Foreground)
++        });
++        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::StorageFull);
++        assert_eq!(allocations, 0);
++        assert!(!config.roots["data"].join("replacement").exists());
++        assert_eq!(memory.snapshot(), before_memory);
++        assert_eq!(disk.snapshot().charged_bytes, before_disk.charged_bytes);
++        assert!(disk.pause().is_err());
++        assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++        release.send(()).unwrap();
++        closing.join().unwrap();
++        assert_eq!(disk.snapshot().open_files, 0);
++        assert!(!disk.lock_state().live.contains_key(&identity));
++        disk.reconcile(&CensusCancellation::default()).unwrap();
++        let current = disk.open_file("data", Path::new("file")).unwrap();
++        assert_eq!(disk.snapshot().open_files, 1);
++        drop(current);
++        clean(&disk, &["file"]);
++    }
++}
++
++#[test]
++fn concurrent_final_file_clones_retire_exactly_one_registration() {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let (_directory, config) = installation();
++    seed(&config, "file", 32 << 10);
++    let disk = open(config, memory.clone());
++    let original = disk.open_file("data", Path::new("file")).unwrap();
++    let start = Arc::new(std::sync::Barrier::new(9));
++    let mut closing = Vec::new();
++    for _ in 0..8 {
++        let file = original.clone();
++        let start = start.clone();
++        closing.push(std::thread::spawn(move || {
++            start.wait();
++            drop(file);
++        }));
++    }
++    drop(original);
++    let (entered, observed) = std::sync::mpsc::channel();
++    let (release, resumed) = std::sync::mpsc::channel();
++    *disk.after_file_close.lock().unwrap() = Some(file::ClosePause {
++        stage: file::CloseStage::ResourcesClosed,
++        entered,
++        release: resumed,
++    });
++    start.wait();
++    observed
++        .recv_timeout(std::time::Duration::from_secs(5))
++        .unwrap();
++    assert_eq!(disk.snapshot().open_files, 1);
++    assert_eq!(
++        disk.open_file("data", Path::new("file"))
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::WouldBlock
++    );
++    release.send(()).unwrap();
++    for task in closing {
++        task.join().unwrap();
++    }
++    assert_eq!(disk.snapshot().open_files, 0);
++    assert!(disk.lock_state().live.is_empty());
++    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
++    clean(&disk, &["file"]);
++}
++
++#[test]
++fn reclaim_retires_parent_metadata_and_weak_backing_before_releasing_promises() {
++    for fail in [false, true] {
++        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++        let (_directory, config) = installation();
++        seed(&config, "file", 32 << 10);
++        let disk = open(config, memory.clone());
++        let file = disk.open_file("data", Path::new("file")).unwrap();
++        file.reserve_growth(32 << 10, 64 << 10, DiskWork::Foreground)
++            .unwrap();
++        file.grow_reserved(64 << 10).unwrap();
++        file.sync_all().unwrap();
++        let before = disk.snapshot();
++        if fail {
++            disk.namespace_failure.store(
++                file::NamespaceFailure::ReclaimParentSync as u8,
++                Ordering::Relaxed,
++            );
++        }
++        let (entered, observed) = std::sync::mpsc::channel();
++        let (release, resumed) = std::sync::mpsc::channel();
++        *disk.after_file_close.lock().unwrap() = Some(file::ClosePause {
++            stage: file::CloseStage::ResourcesClosed,
++            entered,
++            release: resumed,
++        });
++        let owner = disk.clone();
++        let closing = std::thread::spawn(move || owner.delete_file(file));
++        observed
++            .recv_timeout(std::time::Duration::from_secs(5))
++            .unwrap();
++        // Resources are gone, but the exact Weak allocation/registration and
++        // device promises still belong to this serialized reclaim transition.
++        assert!(disk.state.try_lock().is_err());
++        assert_eq!(*disk.device.lock(), before.filesystem_pending_bytes);
++        release.send(()).unwrap();
++        let result = closing.join().unwrap();
++        assert_eq!(result.is_err(), fail);
++        let after = disk.snapshot();
++        assert_eq!(after.open_files, 0);
++        assert!(disk.lock_state().live.is_empty());
++        if fail {
++            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
++            assert_eq!(after.phase, NodeDiskPhase::Failed);
++            assert_eq!(after.charged_bytes, before.charged_bytes);
++            assert_eq!(after.pending_bytes, before.pending_bytes);
++        } else {
++            assert_eq!(after.phase, NodeDiskPhase::Open);
++            assert_eq!(after.charged_bytes, 0);
++            assert_eq!(after.pending_bytes, 0);
++        }
++        disk.reconcile(&CensusCancellation::default()).unwrap();
++    }
++}
++
++#[test]
++fn prepared_publication_abandonment_retires_old_weak_registration_once_without_allocation() {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let (_directory, config) = installation();
++    seed(&config, "file", 32 << 10);
++    let disk = open(config.clone(), memory.clone());
++    let file = disk.open_file("data", Path::new("file")).unwrap();
++    let prepared = disk
++        .prepare_publication(file, "data", Path::new("destination"))
++        .unwrap();
++    let ((), allocations) = crate::allocation_tests::measure(|| drop(prepared));
++    assert_eq!(allocations, 0);
++    assert_eq!(disk.snapshot().open_files, 0);
++    assert!(disk.lock_state().live.is_empty());
++    assert!(!config.roots["data"].join("destination").exists());
++    let file = disk.open_file("data", Path::new("file")).unwrap();
++    let prepared = disk
++        .prepare_publication(file, "data", Path::new("destination"))
++        .unwrap();
++    let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
++    let published = result.unwrap();
++    assert_eq!(allocations, 0);
++    assert_eq!(disk.snapshot().open_files, 1);
++    drop(published);
++    assert!(disk.lock_state().live.is_empty());
++    clean(&disk, &["destination"]);
++}
++
++// Native stat fields differ in width between the supported Unix targets.
++#[allow(clippy::unnecessary_cast)]
++fn retired_descriptor_no_longer_names(fd: std::os::fd::RawFd, expected: Identity) {
++    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
++    if unsafe { libc::fstat(fd, &mut stat) } == 0 {
++        // Parallel tests may reuse the integer after close. They cannot own our
++        // unique private root, so an unrelated inode is also proof of retirement.
++        assert_ne!(Identity(stat.st_dev as u64, stat.st_ino as u64), expected);
++    } else {
++        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
++    }
++}
++
++#[test]
++fn abandoned_preparation_closes_target_descriptors_before_the_next_preparation() {
++    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
++    let (_directory, config) = installation();
++    let disk = open(config.clone(), memory.clone());
++    let root_identity = disk.roots["data"].identity;
++    let prepared = disk
++        .prepare_file("data", Path::new("uncreated"), Some(DiskWork::Foreground))
++        .unwrap();
++    let parent = prepared.parent_descriptor();
++    assert!(disk.state.try_lock().is_err());
++    let ((), allocations) = crate::allocation_tests::measure(|| drop(prepared));
++    assert_eq!(allocations, 0);
++    retired_descriptor_no_longer_names(parent, root_identity);
++    assert!(disk.state.try_lock().is_ok());
++    assert!(!config.roots["data"].join("uncreated").exists());
++    let file = disk
++        .create_file("data", Path::new("created"), DiskWork::Foreground)
++        .unwrap();
++    let prepared = disk
++        .prepare_publication(file, "data", Path::new("unpublished"))
++        .unwrap();
++    let parent = prepared.parent_descriptor();
++    assert!(disk.state.try_lock().is_err());
++    let ((), allocations) = crate::allocation_tests::measure(|| drop(prepared));
++    assert_eq!(allocations, 0);
++    retired_descriptor_no_longer_names(parent, root_identity);
++    assert_eq!(disk.snapshot().open_files, 0);
++    assert!(disk.lock_state().live.is_empty());
++    assert!(!config.roots["data"].join("unpublished").exists());
++    clean(&disk, &["created"]);
++}

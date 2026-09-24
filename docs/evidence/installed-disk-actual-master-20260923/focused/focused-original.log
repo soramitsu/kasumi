@@ -1,0 +1,8 @@
+
+running 1 test
+test service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain ... AUTHORITY_PROPOSAL_ROUTE: local=1 admitted_term=1 current=RaftMetrics { running_state: Ok(()), id: 1, current_term: 2, vote: Vote { leader_id: LeaderId { term: 2, node_id: 3 }, committed: false }, last_log_index: Some(8), last_applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 7 }), snapshot: None, purged: None, state: Follower, current_leader: None, millis_since_quorum_ack: None, membership_config: StoredMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "https://authority-1.test" }, 2: BasicNode { addr: "https://authority-2.test" }, 3: BasicNode { addr: "https://authority-3.test" }} } }, replication: None }
+AUTHORITY_UNKNOWN at crates/kasumi-authority/src/service.rs:446:32: authority proposal leader changed
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 62 filtered out; finished in 8.96s
+

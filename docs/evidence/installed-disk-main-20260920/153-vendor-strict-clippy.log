@@ -1,0 +1,133 @@
+    Checking libc v0.2.186
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi/vendor/redb-4.2.0)
+    Checking getrandom v0.4.3
+    Checking errno v0.3.14
+    Checking uuid v1.24.0
+    Checking rustix v1.1.4
+    Checking chrono v0.4.45
+    Checking chacha20 v0.10.1
+    Checking fastrand v2.4.1
+    Checking log v0.4.33
+    Checking tempfile v3.27.0
+    Checking rand v0.10.2
+    Checking redb v2.6.0
+error[E0599]: no method named `get` found for struct `table::ReadOnlyTable<K, V>` in the current scope
+   --> src/page_list_tests.rs:554:18
+    |
+552 | /             read.open_table(TABLE)
+553 | |                 .unwrap()
+554 | |                 .get(1)
+    | |                 -^^^ method not found in `table::ReadOnlyTable<u64, &[u8]>`
+    | |_________________|
+    |
+    |
+   ::: src/table.rs:627:8
+    |
+627 |       fn get<'a>(&self, key: impl Borrow<K::SelfType<'a>>) -> Result<Option<AccessGuard<'_, V>>>;
+    |          --- the method is available for `table::ReadOnlyTable<u64, &[u8]>` here
+...
+857 |   pub struct ReadOnlyTable<K: Key + 'static, V: Value + 'static> {
+    |   -------------------------------------------------------------- method `get` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `ReadableTable` which provides `get` is implemented but not in scope; perhaps you want to import it
+    |
+  1 + use crate::table::ReadableTable;
+    |
+
+error[E0599]: no method named `get` found for struct `table::ReadOnlyTable<K, V>` in the current scope
+   --> src/page_list_tests.rs:572:18
+    |
+570 | /             read.open_table(TABLE)
+571 | |                 .unwrap()
+572 | |                 .get(1)
+    | |                 -^^^ method not found in `table::ReadOnlyTable<u64, &[u8]>`
+    | |_________________|
+    |
+    |
+   ::: src/table.rs:627:8
+    |
+627 |       fn get<'a>(&self, key: impl Borrow<K::SelfType<'a>>) -> Result<Option<AccessGuard<'_, V>>>;
+    |          --- the method is available for `table::ReadOnlyTable<u64, &[u8]>` here
+...
+857 |   pub struct ReadOnlyTable<K: Key + 'static, V: Value + 'static> {
+    |   -------------------------------------------------------------- method `get` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `ReadableTable` which provides `get` is implemented but not in scope; perhaps you want to import it
+    |
+  1 + use crate::table::ReadableTable;
+    |
+
+error[E0599]: no method named `get` found for struct `table::ReadOnlyTable<K, V>` in the current scope
+   --> src/page_list_tests.rs:983:18
+    |
+981 | /             read.open_table(TABLE)
+982 | |                 .unwrap()
+983 | |                 .get(1)
+    | |                 -^^^ method not found in `table::ReadOnlyTable<u64, &[u8]>`
+    | |_________________|
+    |
+    |
+   ::: src/table.rs:627:8
+    |
+627 |       fn get<'a>(&self, key: impl Borrow<K::SelfType<'a>>) -> Result<Option<AccessGuard<'_, V>>>;
+    |          --- the method is available for `table::ReadOnlyTable<u64, &[u8]>` here
+...
+857 |   pub struct ReadOnlyTable<K: Key + 'static, V: Value + 'static> {
+    |   -------------------------------------------------------------- method `get` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `ReadableTable` which provides `get` is implemented but not in scope; perhaps you want to import it
+    |
+  1 + use crate::table::ReadableTable;
+    |
+
+error[E0599]: no method named `get` found for struct `table::ReadOnlyTable<K, V>` in the current scope
+    --> src/page_list_tests.rs:1001:18
+     |
+ 999 | /             read.open_table(TABLE)
+1000 | |                 .unwrap()
+1001 | |                 .get(1)
+     | |                 -^^^ method not found in `table::ReadOnlyTable<u64, &[u8]>`
+     | |_________________|
+     |
+     |
+    ::: src/table.rs:627:8
+     |
+ 627 |       fn get<'a>(&self, key: impl Borrow<K::SelfType<'a>>) -> Result<Option<AccessGuard<'_, V>>>;
+     |          --- the method is available for `table::ReadOnlyTable<u64, &[u8]>` here
+...
+ 857 |   pub struct ReadOnlyTable<K: Key + 'static, V: Value + 'static> {
+     |   -------------------------------------------------------------- method `get` not found for this struct
+     |
+     = help: items from traits can only be used if the trait is in scope
+help: trait `ReadableTable` which provides `get` is implemented but not in scope; perhaps you want to import it
+     |
+   1 + use crate::table::ReadableTable;
+     |
+
+error: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+   --> src/tree_store/page_store/cached_file.rs:294:23
+    |
+294 |             .div_ceil(Self::lock_stripes() as usize)
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+note: the lint level is defined here
+   --> src/lib.rs:2:22
+    |
+  2 | #![deny(clippy::all, clippy::pedantic, clippy::disallowed_methods)]
+    |                      ^^^^^^^^^^^^^^^^
+    = note: `#[deny(clippy::cast_possible_truncation)]` implied by `#[deny(clippy::pedantic)]`
+help: ... or use `try_from` and handle the error accordingly
+    |
+294 -             .div_ceil(Self::lock_stripes() as usize)
+294 +             .div_ceil(usize::try_from(Self::lock_stripes()))
+    |
+
+error: could not compile `redb` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `redb` (lib test) due to 4 previous errors

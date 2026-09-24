@@ -1,0 +1,22 @@
+{
+  "status": "same reviewed source; all 25 selected native tests now pass including the added Weak regression; broader review limitations unchanged",
+  "prior_review_sha256": "bdf211d8d35ae093404168692c423f357806ab47006b49fcc6827ee2863206d0",
+  "prior_receipt_sha256": "3ec7b50b90089bf4bb34460163f798ecc066bf5462116204afbfcdacd4827b77",
+  "frozen_package": {
+    "fixed-maps.patch": "4338e2e17b7ec4277d29871d97da80bbfc2e0ae62f49c19e6f1255d9780617a7",
+    "cumulative.patch": "ef2c07b01c7d4a9acc7b5e606a023cb530cda354a5ec342d60bf3ee9c3a302f0",
+    "manifest.json": "981d4bf8e40a0e37529be5e0beab07c927aaf4ff88caa9fe6d545755d398a97d"
+  },
+  "native_03_results_sha256": "0816b168aa6cc4dbe31a6730cad2c0636c75d286ccad61e299337fcd1dfcbe2b",
+  "native_03_before_sha256": "92add4ab46e2a08cf56969166032f23a7fbb48bb1c0a8d9a2c4cd062ec7506fe",
+  "native_03_after_sha256": "92add4ab46e2a08cf56969166032f23a7fbb48bb1c0a8d9a2c4cd062ec7506fe",
+  "inputs_count": 460,
+  "inputs_unchanged": true,
+  "all_commands_zero_drained_unchanged_executables": true,
+  "commands": 5,
+  "stdout_sha256": "dd90ead8f78c7587974cfa311c9eab2dd994b879675cd64fb80a429fe0060f10",
+  "selected_tests_passed": 25,
+  "native_03_test_executable_sha256": "0d63ed19ccc9d215407de13ee588f6117c9776b6564ca60f7de3f76120f13bc2",
+  "reviewer_reran_native_or_cargo": false,
+  "scope_note": "This records peer-produced exact-source native evidence, not a whole-store/whole-workspace result or resolution of the inherited namespace census, native allocation, physical directory growth and whole high-water gaps."
+}

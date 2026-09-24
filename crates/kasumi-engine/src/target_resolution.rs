@@ -15,12 +15,13 @@ pub(crate) fn scratch_limit(table_budget: u64) -> Result<u64> {
         .and_then(|n| n.checked_add(64 << 20))
         .context("target terminal staging budget overflow")
 }
-/// Resident application, ordinary receipts and permanent target records have independent configured
-/// budgets. The snapshot spool admits their checked aggregate on the same disk.
+/// Resident application, receipts, target records and Control backup bindings
+/// have independent budgets. The snapshot spool admits their checked aggregate.
 pub(crate) fn snapshot_limit(state: &TenantState) -> Result<u64> {
     ensure!(
         state.target_resolution_head.encoded_bytes <= state.limits.max_target_resolution_bytes
-            && state.mutation_receipt_head.encoded_bytes <= state.limits.max_mutation_receipt_bytes,
+            && state.mutation_receipt_head.encoded_bytes <= state.limits.max_mutation_receipt_bytes
+            && state.backup_binding_head.encoded_bytes <= state.limits.max_backup_binding_bytes,
         "selected permanent bytes exceed configured table budget"
     );
     state
@@ -28,6 +29,7 @@ pub(crate) fn snapshot_limit(state: &TenantState) -> Result<u64> {
         .max_snapshot_bytes
         .checked_add(state.target_resolution_head.encoded_bytes)
         .and_then(|bytes| bytes.checked_add(state.mutation_receipt_head.encoded_bytes))
+        .and_then(|bytes| bytes.checked_add(state.backup_binding_head.encoded_bytes))
         .context("combined permanent snapshot budget overflow")
 }
 
@@ -269,6 +271,11 @@ impl View {
             .bytes(&ordinal_key(ordinal))?
             .context("terminal ordinal missing")?;
         let entry: Ordinal = serde_json::from_slice(&bytes)?;
+        crate::current_json::require_current_writer_bytes(
+            &bytes,
+            &entry,
+            "target terminal ordinal",
+        )?;
         ensure!(
             valid_key(&entry.key) && digest(&entry.sha256),
             "invalid terminal ordinal index"
@@ -327,6 +334,7 @@ impl View {
         if row.ordinal > self.head.count {
             return Ok(None);
         }
+        crate::current_json::require_current_writer_bytes(&bytes, &row, "target terminal point")?;
         ensure!(
             row.key == key && row.ordinal > 0,
             "terminal point identity differs"
@@ -780,7 +788,14 @@ impl View {
         self.check_head(&state.tenant)?;
         let selected = store
             .get_bounded(CATALOG, checkpoint_sha256.as_bytes(), 64 << 10)?
-            .map(|bytes| serde_json::from_slice::<NamespaceBinding>(&bytes))
+            .map(|bytes| {
+                let binding: NamespaceBinding = serde_json::from_slice(&bytes)?;
+                ensure!(
+                    serde_json::to_vec(&binding)? == bytes,
+                    "noncanonical target terminal checkpoint binding"
+                );
+                Ok::<NamespaceBinding, anyhow::Error>(binding)
+            })
             .transpose()?;
         if reopen {
             let binding = selected.context("authoritative terminal checkpoint binding missing")?;

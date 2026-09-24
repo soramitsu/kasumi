@@ -1,0 +1,27 @@
+{
+  "scope": "development engine library mandatory disk-memory caller regression; known unresolved 512x256 restore case explicitly excluded, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--keep-going",
+    "-p",
+    "kasumi-engine",
+    "--all-features",
+    "--lib",
+    "--",
+    "--test-threads=1",
+    "--skip",
+    "public_restore_admits_resident_state_without_charging_permanent_stream_as_ram"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 60043,
+  "exit_code": 1,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 0.10756397247314453,
+  "inventoried_source_unchanged": true
+}

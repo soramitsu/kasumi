@@ -1,0 +1,31 @@
+{
+  "patch_sha256": "fbd5f8ff5cee7c0818ffe3c8ea63fdfdbbf84829d2497e04d85f7bc206b637a8",
+  "applied_files": [
+    {
+      "path": "scripts/gate_process.py",
+      "before_sha256": "a665a4fe4698a093d7e814d0952b79e76686ffcce125d8c6b3f4fb3b47f63daf",
+      "proposed_sha256": "ba7437cc9c68d189d37b679e6e067da0e8dbb98928959b5d27cdf78b4361cf08"
+    },
+    {
+      "path": "scripts/release_gate.py",
+      "before_sha256": "d09d6b82b5e63fe8a9e3198875a090f91ab163ee22bf723aa05eeafe0a4b3489",
+      "proposed_sha256": "57a31477598d441b6f0e0deb00918ef2299fadaddb4ae5e343518eafad2ffa16"
+    },
+    {
+      "path": "scripts/test_release_gate.py",
+      "before_sha256": "fff944b27fa97d7c88416b049c99ceb67a6381930e2e4f12c2a0d17d4ca445a1",
+      "proposed_sha256": "f537f5c5647d657f56df59e2420f89f5d6417e74100c25ba2f66598c8a9c028a"
+    },
+    {
+      "path": "scripts/package_release.py",
+      "before_sha256": "25f78b8bcc2bb115b868a822869707c26637ac30db2c85825c5e4702f4a2972b",
+      "proposed_sha256": "ce19cea0753531fe2cd5887c0134cb21571cd107755cfcc7b589d25dcff9c968"
+    },
+    {
+      "path": "scripts/test_package_metadata.py",
+      "before_sha256": null,
+      "proposed_sha256": "a3d9b5f1ff763153497d005ca4a2bb64b0eb27ce584eaa16f1c49de54009f2d0"
+    }
+  ],
+  "before_and_after_hashes_verified": true
+}

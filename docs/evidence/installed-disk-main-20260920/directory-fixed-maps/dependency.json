@@ -1,0 +1,35 @@
+{
+  "status": "working target-only proposal, no application/native validation",
+  "dependency_patch": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/directory-cursor/cumulative.patch",
+  "dependency_sha256": "1e01ebae6ec21036854a4f82050eb96ba0a4681fc07a2d4563150e3d61bcfaca",
+  "baselines": {
+    "crates/kasumi-store/src/node_disk.rs": {
+      "prior_proposal_sha256": "cceec02f46ca37ca969924fe37f0724e6291f3ec99c440d682e36fd8282a6c9e",
+      "actual_source_sha256": "f230ff417b9abcfe5f15815aba38ab6fe8131d4920db9187894ec184cdf803f7"
+    },
+    "crates/kasumi-store/src/node_disk/census.rs": {
+      "prior_proposal_sha256": "d4a5cae239813b9481bbeadeea9ac21e066b0501f1f54d52d96ce0985a4b7aca",
+      "actual_source_sha256": "66f063352501c5f4c29da812ffad306fb2204d2b7a5ae4c63d0f1d8f5fe616d7"
+    },
+    "crates/kasumi-store/src/node_disk/file.rs": {
+      "prior_proposal_sha256": "145205325dcb354e1d711964c90a57404d365f97d92f255aecf997b5f6e379af",
+      "actual_source_sha256": "24934b329c935269f578118d70a4e2e9e108f6cf62c3e68455d232aee51843e5"
+    },
+    "crates/kasumi-store/src/node_disk/memory.rs": {
+      "prior_proposal_sha256": "481ce44b22151b4ebd9b740cedf3bc0fa8c8d4f08c1f7076c71fc0ff412e4f33",
+      "actual_source_sha256": "a818170d52397a3ac5987ab4e93f55897de82c61e14c2708dbfb799383176d12"
+    },
+    "crates/kasumi-store/src/node_disk/ledger.rs": {
+      "prior_proposal_sha256": "3e5edb1147075d259bea145c459b31aa7d4f1359e0881540e80a999718ac2628",
+      "actual_source_sha256": null
+    },
+    "crates/kasumi-store/src/allocation_tests.rs": {
+      "prior_proposal_sha256": null,
+      "actual_source_sha256": "2c5d9a7df0ad3642dc71143d139578ed26e40cf7a2d5f90c45da4ca06494e036"
+    },
+    "crates/kasumi-store/src/node_disk/directory/tests.rs": {
+      "prior_proposal_sha256": "add0e868c37dbc2ed0e45da8a1fb2bd9f9ccdfcbcf95b9e4c1291560fe550b24",
+      "actual_source_sha256": null
+    }
+  }
+}

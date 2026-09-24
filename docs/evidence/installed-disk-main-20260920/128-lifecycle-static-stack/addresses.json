@@ -1,0 +1,127 @@
+{
+  "prepare_completion_poll": {
+    "start": "0x100135bb0",
+    "end": "0x100143bf0",
+    "symbol": "lifecycle::recovery_control::prepare_completion::{closure#0}"
+  },
+  "prepare_completion_box_poll": {
+    "start": "0x1000d4d64",
+    "end": "0x1000d4db0",
+    "symbol": "<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::prepare_completion::{closure#0}>> as core::future::future::Future>::poll"
+  },
+  "complete_recovery_poll": {
+    "start": "0x1001241e4",
+    "end": "0x100134714",
+    "symbol": "lifecycle::recovery_control::complete_recovery::{closure#0}"
+  },
+  "complete_recovery_box_poll": {
+    "start": "0x1000d4d18",
+    "end": "0x1000d4d64",
+    "symbol": "<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::complete_recovery::{closure#0}>> as core::future::future::Future>::poll"
+  },
+  "exercise_completed_recovery_poll": {
+    "start": "0x100152f54",
+    "end": "0x100153dd4",
+    "symbol": "lifecycle::recovery_control::exercise_completed_recovery::{closure#0}"
+  },
+  "resolve_expired_completion_poll": {
+    "start": "0x10014c1fc",
+    "end": "0x100152f54",
+    "symbol": "lifecycle::recovery_control::resolve_expired_completion::{closure#0}"
+  },
+  "resolve_expired_completion_box_poll": {
+    "start": "0x1000d4df4",
+    "end": "0x1000d4e38",
+    "symbol": "<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::resolve_expired_completion::{closure#0}>> as core::future::future::Future>::poll"
+  },
+  "exercise_route_publication_poll": {
+    "start": "0x100145314",
+    "end": "0x10014c1fc",
+    "symbol": "lifecycle::recovery_control::exercise_route_publication::{closure#0}"
+  },
+  "exercise_route_publication_box_poll": {
+    "start": "0x1000d4db0",
+    "end": "0x1000d4df4",
+    "symbol": "<core::pin::Pin<alloc::boxed::Box<lifecycle::recovery_control::exercise_route_publication::{closure#0}>> as core::future::future::Future>::poll"
+  },
+  "fixture_new_poll": {
+    "start": "0x10003bfdc",
+    "end": "0x10003c224",
+    "symbol": "<lifecycle::Fixture>::new::{closure#0}"
+  },
+  "fixture_open_poll": {
+    "start": "0x10003c224",
+    "end": "0x10003e0e4",
+    "symbol": "<lifecycle::Fixture>::open::{closure#0}"
+  },
+  "fixture_limits_poll": {
+    "start": "0x10003ec34",
+    "end": "0x10003eeb8",
+    "symbol": "<lifecycle::Fixture>::limits::{closure#0}"
+  },
+  "fixture_configured_poll": {
+    "start": "0x100038b48",
+    "end": "0x10003b440",
+    "symbol": "<lifecycle::Fixture>::configured::{closure#0}"
+  },
+  "probe_new": {
+    "start": "0x1000e7a60",
+    "end": "0x1000e7bcc",
+    "symbol": "<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new"
+  },
+  "probe_begin": {
+    "start": "0x1000e7bcc",
+    "end": "0x1000e8054",
+    "symbol": "<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin"
+  },
+  "probe_candidate": {
+    "start": "0x1000e82e8",
+    "end": "0x1000e85f0",
+    "symbol": "<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::candidate"
+  },
+  "probe_history": {
+    "start": "0x1000e8054",
+    "end": "0x1000e8094",
+    "symbol": "<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::history"
+  },
+  "probe_finish": {
+    "start": "0x1000e85f0",
+    "end": "0x1000e8888",
+    "symbol": "<lifecycle::bootstrap_vote_probe::Guard>::finish"
+  },
+  "probe_guard_drop": {
+    "start": "0x1000b4030",
+    "end": "0x1000b408c",
+    "symbol": "<lifecycle::bootstrap_vote_probe::Guard as core::ops::drop::Drop>::drop"
+  },
+  "probe_send_constructor": {
+    "start": "0x1000e914c",
+    "end": "0x1000e9248",
+    "symbol": "<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send"
+  },
+  "probe_send_poll": {
+    "start": "0x100109ba8",
+    "end": "0x10010a168",
+    "symbol": "<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}"
+  },
+  "probe_arc_new": {
+    "start": "0x1000719a0",
+    "end": "0x100071a90",
+    "symbol": "<alloc::sync::Arc<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>>::new"
+  },
+  "probe_slots_try_from_fn": {
+    "start": "0x1000d0488",
+    "end": "0x1000d0524",
+    "symbol": "core::array::try_from_fn::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, 32, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>"
+  },
+  "probe_slots_try_from_fn_erased": {
+    "start": "0x1000d06e8",
+    "end": "0x1000d08fc",
+    "symbol": "core::array::try_from_fn_erased::<core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>, <core::ops::try_trait::NeverShortCircuit<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>>>::wrap_mut_1<usize, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>::{closure#0}>"
+  },
+  "probe_slots_from_fn": {
+    "start": "0x1000d0938",
+    "end": "0x1000d0994",
+    "symbol": "core::array::from_fn::<core::option::Option<lifecycle::bootstrap_vote_probe::Observation>, 32, <lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::new::{closure#1}>"
+  }
+}

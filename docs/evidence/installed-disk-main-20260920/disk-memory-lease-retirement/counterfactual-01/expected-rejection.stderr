@@ -1,0 +1,6 @@
+
+thread 'disk_memory::tests::installed_lease_cannot_return_bytes_or_slot_before_actual_box_deallocation' (4187503) panicked at /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/disk-memory-lease-retirement/proposed/crates/kasumi-store/src/disk_memory_tests.rs:70:5:
+assertion `left == right` failed
+  left: 0
+ right: 5346
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

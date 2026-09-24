@@ -1,0 +1,14 @@
+{
+  "status": "static-checks-only",
+  "base_unchanged": true,
+  "patch_applies": true,
+  "proposed_rustfmt_check_exit": 0,
+  "actual_source_edited": false,
+  "cargo_built_or_tested": false,
+  "files": {
+    "README.md": "604c69f7cc50adcf6bbc1c3d24f34956c854aad1136b0fba2c97b10e2039df09",
+    "corrections.patch": "22b8f65c8f0a9a81fd9b32954547e6dee71c56b9f8cc2c49c4baac57fd9933b0",
+    "manifest.json": "4966ad8fdcd5569abdd82c5913d1b34760117b3a9ed115abe98a4bee29b57252",
+    "prepare.py": "f2fba47dde92057f0a3cf9a1cbdf81a3aa7ea80ba7bc1335cd2f41dec4c2a521"
+  }
+}

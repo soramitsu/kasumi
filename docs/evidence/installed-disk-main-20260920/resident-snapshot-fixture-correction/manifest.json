@@ -1,0 +1,67 @@
+{
+  "status": "TARGET_ONLY_UNCOMPILED_FIXTURE_CORRECTION",
+  "patch_sha256": "e11a7f2fca8e39e1944b60222303858a94da856e4106204677644a510818ab23",
+  "files": [
+    {
+      "path": "crates/kasumi-engine/src/test_utils.rs",
+      "before_sha256": "fcd689a1833e65087856172f6f9e70f1950b604ec0bc64876da02a212ca86446",
+      "proposed_sha256": "6d382db443fd1e792243cb4c43cb79959968f6f82cf81729a6eb787654bd3eb2",
+      "diff_lines": 17,
+      "fn_names_unchanged": null,
+      "duration_and_limit_expressions_unchanged": true
+    },
+    {
+      "path": "crates/kasumi-engine/tests/guarded_staging.rs",
+      "before_sha256": "30c58fe80ef063227b3ed7502d640ca605b7a9b3b82417bec4342274c699e7cc",
+      "proposed_sha256": "39206520b25cd2ca73f20acfefd37360658fe3f6e2d3849db82d190847df79b2",
+      "diff_lines": 115,
+      "fn_names_unchanged": true,
+      "duration_and_limit_expressions_unchanged": true
+    },
+    {
+      "path": "crates/kasumi-engine/tests/history.rs",
+      "before_sha256": "880d90e07be06eed93d588ed1f4de8cc2b8568fb525be688e71f12cdcae6b713",
+      "proposed_sha256": "c0396b11b7a18ab581421fc37b9b9d741c41bddec6d5837e99cb1386b1f5261a",
+      "diff_lines": 59,
+      "fn_names_unchanged": true,
+      "duration_and_limit_expressions_unchanged": true
+    },
+    {
+      "path": "crates/kasumi-engine/tests/schema_activation.rs",
+      "before_sha256": "83390d238cd74f947f1f6d37392b434ce1d9b90a405019b17396b60d8da0f8f3",
+      "proposed_sha256": "828234affb6215e38b59b47f330a7965f4abdcf44f32e9c024109620d8d4a0cf",
+      "diff_lines": 17,
+      "fn_names_unchanged": true,
+      "duration_and_limit_expressions_unchanged": true
+    },
+    {
+      "path": "crates/kasumi-engine/tests/staged_transactions.rs",
+      "before_sha256": "36dee8d38f5a9efccfd58798dc983d6e7f54926a643e6d7acb8d442fc56f7d39",
+      "proposed_sha256": "d12f1128fd395975c5ee1c08d1cb2108cec8ffc6c790f37605fe985e3d012277",
+      "diff_lines": 19,
+      "fn_names_unchanged": true,
+      "duration_and_limit_expressions_unchanged": true
+    }
+  ],
+  "apply_check": {
+    "exit_code": 0,
+    "stderr": ""
+  },
+  "rustfmt_stdin": "passed; proposed files only",
+  "actual_source_modified": false,
+  "builds_or_tests_run": false,
+  "scope": "one authenticated resident-stream helper and four integration fixture files",
+  "readme_sha256": "9346cb00bea313a7dc3d0ad67dbb6c8b5a8e12e93f52a5b3ed10fb7c7842593c",
+  "confirmed_source_paths": [
+    "crates/kasumi-engine/src/snapshot_codec.rs",
+    "crates/kasumi-engine/src/staged_reads.rs",
+    "crates/kasumi-engine/src/staged_terminal.rs",
+    "crates/kasumi-engine/src/staging.rs"
+  ],
+  "reviewed_source_hashes": {
+    "crates/kasumi-engine/src/snapshot_codec.rs": "007325e0c5d38856804590091cf415bbd9bade8ce774c5249571a351c65ceafa",
+    "crates/kasumi-engine/src/staged_reads.rs": "b73a7b9822ee1e5a95cf89ccb8dcfc72a13798828ecba5bbe78a30be5b4e80c6",
+    "crates/kasumi-engine/src/staged_terminal.rs": "097c73638c9ac99ea085ba9e339b6c7ac0a593ae4b437740a4681af782f11128",
+    "crates/kasumi-engine/src/staging.rs": "7b583aac2229330d585ed5c3c8191420c1898509fa511434e18a2c4af87ce4bf"
+  }
+}

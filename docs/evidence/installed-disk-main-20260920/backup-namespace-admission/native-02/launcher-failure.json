@@ -1,0 +1,5 @@
+{
+  "command": "python3 -u -c 'import os, runpy; os.setsid(); runpy.run_path(...)'",
+  "status": "os.setsid raised PermissionError errno1 before run.py started; runner successfully owns PG without a redundant setsid",
+  "compiler_or_test_dispatched": false
+}

@@ -12,12 +12,35 @@ fn context() -> RequestContext {
     }
 }
 
-#[tokio::test]
-async fn backup_cli_persists_session_before_connect_and_resolves_original_completion() {
-    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let installation = initialize(&directory.path().join("kasumi"), "tenant-a")
-        .await
+#[test]
+fn backup_cli_persists_session_before_connect_and_resolves_original_completion() {
+    // This aggregate fixture retains the large CLI, cold-open and serving
+    // futures across many awaits. Keep the same assertions on an isolated stack.
+    std::thread::Builder::new()
+        .name("standalone backup CLI fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    backup_cli_persists_session_before_connect_and_resolves_original_completion_impl(),
+                ));
+        })
+        .unwrap()
+        .join()
         .unwrap();
+}
+
+async fn backup_cli_persists_session_before_connect_and_resolves_original_completion_impl() {
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let (installation, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &directory.path().join("kasumi"),
+        "tenant-a",
+    )
+    .await
+    .unwrap();
     let mut config = RuntimeConfig::load(&installation.configuration).unwrap();
     let mut profile = ClientProfile::load(&installation.tenant_profile).unwrap();
     let mut control = ClientProfile::load(&installation.control_profile).unwrap();
@@ -51,7 +74,7 @@ async fn backup_cli_persists_session_before_connect_and_resolves_original_comple
         &serde_json::to_vec(&control).unwrap(),
     )
     .unwrap();
-    crate::standalone::configure_test_topology(&config).await;
+    crate::standalone::configure_test_topology(&config, storage.clone()).await;
     drop(listeners);
     let output = installation
         .tenant_profile
@@ -80,7 +103,13 @@ async fn backup_cli_persists_session_before_connect_and_resolves_original_comple
     let session_id = Uuid::parse_str(persisted["session_id"].as_str().unwrap()).unwrap();
     assert!(!session_id.is_nil());
 
-    let runtime = NodeRuntime::open(config.clone()).await.unwrap();
+    let runtime = NodeRuntime::open_using_storage(
+        config.clone(),
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await
+    .unwrap();
     let registry = runtime.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(runtime.serve(shutdown));

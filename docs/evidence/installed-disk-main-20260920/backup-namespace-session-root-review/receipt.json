@@ -1,0 +1,21 @@
+{
+  "actual_cumulative_bases_verified": 57,
+  "actual_source_edits": false,
+  "branch": "master",
+  "frozen_package_files_verified": 455,
+  "input_inventories_equal": true,
+  "native_phase_count": 5,
+  "pins": {
+    "cumulative-manifest.json": "d89051bae6169975ec12c7f1213e4b7383ff74b59d7d9e2ebe2b1257198ec790",
+    "cumulative.patch": "409b13abe8cbcf38fe3108a203daa195b205404c5be619dfb02322c092120ee8",
+    "manifest.json": "bdea7417d9a73f86dff25a1d76e3b8bfb7cd2ef783ea12edbc0f347198620fde",
+    "qualification-receipt.json": "296cb3f9d55099d9788f1f14fd647196a579d01a2ac11b310c63095af442da7d",
+    "raw-manifest.json": "02e345a8c3afb37dae9153fb7a9e8bbcd81f8151c2e407ddf3149bf08d1677fe"
+  },
+  "preclaim_path_finding": "fixed in revision4; whole-call resources remain open",
+  "readme_sha256": "b7ec4a66fa13f781e6f38a86a967642f670da98553e635c8504cea861712e9ea",
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "root_reran_native": false,
+  "selected_native_tests": 67,
+  "status": "APPROVED_PREREQUISITE_PENDING_COMPOSED_WORKSPACE"
+}

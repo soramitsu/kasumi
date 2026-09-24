@@ -1,0 +1,18 @@
+[
+  {
+    "path": "crates/kasumi-store/src/node_disk.rs",
+    "exit_code": 0
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/census.rs",
+    "exit_code": 1
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/file.rs",
+    "exit_code": 0
+  },
+  {
+    "path": "crates/kasumi-store/src/node_disk/tests.rs",
+    "exit_code": 0
+  }
+]

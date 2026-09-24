@@ -1,0 +1,18 @@
+{
+  "at_utc": "2026-09-23T01:13:35.129784+00:00",
+  "path": "/Users/mtakemiya/dev/kasumi/crates/kasumi-engine/src/service.rs",
+  "before": {
+    "sha256": "4ae922724056357579b842e82d982553f17550e05ab11eb01954ce23908f80c6",
+    "bytes": 97642,
+    "recovered_from_exact_hashed_frozen_assembly": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-integration-revision6/assembly/crates/kasumi-engine/src/service.rs"
+  },
+  "after": {
+    "sha256": "7c6fd2dccb2afddc0c9ffd203fab2e21b7048c0b9e1342652f03f539876bd7c0",
+    "bytes": 97662,
+    "mtime_ns": 1790124885175419911
+  },
+  "patch_sha256": "1a8e53a4a7d990960681dcce587a3fcc6d1c27fee0a9ad23b6f31cbf5315cad8",
+  "description": "Two Box::pin wrappers added at existing async calls; 20 bytes total. Source mutator not identified by this agent.",
+  "native_qualification_invalid": true,
+  "actual_source_modified_by_this_review": false
+}

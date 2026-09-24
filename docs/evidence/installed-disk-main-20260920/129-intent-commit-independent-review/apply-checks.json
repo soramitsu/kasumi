@@ -1,0 +1,25 @@
+[
+  {
+    "argv": [
+      "git",
+      "apply",
+      "--check",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/129-intent-commit-failure-diagnostic/diagnostic.patch"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/129-intent-commit-independent-review/apply-check",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "git",
+      "apply",
+      "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/129-intent-commit-failure-diagnostic/diagnostic.patch"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/129-intent-commit-independent-review/apply-check",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  }
+]

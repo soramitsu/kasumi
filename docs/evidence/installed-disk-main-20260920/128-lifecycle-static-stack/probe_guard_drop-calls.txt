@@ -1,0 +1,4 @@
+1000b4050: 14000001    	b	0x1000b4054 <<lifecycle::bootstrap_vote_probe::Guard as core::ops::drop::Drop>::drop+0x24>
+1000b4054: 97fd7e98    	bl	0x100013ab4 <std::thread::functions::panicking>
+1000b4078: 9400d15e    	bl	0x1000e85f0 <<lifecycle::bootstrap_vote_probe::Guard>::finish>
+1000b407c: 14000001    	b	0x1000b4080 <<lifecycle::bootstrap_vote_probe::Guard as core::ops::drop::Drop>::drop+0x50>

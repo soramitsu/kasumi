@@ -1,0 +1,68 @@
+[
+  {
+    "path": "crates/kasumi-engine/tests/backup_checkpoint.rs",
+    "test_entrypoints": [
+      "captured_and_historical_backup_verification_fit_fixed_production_workspace",
+      "restore_hands_off_verified_workspace_with_production_and_destination_reserves",
+      "cancelled_restore_publication_keeps_storage_and_workspace_until_write_drains",
+      "checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_restart",
+      "missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yield_proof",
+      "verification_requires_current_global_admin_and_rechecks_policy_during_readback",
+      "shutdown_cancels_pending_checkpoint_read_and_releases_database_work",
+      "durable_session_resolves_lost_ack_and_never_reclaims_completed_graph",
+      "aborted_session_cleanup_is_bounded_and_catches_late_uploads",
+      "abort_resolves_published_root_before_considering_cleanup",
+      "local_restore_binds_exact_source_purpose_even_without_cold_archives",
+      "archived_audit_backup_is_self_contained_and_source_unavailable_restore_preserves_exact_chain"
+    ],
+    "duration_expressions_unchanged": true,
+    "formatted": true
+  },
+  {
+    "path": "crates/kasumi-engine/tests/embedded_audit.rs",
+    "test_entrypoints": [
+      "every_embedded_request_boundary_durably_audits_denials_and_sealed_tenants",
+      "cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen",
+      "standalone_restore_denials_are_audited_before_a_database_exists"
+    ],
+    "duration_expressions_unchanged": true,
+    "formatted": true
+  },
+  {
+    "path": "crates/kasumi-engine/tests/lifecycle.rs",
+    "test_entrypoints": [
+      "replicated_control_intent_is_exact_original_expiry_bound_current_quorum_and_permanent_after_reopen",
+      "fresh_control_materialization_requires_exact_retained_original_after_expiry_and_reopen",
+      "replicated_control_change_pins_all_partitions_freezes_issuance_and_recovers_self_revocation",
+      "control_completion_audit_reservation_survives_denials_and_current_admin_status_recovery",
+      "control_rejects_unfinishable_byte_budget_and_substituted_authenticated_history"
+    ],
+    "duration_expressions_unchanged": true,
+    "formatted": true
+  },
+  {
+    "path": "crates/kasumi-engine/tests/replicated.rs",
+    "test_entrypoints": [
+      "replicated_service_preserves_batches_receipts_and_cursor_fences_across_partition_and_restart",
+      "deployment_modes_and_live_store_ownership_cannot_be_overridden",
+      "replicated_restore_has_identical_genesis_and_requires_quorum_audit_before_activation"
+    ],
+    "duration_expressions_unchanged": true,
+    "formatted": true
+  },
+  {
+    "path": "crates/kasumi-engine/tests/retirement.rs",
+    "test_entrypoints": [
+      "actual_retirement_seed_reopens_through_control_domain_without_loading_source_payload",
+      "exact_retirement_seals_source_once_and_retains_proof_after_encrypted_restart",
+      "post_checkpoint_payload_or_rejected_mutation_identity_blocks_retirement",
+      "caller_checkpoint_observation_is_not_backup_authority",
+      "retired_source_rotates_custody_without_reopening_data_or_rewriting_original_actor",
+      "permanent_retirement_quota_fails_before_backup_io_and_exact_failure_replays",
+      "durable_retirement_stop_defeats_inflight_backup_verification_and_survives_restart",
+      "invisible_staged_identity_after_checkpoint_is_not_lost_by_retirement"
+    ],
+    "duration_expressions_unchanged": true,
+    "formatted": true
+  }
+]

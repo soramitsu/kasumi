@@ -2,11 +2,14 @@
 //! tenant quotas. Charges follow the actual file owner, including detached workers
 //! and immutable snapshot readers. This does not reserve persistent database space
 //! or make filesystem allocation immune to other processes or device failures.
-use crate::device_disk::DeviceDisk;
+use crate::DiskOpenError;
+use crate::{
+    device_disk::{DeviceDisk, DeviceSelection},
+    disk_memory::{self, DiskMemoryRequirements, Lease, List, NodeDiskMemoryAdmission},
+};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
     ffi::CString,
     fs::File,
     io,
@@ -15,7 +18,7 @@ use std::{
         unix::fs::{MetadataExt, OpenOptionsExt},
     },
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{Arc, Mutex},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +59,8 @@ pub struct ScratchDiskSnapshot {
     /// with every scratch governor on the same physical filesystem in this process.
     pub filesystem_pending_bytes: u64,
     pub filesystem_available_bytes: Option<u64>,
+    pub filesystem_total_bytes: Option<u64>,
+    pub filesystem_used_bytes: Option<u64>,
     pub filesystem_admission_ready: bool,
 }
 #[derive(Default, Debug)]
@@ -63,25 +68,31 @@ struct State {
     bytes: u64,
     files: u64,
 }
-#[derive(Default)]
-struct Registry {
-    directories: HashMap<(u64, u64), Weak<ScratchDisk>>,
+struct RegisteredScratch {
+    identity: (u64, u64),
+    owner: Arc<ScratchDisk>,
+    // Installed ownership, like NodeDisk: this entry and its actual owner remain
+    // funded together until process exit, including external Weak observers.
+    _charge: Lease,
 }
-fn registry() -> &'static Mutex<Registry> {
-    static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
-    REGISTRY.get_or_init(Default::default)
+type Registry = parking_lot::Mutex<List<RegisteredScratch>>;
+fn registry() -> &'static Registry {
+    static REGISTRY: Registry = parking_lot::Mutex::new(List::new());
+    &REGISTRY
 }
 
 pub struct ScratchDisk {
     config: ScratchDiskConfig,
+    memory: Arc<dyn NodeDiskMemoryAdmission>,
+    directory_c: CString,
+    identity: (u64, u64),
     directory: File,
     allocation_unit: u64,
     state: Mutex<State>,
     device: DeviceDisk,
-    #[cfg(any(test, feature = "test-utils"))]
-    _fixture: Option<tempfile::TempDir>,
     #[cfg(test)]
     available_override: Mutex<Option<u64>>,
+    _memory_charge: Lease,
 }
 impl std::fmt::Debug for ScratchDisk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -95,25 +106,78 @@ impl ScratchDisk {
     /// Open one exact private directory. Another live owner of the same physical
     /// directory shares the original governor and must request identical budgets.
     /// Parents must already exist; no implicit system temporary-directory fallback.
-    pub fn open(config: ScratchDiskConfig) -> Result<Arc<Self>> {
-        Self::open_inner(
-            config,
-            #[cfg(any(test, feature = "test-utils"))]
-            None,
-        )
+    pub fn memory(&self) -> &Arc<dyn NodeDiskMemoryAdmission> {
+        &self.memory
+    }
+    pub fn required_metadata_bytes(config: &ScratchDiskConfig) -> Result<u64> {
+        use std::os::unix::ffi::OsStrExt;
+        config.validate()?;
+        let path = u64::try_from(config.directory.as_os_str().as_bytes().len())?;
+        Ok(disk_memory::add(
+            disk_memory::arc::<Self>()?,
+            disk_memory::add(64 << 10, disk_memory::mul(3, disk_memory::add(path, 1)?)?)?,
+        )?)
+    }
+    pub fn memory_requirements(config: &ScratchDiskConfig) -> Result<DiskMemoryRequirements> {
+        let (device_bytes, registration_bytes) = DeviceDisk::metadata_requirements()?;
+        let registry_bytes = disk_memory::allocation::<disk_memory::Entry<RegisteredScratch>>(1)?;
+        Ok(DiskMemoryRequirements {
+            owner_bytes: Self::required_metadata_bytes(config)?,
+            registry_bytes,
+            device_bytes,
+            registration_bytes,
+        })
+    }
+    pub fn open(
+        config: &ScratchDiskConfig,
+        memory: Arc<dyn NodeDiskMemoryAdmission>,
+    ) -> std::result::Result<Arc<Self>, DiskOpenError> {
+        Self::open_inner(config, memory, DeviceSelection::Installed)
+    }
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn open_fixture(
+        config: &ScratchDiskConfig,
+        memory: Arc<dyn NodeDiskMemoryAdmission>,
+    ) -> std::result::Result<Arc<Self>, DiskOpenError> {
+        Self::open_inner(config, memory, DeviceSelection::Isolated)
     }
     fn open_inner(
-        config: ScratchDiskConfig,
-        #[cfg(any(test, feature = "test-utils"))] fixture: Option<tempfile::TempDir>,
-    ) -> Result<Arc<Self>> {
+        config: &ScratchDiskConfig,
+        memory: Arc<dyn NodeDiskMemoryAdmission>,
+        selection: DeviceSelection,
+    ) -> std::result::Result<Arc<Self>, DiskOpenError> {
+        use std::os::unix::ffi::OsStrExt;
         config.validate()?;
+        let mut registry = registry().try_lock().ok_or(DiskOpenError::RegistryBusy)?;
+        let existing = registry
+            .find(|entry| entry.owner.config.directory == config.directory)
+            .map(|entry| entry.owner.clone());
+        if let Some(existing) = existing {
+            disk_memory::require(
+                existing.config == *config,
+                "live scratch directory has different installed budgets or path",
+            )?;
+            disk_memory::require(
+                Arc::ptr_eq(existing.memory(), &memory),
+                "live scratch directory has different memory admission",
+            )?;
+            existing.verify_nonallocating()?;
+            return Ok(existing);
+        }
+        let requirements = Self::memory_requirements(config)?;
+        let charge = memory.clone().reserve_installed(requirements.owner_bytes)?;
+        let registry_charge = memory
+            .clone()
+            .reserve_installed(requirements.registry_bytes)?;
+        let directory_c =
+            CString::new(config.directory.as_os_str().as_bytes()).map_err(anyhow::Error::from)?;
         match crate::private_files::create_directory(&config.directory) {
             Ok(()) => {}
             Err(error)
                 if error
                     .downcast_ref::<io::Error>()
                     .is_some_and(|e| e.kind() == io::ErrorKind::AlreadyExists) => {}
-            Err(error) => return Err(error.context("creating scratch directory")),
+            Err(error) => return Err(error.context("creating scratch directory").into()),
         }
         let directory = std::fs::OpenOptions::new()
             .read(true)
@@ -122,90 +186,109 @@ impl ScratchDisk {
             .context("opening private scratch directory")?;
         let metadata = directory.metadata()?;
         check_directory(&metadata)?;
-        let key = (metadata.dev(), metadata.ino());
-        let mut registry = registry().lock().unwrap_or_else(|p| p.into_inner());
-        registry.directories.retain(|_, v| v.strong_count() != 0);
-        if let Some(existing) = registry.directories.get(&key).and_then(Weak::upgrade) {
-            ensure!(
-                existing.config.max_bytes == config.max_bytes
-                    && existing.config.min_free_bytes == config.min_free_bytes,
-                "live scratch directory has different installed budgets"
-            );
-            return Ok(existing);
-        }
+        let identity = (metadata.dev(), metadata.ino());
+        disk_memory::require(
+            !registry.iter().any(|entry| entry.identity == identity),
+            "scratch physical directory already has another installed path",
+        )?;
         let (_, allocation_unit) = filesystem(&directory)?;
-        let device = DeviceDisk::open(metadata.dev(), config.min_free_bytes)?;
+        let device = selection.open(metadata.dev(), config.min_free_bytes, memory.clone())?;
         let disk = Arc::new(Self {
-            config,
+            config: config.clone(),
+            memory,
+            directory_c,
+            identity,
             directory,
             allocation_unit,
             device,
             state: Mutex::new(State::default()),
-            #[cfg(any(test, feature = "test-utils"))]
-            _fixture: fixture,
             #[cfg(test)]
             available_override: Mutex::new(None),
+            _memory_charge: charge,
         });
-        // Prepare the test hook before admission: some platforms allocate the
-        // native mutex on its first lock, which must not happen during growth.
+        drop(disk.state.lock().expect("unpublished scratch state"));
         #[cfg(test)]
         drop(disk.available_override.lock().unwrap());
-        registry.directories.insert(key, Arc::downgrade(&disk));
+        let entry = List::prepare(RegisteredScratch {
+            identity,
+            owner: disk.clone(),
+            _charge: registry_charge,
+        });
+        registry.insert(entry);
         Ok(disk)
     }
+    fn verify_nonallocating(&self) -> io::Result<()> {
+        let fd = unsafe {
+            libc::open(
+                self.directory_c.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let observed = unsafe { File::from_raw_fd(fd) };
+        let metadata = observed.metadata()?;
+        let retained = self.directory.metadata()?;
+        if !metadata.is_dir()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+            || (metadata.dev(), metadata.ino()) != self.identity
+            || (retained.dev(), retained.ino()) != self.identity
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        Ok(())
+    }
+    /// Trusted fixture setup must retain the enclosing private directory for
+    /// the full fixture scope. The installed owner never owns a TempDir cleanup.
     #[cfg(any(test, feature = "test-utils"))]
-    pub fn fixture() -> Arc<Self> {
-        let directory = tempfile::tempdir().expect("fixture scratch directory");
-        Self::open_inner(
-            ScratchDiskConfig {
-                directory: directory.path().join("scratch"),
-                max_bytes: 256 << 30,
-                min_free_bytes: 0,
-            },
-            Some(directory),
-        )
-        .expect("fixture scratch governor")
+    pub fn fixture(
+        directory: impl AsRef<std::path::Path>,
+        memory: Arc<dyn NodeDiskMemoryAdmission>,
+    ) -> Arc<Self> {
+        let config = ScratchDiskConfig {
+            directory: directory.as_ref().to_owned(),
+            max_bytes: 256 << 30,
+            min_free_bytes: 0,
+        };
+        crate::test_utils::retry_disk_registry(|| Self::open_fixture(&config, memory.clone()))
+            .expect("fixture scratch governor")
     }
     #[cfg(test)]
-    pub(crate) fn isolated_fixture(max_bytes: u64) -> Arc<Self> {
-        let directory = tempfile::tempdir().expect("isolated scratch fixture");
-        let disk = Self::open_inner(
-            ScratchDiskConfig {
-                directory: directory.path().join("scratch"),
-                max_bytes,
-                min_free_bytes: 0,
-            },
-            Some(directory),
-        )
-        .expect("isolated scratch governor");
-        let mut disk = Arc::try_unwrap(disk).expect("fresh scratch owner");
-        disk.device = DeviceDisk::isolated(0);
-        Arc::new(disk)
+    pub(crate) fn isolated_fixture(
+        directory: impl AsRef<std::path::Path>,
+        max_bytes: u64,
+        memory: Arc<dyn NodeDiskMemoryAdmission>,
+    ) -> Arc<Self> {
+        let config = ScratchDiskConfig {
+            directory: directory.as_ref().to_owned(),
+            max_bytes,
+            min_free_bytes: 0,
+        };
+        crate::test_utils::retry_disk_registry(|| Self::open_fixture(&config, memory.clone()))
+            .expect("isolated scratch governor")
     }
-
     #[cfg(test)]
     pub(crate) fn test_with_device(
         directory: PathBuf,
         device: DeviceDisk,
         available: u64,
     ) -> Arc<Self> {
-        let owner = Self::open_inner(
-            ScratchDiskConfig {
-                directory,
-                max_bytes: 16 << 20,
-                min_free_bytes: 0,
-            },
-            None,
-        )
-        .unwrap();
-        let mut owner = Arc::try_unwrap(owner).expect("unique synthetic test owner");
-        owner.device = device;
+        let memory = device.memory().clone();
+        let config = ScratchDiskConfig {
+            directory,
+            max_bytes: 16 << 20,
+            min_free_bytes: 0,
+        };
+        let owner = Self::open_inner(&config, memory, DeviceSelection::Existing(device)).unwrap();
         *owner.available_override.lock().unwrap() = Some(available);
-        Arc::new(owner)
+        owner
     }
     pub fn snapshot(&self) -> ScratchDiskSnapshot {
         let state = self.lock_state();
         let pending = self.device.lock();
+        let physical = filesystem_usage(&self.directory).ok();
         ScratchDiskSnapshot {
             max_bytes: self.config.max_bytes,
             min_free_bytes: self.config.min_free_bytes,
@@ -213,6 +296,8 @@ impl ScratchDisk {
             live_files: state.files,
             filesystem_pending_bytes: *pending,
             filesystem_available_bytes: self.available().ok(),
+            filesystem_total_bytes: physical.map(|(total, _)| total),
+            filesystem_used_bytes: physical.map(|(_, used)| used),
             filesystem_admission_ready: pending.admission_ready(),
         }
     }
@@ -283,10 +368,15 @@ impl ScratchDisk {
                 identity,
                 bytes: 0,
                 allocated: 0,
+                // Legacy implicit File destruction still lacks observed native
+                // retirement. Explicit native close marks uncertainty before
+                // consuming the File and may only restore this on success.
+                release_on_drop: true,
             },
         ))
     }
 }
+
 fn check_directory(metadata: &std::fs::Metadata) -> Result<()> {
     ensure!(
         metadata.is_dir()
@@ -300,12 +390,35 @@ fn exhausted(_message: &'static str) -> io::Error {
     io::Error::from(io::ErrorKind::StorageFull)
 }
 
-fn filesystem(directory: &File) -> io::Result<(u64, u64)> {
+fn filesystem_stat(directory: &File) -> io::Result<libc::statvfs> {
     let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
     // SAFETY: stat points to initialized storage and the directory remains open.
     if unsafe { libc::fstatvfs(directory.as_raw_fd(), &mut stat) } != 0 {
         return Err(io::Error::last_os_error());
     }
+    Ok(stat)
+}
+
+fn filesystem_usage(directory: &File) -> io::Result<(u64, u64)> {
+    let stat = filesystem_stat(directory)?;
+    let unit = stat.f_frsize as u64;
+    let blocks = stat.f_blocks as u64;
+    let free = stat.f_bfree as u64;
+    if unit == 0 || blocks == 0 {
+        return Err(io::Error::from(io::ErrorKind::InvalidData));
+    }
+    let total = blocks
+        .checked_mul(unit)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+    let used = blocks
+        .checked_sub(free)
+        .and_then(|used| used.checked_mul(unit))
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+    Ok((total, used))
+}
+
+fn filesystem(directory: &File) -> io::Result<(u64, u64)> {
+    let stat = filesystem_stat(directory)?;
     let unit = stat.f_frsize as u64;
     if unit == 0 {
         return Err(io::Error::from(io::ErrorKind::Other));
@@ -323,6 +436,7 @@ pub(crate) struct Charge {
     identity: (u64, u64),
     bytes: u64,
     allocated: u64,
+    release_on_drop: bool,
 }
 impl Charge {
     pub(crate) fn disk(&self) -> &Arc<ScratchDisk> {
@@ -330,6 +444,17 @@ impl Charge {
     }
     pub(crate) fn fail_owner(&self) {
         self.disk.device.lock().fail_owner();
+    }
+
+    /// A consumed native descriptor with an unobserved result may never return
+    /// its file or extent credit, even if the enclosing aggregate is dropped.
+    pub(crate) fn native_close_entered(&mut self) {
+        self.release_on_drop = false;
+    }
+
+    /// Only the observed successful native close restores credit retirement.
+    pub(crate) fn native_close_drained(&mut self) {
+        self.release_on_drop = true;
     }
 
     pub(crate) fn check_owner(&self, file: &File) -> io::Result<()> {
@@ -444,6 +569,13 @@ impl Charge {
 }
 impl Drop for Charge {
     fn drop(&mut self) {
+        if !self.release_on_drop {
+            // The installed ScratchDisk remains strongly registered. Its file,
+            // extent and pending counts conservatively retain this debt while
+            // the physical device is fenced; no allocation is made on drop.
+            self.fail_owner();
+            return;
+        }
         let mut state = self.disk.lock_state();
         let mut pending = self.disk.device.lock();
         let bytes = state.bytes.checked_sub(self.bytes);
@@ -463,35 +595,48 @@ impl Drop for Charge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn disk(max_bytes: u64, min_free_bytes: u64) -> Arc<ScratchDisk> {
-        let directory = tempfile::tempdir().unwrap();
-        let disk = ScratchDisk::open_inner(
-            ScratchDiskConfig {
-                directory: directory.path().join("scratch"),
-                max_bytes,
-                min_free_bytes,
-            },
-            Some(directory),
-        )
-        .unwrap();
-        // Synthetic free-space observations must not race unrelated test files
-        // on the host's actual shared filesystem promise ledger.
-        if min_free_bytes != 0 {
-            let mut owned = Arc::try_unwrap(disk).expect("unique test governor");
-            owned.device = DeviceDisk::isolated(min_free_bytes);
-            Arc::new(owned)
-        } else {
-            disk
-        }
+    fn disk(directory: &std::path::Path, max_bytes: u64, min_free_bytes: u64) -> Arc<ScratchDisk> {
+        let memory = crate::test_utils::TestDiskMemory::new(16 << 20, 256);
+        let config = ScratchDiskConfig {
+            directory: directory.to_owned(),
+            max_bytes,
+            min_free_bytes,
+        };
+        crate::test_utils::retry_disk_registry(|| {
+            ScratchDisk::open_inner(&config, memory.clone(), DeviceSelection::Isolated)
+        })
+        .unwrap()
     }
     #[test]
+    fn physical_filesystem_capacity_is_measured_on_the_installed_directory() {
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let disk = disk(directory.path(), 1 << 20, 0);
+        let sample = disk.snapshot();
+        let total = sample.filesystem_total_bytes.expect("physical total");
+        let used = sample.filesystem_used_bytes.expect("physical used");
+        assert!(total > 0);
+        assert!(used <= total);
+        assert!(sample.filesystem_available_bytes.expect("available") <= total);
+    }
+
+    #[test]
     fn physical_directory_reopens_share_budget_and_cannot_change_it() {
-        let disk = disk(1 << 20, 0);
-        let same = ScratchDisk::open(disk.config.clone()).unwrap();
+        let fixture_directory = crate::test_utils::private_tempdir().unwrap();
+        let disk = disk(fixture_directory.path(), 1 << 20, 0);
+        let same = crate::test_utils::retry_disk_registry(|| {
+            ScratchDisk::open_fixture(&disk.config, disk.memory().clone())
+        })
+        .unwrap();
         assert!(Arc::ptr_eq(&disk, &same));
         let mut changed = disk.config.clone();
         changed.max_bytes += 1;
-        assert!(ScratchDisk::open(changed).is_err());
+        assert!(
+            crate::test_utils::retry_disk_registry(|| ScratchDisk::open_fixture(
+                &changed,
+                disk.memory().clone()
+            ))
+            .is_err()
+        );
         let (file, mut charge) = disk.file().unwrap();
         charge.grow(1 << 20).unwrap();
         assert_eq!(same.snapshot().charged_bytes, 1 << 20);
@@ -501,7 +646,8 @@ mod tests {
     }
     #[test]
     fn pending_files_share_filesystem_promises_and_keep_recovery_reserve() {
-        let disk = disk(1 << 20, 1 << 16);
+        let fixture_directory = crate::test_utils::private_tempdir().unwrap();
+        let disk = disk(fixture_directory.path(), 1 << 20, 1 << 16);
         let (file, mut charge) = disk.file().unwrap();
         let baseline = disk.snapshot().filesystem_pending_bytes;
         *disk.available_override.lock().unwrap() = Some(baseline + (1 << 17));
@@ -522,10 +668,20 @@ mod tests {
 
     #[test]
     fn separate_governors_cannot_double_spend_filesystem_promises() {
-        let first = disk(1 << 20, 1 << 16);
-        let mut second = Arc::try_unwrap(disk(1 << 20, 1 << 16)).unwrap();
-        second.device = first.device.share(second.config.min_free_bytes);
-        let second = Arc::new(second);
+        let fixture_directory = crate::test_utils::private_tempdir().unwrap();
+        let first = disk(fixture_directory.path(), 1 << 20, 1 << 16);
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let config = ScratchDiskConfig {
+            directory: directory.path().join("scratch"),
+            max_bytes: 1 << 20,
+            min_free_bytes: 1 << 16,
+        };
+        let second = ScratchDisk::open_inner(
+            &config,
+            first.memory().clone(),
+            DeviceSelection::Existing(first.device.share(config.min_free_bytes)),
+        )
+        .unwrap();
         *first.available_override.lock().unwrap() = Some(1 << 17);
         *second.available_override.lock().unwrap() = Some(1 << 17);
         let (first_file, mut first_charge) = first.file().unwrap();
@@ -544,7 +700,8 @@ mod tests {
     }
     #[test]
     fn pinned_directory_survives_path_substitution_without_using_replacement() {
-        let disk = disk(1 << 20, 0);
+        let fixture_directory = crate::test_utils::private_tempdir().unwrap();
+        let disk = disk(fixture_directory.path(), 1 << 20, 0);
         let original = disk.config.directory.with_extension("held");
         std::fs::rename(&disk.config.directory, &original).unwrap();
         crate::private_files::create_directory(&disk.config.directory).unwrap();
@@ -566,11 +723,15 @@ mod tests {
         crate::private_files::create_directory(&actual).unwrap();
         let link = root.path().join("link");
         std::os::unix::fs::symlink(actual, &link).unwrap();
+        let config = ScratchDiskConfig {
+            directory: link,
+            max_bytes: 1,
+            min_free_bytes: 0,
+        };
+        let memory = crate::test_utils::TestDiskMemory::new(1 << 20, 32);
         assert!(
-            ScratchDisk::open(ScratchDiskConfig {
-                directory: link,
-                max_bytes: 1,
-                min_free_bytes: 0
+            crate::test_utils::retry_disk_registry(|| {
+                ScratchDisk::open_fixture(&config, memory.clone())
             })
             .is_err()
         );
@@ -588,7 +749,8 @@ mod tests {
     #[test]
     fn concurrent_spools_cannot_each_spend_the_aggregate_budget() {
         use std::{io::Write, sync::Barrier};
-        let disk = disk(1 << 20, 0);
+        let fixture_directory = crate::test_utils::private_tempdir().unwrap();
+        let disk = disk(fixture_directory.path(), 1 << 20, 0);
         let barrier = Arc::new(Barrier::new(33));
         let mut workers = Vec::new();
         for _ in 0..32 {
@@ -620,7 +782,8 @@ mod tests {
     #[test]
     fn immutable_image_readers_retain_capacity_until_the_last_owner_drains() {
         use std::io::Read;
-        let disk = disk(1 << 20, 0);
+        let fixture_directory = crate::test_utils::private_tempdir().unwrap();
+        let disk = disk(fixture_directory.path(), 1 << 20, 0);
         let image = crate::SnapshotImage::capture(&disk, 128 << 10, |writer| {
             writer.write_all(&[37; 128 << 10])?;
             Ok(())
@@ -644,7 +807,8 @@ mod tests {
     #[test]
     fn truncation_and_rejected_growth_preserve_exact_file_charges() {
         use std::io::{Read, Seek, Write};
-        let disk = disk(1 << 20, 0);
+        let fixture_directory = crate::test_utils::private_tempdir().unwrap();
+        let disk = disk(fixture_directory.path(), 1 << 20, 0);
         let mut spool = crate::EncryptedSpool::new(&disk, 8 << 20).unwrap();
         spool.write_all(&[73; 128 << 10]).unwrap();
         spool.flush().unwrap();
@@ -666,5 +830,189 @@ mod tests {
         assert_eq!(bytes, [73; 7]);
         spool.resize(0).unwrap();
         assert_eq!(disk.snapshot().charged_bytes, 0);
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+    use crate::test_utils::TestDiskMemory;
+
+    fn total(config: &ScratchDiskConfig) -> u64 {
+        let required = ScratchDisk::memory_requirements(config).unwrap();
+        [
+            required.owner_bytes,
+            required.registry_bytes,
+            required.device_bytes,
+            required.registration_bytes,
+        ]
+        .into_iter()
+        .map(|bytes| TestDiskMemory::required_reservation_bytes(bytes).unwrap())
+        .try_fold(0_u64, u64::checked_add)
+        .unwrap()
+    }
+    fn config(directory: &tempfile::TempDir, name: &str) -> ScratchDiskConfig {
+        ScratchDiskConfig {
+            directory: directory.path().join(name),
+            max_bytes: 1 << 20,
+            min_free_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn scratch_metadata_denial_precedes_directory_creation() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = config(&directory, "not-created");
+        let required = ScratchDisk::memory_requirements(&config).unwrap();
+        let memory = TestDiskMemory::new(
+            TestDiskMemory::required_bookkeeping_bytes(4).unwrap()
+                + TestDiskMemory::required_reservation_bytes(required.owner_bytes).unwrap()
+                - 1,
+            4,
+        );
+        assert!(
+            crate::test_utils::retry_disk_registry(|| ScratchDisk::open_fixture(
+                &config,
+                memory.clone()
+            ))
+            .is_err()
+        );
+        assert!(!config.directory.exists());
+        assert_eq!(memory.snapshot().used_bytes, 0);
+        assert_eq!(memory.snapshot().attempts, 1);
+    }
+
+    #[test]
+    fn installed_scratch_reuse_keeps_metadata_funded_after_public_strong_handles_drop() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = config(&directory, "scratch");
+        let memory = TestDiskMemory::new(
+            TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total(&config),
+            4,
+        );
+        let disk = crate::test_utils::retry_disk_registry(|| {
+            ScratchDisk::open_fixture(&config, memory.clone())
+        })
+        .unwrap();
+        let held = memory.snapshot();
+        assert_eq!(held.used_bytes, total(&config));
+        assert_eq!(held.live_reservations, 4);
+        let same = crate::test_utils::retry_disk_registry(|| {
+            ScratchDisk::open_fixture(&config, memory.clone())
+        })
+        .unwrap();
+        assert!(Arc::ptr_eq(&disk, &same));
+        assert_eq!(memory.snapshot(), held);
+        let foreign = TestDiskMemory::new(
+            TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total(&config),
+            4,
+        );
+        assert!(
+            crate::test_utils::retry_disk_registry(|| ScratchDisk::open_fixture(
+                &config,
+                foreign.clone()
+            ))
+            .is_err()
+        );
+        assert_eq!(foreign.snapshot().attempts, 0);
+        let mut different = config.clone();
+        different.max_bytes += 1;
+        assert!(
+            crate::test_utils::retry_disk_registry(|| ScratchDisk::open_fixture(
+                &different,
+                memory.clone()
+            ))
+            .is_err()
+        );
+        assert_eq!(memory.snapshot(), held);
+        let external_weak = Arc::downgrade(&disk);
+        drop(same);
+        assert_eq!(memory.snapshot(), held);
+        drop(disk);
+        assert_eq!(memory.snapshot(), held);
+        let retained = external_weak
+            .upgrade()
+            .expect("installed registry retains actual owner");
+        let reopened = crate::test_utils::retry_disk_registry(|| {
+            ScratchDisk::open_fixture(&config, memory.clone())
+        })
+        .unwrap();
+        assert!(Arc::ptr_eq(&retained, &reopened));
+        assert_eq!(memory.snapshot(), held);
+        drop(retained);
+        drop(reopened);
+        drop(external_weak);
+        assert_eq!(memory.snapshot(), held);
+    }
+
+    #[test]
+    fn fixture_directory_custody_stays_with_caller_while_metadata_stays_installed() {
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let path = directory.path().to_owned();
+        let memory = TestDiskMemory::new(1 << 20, 4);
+        let disk = ScratchDisk::fixture(&path, memory.clone());
+        let observer = Arc::downgrade(&disk);
+        let held = memory.snapshot();
+        drop(disk);
+        assert!(path.exists());
+        assert_eq!(memory.snapshot(), held);
+        drop(directory);
+        assert!(!path.exists());
+        assert!(observer.upgrade().is_some());
+        assert_eq!(memory.snapshot(), held);
+    }
+
+    #[test]
+    fn scratch_file_release_does_not_release_installed_owner_or_registry_memory() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let config = config(&directory, "scratch");
+        let memory = TestDiskMemory::new(
+            TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total(&config),
+            4,
+        );
+        let disk = crate::test_utils::retry_disk_registry(|| {
+            ScratchDisk::open_fixture(&config, memory.clone())
+        })
+        .unwrap();
+        let held = memory.snapshot();
+        let mut spool = crate::EncryptedSpool::new(&disk, 1 << 20).unwrap();
+        spool.write_all(b"a real encrypted scratch file").unwrap();
+        spool.flush().unwrap();
+        assert_eq!(disk.snapshot().live_files, 1);
+        assert!(disk.snapshot().charged_bytes > 0);
+        drop(spool);
+        assert_eq!(disk.snapshot().live_files, 0);
+        assert_eq!(disk.snapshot().charged_bytes, 0);
+        assert_eq!(disk.snapshot().filesystem_pending_bytes, 0);
+        assert_eq!(memory.snapshot(), held);
+        drop(disk);
+        assert_eq!(memory.snapshot(), held);
+    }
+}
+
+#[cfg(test)]
+mod registry_busy_tests {
+    use super::*;
+    #[test]
+    fn busy_scratch_registry_does_not_allocate_admit_or_create_directory() {
+        let temporary = tempfile::tempdir().unwrap();
+        let config = ScratchDiskConfig {
+            directory: temporary.path().join("not-created"),
+            max_bytes: 1 << 20,
+            min_free_bytes: 0,
+        };
+        let memory = crate::test_utils::TestDiskMemory::new(
+            crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(1).unwrap() + 1,
+            1,
+        );
+        let guard = registry().lock();
+        let (result, allocations) =
+            crate::allocation_tests::measure(|| ScratchDisk::open_fixture(&config, memory.clone()));
+        assert!(matches!(result, Err(DiskOpenError::RegistryBusy)));
+        assert_eq!(allocations, 0);
+        assert_eq!(memory.snapshot().attempts, 0);
+        assert!(!config.directory.exists());
+        drop(guard);
     }
 }

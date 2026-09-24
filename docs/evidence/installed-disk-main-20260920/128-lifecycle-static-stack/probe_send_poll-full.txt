@@ -1,0 +1,374 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+0000000100109ba8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}>:
+100109ba8: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+100109bac: a9017bfd    	stp	x29, x30, [sp, #0x10]
+100109bb0: 910043fd    	add	x29, sp, #0x10
+100109bb4: d12c43ff    	sub	sp, sp, #0xb10
+100109bb8: f90003ff    	str	xzr, [sp]
+100109bbc: f90053e8    	str	x8, [sp, #0xa0]
+100109bc0: f90057e0    	str	x0, [sp, #0xa8]
+100109bc4: f9005fe1    	str	x1, [sp, #0xb8]
+100109bc8: aa0003e8    	mov	x8, x0
+100109bcc: f81883a8    	stur	x8, [x29, #-0x78]
+100109bd0: aa0003e8    	mov	x8, x0
+100109bd4: f81903a8    	stur	x8, [x29, #-0x70]
+100109bd8: 39482008    	ldrb	w8, [x0, #0x208]
+100109bdc: b900b7e8    	str	w8, [sp, #0xb4]
+100109be0: 34000168    	cbz	w8, 0x100109c0c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x64>
+100109be4: 14000001    	b	0x100109be8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x40>
+100109be8: b940b7e8    	ldr	w8, [sp, #0xb4]
+100109bec: 71000508    	subs	w8, w8, #0x1
+100109bf0: 54000260    	b.eq	0x100109c3c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x94>
+100109bf4: 14000001    	b	0x100109bf8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x50>
+100109bf8: b940b7e8    	ldr	w8, [sp, #0xb4]
+100109bfc: 71000908    	subs	w8, w8, #0x2
+100109c00: 54000240    	b.eq	0x100109c48 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0xa0>
+100109c04: 14000001    	b	0x100109c08 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x60>
+100109c08: 14000013    	b	0x100109c54 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0xac>
+100109c0c: f94057e9    	ldr	x9, [sp, #0xa8]
+100109c10: 3908253f    	strb	wzr, [x9, #0x209]
+100109c14: 3908293f    	strb	wzr, [x9, #0x20a]
+100109c18: 52800028    	mov	w8, #0x1                ; =1
+100109c1c: 39082928    	strb	w8, [x9, #0x20a]
+100109c20: 92800028    	mov	x8, #-0x2               ; =-2
+100109c24: f90063e8    	str	x8, [sp, #0xc0]
+100109c28: f94063e8    	ldr	x8, [sp, #0xc0]
+100109c2c: b1000908    	adds	x8, x8, #0x2
+100109c30: 9a9f07e8    	cset	x8, ne
+100109c34: 37000168    	tbnz	w8, #0x0, 0x100109c60 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0xb8>
+100109c38: 14000018    	b	0x100109c98 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0xf0>
+100109c3c: 52800008    	mov	w8, #0x0                ; =0
+100109c40: 3707ffe8    	tbnz	w8, #0x0, 0x100109c3c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x94>
+100109c44: 14000099    	b	0x100109ea8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x300>
+100109c48: 52800008    	mov	w8, #0x0                ; =0
+100109c4c: 3707ffe8    	tbnz	w8, #0x0, 0x100109c48 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0xa0>
+100109c50: 14000099    	b	0x100109eb4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x30c>
+100109c54: f9405fe8    	ldr	x8, [sp, #0xb8]
+100109c58: f9005fe8    	str	x8, [sp, #0xb8]
+100109c5c: 1400008e    	b	0x100109e94 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x2ec>
+100109c60: 910303e1    	add	x1, sp, #0xc0
+100109c64: 9106a3e0    	add	x0, sp, #0x1a8
+100109c68: f9004be0    	str	x0, [sp, #0x90]
+100109c6c: 52801d08    	mov	w8, #0xe8               ; =232
+100109c70: aa0803e2    	mov	x2, x8
+100109c74: f9004fe2    	str	x2, [sp, #0x98]
+100109c78: 948a16a8    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109c7c: f9404be1    	ldr	x1, [sp, #0x90]
+100109c80: f9404fe2    	ldr	x2, [sp, #0x98]
+100109c84: 912703e0    	add	x0, sp, #0x9c0
+100109c88: 948a16a4    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109c8c: f94057e0    	ldr	x0, [sp, #0xa8]
+100109c90: 94334d5d    	bl	0x100ddd204 <core::ptr::drop_glue::<kasumi_raft::network::RpcRequest>>
+100109c94: 14000024    	b	0x100109d24 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x17c>
+100109c98: f94057e1    	ldr	x1, [sp, #0xa8]
+100109c9c: f9406428    	ldr	x8, [x1, #0xc8]
+100109ca0: f9003fe8    	str	x8, [sp, #0x78]
+100109ca4: f81a83a8    	stur	x8, [x29, #-0x58]
+100109ca8: f9407428    	ldr	x8, [x1, #0xe8]
+100109cac: f90043e8    	str	x8, [sp, #0x80]
+100109cb0: f81b03a8    	stur	x8, [x29, #-0x50]
+100109cb4: f9407828    	ldr	x8, [x1, #0xf0]
+100109cb8: f90047e8    	str	x8, [sp, #0x88]
+100109cbc: f81b83a8    	stur	x8, [x29, #-0x48]
+100109cc0: 3908283f    	strb	wzr, [x1, #0x20a]
+100109cc4: 52800028    	mov	w8, #0x1                ; =1
+100109cc8: 39082428    	strb	w8, [x1, #0x209]
+100109ccc: 9103e020    	add	x0, x1, #0xf8
+100109cd0: 52801908    	mov	w8, #0xc8               ; =200
+100109cd4: aa0803e2    	mov	x2, x8
+100109cd8: 948a1690    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109cdc: f94057e8    	ldr	x8, [sp, #0xa8]
+100109ce0: f9407d0a    	ldr	x10, [x8, #0xf8]
+100109ce4: f1000948    	subs	x8, x10, #0x2
+100109ce8: 52800049    	mov	w9, #0x2                ; =2
+100109cec: f100094a    	subs	x10, x10, #0x2
+100109cf0: 9a892108    	csel	x8, x8, x9, hs
+100109cf4: f1000508    	subs	x8, x8, #0x1
+100109cf8: 540002e0    	b.eq	0x100109d54 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x1ac>
+100109cfc: 14000020    	b	0x100109d7c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x1d4>
+100109d00: f94057e9    	ldr	x9, [sp, #0xa8]
+100109d04: 52800048    	mov	w8, #0x2                ; =2
+100109d08: 39082128    	strb	w8, [x9, #0x208]
+100109d0c: f85983a0    	ldur	x0, [x29, #-0x68]
+100109d10: 948a15c5    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>
+100109d14: f81983a0    	stur	x0, [x29, #-0x68]
+100109d18: aa0103e8    	mov	x8, x1
+100109d1c: b81a03a8    	stur	w8, [x29, #-0x60]
+100109d20: 17fffff8    	b	0x100109d00 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x158>
+100109d24: f94053e0    	ldr	x0, [sp, #0xa0]
+100109d28: 912703e1    	add	x1, sp, #0x9c0
+100109d2c: 52801d08    	mov	w8, #0xe8               ; =232
+100109d30: aa0803e2    	mov	x2, x8
+100109d34: 948a1679    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109d38: f94057e9    	ldr	x9, [sp, #0xa8]
+100109d3c: 52800028    	mov	w8, #0x1                ; =1
+100109d40: 39082128    	strb	w8, [x9, #0x208]
+100109d44: 912c43ff    	add	sp, sp, #0xb10
+100109d48: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+100109d4c: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+100109d50: d65f03c0    	ret
+100109d54: f94047e2    	ldr	x2, [sp, #0x88]
+100109d58: f94043e1    	ldr	x1, [sp, #0x80]
+100109d5c: f9403fe0    	ldr	x0, [sp, #0x78]
+100109d60: f94057e8    	ldr	x8, [sp, #0xa8]
+100109d64: 91040103    	add	x3, x8, #0x100
+100109d68: aa0303e8    	mov	x8, x3
+100109d6c: f81c03a8    	stur	x8, [x29, #-0x40]
+100109d70: 910de3e8    	add	x8, sp, #0x378
+100109d74: 97ff7796    	bl	0x1000e7bcc <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin>
+100109d78: 1400000d    	b	0x100109dac <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x204>
+100109d7c: f94057e9    	ldr	x9, [sp, #0xa8]
+100109d80: 52800048    	mov	w8, #0x2                ; =2
+100109d84: f900e128    	str	x8, [x9, #0x1c0]
+100109d88: 14000010    	b	0x100109dc8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x220>
+100109d8c: f94057e8    	ldr	x8, [sp, #0xa8]
+100109d90: 39482508    	ldrb	w8, [x8, #0x209]
+100109d94: 37001dc8    	tbnz	w8, #0x0, 0x10010a14c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x5a4>
+100109d98: 140000e8    	b	0x10010a138 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x590>
+100109d9c: f81983a0    	stur	x0, [x29, #-0x68]
+100109da0: aa0103e8    	mov	x8, x1
+100109da4: b81a03a8    	stur	w8, [x29, #-0x60]
+100109da8: 17fffff9    	b	0x100109d8c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x1e4>
+100109dac: f94057e8    	ldr	x8, [sp, #0xa8]
+100109db0: 91070100    	add	x0, x8, #0x1c0
+100109db4: 910de3e1    	add	x1, sp, #0x378
+100109db8: 52800708    	mov	w8, #0x38               ; =56
+100109dbc: aa0803e2    	mov	x2, x8
+100109dc0: 948a1656    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109dc4: 14000001    	b	0x100109dc8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x220>
+100109dc8: f9403fe8    	ldr	x8, [sp, #0x78]
+100109dcc: 5285d009    	mov	w9, #0x2e80             ; =11904
+100109dd0: 8b090100    	add	x0, x8, x9
+100109dd4: 94304de2    	bl	0x100d1d55c <<alloc::sync::Arc<kasumi_raft::network::InProcessRouter> as core::ops::deref::Deref>::deref>
+100109dd8: f9003be0    	str	x0, [sp, #0x70]
+100109ddc: 14000009    	b	0x100109e00 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x258>
+100109de0: f94057e8    	ldr	x8, [sp, #0xa8]
+100109de4: 91070100    	add	x0, x8, #0x1c0
+100109de8: 97fe410b    	bl	0x10009a214 <core::ptr::drop_glue::<core::option::Option<lifecycle::bootstrap_vote_probe::Guard>>>
+100109dec: 17ffffe8    	b	0x100109d8c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x1e4>
+100109df0: f81983a0    	stur	x0, [x29, #-0x68]
+100109df4: aa0103e8    	mov	x8, x1
+100109df8: b81a03a8    	stur	w8, [x29, #-0x60]
+100109dfc: 17fffff9    	b	0x100109de0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x238>
+100109e00: f94057e8    	ldr	x8, [sp, #0xa8]
+100109e04: f9406909    	ldr	x9, [x8, #0xd0]
+100109e08: f90023e9    	str	x9, [sp, #0x40]
+100109e0c: f9406d09    	ldr	x9, [x8, #0xd8]
+100109e10: f90027e9    	str	x9, [sp, #0x48]
+100109e14: f9407109    	ldr	x9, [x8, #0xe0]
+100109e18: f9002be9    	str	x9, [sp, #0x50]
+100109e1c: 3908251f    	strb	wzr, [x8, #0x209]
+100109e20: 9103e101    	add	x1, x8, #0xf8
+100109e24: 911263e0    	add	x0, sp, #0x498
+100109e28: f9002fe0    	str	x0, [sp, #0x58]
+100109e2c: 52801908    	mov	w8, #0xc8               ; =200
+100109e30: aa0803e2    	mov	x2, x8
+100109e34: 948a1639    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109e38: f9403be0    	ldr	x0, [sp, #0x70]
+100109e3c: f94023e1    	ldr	x1, [sp, #0x40]
+100109e40: f94027e2    	ldr	x2, [sp, #0x48]
+100109e44: f94043e3    	ldr	x3, [sp, #0x80]
+100109e48: f94047e4    	ldr	x4, [sp, #0x88]
+100109e4c: f9402be5    	ldr	x5, [sp, #0x50]
+100109e50: f9402fe6    	ldr	x6, [sp, #0x58]
+100109e54: 9435a667    	bl	0x100e737f0 <<kasumi_raft::network::InProcessRouter as kasumi_raft::network::RaftTransport>::send>
+100109e58: f90033e0    	str	x0, [sp, #0x60]
+100109e5c: f90037e1    	str	x1, [sp, #0x68]
+100109e60: 14000001    	b	0x100109e64 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x2bc>
+100109e64: f94037e1    	ldr	x1, [sp, #0x68]
+100109e68: f94033e0    	ldr	x0, [sp, #0x60]
+100109e6c: 94192f06    	bl	0x100755a84 <<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = core::result::Result<kasumi_raft::network::RpcResponse, anyhow::Error>> + core::marker::Send>> as core::future::into_future::IntoFuture>::into_future>
+100109e70: f9001be0    	str	x0, [sp, #0x30]
+100109e74: f9001fe1    	str	x1, [sp, #0x38]
+100109e78: 14000001    	b	0x100109e7c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x2d4>
+100109e7c: f94057e9    	ldr	x9, [sp, #0xa8]
+100109e80: f9401fe8    	ldr	x8, [sp, #0x38]
+100109e84: f9401bea    	ldr	x10, [sp, #0x30]
+100109e88: f900fd2a    	str	x10, [x9, #0x1f8]
+100109e8c: f9010128    	str	x8, [x9, #0x200]
+100109e90: 14000001    	b	0x100109e94 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x2ec>
+100109e94: f94057e8    	ldr	x8, [sp, #0xa8]
+100109e98: 9107e108    	add	x8, x8, #0x1f8
+100109e9c: f90017e8    	str	x8, [sp, #0x28]
+100109ea0: f81e83a8    	stur	x8, [x29, #-0x18]
+100109ea4: 1400000f    	b	0x100109ee0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x338>
+100109ea8: 9002e3e0    	adrp	x0, 0x105d85000 <dyld_stub_binder+0x105d85000>
+100109eac: 9120a000    	add	x0, x0, #0x828
+100109eb0: 948a14f3    	bl	0x10238f27c <core::panicking::panic_const::panic_const_async_fn_resumed>
+100109eb4: 9002e3e0    	adrp	x0, 0x105d85000 <dyld_stub_binder+0x105d85000>
+100109eb8: 9120a000    	add	x0, x0, #0x828
+100109ebc: 948a14f7    	bl	0x10238f298 <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+100109ec0: f94057e8    	ldr	x8, [sp, #0xa8]
+100109ec4: 9107e100    	add	x0, x8, #0x1f8
+100109ec8: 940b2858    	bl	0x1003d4028 <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = core::result::Result<kasumi_raft::network::RpcResponse, anyhow::Error>> + core::marker::Send>>>>
+100109ecc: 17ffffc5    	b	0x100109de0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x238>
+100109ed0: f81983a0    	stur	x0, [x29, #-0x68]
+100109ed4: aa0103e8    	mov	x8, x1
+100109ed8: b81a03a8    	stur	w8, [x29, #-0x60]
+100109edc: 17fffff9    	b	0x100109ec0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x318>
+100109ee0: f94017e0    	ldr	x0, [sp, #0x28]
+100109ee4: f9405fe1    	ldr	x1, [sp, #0xb8]
+100109ee8: 911583e8    	add	x8, sp, #0x560
+100109eec: 94192efe    	bl	0x100755ae4 <<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = core::result::Result<kasumi_raft::network::RpcResponse, anyhow::Error>> + core::marker::Send>> as core::future::future::Future>::poll>
+100109ef0: 14000001    	b	0x100109ef4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x34c>
+100109ef4: f942b3e9    	ldr	x9, [sp, #0x560]
+100109ef8: d2800008    	mov	x8, #0x0                ; =0
+100109efc: b1000929    	adds	x9, x9, #0x2
+100109f00: 9a9f1508    	csinc	x8, x8, xzr, ne
+100109f04: 36000188    	tbz	w8, #0x0, 0x100109f34 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x38c>
+100109f08: 14000001    	b	0x100109f0c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x364>
+100109f0c: f94057e9    	ldr	x9, [sp, #0xa8]
+100109f10: f94053ea    	ldr	x10, [sp, #0xa0]
+100109f14: 92800028    	mov	x8, #-0x2               ; =-2
+100109f18: f9000148    	str	x8, [x10]
+100109f1c: 52800068    	mov	w8, #0x3                ; =3
+100109f20: 39082128    	strb	w8, [x9, #0x208]
+100109f24: 912c43ff    	add	sp, sp, #0xb10
+100109f28: a9417bfd    	ldp	x29, x30, [sp, #0x10]
+100109f2c: a8c26ffc    	ldp	x28, x27, [sp], #0x20
+100109f30: d65f03c0    	ret
+100109f34: 911583e1    	add	x1, sp, #0x560
+100109f38: 911923e0    	add	x0, sp, #0x648
+100109f3c: f9000fe0    	str	x0, [sp, #0x18]
+100109f40: 52801d08    	mov	w8, #0xe8               ; =232
+100109f44: aa0803e2    	mov	x2, x8
+100109f48: f90013e2    	str	x2, [sp, #0x20]
+100109f4c: 948a15f3    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109f50: f9400fe1    	ldr	x1, [sp, #0x18]
+100109f54: f94013e2    	ldr	x2, [sp, #0x20]
+100109f58: 910ec3e0    	add	x0, sp, #0x3b0
+100109f5c: 948a15ef    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109f60: f94057e8    	ldr	x8, [sp, #0xa8]
+100109f64: 9107e100    	add	x0, x8, #0x1f8
+100109f68: 940b2830    	bl	0x1003d4028 <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = core::result::Result<kasumi_raft::network::RpcResponse, anyhow::Error>> + core::marker::Send>>>>
+100109f6c: 14000001    	b	0x100109f70 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x3c8>
+100109f70: f94057e8    	ldr	x8, [sp, #0xa8]
+100109f74: 91070109    	add	x9, x8, #0x1c0
+100109f78: f9000be9    	str	x9, [sp, #0x10]
+100109f7c: f940e108    	ldr	x8, [x8, #0x1c0]
+100109f80: f1000908    	subs	x8, x8, #0x2
+100109f84: 9a9f07e8    	cset	x8, ne
+100109f88: 36000148    	tbz	w8, #0x0, 0x100109fb0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x408>
+100109f8c: 14000001    	b	0x100109f90 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x3e8>
+100109f90: f9400be8    	ldr	x8, [sp, #0x10]
+100109f94: f81c83a8    	stur	x8, [x29, #-0x38]
+100109f98: f941dbe9    	ldr	x9, [sp, #0x3b0]
+100109f9c: d2800008    	mov	x8, #0x0                ; =0
+100109fa0: b1000529    	adds	x9, x9, #0x1
+100109fa4: 9a9f1508    	csinc	x8, x8, xzr, ne
+100109fa8: 37000168    	tbnz	w8, #0x0, 0x100109fd4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x42c>
+100109fac: 14000011    	b	0x100109ff0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x448>
+100109fb0: 910a43e0    	add	x0, sp, #0x290
+100109fb4: 910ec3e1    	add	x1, sp, #0x3b0
+100109fb8: 52801d08    	mov	w8, #0xe8               ; =232
+100109fbc: aa0803e2    	mov	x2, x8
+100109fc0: 948a15d6    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109fc4: f94057e8    	ldr	x8, [sp, #0xa8]
+100109fc8: 91070100    	add	x0, x8, #0x1c0
+100109fcc: 97fe4092    	bl	0x10009a214 <core::ptr::drop_glue::<core::option::Option<lifecycle::bootstrap_vote_probe::Guard>>>
+100109fd0: 14000052    	b	0x10010a118 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x570>
+100109fd4: 910ec3e8    	add	x8, sp, #0x3b0
+100109fd8: 91002100    	add	x0, x8, #0x8
+100109fdc: aa0003e8    	mov	x8, x0
+100109fe0: f81e03a8    	stur	x8, [x29, #-0x20]
+100109fe4: 912263e8    	add	x8, sp, #0x898
+100109fe8: 97fffe5a    	bl	0x100109950 <<lifecycle::bootstrap_vote_probe::ErrorText>::capture::<anyhow::Error>>
+100109fec: 14000040    	b	0x10010a0ec <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x544>
+100109ff0: f941dbe8    	ldr	x8, [sp, #0x3b0]
+100109ff4: f1000508    	subs	x8, x8, #0x1
+100109ff8: 540000e1    	b.ne	0x10010a014 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x46c>
+100109ffc: 14000001    	b	0x10010a000 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x458>
+10010a000: f941dfe8    	ldr	x8, [sp, #0x3b8]
+10010a004: b1000908    	adds	x8, x8, #0x2
+10010a008: 9a9f07e8    	cset	x8, ne
+10010a00c: 370000a8    	tbnz	w8, #0x0, 0x10010a020 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x478>
+10010a010: 1400000b    	b	0x10010a03c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x494>
+10010a014: 52800088    	mov	w8, #0x4                ; =4
+10010a018: 391cc3e8    	strb	w8, [sp, #0x730]
+10010a01c: 1400001f    	b	0x10010a098 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x4f0>
+10010a020: 910ec3e8    	add	x8, sp, #0x3b0
+10010a024: 91002100    	add	x0, x8, #0x8
+10010a028: aa0003e8    	mov	x8, x0
+10010a02c: f81d83a8    	stur	x8, [x29, #-0x28]
+10010a030: 912023e8    	add	x8, sp, #0x808
+10010a034: 97fffe22    	bl	0x1001098bc <<lifecycle::bootstrap_vote_probe::ErrorText>::capture::<openraft::error::RaftError<u64>>>
+10010a038: 14000024    	b	0x10010a0c8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x520>
+10010a03c: 910ec3e8    	add	x8, sp, #0x3b0
+10010a040: 91004100    	add	x0, x8, #0x10
+10010a044: aa0003e8    	mov	x8, x0
+10010a048: f81d03a8    	stur	x8, [x29, #-0x30]
+10010a04c: 911f23e8    	add	x8, sp, #0x7c8
+10010a050: 97fe3e12    	bl	0x100099898 <<openraft::raft::message::vote::VoteResponse<u64> as core::clone::Clone>::clone>
+10010a054: 14000008    	b	0x10010a074 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x4cc>
+10010a058: 910ec3e0    	add	x0, sp, #0x3b0
+10010a05c: 97fe4182    	bl	0x10009a664 <core::ptr::drop_glue::<core::result::Result<kasumi_raft::network::RpcResponse, anyhow::Error>>>
+10010a060: 17ffff60    	b	0x100109de0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x238>
+10010a064: f81983a0    	stur	x0, [x29, #-0x68]
+10010a068: aa0103e8    	mov	x8, x1
+10010a06c: b81a03a8    	stur	w8, [x29, #-0x60]
+10010a070: 17fffffa    	b	0x10010a058 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x4b0>
+10010a074: 911cc3e8    	add	x8, sp, #0x730
+10010a078: 91002100    	add	x0, x8, #0x8
+10010a07c: 911f23e1    	add	x1, sp, #0x7c8
+10010a080: 52800808    	mov	w8, #0x40               ; =64
+10010a084: aa0803e2    	mov	x2, x8
+10010a088: 948a15a4    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10010a08c: 52800028    	mov	w8, #0x1                ; =1
+10010a090: 391cc3e8    	strb	w8, [sp, #0x730]
+10010a094: 14000001    	b	0x10010a098 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x4f0>
+10010a098: 911cc3e1    	add	x1, sp, #0x730
+10010a09c: 9124a3e0    	add	x0, sp, #0x928
+10010a0a0: f90007e0    	str	x0, [sp, #0x8]
+10010a0a4: 52801308    	mov	w8, #0x98               ; =152
+10010a0a8: aa0803e2    	mov	x2, x8
+10010a0ac: 948a159b    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10010a0b0: f9400be0    	ldr	x0, [sp, #0x10]
+10010a0b4: f94007e1    	ldr	x1, [sp, #0x8]
+10010a0b8: 52800028    	mov	w8, #0x1                ; =1
+10010a0bc: 12000102    	and	w2, w8, #0x1
+10010a0c0: 97ff794c    	bl	0x1000e85f0 <<lifecycle::bootstrap_vote_probe::Guard>::finish>
+10010a0c4: 14000013    	b	0x10010a110 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x568>
+10010a0c8: 911cc3e8    	add	x8, sp, #0x730
+10010a0cc: 91002100    	add	x0, x8, #0x8
+10010a0d0: 912023e1    	add	x1, sp, #0x808
+10010a0d4: 52801208    	mov	w8, #0x90               ; =144
+10010a0d8: aa0803e2    	mov	x2, x8
+10010a0dc: 948a158f    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10010a0e0: 52800048    	mov	w8, #0x2                ; =2
+10010a0e4: 391cc3e8    	strb	w8, [sp, #0x730]
+10010a0e8: 17ffffec    	b	0x10010a098 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x4f0>
+10010a0ec: 911cc3e8    	add	x8, sp, #0x730
+10010a0f0: 91002100    	add	x0, x8, #0x8
+10010a0f4: 912263e1    	add	x1, sp, #0x898
+10010a0f8: 52801208    	mov	w8, #0x90               ; =144
+10010a0fc: aa0803e2    	mov	x2, x8
+10010a100: 948a1586    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10010a104: 52800068    	mov	w8, #0x3                ; =3
+10010a108: 391cc3e8    	strb	w8, [sp, #0x730]
+10010a10c: 17ffffe3    	b	0x10010a098 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x4f0>
+10010a110: 17ffffa8    	b	0x100109fb0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x408>
+10010a114: 948a1358    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+10010a118: 910a43e1    	add	x1, sp, #0x290
+10010a11c: 912703e0    	add	x0, sp, #0x9c0
+10010a120: 52801d08    	mov	w8, #0xe8               ; =232
+10010a124: aa0803e2    	mov	x2, x8
+10010a128: 948a157c    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10010a12c: f94057e8    	ldr	x8, [sp, #0xa8]
+10010a130: 3908251f    	strb	wzr, [x8, #0x209]
+10010a134: 17fffefc    	b	0x100109d24 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x17c>
+10010a138: f94057e8    	ldr	x8, [sp, #0xa8]
+10010a13c: 3908251f    	strb	wzr, [x8, #0x209]
+10010a140: 39482908    	ldrb	w8, [x8, #0x20a]
+10010a144: 370000c8    	tbnz	w8, #0x0, 0x10010a15c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x5b4>
+10010a148: 17fffeee    	b	0x100109d00 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x158>
+10010a14c: f94057e8    	ldr	x8, [sp, #0xa8]
+10010a150: 9103e100    	add	x0, x8, #0xf8
+10010a154: 94334c2c    	bl	0x100ddd204 <core::ptr::drop_glue::<kasumi_raft::network::RpcRequest>>
+10010a158: 17fffff8    	b	0x10010a138 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x590>
+10010a15c: f94057e0    	ldr	x0, [sp, #0xa8]
+10010a160: 94334c29    	bl	0x100ddd204 <core::ptr::drop_glue::<kasumi_raft::network::RpcRequest>>
+10010a164: 17fffee7    	b	0x100109d00 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x158>

@@ -1,0 +1,5 @@
+Exact proposed memory.rs and ledger.rs, extracted field declarations; stub validation and external pointed-to implementations. Layout/formula evidence only, not compiled production/RSS qualification.
+AccountedFile=72 AccountedDirectory=88 AccountedInode=88 Identity=16 FileOwner=216 DirectoryOwner=72 State=152 NodeDisk=352
+entries=1000000 file_handles=4096 directory_handles=4096 roots=[("data", "/var/lib/kasumi/data")] old_max=2000001 new_max=1000001 old_table_bytes=960004576 new_table_bytes=480004576 total_metadata=1802876060 mib=1719.356594 remaining_2gib=344607588 
+entries=1000000 file_handles=4096 directory_handles=4096 roots=[("data", "/var/lib/kasumi/data"), ("metadata", "/var/lib/kasumi/metadata")] old_max=2000002 new_max=1000002 old_table_bytes=960005056 new_table_bytes=480005056 total_metadata=1802885544 mib=1719.365639 remaining_2gib=344598104 
+entries=16384 file_handles=256 directory_handles=256 roots=[("fixture", "/tmp/fixture-root-xx")] old_max=32769 new_max=16385 old_table_bytes=15733216 new_table_bytes=7868896 total_metadata=50392232 mib=48.057777 remaining_2gib=2097091416 

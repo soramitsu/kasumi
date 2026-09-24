@@ -2,18 +2,54 @@
 //! the temporary file; the random key dies with the final spool owner.
 use crate::{ScratchDisk, SecretKey};
 use chacha20poly1305::{KeyInit, Tag, XChaCha20Poly1305, XNonce, aead::AeadInPlace};
+use redb::BackendCloseOutcome;
 use sha2::{Digest, Sha256};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::ops::{Deref, DerefMut};
+use std::os::fd::IntoRawFd;
 use std::sync::{Arc, Mutex};
 use zeroize::Zeroizing;
 
 const BLOCK: usize = 64 << 10;
 const SLOT: u64 = BLOCK as u64 + 40;
 
+/// The File must leave Rust ownership before its one observable native close.
+/// A missing value means no subsequent destructor may retry the descriptor.
+struct NativeFile(Option<std::fs::File>);
+impl Deref for NativeFile {
+    type Target = std::fs::File;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("open spool descriptor")
+    }
+}
+impl DerefMut for NativeFile {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().expect("open spool descriptor")
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeClosePhase {
+    Open,
+    Attempting,
+    Drained,
+    Unknown(i32),
+}
+
+struct FenceOnNativeUnwind<'a>(&'a crate::scratch_disk::Charge, bool);
+impl Drop for FenceOnNativeUnwind<'_> {
+    fn drop(&mut self) {
+        if self.1 {
+            self.0.fail_owner();
+        }
+    }
+}
+
 pub struct EncryptedSpool {
-    file: std::fs::File,
-    // Field order closes the anonymous file before releasing its disk charge.
-    charge: crate::scratch_disk::Charge,
+    file: NativeFile,
+    native_close: NativeClosePhase,
+    close_entered: bool,
     key: SecretKey,
     id: [u8; 16],
     length: u64,
@@ -24,6 +60,9 @@ pub struct EncryptedSpool {
     ciphertext: Zeroizing<Vec<u8>>,
     dirty: bool,
     append_digest: Option<Sha256>,
+    // Retire the actual file, key and both buffer allocations before the last
+    // field makes this anonymous extent's credit available to another owner.
+    charge: crate::scratch_disk::Charge,
 }
 
 impl std::fmt::Debug for EncryptedSpool {
@@ -43,14 +82,18 @@ impl EncryptedSpool {
                 "spool limit exceeds supported file offsets",
             ));
         }
+        let key = SecretKey::random().map_err(io::Error::other)?;
+        let id = *uuid::Uuid::new_v4().as_bytes();
         let (file, charge) = disk.file()?;
         // Unnamed temporary files have owner-only permissions and cannot be
         // reopened after a crash. No key or pathname is persisted.
         Ok(Self {
-            file,
+            file: NativeFile(Some(file)),
+            native_close: NativeClosePhase::Open,
+            close_entered: false,
             charge,
-            key: SecretKey::random().map_err(io::Error::other)?,
-            id: *uuid::Uuid::new_v4().as_bytes(),
+            key,
+            id,
             length: 0,
             position: 0,
             limit,
@@ -75,7 +118,10 @@ impl EncryptedSpool {
     }
 
     pub(crate) fn check_owner(&self) -> io::Result<()> {
-        self.charge.check_owner(&self.file)
+        let Some(file) = self.file.0.as_ref() else {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        };
+        self.charge.check_owner(file)
     }
 
     pub(crate) fn owner_failed(&self) {
@@ -117,12 +163,70 @@ impl EncryptedSpool {
         self.file.sync_all().inspect_err(|_| self.owner_failed())
     }
 
-    pub(crate) fn close(mut self) -> io::Result<()> {
-        // The anonymous inode is physically released by the actual final file
-        // close even when sync failed; field order releases its charge afterward.
-        let result = self.sync_all();
-        drop(self);
-        result
+    /// Enter sync and native closure once without consuming the exact spool.
+    /// The caller may dispose it only after Drained is positively observed.
+    pub(crate) fn close_once(&mut self) -> BackendCloseOutcome {
+        self.close_once_with(Self::sync_all)
+    }
+
+    fn close_once_with(
+        &mut self,
+        sync: impl FnOnce(&mut Self) -> io::Result<()>,
+    ) -> BackendCloseOutcome {
+        if self.close_entered {
+            return BackendCloseOutcome::retained(io::ErrorKind::BrokenPipe.into());
+        }
+        self.close_entered = true;
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sync(self))) {
+            Ok(result) => result,
+            Err(payload) => {
+                self.owner_failed();
+                std::panic::resume_unwind(payload)
+            }
+        };
+        match result {
+            Ok(()) => self.close_native_after_sync(),
+            Err(error) => BackendCloseOutcome::retained(error),
+        }
+    }
+
+    /// The authenticated ciphertext has already synchronized. Consume the
+    /// actual descriptor before calling close; a failed syscall is uncertain
+    /// and its numeric descriptor must never be retried or rewrapped as File.
+    fn close_native_after_sync(&mut self) -> BackendCloseOutcome {
+        self.close_native_with(|descriptor| {
+            // SAFETY: the File owner is consumed by close_native_with.
+            if unsafe { libc::close(descriptor) } == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        })
+    }
+
+    fn close_native_with(
+        &mut self,
+        closer: impl FnOnce(i32) -> io::Result<()>,
+    ) -> BackendCloseOutcome {
+        if self.native_close != NativeClosePhase::Open {
+            return BackendCloseOutcome::retained(io::ErrorKind::BrokenPipe.into());
+        }
+        self.native_close = NativeClosePhase::Attempting;
+        self.charge.native_close_entered();
+        let file = self.file.0.take().expect("open spool descriptor");
+        let descriptor = file.into_raw_fd();
+        self.native_close = NativeClosePhase::Unknown(descriptor);
+        let mut fence = FenceOnNativeUnwind(&self.charge, true);
+        match closer(descriptor) {
+            Ok(()) => {
+                fence.1 = false;
+                drop(fence);
+                self.charge.native_close_drained();
+                self.native_close = NativeClosePhase::Drained;
+                BackendCloseOutcome::drained(Ok(()))
+            }
+            Err(error) => BackendCloseOutcome::retained(error),
+        }
     }
 
     pub(crate) fn resize(&mut self, length: u64) -> io::Result<()> {
@@ -448,15 +552,38 @@ impl Seek for SnapshotReader {
     }
 }
 
+#[path = "retained_spool.rs"]
+mod retained_spool;
+pub use retained_spool::{RetainedSpool, SpoolClosePhase};
+
+#[cfg(test)]
+#[path = "spool_native_close_tests.rs"]
+mod native_close_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn close_and_dispose(spool: &mut EncryptedSpool) {
+        let outcome = spool.close_once();
+        assert_eq!(
+            outcome.native_disposition(),
+            redb::BackendNativeDisposition::Drained
+        );
+        outcome.into_result().unwrap();
+    }
+
     #[test]
     fn unused_reservation_and_denied_growth_preserve_authenticated_physical_extent() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
         use std::os::unix::fs::FileExt;
 
-        let disk = ScratchDisk::isolated_fixture(256 << 10);
+        let disk = ScratchDisk::isolated_fixture(
+            scratch_directory.path(),
+            256 << 10,
+            fixture_memory.clone(),
+        );
         let mut spool = EncryptedSpool::new(&disk, 4 << 20).unwrap();
         spool.write_all(b"original").unwrap();
         spool.sync_all().unwrap();
@@ -489,13 +616,16 @@ mod tests {
         let mut plaintext = [0; 8];
         spool.read_exact(&mut plaintext).unwrap();
         assert_eq!(&plaintext, b"original");
-        spool.close().unwrap();
+        close_and_dispose(&mut spool);
+        drop(spool);
         assert_eq!(disk.snapshot().charged_bytes, 0);
         assert!(disk.snapshot().filesystem_admission_ready);
     }
 
     #[test]
     fn interleaved_record_appends_preserve_admission_and_authentication() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
         fn body(sequence: usize, bytes: &mut [u8; 1280]) -> &[u8] {
             let length = 256 + sequence * 37 % 1024;
             for (offset, byte) in bytes[..length].iter_mut().enumerate() {
@@ -526,7 +656,11 @@ mod tests {
             assert_eq!(spool.read(&mut actual).unwrap(), 0);
         }
 
-        let disk = ScratchDisk::isolated_fixture(64 << 20);
+        let disk = ScratchDisk::isolated_fixture(
+            scratch_directory.path(),
+            64 << 20,
+            fixture_memory.clone(),
+        );
         let mut commands = EncryptedSpool::new(&disk, 16 << 20).unwrap();
         let mut audit = EncryptedSpool::new(&disk, 16 << 20).unwrap();
         let mut bytes = [0; 1280];
@@ -539,15 +673,23 @@ mod tests {
         assert!(audit.len() > 2 << 20);
         verify(&mut commands, 4200);
         verify(&mut audit, 8400);
-        commands.close().unwrap();
-        audit.close().unwrap();
+        close_and_dispose(&mut commands);
+        close_and_dispose(&mut audit);
     }
 
     #[test]
     fn encrypted_spool_seek_overwrite_and_bounds() {
-        let mut spool =
-            EncryptedSpool::new(&ScratchDisk::isolated_fixture(1 << 20), (BLOCK * 3) as u64)
-                .unwrap();
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let mut spool = EncryptedSpool::new(
+            &ScratchDisk::isolated_fixture(
+                scratch_directory.path(),
+                1 << 20,
+                fixture_memory.clone(),
+            ),
+            (BLOCK * 3) as u64,
+        )
+        .unwrap();
         let data: Vec<_> = (0..BLOCK * 2 + 31).map(|i| (i % 251) as u8).collect();
         spool.write_all(&data).unwrap();
         spool.seek(SeekFrom::Start(BLOCK as u64 - 5)).unwrap();
@@ -568,9 +710,17 @@ mod tests {
     }
     #[test]
     fn corrupted_or_reordered_blocks_fail_authentication() {
-        let mut spool =
-            EncryptedSpool::new(&ScratchDisk::isolated_fixture(1 << 20), (BLOCK * 3) as u64)
-                .unwrap();
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let mut spool = EncryptedSpool::new(
+            &ScratchDisk::isolated_fixture(
+                scratch_directory.path(),
+                1 << 20,
+                fixture_memory.clone(),
+            ),
+            (BLOCK * 3) as u64,
+        )
+        .unwrap();
         spool.write_all(&vec![7; BLOCK * 2]).unwrap();
         spool.flush().unwrap();
         spool.file.rewind().unwrap();

@@ -1,0 +1,2472 @@
+diff --git a/crates/kasumi-engine/src/admission/disk_memory.rs b/crates/kasumi-engine/src/admission/disk_memory.rs
+--- a/crates/kasumi-engine/src/admission/disk_memory.rs
++++ b/crates/kasumi-engine/src/admission/disk_memory.rs
+@@ -26,6 +26,9 @@
+     }
+ }
+ impl kasumi_store::NodeDiskMemoryAdmission for MemoryCore {
++    fn storage_census(&self) -> &kasumi_store::StorageCensus {
++        &self.storage_census
++    }
+     fn reserve_installed(
+         self: Arc<Self>,
+         workspace: u64,
+@@ -89,4 +92,29 @@
+         assert_eq!(after.inflight_operations, 0);
+         assert!(MemoryCore::required_installed_reservation_bytes(u64::MAX).is_err());
+     }
++    #[test]
++    fn installed_storage_census_is_fixed_precharged_and_matches_the_exact_core() {
++        let config = AdmissionConfig::default();
++        let required =
++            kasumi_store::StorageCensus::required_bytes(config.max_reservations).unwrap();
++        let node = NodeAdmission::with_fixed_memory(config.clone(), 2 << 30, 0).unwrap();
++        let core = node.memory();
++        let provider: Arc<dyn NodeDiskMemoryAdmission> = core.clone();
++        assert!(std::ptr::eq(
++            core.storage_census(),
++            provider.storage_census()
++        ));
++        assert_eq!(
++            provider.storage_census().snapshot().capacity,
++            config.max_reservations
++        );
++        assert!(core.snapshot().reserved_bytes >= required);
++        assert_eq!(provider.storage_census().snapshot().databases, 0);
++        assert_eq!(provider.storage_census().snapshot().writers, 0);
++        assert!(provider.storage_census().bind_provider(&provider).is_err());
++        let mut too_small = config;
++        too_small.max_inflight_bytes =
++            Some(MemoryCore::required_bookkeeping_bytes(&too_small).unwrap() - 1);
++        assert!(NodeAdmission::with_fixed_memory(too_small, 2 << 30, 0).is_err());
++    }
+ }
+diff --git a/crates/kasumi-engine/src/admission.rs b/crates/kasumi-engine/src/admission.rs
+--- a/crates/kasumi-engine/src/admission.rs
++++ b/crates/kasumi-engine/src/admission.rs
+@@ -316,6 +316,7 @@
+ /// facades deliberately reuse this exact core; installed NodeDisk caller wiring
+ /// remains separately tracked in the storage-admission workstream.
+ pub struct MemoryCore {
++    storage_census: kasumi_store::StorageCensus,
+     startups: Mutex<startup::Census>,
+     snapshot_work: Mutex<snapshot_work::Census>,
+     sampler: Option<std::thread::JoinHandle<()>>,
+@@ -365,11 +366,13 @@
+         let data = arc_bytes::<MemoryState>()?;
+         let startups = startup::Census::required_bytes(config.max_startup_scopes)?;
+         let snapshot_work = snapshot_work::Census::required_bytes(config.max_inflight_operations)?;
++        let storage = kasumi_store::StorageCensus::required_bytes(config.max_reservations)?;
+         arc_bytes::<Self>()?
+             .checked_add(allocation_bytes::<ChargeSlot>(config.max_reservations)?)
+             .and_then(|bytes| bytes.checked_add(data))
+             .and_then(|bytes| bytes.checked_add(startups))
+             .and_then(|bytes| bytes.checked_add(snapshot_work))
++            .and_then(|bytes| bytes.checked_add(storage))
+             .and_then(|bytes| bytes.checked_add(source))
+             .and_then(|bytes| bytes.checked_add(clock))
+             .and_then(|bytes| bytes.checked_add(SAMPLER_STACK_BYTES as u64))
+@@ -415,6 +418,8 @@
+         memory: Arc<dyn MemorySource>,
+         clock: Arc<dyn LeaseClock>,
+     ) -> anyhow::Result<Arc<Self>> {
++        let storage_census =
++            kasumi_store::StorageCensus::allocate(prepared.config.max_reservations)?;
+         let startups = Mutex::new(startup::Census::allocate(
+             prepared.config.max_startup_scopes,
+         )?);
+@@ -456,12 +461,19 @@
+         });
+         drop(data.state.lock().unwrap());
+         drop(data.stop.lock().unwrap());
+-        Ok(Arc::new(Self {
++        let core = Arc::new(Self {
++            storage_census,
+             startups,
+             snapshot_work,
+             sampler: None,
+             data,
+-        }))
++        });
++        let provider: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> = core.clone();
++        core.storage_census.bind_provider(&provider)?;
++        // Binding stores the exact address, not a Weak. Unpublished sampler
++        // startup still has the unique Arc required by Arc::get_mut.
++        drop(provider);
++        Ok(core)
+     }
+     pub fn new(config: AdmissionConfig) -> anyhow::Result<Arc<Self>> {
+         config.validate()?;
+diff --git a/crates/kasumi-store/src/device_disk.rs b/crates/kasumi-store/src/device_disk.rs
+--- a/crates/kasumi-store/src/device_disk.rs
++++ b/crates/kasumi-store/src/device_disk.rs
+@@ -322,7 +322,12 @@
+         let device_bytes = TestDiskMemory::required_reservation_bytes(device_bytes).unwrap();
+         let registration_bytes =
+             TestDiskMemory::required_reservation_bytes(registration_bytes).unwrap();
+-        let memory = TestDiskMemory::new(device_bytes + 2 * registration_bytes, 3);
++        let memory = TestDiskMemory::new(
++            TestDiskMemory::required_bookkeeping_bytes(3).unwrap()
++                + device_bytes
++                + 2 * registration_bytes,
++            3,
++        );
+         let registry = Registry::new(List::new());
+         let first = DeviceDisk::open_registered(&registry, 73, 0, memory.clone()).unwrap();
+         assert_eq!(
+@@ -356,12 +361,22 @@
+         let registration_bytes =
+             TestDiskMemory::required_reservation_bytes(registration_bytes).unwrap();
+         let registry = Registry::new(List::new());
+-        let too_small = TestDiskMemory::new(device_bytes + registration_bytes, 1);
++        let too_small = TestDiskMemory::new(
++            TestDiskMemory::required_bookkeeping_bytes(1).unwrap()
++                + device_bytes
++                + registration_bytes,
++            1,
++        );
+         assert!(DeviceDisk::open_registered(&registry, 74, 0, too_small.clone()).is_err());
+         assert_eq!(too_small.snapshot().used_bytes, 0);
+         assert_eq!(too_small.snapshot().live_reservations, 0);
+         assert_eq!(registry.lock().iter().count(), 0);
+-        let memory = TestDiskMemory::new(device_bytes + registration_bytes, 2);
++        let memory = TestDiskMemory::new(
++            TestDiskMemory::required_bookkeeping_bytes(2).unwrap()
++                + device_bytes
++                + registration_bytes,
++            2,
++        );
+         let owner = DeviceDisk::open_registered(&registry, 74, 0, memory.clone()).unwrap();
+         let before = memory.snapshot();
+         assert!(DeviceDisk::open_registered(&registry, 74, 0, too_small.clone()).is_err());
+@@ -379,7 +394,10 @@
+     use super::*;
+     #[test]
+     fn busy_device_registry_does_not_allocate_or_touch_memory_admission() {
+-        let memory = crate::test_utils::TestDiskMemory::new(1, 1);
++        let memory = crate::test_utils::TestDiskMemory::new(
++            crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(1).unwrap() + 1,
++            1,
++        );
+         let registry = Registry::new(List::new());
+         let guard = registry.lock();
+         let (result, allocations) = crate::allocation_tests::measure(|| {
+diff --git a/crates/kasumi-store/src/disk_memory.rs b/crates/kasumi-store/src/disk_memory.rs
+--- a/crates/kasumi-store/src/disk_memory.rs
++++ b/crates/kasumi-store/src/disk_memory.rs
+@@ -6,6 +6,8 @@
+ /// allocating that lease. Acquisition consumes no inflight operation slot.
+ /// An installed owner is identified by this exact Arc, not equivalent policy.
+ pub trait NodeDiskMemoryAdmission: Send + Sync {
++    /// Fixed custody admitted in this exact provider's initial bookkeeping.
++    fn storage_census(&self) -> &crate::StorageCensus;
+     fn reserve_installed(self: Arc<Self>, bytes: u64) -> io::Result<DiskMemoryLease>;
+ }
+ 
+diff --git a/crates/kasumi-store/src/disk_memory_tests.rs b/crates/kasumi-store/src/disk_memory_tests.rs
+--- a/crates/kasumi-store/src/disk_memory_tests.rs
++++ b/crates/kasumi-store/src/disk_memory_tests.rs
+@@ -60,7 +60,10 @@
+ fn installed_lease_cannot_return_bytes_or_slot_before_actual_box_deallocation() {
+     let workspace = 1234;
+     let required = TestDiskMemory::required_reservation_bytes(workspace).unwrap();
+-    let memory = TestDiskMemory::new(required, 1);
++    let memory = TestDiskMemory::new(
++        TestDiskMemory::required_bookkeeping_bytes(1).unwrap() + required,
++        1,
++    );
+     let lease = memory.clone().reserve_installed(workspace).unwrap();
+     assert_eq!(memory.snapshot().used_bytes, required);
+     assert_eq!(memory.snapshot().live_reservations, 1);
+@@ -168,7 +171,10 @@
+         std::mem::align_of::<Box<dyn Send + Sync>>()
+     );
+     let required = TestDiskMemory::required_reservation_bytes(1234).unwrap();
+-    let memory = TestDiskMemory::new(required - 1, 1);
++    let memory = TestDiskMemory::new(
++        TestDiskMemory::required_bookkeeping_bytes(1).unwrap() + required - 1,
++        1,
++    );
+     assert!(memory.clone().reserve_installed(1234).is_err());
+     let after = memory.snapshot();
+     assert_eq!(after.used_bytes, 0);
+diff --git a/crates/kasumi-store/src/lib.rs b/crates/kasumi-store/src/lib.rs
+--- a/crates/kasumi-store/src/lib.rs
++++ b/crates/kasumi-store/src/lib.rs
+@@ -24,8 +24,18 @@
+ mod allocation_tests;
+ mod device_disk;
+ mod disk_memory;
++mod storage_census;
++mod storage_opening;
+ pub use disk_memory::{
+     DiskMemoryLease, DiskMemoryRequirements, DiskOpenError, NodeDiskMemoryAdmission,
++};
++pub use storage_census::{
++    StorageCensus, StorageCensusDisposition, StorageCensusObservation, StorageCensusPanicPhase,
++    StorageCensusSnapshot, StorageOwnerId, StorageOwnerKind,
++};
++pub use storage_opening::{
++    NodeOpeningMode, NodeOpeningPhase, NodeOpeningReport, NodeTablesBodyError, NodeTablesReport,
++    NodeWriterPhase, RegisteredNodeOpening, RegisteredNodeTables,
+ };
+ mod keys;
+ mod node_database;
+diff --git a/crates/kasumi-store/src/node_disk/tests.rs b/crates/kasumi-store/src/node_disk/tests.rs
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -1988,7 +1988,10 @@
+     let cap = crate::test_utils::TestDiskMemory::required_reservation_bytes(required.owner_bytes)
+         .unwrap()
+         - 1;
+-    let memory = crate::test_utils::TestDiskMemory::new(cap, 4);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + cap,
++        4,
++    );
+     let crate::DiskOpenError::Failed(error) = crate::test_utils::retry_disk_registry(|| {
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     })
+@@ -2010,7 +2013,10 @@
+     for slots in [1, 2, 3] {
+         let (_directory, config) = installation();
+         let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+-        let memory = crate::test_utils::TestDiskMemory::new(total, slots);
++        let memory = crate::test_utils::TestDiskMemory::new(
++            crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(slots).unwrap() + total,
++            slots,
++        );
+         assert!(
+             crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+                 &config,
+@@ -2032,7 +2038,10 @@
+ fn installed_metadata_reuse_keeps_one_exact_core_and_one_retained_envelope() {
+     let (_directory, config) = installation();
+     let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+-    let memory = crate::test_utils::TestDiskMemory::new(total, 4);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total,
++        4,
++    );
+     let disk = crate::test_utils::retry_disk_registry(|| {
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     })
+@@ -2046,7 +2055,10 @@
+     .unwrap();
+     assert!(Arc::ptr_eq(&disk, &same));
+     assert_eq!(memory.snapshot(), held);
+-    let foreign = crate::test_utils::TestDiskMemory::new(total, 4);
++    let foreign = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total,
++        4,
++    );
+     assert!(
+         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+             &config,
+@@ -2080,7 +2092,10 @@
+     let (_directory, config) = installation();
+     symlink("missing", config.roots["data"].join("invalid")).unwrap();
+     let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+-    let memory = crate::test_utils::TestDiskMemory::new(total, 4);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total,
++        4,
++    );
+     assert!(
+         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+             &config,
+@@ -2109,7 +2124,10 @@
+     let (_directory, config) = installation();
+     seed(&config, "owned-empty", 0);
+     let total = installed_metadata_total(NodeDisk::memory_requirements(&config).unwrap());
+-    let memory = crate::test_utils::TestDiskMemory::new(total, 4);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total,
++        4,
++    );
+     let disk = crate::test_utils::retry_disk_registry(|| {
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     })
+@@ -2163,7 +2181,10 @@
+ #[test]
+ fn registry_busy_precedes_memory_acquisition_without_allocating() {
+     let (_directory, config) = installation();
+-    let memory = crate::test_utils::TestDiskMemory::new(1, 1);
++    let memory = crate::test_utils::TestDiskMemory::new(
++        crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(1).unwrap() + 1,
++        1,
++    );
+     let guard = registry().lock();
+     let (result, allocations) = crate::allocation_tests::measure(|| {
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+diff --git a/crates/kasumi-store/src/node_file.rs b/crates/kasumi-store/src/node_file.rs
+--- a/crates/kasumi-store/src/node_file.rs
++++ b/crates/kasumi-store/src/node_file.rs
+@@ -68,6 +68,83 @@
+ }
+ 
+ impl NodeFile {
++    /// Concrete backing charged by the fixed storage registration before this
++    /// prepared NodeFile and its path/backend allocations are constructed.
++    pub(crate) fn prepared_backing_bytes(path: &Path) -> io::Result<u64> {
++        use crate::disk_memory::{add, allocation, arc};
++        add(
++            add(
++                arc::<Self>()?,
++                allocation::<u8>(
++                    u64::try_from(path.as_os_str().len())
++                        .map_err(|_| io::ErrorKind::InvalidInput)?,
++                )?,
++            )?,
++            allocation::<NodeBackend>(1)?,
++        )
++    }
++
++    /// Allocation only. The exact empty descriptor owner is published in the
++    /// storage census before `acquire_prepared` may perform any filesystem I/O.
++    pub(crate) fn retained_prepared(path: &Path, id: Uuid, disk: Arc<NodeDisk>) -> Arc<Self> {
++        Arc::new(Self {
++            file: RwLock::new(None),
++            disk,
++            path: path.to_owned(),
++            id,
++            #[cfg(test)]
++            after_write_check: Default::default(),
++        })
++    }
++
++    pub(crate) fn acquire_prepared(
++        &self,
++        mode: &crate::storage_opening::NodeOpeningMode,
++    ) -> Result<()> {
++        use crate::storage_opening::NodeOpeningMode;
++        ensure!(!self.id.is_nil(), "node store identity is nil");
++        let (root, relative) = self.disk.binding(&self.path)?;
++        let file = match mode {
++            NodeOpeningMode::Create => {
++                self.disk
++                    .create_file(root, relative, DiskWork::Foreground)?
++            }
++            NodeOpeningMode::OwnedEmpty(_) | NodeOpeningMode::Existing => {
++                self.disk.open_file(root, relative)?
++            }
++        };
++        // No validation, callback or envelope operation precedes actual custody.
++        *self.file.write() = Some(file);
++        {
++            let guard = self.file.read();
++            let file = present(&guard)?;
++            file.check_owner()?;
++            match mode {
++                NodeOpeningMode::OwnedEmpty(identity) => {
++                    ensure!(
++                        &file.identity()? == identity,
++                        "prepared node file identity differs"
++                    );
++                    ensure!(file.observed_len()? == 0, "prepared node file is not empty");
++                }
++                NodeOpeningMode::Existing => {
++                    let length = file.observed_len()?;
++                    ensure!(
++                        length > HEADER_BYTES as u64 && length <= i64::MAX as u64,
++                        "existing node payload length is invalid"
++                    );
++                    let mut bytes = [0; HEADER_BYTES];
++                    file.read_exact_at(&mut bytes, 0)?;
++                    validate_header(&bytes, self.id, HeaderUse::Reopen)?;
++                }
++                NodeOpeningMode::Create => {}
++            }
++        }
++        if !matches!(mode, NodeOpeningMode::Existing) {
++            self.prepare()?;
++        }
++        Ok(())
++    }
+     pub(crate) fn create_new(path: &Path, id: Uuid, disk: Arc<NodeDisk>) -> Result<Arc<Self>> {
+         ensure!(!id.is_nil(), "node store identity is nil");
+         let (root, relative) = disk.binding(path)?;
+diff --git a/crates/kasumi-store/src/scratch_disk.rs b/crates/kasumi-store/src/scratch_disk.rs
+--- a/crates/kasumi-store/src/scratch_disk.rs
++++ b/crates/kasumi-store/src/scratch_disk.rs
+@@ -802,7 +802,9 @@
+         let config = config(&directory, "not-created");
+         let required = ScratchDisk::memory_requirements(&config).unwrap();
+         let memory = TestDiskMemory::new(
+-            TestDiskMemory::required_reservation_bytes(required.owner_bytes).unwrap() - 1,
++            TestDiskMemory::required_bookkeeping_bytes(4).unwrap()
++                + TestDiskMemory::required_reservation_bytes(required.owner_bytes).unwrap()
++                - 1,
+             4,
+         );
+         assert!(
+@@ -821,7 +823,10 @@
+     fn installed_scratch_reuse_keeps_metadata_funded_after_public_strong_handles_drop() {
+         let directory = tempfile::tempdir().unwrap();
+         let config = config(&directory, "scratch");
+-        let memory = TestDiskMemory::new(total(&config), 4);
++        let memory = TestDiskMemory::new(
++            TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total(&config),
++            4,
++        );
+         let disk = crate::test_utils::retry_disk_registry(|| {
+             ScratchDisk::open_fixture(&config, memory.clone())
+         })
+@@ -835,7 +840,10 @@
+         .unwrap();
+         assert!(Arc::ptr_eq(&disk, &same));
+         assert_eq!(memory.snapshot(), held);
+-        let foreign = TestDiskMemory::new(total(&config), 4);
++        let foreign = TestDiskMemory::new(
++            TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total(&config),
++            4,
++        );
+         assert!(
+             crate::test_utils::retry_disk_registry(|| ScratchDisk::open_fixture(
+                 &config,
+@@ -896,7 +904,10 @@
+         use std::io::Write;
+         let directory = tempfile::tempdir().unwrap();
+         let config = config(&directory, "scratch");
+-        let memory = TestDiskMemory::new(total(&config), 4);
++        let memory = TestDiskMemory::new(
++            TestDiskMemory::required_bookkeeping_bytes(4).unwrap() + total(&config),
++            4,
++        );
+         let disk = crate::test_utils::retry_disk_registry(|| {
+             ScratchDisk::open_fixture(&config, memory.clone())
+         })
+@@ -928,7 +939,10 @@
+             max_bytes: 1 << 20,
+             min_free_bytes: 0,
+         };
+-        let memory = crate::test_utils::TestDiskMemory::new(1, 1);
++        let memory = crate::test_utils::TestDiskMemory::new(
++            crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(1).unwrap() + 1,
++            1,
++        );
+         let guard = registry().lock();
+         let (result, allocations) =
+             crate::allocation_tests::measure(|| ScratchDisk::open_fixture(&config, memory.clone()));
+diff --git a/crates/kasumi-store/src/storage_census.rs b/crates/kasumi-store/src/storage_census.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/storage_census.rs
+@@ -0,0 +1,553 @@
++//! Fixed custody owned by the exact installed memory provider.
++//!
++//! Each occupied cell owns its own resident lease, separate from its actual
++//! payload. Initial provider bookkeeping admits the complete fixed slot array.
++//! Owner backing is not a bound for redb caches, transactions, callback workspaces
++//! or opaque diagnostics; those need their own concrete workspace plans.
++use crate::{DiskMemoryLease, NodeDiskMemoryAdmission, disk_memory};
++use std::{
++    alloc::Layout,
++    any::Any,
++    io,
++    panic::{AssertUnwindSafe, catch_unwind},
++    sync::{
++        Arc, Mutex, MutexGuard, OnceLock,
++        atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering},
++    },
++};
++type Panic = Box<dyn Any + Send>;
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum StorageOwnerKind {
++    Database,
++    Writer,
++}
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct StorageOwnerId {
++    index: usize,
++    generation: u64,
++}
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum StorageCensusDisposition {
++    Retained,
++    Retired,
++    Stale,
++}
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum StorageCensusPanicPhase {
++    Construction,
++    Drive,
++    PayloadDisposal,
++    LeaseRetirement,
++}
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub struct StorageCensusSnapshot {
++    pub capacity: usize,
++    pub databases: usize,
++    pub writers: usize,
++    pub servicing: usize,
++    pub retained_panics: usize,
++    pub fenced: bool,
++}
++
++/// Only the store's concrete owners implement this contract. Drive uses
++/// nonblocking access to actual resources. True witnesses their positive
++/// disposal; it does not witness disposal of this owner's backing or diagnostics.
++pub(crate) trait StoragePayload: Send + Sync + 'static {
++    const KIND: StorageOwnerKind;
++    fn drive(&self) -> bool;
++}
++trait ErasedPayload: Any + Send + Sync {
++    fn drive(&self) -> bool;
++    fn try_dispose(self: Arc<Self>) -> Disposal;
++}
++enum Disposal {
++    StillOwned(Arc<dyn ErasedPayload>),
++    Disposed,
++    Panicked(Panic),
++}
++impl<T: StoragePayload> ErasedPayload for T {
++    fn drive(&self) -> bool {
++        StoragePayload::drive(self)
++    }
++    fn try_dispose(self: Arc<Self>) -> Disposal {
++        match Arc::try_unwrap(self) {
++            Err(owner) => Disposal::StillOwned(owner),
++            Ok(payload) => {
++                // No Weak or raw Arc capability escapes this census. The
++                // actual control block has retired before payload destruction.
++                match catch_unwind(AssertUnwindSafe(|| drop(payload))) {
++                    Ok(()) => Disposal::Disposed,
++                    Err(payload) => Disposal::Panicked(payload),
++                }
++            }
++        }
++    }
++}
++enum Cell {
++    Vacant,
++    Constructing,
++    Active {
++        owner: Arc<dyn ErasedPayload>,
++        servicing: bool,
++    },
++    Disposing,
++    RetiringLease,
++    Retained,
++}
++struct Metadata {
++    generation: u64,
++    kind: StorageOwnerKind,
++    cell: Cell,
++    lease: Option<DiskMemoryLease>,
++}
++struct OriginalPanic {
++    generation: u64,
++    phase: StorageCensusPanicPhase,
++    payload: Mutex<Panic>,
++}
++// Every effectful stage has a fixed scalar completion slot. A post-effect
++// try_lock failure returns Retained without losing its actual owner or result.
++const NONE: u8 = 0;
++const DRIVE_BUSY: u8 = 1;
++const DRIVE_SETTLED: u8 = 2;
++const PANICKED: u8 = 3;
++const PAYLOAD_DISPOSED: u8 = 4;
++const LEASE_RETIRED: u8 = 5;
++const UNEXPECTED_SHARED: u8 = 6;
++struct Slot {
++    metadata: Mutex<Metadata>,
++    pending: AtomicU8,
++    // Once installed, an original panic makes the cell permanently retained;
++    // successful retirement/reuse therefore never needs to reset this OnceLock.
++    panic: OnceLock<OriginalPanic>,
++    unexpected_shared: OnceLock<Arc<dyn ErasedPayload>>,
++}
++
++/// Allocate after admitting required_bytes in provider bookkeeping; bind the
++/// exact provider before publishing it. There is no optional or lazy census.
++pub struct StorageCensus {
++    provider: AtomicPtr<()>,
++    next_generation: AtomicU64,
++    fenced: AtomicBool,
++    slots: Box<[Slot]>,
++}
++impl StorageCensus {
++    pub fn required_bytes(capacity: usize) -> io::Result<u64> {
++        if capacity == 0 {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        Layout::array::<Slot>(capacity).map_err(|_| disk_memory::overflow())?;
++        disk_memory::allocation::<Slot>(
++            u64::try_from(capacity).map_err(|_| disk_memory::overflow())?,
++        )
++    }
++    pub fn allocate(capacity: usize) -> io::Result<Self> {
++        Self::required_bytes(capacity)?;
++        let mut slots = Box::<[Slot]>::new_uninit_slice(capacity);
++        for slot in &mut slots {
++            let metadata = Mutex::new(Metadata {
++                generation: 0,
++                kind: StorageOwnerKind::Database,
++                cell: Cell::Vacant,
++                lease: None,
++            });
++            drop(metadata.lock().unwrap());
++            slot.write(Slot {
++                metadata,
++                pending: AtomicU8::new(NONE),
++                panic: OnceLock::new(),
++                unexpected_shared: OnceLock::new(),
++            });
++        }
++        // SAFETY: all elements are initialized before assume_init. Each loop
++        // iteration uses only fixed inline constructors and an unshared mutex.
++        let slots = unsafe { slots.assume_init() };
++        Ok(Self {
++            provider: AtomicPtr::new(std::ptr::null_mut()),
++            next_generation: AtomicU64::new(0),
++            fenced: AtomicBool::new(false),
++            slots,
++        })
++    }
++    pub fn bind_provider(&self, provider: &Arc<dyn NodeDiskMemoryAdmission>) -> io::Result<()> {
++        if !std::ptr::eq(self, provider.storage_census()) {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        let identity = Arc::as_ptr(provider).cast::<()>().cast_mut();
++        self.provider
++            .compare_exchange(
++                std::ptr::null_mut(),
++                identity,
++                Ordering::AcqRel,
++                Ordering::Acquire,
++            )
++            .map_err(|_| io::Error::from(io::ErrorKind::AlreadyExists))?;
++        Ok(())
++    }
++    fn require_provider(&self, provider: &Arc<dyn NodeDiskMemoryAdmission>) -> io::Result<()> {
++        if !std::ptr::eq(self, provider.storage_census())
++            || self.provider.load(Ordering::Acquire)
++                != Arc::as_ptr(provider).cast::<()>().cast_mut()
++        {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        Ok(())
++    }
++    /// Telemetry only. Drain itself always uses the nonblocking snapshot below.
++    /// Original observation guards never own any of these metadata mutexes.
++    pub fn snapshot(&self) -> StorageCensusSnapshot {
++        let mut snapshot = StorageCensusSnapshot {
++            capacity: self.slots.len(),
++            ..Default::default()
++        };
++        for slot in &self.slots {
++            let metadata = slot.metadata.lock().unwrap_or_else(|poisoned| {
++                self.fenced.store(true, Ordering::Release);
++                poisoned.into_inner()
++            });
++            Self::count(&mut snapshot, slot, &metadata);
++        }
++        snapshot.fenced = self.fenced.load(Ordering::Acquire);
++        snapshot
++    }
++    pub fn try_snapshot(&self) -> Option<StorageCensusSnapshot> {
++        let mut snapshot = StorageCensusSnapshot {
++            capacity: self.slots.len(),
++            ..Default::default()
++        };
++        for slot in &self.slots {
++            let metadata = slot.metadata.try_lock().ok()?;
++            Self::count(&mut snapshot, slot, &metadata);
++        }
++        snapshot.fenced = self.fenced.load(Ordering::Acquire);
++        Some(snapshot)
++    }
++    fn count(snapshot: &mut StorageCensusSnapshot, slot: &Slot, metadata: &Metadata) {
++        if matches!(metadata.cell, Cell::Vacant) {
++            return;
++        }
++        match metadata.kind {
++            StorageOwnerKind::Database => snapshot.databases += 1,
++            StorageOwnerKind::Writer => snapshot.writers += 1,
++        }
++        if matches!(
++            metadata.cell,
++            Cell::Constructing
++                | Cell::Disposing
++                | Cell::RetiringLease
++                | Cell::Active {
++                    servicing: true,
++                    ..
++                }
++        ) {
++            snapshot.servicing += 1;
++        }
++        if slot.panic.get().is_some() {
++            snapshot.retained_panics += 1;
++        }
++    }
++    pub fn owner_at(&self, index: usize) -> Option<StorageOwnerId> {
++        let metadata = self.slots.get(index)?.metadata.try_lock().ok()?;
++        (!matches!(metadata.cell, Cell::Vacant)).then_some(StorageOwnerId {
++            index,
++            generation: metadata.generation,
++        })
++    }
++    /// The original Send-only payload has its own fixed mutex. A retained
++    /// observation cannot hold census metadata or prevent another owner draining.
++    pub fn observation(&self, id: StorageOwnerId) -> Option<StorageCensusObservation<'_>> {
++        let original = self.slots.get(id.index)?.panic.get()?;
++        if original.generation != id.generation {
++            return None;
++        }
++        let payload = match original.payload.try_lock() {
++            Ok(payload) => payload,
++            Err(std::sync::TryLockError::WouldBlock) => return None,
++            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
++        };
++        Some(StorageCensusObservation {
++            phase: original.phase,
++            payload,
++        })
++    }
++    fn record_panic(
++        slot: &Slot,
++        id: StorageOwnerId,
++        phase: StorageCensusPanicPhase,
++        payload: Panic,
++    ) {
++        // This slot has one servicing owner, and every first panic is terminal.
++        // No later stage is dispatched after it; observation only calls get.
++        let original = OriginalPanic {
++            generation: id.generation,
++            phase,
++            payload: Mutex::new(payload),
++        };
++        assert!(
++            slot.panic.set(original).is_ok(),
++            "one terminal original per census slot"
++        );
++        slot.pending.store(PANICKED, Ordering::Release);
++    }
++    /// Charge and publish a concrete owner before dispatch. The private store
++    /// constructors perform only allocation/inline initialization; no storage,
++    /// user callback, writer wait or destructor may occur inside the constructor.
++    pub(crate) fn register<T: StoragePayload>(
++        &self,
++        provider: Arc<dyn NodeDiskMemoryAdmission>,
++        backing_bytes: u64,
++        construct: impl FnOnce() -> T,
++    ) -> io::Result<StorageRegistration<T>> {
++        self.require_provider(&provider)?;
++        if self.fenced.load(Ordering::Acquire) {
++            return Err(io::ErrorKind::BrokenPipe.into());
++        }
++        let lease = provider
++            .clone()
++            .reserve_installed(disk_memory::add(disk_memory::arc::<T>()?, backing_bytes)?)?;
++        for (index, slot) in self.slots.iter().enumerate() {
++            let Ok(mut metadata) = slot.metadata.try_lock() else {
++                continue;
++            };
++            if !matches!(metadata.cell, Cell::Vacant) {
++                continue;
++            }
++            let generation = self
++                .next_generation
++                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
++                    value.checked_add(1)
++                })
++                .map_err(|_| io::ErrorKind::Other)?
++                + 1;
++            let id = StorageOwnerId { index, generation };
++            metadata.generation = generation;
++            metadata.kind = T::KIND;
++            metadata.lease = Some(lease);
++            metadata.cell = Cell::Constructing;
++            // Effect-free construction/publication is the only allocation held
++            // under this short metadata guard. Storage dispatch happens later.
++            match catch_unwind(AssertUnwindSafe(|| Arc::new(construct()))) {
++                Ok(owner) => {
++                    metadata.cell = Cell::Active {
++                        owner: owner.clone(),
++                        servicing: false,
++                    };
++                    drop(metadata);
++                    return Ok(StorageRegistration {
++                        provider,
++                        id,
++                        owner,
++                    });
++                }
++                Err(payload) => {
++                    Self::record_panic(slot, id, StorageCensusPanicPhase::Construction, payload);
++                    metadata.cell = Cell::Retained;
++                    return Err(io::ErrorKind::Other.into());
++                }
++            }
++        }
++        Err(io::ErrorKind::WouldBlock.into())
++    }
++    /// Recover only a typed facade to the already-installed exact owner. This
++    /// allocates no owner/control block, dispatches no work, and exposes no Weak.
++    pub(crate) fn retained<T: StoragePayload>(
++        &self,
++        provider: Arc<dyn NodeDiskMemoryAdmission>,
++        id: StorageOwnerId,
++    ) -> Option<StorageRegistration<T>> {
++        self.require_provider(&provider).ok()?;
++        let slot = self.slots.get(id.index)?;
++        let metadata = slot.metadata.try_lock().ok()?;
++        if metadata.generation != id.generation {
++            return None;
++        }
++        let Cell::Active { owner, .. } = &metadata.cell else {
++            return None;
++        };
++        let erased: Arc<dyn Any + Send + Sync> = owner.clone();
++        let owner = Arc::downcast::<T>(erased).ok()?;
++        Some(StorageRegistration {
++            provider,
++            id,
++            owner,
++        })
++    }
++    /// One actual owner; all post-effect bookkeeping uses try_lock. When busy,
++    /// the original completion remains in this fixed slot for a later call.
++    pub fn drain_owner(&self, id: StorageOwnerId) -> StorageCensusDisposition {
++        let Some(slot) = self.slots.get(id.index) else {
++            return StorageCensusDisposition::Stale;
++        };
++        // At most drive, payload disposal and lease retirement run in one pass.
++        for _ in 0..4 {
++            let Ok(mut metadata) = slot.metadata.try_lock() else {
++                return StorageCensusDisposition::Retained;
++            };
++            if metadata.generation != id.generation || matches!(metadata.cell, Cell::Vacant) {
++                return StorageCensusDisposition::Stale;
++            }
++            let pending = slot.pending.load(Ordering::Acquire);
++            if self.fenced.load(Ordering::Acquire)
++                || pending == PANICKED
++                || pending == UNEXPECTED_SHARED
++            {
++                return StorageCensusDisposition::Retained;
++            }
++            match &mut metadata.cell {
++                Cell::Active { owner, servicing } => {
++                    if *servicing {
++                        if pending == NONE {
++                            return StorageCensusDisposition::Retained;
++                        }
++                        slot.pending.store(NONE, Ordering::Release);
++                        *servicing = false;
++                        if pending == DRIVE_BUSY {
++                            return StorageCensusDisposition::Retained;
++                        }
++                        assert_eq!(pending, DRIVE_SETTLED);
++                        // With no Weak/raw Arc escape, a count of one cannot
++                        // race a new facade clone: there is no other facade.
++                        if Arc::strong_count(owner) != 1 {
++                            return StorageCensusDisposition::Retained;
++                        }
++                        let Cell::Active { owner, .. } =
++                            std::mem::replace(&mut metadata.cell, Cell::Disposing)
++                        else {
++                            unreachable!();
++                        };
++                        drop(metadata);
++                        match owner.try_dispose() {
++                            Disposal::Disposed => {
++                                slot.pending.store(PAYLOAD_DISPOSED, Ordering::Release)
++                            }
++                            Disposal::Panicked(payload) => Self::record_panic(
++                                slot,
++                                id,
++                                StorageCensusPanicPhase::PayloadDisposal,
++                                payload,
++                            ),
++                            Disposal::StillOwned(owner) => {
++                                assert!(slot.unexpected_shared.set(owner).is_ok());
++                                slot.pending.store(UNEXPECTED_SHARED, Ordering::Release);
++                                self.fenced.store(true, Ordering::Release);
++                            }
++                        }
++                    } else {
++                        *servicing = true;
++                        let temporary = owner.clone();
++                        drop(metadata);
++                        let result = catch_unwind(AssertUnwindSafe(|| temporary.drive()));
++                        // The original Arc is still installed throughout this
++                        // catch and temporary drop; a drive panic cannot erase it.
++                        drop(temporary);
++                        match result {
++                            Ok(true) => slot.pending.store(DRIVE_SETTLED, Ordering::Release),
++                            Ok(false) => slot.pending.store(DRIVE_BUSY, Ordering::Release),
++                            Err(payload) => Self::record_panic(
++                                slot,
++                                id,
++                                StorageCensusPanicPhase::Drive,
++                                payload,
++                            ),
++                        }
++                    }
++                }
++                Cell::Disposing => {
++                    if pending != PAYLOAD_DISPOSED {
++                        return StorageCensusDisposition::Retained;
++                    }
++                    slot.pending.store(NONE, Ordering::Release);
++                    metadata.cell = Cell::RetiringLease;
++                    let lease = metadata.lease.take();
++                    drop(metadata);
++                    match catch_unwind(AssertUnwindSafe(|| drop(lease))) {
++                        Ok(()) => slot.pending.store(LEASE_RETIRED, Ordering::Release),
++                        Err(payload) => {
++                            Self::record_panic(
++                                slot,
++                                id,
++                                StorageCensusPanicPhase::LeaseRetirement,
++                                payload,
++                            );
++                            self.fenced.store(true, Ordering::Release);
++                        }
++                    }
++                }
++                Cell::RetiringLease => {
++                    if pending != LEASE_RETIRED {
++                        return StorageCensusDisposition::Retained;
++                    }
++                    slot.pending.store(NONE, Ordering::Release);
++                    metadata.cell = Cell::Vacant;
++                    return StorageCensusDisposition::Retired;
++                }
++                Cell::Constructing | Cell::Retained | Cell::Vacant => {
++                    return StorageCensusDisposition::Retained;
++                }
++            }
++        }
++        StorageCensusDisposition::Retained
++    }
++    /// One nonblocking fixed pass. Busy observations or resources never require
++    /// a user facade to be reconstructed and cannot force a metadata wait.
++    pub fn drain(&self) -> Option<StorageCensusSnapshot> {
++        for index in 0..self.slots.len() {
++            if let Some(id) = self.owner_at(index) {
++                self.drain_owner(id);
++            }
++        }
++        self.try_snapshot()
++    }
++}
++
++pub struct StorageCensusObservation<'a> {
++    phase: StorageCensusPanicPhase,
++    payload: MutexGuard<'a, Panic>,
++}
++impl StorageCensusObservation<'_> {
++    pub fn phase(&self) -> StorageCensusPanicPhase {
++        self.phase
++    }
++    pub fn payload(&self) -> &(dyn Any + Send) {
++        self.payload.as_ref()
++    }
++}
++
++/// Private actual-owner facade. Drop never removes the independent census cell.
++/// A queued worker may disappear without destroying its actual accepted request.
++pub(crate) struct StorageRegistration<T> {
++    provider: Arc<dyn NodeDiskMemoryAdmission>,
++    id: StorageOwnerId,
++    owner: Arc<T>,
++}
++impl<T> Clone for StorageRegistration<T> {
++    fn clone(&self) -> Self {
++        Self {
++            provider: self.provider.clone(),
++            id: self.id,
++            owner: self.owner.clone(),
++        }
++    }
++}
++impl<T> StorageRegistration<T> {
++    pub(crate) fn owner(&self) -> &T {
++        &self.owner
++    }
++    pub(crate) fn id(&self) -> StorageOwnerId {
++        self.id
++    }
++    pub(crate) fn retire(self) -> StorageCensusDisposition {
++        let Self {
++            provider,
++            id,
++            owner,
++        } = self;
++        drop(owner);
++        provider.storage_census().drain_owner(id)
++    }
++}
++
++#[cfg(test)]
++#[path = "storage_census_tests.rs"]
++mod tests;
+diff --git a/crates/kasumi-store/src/storage_census_tests.rs b/crates/kasumi-store/src/storage_census_tests.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/storage_census_tests.rs
+@@ -0,0 +1,377 @@
++use super::*;
++use crate::test_utils::TestDiskMemory;
++use std::sync::atomic::{AtomicBool, AtomicUsize};
++
++struct ActualOwner {
++    ready: Arc<AtomicBool>,
++    drops: Arc<AtomicUsize>,
++    memory: Arc<TestDiskMemory>,
++}
++impl StoragePayload for ActualOwner {
++    const KIND: StorageOwnerKind = StorageOwnerKind::Writer;
++    fn drive(&self) -> bool {
++        self.ready.load(Ordering::Acquire)
++    }
++}
++impl Drop for ActualOwner {
++    fn drop(&mut self) {
++        assert_eq!(self.memory.snapshot().live_reservations, 1);
++        assert_eq!(self.memory.storage_census().snapshot().servicing, 1);
++        self.drops.fetch_add(1, Ordering::AcqRel);
++    }
++}
++fn fixture_memory(capacity: usize) -> Arc<TestDiskMemory> {
++    TestDiskMemory::new(1 << 20, capacity)
++}
++
++#[test]
++fn fixed_census_is_precharged_and_bound_to_the_exact_provider() {
++    let memory = fixture_memory(2);
++    assert_eq!(
++        memory.snapshot().bookkeeping_bytes,
++        TestDiskMemory::required_bookkeeping_bytes(2).unwrap()
++    );
++    assert_eq!(memory.snapshot().used_bytes, 0);
++    assert_eq!(memory.storage_census().snapshot().capacity, 2);
++    let foreign = fixture_memory(2);
++    let provider: Arc<dyn NodeDiskMemoryAdmission> = foreign.clone();
++    let before = foreign.snapshot();
++    let built = AtomicBool::new(false);
++    let result = memory
++        .storage_census()
++        .register::<ActualOwner>(provider.clone(), 0, || {
++            built.store(true, Ordering::Release);
++            unreachable!()
++        });
++    assert!(result.is_err());
++    assert!(!built.load(Ordering::Acquire));
++    assert_eq!(foreign.snapshot(), before);
++    assert!(memory.storage_census().bind_provider(&provider).is_err());
++    assert!(StorageCensus::required_bytes(0).is_err());
++    assert!(StorageCensus::required_bytes(usize::MAX).is_err());
++}
++
++#[test]
++fn facade_cancellation_preserves_actual_owner_and_census_drives_later_retirement() {
++    let memory = fixture_memory(1);
++    let base = memory.snapshot();
++    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
++    let ready = Arc::new(AtomicBool::new(false));
++    let drops = Arc::new(AtomicUsize::new(0));
++    let registration = memory
++        .storage_census()
++        .register(provider, 0, || ActualOwner {
++            ready: ready.clone(),
++            drops: drops.clone(),
++            memory: memory.clone(),
++        })
++        .unwrap();
++    let id = registration.id();
++    let actual = std::ptr::from_ref(registration.owner());
++    let held = memory.snapshot();
++    assert!(held.used_bytes > base.used_bytes);
++    assert_eq!(held.live_reservations, 1);
++    drop(registration);
++    assert_eq!(memory.storage_census().drain().unwrap().writers, 1);
++    assert_eq!(drops.load(Ordering::Acquire), 0);
++    assert_eq!(memory.snapshot(), held);
++    {
++        let metadata = memory.storage_census().slots[id.index]
++            .metadata
++            .lock()
++            .unwrap();
++        let Cell::Active { owner, .. } = &metadata.cell else {
++            panic!("actual owner missing");
++        };
++        assert_eq!(Arc::as_ptr(owner).cast::<()>(), actual.cast::<()>());
++    }
++    ready.store(true, Ordering::Release);
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retired
++    );
++    assert_eq!(drops.load(Ordering::Acquire), 1);
++    assert_eq!(memory.snapshot().used_bytes, base.used_bytes);
++    assert_eq!(memory.snapshot().live_reservations, 0);
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Stale
++    );
++}
++
++struct PanicOwner {
++    cause: Mutex<Option<Panic>>,
++    actual: Box<u64>,
++    drops: Arc<AtomicUsize>,
++}
++impl StoragePayload for PanicOwner {
++    const KIND: StorageOwnerKind = StorageOwnerKind::Database;
++    fn drive(&self) -> bool {
++        std::panic::resume_unwind(self.cause.lock().unwrap().take().unwrap())
++    }
++}
++impl Drop for PanicOwner {
++    fn drop(&mut self) {
++        self.drops.fetch_add(1, Ordering::AcqRel);
++    }
++}
++
++#[test]
++fn settlement_unwind_keeps_the_actual_owner_and_exact_original_payload() {
++    let memory = fixture_memory(1);
++    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
++    let original = Box::new(717_u64);
++    let original_address = std::ptr::from_ref(original.as_ref());
++    let drops = Arc::new(AtomicUsize::new(0));
++    let registration = memory
++        .storage_census()
++        .register(provider, 0, || PanicOwner {
++            cause: Mutex::new(Some(original)),
++            actual: Box::new(919),
++            drops: drops.clone(),
++        })
++        .unwrap();
++    let id = registration.id();
++    let actual_address = std::ptr::from_ref(registration.owner().actual.as_ref());
++    let owner_address = std::ptr::from_ref(registration.owner());
++    let held = memory.snapshot();
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retained
++    );
++    assert_eq!(
++        std::ptr::from_ref(registration.owner().actual.as_ref()),
++        actual_address
++    );
++    assert_eq!(*registration.owner().actual, 919);
++    drop(registration);
++    assert_eq!(memory.snapshot(), held);
++    assert_eq!(drops.load(Ordering::Acquire), 0);
++    let observation = memory.storage_census().observation(id).unwrap();
++    assert_eq!(observation.phase(), StorageCensusPanicPhase::Drive);
++    assert_eq!(
++        std::ptr::from_ref(observation.payload().downcast_ref::<u64>().unwrap()),
++        original_address
++    );
++    drop(observation);
++    {
++        let metadata = memory.storage_census().slots[id.index]
++            .metadata
++            .lock()
++            .unwrap();
++        let Cell::Active { owner, .. } = &metadata.cell else {
++            panic!("actual owner missing");
++        };
++        assert_eq!(Arc::as_ptr(owner).cast::<()>(), owner_address.cast::<()>());
++    }
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retained
++    );
++    assert_eq!(memory.storage_census().snapshot().retained_panics, 1);
++    assert_eq!(drops.load(Ordering::Acquire), 0);
++}
++
++struct DestructorPanic {
++    drops: Arc<AtomicUsize>,
++}
++impl StoragePayload for DestructorPanic {
++    const KIND: StorageOwnerKind = StorageOwnerKind::Writer;
++    fn drive(&self) -> bool {
++        true
++    }
++}
++impl Drop for DestructorPanic {
++    fn drop(&mut self) {
++        self.drops.fetch_add(1, Ordering::AcqRel);
++        std::panic::panic_any(123_u64);
++    }
++}
++#[test]
++fn payload_destructor_panic_keeps_original_and_charge_and_never_replays() {
++    let memory = fixture_memory(1);
++    let drops = Arc::new(AtomicUsize::new(0));
++    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
++    let registration = memory
++        .storage_census()
++        .register(provider, 0, || DestructorPanic {
++            drops: drops.clone(),
++        })
++        .unwrap();
++    let id = registration.id();
++    let held = memory.snapshot();
++    assert_eq!(registration.retire(), StorageCensusDisposition::Retained);
++    assert_eq!(memory.snapshot(), held);
++    let observation = memory.storage_census().observation(id).unwrap();
++    assert_eq!(
++        observation.phase(),
++        StorageCensusPanicPhase::PayloadDisposal
++    );
++    assert_eq!(observation.payload().downcast_ref::<u64>(), Some(&123));
++    drop(observation);
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retained
++    );
++    assert_eq!(drops.load(Ordering::Acquire), 1);
++}
++
++#[test]
++fn hard_capacity_and_byte_denial_precede_owner_construction() {
++    let base = TestDiskMemory::required_bookkeeping_bytes(1).unwrap();
++    let owner_bytes = disk_memory::arc::<ActualOwner>().unwrap();
++    let required = TestDiskMemory::required_reservation_bytes(owner_bytes).unwrap();
++    let memory = TestDiskMemory::new(base + required - 1, 1);
++    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
++    let called = AtomicBool::new(false);
++    assert!(
++        memory
++            .storage_census()
++            .register::<ActualOwner>(provider, 0, || {
++                called.store(true, Ordering::Release);
++                unreachable!()
++            })
++            .is_err()
++    );
++    assert!(!called.load(Ordering::Acquire));
++    assert_eq!(memory.snapshot().bookkeeping_bytes, base);
++    assert_eq!(memory.snapshot().used_bytes, 0);
++    assert_eq!(memory.storage_census().snapshot().writers, 0);
++}
++
++#[test]
++fn constructor_unwind_is_classified_before_dispatch_and_keeps_exact_payload() {
++    let memory = fixture_memory(1);
++    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
++    let original = Box::new(181_u64);
++    let address = std::ptr::from_ref(original.as_ref());
++    assert!(
++        memory
++            .storage_census()
++            .register::<ActualOwner>(provider, 0, || { std::panic::resume_unwind(original) })
++            .is_err()
++    );
++    let census = memory.storage_census();
++    let snapshot = census.snapshot();
++    assert_eq!(snapshot.writers, 1);
++    assert_eq!(snapshot.databases, 0);
++    assert_eq!(memory.snapshot().live_reservations, 1);
++    let id = census.owner_at(0).unwrap();
++    let report = census.observation(id).unwrap();
++    assert_eq!(report.phase(), StorageCensusPanicPhase::Construction);
++    assert_eq!(
++        std::ptr::from_ref(report.payload().downcast_ref::<u64>().unwrap()),
++        address
++    );
++    drop(report);
++    assert_eq!(census.drain_owner(id), StorageCensusDisposition::Retained);
++}
++
++struct ReadyOwner(Arc<AtomicUsize>);
++impl StoragePayload for ReadyOwner {
++    const KIND: StorageOwnerKind = StorageOwnerKind::Writer;
++    fn drive(&self) -> bool {
++        true
++    }
++}
++impl Drop for ReadyOwner {
++    fn drop(&mut self) {
++        self.0.fetch_add(1, Ordering::AcqRel);
++    }
++}
++#[test]
++fn retained_original_observation_never_holds_metadata_or_stalls_another_owner() {
++    let memory = fixture_memory(2);
++    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
++    let bad = memory
++        .storage_census()
++        .register(provider.clone(), 0, || DestructorPanic {
++            drops: Arc::new(AtomicUsize::new(0)),
++        })
++        .unwrap();
++    let id = bad.id();
++    assert_eq!(bad.retire(), StorageCensusDisposition::Retained);
++    let observation = memory.storage_census().observation(id).unwrap();
++    let drops = Arc::new(AtomicUsize::new(0));
++    let good = memory
++        .storage_census()
++        .register(provider, 0, || ReadyOwner(drops.clone()))
++        .unwrap();
++    drop(good);
++    let snapshot = memory.storage_census().drain().unwrap();
++    assert_eq!(snapshot.writers, 1);
++    assert_eq!(snapshot.retained_panics, 1);
++    assert_eq!(drops.load(Ordering::Acquire), 1);
++    assert_eq!(observation.payload().downcast_ref::<u64>(), Some(&123));
++}
++
++struct PausedDrive {
++    entered: std::sync::mpsc::Sender<()>,
++    resume: Mutex<std::sync::mpsc::Receiver<()>>,
++    drops: Arc<AtomicUsize>,
++}
++impl StoragePayload for PausedDrive {
++    const KIND: StorageOwnerKind = StorageOwnerKind::Writer;
++    fn drive(&self) -> bool {
++        self.entered.send(()).unwrap();
++        self.resume.lock().unwrap().recv().unwrap();
++        true
++    }
++}
++impl Drop for PausedDrive {
++    fn drop(&mut self) {
++        self.drops.fetch_add(1, Ordering::AcqRel);
++    }
++}
++#[test]
++fn post_drive_metadata_contention_keeps_completion_in_fixed_slot_without_waiting() {
++    // The synthetic pause positions another thread at the exact post-effect
++    // metadata boundary; concrete production drivers use try_lock themselves.
++    let memory = fixture_memory(1);
++    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
++    let (entered, observed) = std::sync::mpsc::channel();
++    let (resume, receiver) = std::sync::mpsc::channel();
++    let drops = Arc::new(AtomicUsize::new(0));
++    let registration = memory
++        .storage_census()
++        .register(provider, 0, || PausedDrive {
++            entered,
++            resume: Mutex::new(receiver),
++            drops: drops.clone(),
++        })
++        .unwrap();
++    let id = registration.id();
++    drop(registration);
++    let worker_memory = memory.clone();
++    let worker = std::thread::spawn(move || worker_memory.storage_census().drain_owner(id));
++    observed
++        .recv_timeout(std::time::Duration::from_secs(5))
++        .unwrap();
++    let metadata = memory.storage_census().slots[id.index]
++        .metadata
++        .lock()
++        .unwrap();
++    resume.send(()).unwrap();
++    assert_eq!(worker.join().unwrap(), StorageCensusDisposition::Retained);
++    assert_eq!(
++        memory.storage_census().slots[id.index]
++            .pending
++            .load(Ordering::Acquire),
++        DRIVE_SETTLED
++    );
++    assert!(matches!(
++        metadata.cell,
++        Cell::Active {
++            servicing: true,
++            ..
++        }
++    ));
++    assert_eq!(drops.load(Ordering::Acquire), 0);
++    assert_eq!(memory.snapshot().live_reservations, 1);
++    drop(metadata);
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retired
++    );
++    assert_eq!(drops.load(Ordering::Acquire), 1);
++}
+diff --git a/crates/kasumi-store/src/storage_opening.rs b/crates/kasumi-store/src/storage_opening.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/storage_opening.rs
+@@ -0,0 +1,495 @@
++//! Concrete custody boundary for physical opening and fixed NodeTables work.
++//!
++//! Adoption prerequisite: the census and listed fixed backing are bounded here.
++//! Complete redb workspace/diagnostic plans and all twelve consumer replacements
++//! remain mandatory before this boundary can be the production NodeDatabase.
++use crate::{
++    NodeDisk, NodeDiskMemoryAdmission, StorageCensusDisposition, StorageOwnerId,
++    node_file::NodeFile,
++    private_files::FileIdentity,
++    storage_census::{StorageOwnerKind, StoragePayload, StorageRegistration},
++};
++use parking_lot::{Mutex, MutexGuard};
++use redb::{
++    DatabaseOpenMode, DatabaseOpenSettlement, ReadableDatabase, RetainedDatabaseOpening,
++    RetainedWriteTransaction, TerminalObservation,
++};
++use std::{
++    any::Any,
++    io,
++    panic::{AssertUnwindSafe, catch_unwind},
++    path::Path,
++    sync::{
++        Arc,
++        atomic::{AtomicBool, Ordering},
++    },
++};
++use uuid::Uuid;
++
++pub enum NodeOpeningMode {
++    Create,
++    OwnedEmpty(FileIdentity),
++    Existing,
++}
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NodeOpeningPhase {
++    Prepared,
++    FileAcquisition,
++    RedbOpening,
++    Open,
++    Closing,
++}
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NodeWriterPhase {
++    Queued,
++    Begin,
++    Body,
++    Terminal,
++    Disposal,
++    Finished,
++    Cancelled,
++}
++
++enum Observation<E> {
++    NotEntered,
++    Entered,
++    Returned(Result<(), E>),
++    Panicked(Box<dyn Any + Send>),
++}
++impl<E> Observation<E> {
++    fn success(&self) -> bool {
++        matches!(self, Self::Returned(Ok(())))
++    }
++    fn borrow(&self) -> TerminalObservation<'_, E> {
++        match self {
++            Self::NotEntered => TerminalObservation::NotEntered,
++            Self::Entered => TerminalObservation::Entered,
++            Self::Returned(Ok(())) => TerminalObservation::Returned(Ok(())),
++            Self::Returned(Err(error)) => TerminalObservation::Returned(Err(error)),
++            Self::Panicked(payload) => TerminalObservation::Panicked(payload.as_ref()),
++        }
++    }
++}
++struct OpeningState {
++    mode: NodeOpeningMode,
++    file: Arc<NodeFile>,
++    redb: RetainedDatabaseOpening,
++    phase: NodeOpeningPhase,
++    acquisition: Observation<anyhow::Error>,
++    opening_outer: Observation<std::convert::Infallible>,
++    outcomes_released: bool,
++}
++fn observed_failure<E>(observation: TerminalObservation<'_, E>) -> bool {
++    matches!(
++        observation,
++        TerminalObservation::Entered
++            | TerminalObservation::Returned(Err(_))
++            | TerminalObservation::Panicked(_)
++    )
++}
++fn transaction_failure(report: &redb::WriteTerminalReport<'_>) -> bool {
++    observed_failure(report.terminal())
++        || observed_failure(report.rollback())
++        || observed_failure(report.disposal())
++}
++impl OpeningState {
++    fn has_failures(&self) -> bool {
++        let report = self.redb.report();
++        observed_failure(self.acquisition.borrow())
++            || observed_failure(self.opening_outer.borrow())
++            || observed_failure(report.opening())
++            || observed_failure(report.partial_close())
++            || report.bootstrap().as_ref().is_some_and(transaction_failure)
++            || report.database_close().is_some_and(|close| {
++                observed_failure(close.shutdown()) || observed_failure(close.backend())
++            })
++            || report.fence().observation().is_none_or(observed_failure)
++    }
++}
++struct DatabaseOwner {
++    stopped: AtomicBool,
++    serial: Mutex<()>,
++    state: Mutex<OpeningState>,
++}
++impl StoragePayload for DatabaseOwner {
++    const KIND: StorageOwnerKind = StorageOwnerKind::Database;
++    fn drive(&self) -> bool {
++        self.stopped.store(true, Ordering::Release);
++        let Some(mut state) = self.state.try_lock() else {
++            return false;
++        };
++        state.phase = NodeOpeningPhase::Closing;
++        if state.redb.report().settlement() != DatabaseOpenSettlement::Closed {
++            // A caller can relinquish only outcomes that already existed.
++            // This attempt may produce a new shutdown/backend error, even if
++            // backend release subsequently returns a positive Closed witness.
++            state.outcomes_released = false;
++            let _ = state.redb.close();
++        }
++        state.redb.report().settlement() == DatabaseOpenSettlement::Closed
++            && (state.outcomes_released || !state.has_failures())
++    }
++}
++/// Every facade is secondary to the actual installed census owner.
++pub struct RegisteredNodeOpening {
++    registration: StorageRegistration<DatabaseOwner>,
++}
++impl RegisteredNodeOpening {
++    /// Borrow the same retained owner after the original facade disappeared.
++    /// This never creates, reopens or retries a physical resource.
++    pub fn retained(
++        provider: Arc<dyn NodeDiskMemoryAdmission>,
++        id: StorageOwnerId,
++    ) -> Option<Self> {
++        let registration = provider.storage_census().retained(provider.clone(), id)?;
++        Some(Self { registration })
++    }
++    pub fn prepare(
++        path: &Path,
++        id: Uuid,
++        disk: Arc<NodeDisk>,
++        mode: NodeOpeningMode,
++    ) -> io::Result<Self> {
++        if id.is_nil() {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        let provider = disk.memory().clone();
++        let known_backing = NodeFile::prepared_backing_bytes(path)?;
++        let registration =
++            provider
++                .storage_census()
++                .register(provider.clone(), known_backing, || {
++                    let file = NodeFile::retained_prepared(path, id, disk);
++                    let redb_mode = if matches!(mode, NodeOpeningMode::Existing) {
++                        DatabaseOpenMode::Existing
++                    } else {
++                        DatabaseOpenMode::Create
++                    };
++                    let redb = redb::Database::builder(file.clone())
++                        .retain_backend(Box::new(file.backend()), redb_mode);
++                    DatabaseOwner {
++                        stopped: AtomicBool::new(false),
++                        serial: Mutex::new(()),
++                        state: Mutex::new(OpeningState {
++                            mode,
++                            file,
++                            redb,
++                            phase: NodeOpeningPhase::Prepared,
++                            acquisition: Observation::NotEntered,
++                            opening_outer: Observation::NotEntered,
++                            outcomes_released: false,
++                        }),
++                    }
++                })?;
++        Ok(Self { registration })
++    }
++    pub fn id(&self) -> StorageOwnerId {
++        self.registration.id()
++    }
++    pub fn open(&self) -> NodeOpeningPhase {
++        let owner = self.registration.owner();
++        let mut state = owner.state.lock();
++        if state.phase != NodeOpeningPhase::Prepared || owner.stopped.load(Ordering::Acquire) {
++            return state.phase;
++        }
++        state.phase = NodeOpeningPhase::FileAcquisition;
++        state.acquisition = Observation::Entered;
++        let result = catch_unwind(AssertUnwindSafe(|| {
++            state.file.acquire_prepared(&state.mode)
++        }));
++        state.acquisition = match result {
++            Ok(result) => Observation::Returned(result),
++            Err(payload) => Observation::Panicked(payload),
++        };
++        if !state.acquisition.success() {
++            return state.phase;
++        }
++        state.phase = NodeOpeningPhase::RedbOpening;
++        state.opening_outer = Observation::Entered;
++        match catch_unwind(AssertUnwindSafe(|| state.redb.open().settlement())) {
++            Ok(settlement) => {
++                state.opening_outer = Observation::Returned(Ok(()));
++                if settlement == DatabaseOpenSettlement::Ready {
++                    state.phase = NodeOpeningPhase::Open;
++                }
++            }
++            Err(payload) => {
++                state.opening_outer = Observation::Panicked(payload);
++                owner.stopped.store(true, Ordering::Release);
++            }
++        }
++        state.phase
++    }
++    pub fn report(&self) -> NodeOpeningReport<'_> {
++        NodeOpeningReport {
++            state: self.registration.owner().state.lock(),
++        }
++    }
++    /// Fixed, closed operation shape with no user callback or raw transaction
++    /// escape. The actual queued request is registered before any serial wait.
++    pub fn queue_node_tables(&self) -> io::Result<RegisteredNodeTables> {
++        if self.registration.owner().stopped.load(Ordering::Acquire) {
++            return Err(io::ErrorKind::BrokenPipe.into());
++        }
++        let state = self.registration.owner().state.lock();
++        if matches!(state.mode, NodeOpeningMode::Existing) || state.phase != NodeOpeningPhase::Open
++        {
++            return Err(io::ErrorKind::InvalidInput.into());
++        }
++        let provider = state.file.disk().memory().clone();
++        drop(state);
++        let database = self.registration.clone();
++        let registration = provider
++            .storage_census()
++            .register(provider.clone(), 0, || NodeTablesRequest {
++                database,
++                state: Mutex::new(WriterState {
++                    phase: NodeWriterPhase::Queued,
++                    transaction: None,
++                    begin: Observation::NotEntered,
++                    body: Observation::NotEntered,
++                    outer: Observation::NotEntered,
++                    outcomes_released: false,
++                    #[cfg(test)]
++                    fail_owner_before_terminal: false,
++                }),
++            })?;
++        Ok(RegisteredNodeTables { registration })
++    }
++    /// Relinquish this caller's outcomes after inspection. Physical uncertainty
++    /// still prevents retirement; other real facades still retain the owner.
++    pub fn retire(self) -> StorageCensusDisposition {
++        let owner = self.registration.owner();
++        owner.stopped.store(true, Ordering::Release);
++        if let Some(mut state) = owner.state.try_lock() {
++            state.outcomes_released = true;
++        }
++        self.registration.retire()
++    }
++}
++pub struct NodeOpeningReport<'a> {
++    state: MutexGuard<'a, OpeningState>,
++}
++impl NodeOpeningReport<'_> {
++    pub fn acquisition(&self) -> TerminalObservation<'_, anyhow::Error> {
++        self.state.acquisition.borrow()
++    }
++    pub fn opening_outer(&self) -> TerminalObservation<'_, std::convert::Infallible> {
++        self.state.opening_outer.borrow()
++    }
++    pub fn redb(&self) -> redb::DatabaseOpenReport<'_> {
++        self.state.redb.report()
++    }
++}
++
++#[derive(Debug)]
++pub enum NodeTablesBodyError {
++    Catalog(redb::TableError),
++    Records(redb::TableError),
++}
++struct WriterState {
++    phase: NodeWriterPhase,
++    transaction: Option<RetainedWriteTransaction>,
++    begin: Observation<redb::TransactionError>,
++    body: Observation<NodeTablesBodyError>,
++    outer: Observation<std::convert::Infallible>,
++    outcomes_released: bool,
++    #[cfg(test)]
++    fail_owner_before_terminal: bool,
++}
++impl WriterState {
++    fn has_failures(&self) -> bool {
++        observed_failure(self.begin.borrow())
++            || observed_failure(self.body.borrow())
++            || observed_failure(self.outer.borrow())
++            || self
++                .transaction
++                .as_ref()
++                .is_some_and(|transaction| transaction_failure(&transaction.report()))
++    }
++}
++struct NodeTablesRequest {
++    database: StorageRegistration<DatabaseOwner>,
++    state: Mutex<WriterState>,
++}
++impl NodeTablesRequest {
++    fn dispose(&self, state: &mut WriterState) -> bool {
++        let Some(transaction) = state.transaction.as_mut() else {
++            return !matches!(state.outer, Observation::Panicked(_))
++                && !matches!(state.begin, Observation::Entered);
++        };
++        if transaction.report().disposal_complete() {
++            // This actual disposal proof remains valid after the matching
++            // database becomes Closed and its borrowed witness is gated away.
++            return true;
++        }
++        // Abort/disposal can create a new original outcome. An earlier report
++        // release never acknowledges that future operation.
++        state.outcomes_released = false;
++        let Some(database) = self.database.owner().state.try_lock() else {
++            return false;
++        };
++        let Some(witness) = database.redb.retained_database() else {
++            return false;
++        };
++        if transaction.report().operation().is_none() {
++            let _ = transaction.abort();
++        }
++        transaction.dispose_settled(witness).disposal_complete()
++    }
++    fn execute(&self, state: &mut WriterState) {
++        let owner = self.database.owner();
++        // This gate is separate from both the census and the database's state.
++        // close seals admission and uses try_lock even while this worker waits.
++        let _serial = owner.serial.lock();
++        if owner.stopped.load(Ordering::Acquire) {
++            state.phase = NodeWriterPhase::Cancelled;
++            return;
++        }
++        state.phase = NodeWriterPhase::Begin;
++        state.begin = Observation::Entered;
++        let database = owner.state.lock();
++        let Some(db) = database.redb.database() else {
++            state.begin = Observation::Returned(Err(redb::StorageError::DatabaseClosed.into()));
++            return;
++        };
++        match db.begin_write() {
++            Ok(transaction) => {
++                state.transaction = Some(transaction.retain());
++                state.begin = Observation::Returned(Ok(()));
++            }
++            Err(error) => {
++                state.begin = Observation::Returned(Err(error));
++                return;
++            }
++        }
++        drop(database);
++        state.phase = NodeWriterPhase::Body;
++        state.body = Observation::Entered;
++        let body = catch_unwind(AssertUnwindSafe(|| {
++            let transaction = state.transaction.as_ref().unwrap().transaction().unwrap();
++            transaction
++                .open_table(crate::CATALOG)
++                .map_err(NodeTablesBodyError::Catalog)?;
++            transaction
++                .open_table(crate::RECORDS)
++                .map_err(NodeTablesBodyError::Records)?;
++            Ok(())
++        }));
++        state.body = match body {
++            Ok(result) => Observation::Returned(result),
++            Err(payload) => Observation::Panicked(payload),
++        };
++        state.phase = NodeWriterPhase::Terminal;
++        #[cfg(test)]
++        if state.fail_owner_before_terminal {
++            owner.state.lock().file.disk().fail();
++        }
++        let transaction = state.transaction.as_mut().unwrap();
++        if state.body.success() {
++            let _ = transaction.commit();
++        } else {
++            let _ = transaction.abort();
++        }
++        state.phase = NodeWriterPhase::Disposal;
++        if self.dispose(state) {
++            state.phase = NodeWriterPhase::Finished;
++        }
++        if state.phase != NodeWriterPhase::Finished {
++            owner.stopped.store(true, Ordering::Release);
++        }
++    }
++}
++impl StoragePayload for NodeTablesRequest {
++    const KIND: StorageOwnerKind = StorageOwnerKind::Writer;
++    fn drive(&self) -> bool {
++        let Some(mut state) = self.state.try_lock() else {
++            return false;
++        };
++        if state.phase == NodeWriterPhase::Queued {
++            state.phase = NodeWriterPhase::Cancelled;
++        }
++        self.dispose(&mut state) && (state.outcomes_released || !state.has_failures())
++    }
++}
++pub struct RegisteredNodeTables {
++    registration: StorageRegistration<NodeTablesRequest>,
++}
++impl RegisteredNodeTables {
++    /// Observe the exact request after its worker/facade was cancelled. The
++    /// census retained the request, inputs, transaction and original outcomes.
++    pub fn retained(
++        provider: Arc<dyn NodeDiskMemoryAdmission>,
++        id: StorageOwnerId,
++    ) -> Option<Self> {
++        let registration = provider.storage_census().retained(provider.clone(), id)?;
++        Some(Self { registration })
++    }
++    pub fn run(&self) -> NodeWriterPhase {
++        let request = self.registration.owner();
++        let mut state = request.state.lock();
++        if state.phase != NodeWriterPhase::Queued {
++            return state.phase;
++        }
++        state.outcomes_released = false;
++        state.outer = Observation::Entered;
++        match catch_unwind(AssertUnwindSafe(|| request.execute(&mut state))) {
++            Ok(()) => state.outer = Observation::Returned(Ok(())),
++            Err(payload) => {
++                state.outer = Observation::Panicked(payload);
++                request
++                    .database
++                    .owner()
++                    .stopped
++                    .store(true, Ordering::Release);
++            }
++        }
++        state.phase
++    }
++    pub fn id(&self) -> StorageOwnerId {
++        self.registration.id()
++    }
++    pub fn report(&self) -> NodeTablesReport<'_> {
++        NodeTablesReport {
++            state: self.registration.owner().state.lock(),
++        }
++    }
++    /// Relinquish this caller's outcomes after inspection. Physical uncertainty
++    /// still prevents retirement; other real facades still retain the owner.
++    pub fn retire(self) -> StorageCensusDisposition {
++        let owner = self.registration.owner();
++        if let Some(mut state) = owner.state.try_lock() {
++            // A second facade may still call run. Seal this queued request
++            // before acknowledging it; never acknowledge an active worker.
++            if state.phase == NodeWriterPhase::Queued {
++                state.phase = NodeWriterPhase::Cancelled;
++            }
++            state.outcomes_released = true;
++        }
++        self.registration.retire()
++    }
++}
++pub struct NodeTablesReport<'a> {
++    state: MutexGuard<'a, WriterState>,
++}
++impl NodeTablesReport<'_> {
++    pub fn begin(&self) -> TerminalObservation<'_, redb::TransactionError> {
++        self.state.begin.borrow()
++    }
++    pub fn body(&self) -> TerminalObservation<'_, NodeTablesBodyError> {
++        self.state.body.borrow()
++    }
++    pub fn outer(&self) -> TerminalObservation<'_, std::convert::Infallible> {
++        self.state.outer.borrow()
++    }
++    pub fn terminal(&self) -> Option<redb::WriteTerminalReport<'_>> {
++        self.state
++            .transaction
++            .as_ref()
++            .map(RetainedWriteTransaction::report)
++    }
++}
++
++#[cfg(test)]
++#[path = "storage_opening_tests.rs"]
++mod tests;
+diff --git a/crates/kasumi-store/src/storage_opening_tests.rs b/crates/kasumi-store/src/storage_opening_tests.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/kasumi-store/src/storage_opening_tests.rs
+@@ -0,0 +1,501 @@
++use super::*;
++use crate::{
++    NodeDiskMemoryAdmission,
++    test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry},
++};
++use std::time::{Duration, Instant};
++
++fn disk(path: &Path, memory: &Arc<TestDiskMemory>) -> Arc<NodeDisk> {
++    retry_disk_registry(|| NodeDisk::fixture_for_path(path, memory.clone())).unwrap()
++}
++// Every assertion failure releases the actual serial gate and joins the
++// worker; the fixture never leaves a detached accepted writer behind.
++struct HeldQueue<'a> {
++    serial: Option<MutexGuard<'a, ()>>,
++    worker: Option<std::thread::JoinHandle<NodeWriterPhase>>,
++}
++impl<'a> HeldQueue<'a> {
++    fn start(opening: &'a RegisteredNodeOpening, queued: RegisteredNodeTables) -> Self {
++        let serial = opening.registration.owner().serial.lock();
++        let worker = std::thread::spawn(move || queued.run());
++        Self {
++            serial: Some(serial),
++            worker: Some(worker),
++        }
++    }
++    fn finish(mut self) -> NodeWriterPhase {
++        drop(self.serial.take());
++        self.worker.take().unwrap().join().unwrap()
++    }
++}
++impl Drop for HeldQueue<'_> {
++    fn drop(&mut self) {
++        drop(self.serial.take());
++        if let Some(worker) = self.worker.take() {
++            let _ = worker.join();
++        }
++    }
++}
++
++const ID: Uuid = Uuid::from_u128(0x38a5_c9c5_6a88_41f0_a1a3_a723_fe68_4535);
++
++#[test]
++fn registered_opening_exists_before_actual_creation_and_abandoned_prepare_has_no_file_effect() {
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("prepared.kasumi");
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = disk(&path, &memory);
++    let baseline = memory.snapshot();
++    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
++    let id = opening.id();
++    assert!(!path.exists());
++    assert_eq!(memory.storage_census().snapshot().databases, 1);
++    assert!(memory.snapshot().used_bytes > baseline.used_bytes);
++    assert!(matches!(
++        opening.report().acquisition(),
++        TerminalObservation::NotEntered
++    ));
++    drop(opening);
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retired
++    );
++    assert!(!path.exists());
++    assert_eq!(memory.storage_census().snapshot().databases, 0);
++    assert_eq!(memory.snapshot().used_bytes, baseline.used_bytes);
++}
++
++#[test]
++fn registered_node_tables_retains_actual_transaction_and_reports_through_physical_close() {
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("initialized.kasumi");
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = disk(&path, &memory);
++    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
++    assert_eq!(opening.open(), NodeOpeningPhase::Open);
++    assert!(path.exists());
++    assert!(matches!(
++        opening.report().opening_outer(),
++        TerminalObservation::Returned(Ok(()))
++    ));
++    let writer = opening.queue_node_tables().unwrap();
++    assert_eq!(memory.storage_census().snapshot().writers, 1);
++    assert!(matches!(
++        writer.report().begin(),
++        TerminalObservation::NotEntered
++    ));
++    assert_eq!(writer.run(), NodeWriterPhase::Finished);
++    {
++        let report = writer.report();
++        assert!(matches!(
++            report.begin(),
++            TerminalObservation::Returned(Ok(()))
++        ));
++        assert!(matches!(
++            report.body(),
++            TerminalObservation::Returned(Ok(()))
++        ));
++        assert!(matches!(
++            report.outer(),
++            TerminalObservation::Returned(Ok(()))
++        ));
++        let terminal = report.terminal().unwrap();
++        assert_eq!(
++            terminal.operation(),
++            Some(redb::WriteTerminalOperation::Commit)
++        );
++        assert!(terminal.disposal_complete());
++        assert!(matches!(
++            terminal.terminal(),
++            TerminalObservation::Returned(Ok(()))
++        ));
++    }
++    {
++        let state = opening.registration.owner().state.lock();
++        let read = state.redb.database().unwrap().begin_read().unwrap();
++        read.open_table(crate::CATALOG).unwrap();
++        read.open_table(crate::RECORDS).unwrap();
++    }
++    let id = opening.id();
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retained
++    );
++    assert_eq!(
++        opening.report().redb().settlement(),
++        DatabaseOpenSettlement::Closed
++    );
++    // The returned report's real request owner remains charged after physical
++    // close. Only its own actual disposal can remove the writer cell.
++    assert_eq!(memory.storage_census().snapshot().writers, 1);
++    assert!(writer.report().terminal().unwrap().disposal_complete());
++    assert_eq!(writer.retire(), StorageCensusDisposition::Retired);
++    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
++}
++
++#[test]
++fn actual_queued_worker_keeps_request_without_blocking_close_and_cancels_after_seal() {
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("queued.kasumi");
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = disk(&path, &memory);
++    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
++    assert_eq!(opening.open(), NodeOpeningPhase::Open);
++    let writer = opening.queue_node_tables().unwrap();
++    let id = writer.id();
++    let queued = RegisteredNodeTables {
++        registration: writer.registration.clone(),
++    };
++    let paused = HeldQueue::start(&opening, queued);
++    let deadline = Instant::now() + Duration::from_secs(5);
++    while !writer.registration.owner().state.is_locked() {
++        assert!(
++            Instant::now() < deadline,
++            "worker never reached serial queue"
++        );
++        std::thread::yield_now();
++    }
++    let started = Instant::now();
++    assert_eq!(
++        memory.storage_census().drain_owner(opening.id()),
++        StorageCensusDisposition::Retained
++    );
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retained
++    );
++    assert!(
++        started.elapsed() < Duration::from_secs(1),
++        "close waited for queued writer"
++    );
++    assert_eq!(memory.storage_census().snapshot().writers, 1);
++    assert_eq!(paused.finish(), NodeWriterPhase::Cancelled);
++    assert!(matches!(
++        writer.report().begin(),
++        TerminalObservation::NotEntered
++    ));
++    drop(writer);
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retired
++    );
++    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
++}
++
++#[test]
++fn actual_body_error_is_retained_before_abort_and_disposal_without_replay() {
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("body-error.kasumi");
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = disk(&path, &memory);
++    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
++    assert_eq!(opening.open(), NodeOpeningPhase::Open);
++    {
++        // Produce a real incompatible table with the ordinary engine. The
++        // NodeTables adapter below takes its actual TableError and abort path.
++        let state = opening.registration.owner().state.lock();
++        let tx = state.redb.database().unwrap().begin_write().unwrap();
++        tx.open_table(redb::TableDefinition::<u64, u64>::new("wrapped_keys_v1"))
++            .unwrap();
++        tx.commit().unwrap();
++    }
++    let writer = opening.queue_node_tables().unwrap();
++    assert_eq!(writer.run(), NodeWriterPhase::Finished);
++    let address = {
++        let report = writer.report();
++        let TerminalObservation::Returned(Err(NodeTablesBodyError::Catalog(error))) = report.body()
++        else {
++            panic!("expected actual catalog error");
++        };
++        assert!(report.terminal().unwrap().disposal_complete());
++        assert_eq!(
++            report.terminal().unwrap().operation(),
++            Some(redb::WriteTerminalOperation::Abort)
++        );
++        std::ptr::from_ref(error)
++    };
++    assert_eq!(writer.run(), NodeWriterPhase::Finished);
++    memory.storage_census().drain_owner(opening.id());
++    {
++        let report = writer.report();
++        let TerminalObservation::Returned(Err(NodeTablesBodyError::Catalog(error))) = report.body()
++        else {
++            panic!("original body error lost");
++        };
++        assert_eq!(std::ptr::from_ref(error), address);
++    }
++    assert_eq!(writer.retire(), StorageCensusDisposition::Retired);
++    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
++}
++
++// An uncertain transaction is deliberately retained by the exact provider's
++// fixed census. Keep fixture path custody too, rather than unlinking under it.
++static UNCERTAIN_DIRECTORIES: std::sync::Mutex<[Option<tempfile::TempDir>; 2]> =
++    std::sync::Mutex::new([None, None]);
++#[test]
++fn real_commit_and_abort_failures_keep_actual_request_after_all_facades_cancel() {
++    for (index, body_error) in [false, true].into_iter().enumerate() {
++        let directory = private_tempdir().unwrap();
++        let path = directory.path().join("terminal-failure.kasumi");
++        let memory = TestDiskMemory::new(256 << 20, 4096);
++        let disk = disk(&path, &memory);
++        let opening =
++            RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
++        UNCERTAIN_DIRECTORIES.lock().unwrap()[index] = Some(directory);
++        assert_eq!(opening.open(), NodeOpeningPhase::Open);
++        if body_error {
++            let state = opening.registration.owner().state.lock();
++            let tx = state.redb.database().unwrap().begin_write().unwrap();
++            tx.open_table(redb::TableDefinition::<u64, u64>::new("wrapped_keys_v1"))
++                .unwrap();
++            tx.commit().unwrap();
++        }
++        let writer = opening.queue_node_tables().unwrap();
++        writer
++            .registration
++            .owner()
++            .state
++            .lock()
++            .fail_owner_before_terminal = true;
++        let id = writer.id();
++        assert_eq!(writer.run(), NodeWriterPhase::Disposal);
++        let (original, transaction) = {
++            let report = writer.report();
++            let terminal = report.terminal().unwrap();
++            assert_eq!(
++                terminal.operation(),
++                Some(if body_error {
++                    redb::WriteTerminalOperation::Abort
++                } else {
++                    redb::WriteTerminalOperation::Commit
++                })
++            );
++            assert_eq!(
++                terminal.settlement(),
++                redb::WriteTerminalSettlement::Retained
++            );
++            assert!(!terminal.disposal_complete());
++            let TerminalObservation::Returned(Err(error)) = terminal.terminal() else {
++                panic!("expected actual terminal refusal");
++            };
++            (
++                std::ptr::from_ref(error),
++                std::ptr::from_ref(report.state.transaction.as_ref().unwrap()),
++            )
++        };
++        drop(writer);
++        drop(opening);
++        let held = memory.snapshot();
++        let snapshot = memory.storage_census().drain().unwrap();
++        assert_eq!(snapshot.databases, 1);
++        assert_eq!(snapshot.writers, 1);
++        assert_eq!(memory.snapshot(), held);
++        let retained = RegisteredNodeTables::retained(memory.clone(), id).unwrap();
++        {
++            let report = retained.report();
++            let terminal = report.terminal().unwrap();
++            let TerminalObservation::Returned(Err(error)) = terminal.terminal() else {
++                panic!("original terminal failure lost");
++            };
++            assert_eq!(std::ptr::from_ref(error), original);
++            assert_eq!(
++                std::ptr::from_ref(report.state.transaction.as_ref().unwrap()),
++                transaction
++            );
++            assert!(!terminal.disposal_complete());
++        }
++        assert_eq!(retained.retire(), StorageCensusDisposition::Retained);
++        let raw = std::fs::OpenOptions::new()
++            .read(true)
++            .write(true)
++            .open(&path)
++            .unwrap();
++        use std::os::fd::AsRawFd;
++        // SAFETY: the owned descriptor is live, and nonblocking flock does not
++        // mutate its bytes or transfer ownership of the descriptor.
++        assert_eq!(
++            unsafe { libc::flock(raw.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
++            -1
++        );
++        assert_eq!(io::Error::last_os_error().kind(), io::ErrorKind::WouldBlock);
++    }
++}
++
++#[test]
++fn abandoned_failed_open_keeps_original_after_positive_close_until_explicit_report_release() {
++    use std::os::unix::fs::OpenOptionsExt;
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("invalid-envelope.kasumi");
++    drop(
++        std::fs::OpenOptions::new()
++            .create_new(true)
++            .write(true)
++            .mode(0o600)
++            .open(&path)
++            .unwrap(),
++    );
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = disk(&path, &memory);
++    let opening =
++        RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Existing).unwrap();
++    assert_eq!(opening.open(), NodeOpeningPhase::FileAcquisition);
++    let original = {
++        let report = opening.report();
++        let TerminalObservation::Returned(Err(error)) = report.acquisition() else {
++            panic!("expected actual envelope rejection");
++        };
++        std::ptr::from_ref(error)
++    };
++    let id = opening.id();
++    drop(opening);
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retained
++    );
++    assert_eq!(memory.storage_census().snapshot().databases, 1);
++    let retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
++    {
++        let report = retained.report();
++        assert_eq!(report.redb().settlement(), DatabaseOpenSettlement::Closed);
++        let TerminalObservation::Returned(Err(error)) = report.acquisition() else {
++            panic!("original acquisition error lost");
++        };
++        assert_eq!(std::ptr::from_ref(error), original);
++    }
++    assert_eq!(retained.retire(), StorageCensusDisposition::Retired);
++    assert_eq!(memory.storage_census().snapshot().databases, 0);
++}
++
++#[test]
++fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("new-close-error.kasumi");
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = disk(&path, &memory);
++    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
++    assert_eq!(opening.open(), NodeOpeningPhase::Open);
++    let id = opening.id();
++    let actual = std::ptr::from_ref(opening.registration.owner());
++    // The new error is returned by the real retained shutdown protocol; the
++    // borrowed backend close still releases the actual descriptor successfully.
++    opening.registration.owner().state.lock().file.disk().fail();
++    assert_eq!(opening.retire(), StorageCensusDisposition::Retained);
++    let retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
++    assert_eq!(std::ptr::from_ref(retained.registration.owner()), actual);
++    let original = {
++        let report = retained.report();
++        let redb = report.redb();
++        assert_eq!(redb.settlement(), DatabaseOpenSettlement::Closed);
++        let close = redb.database_close().unwrap();
++        assert!(matches!(
++            close.backend(),
++            TerminalObservation::Returned(Ok(()))
++        ));
++        let TerminalObservation::Returned(Err(error)) = close.shutdown() else {
++            panic!("new original shutdown failure absent");
++        };
++        std::ptr::from_ref(error)
++    };
++    drop(retained);
++    let charged = memory.snapshot();
++    assert_eq!(
++        memory.storage_census().drain_owner(id),
++        StorageCensusDisposition::Retained
++    );
++    assert_eq!(memory.snapshot(), charged);
++    let observed = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
++    {
++        let report = observed.report();
++        let redb = report.redb();
++        let close = redb.database_close().unwrap();
++        let TerminalObservation::Returned(Err(error)) = close.shutdown() else {
++            panic!("close original was erased");
++        };
++        assert_eq!(std::ptr::from_ref(error), original);
++    }
++    assert_eq!(observed.retire(), StorageCensusDisposition::Retired);
++}
++
++#[test]
++fn queued_relinquishment_seals_the_request_before_another_facade_can_run() {
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("sealed-queue.kasumi");
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = disk(&path, &memory);
++    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
++    assert_eq!(opening.open(), NodeOpeningPhase::Open);
++    let first = opening.queue_node_tables().unwrap();
++    let second = RegisteredNodeTables::retained(memory.clone(), first.id()).unwrap();
++    assert_eq!(first.retire(), StorageCensusDisposition::Retained);
++    assert_eq!(second.run(), NodeWriterPhase::Cancelled);
++    assert!(matches!(
++        second.report().begin(),
++        TerminalObservation::NotEntered
++    ));
++    assert!(second.report().terminal().is_none());
++    assert_eq!(second.retire(), StorageCensusDisposition::Retired);
++    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
++}
++
++#[test]
++fn busy_worker_cannot_acknowledge_the_body_error_that_it_has_not_produced_yet() {
++    let directory = private_tempdir().unwrap();
++    let path = directory.path().join("busy-report-release.kasumi");
++    let memory = TestDiskMemory::new(256 << 20, 4096);
++    let disk = disk(&path, &memory);
++    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
++    assert_eq!(opening.open(), NodeOpeningPhase::Open);
++    {
++        let state = opening.registration.owner().state.lock();
++        let tx = state.redb.database().unwrap().begin_write().unwrap();
++        tx.open_table(redb::TableDefinition::<u64, u64>::new("wrapped_keys_v1"))
++            .unwrap();
++        tx.commit().unwrap();
++    }
++    let first = opening.queue_node_tables().unwrap();
++    let id = first.id();
++    let observer = RegisteredNodeTables::retained(memory.clone(), id).unwrap();
++    let queued = RegisteredNodeTables::retained(memory.clone(), id).unwrap();
++    let paused = HeldQueue::start(&opening, queued);
++    let deadline = Instant::now() + Duration::from_secs(5);
++    while !observer.registration.owner().state.is_locked() {
++        assert!(
++            Instant::now() < deadline,
++            "worker did not enter the real serial queue"
++        );
++        std::thread::yield_now();
++    }
++    let started = Instant::now();
++    assert_eq!(first.retire(), StorageCensusDisposition::Retained);
++    assert!(
++        started.elapsed() < Duration::from_secs(1),
++        "relinquishment waited for an active worker"
++    );
++    assert_eq!(paused.finish(), NodeWriterPhase::Finished);
++    let original = {
++        let report = observer.report();
++        let TerminalObservation::Returned(Err(NodeTablesBodyError::Catalog(error))) = report.body()
++        else {
++            panic!("actual body failure absent");
++        };
++        assert!(report.terminal().unwrap().disposal_complete());
++        std::ptr::from_ref(error)
++    };
++    drop(observer);
++    drop(opening);
++    let snapshot = memory.storage_census().drain().unwrap();
++    assert_eq!(snapshot.writers, 1);
++    let retained = RegisteredNodeTables::retained(memory.clone(), id).unwrap();
++    {
++        let report = retained.report();
++        let TerminalObservation::Returned(Err(NodeTablesBodyError::Catalog(error))) = report.body()
++        else {
++            panic!("unacknowledged original lost");
++        };
++        assert_eq!(std::ptr::from_ref(error), original);
++    }
++    assert_eq!(retained.retire(), StorageCensusDisposition::Retired);
++    let final_snapshot = memory.storage_census().drain().unwrap();
++    assert_eq!(final_snapshot.writers, 0);
++    assert_eq!(final_snapshot.databases, 0);
++}
+diff --git a/crates/kasumi-store/src/test_utils.rs b/crates/kasumi-store/src/test_utils.rs
+--- a/crates/kasumi-store/src/test_utils.rs
++++ b/crates/kasumi-store/src/test_utils.rs
+@@ -49,12 +49,16 @@
+ /// same mandatory resident acquisition and owns every accepted lease until Drop;
+ /// no production constructor selects this governor implicitly.
+ pub struct TestDiskMemory {
++    storage_census: crate::StorageCensus,
+     max_bytes: u64,
+     max_reservations: usize,
+     state: std::sync::Mutex<TestDiskMemorySnapshot>,
+ }
+ #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+ pub struct TestDiskMemorySnapshot {
++    /// Fixed provider and census backing, admitted before their allocations.
++    pub bookkeeping_bytes: u64,
++    /// Bytes held by live resident leases, additional to bookkeeping.
+     pub used_bytes: u64,
+     pub live_reservations: usize,
+     pub attempts: u64,
+@@ -66,13 +70,31 @@
+ impl TestDiskMemory {
+     pub fn new(max_bytes: u64, max_reservations: usize) -> std::sync::Arc<Self> {
+         assert!(max_bytes > 0 && max_reservations > 0);
++        let base_bytes = Self::required_bookkeeping_bytes(max_reservations).unwrap();
++        assert!(
++            base_bytes <= max_bytes,
++            "fixture bookkeeping admission denied"
++        );
++        let storage_census = crate::StorageCensus::allocate(max_reservations).unwrap();
+         let owner = std::sync::Arc::new(Self {
++            storage_census,
+             max_bytes,
+             max_reservations,
+-            state: Default::default(),
++            state: std::sync::Mutex::new(TestDiskMemorySnapshot {
++                bookkeeping_bytes: base_bytes,
++                ..Default::default()
++            }),
+         });
+         drop(owner.state.lock().unwrap());
++        let provider: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission> = owner.clone();
++        owner.storage_census.bind_provider(&provider).unwrap();
+         owner
++    }
++    pub fn required_bookkeeping_bytes(max_reservations: usize) -> std::io::Result<u64> {
++        crate::disk_memory::add(
++            crate::disk_memory::arc::<Self>()?,
++            crate::StorageCensus::required_bytes(max_reservations)?,
++        )
+     }
+     pub fn required_reservation_bytes(bytes: u64) -> std::io::Result<u64> {
+         crate::disk_memory::add(bytes, crate::disk_memory::allocation::<TestDiskLease>(1)?)
+@@ -82,6 +104,9 @@
+     }
+ }
+ impl crate::NodeDiskMemoryAdmission for TestDiskMemory {
++    fn storage_census(&self) -> &crate::StorageCensus {
++        &self.storage_census
++    }
+     fn reserve_installed(
+         self: std::sync::Arc<Self>,
+         bytes: u64,
+@@ -96,7 +121,11 @@
+             .used_bytes
+             .checked_add(bytes)
+             .ok_or(std::io::ErrorKind::OutOfMemory)?;
+-        if next > self.max_bytes || state.live_reservations >= self.max_reservations {
++        if next
++            .checked_add(state.bookkeeping_bytes)
++            .is_none_or(|total| total > self.max_bytes)
++            || state.live_reservations >= self.max_reservations
++        {
+             return Err(std::io::ErrorKind::OutOfMemory.into());
+         }
+         state.used_bytes = next;

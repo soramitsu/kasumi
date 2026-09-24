@@ -10,12 +10,12 @@ use crate::tree_store::{
     PageNumberHashMap, PageResolver, PageTracker, RawBtree,
 };
 use crate::types::{Key, TypeName, Value};
+use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::max;
 use core::marker::PhantomData;
-use core::mem::size_of;
 use core::ops::Range;
 
 pub(crate) fn multimap_btree_stats(
@@ -92,7 +92,7 @@ fn multimap_stats_helper(
                     SubtreeV2 => {
                         // this is a sub-tree, so traverse it
                         let stats = btree_stats(
-                            Some(collection.as_subtree().root),
+                            Some(collection.as_subtree()?.root),
                             mem,
                             fixed_value_size,
                             <() as Value>::fixed_width(),
@@ -118,7 +118,7 @@ fn multimap_stats_helper(
             })
         }
         BRANCH => {
-            let accessor = BranchAccessor::new(&page, fixed_key_size);
+            let accessor = BranchAccessor::new(&page, fixed_key_size)?;
             let mut max_child_height = 0;
             let mut leaf_pages = 0;
             let mut branch_pages = 1;
@@ -176,7 +176,7 @@ pub(super) fn verify_tree_and_subtree_checksums(
             AllPageNumbersBtreeIter::new(header.root, key_size, mem.clone(), hint);
         for table_page in table_pages_iter {
             let page = mem.get_page(table_page?, hint)?;
-            let subtree_roots = parse_subtree_roots(&page, key_size, value_size);
+            let subtree_roots = parse_subtree_roots(&page, key_size, value_size)?;
             for header in subtree_roots {
                 if !RawBtree::new(
                     Some(header),
@@ -196,7 +196,61 @@ pub(super) fn verify_tree_and_subtree_checksums(
     Ok(true)
 }
 
-// Relocate all subtrees to lower index pages, if possible
+fn preflight_multimap_relocation(
+    number: PageNumber,
+    widths: (Option<usize>, Option<usize>),
+    allocator: &PageAllocator,
+    freed: &Arc<Mutex<Vec<PageNumber>>>,
+    map: &PageNumberHashMap<PageNumber>,
+    path: &mut [Option<PageNumber>; crate::tree_store::btree_base::MAX_BTREE_DEPTH],
+    depth: usize,
+) -> Result {
+    let (key_size, value_size) = widths;
+    if !map.contains_key(&number) {
+        return Ok(());
+    }
+    if depth >= path.len() || path[..depth].contains(&Some(number)) {
+        return Err(crate::StorageError::Corrupted(
+            "Invalid multimap relocation path".to_string(),
+        ));
+    }
+    path[depth] = Some(number);
+    let page = allocator.get_page(number, PageHint::None)?;
+    if page.memory()[0] == BRANCH {
+        let accessor = BranchAccessor::new(&page, key_size)?;
+        for index in 0..accessor.count_children() {
+            preflight_multimap_relocation(
+                accessor.child_page(index).unwrap(),
+                widths,
+                allocator,
+                freed,
+                map,
+                path,
+                depth + 1,
+            )?;
+        }
+    } else {
+        // Validate every stored subtree root before preflighting any subtree.
+        let roots = parse_subtree_roots(&page, key_size, value_size)?;
+        for header in roots {
+            let tree = UntypedBtreeMut::new(
+                Some(header),
+                allocator.clone(),
+                freed.clone(),
+                value_size,
+                <()>::fixed_width(),
+            );
+            tree.preflight_relocation(
+                header.root,
+                map,
+                &mut [None; crate::tree_store::btree_base::MAX_BTREE_DEPTH],
+                0,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn relocate_subtrees(
     root: (PageNumber, Checksum),
     key_size: Option<usize>,
@@ -205,12 +259,43 @@ pub(super) fn relocate_subtrees(
     freed_pages: Arc<Mutex<Vec<PageNumber>>>,
     relocation_map: &PageNumberHashMap<PageNumber>,
 ) -> Result<(PageNumber, Checksum)> {
-    let old_page = page_allocator.get_page(root.0, PageHint::None)?;
-    let mut new_page = if let Some(new_page_number) = relocation_map.get(&root.0) {
-        page_allocator.get_page_mut(*new_page_number)?
-    } else {
+    preflight_multimap_relocation(
+        root.0,
+        (key_size, value_size),
+        &page_allocator,
+        &freed_pages,
+        relocation_map,
+        &mut [None; crate::tree_store::btree_base::MAX_BTREE_DEPTH],
+        0,
+    )?;
+    relocate_subtrees_inner(
+        root,
+        key_size,
+        value_size,
+        page_allocator,
+        freed_pages,
+        relocation_map,
+    )
+}
+
+// Relocate all subtrees to lower index pages, if possible
+fn relocate_subtrees_inner(
+    root: (PageNumber, Checksum),
+    key_size: Option<usize>,
+    value_size: Option<usize>,
+    page_allocator: PageAllocator,
+    freed_pages: Arc<Mutex<Vec<PageNumber>>>,
+    relocation_map: &PageNumberHashMap<PageNumber>,
+) -> Result<(PageNumber, Checksum)> {
+    let Some(new_page_number) = relocation_map.get(&root.0) else {
         return Ok(root);
     };
+    let old_page = page_allocator.get_page(root.0, PageHint::None)?;
+    if old_page.memory()[0] == BRANCH {
+        BranchAccessor::new(&old_page, key_size)?;
+    }
+    parse_subtree_roots(&old_page, key_size, value_size)?;
+    let mut new_page = page_allocator.get_page_mut(*new_page_number)?;
     let new_page_number = new_page.get_page_number();
     new_page.memory_mut().copy_from_slice(old_page.memory());
 
@@ -230,7 +315,7 @@ pub(super) fn relocate_subtrees(
                 let entry = accessor.entry(i).unwrap();
                 let collection = UntypedDynamicCollection::from_bytes(entry.value());
                 if matches!(collection.collection_type(), SubtreeV2) {
-                    let sub_root = collection.as_subtree();
+                    let sub_root = collection.as_subtree()?;
                     let mut tree = UntypedBtreeMut::new(
                         Some(sub_root),
                         page_allocator.clone(),
@@ -248,12 +333,12 @@ pub(super) fn relocate_subtrees(
             }
         }
         BRANCH => {
-            let accessor = BranchAccessor::new(&old_page, key_size);
-            let mut mutator = BranchMutator::new(new_page.memory_mut());
+            let accessor = BranchAccessor::new(&old_page, key_size)?;
+            let mut mutator = BranchMutator::new(new_page.memory_mut())?;
             for i in 0..accessor.count_children() {
                 if let Some(child) = accessor.child_page(i) {
                     let child_checksum = accessor.child_checksum(i).unwrap();
-                    let (new_child, new_checksum) = relocate_subtrees(
+                    let (new_child, new_checksum) = relocate_subtrees_inner(
                         (child, child_checksum),
                         key_size,
                         value_size,
@@ -302,7 +387,14 @@ pub(super) fn finalize_tree_and_subtree_checksums(
             let entry = accessor.entry(i).unwrap();
             let collection = <&DynamicCollection<()>>::from_bytes(entry.value());
             if matches!(collection.collection_type(), SubtreeV2) {
-                let sub_root = collection.as_subtree();
+                collection.as_subtree()?;
+            }
+        }
+        for i in 0..accessor.num_pairs() {
+            let entry = accessor.entry(i).unwrap();
+            let collection = <&DynamicCollection<()>>::from_bytes(entry.value());
+            if matches!(collection.collection_type(), SubtreeV2) {
+                let sub_root = collection.as_subtree()?;
                 if page_allocator.uncommitted(sub_root.root) {
                     let mut subtree = UntypedBtreeMut::new(
                         Some(sub_root),
@@ -334,8 +426,8 @@ fn parse_subtree_roots<T: Page>(
     page: &T,
     fixed_key_size: Option<usize>,
     fixed_value_size: Option<usize>,
-) -> Vec<BtreeHeader> {
-    match page.memory()[0] {
+) -> Result<Vec<BtreeHeader>> {
+    Ok(match page.memory()[0] {
         BRANCH => {
             vec![]
         }
@@ -350,14 +442,14 @@ fn parse_subtree_roots<T: Page>(
                 let entry = accessor.entry(i).unwrap();
                 let collection = <&DynamicCollection<()>>::from_bytes(entry.value());
                 if matches!(collection.collection_type(), SubtreeV2) {
-                    result.push(collection.as_subtree());
+                    result.push(collection.as_subtree()?);
                 }
             }
 
             result
         }
         _ => unreachable!(),
-    }
+    })
 }
 
 pub(super) struct UntypedMultiBtree {
@@ -402,7 +494,7 @@ impl UntypedMultiBtree {
             let page = self.mem.get_page(path.page_number(), self.hint)?;
             match page.memory()[0] {
                 LEAF => {
-                    for header in parse_subtree_roots(&page, self.key_width, self.value_width) {
+                    for header in parse_subtree_roots(&page, self.key_width, self.value_width)? {
                         let subtree = UntypedBtree::new(
                             Some(header),
                             self.mem.clone(),
@@ -541,32 +633,24 @@ impl<V: Key> DynamicCollection<V> {
         (collection_range.start + 1)..collection_range.end
     }
 
-    pub(crate) fn as_subtree(&self) -> BtreeHeader {
-        assert!(matches!(self.collection_type(), SubtreeV2));
-        BtreeHeader::from_le_bytes(
-            self.data[1..=BtreeHeader::serialized_size()]
-                .try_into()
-                .unwrap(),
-        )
+    pub(crate) fn as_subtree(&self) -> Result<BtreeHeader> {
+        let malformed = || crate::StorageError::Corrupted("Corrupted multimap subtree".to_string());
+        if self.data.len() != 1 + BtreeHeader::serialized_size() || self.data[0] != 3 {
+            return Err(malformed());
+        }
+        BtreeHeader::from_le_bytes(self.data[1..].try_into().map_err(|_| malformed())?)
     }
 
-    pub(crate) fn get_num_values(&self) -> u64 {
-        match self.collection_type() {
+    pub(crate) fn get_num_values(&self) -> Result<u64> {
+        Ok(match self.collection_type() {
             Inline => {
                 let leaf_data = self.as_inline();
                 let accessor =
                     LeafAccessor::new(leaf_data, V::fixed_width(), <() as Value>::fixed_width());
                 accessor.num_pairs() as u64
             }
-            SubtreeV2 => {
-                let offset = 1 + PageNumber::serialized_size() + size_of::<Checksum>();
-                u64::from_le_bytes(
-                    self.data[offset..(offset + size_of::<u64>())]
-                        .try_into()
-                        .unwrap(),
-                )
-            }
-        }
+            SubtreeV2 => self.as_subtree()?.length,
+        })
     }
 
     pub(crate) fn make_inline_data(data: &[u8]) -> Vec<u8> {
@@ -620,12 +704,60 @@ impl UntypedDynamicCollection {
         &self.data[1..]
     }
 
-    fn as_subtree(&self) -> BtreeHeader {
-        assert!(matches!(self.collection_type(), SubtreeV2));
-        BtreeHeader::from_le_bytes(
-            self.data[1..=BtreeHeader::serialized_size()]
-                .try_into()
-                .unwrap(),
-        )
+    fn as_subtree(&self) -> Result<BtreeHeader> {
+        let malformed = || crate::StorageError::Corrupted("Corrupted multimap subtree".to_string());
+        if self.data.len() != 1 + BtreeHeader::serialized_size() || self.data[0] != 3 {
+            return Err(malformed());
+        }
+        BtreeHeader::from_le_bytes(self.data[1..].try_into().map_err(|_| malformed())?)
+    }
+}
+
+#[cfg(test)]
+mod canonical_root_tests {
+    use super::*;
+    #[test]
+    fn typed_and_untyped_subtrees_share_the_only_canonical_root_decoder() {
+        for order in 0..=20 {
+            let header = BtreeHeader::new(PageNumber::new(7, 0, order), 23, 31);
+            let bytes = DynamicCollection::<u64>::make_subtree_data(header);
+            assert_eq!(
+                DynamicCollection::<u64>::new(&bytes).as_subtree().unwrap(),
+                header
+            );
+            assert_eq!(
+                UntypedDynamicCollection::new(&bytes).as_subtree().unwrap(),
+                header
+            );
+            for bit in (40..59).chain((20 - u32::from(order))..20) {
+                let mut bad = bytes.clone();
+                bad[1 + bit as usize / 8] |= 1 << (bit % 8);
+                assert!(matches!(
+                    DynamicCollection::<u64>::new(&bad).as_subtree(),
+                    Err(crate::StorageError::Corrupted(_))
+                ));
+                assert!(matches!(
+                    UntypedDynamicCollection::new(&bad).as_subtree(),
+                    Err(crate::StorageError::Corrupted(_))
+                ));
+                assert!(
+                    DynamicCollection::<u64>::new(&bad)
+                        .get_num_values()
+                        .is_err()
+                );
+            }
+            for length in 0..bytes.len() {
+                assert!(
+                    DynamicCollection::<u64>::new(&bytes[..length])
+                        .as_subtree()
+                        .is_err()
+                );
+                assert!(
+                    UntypedDynamicCollection::new(&bytes[..length])
+                        .as_subtree()
+                        .is_err()
+                );
+            }
+        }
     }
 }

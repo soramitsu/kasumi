@@ -1,0 +1,14 @@
+{
+  "verdict": "NO_STATIC_PRODUCTION_BLOCKER_WITH_REQUIRED_TEST_FOLLOWUP",
+  "reviewed_patch_sha256": "3f2548f12aad8c27f72a8645162296ec85079d9cdc9a2adf6363f5c9a1e4bcdc",
+  "reviewed_manifest_sha256": "562bc4b6aadafd07dac3168b5793d460557afd264ffd74c03fb2e5f12e593f73",
+  "required_followup_patch_sha256": "b71cc8d16ed8fef78a14426e41cfdc8ffc2582894d0d17c67b5b5e37a6879dc2",
+  "required_followup_manifest_sha256": "411000344b1d6e825744be87fcc95ed6589686d952d6c9d8442d55662a2a1117",
+  "review_sha256": "a2a860f4c7a85c12531cdb049de6ae04a0b8e1863c398dc754972f4c8e587b01",
+  "all_base_and_proposed_hashes_verified": true,
+  "actual_source_matches_baselines": true,
+  "git_apply_check": "PASS",
+  "followup_base_matches_revision2_proposed": true,
+  "cargo_or_tests_run": false,
+  "actual_source_edits": false
+}

@@ -80,11 +80,23 @@ fn create_lock(disk: &Arc<NodeDisk>, config: &NodeDiskConfig, path: &Path) -> No
 fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Registration) {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let path = directory.path().join("serving.redb");
-    let lock = directory.path().join("installation.lock");
-    let disk_config = crate::persistent_disk::fixture_config(directory.path());
-    let disk = crate::persistent_disk::open(&disk_config).unwrap();
-    let scratch = ScratchDisk::fixture();
+    let path = directory.path().join("persistent/serving.redb");
+    let lock = path.with_file_name("installation.lock");
+    let disk_config = crate::persistent_disk::fixture_config(path.parent().unwrap());
+    let scratch_config = kasumi_store::ScratchDiskConfig {
+        directory: directory.path().join("scratch"),
+        max_bytes: 256 << 30,
+        min_free_bytes: 0,
+    };
+    let storage = crate::runtime_memory::RuntimeStorage::isolated_fixture(
+        Default::default(),
+        &disk_config,
+        &scratch_config,
+    )
+    .unwrap();
+    let admission = storage.facade(storage.policy()).unwrap();
+    let disk = storage.open_persistent(&disk_config).unwrap();
+    let scratch = storage.open_scratch(&scratch_config).unwrap();
     let node = NodeStore::create_new(
         &path,
         kasumi_store::test_utils::NODE_STORE_ID,
@@ -122,12 +134,7 @@ fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Regis
         report: Default::default(),
         _lock: create_lock(&disk, &disk_config, &lock),
     };
-    let registration = Registration::new(
-        Kind::Data,
-        uuid::Uuid::new_v4(),
-        &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
-    )
-    .unwrap();
+    let registration = Registration::new(Kind::Data, uuid::Uuid::new_v4(), &admission).unwrap();
     (fixture, owner, registration)
 }
 impl Fixture {
@@ -377,11 +384,23 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
     }
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let path = directory.path().join("destructor.redb");
-    let lock = directory.path().join("installation.lock");
-    let disk_config = crate::persistent_disk::fixture_config(directory.path());
-    let disk = crate::persistent_disk::open(&disk_config).unwrap();
-    let scratch = ScratchDisk::fixture();
+    let path = directory.path().join("persistent/destructor.redb");
+    let lock = path.with_file_name("installation.lock");
+    let disk_config = crate::persistent_disk::fixture_config(path.parent().unwrap());
+    let scratch_config = kasumi_store::ScratchDiskConfig {
+        directory: directory.path().join("scratch"),
+        max_bytes: 256 << 30,
+        min_free_bytes: 0,
+    };
+    let storage = crate::runtime_memory::RuntimeStorage::isolated_fixture(
+        Default::default(),
+        &disk_config,
+        &scratch_config,
+    )
+    .unwrap();
+    let admission = storage.facade(storage.policy()).unwrap();
+    let disk = storage.open_persistent(&disk_config).unwrap();
+    let scratch = storage.open_scratch(&scratch_config).unwrap();
     let node = NodeStore::create_new(
         &path,
         kasumi_store::test_utils::NODE_STORE_ID,
@@ -390,12 +409,7 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
     )
     .unwrap();
     let registry = Arc::new(Registry::default());
-    let registration = Registration::new(
-        Kind::Data,
-        uuid::Uuid::new_v4(),
-        &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
-    )
-    .unwrap();
+    let registration = Registration::new(Kind::Data, uuid::Uuid::new_v4(), &admission).unwrap();
     let (_stop, shutdown) = watch::channel(false);
     drop(begin(
         registry.clone(),

@@ -1,0 +1,83 @@
+100109be4: 14000001    	b	0x100109be8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x40>
+100109bf4: 14000001    	b	0x100109bf8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x50>
+100109c04: 14000001    	b	0x100109c08 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x60>
+100109c08: 14000013    	b	0x100109c54 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0xac>
+100109c38: 14000018    	b	0x100109c98 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0xf0>
+100109c44: 14000099    	b	0x100109ea8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x300>
+100109c50: 14000099    	b	0x100109eb4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x30c>
+100109c5c: 1400008e    	b	0x100109e94 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x2ec>
+100109c78: 948a16a8    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109c88: 948a16a4    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109c90: 94334d5d    	bl	0x100ddd204 <core::ptr::drop_glue::<kasumi_raft::network::RpcRequest>>
+100109c94: 14000024    	b	0x100109d24 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x17c>
+100109cd8: 948a1690    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109cfc: 14000020    	b	0x100109d7c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x1d4>
+100109d10: 948a15c5    	bl	0x10238f424 <dyld_stub_binder+0x10238f424>
+100109d20: 17fffff8    	b	0x100109d00 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x158>
+100109d34: 948a1679    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109d74: 97ff7796    	bl	0x1000e7bcc <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe>::begin>
+100109d78: 1400000d    	b	0x100109dac <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x204>
+100109d88: 14000010    	b	0x100109dc8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x220>
+100109d98: 140000e8    	b	0x10010a138 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x590>
+100109da8: 17fffff9    	b	0x100109d8c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x1e4>
+100109dc0: 948a1656    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109dc4: 14000001    	b	0x100109dc8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x220>
+100109dd4: 94304de2    	bl	0x100d1d55c <<alloc::sync::Arc<kasumi_raft::network::InProcessRouter> as core::ops::deref::Deref>::deref>
+100109ddc: 14000009    	b	0x100109e00 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x258>
+100109de8: 97fe410b    	bl	0x10009a214 <core::ptr::drop_glue::<core::option::Option<lifecycle::bootstrap_vote_probe::Guard>>>
+100109dec: 17ffffe8    	b	0x100109d8c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x1e4>
+100109dfc: 17fffff9    	b	0x100109de0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x238>
+100109e34: 948a1639    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109e54: 9435a667    	bl	0x100e737f0 <<kasumi_raft::network::InProcessRouter as kasumi_raft::network::RaftTransport>::send>
+100109e60: 14000001    	b	0x100109e64 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x2bc>
+100109e6c: 94192f06    	bl	0x100755a84 <<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = core::result::Result<kasumi_raft::network::RpcResponse, anyhow::Error>> + core::marker::Send>> as core::future::into_future::IntoFuture>::into_future>
+100109e78: 14000001    	b	0x100109e7c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x2d4>
+100109e90: 14000001    	b	0x100109e94 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x2ec>
+100109ea4: 1400000f    	b	0x100109ee0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x338>
+100109eb0: 948a14f3    	bl	0x10238f27c <core::panicking::panic_const::panic_const_async_fn_resumed>
+100109ebc: 948a14f7    	bl	0x10238f298 <core::panicking::panic_const::panic_const_async_fn_resumed_panic>
+100109ec8: 940b2858    	bl	0x1003d4028 <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = core::result::Result<kasumi_raft::network::RpcResponse, anyhow::Error>> + core::marker::Send>>>>
+100109ecc: 17ffffc5    	b	0x100109de0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x238>
+100109edc: 17fffff9    	b	0x100109ec0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x318>
+100109eec: 94192efe    	bl	0x100755ae4 <<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = core::result::Result<kasumi_raft::network::RpcResponse, anyhow::Error>> + core::marker::Send>> as core::future::future::Future>::poll>
+100109ef0: 14000001    	b	0x100109ef4 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x34c>
+100109f08: 14000001    	b	0x100109f0c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x364>
+100109f4c: 948a15f3    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109f5c: 948a15ef    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109f68: 940b2830    	bl	0x1003d4028 <core::ptr::drop_glue::<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = core::result::Result<kasumi_raft::network::RpcResponse, anyhow::Error>> + core::marker::Send>>>>
+100109f6c: 14000001    	b	0x100109f70 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x3c8>
+100109f8c: 14000001    	b	0x100109f90 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x3e8>
+100109fac: 14000011    	b	0x100109ff0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x448>
+100109fc0: 948a15d6    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+100109fcc: 97fe4092    	bl	0x10009a214 <core::ptr::drop_glue::<core::option::Option<lifecycle::bootstrap_vote_probe::Guard>>>
+100109fd0: 14000052    	b	0x10010a118 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x570>
+100109fe8: 97fffe5a    	bl	0x100109950 <<lifecycle::bootstrap_vote_probe::ErrorText>::capture::<anyhow::Error>>
+100109fec: 14000040    	b	0x10010a0ec <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x544>
+100109ffc: 14000001    	b	0x10010a000 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x458>
+10010a010: 1400000b    	b	0x10010a03c <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x494>
+10010a01c: 1400001f    	b	0x10010a098 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x4f0>
+10010a034: 97fffe22    	bl	0x1001098bc <<lifecycle::bootstrap_vote_probe::ErrorText>::capture::<openraft::error::RaftError<u64>>>
+10010a038: 14000024    	b	0x10010a0c8 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x520>
+10010a050: 97fe3e12    	bl	0x100099898 <<openraft::raft::message::vote::VoteResponse<u64> as core::clone::Clone>::clone>
+10010a054: 14000008    	b	0x10010a074 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x4cc>
+10010a05c: 97fe4182    	bl	0x10009a664 <core::ptr::drop_glue::<core::result::Result<kasumi_raft::network::RpcResponse, anyhow::Error>>>
+10010a060: 17ffff60    	b	0x100109de0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x238>
+10010a070: 17fffffa    	b	0x10010a058 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x4b0>
+10010a088: 948a15a4    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10010a094: 14000001    	b	0x10010a098 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x4f0>
+10010a0ac: 948a159b    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10010a0c0: 97ff794c    	bl	0x1000e85f0 <<lifecycle::bootstrap_vote_probe::Guard>::finish>
+10010a0c4: 14000013    	b	0x10010a110 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x568>
+10010a0dc: 948a158f    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10010a0e8: 17ffffec    	b	0x10010a098 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x4f0>
+10010a100: 948a1586    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10010a10c: 17ffffe3    	b	0x10010a098 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x4f0>
+10010a110: 17ffffa8    	b	0x100109fb0 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x408>
+10010a114: 948a1358    	bl	0x10238ee74 <core::panicking::panic_in_cleanup>
+10010a128: 948a157c    	bl	0x10238f718 <dyld_stub_binder+0x10238f718>
+10010a134: 17fffefc    	b	0x100109d24 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x17c>
+10010a148: 17fffeee    	b	0x100109d00 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x158>
+10010a154: 94334c2c    	bl	0x100ddd204 <core::ptr::drop_glue::<kasumi_raft::network::RpcRequest>>
+10010a158: 17fffff8    	b	0x10010a138 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x590>
+10010a160: 94334c29    	bl	0x100ddd204 <core::ptr::drop_glue::<kasumi_raft::network::RpcRequest>>
+10010a164: 17fffee7    	b	0x100109d00 <<lifecycle::bootstrap_vote_probe::BootstrapVoteProbe as kasumi_raft::network::RaftTransport>::send::{closure#0}+0x158>

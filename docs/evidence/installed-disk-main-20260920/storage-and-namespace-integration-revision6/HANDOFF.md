@@ -1,0 +1,9 @@
+# Qualified combined storage and namespace prerequisite
+
+Cumulative `combined.patch` applies to all 73 verified current master bases. `manifest.json` pins every before/after file and original package inputs; `proposed/`, `assembly/` and `apply-readback/` match. Actual source and manifests were not edited.
+
+Full workspace offline locked all-target/all-feature check and strict Clippy passed. The exact 326-name store binary ran unfiltered: **324 passed, 0 failed, 2 pre-existing ignored**, with no filtered cases. All **17 Python smoke-script tests passed** using bundled Python 3.12 and temporary files under the repository. Every recorded group drained, every timeout is false, cleanup signal lists are empty, and both cohorts completed within the unchanged 1200-second bounds. `qualification-receipt.json` pins exact logs, binary, counts and source inventories.
+
+The executing qualification runner remains frozen revision2. Independent review identified two untriggered branches that could incorrectly accept timeout-plus-zero-exit or forced descendant cleanup. Runner revision3 fixes them and passed 12 pure gate regression cases; `native-full-store/conservative-terminal-acceptance.json` applies those stricter requirements to this exact completed trial. No predecessor success is attributed to changed source; every failed candidate and original log remains preserved.
+
+This is a reviewed, qualified prerequisite for integration. Complete production caller adoption, total vendor workspace/original-outcome backing admission, memory/RSS accounting, maintenance reserve and release acceptance remain unfinished. No backward compatibility path or fallback was added. The serial native window has been returned to the managed namespace agent for its separate 132-case proposal; that proposal is not part of this combined patch.

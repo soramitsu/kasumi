@@ -2,7 +2,10 @@
 //! disappears. The registry stores no response fence or authority back-reference.
 use super::*;
 use kasumi_types::drain::{DrainCompletion, DrainReport, DrainResult};
-use std::future::Future;
+use std::{
+    future::Future,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use tokio::sync::oneshot;
 
 pub const AUTHORITY_REQUEST_SLOTS: usize = 32;
@@ -17,6 +20,7 @@ type TerminalOutcome = Result<()>;
 struct RequestJob {
     child: Arc<BackgroundWork>,
     outcome: Arc<Mutex<Option<TerminalOutcome>>>,
+    claimed: AtomicBool,
 }
 struct Registry {
     jobs: Vec<Option<Arc<RequestJob>>>,
@@ -56,6 +60,26 @@ impl RequestJobs {
         self.registry.lock().unwrap().jobs.iter().flatten().count()
     }
 
+    #[cfg(test)]
+    pub(super) fn completed_unclaimed_errors(&self) -> usize {
+        let registry = self.registry.lock().unwrap_or_else(|p| p.into_inner());
+        registry
+            .jobs
+            .iter()
+            .flatten()
+            .filter(|job| {
+                matches!(job.child.observed(), Some(Ok(())))
+                    && !job.claimed.load(Ordering::Acquire)
+                    && job
+                        .outcome
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .as_ref()
+                        .is_some_and(Result::is_err)
+            })
+            .count()
+    }
+
     pub(super) fn new(budget: BackgroundWorkBudget) -> anyhow::Result<Self> {
         ensure!(
             budget.max_registered() == AUTHORITY_REQUEST_SLOTS,
@@ -71,9 +95,9 @@ impl RequestJobs {
         })
     }
 
-    /// Actual nonblocking joins reclaim only normally terminated cells. Panic
-    /// diagnostics stay installed, and their original Arc identity survives all
-    /// request admission and shutdown retries.
+    /// Actual nonblocking joins reclaim successful commands and results the
+    /// caller positively joined. An unclaimed rejection stays in the fixed
+    /// inventory for shutdown; panic diagnostics retain their original Arc.
     pub(super) fn observe(&self, requests: &Semaphore) {
         let mut registry = self.registry.lock().unwrap_or_else(|p| p.into_inner());
         for index in 0..registry.jobs.len() {
@@ -87,19 +111,23 @@ impl RequestJobs {
                     registry.report.merge(&failure);
                 }
                 Some(Ok(())) => {
-                    // A normal rejection is a completed request outcome, not a
-                    // failed resource drain. Its permanent identity is resolved
-                    // through the existing authoritative receipt/journal API.
                     let outcome = job.outcome.lock().unwrap_or_else(|p| p.into_inner());
-                    if outcome.is_some() {
-                        registry.jobs[index] = None;
-                    } else {
-                        requests.close();
-                        registry.report.record(
-                            "authority request outcome",
-                            index,
-                            anyhow::anyhow!("joined request has no terminal operation outcome"),
-                        );
+                    match outcome.as_ref() {
+                        None => {
+                            requests.close();
+                            registry.report.record(
+                                "authority request outcome",
+                                index,
+                                anyhow::anyhow!("joined request has no terminal operation outcome"),
+                            );
+                        }
+                        // Positive commands resolve through their permanent
+                        // receipt or phase journal even if the waiter vanished.
+                        Some(Ok(())) => registry.jobs[index] = None,
+                        Some(Err(_)) if job.claimed.load(Ordering::Acquire) => {
+                            registry.jobs[index] = None;
+                        }
+                        Some(Err(_)) => {}
                     }
                 }
             }
@@ -156,8 +184,24 @@ impl RequestJobs {
         registry.jobs[slot] = Some(Arc::new(RequestJob {
             child: child.clone(),
             outcome,
+            claimed: AtomicBool::new(false),
         }));
         Ok((child, receive))
+    }
+
+    fn claim(&self, child: &Arc<BackgroundWork>, requests: &Semaphore) {
+        {
+            let registry = self.registry.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(job) = registry
+                .jobs
+                .iter()
+                .flatten()
+                .find(|job| Arc::ptr_eq(&job.child, child))
+            {
+                job.claimed.store(true, Ordering::Release);
+            }
+        }
+        self.observe(requests);
     }
 
     pub(super) async fn drain(&self, requests: &Semaphore) -> DrainResult {
@@ -169,15 +213,34 @@ impl RequestJobs {
             let Some(job) = job else { continue };
             // The handle remains in BackgroundWork across cancellation of this
             // await. Publish observed errors before awaiting a different child.
-            let outcome = job.child.drain().await;
+            let joined = job.child.drain().await;
             let mut registry = self.registry.lock().unwrap_or_else(|p| p.into_inner());
-            if let Err(failure) = outcome {
-                registry.report.merge(&failure);
+            if let Err(failure) = &joined {
+                registry.report.merge(failure);
                 if failure.completion() == DrainCompletion::Retained {
-                    retained = Some(failure);
+                    retained = Some(failure.clone());
                 }
             }
             if job.child.drained() {
+                if !job.claimed.load(Ordering::Acquire) {
+                    match job.outcome.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                        Some(Err(error)) => {
+                            registry.report.record(
+                                "authority request outcome",
+                                index,
+                                error.into(),
+                            );
+                        }
+                        None if joined.is_ok() => {
+                            registry.report.record(
+                                "authority request outcome",
+                                index,
+                                anyhow::anyhow!("joined request has no terminal operation outcome"),
+                            );
+                        }
+                        _ => {}
+                    }
+                }
                 registry.jobs[index] = None;
             }
         }
@@ -201,7 +264,7 @@ impl IndependentAuthority {
             ));
         }
         let (child, receive) = self.request_jobs.submit(self.requests.clone(), task)?;
-        tokio::time::timeout_at(deadline, async {
+        let received = tokio::time::timeout_at(deadline, async {
             let result = receive.await;
             // Keep the real JoinError, including its original panic payload, in
             // registry custody even when the response channel closed first.
@@ -209,9 +272,14 @@ impl IndependentAuthority {
                 self.requests.close();
                 return Err(unknown(failure));
             }
-            result.map_err(unknown)?
+            Ok(result)
         })
         .await
-        .map_err(unknown)?
+        .map_err(unknown)??;
+        let result = received.map_err(unknown)?;
+        // Only this caller can claim delivery after joining the exact child.
+        // A timeout or cancelled future leaves its terminal outcome installed.
+        self.request_jobs.claim(&child, &self.requests);
+        result
     }
 }

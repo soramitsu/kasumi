@@ -1,0 +1,40 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010011f894 <lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}>:
+10011f894: d10283ff    	sub	sp, sp, #0xa0
+10011f898: a9097bfd    	stp	x29, x30, [sp, #0x90]
+10011f89c: 910243fd    	add	x29, sp, #0x90
+10011f8a0: f90013e8    	str	x8, [sp, #0x20]
+10011f8a4: aa0003e8    	mov	x8, x0
+10011f8a8: f90017e8    	str	x8, [sp, #0x28]
+10011f8ac: 9100e3e0    	add	x0, sp, #0x38
+10011f8b0: f9001fe1    	str	x1, [sp, #0x38]
+10011f8b4: f81e03a8    	stur	x8, [x29, #-0x20]
+10011f8b8: 942ffded    	bl	0x100d1f06c <<alloc::sync::Arc<kasumi_engine::state::Generation> as core::ops::deref::Deref>::deref>
+10011f8bc: f9001be0    	str	x0, [sp, #0x30]
+10011f8c0: 14000008    	b	0x10011f8e0 <lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}+0x4c>
+10011f8c4: 9100e3e0    	add	x0, sp, #0x38
+10011f8c8: 940b1a1f    	bl	0x1003e6144 <core::ptr::drop_glue::<alloc::sync::Arc<kasumi_engine::state::Generation>>>
+10011f8cc: 1400002a    	b	0x10011f974 <lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}+0xe0>
+10011f8d0: f81e83a0    	stur	x0, [x29, #-0x18]
+10011f8d4: aa0103e8    	mov	x8, x1
+10011f8d8: b81f03a8    	stur	w8, [x29, #-0x10]
+10011f8dc: 17fffffa    	b	0x10011f8c4 <lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}+0x30>
+10011f8e0: f9401be8    	ldr	x8, [sp, #0x30]
+10011f8e4: 910ca100    	add	x0, x8, #0x328
+10011f8e8: 94189545    	bl	0x100744dfc <<core::option::Option<kasumi_types::lifecycle::LifecycleControlState>>::as_ref>
+10011f8ec: f9000fe0    	str	x0, [sp, #0x18]
+10011f8f0: 14000001    	b	0x10011f8f4 <lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}+0x60>
+10011f8f4: f94017e1    	ldr	x1, [sp, #0x28]
+10011f8f8: f9400fe0    	ldr	x0, [sp, #0x18]
+10011f8fc: 97ffb698    	bl	0x10010d35c <<core::option::Option<&kasumi_types::lifecycle::LifecycleControlState>>::and_then::<&kasumi_types::lifecycle::LifecycleIntent, lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}::{closure#0}>>
+10011f900: f9000be0    	str	x0, [sp, #0x10]
+10011f904: 14000001    	b	0x10011f908 <lifecycle::recovery_control::commit_next_intent::{closure#0}::{closure#0}::{closure#0}+0x74>
+10011f908: f9400be8    	ldr	x8, [sp, #0x10]
+10011f90c: f81f83a8    	stur	x8, [x29, #-0x8]
+10011f910: 9100e3e0    	add	x0, sp, #0x38
+10011f914: 942ffdd6    	bl	0x100d1f06c <<alloc::sync::Arc<kasumi_engine::state::Generation> as core::ops::deref::Deref>::deref>
+10011f918: f90007e0    	str	x0, [sp, #0x8]

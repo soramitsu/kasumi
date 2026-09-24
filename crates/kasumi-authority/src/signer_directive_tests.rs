@@ -190,8 +190,61 @@ async fn issuer_permission_retains_original_policy_while_current_admin_can_read_
     let global = f.maintenance_command(AuthorityMaintenanceAction::StageSignerGeneration {
         certificate: certificate.clone(),
     }).await;
-    assert_eq!(f.maintenance(AuthorityMaintenanceRequest::Start { command: global }).await.unwrap().phase,
-        AuthorityMaintenancePhase::Completed);
+    let global_status = match f
+        .maintenance(AuthorityMaintenanceRequest::Start {
+            command: global.clone(),
+        })
+        .await
+    {
+        Ok(status) => status,
+        Err(error)
+            if matches!(
+                error.code,
+                ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+            ) =>
+        {
+            // A lost start reply cannot authorize a different generation or
+            // another command identity. Read only this permanent operation.
+            tokio::time::timeout(Duration::from_secs(35), async {
+                loop {
+                    match f
+                        .maintenance(AuthorityMaintenanceRequest::Status {
+                            operation_id: global.operation_id,
+                        })
+                        .await
+                    {
+                        Ok(status) => {
+                            assert_eq!(status.command, global);
+                            if status.phase == AuthorityMaintenancePhase::Completed {
+                                break status;
+                            }
+                            assert!(
+                                !status.phase.terminal(),
+                                "original signer stage reached a different terminal phase: {status:?}"
+                            );
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                        Err(error)
+                            if matches!(
+                                error.code,
+                                ErrorCode::NotFound
+                                    | ErrorCode::UnknownOutcome
+                                    | ErrorCode::Unavailable
+                            ) =>
+                        {
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                        Err(error) => panic!("exact signer stage status failed: {error:?}"),
+                    }
+                }
+            })
+            .await
+            .expect("original signer stage has no bounded exact status")
+        }
+        Err(error) => panic!("signer stage rejected: {error:?}"),
+    };
+    assert_eq!(global_status.command, global);
+    assert_eq!(global_status.phase, AuthorityMaintenancePhase::Completed);
     let verifier = f.settings.installed_members[&service.local_node_id].verifier.clone();
     let domain = certificate.identity.domain.digest().unwrap();
     let context = f.context("operator");
@@ -322,7 +375,11 @@ async fn replicated_signer_head_fences_unchanged_local_keys_and_rejects_snapshot
     let mut expired = activate;
     expired.operation_id = Uuid::new_v4();
     assert!(service.signing_maintenance(fixture.context("operator"), request(AuthoritySigningAction::Start { command: expired })).await.is_err());
-    let (historical, _) = service.signing_maintenance(fixture.context("operator"), request(AuthoritySigningAction::Receipt { operation_id: stage.operation_id })).await.unwrap();
+    // The failed new effect can coincide with an election. Read the exact old
+    // receipt through the current quorum with one original read invocation.
+    let historical_context = fixture.context("operator");
+    let service = fixture.leader().await;
+    let (historical, _) = service.signing_maintenance(historical_context, request(AuthoritySigningAction::Receipt { operation_id: stage.operation_id })).await.unwrap();
     assert_eq!(historical.status.unwrap().command, stage);
     assert!(historical.current.retirement.is_some());
     fixture.close().await;

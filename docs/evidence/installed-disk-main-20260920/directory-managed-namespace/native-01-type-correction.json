@@ -1,0 +1,5 @@
+{
+  "before": "631ec5503a1eab9597658a58b9282954fbcf1f498b7ab521a8a90b904ca844f4",
+  "after": "031926752ec530429665d7e0038b7b3b27911df2ea081050abd45bafda1b7d4f",
+  "reason": "Native-01 E0282: explicitly bind open_child closure error to io::Error; behavior unchanged."
+}

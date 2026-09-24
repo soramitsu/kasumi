@@ -1,0 +1,32 @@
+{
+  "scope": "Both original129 failing uncertain-activation cases after current-route fixture and single-write failure diagnostic; unchanged workloads/deadlines, no final acceptance",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-engine",
+    "--all-features",
+    "--test",
+    "lifecycle",
+    "recovery_control::recovery_uncertain_activation_",
+    "--",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 69998,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 22.66136384010315,
+  "inventoried_source_unchanged": true,
+  "binary_path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0",
+  "expected_binary_sha256": "0f393accc494917f40fb35c4cee06bd88d20532bda6b9ca88eca06a74537dc2f",
+  "binary_sha256_before": "0f393accc494917f40fb35c4cee06bd88d20532bda6b9ca88eca06a74537dc2f",
+  "binary_sha256_after": "0f393accc494917f40fb35c4cee06bd88d20532bda6b9ca88eca06a74537dc2f",
+  "binary_unchanged": true
+}

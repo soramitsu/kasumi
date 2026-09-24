@@ -1,0 +1,477 @@
+{
+  "source": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/file-owner-custody-revision1/candidate-03/native-01/proposal-at-run/crates/kasumi-store/src/node_disk/tests.rs",
+  "sha256": "cc9f05813370469df6847db5944d9a54e76489a7df841bd72fdd00b3e36a189e",
+  "selected": [
+    {
+      "name": "installation",
+      "sha256": "1e711d1ac90af4586f0dcd9454a80fefc104d6b038160bb3ee478cacf441eb02",
+      "source_start_line": 7,
+      "test": false
+    },
+    {
+      "name": "open",
+      "sha256": "502b0484a7b37b1682cb21bcd6ac4ffe7e06a6a277cfc75fd27d1d18dc880263",
+      "source_start_line": 28,
+      "test": false
+    },
+    {
+      "name": "namespace_charge",
+      "sha256": "db6f3150370cfa7f953ef2a6f4015e9d7d4b5e35585909ec8ac02fdd18f349db",
+      "source_start_line": 38,
+      "test": false
+    },
+    {
+      "name": "namespace_pending",
+      "sha256": "84921df31d5daa85ce80700b6bca2889d0e5ffc9cfde047b1a4cc8e642e28592",
+      "source_start_line": 46,
+      "test": false
+    },
+    {
+      "name": "retained_file_io_settlement_shrink_and_drop_do_not_allocate",
+      "sha256": "3b48d7293d7b045fe86bb387f649f6bccf3614714da2668c7dda81fa1c3a7912",
+      "source_start_line": 56,
+      "test": true
+    },
+    {
+      "name": "identity_failure_and_uncertain_file_drop_fence_without_allocating",
+      "sha256": "8fa818c89a503c58073a1028eec7a57e175cbe196395fe4b5b91c81c6d38e4b1",
+      "source_start_line": 102,
+      "test": true
+    },
+    {
+      "name": "explicit_settlement_returns_only_unused_promises_and_requires_exact_extent",
+      "sha256": "1e72b2492e95db75ae1275bc0d6336c16d860c5e7b67a31ea251aed8e5f5c785",
+      "source_start_line": 135,
+      "test": true
+    },
+    {
+      "name": "seed",
+      "sha256": "10ed2b5b7949c2ad3542036e4baa697db55001fc059ec54740c3eeba2a6a177e",
+      "source_start_line": 163,
+      "test": false
+    },
+    {
+      "name": "clean",
+      "sha256": "571dceafdffa46c3eeaf28d90798d5566882c935a25197f2a000c5df7b3c3a58",
+      "source_start_line": 175,
+      "test": false
+    },
+    {
+      "name": "census_counts_closed_files_and_repeated_cursors_start_at_the_beginning",
+      "sha256": "c49a89168afccdaa25f26e48eb8897f797a3eddfd36922589bac5bdb08bf1204",
+      "source_start_line": 197,
+      "test": true
+    },
+    {
+      "name": "dropped_unmaterialized_growth_is_retained_until_exclusive_reconciliation",
+      "sha256": "583c67792c3bed2290608d28a64ea5c8ae0978f7e19c7af49eab61343c73cc32",
+      "source_start_line": 239,
+      "test": true
+    },
+    {
+      "name": "pause_seals_new_reservations_but_drains_reserved_io_and_retains_sparse_promises",
+      "sha256": "b3534677aef6dfb9f43f954dfda5ea785485b7761d22d84b6c648d786d549937",
+      "source_start_line": 273,
+      "test": true
+    },
+    {
+      "name": "maintenance_has_reserved_capacity_and_denial_changes_no_extent_or_charge",
+      "sha256": "05fdcac813a9f5e288059439bfe0af0a46409d424f5eb66e091a3a4640616255",
+      "source_start_line": 302,
+      "test": true
+    },
+    {
+      "name": "physical_reclaim_requires_sole_owner_and_releases_only_verified_extent",
+      "sha256": "782f58c89b097c1b22df140288231540ae11da7d8ba43ba8bffe81b6747935b7",
+      "source_start_line": 343,
+      "test": true
+    },
+    {
+      "name": "substitution_closes_shared_admission_and_does_not_delete_the_replacement",
+      "sha256": "c2c2d2a2611ca262fc2363b18390bd02b8a1624bff309161c69a89317058ae1e",
+      "source_start_line": 373,
+      "test": true
+    },
+    {
+      "name": "cancelled_or_cardinality_exhausted_census_publishes_no_partial_owner",
+      "sha256": "729f7f916bb5d3feed5fe873a446b55073d4ff60fcf796e5aa522aa982996a97",
+      "source_start_line": 399,
+      "test": true
+    },
+    {
+      "name": "symlinks_hardlinks_and_overlapping_roots_cannot_duplicate_census_charge",
+      "sha256": "f84f4788f8f575cd5d6ae2e21e42957ad138e98acb7148d629cd9748e8b3230c",
+      "source_start_line": 435,
+      "test": true
+    },
+    {
+      "name": "open_file_metadata_budget_is_bounded_and_close_returns_only_metadata_capacity",
+      "sha256": "9506e86959417c08fc4c6d1b0303f5565e5aeab3fef8f694ada6259a658433fa",
+      "source_start_line": 487,
+      "test": true
+    },
+    {
+      "name": "a_retiring_predecessor_keeps_exclusive_registration_until_all_resources_close",
+      "sha256": "fa04baec3e793a2abea6ee0636e01deed156fe1a7f42f4822af774e0a6be54f4",
+      "source_start_line": 610,
+      "test": true
+    },
+    {
+      "name": "duplicate_live_inode_open_requires_explicit_owner_clone",
+      "sha256": "8f12a872c13a80c1f510212ef53de5eeefe63f893da77eb21196c09fa33f63c4",
+      "source_start_line": 687,
+      "test": true
+    },
+    {
+      "name": "live_shrink_requires_the_only_mutable_file_owner",
+      "sha256": "b4252c798545cd4c487f8a915b8cbb5b09006d53d8cc9780980b6b604c1897b3",
+      "source_start_line": 713,
+      "test": true
+    },
+    {
+      "name": "live_shrink_cannot_release_unmaterialized_or_unsynced_growth",
+      "sha256": "6694db9a38d5519d21a04ab7b756147bc4852380f6518e6441d6ca9c1932f708",
+      "source_start_line": 743,
+      "test": true
+    },
+    {
+      "name": "live_shrink_retains_identity_and_lock_with_exact_reopen_accounting",
+      "sha256": "619a0a9c00f12763c7c9fde448d70de0c2bc520c7a66795a4f5c472fe13bb380",
+      "source_start_line": 776,
+      "test": true
+    },
+    {
+      "name": "envelope_identity_and_durability_retain_custody_until_the_last_handle_closes",
+      "sha256": "6dff7e0babf3a170c89cc1dc329da0218065270e236f92c0f1f930eac08caa44",
+      "source_start_line": 929,
+      "test": true
+    },
+    {
+      "name": "envelope_inspection_and_publication_reject_inode_and_parent_substitution",
+      "sha256": "a792c9f90a60421323877064edfc0064c40251b19ed2b5e8c04897d18f0d8871",
+      "source_start_line": 973,
+      "test": true
+    },
+    {
+      "name": "uncertain_envelope_parent_sync_preserves_charges_through_close_and_census",
+      "sha256": "5888000a8fba1f4b2d3c05570efde933fc87d14320f0c578f3d59bdef45305d2",
+      "source_start_line": 1029,
+      "test": true
+    },
+    {
+      "name": "immutable_publication_preserves_the_inode_and_its_capacity_charge",
+      "sha256": "4e72cb995779705564c1b55379e3ab68ee8f1458211e8ee1c38e90eb43c7dc87",
+      "source_start_line": 1075,
+      "test": true
+    },
+    {
+      "name": "publication_conflict_keeps_both_files_and_the_owner_usable",
+      "sha256": "5498162b622b7c864945e07cea8479e1a80b497b1f16f4adb2143b9ca5217a8e",
+      "source_start_line": 1104,
+      "test": true
+    },
+    {
+      "name": "publication_requires_actual_descriptor_clone_drain",
+      "sha256": "e4927c05077126d92e3e054fedef92298c22bc01f9993fcb9959f8d2d2aaeaaf",
+      "source_start_line": 1128,
+      "test": true
+    },
+    {
+      "name": "raw_created_file_is_not_adopted_after_the_installed_census",
+      "sha256": "87c2882a0bfae9c0cb7092ed2a15573ef62d2089bd9e2fc619da10ab1651c33f",
+      "source_start_line": 1149,
+      "test": true
+    },
+    {
+      "name": "raw_growth_of_a_closed_censused_inode_fences_without_rebasing_its_charge",
+      "sha256": "d7181c0f18c78d6c0a6cb9fa24895c8f2da18ff6998d5cc51ab71ac94225f8bc",
+      "source_start_line": 1183,
+      "test": true
+    },
+    {
+      "name": "enrolled_extents_survive_all_physical_updates_and_descriptor_reopens",
+      "sha256": "1cd3d1b43b91e76e7ead068037828cfb39d146773820c258ea70d103dae5d5db",
+      "source_start_line": 1217,
+      "test": true
+    },
+    {
+      "name": "enrolled_file_metadata_limit_rejects_before_creating_an_untracked_inode",
+      "sha256": "c4c408d086aa5d5d9b4772dba0315e6830da821d180874e23119d5cd4e50d09d",
+      "source_start_line": 1280,
+      "test": true
+    },
+    {
+      "name": "failed_direct_handles_never_release_bytes_or_restart_sync",
+      "sha256": "9dca0374b921a0f48492929ea2997243cdfd0632ded1451f08e3d4ebb6926fe9",
+      "source_start_line": 1317,
+      "test": true
+    },
+    {
+      "name": "paused_direct_handles_can_finish_only_already_admitted_io",
+      "sha256": "468db08ef2cfde76adc0bee6a24e5b45e3863b4e3d68a3e4a11a7a351350e925",
+      "source_start_line": 1356,
+      "test": true
+    },
+    {
+      "name": "prepared_file_creation_registers_and_retires_without_allocating",
+      "sha256": "0bd2cf9e87af3df032b757ee6a3271b3eb01d127067a23eec00c9ba198c0828b",
+      "source_start_line": 1382,
+      "test": true
+    },
+    {
+      "name": "failed_creation_retains_provisional_enrollment_without_registered_drop",
+      "sha256": "2c1d8f9e105bea05ad482593a5080483b73644f91023e60cc4448168e235198e",
+      "source_start_line": 1414,
+      "test": true
+    },
+    {
+      "name": "abandoned_namespace_preparation_releases_registration_without_deadlock",
+      "sha256": "85824f64a4b6c7fb5b7a3e9df52b28d50319a33ebb1e00dac8217ca90e3142f5",
+      "source_start_line": 1450,
+      "test": true
+    },
+    {
+      "name": "prepared_cross_directory_publication_and_physical_reclaim_do_not_allocate",
+      "sha256": "a00f1e518c4584c54658a7615e26b7ab25690db52c7a0a176477d79639cc6ea8",
+      "source_start_line": 1481,
+      "test": true
+    },
+    {
+      "name": "post_rename_failures_keep_the_charge_and_return_without_allocating",
+      "sha256": "f36fbf4c54e203042da11d97a40a7d9b98f53bf151eb2eb318ef670ee3d11dc3",
+      "source_start_line": 1532,
+      "test": true
+    },
+    {
+      "name": "post_reclaim_failures_keep_credit_until_actual_drain_and_census_without_allocating",
+      "sha256": "95874dd00347aac815a948ad8dc1fe8dc98428f122cd9184ad4934ad61c3503d",
+      "source_start_line": 1588,
+      "test": true
+    },
+    {
+      "name": "prepared_publication_conflict_returns_inline_without_fencing_or_replacing",
+      "sha256": "db7eb5b8a0332010e5cbd746fccf41dc9680afc2d25ddc26ce3b67e2c339d776",
+      "source_start_line": 1642,
+      "test": true
+    },
+    {
+      "name": "unenrolled_missing_leaf_preserves_admission_without_allocating",
+      "sha256": "fcae4f957f4d22816118f8f49ae112373c2b598f292cba67947829fff9da4f8d",
+      "source_start_line": 1672,
+      "test": true
+    },
+    {
+      "name": "disappeared_censused_and_closed_created_names_fence_without_credit",
+      "sha256": "f2ab07f2cefada06b286016e273f7dd6dba41344624d4a349b357cda0986bb05",
+      "source_start_line": 1699,
+      "test": true
+    },
+    {
+      "name": "raw_rename_fences_both_missing_old_name_and_present_new_name",
+      "sha256": "352f15f1673f1f7347d9bcf2ec31211f5d67950611ed976c3d7b3220385d763b",
+      "source_start_line": 1752,
+      "test": true
+    },
+    {
+      "name": "admitted_publication_rebinds_name_and_reclaim_forgets_it",
+      "sha256": "dd075cf92f8aa3c5c1bd16509baa8c3bd2579ee16ebd7229295ceed42b350011",
+      "source_start_line": 1780,
+      "test": true
+    },
+    {
+      "name": "missing_enrolled_target_cannot_be_recreated_or_published_over",
+      "sha256": "26df4d1dc1bcdeb8e7a42c42b10f3ee0316f16753ac2f39c21eb99e8394aceba",
+      "source_start_line": 1820,
+      "test": true
+    },
+    {
+      "name": "live_enrolled_target_conflicts_remain_healthy_and_preserve_content",
+      "sha256": "bbd4e582c7c674e5b1e545ca6862c9c0a4b2a95780a644c850df5306e2adfd33",
+      "source_start_line": 1893,
+      "test": true
+    },
+    {
+      "name": "prepared_unknown_absence_revalidates_replaced_parent",
+      "sha256": "7580cc05ff13715fb651ab071380b22edf04a5bb546bda20f575b554e499d8cc",
+      "source_start_line": 1927,
+      "test": true
+    },
+    {
+      "name": "replaced_parent_cannot_hide_enrolled_missing_leaf",
+      "sha256": "228c6b2706d1b494b41e6ffca60b5e27d2a3c5856ae2d0004258df0c19e463b2",
+      "source_start_line": 1948,
+      "test": true
+    },
+    {
+      "name": "publication_preparation_missing_or_symlinked_ancestor_fences",
+      "sha256": "58af73fad90e706443ce290952940f782fac165b3eb87cc43bd0934ef02384bc",
+      "source_start_line": 1980,
+      "test": true
+    },
+    {
+      "name": "publication_preparation_replaced_root_fences_before_rename",
+      "sha256": "dd7d7c5527825c618ace9bb98c68d58f90f35f77ed8549e4aa14de4d7d09cc76",
+      "source_start_line": 2014,
+      "test": true
+    },
+    {
+      "name": "publication_replaced_private_source_ancestor_fences_before_rename",
+      "sha256": "9f14d37a1b60de4ab490d43604d83bec50f42b165bf7e8e667afb21786bf7389",
+      "source_start_line": 2042,
+      "test": true
+    },
+    {
+      "name": "enrolled_target_unauthorized_growth_never_becomes_a_healthy_conflict",
+      "sha256": "f3ff97eeea2f428101884e4428752136c6133d8751d6b48fa4b7b4437772e0f1",
+      "source_start_line": 2082,
+      "test": true
+    },
+    {
+      "name": "enrolled_target_conflict_accepts_only_actual_admitted_growth",
+      "sha256": "499d91c902f0b0ed50134e9d2f4373db309d8047280f468520869a641cab92f2",
+      "source_start_line": 2139,
+      "test": true
+    },
+    {
+      "name": "installed_metadata_total",
+      "sha256": "45e7bdb25157dfb588d1f45847b9bd6d26cda3817549f1f63a1759746b8b3d73",
+      "source_start_line": 2189,
+      "test": false
+    },
+    {
+      "name": "metadata_denial_precedes_root_open_and_retained_census_allocation",
+      "sha256": "244ae87d0499533f00cc71e05e40e0e119eaa5a6744c88aedd8c872ab02d31fa",
+      "source_start_line": 2203,
+      "test": true
+    },
+    {
+      "name": "partial_metadata_admission_never_leaves_unfunded_provisional_owners",
+      "sha256": "7fbb2a66d19aa8283ccbee72c0607c37cdfc47b5a4d04a0dc78b1220d754c03f",
+      "source_start_line": 2228,
+      "test": true
+    },
+    {
+      "name": "installed_metadata_reuse_keeps_one_exact_core_and_one_retained_envelope",
+      "sha256": "b51f052a7668fc06f9398bdc8b7838996c9a82f593e255ecfabdd4b129b65835",
+      "source_start_line": 2251,
+      "test": true
+    },
+    {
+      "name": "census_failure_closes_real_descriptors_before_releasing_metadata",
+      "sha256": "87fd28951a8160b6facfafee340923534e274948850436bab744bb15450e1472",
+      "source_start_line": 2298,
+      "test": true
+    },
+    {
+      "name": "registry_busy_precedes_memory_acquisition_without_allocating",
+      "sha256": "3f92d702baf94224e7810f3bc765ce64fb35ded5a7a46c370ec01b1852611ba1",
+      "source_start_line": 2383,
+      "test": true
+    },
+    {
+      "name": "metadata_planning_has_no_heap_or_filesystem_effect_and_checks_overflow",
+      "sha256": "93e8ecb902f54586d16431deecc3ea69ea7d5101f1cb7a5d95b864e0fa4e1a55",
+      "source_start_line": 2397,
+      "test": true
+    },
+    {
+      "name": "retiring_file_cannot_lend_handle_or_metadata_credit_before_parent_and_backing_release",
+      "sha256": "44b7899059594f8d945d41d76636bce828df84cabd75a55c2d0351b3c212c7af",
+      "source_start_line": 2413,
+      "test": true
+    },
+    {
+      "name": "concurrent_final_file_clones_retire_exactly_one_registration",
+      "sha256": "44278e9b157076af449a619d18a640520d7f2f4d72054cd974f247ec7750b3de",
+      "source_start_line": 2472,
+      "test": true
+    },
+    {
+      "name": "reclaim_retires_parent_metadata_and_weak_backing_before_releasing_promises",
+      "sha256": "1b09a1598fe1f8190726d5cdd6727dbecc99821be18d109319645d408d3b6698",
+      "source_start_line": 2518,
+      "test": true
+    },
+    {
+      "name": "prepared_publication_abandonment_retires_old_weak_registration_once_without_allocation",
+      "sha256": "b26412d6382c9bc5a272dfdc03714d316e4f3fa13352de73e6b9579b326b913d",
+      "source_start_line": 2591,
+      "test": true
+    },
+    {
+      "name": "retired_descriptor_no_longer_names",
+      "sha256": "c68574ce6a0d0466792e2b9079b47e2170c20010b8b3b3df488096873e3ceddb",
+      "source_start_line": 2620,
+      "test": false
+    },
+    {
+      "name": "abandoned_preparation_closes_target_descriptors_before_the_next_preparation",
+      "sha256": "3e2086902825d3a88ba67377266bfbc8ee6d8713f57a4695a9f0bf0b44ee6bbe",
+      "source_start_line": 2632,
+      "test": true
+    },
+    {
+      "name": "file_preparation_unknown_native_close_retains_slot_and_never_retries_descriptor",
+      "sha256": "3f6c5bf9cb38c6b1a623db9e047100bafa224c7deb35e0a5ccb5a31189efec35",
+      "source_start_line": 2665,
+      "test": true
+    },
+    {
+      "name": "failed_file_creation_keeps_original_outcome_backing_until_accepted_census",
+      "sha256": "386fcaf475c4e4967fb76bf634baddb5e5c862ff7673ce5641000d74d072f9a1",
+      "source_start_line": 2704,
+      "test": true
+    },
+    {
+      "name": "file_verification_walk_close_failure_keeps_registered_custody_after_owner_drop",
+      "sha256": "c039d7d91a8213feccfcb9f33879a23908862d8af3180f85439e296a5ffdbd6c",
+      "source_start_line": 2737,
+      "test": true
+    },
+    {
+      "name": "unwound_file_retirement_keeps_parent_and_weak_backing_until_census",
+      "sha256": "bf034d6e142e6a14b9f081626244e67bc203e174e792d178d01c8097b2ae8ee8",
+      "source_start_line": 2765,
+      "test": true
+    },
+    {
+      "name": "failed_file_owner_rejects_before_verification_descriptor_acquisition",
+      "sha256": "287954ecab288835d74f07c43695caf93981779818232481fa6ddd4ded8bfa6b",
+      "source_start_line": 2812,
+      "test": true
+    }
+  ],
+  "omitted": [
+    {
+      "name": "persistent_and_scratch_cannot_spend_the_same_filesystem_promise",
+      "sha256": "90ecd6b4b13e5547a2a7fdd3f884918af0d8402261014910015ce0a80daed71b",
+      "source_start_line": 507,
+      "test": true
+    },
+    {
+      "name": "poisoned_shared_promises_cannot_be_reopened_by_either_owner",
+      "sha256": "aaa97a2bd7ead77d4d2c641ee05b6b80c6dc98cf9a7da2d1fa78ef5f9e6d152d",
+      "source_start_line": 546,
+      "test": true
+    },
+    {
+      "name": "unknown_filesystem_observation_fences_scratch_until_a_drained_census",
+      "sha256": "20c84868c3b326d9b6cae08e91e8eca3db91b3e5240fbd6a548865a13b3b9dd9",
+      "source_start_line": 653,
+      "test": true
+    },
+    {
+      "name": "live_shrink_failure_retains_charges_through_drop_and_fences_shared_device",
+      "sha256": "13698cf7a91e0c311f69bc33bfb395fd50240a8f902dc578bb8b52eba8c693a3",
+      "source_start_line": 829,
+      "test": true
+    },
+    {
+      "name": "node_store_rejects_different_isolated_memory_before_touching_file",
+      "sha256": "965e14d41b6b2bccd946f53ab173e3bb5eed9696c2ed4b6f5513219f2419b5e3",
+      "source_start_line": 2327,
+      "test": true
+    }
+  ],
+  "reason": "Five existing integration cases require ScratchDisk/NodeStore and are not qualified by this module-only linker; all other exact tests and helpers retained."
+}

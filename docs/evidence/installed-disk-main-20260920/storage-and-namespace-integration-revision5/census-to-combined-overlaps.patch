@@ -1,0 +1,679 @@
+--- census/crates/kasumi-store/src/lib.rs
++++ combined/crates/kasumi-store/src/lib.rs
+@@ -45,7 +45,10 @@
+ pub mod node_store_ids;
+ mod read_view;
+ pub use node_disk::{
+-    CensusCancellation, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeDiskPhase,
++    CensusCancellation, DirectoryPolicy, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskDirectory,
++    NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor, NodeDiskDirectoryEntry,
++    NodeDiskDirectoryFailure, NodeDiskDirectoryOperation, NodeDiskDirectoryOperationKind,
++    NodeDiskDirectoryOperationStep, NodeDiskEntryKind, NodeDiskFile, NodeDiskPhase,
+     NodeDiskSnapshot,
+ };
+ mod scratch_disk;
+--- census/crates/kasumi-store/src/node_disk/tests.rs
++++ combined/crates/kasumi-store/src/node_disk/tests.rs
+@@ -14,7 +14,11 @@
+         maintenance_reserve_bytes: 1 << 20,
+         min_free_bytes: 0,
+         max_open_files: 16,
+-        max_census_entries: 10_000,
++        max_open_directories: 16,
++        directory_policy: DirectoryPolicy::fixture(),
++        max_persistent_files: 10_000,
++        max_persistent_subdirectories: 10_000,
++        census_work_per_step: 10_000,
+         max_depth: 32,
+         max_name_bytes: 255,
+     };
+@@ -26,6 +30,26 @@
+         NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+     })
+     .unwrap()
++}
++
++// Existing file workloads retain their exact byte budgets. Namespace accounting
++// has its own independent assertions in namespace/tests.rs; these helpers add
++// the retained directory component to file-specific expected totals.
++fn namespace_charge(disk: &NodeDisk) -> u64 {
++    disk.lock_state()
++        .accounted
++        .values()
++        .filter_map(AccountedInode::directory)
++        .map(|entry| entry.bytes)
++        .sum()
++}
++fn namespace_pending(disk: &NodeDisk) -> u64 {
++    disk.lock_state()
++        .accounted
++        .values()
++        .filter_map(AccountedInode::directory)
++        .map(|entry| entry.pending)
++        .sum()
+ }
+ 
+ #[test]
+@@ -63,7 +87,10 @@
+         allocations, 0,
+         "admitted physical I/O allocated after preparation"
+     );
+-    assert_eq!(disk.snapshot().charged_bytes, 16 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (16 << 10)
++    );
+     let ((), allocations) = crate::allocation_tests::measure(|| drop(file));
+     assert_eq!(allocations, 0, "descriptor retirement allocated");
+     let file = disk.open_file("data", &relative).unwrap();
+@@ -116,12 +143,18 @@
+         .unwrap();
+     file.grow_reserved(32 << 10).unwrap();
+     file.settle_growth(32 << 10).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     assert!(file.grow_reserved(64 << 10).is_err());
+     let (result, allocations) = crate::allocation_tests::measure(|| file.settle_growth(0));
+     assert!(result.is_err());
+     assert_eq!(allocations, 0);
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     drop(file);
+     clean(&disk, &["file"]);
+@@ -146,8 +179,8 @@
+         let file = disk.open_file("data", Path::new(name)).unwrap();
+         disk.delete_file(file).unwrap();
+     }
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
+-    assert_eq!(disk.snapshot().pending_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
++    assert_eq!(disk.snapshot().pending_bytes, namespace_pending(&disk));
+     disk.pause().unwrap();
+ }
+ 
+@@ -159,7 +192,7 @@
+     seed(&config, "two", 32 << 10);
+     let disk = open(config.clone(), fixture_memory.clone());
+     let before = disk.snapshot();
+-    assert_eq!(before.charged_bytes, 96 << 10);
++    assert_eq!(before.charged_bytes, namespace_charge(&disk) + (96 << 10));
+     assert_eq!(before.persistent_files, 2);
+     for _ in 0..3 {
+         disk.pause().unwrap();
+@@ -204,7 +237,7 @@
+     file.reserve_growth(0, 64 << 10, DiskWork::Foreground)
+         .unwrap();
+     let charged = disk.snapshot();
+-    assert_eq!(charged.charged_bytes, 64 << 10);
++    assert_eq!(charged.charged_bytes, namespace_charge(&disk) + (64 << 10));
+     drop(file);
+     let stopped = disk.snapshot();
+     assert_eq!(stopped.phase, NodeDiskPhase::Failed);
+@@ -222,7 +255,7 @@
+     assert!(Arc::ptr_eq(&same, &disk));
+     assert_eq!(same.snapshot().charged_bytes, charged.charged_bytes);
+     disk.reconcile(&CensusCancellation::default()).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     assert!(disk.snapshot().filesystem_admission_ready);
+     clean(&disk, &["pending"]);
+ }
+@@ -262,7 +295,11 @@
+     let (_directory, mut config) = installation();
+     let root = File::open(&config.roots["data"]).unwrap();
+     let (_, unit) = filesystem(&root).unwrap();
+-    config.max_bytes = 3 * unit;
++    config.max_bytes = 3 * unit
++        + config
++            .directory_policy
++            .extent_bytes
++            .max(root.metadata().unwrap().blocks() * 512);
+     config.maintenance_reserve_bytes = unit;
+     let disk = open(config.clone(), fixture_memory.clone());
+     let file = disk
+@@ -302,14 +339,23 @@
+     let file = disk.open_file("data", Path::new("data")).unwrap();
+     let reader = file.clone();
+     assert!(disk.delete_file(file).is_err());
+-    assert_eq!(disk.snapshot().charged_bytes, 128 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (128 << 10)
++    );
+     assert!(config.roots["data"].join("data").exists());
+     disk.shrink_file(reader, 32 << 10).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     let file = disk.open_file("data", Path::new("data")).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     disk.delete_file(file).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     assert!(!config.roots["data"].join("data").exists());
+     disk.pause().unwrap();
+ }
+@@ -327,7 +373,10 @@
+     seed(&config, "data", 7);
+     assert!(disk.delete_file(file).is_err());
+     assert_eq!(std::fs::metadata(root.join("data")).unwrap().len(), 7);
+-    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (64 << 10)
++    );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     assert!(!sibling.lock().admission_ready());
+     // Repair the fixture's external substitution before its exclusive census.
+@@ -338,7 +387,7 @@
+ }
+ 
+ #[test]
+-fn cancelled_or_work_exhausted_census_publishes_no_partial_owner() {
++fn cancelled_or_cardinality_exhausted_census_publishes_no_partial_owner() {
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     let (_directory, config) = installation();
+     for name in ["one", "two", "three"] {
+@@ -355,7 +404,7 @@
+         .is_err()
+     );
+     let mut bounded = config.clone();
+-    bounded.max_census_entries = 2;
++    bounded.max_persistent_files = 2;
+     assert!(
+         crate::test_utils::retry_disk_registry(|| NodeDisk::open_fixture(
+             &bounded,
+@@ -365,7 +414,10 @@
+         .is_err()
+     );
+     let disk = open(config, fixture_memory.clone());
+-    assert_eq!(disk.snapshot().charged_bytes, 96 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (96 << 10)
++    );
+     assert_eq!(disk.snapshot().persistent_files, 3);
+     clean(&disk, &["one", "two", "three"]);
+ }
+@@ -433,7 +485,10 @@
+     let one = disk.open_file("data", Path::new("one")).unwrap();
+     assert!(disk.open_file("data", Path::new("two")).is_err());
+     drop(one);
+-    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (64 << 10)
++    );
+     let two = disk.open_file("data", Path::new("two")).unwrap();
+     drop(two);
+     clean(&disk, &["one", "two"]);
+@@ -444,7 +499,7 @@
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     let (directory, config) = installation();
+     let disk = open(config, fixture_memory.clone());
+-    let available = 3 * disk.unit;
++    let available = 3 * disk.unit + namespace_pending(&disk);
+     *disk.available_override.lock().unwrap() = Some(available);
+     let scratch = crate::ScratchDisk::test_with_device(
+         directory.path().join("scratch"),
+@@ -462,7 +517,10 @@
+         io::ErrorKind::StorageFull
+     );
+     assert_eq!(scratch.snapshot().charged_bytes, 0);
+-    assert_eq!(scratch.snapshot().filesystem_pending_bytes, 2 * disk.unit);
++    assert_eq!(
++        scratch.snapshot().filesystem_pending_bytes,
++        2 * disk.unit + namespace_pending(&disk)
++    );
+     drop(file);
+     assert!(
+         charge.grow(disk.unit).is_err(),
+@@ -573,7 +631,10 @@
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     let same = current.clone();
+     assert_eq!(disk.snapshot().open_files, 1);
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     drop(same);
+     drop(current);
+     clean(&disk, &["file"]);
+@@ -599,7 +660,7 @@
+             .is_err()
+     );
+     assert_eq!(file.observed_len().unwrap(), 0);
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+     assert!(charge.grow(disk.unit).is_err());
+     assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+@@ -693,7 +754,10 @@
+     file.sync_all().unwrap();
+     file.shrink(32 << 10).unwrap();
+     assert_eq!(file.observed_len().unwrap(), 32 << 10);
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     drop(file);
+     clean(&disk, &["data"]);
+@@ -720,7 +784,10 @@
+         identity
+     );
+     assert_eq!(std::fs::metadata(&path).unwrap().len(), 32 << 10);
+-    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (64 << 10)
++    );
+     assert_eq!(disk.snapshot().open_files, 1);
+     assert_eq!(disk.snapshot().persistent_files, 2);
+     assert!(disk.open_file("data", Path::new("data")).is_err());
+@@ -737,7 +804,10 @@
+         .unwrap();
+     reopened.grow_reserved(64 << 10).unwrap();
+     reopened.sync_all().unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 96 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (96 << 10)
++    );
+     let mut payload = [0; 26];
+     reopened.read_exact_at(&mut payload, 0).unwrap();
+     assert_eq!(&payload, b"retained encrypted payload");
+@@ -773,11 +843,12 @@
+         assert_eq!(allocations, 0, "uncertain shrink allocated: {failure:?}");
+         assert_eq!(
+             file.observed_len().unwrap(),
+-            if failure == file::ShrinkFailure::Truncate {
+-                128 << 10
+-            } else {
+-                32 << 10
+-            }
++            namespace_charge(&disk)
++                + if failure == file::ShrinkFailure::Truncate {
++                    128 << 10
++                } else {
++                    32 << 10
++                }
+         );
+         assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+         assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+@@ -805,11 +876,12 @@
+         disk.reconcile(&CensusCancellation::default()).unwrap();
+         assert_eq!(
+             disk.snapshot().charged_bytes,
+-            if failure == file::ShrinkFailure::Truncate {
+-                128 << 10
+-            } else {
+-                32 << 10
+-            }
++            namespace_charge(&disk)
++                + if failure == file::ShrinkFailure::Truncate {
++                    128 << 10
++                } else {
++                    32 << 10
++                }
+         );
+         assert!(scratch.snapshot().filesystem_admission_ready);
+         scratch_charge.grow(4096).unwrap();
+@@ -978,7 +1050,10 @@
+     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+     assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+     disk.reconcile(&CensusCancellation::default()).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (64 << 10)
++    );
+     assert!(disk.snapshot().filesystem_admission_ready);
+     let reopened = disk.open_file("data", Path::new("node")).unwrap();
+     assert_eq!(reopened.identity().unwrap(), identity);
+@@ -1013,7 +1088,7 @@
+     published.read_exact_at(&mut bytes, 0).unwrap();
+     assert_eq!(bytes, [41; 4096]);
+     disk.delete_file(published).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+ }
+ 
+ #[test]
+@@ -1081,13 +1156,16 @@
+     assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+     drop(retained);
+     disk.reconcile(&CensusCancellation::default()).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (64 << 10)
++    );
+     assert_eq!(disk.snapshot().persistent_files, 2);
+     let raw = disk.open_file("data", Path::new("raw")).unwrap();
+     disk.delete_file(raw).unwrap();
+     let retained = disk.open_file("data", Path::new("retained")).unwrap();
+     disk.delete_file(retained).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     assert_eq!(disk.snapshot().persistent_files, 0);
+     disk.pause().unwrap();
+ }
+@@ -1108,14 +1186,20 @@
+     drop(raw);
+     assert!(disk.open_file("data", Path::new("file")).is_err());
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     assert_eq!(disk.snapshot().persistent_files, 1);
+     assert_eq!(disk.snapshot().open_files, 0);
+     disk.reconcile(&CensusCancellation::default()).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 128 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (128 << 10)
++    );
+     let file = disk.open_file("data", Path::new("file")).unwrap();
+     disk.delete_file(file).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     assert_eq!(disk.snapshot().persistent_files, 0);
+     disk.pause().unwrap();
+ }
+@@ -1149,7 +1233,10 @@
+     file.shrink(64 << 10).unwrap();
+     drop(file);
+     file = disk.open_file("data", Path::new("file")).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (64 << 10)
++    );
+     disk.shrink_file(file, 32 << 10).unwrap();
+     file = disk.open_file("data", Path::new("file")).unwrap();
+     assert_eq!(file.observed_len().unwrap(), 32 << 10);
+@@ -1159,13 +1246,24 @@
+     assert_eq!(file.identity().unwrap(), identity);
+     drop(file);
+     file = disk.open_file("data", Path::new("published")).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     assert_eq!(disk.snapshot().persistent_files, 1);
+     disk.delete_file(file).unwrap();
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
+-    assert_eq!(disk.snapshot().pending_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
++    assert_eq!(disk.snapshot().pending_bytes, namespace_pending(&disk));
+     assert_eq!(disk.snapshot().persistent_files, 0);
+-    assert!(disk.state.lock().unwrap().accounted.is_empty());
++    assert!(
++        !disk
++            .state
++            .lock()
++            .unwrap()
++            .accounted
++            .values()
++            .any(|entry| entry.file().is_some())
++    );
+     disk.pause().unwrap();
+ }
+ 
+@@ -1173,7 +1271,7 @@
+ fn enrolled_file_metadata_limit_rejects_before_creating_an_untracked_inode() {
+     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+     let (_directory, mut config) = installation();
+-    config.max_census_entries = 3;
++    config.max_persistent_files = 3;
+     let disk = open(config.clone(), fixture_memory.clone());
+     for name in ["one", "two", "three"] {
+         drop(
+@@ -1188,7 +1286,16 @@
+     assert!(!config.roots["data"].join("four").exists());
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+     assert_eq!(disk.snapshot().persistent_files, 3);
+-    assert_eq!(disk.state.lock().unwrap().accounted.len(), 3);
++    assert_eq!(
++        disk.state
++            .lock()
++            .unwrap()
++            .accounted
++            .values()
++            .filter(|entry| entry.file().is_some())
++            .count(),
++        3
++    );
+     for name in ["one", "two", "three"] {
+         let file = disk.open_file("data", Path::new(name)).unwrap();
+         disk.delete_file(file).unwrap();
+@@ -1319,7 +1426,12 @@
+         let raw = std::fs::File::open(&path).unwrap();
+         raw.try_lock().unwrap();
+         let identity = Identity::of(&raw.metadata().unwrap());
+-        assert!(!disk.lock_state().accounted[&identity].settled);
++        assert!(
++            !disk.lock_state().accounted[&identity]
++                .file()
++                .unwrap()
++                .settled
++        );
+         drop(raw);
+         clean(&disk, &["created"]);
+     }
+@@ -1385,18 +1497,24 @@
+     assert_eq!(allocations, 0);
+     assert_eq!(file.identity().unwrap(), identity);
+     assert!(!config.roots["data"].join(&source).exists());
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     let (result, allocations) =
+         crate::allocation_tests::measure(|| disk.shrink_file(file, 16 << 10));
+     result.unwrap();
+     assert_eq!(allocations, 0);
+-    assert_eq!(disk.snapshot().charged_bytes, 16 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (16 << 10)
++    );
+     assert_eq!(disk.snapshot().open_files, 0);
+     let file = disk.open_file("data", &destination).unwrap();
+     let (result, allocations) = crate::allocation_tests::measure(|| disk.delete_file(file));
+     result.unwrap();
+     assert_eq!(allocations, 0);
+-    assert_eq!(disk.snapshot().charged_bytes, 0);
++    assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+     assert_eq!(disk.snapshot().persistent_files, 0);
+     assert_eq!(disk.snapshot().open_files, 0);
+ }
+@@ -1437,10 +1555,16 @@
+         assert_eq!(snapshot.phase, NodeDiskPhase::Failed);
+         assert_eq!(snapshot.open_files, 0);
+         assert_eq!(snapshot.persistent_files, 1);
+-        assert_eq!(snapshot.charged_bytes, 32 << 10);
++        assert_eq!(snapshot.charged_bytes, namespace_charge(&disk) + (32 << 10));
+         let binding = NamespaceBinding::root(disk.roots["data"].identity).child(c"destination");
+         assert_eq!(
+-            disk.lock_state().accounted.values().next().unwrap().binding,
++            disk.lock_state()
++                .accounted
++                .values()
++                .filter_map(AccountedInode::file)
++                .next()
++                .unwrap()
++                .binding,
+             binding
+         );
+         assert!(disk.open_file("data", Path::new("destination")).is_err());
+@@ -1481,7 +1605,7 @@
+         assert_eq!(snapshot.phase, NodeDiskPhase::Failed);
+         assert_eq!(snapshot.open_files, 0);
+         assert_eq!(snapshot.persistent_files, 1);
+-        assert_eq!(snapshot.charged_bytes, 32 << 10);
++        assert_eq!(snapshot.charged_bytes, namespace_charge(&disk) + (32 << 10));
+         let path = config.roots["data"].join("file");
+         if let Some(length) = length {
+             let raw = std::fs::File::open(&path).unwrap();
+@@ -1492,12 +1616,15 @@
+             assert!(!path.exists());
+         }
+         disk.reconcile(&CensusCancellation::default()).unwrap();
+-        assert_eq!(disk.snapshot().charged_bytes, length.unwrap_or(0));
++        assert_eq!(
++            disk.snapshot().charged_bytes,
++            namespace_charge(&disk) + (length.unwrap_or(0))
++        );
+         if length.is_some() {
+             let file = disk.open_file("data", Path::new("file")).unwrap();
+             disk.delete_file(file).unwrap();
+         }
+-        assert_eq!(disk.snapshot().charged_bytes, 0);
++        assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+         assert_eq!(disk.snapshot().persistent_files, 0);
+     }
+ }
+@@ -1593,7 +1720,7 @@
+         assert_eq!(disk.snapshot().persistent_files, 1);
+         assert_eq!(disk.snapshot().open_files, 0);
+         disk.reconcile(&CensusCancellation::default()).unwrap();
+-        assert_eq!(disk.snapshot().charged_bytes, 0);
++        assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk) + (0));
+         assert_eq!(disk.snapshot().persistent_files, 0);
+         disk.pause().unwrap();
+     }
+@@ -1616,7 +1743,10 @@
+             .unwrap();
+             assert!(disk.open_file("data", Path::new(lookup)).is_err());
+             assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+-            assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++            assert_eq!(
++                disk.snapshot().charged_bytes,
++                namespace_charge(&disk) + (32 << 10)
++            );
+             assert_eq!(disk.snapshot().persistent_files, 1);
+             drop(retained);
+             clean(&disk, &["moved"]);
+@@ -1775,7 +1905,10 @@
+         io::ErrorKind::NotFound
+     );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     clean(&disk, &["moved/file"]);
+ }
+ 
+@@ -1799,7 +1932,10 @@
+                 .is_err()
+         );
+         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+-        assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++        assert_eq!(
++            disk.snapshot().charged_bytes,
++            namespace_charge(&disk) + (32 << 10)
++        );
+         assert_eq!(disk.snapshot().open_files, 0);
+         assert!(!moved.join("published").exists());
+         if replace_with_symlink {
+@@ -1826,7 +1962,10 @@
+             .is_err()
+     );
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     assert_eq!(disk.snapshot().open_files, 0);
+     assert!(!root.join("published").exists());
+     assert!(moved.join("source").exists());
+@@ -1853,7 +1992,10 @@
+     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+     assert_eq!(allocations, 0);
+     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+-    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
++    assert_eq!(
++        disk.snapshot().charged_bytes,
++        namespace_charge(&disk) + (32 << 10)
++    );
+     assert_eq!(disk.snapshot().open_files, 0);
+     assert!(!parent.join("published").exists());
+     clean(&disk, &["moved/source"]);
+@@ -2206,7 +2348,7 @@
+     assert!(required.device_bytes > 0 && required.registration_bytes > 0);
+     assert_eq!(allocations, 0);
+     assert!(!config.roots["data"].exists());
+-    config.max_census_entries = u64::MAX;
++    config.max_persistent_files = u64::MAX;
+     assert!(NodeDisk::memory_requirements(&config).is_err());
+     assert!(!config.roots["data"].exists());
+ }
+@@ -2322,13 +2464,15 @@
+         let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+         let (_directory, config) = installation();
+         seed(&config, "file", 32 << 10);
+-        let disk = open(config, memory.clone());
++        let disk = open(config.clone(), memory.clone());
+         let file = disk.open_file("data", Path::new("file")).unwrap();
+         file.reserve_growth(32 << 10, 64 << 10, DiskWork::Foreground)
+             .unwrap();
+         file.grow_reserved(64 << 10).unwrap();
+         file.sync_all().unwrap();
+         let before = disk.snapshot();
++        let old_parent_pending = namespace_pending(&disk);
++        let parent_charge = namespace_charge(&disk);
+         if fail {
+             disk.namespace_failure.store(
+                 file::NamespaceFailure::ReclaimParentSync as u8,
+@@ -2350,7 +2494,15 @@
+         // Resources are gone, but the exact Weak allocation/registration and
+         // device promises still belong to this serialized reclaim transition.
+         assert!(disk.state.try_lock().is_err());
+-        assert_eq!(*disk.device.lock(), before.filesystem_pending_bytes);
++        let expected_parent_pending = if fail {
++            old_parent_pending
++        } else {
++            parent_charge - config.roots["data"].metadata().unwrap().blocks() * 512
++        };
++        assert_eq!(
++            *disk.device.lock(),
++            before.filesystem_pending_bytes - old_parent_pending + expected_parent_pending
++        );
+         release.send(()).unwrap();
+         let result = closing.join().unwrap();
+         assert_eq!(result.is_err(), fail);
+@@ -2364,8 +2516,8 @@
+             assert_eq!(after.pending_bytes, before.pending_bytes);
+         } else {
+             assert_eq!(after.phase, NodeDiskPhase::Open);
+-            assert_eq!(after.charged_bytes, 0);
+-            assert_eq!(after.pending_bytes, 0);
++            assert_eq!(after.charged_bytes, namespace_charge(&disk) + (0));
++            assert_eq!(after.pending_bytes, namespace_pending(&disk));
+         }
+         disk.reconcile(&CensusCancellation::default()).unwrap();
+     }

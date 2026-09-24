@@ -1,0 +1,25 @@
+{
+  "status": "FAILED original full store cohort; no Python tests dispatched",
+  "manifest_sha256": "85d4e8afd55650e00b1edfe639ed2e9e4c1bb6b149d37125efd542407dbacfe7",
+  "patch_sha256": "ed3c798c2ab3933af62070c2f472857c57a1f47be49a3b6de7b2041f04c69eff",
+  "workspace_qualification_receipt_sha256": "5ad5fc039ba4801234c6058cb7c635e9907a4f6274be47632ba0d9f576613517",
+  "runtime_result_sha256": "5bb02dac9cd89bd7d9d182f097eadbcb058b6a641b586e276d1f22b38a0e53ac",
+  "runtime_results_sha256": "e518e20fd06934e21b3720ebe7e3163bc05af212637a7d57065f2dd92d3ad2c0",
+  "log_sha256": "28505d6bcc6e509f697458c93bc403ef3010fc2901dd793e2b2d1ef5aecf502d",
+  "binary_sha256": "361fcc682bc25cdcda400ea82e8c8026ef7c2e0d66cf5c286eb4c06396f50854",
+  "exact_inventory_count": 326,
+  "passed": 322,
+  "failed": 2,
+  "ignored": 2,
+  "filtered": 0,
+  "failed_cases": [
+    "audit_archive::owned::tests::owned_publication_resolves_partial_writes_and_uncertain_rename_without_adopting_files",
+    "backup_sessions::tests::visible_session_outcomes_require_durable_readback_before_resolution_or_cleanup"
+  ],
+  "all_groups_drained": true,
+  "source_unchanged": true,
+  "source_count": 3154,
+  "original_bound_seconds": 1200,
+  "successor": "storage-and-namespace-integration-revision6",
+  "actual_source_modified": false
+}

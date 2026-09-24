@@ -1,0 +1,19 @@
+{
+  "root": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "read_only": true,
+  "manifest_unchanged_sha256": "7b196bbfde98b9c0e84aca1cafd010d3757aa4a50c03fc0bb7bfcd91da39a6fc",
+  "report_sha256": "7c70470878d442dceaaef176bba57e0c94368016b46c1e957e1fd0b0f806e809",
+  "readme_sha256": "551059d8bf55d5a1ef16e1ce3fd86816fe04ac21771bd63b048f2d950a65f9ff",
+  "audit_script_sha256": "226524fe8ec9027e14e19d7c84863ae0aa59b79a96dba7e1cdd95dc3c7e00a94",
+  "applied_payload_manifest_sha256": "e78a1d2eebfd9174f73c9f7285f7526b0dc784c24250543768d9a7c03ae4205a",
+  "applied_payload_patch_sha256": "6b2e9c49d20f1fee3d345c764a9566bd929eeee30ea9c9dbc3d6742edf414235",
+  "run162_input_sha256": "7778c30105ea54b8f22baef3580a57fc72e838d27f3a967b02c32e9f81bce44b",
+  "unexpected_unexplained_files": [],
+  "run162_result_sha256": "aef50e9cee3f95de9adb8f7cf6a37abec32f818265c4b207fc0eacc1ae8dbbd4",
+  "redb_changed_recorded_files": 25,
+  "redb_unrecorded_files": 12,
+  "vendor_support_drift": [
+    "vendor/README.md"
+  ]
+}

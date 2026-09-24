@@ -1,0 +1,257 @@
+   Compiling kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 26s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_engine-d4dda2ec4274de51)
+
+running 216 tests
+test admission::disk_memory::tests::installed_box_stays_charged_after_facade_drop_with_operation_slots_full ... ok
+test admission::disk_memory::tests::lease_overhead_is_admitted_before_boxing_and_denial_preserves_counters ... ok
+test admission::installed::tests::concurrent_selection_is_denied_without_publishing_an_independent_core ... ok
+test admission::installed::tests::conflicting_policy_never_replaces_or_charges_the_retained_core ... ok
+test admission::installed::tests::failed_sampler_denies_reuse_and_keeps_original_core_and_panic ... 
+thread 'kasumi-rss' (4017121) panicked at crates/kasumi-engine/src/admission/installed.rs:113:21:
+Box<dyn Any>
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ok
+test admission::installed::tests::retained_registry_reuses_core_across_sealed_runtime_facades ... ok
+test admission::startup::tests::actual_children_and_original_errors_survive_cancelled_drain_and_caller_drop ... ok
+test admission::startup::tests::capacity_and_budget_denial_precede_inert_builder_and_preserve_existing_owner ... ok
+test admission::startup_integration_tests::cancelled_local_startup_and_node_census_keep_actual_group_and_charges_until_join ... ok
+test admission::tests::cancelled_detached_worker_keeps_semaphore_and_reservation_until_exit ... ok
+test admission::tests::completed_failure_keeps_original_report_and_inventory_charge_until_facade_drop ... ok
+test admission::tests::empty_inventory_capacity_is_charged_until_actual_sealed_drain ... ok
+test admission::tests::exhausted_startup_inventory_denies_before_charging_another_owner ... ok
+test admission::tests::explicit_high_water_cannot_bypass_detected_memory_capacity ... ok
+test admission::tests::fixed_bookkeeping_is_denied_before_its_allocation_when_budget_is_too_small ... ok
+test admission::tests::fixed_charge_slots_reuse_capacity_without_forgetting_live_owners ... ok
+test admission::tests::fixture_total_resolution_preserves_the_original_runtime_payload_boundary ... ok
+test admission::tests::identifier_exhaustion_preserves_existing_charge_and_free_slot ... ok
+test admission::tests::initial_bookkeeping_obeys_the_existing_low_water_startup_fence ... ok
+test admission::tests::last_reservation_waits_for_paused_sampler_and_actual_source_destruction ... ok
+test admission::tests::new_inventory_policies_are_required_without_legacy_aliases ... ok
+test admission::tests::pressure_cancels_queries_but_never_changes_write_work_and_uses_hysteresis ... ok
+test admission::tests::queued_rebuild_expands_its_existing_slot_and_rejects_growth_without_losing_charge ... ok
+test admission::tests::real_process_rss_and_physical_capacity_are_measured ... ok
+test admission::tests::replacement_facade_preserves_resident_charge_and_has_fresh_startup_fence ... ok
+test admission::tests::reserved_audit_workspace_remains_usable_under_rss_pressure ... ok
+test admission::tests::resident_admission_never_consumes_an_operation_slot ... ok
+test admission::tests::result_release_rechecks_pressure_after_suspend_even_for_completed_work ... ok
+test admission::tests::retained_cursor_releases_operation_slot_but_keeps_bytes_until_last_owner ... ok
+test admission::tests::sampler_panic_fences_fresh_admission_and_preserves_original_join_outcome ... 
+thread 'kasumi-rss' (4017157) panicked at crates/kasumi-engine/src/admission.rs:1806:21:
+Box<dyn Any>
+ok
+test admission::tests::shutdown_drain_waits_for_detached_work_to_release_its_registration ... ok
+test admission::tests::snapshot_startup_inventory_is_charged_without_a_governor_cycle ... ok
+test admission::tests::suspend_invalidates_old_measurement_and_slow_or_failed_probe_denies ... ok
+test admission::tests::workspace_handoff_preserves_slot_owner_and_checks_only_replacement_growth ... ok
+test audit_maintenance::tests::tenants_share_capacity_and_retained_workers_keep_it_owned ... ok
+test audit_source::tests::historical_incarnation_requires_complete_lineage_and_preserves_exact_source_checkpoint ... ok
+test audit_source::tests::replica_nodes_and_historical_epochs_share_history_without_aliasing_other_installations ... ok
+test backup_verify::history_work::tests::cancelled_waiter_keeps_external_body_and_point_work_until_the_worker_drains ... ok
+test backup_verify::history_work::tests::decode_failure_and_validation_panic_keep_the_expanded_charge_until_owner_drain ... 
+thread 'backup_verify::history_work::tests::decode_failure_and_validation_panic_keep_the_expanded_charge_until_owner_drain' (4017168) panicked at crates/kasumi-engine/src/backup_history_work.rs:168:24:
+injected verifier panic
+ok
+test backup_verify::history_work::tests::dense_external_body_requires_its_peak_in_addition_to_retained_point_work ... ok
+test backup_verify::tests::expired_live_verification_worker_keeps_bytes_and_shutdown_registration_until_done ... ok
+test bootstrap::backup_restore::tests::expired_restore_worker_keeps_its_admission_charge_until_actual_completion ... ok
+test bootstrap::control_genesis::tests::applied_control_requires_exact_schema_and_document_without_resetting_current_routes ... ok
+test bootstrap::control_genesis::tests::control_genesis_is_deterministic_bounded_and_part_of_bootstrap_identity ... ok
+test bootstrap::control_genesis::tests::control_genesis_rejects_wrong_storage_purpose_before_deployment_publication ... ok
+test bootstrap::control_genesis::tests::replicated_genesis_requires_explicit_tag_payload_and_lifecycle_kind ... ok
+test bootstrap::control_genesis::tests::strict_control_reopen_rejects_partial_genesis_without_catalog_or_raft_mutation ... ok
+test bootstrap::existing_replicated_tests::existing_replica_never_creates_missing_bootstrap_or_consensus_identity ... ok
+test bootstrap::existing_replicated_tests::existing_replica_rejects_corrupt_manifest_body_and_authenticated_incarnation ... ok
+test bootstrap::existing_replicated_tests::existing_replica_validates_authenticated_genesis_tag_domains_and_descriptor ... ok
+test bootstrap::existing_replicated_tests::existing_replicas_replay_committed_state_and_membership_after_full_close ... ok
+test bootstrap::existing_tests::authenticated_bootstrap_cannot_change_the_standalone_catalog_incarnation ... ok
+test bootstrap::existing_tests::existing_control_requires_the_non_nil_configured_incarnation_before_startup ... ok
+test bootstrap::existing_tests::existing_local_rejects_corrupt_manifest_body_and_custody_commitment_without_repair ... ok
+test bootstrap::existing_tests::existing_local_reopens_the_same_committed_standalone_after_complete_shutdown ... ok
+test bootstrap::existing_tests::existing_local_requires_both_local_bindings_and_an_initialized_bootstrap ... ok
+test bootstrap::fixtures::tests::production_bootstrap_installs_shared_pool_for_application_and_control ... ok
+test mutation_receipt::tests::durable_future_row_is_invisible_and_only_exact_original_replay_can_reuse_it ... ok
+test mutation_receipt::tests::encrypted_reopen_keeps_unapplied_receipt_rows_hidden_until_exact_replay ... ok
+test mutation_receipt::tests::point_decode_admission_precedes_even_future_row_allocation ... ok
+test mutation_receipt::tests::snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_live_views ... ok
+test security_audit::existing_tests::corrupt_audit_head_hot_gap_and_pending_pair_fail_without_logical_mutation ... ok
+test security_audit::existing_tests::explicit_audit_creation_drains_and_strict_reopen_preserves_stream_and_sequence ... ok
+test security_audit::existing_tests::live_audit_reopen_rejects_deleted_head_instead_of_reusing_cached_writer ... ok
+test security_audit::existing_tests::missing_empty_or_nonempty_audit_head_never_recreates_a_stream ... ok
+test security_audit::jobs::tests::cancelled_maintenance_retains_publication_panic_and_unpruned_history ... 
+thread 'security_audit::jobs::tests::cancelled_maintenance_retains_publication_panic_and_unpruned_history' (4017845) panicked at crates/kasumi-engine/src/security_audit_jobs.rs:238:13:
+actual admitted archive publication panic
+ok
+test security_audit::jobs::tests::cancelled_record_and_drain_retain_actual_blocking_panic_before_physical_reopen ... 
+thread 'tokio-rt-worker' (4018121) panicked at crates/kasumi-engine/src/security_audit.rs:361:13:
+injected real blocking audit record panic
+ok
+test security_audit::retention::tests::uncertain_publication_survives_restart_and_repeated_hot_budget_crossings_preserve_complete_history ... ok
+test security_audit::tests::archive_worker_before_registration_is_joined_through_cancelled_shutdown_and_reopen ... ok
+test security_audit::tests::cancelled_queued_audit_and_cancelled_shutdown_drain_before_immediate_reopen ... ok
+test security_audit::tests::live_opens_share_sequence_and_preserve_concurrent_records_through_reopen ... ok
+test security_audit::tests::uncertain_audit_commit_fences_queued_writers_until_sequence_recovery ... ok
+test service::audit_maintenance_service::tests::encrypted_worker_drains_hot_history_when_ordinary_capacity_is_full ... ok
+test service::audit_maintenance_service::tests::external_archive_outage_before_proposal_preserves_hot_history_and_raft_availability ... ok
+test service::audit_maintenance_service::tests::tenant_audit_worker_keeps_its_owner_through_cancelled_shutdown ... ok
+test service::backup_sessions::work_tests::additional_future_charge_denial_never_invokes_builder ... ok
+test service::backup_sessions::work_tests::future_charge_precedes_builder_and_outlives_box_on_cancel_and_error ... ok
+test service::backup_sessions::work_tests::oversized_future_is_denied_before_builder_or_charge ... ok
+test service::construction::tests::foreign_equal_policy_core_is_rejected_before_bootstrap_or_raft_startup ... ok
+test service::database_worker_outcome_tests::aborted_database_monitor_retains_its_blocking_child_and_distinct_panic ... 
+thread 'tokio-rt-worker' (4027241) panicked at crates/kasumi-engine/src/database_worker_outcome_tests.rs:37:13:
+actual retained blocking child panic
+ok
+test service::database_worker_outcome_tests::cancelled_database_drain_keeps_monitor_panic_before_pending_audit_child ... 
+thread 'tokio-rt-worker' (4027544) panicked at crates/kasumi-engine/src/database_worker_outcome_tests.rs:196:26:
+actual monitor child panic
+ok
+test service::database_worker_outcome_tests::database_audit_blocking_panic_is_terminal_and_retained ... 
+thread 'tokio-rt-worker' (4027596) panicked at crates/kasumi-engine/src/database_worker_outcome_tests.rs:308:26:
+actual audit preparation panic
+ok
+test service::database_worker_outcome_tests::database_shutdown_cancels_undispatched_shared_permit_wait_before_other_tenant_drain ... ok
+test service::proposal_jobs::tests::admission_boundary_ignores_prior_slot_and_pending_preflight_before_retained_child ... ok
+test service::proposal_jobs::tests::cancelled_drain_preserves_prior_panic_while_later_child_remains_owned ... 
+thread 'service::proposal_jobs::tests::cancelled_drain_preserves_prior_panic_while_later_child_remains_owned' (4029087) panicked at crates/kasumi-engine/src/proposal_jobs_tests.rs:156:13:
+original proposal panic
+ok
+test service::proposal_jobs::tests::completed_response_retains_command_workspace_and_registration_until_consumed ... ok
+test service::proposal_jobs::tests::definite_request_rejection_does_not_poison_proposal_custody ... ok
+test service::proposal_jobs::tests::original_error_and_charge_survive_cancelled_caller_and_registry_drop ... ok
+test service::proposal_jobs::tests::registry_is_bounded_and_uses_the_original_node_charge ... ok
+test service::proposal_jobs::tests::timed_out_call_retains_actual_child_and_cannot_cancel_its_effect ... ok
+test service::staged_reads::tests::metadata_growth_requires_additional_admission_before_copying ... ok
+test service::tests::accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tombstone ... ok
+test service::tests::actual_raft_leadership_redirect_does_not_poison_proposal_custody ... ok
+test service::tests::canceled_queued_schema_activation_finishes_once_and_checks_receipt_release_authority ... ok
+test service::tests::cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shutdown ... 
+thread 'service::tests::cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shutdown' (4029233) panicked at crates/kasumi-engine/src/service_proposal_tests.rs:58:13:
+actual proposal admission clock panic
+ok
+test service::tests::cancelled_submit_keeps_actual_proposal_until_original_identity_is_resolvable ... ok
+test service::tests::committed_custody_with_expired_ack_recovers_only_with_fresh_authority ... ok
+test service::tests::committed_effect_with_expired_ack_is_resolved_by_fresh_credential ... ok
+test service::tests::committed_retirement_with_expired_reply_has_fresh_authorized_receipt_recovery ... ok
+test service::tests::custody_observations_preserve_mutation_capacity_and_exhaustion_can_expand ... ok
+test service::tests::expired_queued_and_canceled_credentials_accept_no_effect_or_identity ... ok
+test service::tests::generic_administration_cannot_inject_a_claimed_retirement_preparation ... ok
+test service::tests::guarded_stop_queued_deadline_and_cancellation_leave_only_actual_durable_outcomes ... ok
+test service::tests::lineage_read_keeps_original_expiry_and_current_collection_policy_at_release ... ok
+test service::tests::long_backup_verification_and_encoded_read_recheck_original_credential ... ok
+test service::tests::owned_response_fence_retains_workspace_and_original_credential_after_adapter_return ... ok
+test service::tests::permanent_receipt_public_retry_survives_expiry_era_and_lowered_batch_limits ... ok
+test service::tests::query_shutdown_drains_abandoned_output_and_captured_generation ... ok
+test service::tests::queued_custody_credentials_expire_without_accepting_a_permanent_identity ... ok
+test service::tests::queued_deadlines_use_admission_time_and_survive_caller_cancellation ... ok
+test service::tests::queued_expired_credential_cannot_accept_retirement_or_its_id ... ok
+test service::tests::queued_retirement_uses_trusted_admission_deadline_and_cancellation_keeps_exact_outcome ... ok
+test service::tests::queued_schema_before_expiry_rejects_all_definitions_and_retains_original_failure ... ok
+test service::tests::queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_durable_outcomes ... ok
+test service::tests::queued_stop_checks_authority_after_an_earlier_ordered_write ... ok
+test service::tests::queued_stop_credential_expiry_never_accepts_missing_identity ... ok
+test service::tests::replicated_credential_admission_uses_only_captured_time_after_local_expiry ... ok
+test service::tests::retained_stop_response_fence_expires_without_changing_permanent_outcome ... ok
+test service::tests::retirement_workspace_rejection_is_definite_and_does_not_poison_custody ... ok
+test service::tests::schema_original_deadline_and_current_lookup_dependencies_survive_until_encoded_release ... ok
+test service::tests::serialized_authorization_never_becomes_fresh_service_or_credential_authority ... ok
+test service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly ... ok
+test service::tests::serving_expiry_suppresses_long_backup_verification_and_post_publication_proof ... ok
+test snapshot_codec::frame_tests::inspection_reads_large_typed_payload_in_fixed_chunks_before_any_dto ... ok
+test snapshot_codec::frame_tests::obsolete_receipt_tuple_and_resident_header_fields_are_rejected ... ok
+test snapshot_codec::frame_tests::permanent_aggregate_does_not_become_ram_and_all_layout_arithmetic_is_checked ... ok
+test snapshot_codec::frame_tests::permanent_kind_cannot_forward_a_resident_payload_to_semantic_consumers ... ok
+test snapshot_codec::frame_tests::typed_inspection_rejects_bounds_kind_order_and_terminal_substitutions ... ok
+test snapshot_codec::literal_tests::literal_marker_documents_schema_and_staged_records_survive_canonical_snapshots ... ok
+test snapshot_codec::record_work::tests::dense_numeric_sites_are_charged_before_serde_and_independent_of_token_width ... ok
+test snapshot_codec::record_work::tests::escaped_and_duplicate_keys_are_counted_with_bounded_depth_before_decode ... ok
+test snapshot_codec::recovery_tests::application_backup_rejects_control_recovery_and_embedded_or_orphan_records ... ok
+test snapshot_codec::recovery_tests::canonical_recovery_records_roundtrip_and_point_accounting_match_stream ... ok
+test snapshot_codec::tests::archived_audit_prefix_preserves_absolute_sequences_and_head ... ok
+test snapshot_codec::tests::authenticated_duplicate_header_is_rejected ... ok
+test snapshot_codec::tests::canonical_stream_requires_terminal_counts_digest_and_exact_eof ... ok
+test snapshot_codec::tests::oversized_record_is_rejected_before_payload_read_or_allocation ... ok
+test staged_terminal::tests::durable_future_row_is_invisible_and_only_exact_original_replay_can_reuse_it ... ok
+test staged_terminal::tests::encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_replay ... ok
+test staged_terminal::tests::failed_terminal_ordinal_insert_never_publishes_advanced_head ... ok
+test staged_terminal::tests::original_begin_reservation_covers_maximum_terminal_envelope_and_counter_widths ... ok
+test staged_terminal::tests::point_admission_precedes_decoding_even_for_an_unpublished_row ... ok
+test staged_terminal::tests::rejected_terminal_row_permanently_disqualifies_valid_prefix ... ok
+test staged_terminal::tests::snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_live_views ... ok
+test staged_terminal::tests::terminal_applied_provenance_cannot_be_relabelled_across_two_restore_geneses ... ok
+test state::lease_retention::tests::archive_leaf_clones_share_unchanged_large_values_and_manifest_payloads ... ok
+test state::lease_retention::tests::metadata_allocation_is_charged_before_opening_and_snapshot_replace_invalidates_handles ... ok
+test state::lease_retention::tests::primary_id_paths_stay_charged_after_temporary_insert_and_delete ... ok
+test state::lease_retention::tests::publication_enforces_aggregate_retention_before_another_page_or_monitor_tick ... ok
+test state::lease_retention::tests::publication_expires_full_roots_while_two_inflight_selections_keep_only_bounded_pages ... ok
+test state::mutation_apply::tests::admitted_failure_survives_byte_exhaustion_expansion_and_snapshot_replay ... ok
+test state::mutation_apply::tests::hot_audit_exhaustion_cannot_rewrite_original_or_admit_a_new_identity ... ok
+test state::mutation_apply::tests::terminal_reservation_covers_error_codes_escaped_versions_and_counter_widths ... ok
+test state::mutation_apply::tests::verified_point_history_crosses_former_count_limit_before_a_real_new_mutation ... ignored, explicit permanent-receipt capacity cohort; streams 100,000 encrypted point rows
+test state::recovery::completion::tests::retained_complete_input_requires_explicit_canonical_predecessor ... ok
+test state::recovery::receiver::tests::absence_or_substituted_status_cannot_install_preparation_evidence ... ok
+test state::recovery::receiver::tests::closed_completion_snapshot_rejects_history_deletion_tamper_cursor_regression_and_phase_rewrite ... ok
+test state::recovery::receiver::tests::complete_reducer_rejects_both_original_cap_substitutions_before_inserting_phase ... ok
+test state::recovery::receiver::tests::completion_successor_requires_exact_positive_sealed_original_and_origin ... ok
+test state::recovery::receiver::tests::established_receiver_routes_around_unknown_start_without_unanimous_reopening ... ok
+test state::recovery::receiver::tests::expired_unknown_resolver_uses_only_exact_positive_terminal_status ... ok
+test state::recovery::receiver::tests::linked_completion_history_roundtrips_in_native_stream_and_incremental_byte_accounting ... ok
+test state::recovery::receiver::tests::lost_prepare_reply_and_expired_phase_require_persisted_positive_status_before_resolution ... ok
+test state::recovery::receiver::tests::pending_linked_birth_retains_exact_input_when_stop_clears_pending_without_commit ... ok
+test state::recovery::receiver::tests::repeated_sealed_successors_keep_causal_chain_and_all_original_scopes ... ok
+test state::recovery::receiver::tests::sealed_completion_successor_preserves_exact_old_proof_context_and_rejects_replay ... ok
+test state::recovery::receiver::tests::sealed_terminal_is_retained_distinctly_and_cannot_enter_activation_inspection ... ok
+test state::recovery::receiver::tests::terminal_status_absence_or_new_resolver_identity_has_no_valid_evidence_form ... ok
+test state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence ... ok
+test state::snapshot_bundle::tests::control_archive_transfer_uses_exact_reserved_domain_without_application_authority ... ok
+test state::snapshot_bundle::tests::incomplete_or_corrupt_bundle_never_publishes_pruned_state ... ok
+test state::snapshot_bundle::tests::missing_archive_and_incorrect_totals_prevent_snapshot_completion ... ok
+test state::snapshot_bundle::tests::public_capture_and_restore_preparation_are_complete_admitted_and_never_publish ... ok
+test state::snapshot_bundle::tests::replacement_receives_complete_chain_and_restart_uses_local_dependencies ... ok
+test state::snapshot_bundle::tests::snapshot_operations_reject_foreign_equal_policy_memory_before_dispatch ... ok
+test state::snapshot_validation::tests::authenticated_semantic_substitutions_fail_both_validation_paths ... ok
+test state::snapshot_validation::tests::indexed_terminal_provenance_retains_the_intermediate_incarnation_genesis ... ok
+test state::snapshot_validation::tests::indexed_validation_matches_full_restore_and_canonical_closure ... ok
+test state::snapshot_validation::tests::indexed_verification_keeps_all_staging_on_the_image_owner_until_drain ... ok
+test state::snapshot_validation::tests::indexing_never_returns_a_proof_after_cancellation_or_corrupt_footer ... ok
+test state::snapshot_validation::tests::receipt_original_scope_and_position_are_checked_in_both_snapshot_paths ... ok
+test state::staging::capacity_tests::permanent_staged_configuration_rejects_old_count_policy_and_missing_byte_budget ... ok
+test state::staging::capacity_tests::permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_identity_reuse ... ok
+test state::staging::capacity_tests::permanent_staged_reservation_bounds_all_terminal_outcomes_and_maximum_counter_widths ... ok
+test state::staging::capacity_tests::permanent_staged_snapshot_boundary_reserves_aggregate_counter_digit_growth ... ok
+test state::tenant_audit::memory_tests::audit_maintenance_rejects_foreign_equal_policy_core_and_keeps_exact_pool ... ok
+test state::tenant_audit::memory_tests::audit_maintenance_requires_installed_storage_before_reserving_a_pool ... ok
+test state::tenant_audit::tests::authenticated_wrong_prefix_and_corrupt_ciphertext_never_prune ... ok
+test state::tenant_audit::tests::uncertain_preparation_reopens_the_same_encrypted_object_after_restart ... ok
+test state::tenant_audit::tests::uncertain_publication_keeps_hot_prefix_and_apply_never_recontacts_external_archive ... ok
+test target_completion_machine::tests::committed_original_resolves_positively_and_cannot_authorize_a_successor ... ok
+test target_completion_machine::tests::exact_preparation_replays_after_completion_without_replacing_its_reservation ... ok
+test target_completion_machine::tests::only_an_expired_exact_prepared_attempt_can_be_sealed ... ok
+test target_completion_machine::tests::preparation_reserves_terminal_capacity_and_resolution_does_not_reacquire_it ... ok
+test target_completion_machine::tests::reservation_shape_and_explicit_predecessor_are_canonical ... ok
+test target_completion_machine::tests::sealed_predecessor_orders_successor_and_rejects_a_late_original_complete ... ok
+test target_completion_machine::tests::target_budget_changes_preserve_reserves_and_replay_the_first_outcome ... ok
+test target_completion_machine::tests::terminal_proof_binds_original_target_order_and_distinct_signature_purpose ... ok
+test target_completion_status_tests::fresh_status_preserves_expired_original_scope_position_and_dispatch_cap ... ok
+test target_completion_status_tests::status_requires_distinct_later_control_identity_and_exact_original_attempt ... ok
+test target_completion_status_tests::status_signature_domain_and_expected_input_cannot_be_substituted ... ok
+test target_invocation::admission_tests::native_absolute_dispatch_cap_survives_retry_and_never_expands_node_work_limit ... ok
+test target_invocation::admission_tests::original_short_timeout_expires_during_acquisition_and_cannot_reanchor_after_suspend ... ok
+test target_journal::open_tests::corrupt_or_wrong_installed_journal_head_is_rejected_without_replacement ... ok
+test target_journal::open_tests::installed_empty_journal_reopens_only_its_exact_node_after_owner_drain ... ok
+test target_journal::open_tests::journal_rejects_foreign_equal_policy_core_before_creating_or_reopening_head ... ok
+test target_journal::open_tests::missing_journal_head_never_initializes_and_explicit_installation_cannot_repeat ... ok
+test target_journal::open_tests::paused_registry_handoff_cannot_publish_two_journal_mutation_owners ... ok
+test target_resolution::tests::admitted_completion_reserves_hot_audit_and_resident_completion_space ... ok
+test target_resolution::tests::current_selectors_cannot_omit_a_budget_effect_or_the_last_seal ... ok
+test target_resolution::tests::every_historical_terminal_requires_its_exact_earlier_seal ... ok
+test target_resolution::tests::exact_target_terminal_prefix_hides_unpublished_rows_and_rejects_changed_replay ... ok
+test target_resolution::tests::target_row_binds_actual_generation_command_and_separate_framed_budget ... ok
+test target_resolution::tests::target_snapshot_catalog_reopens_only_its_exact_committed_prefix ... ok
+test test_utils::physical_fixture_tests::configured_total_planning_preserves_existing_bookkeeping_and_limits ... ok
+test test_utils::physical_fixture_tests::installed_metadata_preserves_the_exact_original_payload_allowance ... ok
+
+test result: ok. 215 passed; 0 failed; 1 ignored; 0 measured; 1 filtered out; finished in 548.80s
+

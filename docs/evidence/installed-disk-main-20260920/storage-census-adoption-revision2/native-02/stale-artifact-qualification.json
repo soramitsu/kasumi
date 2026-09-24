@@ -1,0 +1,12 @@
+{
+  "qualified_revision2": false,
+  "reason": "Cargo reused native01 executable despite the new assembly path; opening binary listed six tests instead of revision2 nine and stack traces name native01 assembly",
+  "native01_and_native02_binary_sha256": "f937a2b20f5a437826be6896a33341a7a627fa5c005ddbbe53cbc7914775b0f6",
+  "source_inventory_unchanged": true,
+  "groups_drained": [
+    43075,
+    43087,
+    43104
+  ],
+  "resolution": "native03 uses a fresh candidate-specific Cargo target directory and validates exact test names before test dispatch"
+}

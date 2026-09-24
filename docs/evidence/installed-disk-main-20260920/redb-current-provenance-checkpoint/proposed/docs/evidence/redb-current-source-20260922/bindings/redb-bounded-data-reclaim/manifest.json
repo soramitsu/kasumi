@@ -1,0 +1,131 @@
+{
+  "status": "FROZEN TARGET-ONLY CANDIDATE; NOT APPLIED; NO CARGO OR NATIVE QUALIFICATION",
+  "scope": "canonical format4, bounded DATA historical reclaim, direct current-system exclusion; no backward compatibility",
+  "base_commit": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "patch_sha256": "f2103f19fa5223101a83c8c6cdf230a658f1d26fcfb54be56ab2ea5660cb85f8",
+  "files": [
+    {
+      "path": "vendor/redb-4.2.0/src/transactions.rs",
+      "before_sha256": "b6b3dc77f8d1a97fca8bcee0059ad2614b286e4636bece81266413ad32697c78",
+      "proposed_sha256": "1209c02021691458e421e34c1baa8f00896a924bf3508f47ec8ea75b73d0ce58",
+      "before_bytes": 93195,
+      "proposed_bytes": 89028,
+      "current_matches_before": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/db.rs",
+      "before_sha256": "3cd6bdbdb33b14583b08410e8dbb3586057b22b10467f13655a17359d671795c",
+      "proposed_sha256": "76f3c101c143a8314cad64fee3bb6ea6ef5563f5fcc7ebc911f1b7c19bbe8bf7",
+      "before_bytes": 66907,
+      "proposed_bytes": 67465,
+      "current_matches_before": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/error.rs",
+      "before_sha256": "fb674ef84f4a605be75362451789d891fbb2fc841ddd080ee7cc0f8a9c62578f",
+      "proposed_sha256": "d06dd7441556729c086ccda470f4057e262fec40d46f533799834548e4868881",
+      "before_bytes": 24763,
+      "proposed_bytes": 25241,
+      "current_matches_before": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/page_list_tests.rs",
+      "before_sha256": "312382407366d3e653211330b55efb40f006393520074200d87cb6fdd9a80b08",
+      "proposed_sha256": "b68adbe9a837904d1fb6dabc10d89eb6695a857877402704eaa1125d4e00507c",
+      "before_bytes": 12445,
+      "proposed_bytes": 24190,
+      "current_matches_before": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/mod.rs",
+      "before_sha256": "b8d1fd29ad6ec673ef00bfe9544586736fcc66e5048fb4fa5a11e075a5137a2a",
+      "proposed_sha256": "d1b8c13d009219f5bc10e598e6c07523cfdf18eb17bb78a757f38d7b42c72b0d",
+      "before_bytes": 1483,
+      "proposed_bytes": 1483,
+      "current_matches_before": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/mod.rs",
+      "before_sha256": "d8b37c9f5edfd92b8ad0f7ddd47e402b9e5a093a93c62767d97812c5d97e5a87",
+      "proposed_sha256": "d91c85b7a1fec6e8cf17cd0560e1c515bdf4dd848e9c548a96ceb7d2d3f0c210",
+      "before_bytes": 891,
+      "proposed_bytes": 891,
+      "current_matches_before": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/header.rs",
+      "before_sha256": "e0d967f8dfc9d238f0099159809163dc982094d0bb13ba9acd81558b4816ab93",
+      "proposed_sha256": "d2db298c18d107d8c371a6f4025fefe12e499a9b39ee9f74572bb34c6e1043a7",
+      "before_bytes": 60755,
+      "proposed_bytes": 61945,
+      "current_matches_before": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+      "before_sha256": "bafa9256bdf1cc0a46dc5721aca3226a7f4da05a190a2bf18c484592561c4614",
+      "proposed_sha256": "09912e97be739f0766bfe9d806904b984ab1cfdcaa9e7bac1fd5ec6d8c9fdf3f",
+      "before_bytes": 59930,
+      "proposed_bytes": 59565,
+      "current_matches_before": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/savepoint.rs",
+      "before_sha256": "6f5732fd47215e3c4964b09932315042a6e56d2c21160465bbbe228088883569",
+      "proposed_sha256": "7babc5a9cff6861da26bbdbc28103f034e12ac319d19e3da2a51b89d1dd77df7",
+      "before_bytes": 7322,
+      "proposed_bytes": 7415,
+      "current_matches_before": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/table_tree.rs",
+      "before_sha256": "e4e53fcc516bf69c4f4918335be169d26b0abfc6d6976dbfbfd68c15904f12db",
+      "proposed_sha256": "6c34bc2c6ea096f12bd0c087e2c90b341963fb397b164cd0dea6ec90091de152",
+      "before_bytes": 29633,
+      "proposed_bytes": 29885,
+      "current_matches_before": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_base.rs",
+      "before_sha256": "313bdd7fa068257d1ffae6f13ba56dd26fa105d00e2fdc571263d50c764b2e4a",
+      "proposed_sha256": "6bf0407250bcae126a6a04f5dbad1bf23aeb5b0a3098a0bc37b19544a9386a78",
+      "before_bytes": 86495,
+      "proposed_bytes": 86476,
+      "current_matches_before": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree.rs",
+      "before_sha256": "25840b63faad3ba554331fd3a859e1f73f19f527bacf2067078e3cdfe6f33459",
+      "proposed_sha256": "9b74190495ba1c8d2b2efdacbdbb3e67310e96d99881117ac812c0016047cd4e",
+      "before_bytes": 51177,
+      "proposed_bytes": 51158,
+      "current_matches_before": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_mutator.rs",
+      "before_sha256": "b6350a85c1b7a152eb4a173402607756178a62f29ad0db87d6460d0e74e14661",
+      "proposed_sha256": "6e8b4f5aaa8b359832309c3680db70afa6cabaa7d17e03039182e380fe6799a3",
+      "before_bytes": 84050,
+      "proposed_bytes": 84031,
+      "current_matches_before": true
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/btree_cursor.rs",
+      "before_sha256": "126dcde10a971f6fa9917b34ae19d361b33fb2a812c3314fbd9fefde2a4ce8d7",
+      "proposed_sha256": "347061bf7feda16f835cedd3eb4246bae22bc25c00bcc1b113c1ba37eff0320d",
+      "before_bytes": 117068,
+      "proposed_bytes": 117049,
+      "current_matches_before": true
+    }
+  ],
+  "validation": {
+    "target_rustfmt_exit": 0,
+    "git_apply_check_exit": 0,
+    "cargo_run": false,
+    "native_run": false
+  },
+  "open_requirements": [
+    "reserved physical maintenance capability and its admission/accounting",
+    "full transaction/cache/allocator workspace qualification",
+    "original fault and full vendor regression execution"
+  ]
+}

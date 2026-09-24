@@ -1,0 +1,36 @@
+diff --git a/crates/kasumi-store/src/node_disk/tests.rs b/crates/kasumi-store/src/node_disk/tests.rs
+--- a/crates/kasumi-store/src/node_disk/tests.rs
++++ b/crates/kasumi-store/src/node_disk/tests.rs
+@@ -1039,10 +1039,22 @@
+     file.write_all_at(&vec![0xa5; 64 << 10], 0).unwrap();
+     let identity = file.identity().unwrap();
+     let before = disk.snapshot();
++    let observer = File::open(disk.config.roots["data"].join("node")).unwrap();
+     disk.parent_sync_failure.store(true, Ordering::Relaxed);
+     assert!(file.sync_all_and_parent().is_err());
+-    assert_eq!(file.identity().unwrap(), identity);
+-    assert_eq!(file.observed_len().unwrap(), 64 << 10);
++    assert!(file.identity().is_err());
++    assert!(file.observed_len().is_err());
++    // The failed managed owner cannot start another verification walk. Retain
++    // the original physical identity/EOF/content proof through this independent
++    // read-only fixture observer, acquired before the injected failure.
++    assert_eq!(
++        crate::private_files::descriptor_identity(&observer).unwrap(),
++        identity
++    );
++    assert_eq!(observer.metadata().unwrap().len(), 64 << 10);
++    let mut contents = vec![0; 64 << 10];
++    std::os::unix::fs::FileExt::read_exact_at(&observer, &mut contents, 0).unwrap();
++    assert!(contents.iter().all(|byte| *byte == 0xa5));
+     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+     assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+     assert_eq!(
+@@ -1054,6 +1066,7 @@
+     disk.parent_sync_failure.store(false, Ordering::Relaxed);
+     assert!(file.sync_all_and_parent().is_err());
+     assert!(disk.reconcile(&CensusCancellation::default()).is_err());
++    drop(observer);
+     drop(file);
+     assert_eq!(disk.snapshot().open_files, 1);
+     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);

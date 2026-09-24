@@ -1,0 +1,40 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+000000010013743c <lifecycle::recovery_control::prepare_completion::{closure#0}>:
+10013743c: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+100137440: a9017bfd    	stp	x29, x30, [sp, #0x10]
+100137444: 910043fd    	add	x29, sp, #0x10
+100137448: d1426be9    	sub	x9, sp, #0x9a, lsl #12  ; =0x9a000
+10013744c: d14007ff    	sub	sp, sp, #0x1, lsl #12   ; =0x1000
+100137450: f90003ff    	str	xzr, [sp]
+100137454: eb2963ff    	cmp	sp, x9
+100137458: 54ffffa1    	b.ne	0x10013744c <lifecycle::recovery_control::prepare_completion::{closure#0}+0x10>
+10013745c: d13d83ff    	sub	sp, sp, #0xf60
+100137460: f90003ff    	str	xzr, [sp]
+100137464: 91426be9    	add	x9, sp, #0x9a, lsl #12  ; =0x9a000
+100137468: 9103e129    	add	x9, x9, #0xf8
+10013746c: f90747e9    	str	x9, [sp, #0xe88]
+100137470: 91425fe9    	add	x9, sp, #0x97, lsl #12  ; =0x97000
+100137474: 9125c129    	add	x9, x9, #0x970
+100137478: f9074be9    	str	x9, [sp, #0xe90]
+10013747c: 91425fe9    	add	x9, sp, #0x97, lsl #12  ; =0x97000
+100137480: 911bbd29    	add	x9, x9, #0x6ef
+100137484: f9074fe9    	str	x9, [sp, #0xe98]
+100137488: 91425be9    	add	x9, sp, #0x96, lsl #12  ; =0x96000
+10013748c: 910dc129    	add	x9, x9, #0x370
+100137490: f90753e9    	str	x9, [sp, #0xea0]
+100137494: 914257e9    	add	x9, sp, #0x95, lsl #12  ; =0x95000
+100137498: 912ce129    	add	x9, x9, #0xb38
+10013749c: f90757e9    	str	x9, [sp, #0xea8]
+1001374a0: 914257e9    	add	x9, sp, #0x95, lsl #12  ; =0x95000
+1001374a4: 911abd29    	add	x9, x9, #0x6af
+1001374a8: f9075be9    	str	x9, [sp, #0xeb0]
+1001374ac: 914253e9    	add	x9, sp, #0x94, lsl #12  ; =0x94000
+1001374b0: 91088129    	add	x9, x9, #0x220
+1001374b4: f9075fe9    	str	x9, [sp, #0xeb8]
+1001374b8: 91424fea    	add	x10, sp, #0x93, lsl #12 ; =0x93000
+1001374bc: 911ba14a    	add	x10, x10, #0x6e8
+1001374c0: f90763ea    	str	x10, [sp, #0xec0]

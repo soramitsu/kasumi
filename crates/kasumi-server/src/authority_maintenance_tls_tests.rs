@@ -3,7 +3,7 @@ use kasumi_authority::{
     AuthorityBootstrap, AuthorityInstallation, AuthorityNodeSettings, IndependentAuthority,
 };
 use kasumi_serving::*;
-use kasumi_store::{NodeStore, StorageAccess, TenantStorageSet, test_utils::LocalKeyProvider};
+use kasumi_store::{StorageAccess, TenantStorageSet, test_utils::LocalKeyProvider};
 use kasumi_types::{Action, CredentialResource, RequestAuthorization, RequestContext};
 use tokio::{net::TcpListener, sync::watch};
 use uuid::Uuid;
@@ -199,6 +199,7 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
     let mut services = Vec::new();
     let mut networks = Vec::new();
     let mut stores = Vec::new();
+    let mut physical_nodes = Vec::new();
     for (i, listener) in listeners.into_iter().enumerate() {
         let id = i as u64 + 1;
         let network = ClusterNetwork::new(
@@ -210,13 +211,19 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
         )
         .unwrap();
         network.install_audit(Arc::new(TestAudit)).unwrap();
-        let store = TenantStorageSet::initialize_catalogs(
-            NodeStore::create_new_fixture(
-                dir.path().join(format!("node-{id}.redb")),
+        let replica_root = dir.path().join(format!("replica-{id}"));
+        kasumi_store::private_files::create_directory(&replica_root).unwrap();
+        let physical =
+            crate::runtime_storage_fixtures::physical(&replica_root, Default::default()).unwrap();
+        let node = physical
+            .create_new(
+                replica_root.join("persistent/node.redb"),
                 kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
             )
-            .unwrap(),
+            .unwrap();
+        physical_nodes.push(node.clone());
+        let store = TenantStorageSet::initialize_catalogs(
+            node,
             installation.tenant(),
             Arc::new(LocalKeyProvider::new([id as u8; 32])),
             Arc::new(LocalKeyProvider::new([id as u8 + 10; 32])),
@@ -250,11 +257,8 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
                 election_timeout_max: 1000,
                 ..Default::default()
             },
-            crate::authority_runtime::request_budget(
-                &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
-            )
-            .unwrap(),
-            kasumi_raft::SnapshotBufferOwner::fixture(),
+            crate::authority_runtime::request_budget(&physical.admission).unwrap(),
+            physical.admission.snapshot_buffer_owner().unwrap(),
         )
         .await
         .unwrap();
@@ -383,5 +387,8 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
     }
     for store in stores {
         store.shutdown().await.unwrap();
+    }
+    for node in physical_nodes {
+        node.shutdown().await.unwrap();
     }
 }

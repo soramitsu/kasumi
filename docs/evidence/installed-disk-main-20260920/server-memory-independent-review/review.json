@@ -1,0 +1,97 @@
+{
+  "reviewed_patch_sha256": "830269a7ef6023a21b63043c6ac4546ca7f733baa1f9ca42ec9edbb2cccb5e9c",
+  "reviewer": "redb_canonical_continuation",
+  "scope": "Read-only bounded source review; no Cargo or actual source edits; shared-cluster deep review intentionally not repeated",
+  "result": "No new blocking defect identified in inspected production core/facade ordering, mandatory operator constructors, fixture arithmetic, or stopped raw-swap census handling. Runtime qualification remains pending.",
+  "findings": [],
+  "verified_observations": [
+    "RuntimeStorage::installed always selects MemoryCore::installed; Installed disk factory remains production path even cfg(test). Isolated factory and retry helpers are explicit cfg(test) choices.",
+    "RuntimeStorage::facade checks exact requested policy and creates a fresh NodeAdmission on retained core before NodeDisk/ScratchDisk construction. Data/authority startup and node provisioning retain that facade in pending resources and pass its exact memory into both disk owners.",
+    "New *_with_storage operator entrypoints require RuntimeStorage; public operator entrypoints select installed policy and delegate to one canonical owner implementation. There is no optional/no-op/default-governor bypass, alternate config decoder or legacy API fallback.",
+    "Fixture isolated totals resolve the original total and add actual isolated metadata leases once. Persistent-only fixtures add four components, ordinary persistent+scratch fixtures eight; neither adds unused first-facade bookkeeping again. Normal runtime/standalone fixture generators restore original default total instead of inheriting new-install2GiB.",
+    "Signer capacity regression holds a real resident reservation on the same installed core, leaves exactly1024bytes and no occupied operation slot, then verifies storage remains unchanged on worker-budget denial.",
+    "Stopped substitution regression drains operator and explicitly closes new NodeStores, asserts open_files==0, pauses before external swap, reconciles the same retained owner, and repeats actual-zero/pause/reconcile before restoring original file. Original UUID mismatch is still rejected."
+  ],
+  "qualification_limits": [
+    "No Rust typecheck, runtime test, RSS measurement or filesystem-platform allocation proof performed.",
+    "Per-open admitted StartupContext/future-boxing ownership remains the explicitly documented subsequent layer; RuntimeStorage is not evidence that it is complete.",
+    "Directory mutation/accounting and broader retained report/panic payload bounds remain outside this bounded caller proposal.",
+    "Signer worker budget continues existing reserve-then-retain semantics; this review did not change the separate resident-user migration scope.",
+    "The prior approved shared-cluster aggregate planning was not rederived."
+  ],
+  "files": [
+    {
+      "path": "crates/kasumi-server/src/runtime_memory.rs",
+      "proposed_sha256": "85f8761bd4cf34dd3210392b3948a75cee1e05cdee4704bd41231a0e307e3ec0"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime.rs",
+      "proposed_sha256": "c5a7b05e3b31412844301e4db0adbdcf1e02e0ccb209b82099ea8389558f4d35"
+    },
+    {
+      "path": "crates/kasumi-server/src/authority_runtime.rs",
+      "proposed_sha256": "1ea839d84158a97dfb4590cd334eb16c27a83366a808a8813335141597a10747"
+    },
+    {
+      "path": "crates/kasumi-server/src/persistent_disk.rs",
+      "proposed_sha256": "30a4495687fe1979c8bab8051a42be49e6152bf9513db802d8bcb3d8dfa911bf"
+    },
+    {
+      "path": "crates/kasumi-server/src/node_provision.rs",
+      "proposed_sha256": "ddfdd0f2fa03b74b89e35578d9bde8ff6c8aa9ed2e3e4a0c3eddd7e36aedac56"
+    },
+    {
+      "path": "crates/kasumi-server/src/data_node_enrollment.rs",
+      "proposed_sha256": "47f788aa807aa7c7e5ee6119cec6042fbbcfc86edc568d3d255529d337b9b430"
+    },
+    {
+      "path": "crates/kasumi-server/src/authority_node_enrollment.rs",
+      "proposed_sha256": "dbcd846e785ff8a6fcb01811e5d21071a586c3637b018160e1a12010ed291394"
+    },
+    {
+      "path": "crates/kasumi-server/src/target_journal_installation.rs",
+      "proposed_sha256": "e2e850198e17f185f44c53abe055ad7f499094db4104a05b063cc910f0f87778"
+    },
+    {
+      "path": "crates/kasumi-server/src/signer_runtime.rs",
+      "proposed_sha256": "2f565ee08839327aea7c341eb0fe4e086033e142ebd678085b2eeff06e50d56b"
+    },
+    {
+      "path": "crates/kasumi-server/src/signer_runtime_tests.rs",
+      "proposed_sha256": "aec47b5cb9d7d71de10be76472959528233a55a171d6d5c33c1d787629096f54"
+    },
+    {
+      "path": "crates/kasumi-server/src/standalone.rs",
+      "proposed_sha256": "9a66e50c1a04e1335b9b944263bd11864b261a836238d3a3b4b03507cd219895"
+    },
+    {
+      "path": "crates/kasumi-server/src/standalone_operator.rs",
+      "proposed_sha256": "c8f35194ba51e2e41b5ddd06214cc259b551cacba5857ba4731ad7473a72eaea"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime_storage_fixtures.rs",
+      "proposed_sha256": "be9464f7d79e2f4160778cf9c8cb34ee820f9e79d7e8ccb22cd4d49586e2d020"
+    },
+    {
+      "path": "crates/kasumi-server/src/local_recovery_tests.rs",
+      "proposed_sha256": "99094ac8e5c2ed885efa3ef8f9f4ef94ef428c35ef7d595c18b1d81438674635"
+    },
+    {
+      "path": "crates/kasumi-server/src/readiness_tests.rs",
+      "proposed_sha256": "62c3de48bc87bde0f4f68560927ede03a4842c00dafffbf7bc15558807ccfb69"
+    },
+    {
+      "path": "crates/kasumi-server/src/readiness_probe_tests.rs",
+      "proposed_sha256": "96a088ef1f0472adace02444f120110e77d1df8c352f0b9c91c54563f71154c1"
+    },
+    {
+      "path": "crates/kasumi-server/src/runtime_serving_tests.rs",
+      "proposed_sha256": "055272b45d17019d2b0994e441c814617f9aaabe2a4540bc96d48770a27512c6"
+    },
+    {
+      "path": "crates/kasumi-server/src/control_genesis_tests.rs",
+      "proposed_sha256": "6f296185d3d1ada864d39f1e653399671fe6a41aa77a1e447f81a65c41d91bfe"
+    }
+  ],
+  "actual_git_status": ""
+}

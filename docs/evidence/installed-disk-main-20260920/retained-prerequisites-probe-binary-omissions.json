@@ -1,0 +1,26 @@
+[
+  {
+    "path": "redb-staging-workspace/lru-before-tests",
+    "bytes": 1123744,
+    "sha256": "1fdcd07a9a0f7e2ad2f685f70b05dcbafa0e1cc3b61833eb9d93b27bca132321",
+    "reason": "Native development executable remains under target; source, receipts and digest are archived."
+  },
+  {
+    "path": "redb-staging-workspace/lru-proposed-tests",
+    "bytes": 1124720,
+    "sha256": "d7c566497673562bb9637a0f223259490f0848d1880c8f718680bdb88902865f",
+    "reason": "Native development executable remains under target; source, receipts and digest are archived."
+  },
+  {
+    "path": "unified-inode-census/native-02/ledger-tests",
+    "bytes": 1079744,
+    "sha256": "ed9d11c00a8b43c2b92cbf35b26e6bf478a76015dc8fc0322e2668362d85ad52",
+    "reason": "Native development executable remains under target; source, receipts and digest are archived."
+  },
+  {
+    "path": "unified-inode-census/native-02/metadata-formula",
+    "bytes": 638128,
+    "sha256": "26f5f9bf4cd4ff5905698e0292e213a41a493512cbb1b1c2869bb7e9d1699ce6",
+    "reason": "Native development executable remains under target; source, receipts and digest are archived."
+  }
+]

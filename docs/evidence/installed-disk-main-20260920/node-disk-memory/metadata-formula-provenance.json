@@ -1,0 +1,17 @@
+{
+  "status": "standalone copied-shape estimate, not a compiled production layout or behavioral test",
+  "revision": "namespace binding added",
+  "command": [
+    "rustc",
+    "--edition",
+    "2024",
+    "target/installed-disk-validation/node-disk-memory/metadata_formula.rs",
+    "-o",
+    "target/installed-disk-validation/node-disk-memory/metadata-formula"
+  ],
+  "rustc_version": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "source_sha256": "abf2196d472708197e77e99eb2352b316aeede951717d2ea140446f56a3a4656",
+  "binary_sha256": "d36a658e27be4a958b3258bfa8e22c820fc543ef80d490c1a2b85a88dde8c738",
+  "output_sha256": "3c3f5dcc611e78d7fdacb280ed6c1ac9f7880e4d739207c29ef944a5ea007cb7",
+  "previous_provenance": "before-namespace-rebase/metadata-formula-provenance.json"
+}

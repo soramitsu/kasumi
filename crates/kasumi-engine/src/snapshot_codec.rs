@@ -9,9 +9,9 @@ use std::{
     sync::Arc,
 };
 
-const MAGIC: &[u8; 8] = b"KASUMIT7";
+const MAGIC: &[u8; 8] = b"KASUMIT8";
 const MAX_RECORD: usize = 32 << 20;
-pub(crate) const RECORD_KINDS: u8 = 24;
+pub(crate) const RECORD_KINDS: u8 = 25;
 pub(crate) const FRAME_HEADER_BYTES: usize = 9;
 #[path = "snapshot_record_work.rs"]
 mod record_work;
@@ -55,6 +55,7 @@ pub(crate) fn record_limit(kind: u8) -> anyhow::Result<u64> {
         0..=20 | 23 => MAX_RECORD as u64,
         21 => crate::staged_terminal::MAX_SNAPSHOT_RECORD_BYTES as u64,
         22 => crate::target_resolution::MAX_SNAPSHOT_RECORD_BYTES as u64,
+        24 => crate::backup_binding::MAX_SNAPSHOT_RECORD_BYTES as u64,
         _ => anyhow::bail!("unsupported snapshot record kind"),
     })
 }
@@ -86,6 +87,7 @@ pub(crate) enum Record {
     Terminal(Box<crate::staged_terminal::Row>),
     TargetResolution(Box<crate::target_resolution::Row>),
     RecoveryCompletionHistory(String, Box<RecoveryCompletionHistory>),
+    BackupBinding(Box<crate::backup_binding::Row>),
 }
 impl Record {
     pub(crate) fn order(&self) -> (u8, String, String) {
@@ -114,6 +116,7 @@ impl Record {
             Self::Terminal(row) => (21, format!("{:020}", row.ordinal), String::new()),
             Self::TargetResolution(row) => (22, format!("{:020}", row.ordinal), String::new()),
             Self::RecoveryCompletionHistory(k, _) => (23, k.clone(), String::new()),
+            Self::BackupBinding(row) => (24, format!("{:020}", row.ordinal), String::new()),
         }
     }
 }
@@ -189,7 +192,7 @@ pub(crate) fn records<'a>(
                         Record::Archived(name.clone(), id.clone(), reference.clone())
                     })
             })),
-            5 => Box::new(std::iter::empty()), // Permanent rows require their selected owner.
+            5 | 24 => Box::new(std::iter::empty()), // Permanent rows require their selected owner.
             6 => Box::new(state.staged_transactions.iter().map(|(key, value)| {
                 let mut header = value.clone();
                 header.chunks.clear();
@@ -333,6 +336,7 @@ pub(crate) fn metadata(state: &TenantState) -> TenantState {
         limits: state.limits.clone(),
         collections: Default::default(),
         mutation_receipt_head: state.mutation_receipt_head.clone(),
+        backup_binding_head: state.backup_binding_head.clone(),
         staged_transactions: Default::default(),
         active_staged_transactions: Default::default(),
         permanent_staged_bytes: state.permanent_staged_bytes,
@@ -457,6 +461,7 @@ impl<'a> Encoder<'a> {
 pub(crate) fn write(
     state: &TenantState,
     receipts: &crate::mutation_receipt::View,
+    backup_bindings: &crate::backup_binding::View,
     terminals: &crate::staged_terminal::View,
     target_resolutions: &crate::target_resolution::View,
     writer: &mut dyn Write,
@@ -466,6 +471,7 @@ pub(crate) fn write(
         "snapshot terminal owner differs"
     );
     receipts.validate_state(state)?;
+    backup_bindings.validate_state(state)?;
     terminals.check_head(&state.tenant)?;
     target_resolutions.validate_state(state)?;
     let mut encoder = Encoder::new(writer)?;
@@ -488,6 +494,9 @@ pub(crate) fn write(
     }
     for record in records(state, 23, None)? {
         encoder.record(record?)?;
+    }
+    for row in backup_bindings.records() {
+        encoder.record(Record::BackupBinding(Box::new(row?)))?;
     }
     encoder.finish()
 }
@@ -556,12 +565,14 @@ impl StreamSummary {
         Ok(())
     }
     /// Resident semantic records and fixed stream framing, excluding encrypted
-    /// permanent point rows. This is not an allocator or hard-RSS measurement.
+    /// permanent point rows. Recovery completion history (kind 23) is resident.
+    /// This is not an allocator or hard-RSS measurement; the snapshot quota
+    /// separately includes staged terminal rows, which remain permanent here.
     pub(crate) fn resident_bytes(&self) -> anyhow::Result<u64> {
-        self.kinds[..21]
+        self.kinds
             .iter()
             .enumerate()
-            .filter(|(kind, _)| *kind != 5)
+            .filter(|(kind, _)| !matches!(*kind, 5 | 21 | 22 | 24))
             .try_fold(64u64, |total, (_, kind)| {
                 total
                     .checked_add(kind.framed_bytes)
@@ -755,6 +766,9 @@ pub(crate) fn visit(
                 row.ordinal > 0 && !row.stage.is_active() && row.stage.chunks.is_empty(),
                 "invalid terminal staged record"
             ),
+            Record::BackupBinding(row) => {
+                row.framed_bytes()?;
+            }
             Record::TargetResolution(row) => {
                 row.record.validate()?;
                 row.framed_bytes()?;
@@ -826,6 +840,7 @@ pub(crate) struct Decoded {
     pub(crate) state: TenantState,
     pub(crate) summary: StreamSummary,
     pub(crate) receipts: crate::mutation_receipt::View,
+    pub(crate) backup_bindings: crate::backup_binding::View,
     pub(crate) terminals: crate::staged_terminal::View,
     pub(crate) target_resolutions: crate::target_resolution::View,
 }
@@ -835,6 +850,7 @@ pub(crate) fn read(
 ) -> anyhow::Result<Decoded> {
     let mut state: Option<TenantState> = None;
     let mut receipts: Option<crate::mutation_receipt::Builder> = None;
+    let mut backup_bindings: Option<crate::backup_binding::Builder> = None;
     let mut terminals: Option<crate::staged_terminal::Builder> = None;
     let mut target_resolutions: Option<crate::target_resolution::Builder> = None;
     let summary = visit(reader, |_, record| {
@@ -843,6 +859,13 @@ pub(crate) fn read(
                 state.is_none() && empty_records(&header),
                 "snapshot header contains embedded records"
             );
+            if header.backup_binding_head.count > 0 {
+                backup_bindings = Some(crate::backup_binding::Builder::new(
+                    disk,
+                    crate::backup_binding::scratch_limit(header.limits.max_backup_binding_bytes)?,
+                    &header.backup_binding_head.origin_incarnation,
+                )?);
+            }
             if header.mutation_receipt_head.count > 0 {
                 receipts = Some(crate::mutation_receipt::Builder::new(
                     disk,
@@ -908,6 +931,14 @@ pub(crate) fn read(
                     .ok_or_else(|| anyhow::anyhow!("archive collection missing"))?
                     .archived_documents
                     .insert(id, reference);
+            }
+            Record::BackupBinding(row) => {
+                backup_bindings
+                    .as_mut()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("backup binding row without authenticated prefix")
+                    })?
+                    .push(&row, state)?;
             }
             Record::Receipt(row) => {
                 receipts
@@ -1053,6 +1084,18 @@ pub(crate) fn read(
         Ok(())
     })?;
     let state = state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"))?;
+    let backup_bindings = match backup_bindings {
+        Some(builder) => builder.finish(&state.backup_binding_head)?,
+        None => {
+            let empty =
+                crate::backup_binding::View::empty(&state.backup_binding_head.origin_incarnation)?;
+            anyhow::ensure!(
+                empty.head() == &state.backup_binding_head,
+                "backup binding history missing from snapshot"
+            );
+            empty
+        }
+    };
     let receipts = match receipts {
         Some(builder) => builder.finish(&state.mutation_receipt_head)?,
         None => {
@@ -1098,6 +1141,7 @@ pub(crate) fn read(
     Ok(Decoded {
         state,
         receipts,
+        backup_bindings,
         summary,
         terminals,
         target_resolutions,
@@ -1111,13 +1155,17 @@ mod tests {
         super::write(
             state,
             &crate::mutation_receipt::View::empty(&state.tenant, &state.incarnation)?,
+            &crate::backup_binding::View::empty(&state.incarnation)?,
             &crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)?,
             &crate::target_resolution::View::empty(&state.tenant, &state.incarnation)?,
             writer,
         )
     }
-    fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
-        Ok(super::read(&kasumi_store::ScratchDisk::fixture(), reader)?.state)
+    fn read(
+        disk: &Arc<kasumi_store::ScratchDisk>,
+        reader: &mut dyn Read,
+    ) -> anyhow::Result<TenantState> {
+        Ok(super::read(disk, reader)?.state)
     }
     pub(super) fn state() -> TenantState {
         crate::TenantEngine::new(
@@ -1141,10 +1189,15 @@ mod tests {
     }
     #[test]
     fn canonical_stream_requires_terminal_counts_digest_and_exact_eof() {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
         let state = state();
         let mut bytes = Vec::new();
         write(&state, &mut bytes).unwrap();
-        let decoded = read(&mut bytes.as_slice()).unwrap();
+        let decoded = read(disk, &mut bytes.as_slice()).unwrap();
         assert_eq!(
             serde_json::to_vec(&state).unwrap(),
             serde_json::to_vec(&decoded).unwrap()
@@ -1160,34 +1213,44 @@ mod tests {
             bytes.len() - 1,
         ] {
             assert!(
-                read(&mut &bytes[..index]).is_err(),
+                read(disk, &mut &bytes[..index]).is_err(),
                 "accepted truncation at {index}"
             );
             let mut corrupt = bytes.clone();
             corrupt[index] ^= 1;
             assert!(
-                read(&mut corrupt.as_slice()).is_err(),
+                read(disk, &mut corrupt.as_slice()).is_err(),
                 "accepted corruption at {index}"
             );
         }
         let mut trailing = bytes.clone();
         trailing.push(0);
-        assert!(read(&mut trailing.as_slice()).is_err());
+        assert!(read(disk, &mut trailing.as_slice()).is_err());
         assert!(
-            read(&mut serde_json::to_vec(&state).unwrap().as_slice()).is_err(),
+            read(disk, &mut serde_json::to_vec(&state).unwrap().as_slice()).is_err(),
             "legacy JSON snapshots are forbidden"
         );
     }
     #[test]
     fn oversized_record_is_rejected_before_payload_read_or_allocation() {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
         let mut bytes = MAGIC.to_vec();
         bytes.extend_from_slice(&((MAX_RECORD as u64) + 1).to_be_bytes());
         bytes.push(0);
-        let error = read(&mut bytes.as_slice()).unwrap_err().to_string();
+        let error = read(disk, &mut bytes.as_slice()).unwrap_err().to_string();
         assert!(error.contains("record exceeds"));
     }
     #[test]
     fn authenticated_duplicate_header_is_rejected() {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
         let state = state();
         let record = serde_json::to_vec(&Record::Header(Box::new(state))).unwrap();
         let mut bytes = MAGIC.to_vec();
@@ -1203,7 +1266,7 @@ mod tests {
         bytes.extend_from_slice(&total.to_be_bytes());
         bytes.extend_from_slice(&digest);
         assert!(
-            read(&mut bytes.as_slice())
+            read(disk, &mut bytes.as_slice())
                 .unwrap_err()
                 .to_string()
                 .contains("unordered")
@@ -1211,6 +1274,11 @@ mod tests {
     }
     #[test]
     fn archived_audit_prefix_preserves_absolute_sequences_and_head() {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
         let mut state = state();
         let stream_id = state.audit_retention.stream_id;
         let head = AuditArchiveReference {
@@ -1260,7 +1328,7 @@ mod tests {
                 .unwrap(),
             bytes.len()
         );
-        let restored = read(&mut bytes.as_slice()).unwrap();
+        let restored = read(disk, &mut bytes.as_slice()).unwrap();
         assert_eq!(restored.audit_retention.next_sequence, 24);
         assert_eq!(restored.audit_retention.pruned_before, 23);
         assert_eq!(restored.audit_retention.archive_head, Some(head));
@@ -1268,7 +1336,7 @@ mod tests {
         state.audit_retention.next_sequence = 25;
         bytes.clear();
         write(&state, &mut bytes).unwrap();
-        assert!(read(&mut bytes.as_slice()).is_err());
+        assert!(read(disk, &mut bytes.as_slice()).is_err());
     }
 }
 

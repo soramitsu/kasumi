@@ -119,6 +119,21 @@ impl TenantEngine {
         &self,
         admission: &Arc<crate::admission::NodeAdmission>,
     ) -> Result<()> {
+        let store = self.snapshot_store.get().ok_or_else(|| {
+            Error::new(
+                ErrorCode::Conflict,
+                "install storage before audit maintenance",
+            )
+        })?;
+        admission
+            .memory()
+            .require_store_memory(store)
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::Conflict,
+                    "audit maintenance and physical storage memory owners differ",
+                )
+            })?;
         let _apply = self.apply_lock.lock().map_err(|_| {
             Error::new(ErrorCode::Unavailable, "tenant apply ownership unavailable")
         })?;
@@ -383,6 +398,7 @@ impl TenantEngine {
                 state: next,
                 indexes: previous.indexes.clone(),
                 receipts: previous.receipts.clone(),
+                backup_bindings: previous.backup_bindings.clone(),
                 snapshot_accounting: accounting,
                 _read_reservations: vec![],
             })));
@@ -430,10 +446,16 @@ mod tests {
         Arc<UncertainArchive>,
     ) {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
+        kasumi_store::private_files::create_directory(&directory.path().join("persistent"))
+            .unwrap();
+        let disk =
+            kasumi_store::ScratchDisk::fixture(directory.path().join("scratch"), memory.clone());
         let node = NodeStore::create_new_fixture(
-            directory.path().join("node.redb"),
+            directory.path().join("persistent/node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+            memory,
+            disk,
         )
         .unwrap();
         let store = TenantStore::initialize_catalog_fixture(
@@ -444,12 +466,18 @@ mod tests {
         .await
         .unwrap();
         let cache = Arc::new(
-            FilesystemAuditArchive::open_fixture(directory.path().join("tenant-audit-archives"))
-                .unwrap(),
+            FilesystemAuditArchive::open(
+                directory.path().join("persistent/tenant-audit-archives"),
+                store.persistent_disk().clone(),
+            )
+            .unwrap(),
         );
         let archive = Arc::new(UncertainArchive {
-            archive: FilesystemAuditArchive::open_fixture(directory.path().join("external"))
-                .unwrap(),
+            archive: FilesystemAuditArchive::open(
+                directory.path().join("persistent/external"),
+                store.persistent_disk().clone(),
+            )
+            .unwrap(),
             fail: AtomicBool::new(false),
         });
         store
@@ -486,6 +514,7 @@ mod tests {
         for revision in 1..=50 {
             engine
                 .apply_command(
+                    store.scratch_disk(),
                     revision,
                     Command {
                         context: RequestContext {
@@ -621,12 +650,15 @@ mod tests {
         archive.read(&reference.object).await.unwrap();
         store.shutdown().await.unwrap();
         drop(engine);
+        let disk = store.scratch_disk().clone();
+        let persistent = store.persistent_disk().clone();
         drop(store);
 
-        let node = NodeStore::open_existing_fixture(
-            directory.path().join("node.redb"),
+        let node = NodeStore::open_existing(
+            directory.path().join("persistent/node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
+            persistent,
+            disk,
         )
         .unwrap();
         let store = TenantStore::open_existing_fixture(
@@ -639,8 +671,9 @@ mod tests {
         store
             .install_tenant_audit_archive(
                 Arc::new(
-                    FilesystemAuditArchive::open_fixture(
-                        directory.path().join("tenant-audit-archives"),
+                    FilesystemAuditArchive::open(
+                        directory.path().join("persistent/tenant-audit-archives"),
+                        store.persistent_disk().clone(),
                     )
                     .unwrap(),
                 ),
@@ -663,7 +696,7 @@ mod tests {
             Some(&reference)
         );
         assert_eq!(
-            std::fs::read_dir(directory.path().join("external"))
+            std::fs::read_dir(store.durable_directory().unwrap().join("external"))
                 .unwrap()
                 .count(),
             1
@@ -712,3 +745,7 @@ mod tests {
         store.shutdown().await.unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "tenant_audit_memory_tests.rs"]
+mod memory_tests;

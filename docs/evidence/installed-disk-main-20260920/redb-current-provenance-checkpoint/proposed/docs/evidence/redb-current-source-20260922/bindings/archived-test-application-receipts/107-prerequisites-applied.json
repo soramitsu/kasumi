@@ -1,0 +1,107 @@
+{
+  "branch": "master",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "prior_groups_independently_drained": [
+    102,
+    103,
+    104,
+    105,
+    106
+  ],
+  "scope": "reviewed development prerequisites and one exact fixture; production adapter and final qualification remain open",
+  "applied": [
+    {
+      "package": "102-redb-terminal-corrections",
+      "patch_sha256": "ff27c9b3f303e3bc6ca42bc48ccd78c41a7db519b9f7be0e419cc6de66e71c1f",
+      "files": [
+        {
+          "path": "vendor/redb-4.2.0/src/admission/tests.rs",
+          "before_sha256": "ccea4be7b866f1002e0eb419e1c0a01e5a4fe064ae9637356e6bd9717d77ff74",
+          "proposed_sha256": "2d4581f62015ea68b09a4f5bd79709c06a28e1263c0f56a25b4c022788e825fc",
+          "new_file": false
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/db.rs",
+          "before_sha256": "3e19185c6f93a25fe5f28a76e05c34dfff4210df54b88c279adbaccbdc6e5b14",
+          "proposed_sha256": "dda1792fa3a15d09bb4d5a83c279cc9203dc970b562f010aebdd00feb8e54481",
+          "new_file": false
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/retained_transaction_tests.rs",
+          "before_sha256": "47d8917f9b36919ae4c6d4046bda6621ba28485bfe1adcffd1ffa939da23dbc3",
+          "proposed_sha256": "77df073be144489dad365603bd200f7eb54b107cab41a95ef3d937c9a00c1a09",
+          "new_file": false
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+          "before_sha256": "acb378c1b912b049f7e580adb809c79dee352fd7ecc7d4941ca0b780e56a9d55",
+          "proposed_sha256": "18b42bf9c2d434f8d205d2088dc352af2cd8a40e3e0ddc0edfeff4390f349b72",
+          "new_file": false
+        },
+        {
+          "path": "vendor/redb-4.2.0/src/tree_store/page_store/checked_backend_tests.rs",
+          "before_sha256": null,
+          "proposed_sha256": "c80a43742a7fbf93b7fe8be8778db7555c9da1652558596ce0b160d5125d2fc7",
+          "new_file": true
+        }
+      ]
+    },
+    {
+      "package": "redb-staging-workspace",
+      "patch_sha256": "b2dc5f78c3c77633593cbf416cd12f541bcccc15e3e240cc703ea781680e27a9",
+      "files": [
+        {
+          "path": "vendor/redb-4.2.0/src/tree_store/page_store/lru_cache.rs",
+          "before_sha256": "d17a92a700a492dbbb3a8989722d1e43c2da7c1df6d7e742a3de8c90f797bac8",
+          "proposed_sha256": "3dad9116b06284f993544620885cc57ef7b382f0fc77152eb88e363e68450189"
+        }
+      ]
+    },
+    {
+      "package": "snapshot-work-foundation-revision5",
+      "patch_sha256": "6cc0b9cc8b81234eb682837eee2ac6a7cb4c88c7f05a104fdd1fbc2258a742a0",
+      "files": [
+        {
+          "path": "crates/kasumi-engine/src/admission/snapshot_work.rs",
+          "before_sha256": null,
+          "proposed_sha256": "08ef0e54c3b68b97c0c9e562c6a0598ca23c16b26b6e8860e767560acb77ad6e",
+          "revision4_proposed_sha256": "c96e9c1674b157dcbd5aafbd5174c80d09f19c654907e3f54daccda73ebe41fb",
+          "lines": 930
+        },
+        {
+          "path": "crates/kasumi-engine/src/admission/snapshot_work_tests.rs",
+          "before_sha256": null,
+          "proposed_sha256": "0728468f27f2d3a1d63f96164922355639cf06984400443e548df7a95e66de18",
+          "revision4_proposed_sha256": "8b129c0946f83afe47cfd49372742ed29763034a0a00bb291ed265c3a06c7f2b",
+          "lines": 1214
+        },
+        {
+          "path": "crates/kasumi-engine/src/admission.rs",
+          "before_sha256": "521c90cf40c29899f95aaa02509b65e62af3827928236dff817deb309d8449da",
+          "proposed_sha256": "6892f831a432b75a92da7457cde6d2094890e9b8e544c37a6c53e7f85264c227",
+          "revision4_proposed_sha256": "6892f831a432b75a92da7457cde6d2094890e9b8e544c37a6c53e7f85264c227",
+          "lines": 1864
+        },
+        {
+          "path": "crates/kasumi-query/src/cancellation.rs",
+          "before_sha256": "2e4ef1e7ea85d0be49494ce51f397e14abed62d2ac3f2de80da9ae60e5a79d08",
+          "proposed_sha256": "c062ea749011fcc5d02c3b999053084f503d820cb4d59e227b349e83f0a03eee",
+          "revision4_proposed_sha256": "c062ea749011fcc5d02c3b999053084f503d820cb4d59e227b349e83f0a03eee",
+          "lines": 138
+        }
+      ]
+    },
+    {
+      "package": "105-stopped-epoch-leader-fixture",
+      "patch_sha256": "92e8267f31bd4114698f74d2eeca31d9c79ada4850c4d2580bc55de16883a3c7",
+      "files": [
+        {
+          "path": "crates/kasumi-authority/src/issuer_tests.rs",
+          "before_sha256": "bdc12b184bbcace31a3005640fd1b09bae9de799917dba34011acbb40e5d97a0",
+          "proposed_sha256": "77fbb82454695d3fec5fb019a6d34963fc80d1875ad7766a89ade264e90f4b7e"
+        }
+      ]
+    }
+  ],
+  "finished_at": "2026-09-20T15:00:07.176431+00:00"
+}

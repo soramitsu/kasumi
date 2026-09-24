@@ -1,6 +1,7 @@
 use super::*;
 use crate::observability::{
     CapacityObservation, GroupObservation, LocalObservation, RetentionObservation,
+    archive_backlog_bytes,
 };
 
 impl Administration {
@@ -31,6 +32,7 @@ impl Administration {
                 authority_required,
                 authority_remaining_seconds: None,
                 retention: None,
+                audit_maintenance: None,
                 capacity: None,
             };
             if let Some(managed) = managed {
@@ -73,9 +75,16 @@ impl Administration {
                         archive_bytes: retention.archive_bytes,
                         archive_segments: retention.archive_segments,
                         draining: retention.draining,
+                        archive_backlog_bytes: archive_backlog_bytes(
+                            retention.hot_bytes,
+                            budget,
+                            retention.draining,
+                            !generation.state.retired && generation.state.pending_restore.is_none(),
+                        ),
                         hot_budget_bytes: budget.hot_bytes,
                         archive_budget_bytes: budget.archive_bytes,
                     });
+                    observation.audit_maintenance = managed.database.audit_maintenance_status();
                     observation.store_available = true;
                     stores.push(managed.store);
                 }

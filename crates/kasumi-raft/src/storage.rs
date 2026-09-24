@@ -33,6 +33,8 @@ const SNAPSHOT: &str = "raft.snapshot";
 // Store records are capped at 32 MiB. Snapshots have a separate, much larger
 // tenant limit and must be installed through bounded encrypted chunks.
 const SNAPSHOT_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+// A coverage record must fit the same bounded control read on every path.
+pub(crate) const MAX_SNAPSHOT_COVERAGE_BYTES: usize = 2 << 20;
 
 fn err(error: impl std::fmt::Display) -> StorageError<u64> {
     StorageIOError::write(&io::Error::other(error.to_string())).into()
@@ -50,15 +52,45 @@ fn delete(namespace: &str, key: Vec<u8>) -> WriteOp {
         key,
     }
 }
-fn load<T: DeserializeOwned>(
+fn load<T: DeserializeOwned + Serialize>(
     store: &TenantStore,
     namespace: &str,
     key: &[u8],
 ) -> Result<Option<T>> {
     store
         .get(namespace, key)?
-        .map(|bytes| serde_json::from_slice(&bytes).context("invalid raft storage record"))
+        .map(|bytes| {
+            crate::control::decode_canonical(&bytes).context("invalid raft storage record")
+        })
         .transpose()
+}
+
+/// Snapshot metadata has exactly one first-release writer encoding. Neither
+/// discarded fields nor alternate JSON spellings may enter restore or cleanup.
+fn load_canonical_snapshot_record<T: DeserializeOwned + Serialize>(
+    store: &TenantStore,
+    namespace: &str,
+    key: &[u8],
+) -> Result<Option<T>> {
+    let Some(bytes) = store.get_bounded(namespace, key, MAX_SNAPSHOT_COVERAGE_BYTES)? else {
+        return Ok(None);
+    };
+    let record: T = serde_json::from_slice(&bytes).context("invalid raft snapshot record")?;
+    ensure!(
+        serde_json::to_vec(&record)? == bytes,
+        "noncanonical raft snapshot record"
+    );
+    Ok(Some(record))
+}
+
+/// Every production snapshot writer generates a random RFC UUID and writes its
+/// lower-case hyphenated form. Parseable aliases are not persisted identities.
+pub(crate) fn current_snapshot_id(value: &str) -> bool {
+    uuid::Uuid::parse_str(value).is_ok_and(|id| {
+        id.to_string() == value
+            && id.get_version() == Some(uuid::Version::Random)
+            && id.get_variant() == uuid::Variant::RFC4122
+    })
 }
 
 // Log cleanup, accepted application cursors and snapshot publication share this
@@ -219,7 +251,7 @@ fn read_headers(store: &TenantStore) -> Result<Vec<LogHeader>> {
         let key: [u8; 8] = key
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid raft index key"))?;
-        let header: LogHeader = serde_json::from_slice(&value)?;
+        let header: LogHeader = crate::control::decode_canonical(&value)?;
         header.validate()?;
         ensure!(
             header.log_id.index == u64::from_be_bytes(key),
@@ -628,6 +660,7 @@ pub(crate) struct SnapshotEnvelope {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SnapshotManifest {
     version: u32,
     sha256: String,
@@ -644,11 +677,11 @@ fn chunk_key(manifest: &SnapshotManifest, chunk: u64) -> Vec<u8> {
 }
 
 fn load_manifest(store: &TenantStore, key: &[u8], limit: u64) -> Result<Option<SnapshotManifest>> {
-    let manifest = load::<SnapshotManifest>(store, SNAPSHOT, key)?;
+    let manifest = load_canonical_snapshot_record::<SnapshotManifest>(store, SNAPSHOT, key)?;
     if let Some(manifest) = &manifest {
         kasumi_types::validate_sha256(&manifest.sha256)?;
         ensure!(
-            manifest.version == 1 && uuid::Uuid::parse_str(&manifest.id).is_ok(),
+            manifest.version == 1 && current_snapshot_id(&manifest.id),
             "invalid snapshot manifest"
         );
         ensure!(
@@ -691,6 +724,30 @@ pub(crate) struct SnapshotCoverage {
     pub(crate) meta: SnapshotMeta<u64, BasicNode>,
 }
 
+pub(crate) fn encode_snapshot_coverage(coverage: &SnapshotCoverage) -> Result<Vec<u8>> {
+    let bytes = serde_json::to_vec(coverage)?;
+    ensure!(
+        bytes.len() <= MAX_SNAPSHOT_COVERAGE_BYTES,
+        "snapshot coverage exceeds byte limit"
+    );
+    Ok(bytes)
+}
+
+pub(crate) fn load_snapshot_coverage(store: &TenantStore) -> Result<Option<SnapshotCoverage>> {
+    let coverage =
+        load_canonical_snapshot_record::<SnapshotCoverage>(store, META, b"snapshot_coverage")?;
+    if let Some(coverage) = &coverage {
+        ensure!(
+            current_snapshot_id(&coverage.manifest_id)
+                && current_snapshot_id(&coverage.meta.snapshot_id),
+            "invalid snapshot coverage identity"
+        );
+        kasumi_types::validate_sha256(&coverage.snapshot_sha256)?;
+        kasumi_types::validate_sha256(&coverage.backend_sha256)?;
+    }
+    Ok(coverage)
+}
+
 pub fn recovery_snapshot_bytes(domains: &TenantStorageSet) -> Result<u64> {
     Ok(load_manifest(
         domains.application(),
@@ -707,9 +764,8 @@ fn validate_snapshot_coverage(
 ) -> Result<()> {
     let manifest = load_manifest(domains.application(), b"current", limit)?
         .context("snapshot manifest absent")?;
-    let coverage: SnapshotCoverage =
-        load(domains.custody().store(), META, b"snapshot_coverage")?
-            .context("snapshot lacks independently readable control coverage")?;
+    let coverage = load_snapshot_coverage(domains.custody().store())?
+        .context("snapshot lacks independently readable control coverage")?;
     ensure!(
         coverage.kind == SnapshotKind::Application
             && snapshot.kind == SnapshotKind::Application
@@ -731,6 +787,7 @@ fn validate_snapshot_coverage(
 struct PendingSnapshot {
     application: Vec<WriteOp>,
     coverage: SnapshotCoverage,
+    coverage_bytes: Vec<u8>,
 }
 
 fn stage_snapshot(
@@ -742,8 +799,13 @@ fn stage_snapshot(
     let meta = &snapshot.meta;
     let store = domains.application();
     ensure!(bytes.len() <= limit, "snapshot exceeds byte limit");
-    cleanup_snapshots(store, limit)?;
-    let previous = load_manifest(store, b"current", limit)?;
+    // All application publication paths pass through this function. Refuse a
+    // deterministic projection overflow before cleanup or pending chunk writes.
+    crate::snapshot_custody::preflight_projection(
+        meta,
+        snapshot.retirement.as_ref(),
+        bytes.sha256(),
+    )?;
     let manifest = SnapshotManifest {
         version: 1,
         sha256: bytes.sha256().to_owned(),
@@ -751,6 +813,18 @@ fn stage_snapshot(
         bytes: bytes.len(),
         chunks: bytes.len().div_ceil(SNAPSHOT_CHUNK_BYTES as u64),
     };
+    let coverage = SnapshotCoverage {
+        kind: SnapshotKind::Application,
+        manifest_id: manifest.id.clone(),
+        snapshot_sha256: manifest.sha256.clone(),
+        backend_sha256: snapshot.backend.sha256().to_owned(),
+        meta: meta.clone(),
+    };
+    // Reject before cleanup or the first pending/chunk write; the prior
+    // snapshot remains intact when current-format coverage is too large.
+    let coverage_bytes = encode_snapshot_coverage(&coverage)?;
+    cleanup_snapshots(store, limit)?;
+    let previous = load_manifest(store, b"current", limit)?;
     let encoded = serde_json::to_vec(&manifest)?;
     store.write_batch(&[put(SNAPSHOT, b"pending", encoded.clone())])?;
     let mut reader = bytes.reader();
@@ -768,16 +842,10 @@ fn stage_snapshot(
     if let Some(previous) = previous {
         install.push(put(SNAPSHOT, b"obsolete", serde_json::to_vec(&previous)?));
     }
-    let coverage = SnapshotCoverage {
-        kind: SnapshotKind::Application,
-        manifest_id: manifest.id,
-        snapshot_sha256: manifest.sha256,
-        backend_sha256: snapshot.backend.sha256().to_owned(),
-        meta: meta.clone(),
-    };
     Ok(PendingSnapshot {
         application: install,
         coverage,
+        coverage_bytes,
     })
 }
 
@@ -790,6 +858,7 @@ fn publish_snapshot(
     backend: Option<&dyn crate::PreparedStateMachineRestore>,
 ) -> Result<()> {
     let coverage = pending.coverage;
+    let coverage_bytes = pending.coverage_bytes;
     let mut custody = crate::snapshot_custody::installation_writes(
         domains.custody(),
         &snapshot.meta,
@@ -797,11 +866,9 @@ fn publish_snapshot(
         &coverage.backend_sha256,
         &coverage.snapshot_sha256,
     )?;
-    custody.writes.push(put(
-        META,
-        b"snapshot_coverage",
-        serde_json::to_vec(&coverage)?,
-    ));
+    custody
+        .writes
+        .push(put(META, b"snapshot_coverage", coverage_bytes));
     let replacements = custody.records.as_ref().map(|records| records.namespaces());
     let mut application = pending.application;
     if let Some(backend) = backend {

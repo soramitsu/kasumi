@@ -1,0 +1,25 @@
+{
+  "mode": "STATIC_ONLY",
+  "rustfmt_proposed_only": "PASS",
+  "git_apply_check": "PASS",
+  "actual_source_unchanged": true,
+  "preserved": {
+    "awaits": 111,
+    "contexts": 39,
+    "assertions": 72,
+    "durations": [
+      "Duration::from_secs(10)",
+      "Duration::from_millis(10)",
+      "Duration::from_secs(10)",
+      "Duration::from_secs(10)",
+      "Duration::from_millis(2100)",
+      "Duration::from_millis(2100)"
+    ],
+    "configuration": [
+      "election_timeout_min: 100",
+      "election_timeout_max: 180",
+      "heartbeat_interval: 30"
+    ]
+  },
+  "no_cargo_or_runtime_execution": true
+}

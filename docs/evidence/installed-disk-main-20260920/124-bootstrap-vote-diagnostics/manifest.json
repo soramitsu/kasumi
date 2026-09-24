@@ -1,0 +1,29 @@
+{
+  "mode": "TARGET_PROPOSAL_ONLY",
+  "branch": "master",
+  "actual_source_edits": false,
+  "cargo_or_runtime_execution": false,
+  "patch_sha256": "87b828371f16a3d003a63ac8a56b3845f6f906f9c9e909531cf28d8b128d06ea",
+  "files_changed": [
+    {
+      "path": "crates/kasumi-engine/tests/lifecycle.rs",
+      "before_sha256": "ecd9058d5d6dcc8026364ce2414897c3b09b380a4171d1ab59331cdd4ed0dbc4",
+      "after_sha256": "b39feadc979cbab5a4646a687fd44552cfe4687220e36ada287b72e94db3004c"
+    },
+    {
+      "path": "crates/kasumi-engine/tests/common/bootstrap_vote_probe.rs",
+      "before_sha256": null,
+      "after_sha256": "bc13c13060a5de8427d79f72a5c073e3dbf7deb341c688c20434a8a6c44b597d"
+    }
+  ],
+  "artifacts": {
+    "124-bootstrap-failure-excerpt.txt": "15258a54e4ad3af3e07ee61bfe83c28a311c128fc185398a5a06d74b565b8924",
+    "README.md": "25eb4d83028c4c3f96f2090299fd4e64113124413ad3ccdb63cfdb213f832a5b",
+    "base/crates/kasumi-engine/tests/lifecycle.rs": "ecd9058d5d6dcc8026364ce2414897c3b09b380a4171d1ab59331cdd4ed0dbc4",
+    "diagnostic.patch": "87b828371f16a3d003a63ac8a56b3845f6f906f9c9e909531cf28d8b128d06ea",
+    "evidence.json": "80339da5792bff87bf370a7c1408d33b9b5a3cf482c59c168f883d1f16cd5b85",
+    "proposed/crates/kasumi-engine/tests/common/bootstrap_vote_probe.rs": "bc13c13060a5de8427d79f72a5c073e3dbf7deb341c688c20434a8a6c44b597d",
+    "proposed/crates/kasumi-engine/tests/lifecycle.rs": "b39feadc979cbab5a4646a687fd44552cfe4687220e36ada287b72e94db3004c",
+    "validation.json": "2304fecf1d3ee3f9ede42a6d9efc84754461c7b6aef23ecaaf1431c1a4948bb4"
+  }
+}

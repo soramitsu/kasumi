@@ -1,0 +1,136 @@
+diff --git a/crates/kasumi-store/src/node_disk/census.rs b/crates/kasumi-store/src/node_disk/census.rs
+--- a/crates/kasumi-store/src/node_disk/census.rs
++++ b/crates/kasumi-store/src/node_disk/census.rs
+@@ -12,7 +12,7 @@
+         fd::{AsRawFd, FromRawFd, IntoRawFd},
+         unix::fs::{MetadataExt, OpenOptionsExt},
+     },
+-    path::{Component, Path, PathBuf},
++    path::{Path, PathBuf},
+ };
+ 
+ pub(super) struct Root {
+@@ -192,46 +192,6 @@
+         return Err(io::Error::last_os_error());
+     }
+     Ok(unsafe { File::from_raw_fd(fd) })
+-}
+-
+-pub(super) fn parent(
+-    root: &Root,
+-    relative: &Path,
+-    config: &NodeDiskConfig,
+-) -> Result<(File, CString, NamespaceBinding)> {
+-    root.verify()?;
+-    let mut components = relative.components().peekable();
+-    let mut directory_fd = root.file.try_clone()?;
+-    let mut depth = 0_u32;
+-    let mut binding = NamespaceBinding::root(root.identity);
+-    while let Some(component) = components.next() {
+-        depth = depth
+-            .checked_add(1)
+-            .context("persistent path depth overflow")?;
+-        ensure!(depth <= config.max_depth, "persistent path depth exhausted");
+-        let Component::Normal(name) = component else {
+-            anyhow::bail!("persistent paths must be relative normal components");
+-        };
+-        use std::os::unix::ffi::OsStrExt;
+-        ensure!(
+-            name.len() <= config.max_name_bytes as usize,
+-            "persistent name exceeds budget"
+-        );
+-        let name = CString::new(name.as_bytes())?;
+-        binding = binding.child(&name);
+-        if components.peek().is_none() {
+-            return Ok((directory_fd, name, binding));
+-        }
+-        let child = open_at(&directory_fd, &name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+-        let metadata = child.metadata()?;
+-        directory(&metadata)?;
+-        ensure!(
+-            metadata.dev() == root.identity.0,
+-            "persistent directory crossed filesystem"
+-        );
+-        directory_fd = child;
+-    }
+-    anyhow::bail!("persistent file path is empty")
+ }
+ 
+ /// Native stream custody remains inside the caller's State/initial-open guard.
+diff --git a/crates/kasumi-store/src/node_disk/file.rs b/crates/kasumi-store/src/node_disk/file.rs
+--- a/crates/kasumi-store/src/node_disk/file.rs
++++ b/crates/kasumi-store/src/node_disk/file.rs
+@@ -1140,7 +1140,7 @@
+         owner.record_enrollment(&mut state, &budget);
+         let actual = budget.file.as_ref().expect("live persistent descriptor");
+         let result = (|| -> io::Result<(u64, u64)> {
+-            owner.verify(&actual)?;
++            owner.verify(actual)?;
+             let current = actual.metadata()?.len();
+             if current != budget.actual_len {
+                 return Err(io::ErrorKind::InvalidData.into());
+@@ -1153,7 +1153,7 @@
+                 #[cfg(test)]
+                 self.namespace_checkpoint(NamespaceFailure::ReclaimFileSync)?;
+                 actual.sync_all()?;
+-                owner.verify(&actual)?;
++                owner.verify(actual)?;
+                 if actual.metadata()?.len() != len {
+                     return Err(io::ErrorKind::InvalidData.into());
+                 }
+@@ -2175,14 +2175,13 @@
+         };
+         let disk = owner.disk.clone();
+         let mut state = disk.lock_state();
+-        if !settled {
+-            if let Some(enrolled) = state
++        if !settled
++            && let Some(enrolled) = state
+                 .accounted
+                 .get_mut(&owner.identity)
+                 .and_then(AccountedInode::file_mut)
+-            {
+-                enrolled.settled = false;
+-            }
++        {
++            enrolled.settled = false;
+         }
+         if result.is_err() || !owner.retire_registration(&mut state) {
+             owner.retain_locked(&mut state);
+diff --git a/crates/kasumi-store/src/node_disk/namespace.rs b/crates/kasumi-store/src/node_disk/namespace.rs
+--- a/crates/kasumi-store/src/node_disk/namespace.rs
++++ b/crates/kasumi-store/src/node_disk/namespace.rs
+@@ -129,33 +129,6 @@
+     /// Compare every retained ancestor and the actual parent descriptor. This
+     /// deliberately does not require the affected parent's pre-effect extent:
+     /// the prepared transition owns that snapshot until explicit settlement.
+-    // Existing directory verification remains outside the file-custody successor.
+-    pub(super) fn verify(&self, root: &census::Root, names: &[CString]) -> io::Result<()> {
+-        root.verify_nonallocating()?;
+-        if self.ancestors.len() != names.len() + 1 || self.ancestors[0] != root.identity {
+-            return Err(io::ErrorKind::InvalidData.into());
+-        }
+-        let mut current = root.file.try_clone()?;
+-        for (index, name) in names.iter().enumerate() {
+-            let child = census::open_at(&current, name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+-            let metadata = child.metadata()?;
+-            census::directory_nonallocating(&metadata)?;
+-            if metadata.dev() != root.identity.0
+-                || Identity::of(&metadata) != self.ancestors[index + 1]
+-            {
+-                return Err(io::ErrorKind::InvalidData.into());
+-            }
+-            current = child;
+-        }
+-        let retained = self.file().metadata()?;
+-        census::directory_nonallocating(&retained)?;
+-        if Identity::of(&current.metadata()?) != self.identity
+-            || Identity::of(&retained) != self.identity
+-        {
+-            return Err(io::ErrorKind::InvalidData.into());
+-        }
+-        Ok(())
+-    }
+     pub(super) fn verify_file(&self, root: &census::Root, names: &[CString]) -> io::Result<()> {
+         if let Some(outcome) = &self.close_outcome {
+             return Err(native_file::projection(&outcome.error));

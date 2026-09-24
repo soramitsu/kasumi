@@ -1,0 +1,44 @@
+{
+  "declarations": [
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/base.rs",
+      "sha256": "773858218823539467cd503b4524cbf97de1a20eb2745e97877921f8acc7a7d1",
+      "name": "PageNumber",
+      "exact_declaration": "pub(crate) struct PageNumber {\n    pub(crate) region: u32,\n    pub(crate) page_index: u32,\n    pub(crate) page_order: u8,\n}"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/bitmap.rs",
+      "sha256": "d57724dcbc9701e8fb7a2e268febba1fbe2ff2a00e14e000c27a703afe3af9ff",
+      "name": "BtreeBitmap",
+      "exact_declaration": "pub(super) struct BtreeBitmap {\n    heights: Vec<U64GroupedBitmap>,\n}"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/bitmap.rs",
+      "sha256": "d57724dcbc9701e8fb7a2e268febba1fbe2ff2a00e14e000c27a703afe3af9ff",
+      "name": "U64GroupedBitmap",
+      "exact_declaration": "pub(crate) struct U64GroupedBitmap {\n    len: u32,\n    data: Vec<u64>,\n}"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/buddy_allocator.rs",
+      "sha256": "090fa18f76e9bc375c7e4d17cefc22e6e37501a0f1534a0fdd6d1803d684687a",
+      "name": "BuddyAllocator",
+      "exact_declaration": "pub(crate) struct BuddyAllocator {\n    free: Vec<BtreeBitmap>,\n    len: u32,\n    max_order: u8,\n}"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/region.rs",
+      "sha256": "ae6fb0a6f050de1739afe80fb5706b1634e6629cba3b5baeeff74935fbf367e0",
+      "name": "RegionTracker",
+      "exact_declaration": "pub(crate) struct RegionTracker {\n    order_trackers: Vec<BtreeBitmap>,\n}"
+    },
+    {
+      "path": "vendor/redb-4.2.0/src/tree_store/page_store/region.rs",
+      "sha256": "ae6fb0a6f050de1739afe80fb5706b1634e6629cba3b5baeeff74935fbf367e0",
+      "name": "Allocators",
+      "exact_declaration": "pub(super) struct Allocators {\n    pub(super) region_tracker: RegionTracker,\n    pub(super) region_allocators: Vec<BuddyAllocator>,\n}"
+    }
+  ],
+  "additional": {
+    "PageImpl": "Exact field declarations, hash-map hasher changed to RandomState only inside pointer-size Arc field; pointee never constructed",
+    "BtreeHeader": "Exact declaration; Checksum=u128 exact alias"
+  }
+}

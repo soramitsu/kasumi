@@ -1,0 +1,2 @@
+1000d2b34: 9400ca62    	bl	0x1001054bc <<alloc::boxed::Box<lifecycle::recovery_control::resolve_phase::{closure#0}> as core::ops::deref::DerefMut>::deref_mut>
+1000d2b48: 94013025    	bl	0x10011ebdc <lifecycle::recovery_control::resolve_phase::{closure#0}>

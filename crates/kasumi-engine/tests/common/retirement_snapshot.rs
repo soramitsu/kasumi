@@ -161,15 +161,15 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     let source_binding = source_store.binding().digest().unwrap();
     let recipient = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = recipient.path().join("replica.redb");
+    let recipient_physical = common::PhysicalFixture::new(&path, Default::default());
+    let recipient_node = recipient_physical
+        .storage
+        .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+        .unwrap();
     let app_provider = Arc::new(LocalKeyProvider::new([0xe2; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([0xe3; 32]));
     let domains = TenantStorageSet::initialize_catalogs_fixture(
-        NodeStore::create_new_fixture(
-            &path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap(),
+        recipient_node.clone(),
         context().tenant,
         app_provider.clone(),
         custody_provider.clone(),
@@ -208,7 +208,11 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
             raft: Config::default(),
             limits: kasumi_raft::RaftLimits::default(),
         },
-        kasumi_raft::SnapshotBufferOwner::fixture(),
+        recipient_physical
+            .storage
+            .admission
+            .snapshot_buffer_owner()
+            .unwrap(),
     )
     .await
     .unwrap();
@@ -238,26 +242,27 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     drop(recipient_group);
     drop(backend);
     drop(domains);
+    recipient_node.shutdown().await.unwrap();
+    drop(recipient_node);
+    let reopened_node = recipient_physical
+        .storage
+        .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+        .unwrap();
     // Only the independently keyed domain is opened after the encrypted restart.
-    let custody = CustodyStore::open(
-        NodeStore::open_existing_fixture(
-            &path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap(),
-        context().tenant,
-        custody_provider,
-    )
-    .await
-    .unwrap();
+    let custody = CustodyStore::open(reopened_node.clone(), context().tenant, custody_provider)
+        .await
+        .unwrap();
     let learner = CustodyRaftGroup::open(
         2,
         group.clone(),
         custody.clone(),
         Arc::new(InProcessRouter::default()),
         kasumi_raft::RaftGroupConfig::default(),
-        kasumi_raft::SnapshotBufferOwner::fixture(),
+        recipient_physical
+            .storage
+            .admission
+            .snapshot_buffer_owner()
+            .unwrap(),
     )
     .await
     .unwrap();
@@ -277,6 +282,13 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     assert!(control.recover_retired().unwrap());
     learner.shutdown().await.unwrap();
     custody.store().shutdown().await.unwrap();
+    reopened_node.shutdown().await.unwrap();
+    recipient_physical
+        .storage
+        .admission
+        .drain_snapshot_startups()
+        .await
+        .unwrap();
     closed.shutdown().await.unwrap();
     source.close().await;
 }

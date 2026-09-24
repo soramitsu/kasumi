@@ -1,0 +1,17 @@
+{
+  "scope": "read-only native snapshot of run88 schema integration progress; no terminal inference",
+  "command": [
+    "sample",
+    "98934",
+    "1",
+    "1",
+    "-file",
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/88-schema-observation-sample.txt"
+  ],
+  "sample_exit_code": 0,
+  "observed_test_pid": 98934,
+  "observed_process_group": 82549,
+  "sample_sha256": "82c360dd55230bc69475ff6bae9c92964125d342bbf077253fb59ee648ff0103",
+  "stdout": "",
+  "stderr": "Sampling process 98934 for 1 second with 1 millisecond of run time between samples\nSampling completed, processing symbols...\nSample analysis of process 98934 written to file /Users/mtakemiya/dev/kasumi/target/installed-disk-validation/88-schema-observation-sample.txt\n"
+}

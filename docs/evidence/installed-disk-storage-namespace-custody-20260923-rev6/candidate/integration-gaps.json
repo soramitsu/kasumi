@@ -1,0 +1,40 @@
+{
+  "status": "POST_COMPOSITION_BLOCKERS_NOT_CLAIMED_COMPLETE",
+  "source": "Root independent caller audit; confirmed exact candidate implementation",
+  "gaps": [
+    {
+      "issue": "Mandatory production StorageCensus/retained opening caller migrations, original outcome allocation backing and complete memory/RSS admission remain open."
+    },
+    {
+      "issue": "Configured-root acquisition, DirectoryOwner destructor/verification custody and supported-filesystem pre-effect physical bounds remain outside the custody primitive qualification."
+    },
+    {
+      "issue": "Legacy consuming NodeDatabase close can report DrainCompletion::Complete with a Storage close issue while physical FileOwner custody remains retained; mandatory caller migration is not complete."
+    },
+    {
+      "issue": "RegisteredNodeOpening deliberately retains failed live backend, original shutdown/backend/FileOwner errors, charge and admission fence when no positive release witness exists. A verified disposal and original-outcome acknowledgement/recovery protocol is still required; indefinite retention is not release acceptance."
+    }
+  ],
+  "reviews": [
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-overlap-managed-review/revision2-receipt.json",
+      "sha256": "6eb91d888f021809c164b35a82bdb2a88f7fff62280643cbc3e6ef04db9cf5d9"
+    },
+    {
+      "path": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-namespace-custody-root-review/receipt.json",
+      "sha256": "e08880cfcff816c74c594f57c1eed5b3b385ef65356e3affb50c108f3d8e5f95"
+    }
+  ],
+  "actual_source_modified": false,
+  "explicit_close_successor": {
+    "prior_gap": {
+      "path": "crates/kasumi-store/src/node_file.rs",
+      "sha256": "44778b3b9f038a6991ff2209d9d48cee63573b6bd8f6d60cc00b001df676dcf9",
+      "issue": "NodeBackend::close takes/drops NodeDiskFile and always returns Ok; retained native-close uncertainty is not surfaced through redb/NodeDatabase.",
+      "required_next_step": "Explicit NodeDiskFile retirement result and backend propagation; root owns separate successor.",
+      "release_goal_not_established": "G02 close integration"
+    },
+    "candidate_manifest_sha256": "ce3e396af747696be59d6c1a77452bba0a1e95d15d8d8b1bd817047245167cca",
+    "status": "Implemented in this target-only candidate, native qualification pending. A fallible explicit NodeDiskFile::close now retains original owner/outcomes on failure, and NodeBackend propagates failure without taking the file slot. This is not complete G02 production adoption or a total memory proof."
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "run",
+  "pid": 65204,
+  "pgid": 65204,
+  "argv": [
+    "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/namespace-census-contract-gap/native-baseline-01/diagnostic"
+  ]
+}

@@ -1,0 +1,651 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi/vendor/redb-4.2.0)
+   Compiling kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.35s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_store-da802ca493244251)
+
+running 228 tests
+test audit_archive::owned::tests::exclusive_rename_preserves_an_existing_destination_and_the_source_inode ... ok
+test audit_archive::owned::tests::owned_publication_resolves_partial_writes_and_uncertain_rename_without_adopting_files ... ok
+test audit_archive::tests::authentication_and_final_record_counts_precede_any_release ... ok
+test audit_archive::tests::existing_nonprivate_archive_directory_is_rejected_without_chmod ... ok
+test audit_archive::tests::historical_source_is_exact_and_does_not_reopen_a_live_generation ... ok
+test audit_archive::tests::historical_verification_checks_the_original_clock_and_release_fence ... ok
+test audit_archive::tests::object_symlink_cannot_read_or_overwrite_unrelated_files ... ok
+test audit_archive::tests::persisted_external_placement_never_falls_back_to_default_after_restart ... ok
+test audit_archive::tests::reverse_archive_dependencies_are_bounded_and_require_exact_link_and_source_verification ... ok
+test audit_archive::tests::segment_capacity_is_bounded_and_positions_use_checked_u64 ... ok
+test audit_archive::tests::verified_archive_is_private_immutable_contiguous_and_reopenable ... ok
+test backup::minio_live::actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denial ... ignored, requires explicit KASUMI_MINIO_DOCKER_HOST, KASUMI_MINIO_DOCKER_CONFIG and KASUMI_MINIO_WORKDIR; official pinned image must be pre-pulled
+test backup::s3_tests::aws_published_signature_v4_get_object_vector ... ok
+test backup::s3_tests::s3_credentials_are_reloaded_as_one_atomic_bundle ... ok
+test backup::s3_tests::s3_tls_round_trip_signed_session_token_create_only_and_bounded_download ... ok
+test backup::sessions_s3::tests::bounded_s3_versions_preserve_exact_ids_and_service_order ... ok
+test backup::sessions_s3::tests::bounded_s3_versions_reject_malformed_scope_duplicates_and_oversized_records ... ok
+test backup::sessions_s3::tests::signed_query_uses_aws_encoding_and_sorting ... ok
+test backup::tests::destination_byte_limits_and_untrusted_format_are_rejected ... ok
+test backup::tests::encrypted_bundle_round_trip_filesystem_reopen_and_tamper_rejection ... ok
+test backup::tests::historical_backup_keeps_original_key_dependencies_after_rewrap ... ok
+test backup::tests::removal_of_an_inactive_backup_key_dependency_breaks_authentication ... ok
+test backup_sessions::filesystem::ownership_tests::missing_enrolled_leaf_fences_both_read_and_cleanup_without_releasing_credit ... ok
+test backup_sessions::filesystem::ownership_tests::missing_unknown_or_admitted_deleted_leaf_is_repeatably_absent ... ok
+test backup_sessions::tests::completion_excludes_abort_and_corrupt_publication_never_grants_cleanup ... ok
+test backup_sessions::tests::filesystem_abort_cleanup_is_bounded_repeatable_and_retains_control_and_other_namespaces ... ok
+test backup_sessions::tests::filesystem_cleanup_rejects_directory_symlink_substitution ... ok
+test backup_sessions::tests::recovered_session_root_requires_file_and_directory_sync_before_readback ... ok
+test backup_sessions::tests::session_keeps_historical_source_purpose_separate_from_current_access ... ok
+test backup_sessions::tests::visible_session_outcomes_require_durable_readback_before_resolution_or_cleanup ... ok
+test catalog_budget::catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_persistence ... ok
+test catalog_budget::exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encoding ... ok
+test device_disk::memory_tests::device_registry_and_registration_have_exact_independent_lifetime_charges ... ok
+test device_disk::memory_tests::failed_registration_and_foreign_core_do_not_grow_retained_device_metadata ... ok
+test device_disk::registry_busy_tests::busy_device_registry_does_not_allocate_or_touch_memory_admission ... ok
+test device_disk::tests::abandoned_uncertainty_or_pending_bytes_cannot_be_released_by_drop ... ok
+test device_disk::tests::poisoned_device_stays_closed_after_all_registration_handles_drop ... 
+thread 'device_disk::tests::poisoned_device_stays_closed_after_all_registration_handles_drop' (4341201) panicked at crates/kasumi-store/src/device_disk.rs:170:13:
+injected shared promise mutation panic
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: <kasumi_store::device_disk::DeviceDisk>::poison::{closure#0}
+             at ./src/device_disk.rs:170:13
+   3: <<kasumi_store::device_disk::DeviceDisk>::poison::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+   4: <core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::device_disk::DeviceDisk>::poison::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+   5: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::device_disk::DeviceDisk>::poison::{closure#0}>, !>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+   6: ___rust_try
+   7: std::panicking::catch_unwind::<!, core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::device_disk::DeviceDisk>::poison::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+   8: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::device_disk::DeviceDisk>::poison::{closure#0}>, !>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+   9: <kasumi_store::device_disk::DeviceDisk>::poison
+             at ./src/device_disk.rs:168:23
+  10: kasumi_store::device_disk::tests::poisoned_device_stays_closed_after_all_registration_handles_drop
+             at ./src/device_disk.rs:285:15
+  11: kasumi_store::device_disk::tests::poisoned_device_stays_closed_after_all_registration_handles_drop::{closure#0}
+             at ./src/device_disk.rs:281:74
+  12: <kasumi_store::device_disk::tests::poisoned_device_stays_closed_after_all_registration_handles_drop::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  13: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test disk_memory::tests::installed_lease_cannot_return_bytes_or_slot_before_actual_box_deallocation ... ok
+test disk_memory::tests::mandatory_opaque_lease_preserves_inline_layout_and_provider_denial_accounting ... ok
+test disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind ... 
+thread 'disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind' (4341209) panicked at crates/kasumi-store/src/disk_memory_tests.rs:109:9:
+original token destructor panic
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: <kasumi_store::disk_memory::tests::PanickingToken as core::ops::drop::Drop>::drop
+             at ./src/disk_memory_tests.rs:109:9
+   3: core::ptr::drop_glue::<kasumi_store::disk_memory::tests::PanickingToken>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ptr/mod.rs:825:1
+   4: core::mem::drop::<kasumi_store::disk_memory::tests::PanickingToken>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/mem/mod.rs:1004:1
+   5: <kasumi_store::disk_memory::tests::PanickingToken as kasumi_store::disk_memory::RetireLease>::retire
+             at ./src/disk_memory.rs:31:9
+   6: <kasumi_store::disk_memory::DiskMemoryLease as core::ops::drop::Drop>::drop
+             at ./src/disk_memory.rs:45:25
+   7: core::ptr::drop_glue::<kasumi_store::disk_memory::DiskMemoryLease>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ptr/mod.rs:825:1
+   8: core::mem::drop::<kasumi_store::disk_memory::DiskMemoryLease>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/mem/mod.rs:1004:1
+   9: kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}::{closure#0}
+             at ./src/disk_memory_tests.rs:127:56
+  10: kasumi_store::allocation_tests::observe_deallocation::<(), kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}::{closure#0}>
+             at ./src/allocation_tests.rs:157:5
+  11: kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}
+             at ./src/disk_memory_tests.rs:127:9
+  12: <core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  13: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  14: ___rust_try
+  15: std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  16: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  17: kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind
+             at ./src/disk_memory_tests.rs:126:17
+  18: kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0}
+             at ./src/disk_memory_tests.rs:114:79
+  19: <kasumi_store::disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  20: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test file_keys::tests::file_keyring_rotation_binding_fresh_reads_and_reopen ... ok
+test file_keys::tests::rejects_public_keyrings_symlinks_and_unsupported_formats ... ok
+test file_keys::tests::standalone_catalog_binds_installation_tenant_and_generation ... ok
+test keys::tests::transit_origin_path_and_wrapped_version_validation ... ok
+test keys::tests::transit_reads_replaced_token_for_every_request_and_never_caches_failure ... ok
+test keys::tests::transit_rejects_missing_trust_tls12_redirects_malformed_and_oversized_responses ... ok
+test keys::tests::transit_timeout_is_bounded_and_seals_existing_plaintext ... ok
+test keys::tests::transit_tls_generation_fresh_decrypt_rewrap_context_and_revocation ... ok
+test live_trust::tests::complete_file_reopen_retains_exact_trust_and_permanent_key_bindings ... ok
+test live_trust::tests::dropped_closed_verifier_keeps_cache_fence_until_actual_background_join ... ok
+test live_trust::tests::encrypted_current_generation_fences_lease_admission_and_retained_responses ... ok
+test live_trust::tests::encrypted_restart_and_clock_regression_restart_the_complete_retirement_drain ... ok
+test live_trust::tests::exact_live_generation_rejects_historical_and_reused_key_forgery ... ok
+test live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement ... 
+thread 'live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement' (4341305) panicked at crates/kasumi-store/src/live_trust_tests.rs:804:13:
+unreported verifier worker failure
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}::{closure#0}
+             at ./src/live_trust_tests.rs:804:13
+   3: <tokio::runtime::task::core::Core<kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}::{closure#0}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/core.rs:380:24
+   4: <tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}::{closure#0}>>>::with_mut::<core::task::poll::Poll<()>, <tokio::runtime::task::core::Core<kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}::{closure#0}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/loom/std/unsafe_cell.rs:16:9
+   5: <tokio::runtime::task::core::Core<kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}::{closure#0}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/core.rs:369:30
+   6: tokio::runtime::task::harness::poll_future::<kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}::{closure#0}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:535:30
+   7: <core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}::{closure#0}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+   8: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}::{closure#0}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}>, core::task::poll::Poll<()>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+   9: ___rust_try
+  10: std::panicking::catch_unwind::<core::task::poll::Poll<()>, core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}::{closure#0}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  11: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}::{closure#0}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}>, core::task::poll::Poll<()>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  12: tokio::runtime::task::harness::poll_future::<kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}::{closure#0}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:523:18
+  13: <tokio::runtime::task::harness::Harness<kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}::{closure#0}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll_inner
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:210:27
+  14: <tokio::runtime::task::harness::Harness<kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}::{closure#0}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:155:20
+  15: tokio::runtime::task::raw::poll::<kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}::{closure#0}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/raw.rs:343:13
+  16: <tokio::runtime::task::raw::RawTask>::poll
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/raw.rs:273:18
+  17: <tokio::runtime::task::LocalNotified<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::run
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/mod.rs:519:13
+  18: <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:398:22
+  19: tokio::task::coop::with_budget::<(), <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:167:5
+  20: tokio::task::coop::budget::<(), <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:133:5
+  21: <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:394:13
+  22: <tokio::runtime::scheduler::current_thread::Context>::enter::<(), <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:488:19
+  23: <tokio::runtime::scheduler::current_thread::Context>::run_task
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:393:32
+  24: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:870:37
+  25: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:68
+  26: <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<<tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/scoped.rs:40:9
+  27: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:38
+  28: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::try_with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/thread/local.rs:462:12
+  29: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/thread/local.rs:426:20
+  30: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:17
+  31: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:27
+  32: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:817:24
+  33: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:218:33
+  34: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, ()>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/runtime.rs:65:16
+  35: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:206:9
+  36: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:374:52
+  37: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:343:18
+  38: kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement
+             at ./src/live_trust_tests.rs:853:38
+  39: kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0}
+             at ./src/live_trust_tests.rs:795:90
+  40: <kasumi_store::live_trust::tests::failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_replacement::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  41: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test live_trust::tests::issuance_and_encoded_response_require_the_exact_active_signer_owner ... ok
+test live_trust::tests::stopped_stage_and_new_admin_requests_preserve_original_identity_and_reject_format_fallback ... ok
+test live_trust::tests::uncertain_activation_closes_old_owner_and_exact_receipt_recovers_from_encrypted_state ... ok
+test node_database::tests::already_queued_writer_retains_database_without_blocking_close ... ok
+test node_database::tests::close_panic_retains_original_payload_and_cannot_become_clean_on_retry ... 
+thread 'node_database::tests::close_panic_retains_original_payload_and_cannot_become_clean_on_retry' (4341324) panicked at crates/kasumi-store/src/node_database.rs:214:13:
+Box<dyn Any>
+stack backtrace:
+   0: std::panicking::begin_panic::<kasumi_store::node_database::tests::OriginalClosePanic>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:761:5
+   1: std::panic::panic_any::<kasumi_store::node_database::tests::OriginalClosePanic>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:260:5
+   2: <kasumi_store::node_database::tests::PanicBackend as redb::db::StorageBackend>::close
+             at ./src/node_database.rs:214:13
+   3: <redb::tree_store::page_store::cached_file::CheckedBackend>::close
+             at /Users/mtakemiya/dev/kasumi/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs:172:27
+   4: <redb::tree_store::page_store::cached_file::PagedCachedFile>::close
+             at /Users/mtakemiya/dev/kasumi/vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs:386:19
+   5: <redb::tree_store::page_store::page_manager::TransactionalMemory>::close
+             at /Users/mtakemiya/dev/kasumi/vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs:1322:41
+   6: <redb::db::Database>::close
+             at /Users/mtakemiya/dev/kasumi/vendor/redb-4.2.0/src/db.rs:623:18
+   7: <kasumi_store::node_database::NodeDatabase>::close::{closure#0}
+             at ./src/node_database.rs:97:89
+   8: <core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::node_database::NodeDatabase>::close::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+   9: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::node_database::NodeDatabase>::close::{closure#0}>, core::result::Result<(), redb::error::CloseError<redb::db::Database>>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  10: ___rust_try
+  11: std::panicking::catch_unwind::<core::result::Result<(), redb::error::CloseError<redb::db::Database>>, core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::node_database::NodeDatabase>::close::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  12: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::node_database::NodeDatabase>::close::{closure#0}>, core::result::Result<(), redb::error::CloseError<redb::db::Database>>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  13: <kasumi_store::node_database::NodeDatabase>::close
+             at ./src/node_database.rs:97:35
+  14: kasumi_store::node_database::tests::close_panic_retains_original_payload_and_cannot_become_clean_on_retry
+             at ./src/node_database.rs:226:30
+  15: kasumi_store::node_database::tests::close_panic_retains_original_payload_and_cannot_become_clean_on_retry::{closure#0}
+             at ./src/node_database.rs:219:79
+  16: <kasumi_store::node_database::tests::close_panic_retains_original_payload_and_cannot_become_clean_on_retry::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  17: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test node_database::tests::pinned_transaction_keeps_close_retained_and_repeated_issue_identity ... ok
+test node_disk::tests::a_retiring_predecessor_keeps_exclusive_registration_until_all_resources_close ... ok
+test node_disk::tests::abandoned_namespace_preparation_releases_registration_without_deadlock ... ok
+test node_disk::tests::abandoned_preparation_closes_target_descriptors_before_the_next_preparation ... ok
+test node_disk::tests::admitted_publication_rebinds_name_and_reclaim_forgets_it ... ok
+test node_disk::tests::cancelled_or_work_exhausted_census_publishes_no_partial_owner ... ok
+test node_disk::tests::census_counts_closed_files_and_repeated_cursors_start_at_the_beginning ... ok
+test node_disk::tests::census_failure_closes_real_descriptors_before_releasing_metadata ... ok
+test node_disk::tests::concurrent_final_file_clones_retire_exactly_one_registration ... ok
+test node_disk::tests::disappeared_censused_and_closed_created_names_fence_without_credit ... ok
+test node_disk::tests::dropped_unmaterialized_growth_is_retained_until_exclusive_reconciliation ... ok
+test node_disk::tests::duplicate_live_inode_open_requires_explicit_owner_clone ... ok
+test node_disk::tests::enrolled_extents_survive_all_physical_updates_and_descriptor_reopens ... ok
+test node_disk::tests::enrolled_file_metadata_limit_rejects_before_creating_an_untracked_inode ... ok
+test node_disk::tests::enrolled_target_conflict_accepts_only_actual_admitted_growth ... ok
+test node_disk::tests::enrolled_target_unauthorized_growth_never_becomes_a_healthy_conflict ... ok
+test node_disk::tests::envelope_identity_and_durability_retain_custody_until_the_last_handle_closes ... ok
+test node_disk::tests::envelope_inspection_and_publication_reject_inode_and_parent_substitution ... ok
+test node_disk::tests::explicit_settlement_returns_only_unused_promises_and_requires_exact_extent ... ok
+test node_disk::tests::failed_creation_retains_provisional_enrollment_without_registered_drop ... ok
+test node_disk::tests::failed_direct_handles_never_release_bytes_or_restart_sync ... ok
+test node_disk::tests::identity_failure_and_uncertain_file_drop_fence_without_allocating ... ok
+test node_disk::tests::immutable_publication_preserves_the_inode_and_its_capacity_charge ... ok
+test node_disk::tests::installed_metadata_reuse_keeps_one_exact_core_and_one_retained_envelope ... ok
+test node_disk::tests::live_enrolled_target_conflicts_remain_healthy_and_preserve_content ... ok
+test node_disk::tests::live_shrink_cannot_release_unmaterialized_or_unsynced_growth ... ok
+test node_disk::tests::live_shrink_failure_retains_charges_through_drop_and_fences_shared_device ... ok
+test node_disk::tests::live_shrink_requires_the_only_mutable_file_owner ... ok
+test node_disk::tests::live_shrink_retains_identity_and_lock_with_exact_reopen_accounting ... ok
+test node_disk::tests::maintenance_has_reserved_capacity_and_denial_changes_no_extent_or_charge ... ok
+test node_disk::tests::metadata_denial_precedes_root_open_and_retained_census_allocation ... ok
+test node_disk::tests::metadata_planning_has_no_heap_or_filesystem_effect_and_checks_overflow ... ok
+test node_disk::tests::missing_enrolled_target_cannot_be_recreated_or_published_over ... ok
+test node_disk::tests::node_store_rejects_different_isolated_memory_before_touching_file ... ok
+test node_disk::tests::open_file_metadata_budget_is_bounded_and_close_returns_only_metadata_capacity ... ok
+test node_disk::tests::partial_metadata_admission_never_leaves_unfunded_provisional_owners ... ok
+test node_disk::tests::pause_seals_new_reservations_but_drains_reserved_io_and_retains_sparse_promises ... ok
+test node_disk::tests::paused_direct_handles_can_finish_only_already_admitted_io ... ok
+test node_disk::tests::persistent_and_scratch_cannot_spend_the_same_filesystem_promise ... ok
+test node_disk::tests::physical_reclaim_requires_sole_owner_and_releases_only_verified_extent ... ok
+test node_disk::tests::poisoned_shared_promises_cannot_be_reopened_by_either_owner ... 
+thread 'node_disk::tests::poisoned_shared_promises_cannot_be_reopened_by_either_owner' (4341535) panicked at crates/kasumi-store/src/device_disk.rs:170:13:
+injected shared promise mutation panic
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: <kasumi_store::device_disk::DeviceDisk>::poison::{closure#0}
+             at ./src/device_disk.rs:170:13
+   3: <<kasumi_store::device_disk::DeviceDisk>::poison::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+   4: <core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::device_disk::DeviceDisk>::poison::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+   5: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::device_disk::DeviceDisk>::poison::{closure#0}>, !>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+   6: ___rust_try
+   7: std::panicking::catch_unwind::<!, core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::device_disk::DeviceDisk>::poison::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+   8: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<<kasumi_store::device_disk::DeviceDisk>::poison::{closure#0}>, !>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+   9: <kasumi_store::device_disk::DeviceDisk>::poison
+             at ./src/device_disk.rs:168:23
+  10: kasumi_store::node_disk::tests::poisoned_shared_promises_cannot_be_reopened_by_either_owner
+             at ./src/node_disk/tests.rs:498:17
+  11: kasumi_store::node_disk::tests::poisoned_shared_promises_cannot_be_reopened_by_either_owner::{closure#0}
+             at ./src/node_disk/tests.rs:479:65
+  12: <kasumi_store::node_disk::tests::poisoned_shared_promises_cannot_be_reopened_by_either_owner::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  13: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test node_disk::tests::post_reclaim_failures_keep_credit_until_actual_drain_and_census_without_allocating ... ok
+test node_disk::tests::post_rename_failures_keep_the_charge_and_return_without_allocating ... ok
+test node_disk::tests::prepared_cross_directory_publication_and_physical_reclaim_do_not_allocate ... ok
+test node_disk::tests::prepared_file_creation_registers_and_retires_without_allocating ... ok
+test node_disk::tests::prepared_publication_abandonment_retires_old_weak_registration_once_without_allocation ... ok
+test node_disk::tests::prepared_publication_conflict_returns_inline_without_fencing_or_replacing ... ok
+test node_disk::tests::prepared_unknown_absence_revalidates_replaced_parent ... ok
+test node_disk::tests::publication_conflict_keeps_both_files_and_the_owner_usable ... ok
+test node_disk::tests::publication_preparation_missing_or_symlinked_ancestor_fences ... ok
+test node_disk::tests::publication_preparation_replaced_root_fences_before_rename ... ok
+test node_disk::tests::publication_replaced_private_source_ancestor_fences_before_rename ... ok
+test node_disk::tests::publication_requires_actual_descriptor_clone_drain ... ok
+test node_disk::tests::raw_created_file_is_not_adopted_after_the_installed_census ... ok
+test node_disk::tests::raw_growth_of_a_closed_censused_inode_fences_without_rebasing_its_charge ... ok
+test node_disk::tests::raw_rename_fences_both_missing_old_name_and_present_new_name ... ok
+test node_disk::tests::reclaim_retires_parent_metadata_and_weak_backing_before_releasing_promises ... ok
+test node_disk::tests::registry_busy_precedes_memory_acquisition_without_allocating ... ok
+test node_disk::tests::replaced_parent_cannot_hide_enrolled_missing_leaf ... ok
+test node_disk::tests::retained_file_io_settlement_shrink_and_drop_do_not_allocate ... ok
+test node_disk::tests::retiring_file_cannot_lend_handle_or_metadata_credit_before_parent_and_backing_release ... ok
+test node_disk::tests::substitution_closes_shared_admission_and_does_not_delete_the_replacement ... ok
+test node_disk::tests::symlinks_hardlinks_and_overlapping_roots_cannot_duplicate_census_charge ... ok
+test node_disk::tests::uncertain_envelope_parent_sync_preserves_charges_through_close_and_census ... ok
+test node_disk::tests::unenrolled_missing_leaf_preserves_admission_without_allocating ... ok
+test node_disk::tests::unknown_filesystem_observation_fences_scratch_until_a_drained_census ... ok
+test node_file::tests::canonical_header_rejects_nil_identity_without_creating_a_file ... ok
+test node_file::tests::cleanup_custody_accepts_only_exact_recognized_headers_and_holds_the_inode_lock ... ok
+test node_file::tests::crash_child ... ignored, subprocess helper; invoked with an owned temporary path
+test node_file::tests::existing_header_requires_exact_canonical_fields_and_checksum ... ok
+test node_file::tests::initialization_requires_exact_journal_owned_empty_inode ... ok
+test node_file::tests::offset_io_preserves_header_and_retained_backend_cannot_outlive_close ... ok
+test node_file::tests::partial_envelopes_are_never_adopted_or_reinitialized ... ok
+test node_file::tests::reads_enforce_payload_bounds_even_for_empty_buffers ... ok
+test node_file::tests::recognized_store_recovers_after_actual_process_exit_without_close ... ok
+test node_file::tests::resize_drains_a_write_after_its_extent_check_before_truncating ... ok
+test node_file::tests::unrelated_clean_and_unclean_redb_rejection_is_byte_exact ... ok
+test node_file::tests::validated_descriptor_handoff_never_reopens_a_substituted_path ... ok
+test node_store_ids::tests::immutable_identity_derivations_are_stable_and_domain_separated ... ok
+test scratch_disk::memory_tests::fixture_directory_custody_stays_with_caller_while_metadata_stays_installed ... ok
+test scratch_disk::memory_tests::installed_scratch_reuse_keeps_metadata_funded_after_public_strong_handles_drop ... ok
+test scratch_disk::memory_tests::scratch_file_release_does_not_release_installed_owner_or_registry_memory ... ok
+test scratch_disk::memory_tests::scratch_metadata_denial_precedes_directory_creation ... ok
+test scratch_disk::registry_busy_tests::busy_scratch_registry_does_not_allocate_admit_or_create_directory ... ok
+test scratch_disk::tests::concurrent_spools_cannot_each_spend_the_aggregate_budget ... ok
+test scratch_disk::tests::immutable_image_readers_retain_capacity_until_the_last_owner_drains ... ok
+test scratch_disk::tests::pending_files_share_filesystem_promises_and_keep_recovery_reserve ... ok
+test scratch_disk::tests::physical_directory_reopens_share_budget_and_cannot_change_it ... ok
+test scratch_disk::tests::pinned_directory_survives_path_substitution_without_using_replacement ... ok
+test scratch_disk::tests::rejects_symlinks_and_overflowing_configuration ... ok
+test scratch_disk::tests::separate_governors_cannot_double_spend_filesystem_promises ... ok
+test scratch_disk::tests::truncation_and_rejected_growth_preserve_exact_file_charges ... ok
+test scratch_table::tests::accepted_transaction_keeps_scratch_close_retained_until_actual_drain ... ok
+test scratch_table::tests::exact_backend_publication_io_settlement_shrink_and_close_do_not_allocate ... ok
+test scratch_table::tests::exact_settlement_mismatch_fences_owner_without_allocating_or_returning_credit ... ok
+test scratch_table::tests::explicit_scratch_close_retains_original_physical_failure_on_retry ... ok
+test scratch_table::tests::rejected_resize_is_wholly_reserved_before_any_logical_or_physical_change ... ok
+test single_catalog::tests::borrowed_singleton_keeps_original_provider_clock_and_deadline ... ok
+test single_catalog::tests::buffered_singleton_preparation_errors_require_actual_claim_and_preserve_partial_installation ... ok
+test single_catalog::tests::buffered_singleton_success_publishes_only_on_claim_and_abandonment_preserves_borrowers ... ok
+test single_catalog::tests::cancelled_singleton_drain_retains_buffered_preparation_error ... ok
+test single_catalog::tests::cancelling_during_singleton_key_preparation_retains_actual_node_until_provider_drains ... ok
+test single_catalog::tests::existing_singleton_requires_installed_catalog_and_never_repairs_cached_substitution ... ok
+test single_catalog::tests::production_singletons_reject_paired_capabilities_before_provider_or_catalog_effects ... ok
+test single_catalog::tests::strict_singleton_creation_rejects_orphan_partial_and_existing_catalogs_without_mutation ... ok
+test spool::retained_spool::tests::actual_final_sync_panic_reaches_database_with_same_payload_and_spool_still_present ... ok
+test spool::retained_spool::tests::file_key_and_each_buffer_retire_before_extent_credit_is_reusable ... ok
+test spool::retained_spool::tests::original_sync_error_moves_once_to_database_while_spool_and_charge_stay_owned ... ok
+test spool::tests::corrupted_or_reordered_blocks_fail_authentication ... ok
+test spool::tests::encrypted_spool_seek_overwrite_and_bounds ... ok
+test spool::tests::interleaved_record_appends_preserve_admission_and_authentication ... ok
+test spool::tests::unused_reservation_and_denied_growth_preserve_authenticated_physical_extent ... ok
+test storage_domains::catalog_initialization::tests::admission_reaper_reports_unclaimed_preparation_failure_before_new_work ... ok
+test storage_domains::catalog_initialization::tests::buffered_preparation_error_requires_claim_before_registry_forgets_it ... ok
+test storage_domains::catalog_initialization::tests::buffered_unclaimed_ticket_drains_only_unpublished_new_owners ... ok
+test storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits ... 
+thread 'storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits' (4342002) panicked at crates/kasumi-store/src/storage_domains/catalog_initialization/tests.rs:52:30:
+catalog owner panic before cancelled drain
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}::{closure#1}
+             at ./src/storage_domains/catalog_initialization/tests.rs:52:30
+   3: <tokio::runtime::task::core::Core<kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/core.rs:380:24
+   4: <tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}::{closure#1}>>>::with_mut::<core::task::poll::Poll<core::result::Result<(), anyhow::Error>>, <tokio::runtime::task::core::Core<kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/loom/std/unsafe_cell.rs:16:9
+   5: <tokio::runtime::task::core::Core<kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/core.rs:369:30
+   6: tokio::runtime::task::harness::poll_future::<kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:535:30
+   7: <core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+   8: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}>, core::task::poll::Poll<core::result::Result<(), anyhow::Error>>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+   9: ___rust_try
+  10: std::panicking::catch_unwind::<core::task::poll::Poll<core::result::Result<(), anyhow::Error>>, core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  11: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}>, core::task::poll::Poll<core::result::Result<(), anyhow::Error>>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  12: tokio::runtime::task::harness::poll_future::<kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:523:18
+  13: <tokio::runtime::task::harness::Harness<kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll_inner
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:210:27
+  14: <tokio::runtime::task::harness::Harness<kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:155:20
+  15: tokio::runtime::task::raw::poll::<kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/raw.rs:343:13
+  16: <tokio::runtime::task::raw::RawTask>::poll
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/raw.rs:273:18
+  17: <tokio::runtime::task::LocalNotified<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::run
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/mod.rs:519:13
+  18: <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:398:22
+  19: tokio::task::coop::with_budget::<(), <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:167:5
+  20: tokio::task::coop::budget::<(), <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:133:5
+  21: <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:394:13
+  22: <tokio::runtime::scheduler::current_thread::Context>::enter::<(), <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:488:19
+  23: <tokio::runtime::scheduler::current_thread::Context>::run_task
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:393:32
+  24: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:870:37
+  25: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}, core::option::Option<core::result::Result<(), anyhow::Error>>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:68
+  26: <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<<tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}, core::option::Option<core::result::Result<(), anyhow::Error>>>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<core::result::Result<(), anyhow::Error>>)>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/scoped.rs:40:9
+  27: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<core::result::Result<(), anyhow::Error>>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}, core::option::Option<core::result::Result<(), anyhow::Error>>>::{closure#0}>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:38
+  28: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::try_with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<core::result::Result<(), anyhow::Error>>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}, core::option::Option<core::result::Result<(), anyhow::Error>>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<core::result::Result<(), anyhow::Error>>)>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/thread/local.rs:462:12
+  29: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<core::result::Result<(), anyhow::Error>>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}, core::option::Option<core::result::Result<(), anyhow::Error>>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<core::result::Result<(), anyhow::Error>>)>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/thread/local.rs:426:20
+  30: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<core::result::Result<(), anyhow::Error>>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}, core::option::Option<core::result::Result<(), anyhow::Error>>>::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:17
+  31: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}, core::option::Option<core::result::Result<(), anyhow::Error>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:27
+  32: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:817:24
+  33: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:218:33
+  34: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>::{closure#0}, core::result::Result<(), anyhow::Error>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/runtime.rs:65:16
+  35: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:206:9
+  36: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:374:52
+  37: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:343:18
+  38: kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits
+             at ./src/storage_domains/catalog_initialization/tests.rs:87:7
+  39: kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0}
+             at ./src/storage_domains/catalog_initialization/tests.rs:37:90
+  40: <kasumi_store::storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  41: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_unclaimed_preparation_error ... ok
+test storage_domains::catalog_initialization::tests::cancelled_receiver_keeps_preparation_registered_until_actual_provider_work_drains ... ok
+test storage_domains::catalog_initialization::tests::committed_pair_handoff_preserves_a_concurrent_borrower_through_initializer_drain ... ok
+test storage_domains::catalog_initialization::tests::fresh_pair_rejects_shared_partial_and_orphan_domains_without_mutation ... ok
+test storage_domains::existing_catalogs::tests::application_failure_drains_new_custody_without_changing_existing_bytes ... ok
+test storage_domains::existing_catalogs::tests::application_failure_preserves_borrowed_custody_and_original_deadline ... ok
+test storage_domains::existing_catalogs::tests::buffered_existing_pair_ticket_publishes_nothing_and_drains_its_new_workers ... ok
+test storage_domains::existing_catalogs::tests::buffered_existing_preparation_failure_requires_claim_and_preserves_borrowed_owners ... ok
+test storage_domains::existing_catalogs::tests::caller_cancellation_drains_only_new_domains_after_active_provider_work ... ok
+test storage_domains::existing_catalogs::tests::caller_cancellation_never_closes_a_borrowed_custody_owner ... ok
+test storage_domains::existing_catalogs::tests::missing_binding_rejects_new_custody_and_leaves_every_existing_byte_unchanged ... ok
+test storage_domains::existing_catalogs::tests::unclaimed_borrowed_pair_and_changed_binding_never_close_its_cached_owners ... ok
+test storage_domains::existing_tests::corrupt_or_authenticated_wrong_binding_is_never_repaired_by_reopen ... ok
+test storage_domains::existing_tests::exact_standalone_binding_reopens_after_both_domains_close_and_drain ... ok
+test storage_domains::existing_tests::existing_catalog_admission_cannot_provision_after_waiting_for_the_open_gate ... ok
+test storage_domains::existing_tests::missing_catalogs_and_authenticated_binding_never_provision_during_reopen ... ok
+test storage_domains::tests::combined_quota_and_substituted_catalog_binding_fail_before_publication ... ok
+test storage_domains::tests::control_reopens_without_any_application_key_probe_after_revocation ... ok
+test storage_domains::tests::domains_require_distinct_actual_wrapping_policies_and_same_node ... ok
+test storage_domains::tests::every_interrupted_domain_transaction_recovers_whole_old_or_whole_new ... ok
+test storage_domains::tests::initial_state_checks_and_joint_publication_have_one_concurrent_winner ... ok
+test storage_domains::tests::initial_state_rejects_delete_only_publications_without_consuming_initialization ... ok
+test storage_domains::tests::initial_state_rejects_unknown_records_in_either_complete_domain ... ok
+test storage_domains::tests::initial_state_requires_the_exact_retained_custody_binding ... ok
+test storage_domains::tests::post_commit_domain_expiry_reports_uncertainty_and_retains_complete_write ... ok
+test test_utils::admitted_backend_tests::admitted_backend_rejects_foreign_memory_before_io_and_retains_exact_owner ... ok
+test test_utils::registry_retry_tests::fixture_retry_distinguishes_registry_busy_from_provider_would_block ... ok
+test tests::a_fresh_probe_covers_every_retained_version_and_revocation_seals_warm_state ... ok
+test tests::a_late_success_cannot_undo_an_explicit_seal ... ok
+test tests::atomic_batches_and_cross_namespace_isolation_survive_reopen ... ok
+test tests::bounded_encrypted_reads_reject_payload_before_plaintext_allocation ... ok
+test tests::canceled_shutdown_drains_blocked_probe_and_releases_the_database_file ... ok
+test tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner ... 
+thread 'tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner' (4342271) panicked at crates/kasumi-store/src/tests.rs:292:9:
+actual store worker panic
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}::{closure#1}
+             at ./src/tests.rs:292:9
+   3: <tokio::runtime::task::core::Core<kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/core.rs:380:24
+   4: <tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}::{closure#1}>>>::with_mut::<core::task::poll::Poll<()>, <tokio::runtime::task::core::Core<kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/loom/std/unsafe_cell.rs:16:9
+   5: <tokio::runtime::task::core::Core<kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/core.rs:369:30
+   6: tokio::runtime::task::harness::poll_future::<kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:535:30
+   7: <core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+   8: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}>, core::task::poll::Poll<()>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+   9: ___rust_try
+  10: std::panicking::catch_unwind::<core::task::poll::Poll<()>, core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  11: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::{closure#0}>, core::task::poll::Poll<()>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  12: tokio::runtime::task::harness::poll_future::<kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:523:18
+  13: <tokio::runtime::task::harness::Harness<kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll_inner
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:210:27
+  14: <tokio::runtime::task::harness::Harness<kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::poll
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:155:20
+  15: tokio::runtime::task::raw::poll::<kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}::{closure#1}, alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/raw.rs:343:13
+  16: <tokio::runtime::task::raw::RawTask>::poll
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/raw.rs:273:18
+  17: <tokio::runtime::task::LocalNotified<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>>::run
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/mod.rs:519:13
+  18: <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:398:22
+  19: tokio::task::coop::with_budget::<(), <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:167:5
+  20: tokio::task::coop::budget::<(), <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:133:5
+  21: <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:394:13
+  22: <tokio::runtime::scheduler::current_thread::Context>::enter::<(), <tokio::runtime::scheduler::current_thread::Context>::run_task::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:488:19
+  23: <tokio::runtime::scheduler::current_thread::Context>::run_task
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:393:32
+  24: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:870:37
+  25: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:68
+  26: <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<<tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/scoped.rs:40:9
+  27: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:38
+  28: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::try_with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/thread/local.rs:462:12
+  29: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/thread/local.rs:426:20
+  30: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:17
+  31: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:27
+  32: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:817:24
+  33: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:218:33
+  34: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, ()>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/runtime.rs:65:16
+  35: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:206:9
+  36: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:374:52
+  37: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:343:18
+  38: kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner
+             at ./src/tests.rs:373:39
+  39: kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0}
+             at ./src/tests.rs:273:81
+  40: <kasumi_store::tests::cancelled_store_drain_retains_joined_panic_and_pending_physical_owner::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  41: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ok
+test tests::ciphertext_corruption_swapping_and_wrong_tenant_are_rejected ... ok
+test tests::completed_shutdown_allows_distinct_store_without_reviving_retained_handles ... ok
+test tests::delayed_probe_cannot_extend_a_lease_past_sixty_seconds_from_start ... ok
+test tests::different_tenants_do_not_share_a_slow_key_service_open_gate ... ok
+test tests::dormant_store_workers_stop_cooperatively_and_external_abort_is_reported ... ok
+test tests::every_injected_commit_failure_recovers_whole_batch_or_previous_state ... ok
+test tests::expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_batch ... ok
+test tests::expiry_during_key_catalog_fsync_does_not_acknowledge_rotation ... ok
+test tests::expiry_watchdog_discards_keys_and_notifies_without_an_incoming_request ... ok
+test tests::faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery ... ok
+test tests::invalid_batch_does_not_apply_earlier_operations ... ok
+test tests::names_keys_and_values_are_absent_from_disk_and_nonce_changes_on_overwrite ... ok
+test tests::node_files_are_private_nofollow_and_keep_exclusive_database_ownership ... ok
+test tests::periodic_probes_start_every_twenty_seconds_despite_provider_latency ... ok
+test tests::pinned_read_roots_and_streamed_namespace_publication_preserve_isolation ... ok
+test tests::rewrap_preserves_documents_after_retiring_old_wrapping_versions ... ok
+test tests::separate_node_stores_and_pinned_reads_share_one_scratch_budget ... ok
+test tests::shutdown_fences_a_waiting_background_task_registration ... ok
+test tests::sixty_second_suspend_aware_expiry_and_explicit_recovery ... ok
+test tests::wrapping_catalog_is_atomic_across_every_injected_commit_failure ... ok
+
+test result: ok. 226 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 72.94s
+

@@ -1,0 +1,120 @@
+{
+  "prepare_completion_poll": {
+    "saved": 32,
+    "probed": 622592,
+    "remainder": 1008,
+    "bytes": 623632,
+    "address": "0x1001308dc"
+  },
+  "complete_recovery_poll": {
+    "saved": 32,
+    "probed": 679936,
+    "remainder": 1168,
+    "bytes": 681136,
+    "address": "0x10011ef80"
+  },
+  "exercise_completed_recovery_poll": {
+    "saved": 32,
+    "probed": 106496,
+    "remainder": 3232,
+    "bytes": 109760,
+    "address": "0x10014da4c"
+  },
+  "resolve_expired_completion_poll": {
+    "saved": 32,
+    "probed": 311296,
+    "remainder": 928,
+    "bytes": 312256,
+    "address": "0x100146cf4"
+  },
+  "exercise_route_publication_poll": {
+    "saved": 32,
+    "probed": 389120,
+    "remainder": 1184,
+    "bytes": 390336,
+    "address": "0x10013fe00"
+  },
+  "prepare_next_poll": {
+    "saved": 32,
+    "probed": 32768,
+    "remainder": 768,
+    "bytes": 33568,
+    "address": "0x10011dfa8"
+  },
+  "resolve_phase_poll": {
+    "saved": 32,
+    "probed": 20480,
+    "remainder": 3616,
+    "bytes": 24128,
+    "address": "0x10011ebdc"
+  },
+  "commit_next_control_poll": {
+    "saved": 32,
+    "probed": 16384,
+    "remainder": 2000,
+    "bytes": 18416,
+    "address": "0x10013e6dc"
+  },
+  "commit_next_control_for_poll": {
+    "saved": 32,
+    "probed": 65536,
+    "remainder": 3184,
+    "bytes": 68752,
+    "address": "0x10013e958"
+  },
+  "snapshot_poll": {
+    "saved": 32,
+    "probed": 0,
+    "remainder": 2912,
+    "bytes": 2944,
+    "address": "0x10014fffc"
+  },
+  "leader_poll": {
+    "saved": 32,
+    "probed": 4096,
+    "remainder": 4080,
+    "bytes": 8208,
+    "address": "0x10003dff8"
+  },
+  "leader_diagnostic": {
+    "saved": 0,
+    "probed": 0,
+    "remainder": 368,
+    "bytes": 368,
+    "address": "0x100025238"
+  },
+  "root_test_closure_1": {
+    "saved": 32,
+    "probed": 8192,
+    "remainder": 2784,
+    "bytes": 11008,
+    "address": "0x100150800"
+  },
+  "outer_constructor": {
+    "saved": 0,
+    "probed": 0,
+    "remainder": 16,
+    "bytes": 16,
+    "address": "0x1000cb664"
+  },
+  "prepare_completion_box_poll": {
+    "bytes": 64,
+    "address": "0x1000d2ba4"
+  },
+  "complete_recovery_box_poll": {
+    "bytes": 64,
+    "address": "0x1000d2b58"
+  },
+  "resolve_expired_completion_box_poll": {
+    "bytes": 64,
+    "address": "0x1000d2c34"
+  },
+  "exercise_route_publication_box_poll": {
+    "bytes": 64,
+    "address": "0x1000d2bf0"
+  },
+  "resolve_phase_box_poll": {
+    "bytes": 64,
+    "address": "0x1000d2b0c"
+  }
+}

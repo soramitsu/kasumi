@@ -1,0 +1,9 @@
+{
+  "status": "APPROVED_SCOPED_TARGET_INTEGRATION_PENDING_NATIVE",
+  "patch_sha256": "a41926e0b6fda54e12eff688da8c88c43d0a0f21c1514395a7f2af79f3fc12f2",
+  "evidence_sha256": "2ea55d4c2e2d860f6d158587cb36e044ac90aa689bc79532da63055a6b81c86f",
+  "review_sha256": "0c480fdd992b2af80a1896af5b04fd6679945b8c097d04f273832305821d81e5",
+  "compiler_native_formatter_executed": false,
+  "actual_source_mutated": false,
+  "new_findings": []
+}

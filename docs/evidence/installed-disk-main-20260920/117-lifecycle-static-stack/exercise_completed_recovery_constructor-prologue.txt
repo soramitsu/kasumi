@@ -1,0 +1,46 @@
+
+/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001000cb070 <lifecycle::recovery_control::exercise_completed_recovery>:
+1000cb070: d10043ff    	sub	sp, sp, #0x10
+1000cb074: 390037e0    	strb	w0, [sp, #0xd]
+1000cb078: 39003be1    	strb	w1, [sp, #0xe]
+1000cb07c: 39003fe2    	strb	w2, [sp, #0xf]
+1000cb080: 3915c900    	strb	w0, [x8, #0x572]
+1000cb084: 3915c501    	strb	w1, [x8, #0x571]
+1000cb088: 3915cd02    	strb	w2, [x8, #0x573]
+1000cb08c: 3915c11f    	strb	wzr, [x8, #0x570]
+1000cb090: 910043ff    	add	sp, sp, #0x10
+1000cb094: d65f03c0    	ret
+
+00000001000cb098 <lifecycle::recovery_control::reject_changed_completion_caps>:
+1000cb098: d10043ff    	sub	sp, sp, #0x10
+1000cb09c: aa0003e9    	mov	x9, x0
+1000cb0a0: f90007e9    	str	x9, [sp, #0x8]
+1000cb0a4: f9000100    	str	x0, [x8]
+1000cb0a8: 3dc00020    	ldr	q0, [x1]
+1000cb0ac: 3c808100    	stur	q0, [x8, #0x8]
+1000cb0b0: 3917a11f    	strb	wzr, [x8, #0x5e8]
+1000cb0b4: 910043ff    	add	sp, sp, #0x10
+1000cb0b8: d65f03c0    	ret
+
+00000001000cb0bc <lifecycle::recovery_control::request>:
+1000cb0bc: a9be6ffc    	stp	x28, x27, [sp, #-0x20]!
+1000cb0c0: a9017bfd    	stp	x29, x30, [sp, #0x10]
+1000cb0c4: 910043fd    	add	x29, sp, #0x10
+1000cb0c8: d11343ff    	sub	sp, sp, #0x4d0
+1000cb0cc: f90003ff    	str	xzr, [sp]
+1000cb0d0: 9107c3e9    	add	x9, sp, #0x1f0
+1000cb0d4: f9001be9    	str	x9, [sp, #0x30]
+1000cb0d8: f9001fe8    	str	x8, [sp, #0x38]
+1000cb0dc: f90023e0    	str	x0, [sp, #0x40]
+1000cb0e0: f81983a0    	stur	x0, [x29, #-0x68]
+1000cb0e4: 381973bf    	sturb	wzr, [x29, #-0x69]
+1000cb0e8: 381963bf    	sturb	wzr, [x29, #-0x6a]
+1000cb0ec: 381953bf    	sturb	wzr, [x29, #-0x6b]
+1000cb0f0: 910c6000    	add	x0, x0, #0x318
+1000cb0f4: 900115e1    	adrp	x1, 0x102387000 <dyld_stub_binder+0x102387000>
+1000cb0f8: 91048021    	add	x1, x1, #0x120
+1000cb0fc: d002e542    	adrp	x2, 0x105d75000 <dyld_stub_binder+0x105d75000>

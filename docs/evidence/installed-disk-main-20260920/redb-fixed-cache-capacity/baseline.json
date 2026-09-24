@@ -1,0 +1,30 @@
+[
+  {
+    "path": "vendor/redb-4.2.0/src/error.rs",
+    "before_sha256": "cced646dec3856bd7abe427a04eb328303a526b8a8335ab96f375611ad347686"
+  },
+  {
+    "path": "vendor/redb-4.2.0/src/admission.rs",
+    "before_sha256": "aceee2036eb30fce2ade997106f2b61e28f04bf2d4616180ef9cb9388cfc0817"
+  },
+  {
+    "path": "vendor/redb-4.2.0/src/transactions.rs",
+    "before_sha256": "d8b20ab61cd6864d7704312c868d66e729a4bab6f54a55993cd9257850a8b8ff"
+  },
+  {
+    "path": "vendor/redb-4.2.0/src/retained_transaction.rs",
+    "before_sha256": "98efcb4039728e7cc18178e1b9c000f411555dc836dfafec29b9645732880315"
+  },
+  {
+    "path": "vendor/redb-4.2.0/src/tree_store/page_store/lru_cache.rs",
+    "before_sha256": "3dad9116b06284f993544620885cc57ef7b382f0fc77152eb88e363e68450189"
+  },
+  {
+    "path": "vendor/redb-4.2.0/src/tree_store/page_store/cached_file.rs",
+    "before_sha256": "18b42bf9c2d434f8d205d2088dc352af2cd8a40e3e0ddc0edfeff4390f349b72"
+  },
+  {
+    "path": "vendor/redb-4.2.0/src/tree_store/page_store/page_manager.rs",
+    "before_sha256": "18b9ce3ad0f872557950838d11f92c408d1b984902add06b5f154e2c7fb9696b"
+  }
+]

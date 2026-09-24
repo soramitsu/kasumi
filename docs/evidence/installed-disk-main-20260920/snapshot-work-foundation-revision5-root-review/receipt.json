@@ -1,0 +1,10 @@
+{
+  "repository": "/Users/mtakemiya/dev/kasumi",
+  "branch": "master",
+  "patch_sha256": "6cc0b9cc8b81234eb682837eee2ac6a7cb4c88c7f05a104fdd1fbc2258a742a0",
+  "review_sha256": "379349366e5264ee29a512e89bf90bca97dc3f3041c7aa1f38b4ebdae9cdf566",
+  "static_only": true,
+  "actual_source_modified": false,
+  "cargo_executed": false,
+  "blocking_findings": []
+}

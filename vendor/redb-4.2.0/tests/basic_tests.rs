@@ -3698,6 +3698,10 @@ fn multi_table_commit_writes_are_deterministic() {
             });
             self.inner.write(offset, data)
         }
+
+        fn close(&self) -> redb::BackendCloseOutcome {
+            self.inner.close()
+        }
     }
 
     // A history rich enough to exercise order-sensitive allocation. Every branch depends only

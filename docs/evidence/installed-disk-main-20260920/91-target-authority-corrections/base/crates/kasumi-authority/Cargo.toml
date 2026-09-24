@@ -1,0 +1,32 @@
+[package]
+name = "kasumi-authority"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Replicated serving authority and lifecycle maintenance for Kasumi."
+
+[dependencies]
+async-trait.workspace = true
+anyhow.workspace = true
+kasumi-clock.workspace = true
+kasumi-client.workspace = true
+kasumi-types.workspace = true
+kasumi-serving.workspace = true
+kasumi-store.workspace = true
+kasumi-raft.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+kasumi-raft = { workspace = true, features = ["test-utils"] }
+kasumi-engine = { workspace = true, features = ["test-utils"] }
+ring = "0.17"
+kasumi-serving = { workspace = true, features = ["test-utils"] }
+tempfile.workspace = true
+kasumi-store = { workspace = true, features = ["test-utils"] }

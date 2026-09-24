@@ -1,0 +1,32 @@
+{
+  "scope": "Both original129 uncertain-activation cases after explicit stale-route Arc retirement; original workload/assertions/deadlines, no final acceptance",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kasumi-engine",
+    "--all-features",
+    "--test",
+    "lifecycle",
+    "recovery_control::recovery_uncertain_activation_",
+    "--",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "600c0ca2b2c4c22b89b44ccd932eca02272c70f1",
+  "process_group": 70512,
+  "exit_code": 0,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 112.4339349269867,
+  "inventoried_source_unchanged": true,
+  "binary_path": "/Users/mtakemiya/dev/kasumi/target/debug/deps/lifecycle-377b80b89ca111b0",
+  "expected_binary_sha256": "4ad75c3d3586d0464e9326ff32b9f38aae1c84a991b16a52087ef80f02d498de",
+  "binary_sha256_before": "4ad75c3d3586d0464e9326ff32b9f38aae1c84a991b16a52087ef80f02d498de",
+  "binary_sha256_after": "4ad75c3d3586d0464e9326ff32b9f38aae1c84a991b16a52087ef80f02d498de",
+  "binary_unchanged": true
+}

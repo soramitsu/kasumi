@@ -1,0 +1,63 @@
+[
+  {
+    "name": "workspace-clippy",
+    "pid": 78251,
+    "pgid": 78251,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "clippy",
+      "--offline",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "--message-format=json",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-01/workspace-clippy.log",
+    "cargo_target_dir": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-01/cargo-target",
+    "cohort_bound_seconds": 1200,
+    "remaining_bound_seconds": 1199.997877625,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 209.79013645799998,
+    "log_sha256": "277c0458326470056981be7345830a950c9e386daad143e756ab8ef24b36586f",
+    "artifact_count": 602,
+    "diagnostic_count": 3
+  },
+  {
+    "name": "workspace-check",
+    "pid": 80994,
+    "pgid": 80994,
+    "command": [
+      "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+      "check",
+      "--offline",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "--message-format=json"
+    ],
+    "cwd": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/assembly",
+    "log": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-01/workspace-check.log",
+    "cargo_target_dir": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/storage-and-namespace-integration-revision3/native-01/cargo-target",
+    "cohort_bound_seconds": 1200,
+    "remaining_bound_seconds": 990.205915583,
+    "exit_code": 0,
+    "timeout": false,
+    "signals": [],
+    "drained": true,
+    "remaining_processes": [],
+    "elapsed_seconds": 87.84889366699997,
+    "log_sha256": "534d3cc456fdddc7623821c4f57d071a64bf7c9df163e1c1ddb810d35740bb95",
+    "artifact_count": 602,
+    "diagnostic_count": 3
+  }
+]

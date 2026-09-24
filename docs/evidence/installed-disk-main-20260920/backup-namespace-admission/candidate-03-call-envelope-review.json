@@ -1,0 +1,9 @@
+{
+  "candidate_manifest_sha256": "16b112ad641fd9dadaeac0274418d5d319400a972fda8123548ba331ed39de66",
+  "status": "known whole-call admission limitation; source remains frozen for scoped native tests",
+  "reviewer": "root",
+  "finding": "put currently allocates the unused slot.relative result and claim_path before the physical claim; claim_path retires after claim lane credit. Concurrent valid callers may allocate those paths before locking State, so one-plan workspace does not prove all caller path peaks. Existing async session_put unconditionally spawn_blocking after only a ciphertext length check; no admitted caller count was established by this package.",
+  "scope": "No complete worker/ciphertext/stack/path/RSS fit or all-operation-resource retirement proof is claimed. Core claim still prevents terminal classification/publication race.",
+  "proposed_distinct_successor": "Derive claim from already-retained DirectoryOwner binding plus stack UUID encoding under State; validate typed UUIDs without allocating slot.relative; allocate owned paths only after claim witness. Keep preexisting async worker/ciphertext/result/stack admission explicit.",
+  "candidate_edited": false
+}

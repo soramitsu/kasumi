@@ -163,6 +163,7 @@ impl RetiredCustody {
         audit: Arc<SecurityAudit>,
     ) -> anyhow::Result<Arc<Self>> {
         audit.require_admission(&admission)?;
+        admission.memory().require_store_memory(custody.store())?;
         let group = CustodyRaftGroup::open(
             node_id,
             group,
