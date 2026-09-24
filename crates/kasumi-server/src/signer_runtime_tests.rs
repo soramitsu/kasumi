@@ -67,7 +67,9 @@ async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open(
     let expected =
         BackgroundWorkBudget::required_bytes(fixture.input.verifier.max_background_workers, 1)
             .unwrap();
-    assert_eq!(admission.snapshot().reserved_bytes, baseline + expected);
+    // The opened native KV store also retains a charged resident index.
+    let opened_reserved = admission.snapshot().reserved_bytes;
+    assert!(opened_reserved >= baseline + expected);
     assert_eq!(admission.snapshot().inflight_operations, 0);
     // Installed metadata must leave the sole operation slot usable.
     let request = admission.reserve(1, None).unwrap();

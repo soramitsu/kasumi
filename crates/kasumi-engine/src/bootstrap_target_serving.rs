@@ -141,12 +141,7 @@ pub async fn open_serving_target(
                             .bootstrap_sha256,
                 "existing physical bootstrap differs from committed target"
             );
-            let encoded = material
-                .custody()
-                .store()
-                .get_bounded("engine.deployment", b"mode", 256 << 10)?
-                .context("target deployment absent")?;
-            let bootstrap = decode_current_target_deployment(&material, &encoded)?;
+            let bootstrap = decode_current_target_deployment(&material)?;
             anyhow::ensure!(
                 bootstrap.incarnation == proof.target_incarnation().to_string()
                     && bootstrap.voters.len() == expected.origin.input.voters.len()

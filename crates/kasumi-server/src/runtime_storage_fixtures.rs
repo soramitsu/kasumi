@@ -3,6 +3,7 @@ use crate::{runtime::RuntimeConfig, runtime_memory::RuntimeStorage};
 use anyhow::{Context, Result, ensure};
 use kasumi_engine::admission::AdmissionConfig;
 use kasumi_store::{NodeDiskConfig, ScratchDiskConfig};
+use kasumi_types::AuditRetentionBudget;
 use std::{collections::BTreeMap, path::Path};
 
 /// Existing test policies already include bookkeeping. Add only the exact new
@@ -54,9 +55,17 @@ pub(crate) async fn initialize_standalone(
     directory: &Path,
     tenant: &str,
 ) -> Result<(crate::standalone::InitializedInstallation, RuntimeStorage)> {
-    // These fixtures historically used the default total, not the newly
-    // generated production installation's explicit 2 GiB policy.
-    let storage = standalone_storage(directory, AdmissionConfig::default())?;
+    // Keep the former fixture's ordinary budget after node audit maintenance
+    // admits one 128 MiB native KV escrow and protects another 128 MiB for
+    // maintenance writes. Both amounts remain charged or guarded by admission.
+    let mut policy = AdmissionConfig::default();
+    let former_total = policy.resolved_fixture_total_bytes()?;
+    policy.max_inflight_bytes = Some(
+        former_total
+            .checked_add(4 * AuditRetentionBudget::MAINTENANCE_BYTES)
+            .context("standalone fixture admission total overflow")?,
+    );
+    let storage = standalone_storage(directory, policy)?;
     let installed = crate::standalone::initialize_with_storage(
         directory,
         tenant,

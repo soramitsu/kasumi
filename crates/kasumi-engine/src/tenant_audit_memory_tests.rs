@@ -45,6 +45,11 @@ async fn audit_maintenance_rejects_foreign_equal_policy_core_and_keeps_exact_poo
                     &persistent,
                     &scratch,
                 )?)
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        crate::audit_maintenance::NodeAuditMaintenance::WORKSPACE_BYTES,
+                    )
+                })
                 .ok_or_else(|| anyhow::anyhow!("fixture metadata budget overflow"))?,
         ),
         ..Default::default()

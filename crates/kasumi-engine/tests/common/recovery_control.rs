@@ -157,6 +157,103 @@ async fn read_next_recovery_dispatch(
     .expect("original recovery dispatch did not resolve through a current leader")
 }
 
+// A Prepare may commit before its response's read fence closes. Re-read its
+// exact phase first, then replay only its frozen ID, input, sequence, pending
+// predecessor, and original finite credential. The retained phase and current
+// head must still match the original predecessor and have no effect marker.
+// This creates no effect ticket.
+struct ExactRecoveryPhase {
+    operation: Uuid,
+    phase_id: Uuid,
+    sequence: u64,
+    pending: Option<Uuid>,
+    previous_phase: Option<Uuid>,
+    input: RecoveryDispatch,
+}
+
+async fn prepare_exact_recovery_phase(
+    f: &Fixture,
+    context: RequestContext,
+    exact: ExactRecoveryPhase,
+) -> kasumi_engine::VerifiedRecoveryPhase {
+    let ExactRecoveryPhase {
+        operation,
+        phase_id,
+        sequence,
+        pending,
+        previous_phase,
+        input,
+    } = exact;
+    let original_expiry = context.authorization.expires_at_ms().unwrap();
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
+        loop {
+            let current = f.leader().await;
+            let observed = match current
+                .recovery_phase(context.clone(), operation, phase_id)
+                .await
+            {
+                Ok(record) => Some(record),
+                Err(error) if error.code == ErrorCode::NotFound => None,
+                Err(error) if uncertain_control_read(error.code) => continue,
+                Err(error) => panic!("exact prepared phase read rejected: {error:?}"),
+            };
+            let prepared = if let Some(record) = observed {
+                record
+            } else {
+                match current
+                    .prepare_recovery_dispatch(
+                        context.clone(),
+                        operation,
+                        phase_id,
+                        sequence,
+                        pending,
+                        input.clone(),
+                    )
+                    .await
+                {
+                    Ok(record) => record,
+                    Err(error) if uncertain_control_read(error.code) => continue,
+                    Err(error) => panic!("exact prepared phase rejected: {error:?}"),
+                }
+            };
+            assert_eq!(prepared.record().operation_id, operation);
+            assert_eq!(prepared.record().phase_id, phase_id);
+            assert_eq!(prepared.record().sequence, sequence);
+            assert_eq!(prepared.record().input, input);
+            assert_eq!(prepared.record().previous_phase, previous_phase);
+            assert_eq!(prepared.record().principal, context.principal);
+            assert_eq!(
+                prepared.record().original_credential_expires_at_ms,
+                original_expiry,
+                "prepared phase changed its original credential deadline"
+            );
+            assert!(
+                prepared.record().outcome.is_none(),
+                "prepared phase was already resolved before effect admission"
+            );
+            assert!(
+                prepared.record().effect_attempts.is_empty(),
+                "prepared phase already contains an effect marker"
+            );
+            let head = match current.recovery_status(context.clone(), operation).await {
+                Ok(head) => head,
+                Err(error) if uncertain_control_read(error.code) => continue,
+                Err(error) => panic!("exact prepared phase status rejected: {error:?}"),
+            };
+            assert_eq!(head.record().pending_phase, Some(phase_id));
+            assert_eq!(head.record().last_phase, Some(phase_id));
+            assert_eq!(
+                head.record().next_phase_sequence,
+                sequence.checked_add(1).unwrap(),
+                "prepared phase advanced outside its original sequence"
+            );
+            return prepared;
+        }
+    })
+    .await
+    .expect("exact prepared phase did not resolve through a current leader")
+}
+
 // A failed response call is not a negative proof when its current-quorum fence
 // returns Unavailable/UnknownOutcome. Re-read only the exact prepared phase,
 // keep its marker, input, and pending phase fixed, and re-submit only the
@@ -430,17 +527,52 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
     let mut alias = request.clone();
     alias.operation_id = Uuid::new_v4();
     alias.dispatch_configuration_sha256 = "92".repeat(32);
-    assert_eq!(
-        db.recovery_control(
-            f.context("owner"),
-            RecoveryControlCommand::Start(Box::new(alias))
-        )
-        .await
-        .err()
-        .unwrap()
-        .code,
-        ErrorCode::Conflict
-    );
+    let alias_context = f.context("owner");
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
+        loop {
+            let current = f.leader().await;
+            match current
+                .recovery_control(
+                    alias_context.clone(),
+                    RecoveryControlCommand::Start(Box::new(alias.clone())),
+                )
+                .await
+            {
+                Err(error) if uncertain_control_read(error.code) => {}
+                Err(error) => {
+                    assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+                    assert_eq!(
+                        error.message,
+                        "target incarnation is permanently bound to another recovery"
+                    );
+                    break;
+                }
+                Ok(_) => panic!("invalid alias Start was accepted"),
+            }
+        }
+    })
+    .await
+    .expect("invalid alias Start did not receive a definite rejection");
+    let original_after_alias = read_recovery_status(&f, alias_context.clone(), id).await;
+    assert_eq!(original_after_alias.record().request, request);
+    assert_eq!(original_after_alias.record().created_revision, created);
+    drop(original_after_alias);
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
+        loop {
+            let current = f.leader().await;
+            match current
+                .recovery_status(alias_context.clone(), alias.operation_id)
+                .await
+            {
+                Err(error) if uncertain_control_read(error.code) => {}
+                Err(error) if error.code == ErrorCode::NotFound => break,
+                Err(error) => panic!("invalid alias status read rejected: {error:?}"),
+                Ok(_) => panic!("invalid alias Start was retained"),
+            }
+        }
+    })
+    .await
+    .expect("invalid alias absence did not resolve through a current leader");
     let phase_id = Uuid::new_v4();
     // The earlier control calls may outlive this node's leadership. Keep the
     // original finite observation context while selecting the current route.
@@ -572,6 +704,10 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
     .await;
     assert_eq!(materialize.record().phase, RecoveryPhase::Materialize);
     let sequence = materialize.record().next_phase_sequence;
+    let original_pending = materialize.record().pending_phase;
+    let previous_phase = materialize.record().last_phase;
+    assert_eq!(original_pending, None);
+    assert_eq!(previous_phase, Some(phase_id));
     drop(materialize);
     let intent_phase = Uuid::new_v4();
     let input = read_next_recovery_dispatch(&f, f.context("owner"), id, intent_phase).await;
@@ -579,26 +715,45 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
         panic!("materialization Control intent required")
     };
     let invocation = f.context("owner");
-    db.prepare_recovery_dispatch(
+    prepare_exact_recovery_phase(
+        &f,
         invocation.clone(),
-        id,
-        intent_phase,
-        sequence,
-        None,
-        input.clone(),
+        ExactRecoveryPhase {
+            operation: id,
+            phase_id: intent_phase,
+            sequence,
+            pending: original_pending,
+            previous_phase,
+            input: input.clone(),
+        },
     )
-    .await
-    .unwrap();
+    .await;
     consume_fixture_effect(&f, id, intent_phase, RecoveryEffect::ControlIntent).await;
-    db.lifecycle_control(
-        invocation,
-        LifecycleControlCommand::CommitIntent(commit.clone()),
-    )
-    .await
-    .unwrap();
+    // The ticket was consumed once. Select the current leader for this single
+    // Control effect call; never resubmit it after an uncertain outcome.
+    let effect_db = f.leader().await;
+    effect_db
+        .lifecycle_control(
+            invocation,
+            LifecycleControlCommand::CommitIntent(commit.clone()),
+        )
+        .await
+        .unwrap();
+    let retained_intent = effect_db
+        .engine()
+        .generation()
+        .unwrap()
+        .state
+        .lifecycle_control
+        .as_ref()
+        .and_then(|control| control.intents.get(&intent_phase))
+        .cloned()
+        .expect("the one-shot Control effect did not retain its exact intent");
+    assert_eq!(&retained_intent.request, commit.as_ref());
     // Crash after actual Control consensus accepts the phase, before the
     // coordinator receives or records that outcome.
-    snapshot(&db).await;
+    snapshot(&effect_db).await;
+    drop(effect_db);
     drop(db);
     f.close().await;
     f.open(false).await;
@@ -628,6 +783,9 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
     for node_id in 1..=3 {
         let status = read_recovery_status(&f, f.context("owner"), id).await;
         let sequence = status.record().next_phase_sequence;
+        let pending = status.record().pending_phase;
+        let previous_phase = status.record().last_phase;
+        assert_eq!(pending, None);
         drop(status);
         let phase_id = Uuid::new_v4();
         let input = read_next_recovery_dispatch(&f, f.context("owner"), id, phase_id).await;
@@ -640,10 +798,20 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
         };
         assert_eq!(*actual, node_id);
         let target_command_id = target_request.command_id;
-        let record = db
-            .prepare_recovery_dispatch(f.context("owner"), id, phase_id, sequence, None, input)
-            .await
-            .unwrap();
+        let dispatch_context = f.context("owner");
+        let record = prepare_exact_recovery_phase(
+            &f,
+            dispatch_context.clone(),
+            ExactRecoveryPhase {
+                operation: id,
+                phase_id,
+                sequence,
+                pending,
+                previous_phase,
+                input: input.clone(),
+            },
+        )
+        .await;
         let origin = TargetOrigin {
             authority_manifest_sha256: f.installation.partitions[&request.authority_partition]
                 .manifest_sha256
@@ -670,8 +838,31 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
                 signature,
             })),
         };
-        record.admit_dispatch().await.unwrap();
         drop(record);
+        // A verified handle may lose leadership before its dispatch fence.
+        // Re-read only this exact phase under the original finite credential.
+        tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
+            loop {
+                let current = read_recovery_phase(&f, dispatch_context.clone(), id, phase_id).await;
+                assert_eq!(current.record().input, input);
+                assert_eq!(current.record().sequence, sequence);
+                assert_eq!(current.record().previous_phase, previous_phase);
+                assert_eq!(current.record().principal, dispatch_context.principal);
+                assert_eq!(
+                    current.record().original_credential_expires_at_ms,
+                    dispatch_context.authorization.expires_at_ms().unwrap()
+                );
+                assert!(current.record().outcome.is_none());
+                assert!(current.record().effect_attempts.is_empty());
+                match current.admit_dispatch().await {
+                    Ok(()) => return,
+                    Err(error) if uncertain_control_read(error.code) => {}
+                    Err(error) => panic!("original target dispatch admission rejected: {error:?}"),
+                }
+            }
+        })
+        .await
+        .expect("original target dispatch admission did not resolve");
         resolve_phase(
             &f,
             id,
@@ -706,19 +897,48 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
     };
     target.step = TargetRuntimeStep::Initialize(quorum.clone());
     let head = read_recovery_status(&f, f.context("owner"), id).await;
-    assert!(
-        db.prepare_recovery_dispatch(
-            f.context("owner"),
-            id,
-            premature_id,
-            head.record().next_phase_sequence,
-            None,
-            premature
-        )
-        .await
-        .is_err()
-    );
+    let premature_sequence = head.record().next_phase_sequence;
+    assert_eq!(head.record().pending_phase, None);
     drop(head);
+    let reject_context = f.context("owner");
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
+        loop {
+            let current = f.leader().await;
+            match current
+                .recovery_phase(reject_context.clone(), id, premature_id)
+                .await
+            {
+                Ok(_) => panic!("premature initialization phase was retained"),
+                Err(error) if error.code == ErrorCode::NotFound => {}
+                Err(error) if uncertain_control_read(error.code) => continue,
+                Err(error) => panic!("premature phase read rejected: {error:?}"),
+            }
+            match current
+                .prepare_recovery_dispatch(
+                    reject_context.clone(),
+                    id,
+                    premature_id,
+                    premature_sequence,
+                    None,
+                    premature.clone(),
+                )
+                .await
+            {
+                Err(error)
+                    if error.code == ErrorCode::Conflict
+                        && error.message
+                            == "initialization requires every target started under this exact phase" =>
+                {
+                    return;
+                }
+                Err(error) if uncertain_control_read(error.code) => {}
+                Err(error) => panic!("premature initialization rejected unexpectedly: {error:?}"),
+                Ok(_) => panic!("premature initialization was accepted"),
+            }
+        }
+    })
+    .await
+    .expect("premature initialization did not receive a definite rejection");
 
     for node_id in 1..=3 {
         let (phase_id, input) = prepare_next(&f, &db, id).await;
@@ -1268,10 +1488,7 @@ async fn complete_recovery(
             activated.then_some(activation_phase)
         );
         drop(resolved);
-        let old = db
-            .recovery_phase(f.context("owner"), id, activation_phase)
-            .await
-            .unwrap();
+        let old = read_recovery_phase(&f, f.context("owner"), id, activation_phase).await;
         assert!(matches!(
             old.record().outcome,
             Some(RecoveryDispatchOutcome::AuthorityResolution(_))
@@ -1326,9 +1543,8 @@ async fn complete_recovery(
                 )
                 .await;
                 assert!(
-                    db.recovery_status(f.context("owner"), id)
+                    read_recovery_status(&f, f.context("owner"), id)
                         .await
-                        .unwrap()
                         .record()
                         .voters
                         .values()
@@ -1357,13 +1573,9 @@ async fn complete_recovery(
             // Both preparations follow actual leadership independently. Read
             // the original unresolved phase through that current leader too;
             // the database retained before them may now be a follower.
-            let phase_context = f.context("owner");
-            let current = f.leader().await;
             assert!(
-                current
-                    .recovery_phase(phase_context, id, ambiguous)
+                read_recovery_phase(&f, f.context("owner"), id, ambiguous)
                     .await
-                    .unwrap()
                     .record()
                     .outcome
                     .is_none()
@@ -1767,12 +1979,23 @@ async fn read_topology(f: &Fixture) -> kasumi_engine::control::VersionedTopology
 }
 async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request: &RecoveryStart) {
     use kasumi_engine::control::{ControlNode, ControlPlane, DeploymentMode, TenantRoute};
-    let plane = ControlPlane::new(db.clone()).unwrap();
-    plane
-        .require_initialized(&f.context("owner"))
-        .await
-        .unwrap();
+    let initialization_context = f.context("owner");
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
+        loop {
+            let plane = ControlPlane::new(f.leader().await).unwrap();
+            match plane.require_initialized(&initialization_context).await {
+                Ok(()) => break,
+                Err(error)
+                    if uncertain_control_read(error.code)
+                        || error.code == ErrorCode::AuditUnavailable => {}
+                Err(error) => panic!("installed Control schema rejected: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("installed Control schema did not resolve through a current leader");
     let installed = read_topology(f).await;
+    let plane = ControlPlane::new(f.leader().await).unwrap();
     let mut topology = installed.topology;
     for (node, identity) in &request.target_nodes {
         topology.nodes.insert(
@@ -2874,34 +3097,110 @@ async fn commit_next_control_for(
     let RecoveryDispatch::ControlIntent(command) = input else {
         panic!("Control phase required")
     };
-    // Keep the same prepared command and dispatch limit through leadership
-    // changes; this selects a current route before the single phase read.
+    assert_eq!(command.command_id, phase_id);
+    let frozen_command = command.clone();
+    // Keep the prepared command and its original finite commitment deadline.
+    // A consumed BeginEffect ticket never authorizes another external commit.
     let phase_context = f.context("owner");
-    let db = f.leader().await;
-    let phase = db
-        .recovery_phase(phase_context, operation, phase_id)
-        .await
-        .unwrap();
+    let (dispatch_limit, frozen_phase) = tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
+        loop {
+            let phase = read_recovery_phase(f, phase_context.clone(), operation, phase_id).await;
+            match phase.dispatch_limit().await {
+                Ok(limit) => break (limit, phase.record().clone()),
+                Err(error) if uncertain_control_read(error.code) => {}
+                Err(error) => panic!("original Control phase limit rejected: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("original Control phase limit did not resolve");
+    assert_eq!(
+        frozen_phase.input,
+        RecoveryDispatch::ControlIntent(frozen_command.clone())
+    );
+    assert!(frozen_phase.outcome.is_none());
     let mut context = f.context_for("owner", duration);
     context.authorization = context
         .authorization
-        .with_expiry_limit(phase.dispatch_limit().await.unwrap())
+        .with_expiry_limit(dispatch_limit)
         .unwrap();
-    drop(phase);
-    consume_fixture_effect(f, operation, phase_id, RecoveryEffect::ControlIntent).await;
-    db.lifecycle_control(context, LifecycleControlCommand::CommitIntent(command))
+    let original_principal = context.principal.clone();
+    let original_expiry = context.authorization.expires_at_ms().unwrap();
+    let attempt_id =
+        consume_fixture_effect(f, operation, phase_id, RecoveryEffect::ControlIntent).await;
+    let db = f.leader().await;
+    match db
+        .lifecycle_control(context, LifecycleControlCommand::CommitIntent(command))
         .await
-        .unwrap();
-    let intent = db
-        .engine()
-        .generation()
-        .unwrap()
-        .state
-        .lifecycle_control
-        .as_ref()
-        .unwrap()
-        .intents[&phase_id]
-        .clone();
+    {
+        Ok(_) => {}
+        Err(error) if uncertain_control_read(error.code) => {}
+        Err(error) => panic!("original Control intent commit rejected: {error:?}"),
+    }
+    let marked = read_recovery_phase(f, f.context("owner"), operation, phase_id).await;
+    assert_eq!(marked.record().input, frozen_phase.input);
+    assert_eq!(
+        marked.record().original_credential_expires_at_ms,
+        frozen_phase.original_credential_expires_at_ms
+    );
+    assert!(marked.record().outcome.is_none());
+    let marker = marked
+        .record()
+        .effect_attempts
+        .get(&RecoveryEffect::ControlIntent)
+        .expect("consumed Control effect marker absent");
+    assert_eq!(marker.attempt_id, attempt_id);
+    assert_eq!(marker.input_sha256, frozen_phase.input_sha256);
+    drop(marked);
+    // The one-shot write can commit before its response fence loses leadership.
+    // Observe only that exact command through a current quorum. Absence remains
+    // unresolved and times out; local replica state is not positive evidence.
+    let status_context = f.context("owner");
+    let status_request = ReadLifecycleStatus {
+        command_id: phase_id,
+        expected_incarnation: f.installation.root.control_incarnation,
+    };
+    let intent = tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
+        loop {
+            let current = f.leader().await;
+            match current
+                .read_lifecycle_status(&status_context, status_request.clone())
+                .await
+            {
+                Ok(status) => {
+                    assert_eq!(status.request.command_id, phase_id);
+                    assert_eq!(
+                        status.request.expected_incarnation,
+                        f.installation.root.control_incarnation
+                    );
+                    match status.command {
+                        Some(LifecycleCommandStatus::Intent(intent)) => {
+                            assert_eq!(intent.request, *frozen_command);
+                            assert_eq!(
+                                intent.request_sha256,
+                                staged_digest(frozen_command.as_ref()).unwrap().0
+                            );
+                            assert_eq!(
+                                intent.control_incarnation,
+                                status_request.expected_incarnation
+                            );
+                            assert_eq!(intent.original_principal, original_principal);
+                            assert_eq!(intent.original_credential_expires_at_ms, original_expiry);
+                            break *intent;
+                        }
+                        None => tokio::task::yield_now().await,
+                        Some(other) => panic!("exact Control command changed kind: {other:?}"),
+                    }
+                }
+                Err(error)
+                    if uncertain_control_read(error.code)
+                        || error.code == ErrorCode::AuditUnavailable => {}
+                Err(error) => panic!("exact Control intent status rejected: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("consumed Control intent has no exact quorum-confirmed positive fact");
     resolve_phase(
         f,
         operation,
@@ -2911,7 +3210,6 @@ async fn commit_next_control_for(
     .await;
     intent
 }
-
 async fn resolve_expired_completion(
     f: &Fixture,
     db: &Arc<Database>,

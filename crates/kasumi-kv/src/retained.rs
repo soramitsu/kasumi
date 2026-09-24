@@ -4,8 +4,9 @@
 //! close is never retried merely because a caller asks for another report.
 
 use crate::core::{
-    AdmissionError, BackendCloseEntry, BackendCloseOutcome, BackendNativeDisposition, CoreError,
-    OwnerFailed, ResidentLease, StorageAdmission, StorageBackend,
+    AdmissionError, AdmittedValue, BackendCloseEntry, BackendCloseOutcome,
+    BackendNativeDisposition, CoreError, OwnerFailed, ResidentLease, StorageAdmission,
+    StorageBackend,
 };
 use crate::tables::{
     Builder, CommitError, Database, DatabaseError, ReadTransaction, StorageError, TableDefinition,
@@ -232,8 +233,8 @@ impl fmt::Display for BoundedReadError {
 impl std::error::Error for BoundedReadError {}
 
 pub struct BoundedReadRow {
-    pub key: Vec<u8>,
-    pub value: Vec<u8>,
+    pub key: AdmittedValue,
+    pub value: AdmittedValue,
 }
 
 #[must_use]
@@ -313,14 +314,13 @@ impl RetainedReadTransaction {
         Ok(())
     }
 
-    /// The embedding owner must reserve output memory before this call and
-    /// keep that reservation with the returned vector.
+    /// The returned value retains its resident admission until it is dropped.
     pub fn get_bytes(
         &self,
         definition: TableDefinition<&[u8], &[u8]>,
         key: &[u8],
         max_value_bytes: usize,
-    ) -> Result<Option<Vec<u8>>, BoundedReadError> {
+    ) -> Result<Option<AdmittedValue>, BoundedReadError> {
         let table = Self::table_name(definition)?;
         if key.len() > 8192 || max_value_bytes > 64 << 20 {
             return Err(BoundedReadError::BoundExceeded);
@@ -333,7 +333,7 @@ impl RetainedReadTransaction {
             })
     }
 
-    /// The embedding owner must keep a reservation for both returned vectors.
+    /// Both returned byte strings retain their resident admissions.
     pub fn next_bytes(
         &self,
         definition: TableDefinition<&[u8], &[u8]>,
@@ -842,8 +842,11 @@ impl RetainedDatabaseOpening {
         let mut opened = None;
         self.opening.run(|| {
             let database = match mode {
-                DatabaseOpenMode::Create => builder.create_strict_with_backend(backend),
-                DatabaseOpenMode::Existing => builder.open_with_backend(backend),
+                // This owner already holds the exact SharedBackend and records
+                // its one-shot close. The direct Builder path closes failures
+                // itself; doing that here would re-enter the same backend.
+                DatabaseOpenMode::Create => builder.create_strict_with_backend_retained(backend),
+                DatabaseOpenMode::Existing => builder.open_with_backend_retained(backend),
             }?;
             opened = Some(database);
             Ok(())

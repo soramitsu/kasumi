@@ -15,11 +15,11 @@ impl Installation {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let (persistent_config, scratch_config) =
             crate::test_utils::fixture_disk_configs(directory.path())?;
-        // The original fixed 2 GiB source resolves Default to a 256 MiB total.
-        // Add only the new physical metadata; do not resolve against host RAM.
+        // Keep the 128 MiB ordinary margin available alongside the installed
+        // security audit and maintenance owners. Add the physical metadata.
         let config = crate::admission::AdmissionConfig {
             max_inflight_bytes: Some(
-                (256_u64 << 20)
+                (384_u64 << 20)
                     .checked_add(crate::test_utils::isolated_disk_metadata_bytes(
                         &persistent_config,
                         &scratch_config,

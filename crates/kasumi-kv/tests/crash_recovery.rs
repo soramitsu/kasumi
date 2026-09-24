@@ -1,7 +1,7 @@
 use kasumi_kv::{
     AdmissionError, BackendCloseOutcome, BackendNativeDisposition, Core, CoreError, Database,
     Operation, OwnerFailed, ResidentLease, StorageAdmission, StorageBackend, StorageError,
-    TransactionError,
+    TableDefinition, TransactionError,
 };
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -201,7 +201,7 @@ struct CheckpointAdmission {
 
 struct SlotAdmission {
     live: Arc<AtomicUsize>,
-    limit: usize,
+    limit: AtomicUsize,
 }
 
 struct SlotLease(Arc<AtomicUsize>);
@@ -216,7 +216,7 @@ impl SlotAdmission {
     fn new(limit: usize) -> Arc<Self> {
         Arc::new(Self {
             live: Arc::new(AtomicUsize::new(0)),
-            limit,
+            limit: AtomicUsize::new(limit),
         })
     }
 }
@@ -229,7 +229,7 @@ impl StorageAdmission for SlotAdmission {
     fn reserve_workspace(&self, _bytes: u64) -> Result<Box<dyn ResidentLease>, AdmissionError> {
         let mut observed = self.live.load(Ordering::Acquire);
         loop {
-            if observed >= self.limit {
+            if observed >= self.limit.load(Ordering::Acquire) {
                 return Err(AdmissionError::CapacityDenied);
             }
             match self.live.compare_exchange(
@@ -394,6 +394,51 @@ fn closing_wakes_a_queued_writer_even_while_another_writer_is_held() {
         database.close_native().native_disposition(),
         BackendNativeDisposition::Drained
     );
+}
+
+#[test]
+fn retained_raw_read_keeps_its_output_admitted_until_drop() {
+    const ITEMS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("items");
+    let admission = SlotAdmission::new(128);
+    let database = Database::builder(admission.clone())
+        .create_with_backend(CrashBackend::default())
+        .unwrap();
+    let write = database.begin_write().unwrap();
+    write
+        .open_table(ITEMS)
+        .unwrap()
+        .insert(b"key", b"value")
+        .unwrap();
+    write.commit().unwrap();
+
+    let retained = database.retain();
+    let reader = retained.database().unwrap().begin_read_retained().unwrap();
+    let baseline = admission.live.load(Ordering::Acquire);
+    admission.limit.store(baseline + 1, Ordering::Release);
+
+    let first = reader.get_bytes(ITEMS, b"key", 16).unwrap().unwrap();
+    assert_eq!(first.as_bytes(), b"value");
+    assert_eq!(admission.live.load(Ordering::Acquire), baseline + 1);
+    assert!(reader.get_bytes(ITEMS, b"key", 16).is_err());
+    drop(first);
+    assert_eq!(admission.live.load(Ordering::Acquire), baseline);
+    assert_eq!(
+        reader
+            .get_bytes(ITEMS, b"key", 16)
+            .unwrap()
+            .unwrap()
+            .as_bytes(),
+        b"value"
+    );
+
+    admission.limit.store(baseline + 2, Ordering::Release);
+    let row = reader.next_bytes(ITEMS, b"", None, 16).unwrap().unwrap();
+    assert_eq!(row.key.as_bytes(), b"key");
+    assert_eq!(row.value.as_bytes(), b"value");
+    assert_eq!(admission.live.load(Ordering::Acquire), baseline + 2);
+    assert!(reader.next_bytes(ITEMS, b"", None, 16).is_err());
+    drop(row);
+    assert_eq!(admission.live.load(Ordering::Acquire), baseline);
 }
 
 #[test]

@@ -576,3 +576,170 @@ async fn initial_state_rejects_delete_only_publications_without_consuming_initia
     stores.shutdown().await.unwrap();
     Ok(())
 }
+
+#[tokio::test]
+async fn paired_deployment_read_checks_domains_and_charge() -> Result<()> {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir()?;
+    let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let directory = crate::test_utils::private_tempdir()?;
+    let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
+        directory.path().join("deployment-pair.kv"),
+        crate::test_utils::NODE_STORE_ID,
+        memory.clone(),
+        scratch,
+    )?)
+    .await?;
+    assert!(stores.deployment_binding()?.is_none());
+
+    // The pair must admit a deployment value larger than a single read page
+    // while respecting the exact current paired writer limit.
+    let binding = vec![b'x'; (1 << 20) + 1];
+    assert!(binding.len() <= MAX_DEPLOYMENT_BINDING_BYTES);
+    let put = WriteOp::put(DEPLOYMENT_NS, DEPLOYMENT_KEY, binding.clone());
+    let writes = [put];
+    stores.write_batch(&writes, &writes)?;
+    drop(stores.deployment_binding()?.expect("paired binding"));
+    let before = memory.snapshot().used_bytes;
+    let admitted = stores.deployment_binding()?.expect("paired binding");
+    assert_eq!(admitted.as_bytes(), binding);
+    assert!(memory.snapshot().used_bytes > before);
+    drop(admitted);
+    assert_eq!(memory.snapshot().used_bytes, before);
+
+    stores.write_batch(
+        &[WriteOp::put(DEPLOYMENT_NS, DEPLOYMENT_KEY, b"different")],
+        &[],
+    )?;
+    assert_eq!(
+        stores
+            .deployment_binding()
+            .err()
+            .expect("divergent pair must fail")
+            .to_string(),
+        "deployment binding differs across domains"
+    );
+    stores.write_batch(
+        &[WriteOp::put(DEPLOYMENT_NS, DEPLOYMENT_KEY, binding.clone())],
+        &[WriteOp::delete(DEPLOYMENT_NS, DEPLOYMENT_KEY)],
+    )?;
+    assert_eq!(
+        stores
+            .deployment_binding()
+            .err()
+            .expect("one-domain binding must fail")
+            .to_string(),
+        "required deployment binding is absent from one domain"
+    );
+    stores.write_batch(
+        &[],
+        &[WriteOp::put(DEPLOYMENT_NS, DEPLOYMENT_KEY, binding.clone())],
+    )?;
+    assert_eq!(
+        stores
+            .deployment_binding()?
+            .expect("restored pair")
+            .as_bytes(),
+        binding
+    );
+    stores.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn paired_deployment_read_accepts_exact_current_writer_boundary() -> Result<()> {
+    let memory = crate::test_utils::TestDiskMemory::new(1 << 30, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir()?;
+    let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let directory = crate::test_utils::private_tempdir()?;
+    let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
+        directory.path().join("deployment-boundary.kv"),
+        crate::test_utils::NODE_STORE_ID,
+        memory,
+        scratch,
+    )?)
+    .await?;
+    let exact = vec![b'x'; MAX_DEPLOYMENT_BINDING_BYTES];
+    let put = WriteOp::put(DEPLOYMENT_NS, DEPLOYMENT_KEY, exact);
+    let writes = [put];
+    stores.write_batch(&writes, &writes)?;
+    let admitted = stores.deployment_binding()?.expect("exact writer boundary");
+    assert_eq!(admitted.as_bytes().len(), MAX_DEPLOYMENT_BINDING_BYTES);
+    assert!(admitted.as_bytes().iter().all(|byte| *byte == b'x'));
+    drop(admitted);
+
+    let over = vec![b'y'; MAX_DEPLOYMENT_BINDING_BYTES + 1];
+    let put = WriteOp::put(DEPLOYMENT_NS, DEPLOYMENT_KEY, over);
+    let writes = [put];
+    assert_eq!(
+        stores
+            .write_batch(&writes, &writes)
+            .expect_err("one byte above paired writer boundary")
+            .to_string(),
+        "batch exceeds 64 MiB"
+    );
+    let retained = stores.deployment_binding()?.expect("original exact pair");
+    assert_eq!(retained.as_bytes().len(), MAX_DEPLOYMENT_BINDING_BYTES);
+    assert!(retained.as_bytes().iter().all(|byte| *byte == b'x'));
+    drop(retained);
+    stores.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn paired_deployment_read_rejects_oversized_envelope_before_key_id_parse() -> Result<()> {
+    let memory = crate::test_utils::TestDiskMemory::new(1 << 30, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir()?;
+    let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let directory = crate::test_utils::private_tempdir()?;
+    let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
+        directory.path().join("deployment-oversized-envelope.kv"),
+        crate::test_utils::NODE_STORE_ID,
+        memory.clone(),
+        scratch,
+    )?)
+    .await?;
+    let application = stores.application();
+    let disk_key = {
+        let state = application.state.read();
+        record_key(
+            application.tenant(),
+            DEPLOYMENT_NS,
+            DEPLOYMENT_KEY,
+            state.keys.get(INDEX_KEY).context("index key missing")?,
+        )
+    };
+    // The four-byte prefix makes the entire remaining envelope a malformed,
+    // non-UTF-8 key ID. The whole-envelope bound must win before that parse.
+    let mut oversized = vec![0xff; MAX_DEPLOYMENT_ENVELOPE_BYTES + 1];
+    let id_len = u32::try_from(oversized.len() - 4)?;
+    oversized[..4].copy_from_slice(&id_len.to_be_bytes());
+    let tx = application.node.db.begin_write()?;
+    tx.open_table(RECORDS)?
+        .insert(disk_key.as_slice(), oversized.as_slice())?;
+    tx.commit()?;
+    let before = memory.snapshot().used_bytes;
+    assert_eq!(
+        stores
+            .deployment_binding()
+            .err()
+            .expect("oversized encrypted envelope")
+            .to_string(),
+        "encrypted deployment envelope exceeds read budget"
+    );
+    assert_eq!(memory.snapshot().used_bytes, before);
+    let tx = application.node.db.begin_read()?;
+    let table = tx.open_table(RECORDS)?;
+    assert_eq!(
+        table
+            .get(disk_key.as_slice())?
+            .expect("original malformed row")
+            .value(),
+        oversized.as_slice(),
+        "failed read must not repair the encrypted row"
+    );
+    drop(table);
+    drop(tx);
+    stores.shutdown().await?;
+    Ok(())
+}

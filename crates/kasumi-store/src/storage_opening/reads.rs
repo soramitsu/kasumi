@@ -44,27 +44,27 @@ impl std::error::Error for NodeReadAccessError {
 
 /// The lease stays with the copy while callers decode or hand off the bytes.
 pub struct AdmittedReadBytes {
-    bytes: Vec<u8>,
+    bytes: kasumi_kv::AdmittedValue,
     _charge: crate::DiskMemoryLease,
 }
 impl AdmittedReadBytes {
     pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes
+        self.bytes.as_bytes()
     }
 }
 
 /// Both owned vectors share the pre-effect reservation for this one row.
 pub struct OwnedEncryptedRow {
-    key: Vec<u8>,
-    value: Vec<u8>,
+    key: kasumi_kv::AdmittedValue,
+    value: kasumi_kv::AdmittedValue,
     _charge: crate::DiskMemoryLease,
 }
 impl OwnedEncryptedRow {
     pub fn key(&self) -> &[u8] {
-        &self.key
+        self.key.as_bytes()
     }
     pub fn value(&self) -> &[u8] {
-        &self.value
+        self.value.as_bytes()
     }
 }
 
@@ -286,6 +286,8 @@ pub struct RegisteredNodeRead {
 }
 impl RegisteredNodeOpening {
     /// Register the request before beginning the actual read transaction.
+    /// After registration, concurrent close yields the exact cancelled reader
+    /// so the caller retains its ID, report, and retirement responsibility.
     pub fn queue_read(&self) -> io::Result<RegisteredNodeRead> {
         let owner = self.registration.owner();
         if owner.stopped.load(Ordering::Acquire) {
@@ -323,8 +325,6 @@ impl RegisteredNodeOpening {
             || owner.state.lock().phase != NodeOpeningPhase::Open
         {
             registration.owner().state.lock().phase = NodeReadPhase::Cancelled;
-            let _ = registration.retire();
-            return Err(io::ErrorKind::BrokenPipe.into());
         }
         let lease = ReadFacadeLease {
             registration: registration.clone(),

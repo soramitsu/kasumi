@@ -509,6 +509,13 @@ impl ControlRecoveryCoordinator {
                             .await?;
                     }
                     Err(error) => {
+                        #[cfg(test)]
+                        eprintln!(
+                            "recovery dispatch failed: phase={} sequence={} input={:?} error={error:#}",
+                            id,
+                            prepared.record().sequence,
+                            prepared.record().input
+                        );
                         // Only an explicitly supported expired target phase can
                         // produce a fresh committed admission. The prior entry
                         // stays unresolved in history; its deadline never moves.

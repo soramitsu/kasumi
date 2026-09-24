@@ -1,8 +1,8 @@
 //! Fixed, admitted catalog input for a future retained write request.
 //!
 //! This type performs no database operation. It only establishes a finite,
-//! provider-owned byte buffer before materializing serialized output. Redb transaction, cache,
-//! diagnostics, and terminal custody need their own separate proofs.
+//! provider-owned byte buffer before materializing serialized output. Native KV
+//! transactions, diagnostics, and terminal custody have separate owners.
 use crate::{
     DiskMemoryLease, KeyCatalog, MAX_KEY_CATALOG_BYTES, NodeDiskMemoryAdmission, disk_memory,
     tenant_hash,

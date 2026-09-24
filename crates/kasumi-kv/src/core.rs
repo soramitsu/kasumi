@@ -8,10 +8,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(test)]
+use std::fs::OpenOptions;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::Bound::{Excluded, Included, Unbounded};
-use std::os::fd::IntoRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
@@ -250,6 +253,7 @@ pub enum CoreError {
     InvalidInput(&'static str),
     MissingTable,
     UnknownCommit(io::Error),
+    OpeningFailure(Box<CoreOpenFailure>),
 }
 impl fmt::Display for CoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -262,6 +266,7 @@ impl fmt::Display for CoreError {
             Self::InvalidInput(reason) => write!(f, "invalid storage input: {reason}"),
             Self::MissingTable => f.write_str("table does not exist"),
             Self::UnknownCommit(error) => write!(f, "commit outcome unknown: {error}"),
+            Self::OpeningFailure(failure) => failure.fmt(f),
         }
     }
 }
@@ -269,9 +274,114 @@ impl std::error::Error for CoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) | Self::UnknownCommit(error) => Some(error),
+            Self::OpeningFailure(failure) => Some(failure),
             _ => None,
         }
     }
+}
+
+enum FailedOpenOwner {
+    Backend(Box<dyn StorageBackend>),
+    Installed(Core),
+}
+
+impl FailedOpenOwner {
+    fn close(&self) -> BackendCloseOutcome {
+        match self {
+            Self::Backend(backend) => backend.close(),
+            Self::Installed(core) => core.close(),
+        }
+    }
+}
+
+/// A constructor failure whose close did not prove clean native drain. The
+/// original opening error and first close observation remain available, and a
+/// pre-effect busy close may be retried on this exact owner.
+#[must_use]
+pub struct CoreOpenFailure {
+    original: CoreError,
+    owner: Option<FailedOpenOwner>,
+    close: BackendCloseOutcome,
+}
+
+impl CoreOpenFailure {
+    pub fn original_error(&self) -> &CoreError {
+        &self.original
+    }
+
+    pub fn close_report(&self) -> &BackendCloseOutcome {
+        &self.close
+    }
+
+    pub fn retry_close(&mut self) -> &BackendCloseOutcome {
+        if self.close.entry() == BackendCloseEntry::NotEntered {
+            if let Some(owner) = self.owner.as_ref() {
+                self.close = owner.close();
+                if self.close.native_disposition() == BackendNativeDisposition::Drained {
+                    self.owner.take();
+                }
+            }
+        }
+        &self.close
+    }
+}
+
+impl fmt::Debug for CoreOpenFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CoreOpenFailure")
+            .field("original", &self.original)
+            .field("close", &self.close)
+            .field("owner_retained", &self.owner.is_some())
+            .finish()
+    }
+}
+
+impl fmt::Display for CoreOpenFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "opening failed: {}; native close: ", self.original)?;
+        match self.close.result.as_ref() {
+            Ok(()) => f.write_str("drained"),
+            Err(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for CoreOpenFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.original)
+    }
+}
+
+impl Drop for CoreOpenFailure {
+    fn drop(&mut self) {
+        // A caller who discards the report cannot silently perform an
+        // unobserved native close of an unproved owner.
+        if let Some(owner) = self.owner.take() {
+            std::mem::forget(owner);
+        }
+    }
+}
+
+fn failed_open(owner: FailedOpenOwner, original: CoreError, close_on_failure: bool) -> CoreError {
+    if !close_on_failure {
+        // Used only by the retained opening, which already holds the exact
+        // SharedBackend and records its own terminal close attempt.
+        return original;
+    }
+    let close = owner.close();
+    if close.native_disposition() == BackendNativeDisposition::Drained && close.result.is_ok() {
+        return original;
+    }
+    let owner = if close.native_disposition() == BackendNativeDisposition::Drained {
+        None
+    } else {
+        Some(owner)
+    };
+    CoreError::OpeningFailure(Box::new(CoreOpenFailure {
+        original,
+        owner,
+        close,
+    }))
 }
 impl From<io::Error> for CoreError {
     fn from(error: io::Error) -> Self {
@@ -294,14 +404,116 @@ pub struct FileBackend {
 }
 
 enum FileBackendState {
-    Open(File),
+    Open {
+        file: File,
+        parent: Option<File>,
+        parent_sync_pending: bool,
+    },
+    ParentOnly(File),
     Drained(Option<io::Error>),
     UnknownClose {
-        // The consumed number is diagnostic only. Never rebuild a File or retry it.
-        _descriptor: i32,
+        // Consumed numbers are diagnostic only. Never rebuild a File or retry them.
+        _data_descriptor: Option<i32>,
+        _parent_descriptor: Option<i32>,
         original_error: io::Error,
+        _other_close_error: Option<io::Error>,
         _prior_sync_error: Option<io::Error>,
     },
+}
+
+/// A named-file acquisition failure keeps its already-open parent directory
+/// until the caller observes an explicit one-shot close outcome.
+#[must_use]
+pub struct FileBackendOpenError {
+    original_error: io::Error,
+    parent_owner: Option<FileBackend>,
+    close_report: Option<BackendCloseOutcome>,
+}
+
+impl FileBackendOpenError {
+    fn without_owner(original_error: io::Error) -> Self {
+        Self {
+            original_error,
+            parent_owner: None,
+            close_report: None,
+        }
+    }
+
+    fn with_parent(original_error: io::Error, parent: File) -> Self {
+        let mut failure = Self {
+            original_error,
+            parent_owner: Some(FileBackend {
+                state: Mutex::new(FileBackendState::ParentOnly(parent)),
+            }),
+            close_report: None,
+        };
+        failure.retry_close();
+        failure
+    }
+
+    pub fn original_error(&self) -> &io::Error {
+        &self.original_error
+    }
+
+    pub fn kind(&self) -> io::ErrorKind {
+        self.original_error.kind()
+    }
+
+    pub fn raw_os_error(&self) -> Option<i32> {
+        self.original_error.raw_os_error()
+    }
+
+    pub fn close_report(&self) -> Option<&BackendCloseOutcome> {
+        self.close_report.as_ref()
+    }
+
+    pub fn retry_close(&mut self) -> Option<&BackendCloseOutcome> {
+        if self
+            .close_report
+            .as_ref()
+            .is_none_or(|report| report.entry() == BackendCloseEntry::NotEntered)
+        {
+            if let Some(owner) = self.parent_owner.as_ref() {
+                let outcome = owner.close();
+                if outcome.native_disposition() == BackendNativeDisposition::Drained {
+                    self.parent_owner.take();
+                }
+                self.close_report = Some(outcome);
+            }
+        }
+        self.close_report.as_ref()
+    }
+}
+
+impl fmt::Debug for FileBackendOpenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FileBackendOpenError")
+            .field("original_error", &self.original_error)
+            .field("parent_retained", &self.parent_owner.is_some())
+            .field("close_report", &self.close_report)
+            .finish()
+    }
+}
+
+impl fmt::Display for FileBackendOpenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.original_error.fmt(f)
+    }
+}
+
+impl std::error::Error for FileBackendOpenError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.original_error)
+    }
+}
+
+impl Drop for FileBackendOpenError {
+    fn drop(&mut self) {
+        // Never let an unreported parent descriptor close implicitly.
+        if let Some(owner) = self.parent_owner.take() {
+            std::mem::forget(owner);
+        }
+    }
 }
 
 fn project_file_error(error: &io::Error) -> io::Error {
@@ -315,58 +527,182 @@ std::thread_local! {
     static FILE_CLOSE_FAILURE: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
     static FILE_SYNC_FAILURE: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
     static FILE_CLOSE_ATTEMPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static FILE_PARENT_SYNC_FAILURE: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+    static FILE_PARENT_SYNC_ATTEMPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static FILE_PARENT_CLOSE_FAILURE: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+    static FILE_PARENT_CLOSE_ATTEMPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn parent_directory(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+fn open_in_parent(parent: &File, path: &Path, create: bool) -> io::Result<File> {
+    let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+    let name = std::ffi::CString::new(name.as_bytes()).map_err(|_| io::ErrorKind::InvalidInput)?;
+    let mut flags = libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+    if create {
+        flags |= libc::O_CREAT | libc::O_EXCL;
+    }
+    // SAFETY: name is NUL terminated and parent remains open for the call.
+    let descriptor = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags, 0o600) };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: openat returned a new descriptor owned solely by this File.
+    Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+
+fn sync_parent(parent: &File) -> io::Result<()> {
+    #[cfg(test)]
+    {
+        FILE_PARENT_SYNC_ATTEMPTS.with(|count| count.set(count.get() + 1));
+        if let Some(errno) = FILE_PARENT_SYNC_FAILURE.with(std::cell::Cell::take) {
+            return Err(io::Error::from_raw_os_error(errno));
+        }
+    }
+    parent.sync_all()
+}
+
+fn sync_file_and_parent(
+    file: &File,
+    parent: Option<&File>,
+    parent_sync_pending: &mut bool,
+) -> io::Result<()> {
+    file.sync_data()?;
+    if *parent_sync_pending {
+        let parent = parent.expect("pending named file has a parent descriptor");
+        sync_parent(parent)?;
+        *parent_sync_pending = false;
+    }
+    Ok(())
+}
+
+fn close_file_descriptor(file: File, parent: bool) -> (i32, Option<io::Error>) {
+    let descriptor = file.into_raw_fd();
+    // SAFETY: into_raw_fd consumed the sole File owner. Never reconstruct it.
+    let result = unsafe { libc::close(descriptor) };
+    let error = (result != 0).then(io::Error::last_os_error);
+    #[cfg(test)]
+    let error = if parent {
+        FILE_PARENT_CLOSE_ATTEMPTS.with(|count| count.set(count.get() + 1));
+        error.or_else(|| {
+            FILE_PARENT_CLOSE_FAILURE
+                .with(std::cell::Cell::take)
+                .map(io::Error::from_raw_os_error)
+        })
+    } else {
+        FILE_CLOSE_ATTEMPTS.with(|count| count.set(count.get() + 1));
+        error.or_else(|| {
+            FILE_CLOSE_FAILURE
+                .with(std::cell::Cell::take)
+                .map(io::Error::from_raw_os_error)
+        })
+    };
+    #[cfg(not(test))]
+    let _ = parent;
+    (descriptor, error)
 }
 
 impl FileBackend {
     pub fn from_file(file: File) -> Self {
         Self {
-            state: Mutex::new(FileBackendState::Open(file)),
+            state: Mutex::new(FileBackendState::Open {
+                file,
+                parent: None,
+                parent_sync_pending: false,
+            }),
         }
     }
-    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
-        Ok(Self::from_file(file))
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, FileBackendOpenError> {
+        let path = path.as_ref();
+        let parent =
+            File::open(parent_directory(path)).map_err(FileBackendOpenError::without_owner)?;
+        // Resolve parent durability before acquiring the data descriptor. The
+        // same held directory is synced again after a newly created file's
+        // first durable header, then closed with an observed native result.
+        if let Err(error) = sync_parent(&parent) {
+            return Err(FileBackendOpenError::with_parent(error, parent));
+        }
+        let file = match open_in_parent(&parent, path, true) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                return Self::open_existing_with_parent(path, parent);
+            }
+            Err(error) => return Err(FileBackendOpenError::with_parent(error, parent)),
+        };
+        Ok(Self {
+            state: Mutex::new(FileBackendState::Open {
+                file,
+                parent: Some(parent),
+                parent_sync_pending: true,
+            }),
+        })
     }
-    pub fn open_existing(path: impl AsRef<Path>) -> io::Result<Self> {
-        let file = OpenOptions::new().read(true).write(true).open(path)?;
-        Ok(Self::from_file(file))
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, FileBackendOpenError> {
+        let path = path.as_ref();
+        let parent =
+            File::open(parent_directory(path)).map_err(FileBackendOpenError::without_owner)?;
+        // A prior create may have failed after writing valid headers but before
+        // syncing the name. Reopening cannot turn that uncertainty into success.
+        if let Err(error) = sync_parent(&parent) {
+            return Err(FileBackendOpenError::with_parent(error, parent));
+        }
+        Self::open_existing_with_parent(path, parent)
     }
-    fn with<T>(&self, work: impl FnOnce(&mut File) -> io::Result<T>) -> io::Result<T> {
+    fn open_existing_with_parent(path: &Path, parent: File) -> Result<Self, FileBackendOpenError> {
+        let file = match open_in_parent(&parent, path, false) {
+            Ok(file) => file,
+            Err(error) => return Err(FileBackendOpenError::with_parent(error, parent)),
+        };
+        Ok(Self {
+            state: Mutex::new(FileBackendState::Open {
+                file,
+                parent: Some(parent),
+                parent_sync_pending: false,
+            }),
+        })
+    }
+    fn with<T>(
+        &self,
+        work: impl FnOnce(&mut File, Option<&File>, &mut bool) -> io::Result<T>,
+    ) -> io::Result<T> {
         let mut guard = self.state.lock().map_err(|_| io::ErrorKind::Other)?;
         match &mut *guard {
-            FileBackendState::Open(file) => work(file),
-            FileBackendState::Drained(_) | FileBackendState::UnknownClose { .. } => {
-                Err(io::ErrorKind::BrokenPipe.into())
-            }
+            FileBackendState::Open {
+                file,
+                parent,
+                parent_sync_pending,
+            } => work(file, parent.as_ref(), parent_sync_pending),
+            FileBackendState::ParentOnly(_)
+            | FileBackendState::Drained(_)
+            | FileBackendState::UnknownClose { .. } => Err(io::ErrorKind::BrokenPipe.into()),
         }
     }
 }
 impl StorageBackend for FileBackend {
     fn len(&self) -> io::Result<u64> {
-        self.with(|file| Ok(file.metadata()?.len()))
+        self.with(|file, _, _| Ok(file.metadata()?.len()))
     }
     fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
-        self.with(|file| {
+        self.with(|file, _, _| {
             file.seek(SeekFrom::Start(at))?;
             file.read_exact(out)
         })
     }
     fn write(&self, at: u64, bytes: &[u8]) -> io::Result<()> {
-        self.with(|file| {
+        self.with(|file, _, _| {
             file.seek(SeekFrom::Start(at))?;
             file.write_all(bytes)
         })
     }
     fn set_len(&self, length: u64) -> io::Result<()> {
-        self.with(|file| file.set_len(length))
+        self.with(|file, _, _| file.set_len(length))
     }
     fn sync_data(&self) -> io::Result<()> {
-        self.with(|file| file.sync_data())
+        self.with(|file, parent, pending| sync_file_and_parent(file, parent, pending))
     }
     fn close(&self) -> BackendCloseOutcome {
         let mut guard = match self.state.try_lock() {
@@ -388,35 +724,47 @@ impl StorageBackend for FileBackend {
             FileBackendState::UnknownClose { original_error, .. } => {
                 return BackendCloseOutcome::retained(project_file_error(original_error));
             }
-            FileBackendState::Open(_) => {}
+            FileBackendState::Open { .. } | FileBackendState::ParentOnly(_) => {}
         }
-        let FileBackendState::Open(file) =
-            std::mem::replace(&mut *guard, FileBackendState::Drained(None))
-        else {
-            unreachable!("the open arm was checked under the mutex")
+        let previous = std::mem::replace(&mut *guard, FileBackendState::Drained(None));
+        let (file, parent, mut parent_sync_pending) = match previous {
+            FileBackendState::Open {
+                file,
+                parent,
+                parent_sync_pending,
+            } => (Some(file), parent, parent_sync_pending),
+            FileBackendState::ParentOnly(parent) => (None, Some(parent), false),
+            _ => unreachable!("the open arm was checked under the mutex"),
         };
-        let sync_error = file.sync_data().err();
+        let sync_error = file.as_ref().and_then(|file| {
+            sync_file_and_parent(file, parent.as_ref(), &mut parent_sync_pending).err()
+        });
         #[cfg(test)]
         let sync_error = {
             let injected = FILE_SYNC_FAILURE.with(std::cell::Cell::take);
             sync_error.or_else(|| injected.map(io::Error::from_raw_os_error))
         };
-        let descriptor = file.into_raw_fd();
-        // SAFETY: into_raw_fd consumed the sole File owner. An uncertain result
-        // retains only evidence, never an object that could close this number.
-        let native_result = unsafe { libc::close(descriptor) };
-        let close_error = (native_result != 0).then(io::Error::last_os_error);
-        #[cfg(test)]
-        let close_error = {
-            FILE_CLOSE_ATTEMPTS.with(|count| count.set(count.get() + 1));
-            let injected = FILE_CLOSE_FAILURE.with(std::cell::Cell::take);
-            close_error.or_else(|| injected.map(io::Error::from_raw_os_error))
+        let (data_descriptor, data_error) = file
+            .map(|file| close_file_descriptor(file, false))
+            .map_or((None, None), |(descriptor, error)| {
+                (Some(descriptor), error)
+            });
+        let (parent_descriptor, parent_error) = parent
+            .map(|parent| close_file_descriptor(parent, true))
+            .map_or((None, None), |(descriptor, error)| {
+                (Some(descriptor), error)
+            });
+        let (original_close_error, other_close_error) = match (data_error, parent_error) {
+            (Some(data), parent) => (Some(data), parent),
+            (None, parent) => (parent, None),
         };
-        if let Some(original_error) = close_error {
+        if let Some(original_error) = original_close_error {
             let returned = project_file_error(&original_error);
             *guard = FileBackendState::UnknownClose {
-                _descriptor: descriptor,
+                _data_descriptor: data_descriptor,
+                _parent_descriptor: parent_descriptor,
                 original_error,
+                _other_close_error: other_close_error,
                 _prior_sync_error: sync_error,
             };
             BackendCloseOutcome::retained(returned)
@@ -639,12 +987,11 @@ pub struct AdmittedValue {
     bytes: Vec<u8>,
     lease: Box<dyn ResidentLease>,
 }
-pub type OwnedRow = (Vec<u8>, Vec<u8>);
 impl AdmittedValue {
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
-    pub fn into_parts(self) -> (Vec<u8>, Box<dyn ResidentLease>) {
+    pub(crate) fn into_parts(self) -> (Vec<u8>, Box<dyn ResidentLease>) {
         (self.bytes, self.lease)
     }
 }
@@ -1163,10 +1510,21 @@ impl Core {
         backend: impl StorageBackend + 'static,
         admission: Arc<dyn StorageAdmission>,
     ) -> Result<Self, CoreError> {
-        if backend.len()? == 0 {
-            Self::create_strict_with_backend(backend, admission)
+        let backend: Box<dyn StorageBackend> = Box::new(backend);
+        let length = match backend.len() {
+            Ok(length) => length,
+            Err(error) => {
+                return Err(failed_open(
+                    FailedOpenOwner::Backend(backend),
+                    error.into(),
+                    true,
+                ));
+            }
+        };
+        if length == 0 {
+            Self::create_strict_boxed(backend, admission, true)
         } else {
-            Self::open_with_backend(backend, admission)
+            Self::open_boxed(backend, admission, true)
         }
     }
 
@@ -1174,24 +1532,49 @@ impl Core {
         backend: impl StorageBackend + 'static,
         admission: Arc<dyn StorageAdmission>,
     ) -> Result<Self, CoreError> {
-        admission
-            .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        if backend.len()? != 0 {
-            return Err(CoreError::InvalidInput("new backend is not empty"));
+        Self::create_strict_boxed(Box::new(backend), admission, true)
+    }
+
+    pub(crate) fn create_strict_with_backend_retained(
+        backend: impl StorageBackend + 'static,
+        admission: Arc<dyn StorageAdmission>,
+    ) -> Result<Self, CoreError> {
+        Self::create_strict_boxed(Box::new(backend), admission, false)
+    }
+
+    fn create_strict_boxed(
+        backend: Box<dyn StorageBackend>,
+        admission: Arc<dyn StorageAdmission>,
+        close_on_failure: bool,
+    ) -> Result<Self, CoreError> {
+        let result = (|| -> Result<(), CoreError> {
+            admission
+                .check_owner()
+                .map_err(|_| CoreError::OwnerFailed)?;
+            if backend.len()? != 0 {
+                return Err(CoreError::InvalidInput("new backend is not empty"));
+            }
+            admission.reserve_growth(0, LOG_START)?;
+            backend.set_len(LOG_START)?;
+            admission
+                .settle_growth(LOG_START)
+                .map_err(|_| CoreError::OwnerFailed)?;
+            let header = header_bytes(0, LOG_START, 1, LOG_START);
+            backend.write(0, &header)?;
+            backend.write(HEADER_BYTES as u64, &header)?;
+            backend.sync_data()?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            return Err(failed_open(
+                FailedOpenOwner::Backend(backend),
+                error,
+                close_on_failure,
+            ));
         }
-        admission.reserve_growth(0, LOG_START)?;
-        backend.set_len(LOG_START)?;
-        admission
-            .settle_growth(LOG_START)
-            .map_err(|_| CoreError::OwnerFailed)?;
-        let header = header_bytes(0, LOG_START, 1, LOG_START);
-        backend.write(0, &header)?;
-        backend.write(HEADER_BYTES as u64, &header)?;
-        backend.sync_data()?;
         let index_pool = IndexChargePool::new(admission.clone());
         Ok(Self::installed(
-            Box::new(backend),
+            backend,
             admission,
             index_pool,
             Index::new(),
@@ -1211,41 +1594,79 @@ impl Core {
         backend: impl StorageBackend + 'static,
         admission: Arc<dyn StorageAdmission>,
     ) -> Result<Self, CoreError> {
-        admission
-            .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        let length = backend.len()?;
-        let header = chosen_header(&backend, length)?;
-        let mut index = Index::new();
-        let index_pool = IndexChargePool::new(admission.clone());
-        let mut cursor = header.base;
-        let mut generation = header.first_generation - 1;
-        while cursor < header.end {
-            let frame = read_frame(&backend, cursor, header.end, generation)?;
-            scan_payload(&backend, &frame)?;
-            replay_payload(&backend, &frame, &mut index, &index_pool)?;
-            cursor = frame.end;
-            generation = frame.generation;
-        }
-        if cursor != header.end || generation != header.generation {
-            return Err(CoreError::Corrupt(
-                "commit chain does not reach selected header",
-            ));
-        }
-        // Bytes beyond the selected header belong to an uncommitted attempt.
-        // Recovery validates every committed byte before reclaiming that tail.
-        if length > header.end {
-            backend.set_len(header.end)?;
-            backend.sync_data()?;
+        Self::open_boxed(Box::new(backend), admission, true)
+    }
+
+    pub(crate) fn open_with_backend_retained(
+        backend: impl StorageBackend + 'static,
+        admission: Arc<dyn StorageAdmission>,
+    ) -> Result<Self, CoreError> {
+        Self::open_boxed(Box::new(backend), admission, false)
+    }
+
+    fn open_boxed(
+        backend: Box<dyn StorageBackend>,
+        admission: Arc<dyn StorageAdmission>,
+        close_on_failure: bool,
+    ) -> Result<Self, CoreError> {
+        let result = (|| -> Result<(Index, Arc<IndexChargePool>, CommitHeader), CoreError> {
             admission
-                .settle_growth(header.end)
+                .check_owner()
                 .map_err(|_| CoreError::OwnerFailed)?;
-        }
-        let core = Self::installed(Box::new(backend), admission, index_pool, index, header);
+            let length = backend.len()?;
+            let header = chosen_header(&*backend, length)?;
+            let mut index = Index::new();
+            let index_pool = IndexChargePool::new(admission.clone());
+            let mut cursor = header.base;
+            let mut generation = header.first_generation - 1;
+            while cursor < header.end {
+                let frame = read_frame(&*backend, cursor, header.end, generation)?;
+                scan_payload(&*backend, &frame)?;
+                replay_payload(&*backend, &frame, &mut index, &index_pool)?;
+                cursor = frame.end;
+                generation = frame.generation;
+            }
+            if cursor != header.end || generation != header.generation {
+                return Err(CoreError::Corrupt(
+                    "commit chain does not reach selected header",
+                ));
+            }
+            // Bytes beyond the selected header belong to an uncommitted attempt.
+            // Recovery validates every committed byte before reclaiming that tail.
+            if length > header.end {
+                backend.set_len(header.end)?;
+            }
+            // Persist a fully validated page-cache generation before resolving
+            // an uncertain same-host commit for the caller.
+            backend.sync_data()?;
+            if length > header.end {
+                admission
+                    .settle_growth(header.end)
+                    .map_err(|_| CoreError::OwnerFailed)?;
+            }
+            Ok((index, index_pool, header))
+        })();
+        let (index, index_pool, header) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                return Err(failed_open(
+                    FailedOpenOwner::Backend(backend),
+                    error,
+                    close_on_failure,
+                ));
+            }
+        };
+        let core = Self::installed(backend, admission, index_pool, index, header);
         if header.base != LOG_START {
             // Recovery finishes a published shadow relocation before exposing
             // an instance that may accept another user commit.
-            core.compact()?;
+            if let Err(error) = core.compact() {
+                return Err(failed_open(
+                    FailedOpenOwner::Installed(core),
+                    error,
+                    close_on_failure,
+                ));
+            }
         }
         Ok(core)
     }
@@ -1534,9 +1955,8 @@ impl Core {
         }
     }
 
-    /// The returned owned bytes have a hard caller-provided bound. The index
-    /// contains no value bytes; this reads only the selected committed extent.
-    pub(crate) fn get(
+    #[cfg(test)]
+    fn get(
         &self,
         snapshot: &ReadSnapshot,
         table: &str,
@@ -1578,18 +1998,6 @@ impl Core {
                 .read_value_admitted(&mut state, reference, max_value_bytes)
                 .map(Some),
         }
-    }
-
-    pub(crate) fn next(
-        &self,
-        snapshot: &ReadSnapshot,
-        table: &str,
-        prefix: &[u8],
-        after: Option<&[u8]>,
-        max_value_bytes: usize,
-    ) -> Result<Option<OwnedRow>, CoreError> {
-        self.next_admitted(snapshot, table, prefix, after, max_value_bytes)
-            .map(|row| row.map(|(key, value)| (key.into_parts().0, value.into_parts().0)))
     }
 
     pub fn next_admitted(
@@ -2578,6 +2986,8 @@ mod tests {
         durable: Vec<u8>,
         sync_fault: Option<(usize, bool)>,
         fail_next_read: bool,
+        fail_next_len: bool,
+        close_attempts: usize,
         close_error: Option<io::Error>,
     }
     #[derive(Clone)]
@@ -2589,6 +2999,8 @@ mod tests {
                 durable: Vec::new(),
                 sync_fault: None,
                 fail_next_read: false,
+                fail_next_len: false,
+                close_attempts: 0,
                 close_error: None,
             })))
         }
@@ -2599,6 +3011,8 @@ mod tests {
                 durable,
                 sync_fault: None,
                 fail_next_read: false,
+                fail_next_len: false,
+                close_attempts: 0,
                 close_error: None,
             })))
         }
@@ -2607,6 +3021,12 @@ mod tests {
         }
         fn fail_next_read(&self) {
             self.0.lock().unwrap().fail_next_read = true;
+        }
+        fn fail_next_len(&self) {
+            self.0.lock().unwrap().fail_next_len = true;
+        }
+        fn close_attempts(&self) -> usize {
+            self.0.lock().unwrap().close_attempts
         }
         fn fail_close_with(&self, error: io::Error) {
             self.0.lock().unwrap().close_error = Some(error);
@@ -2627,7 +3047,11 @@ mod tests {
     }
     impl StorageBackend for CrashBackend {
         fn len(&self) -> io::Result<u64> {
-            Ok(self.0.lock().unwrap().volatile.len() as u64)
+            let mut state = self.0.lock().unwrap();
+            if std::mem::take(&mut state.fail_next_len) {
+                return Err(io::Error::from_raw_os_error(libc::EIO));
+            }
+            Ok(state.volatile.len() as u64)
         }
         fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
             let mut state = self.0.lock().unwrap();
@@ -2683,14 +3107,9 @@ mod tests {
             Ok(())
         }
         fn close(&self) -> BackendCloseOutcome {
-            BackendCloseOutcome::drained(
-                self.0
-                    .lock()
-                    .unwrap()
-                    .close_error
-                    .take()
-                    .map_or(Ok(()), Err),
-            )
+            let mut state = self.0.lock().unwrap();
+            state.close_attempts += 1;
+            BackendCloseOutcome::drained(state.close_error.take().map_or(Ok(()), Err))
         }
     }
 
@@ -2800,6 +3219,223 @@ mod tests {
         FileBackend::from_file(file)
     }
 
+    fn parent_sync_test_path() -> std::path::PathBuf {
+        static NEXT_TEST_FILE: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "kasumi-kv-parent-sync-{}-{}",
+            std::process::id(),
+            NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[test]
+    fn new_named_file_syncs_parent_before_successful_create_and_reopens() {
+        let path = parent_sync_test_path();
+        let before = FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get);
+        let closes = FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
+        let backend = FileBackend::open(&path).unwrap();
+        assert_eq!(
+            FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get),
+            before + 1
+        );
+
+        let core = Core::create_strict_with_backend(backend, TestAdmission::unlimited()).unwrap();
+        assert_eq!(
+            FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get),
+            before + 2
+        );
+        core.commit(&[
+            Operation::create_table("items"),
+            Operation::put("items", b"key", b"durable"),
+        ])
+        .unwrap();
+        assert_eq!(
+            FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get),
+            before + 2
+        );
+        assert_eq!(
+            core.close().native_disposition(),
+            BackendNativeDisposition::Drained
+        );
+        assert_eq!(
+            FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
+            closes + 1
+        );
+
+        let reopened = Core::open_with_backend(
+            FileBackend::open_existing(&path).unwrap(),
+            TestAdmission::unlimited(),
+        )
+        .unwrap();
+        assert_eq!(
+            FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get),
+            before + 3
+        );
+        let snapshot = reopened.snapshot().unwrap();
+        assert_eq!(
+            reopened.get(&snapshot, "items", b"key", 16).unwrap(),
+            Some(b"durable".to_vec())
+        );
+        drop(snapshot);
+        assert_eq!(
+            reopened.close().native_disposition(),
+            BackendNativeDisposition::Drained
+        );
+        assert_eq!(
+            FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
+            closes + 2
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn failed_parent_sync_makes_create_uncertain_until_same_path_reopens() {
+        let path = parent_sync_test_path();
+        let backend = FileBackend::open(&path).unwrap();
+        let before = FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get);
+        FILE_PARENT_SYNC_FAILURE
+            .with(|failure| assert!(failure.replace(Some(libc::EIO)).is_none()));
+        let error = Core::create_strict_with_backend(backend, TestAdmission::unlimited())
+            .err()
+            .expect("directory sync failure must not publish a successful create");
+        assert!(
+            matches!(error, CoreError::Io(ref error) if error.raw_os_error() == Some(libc::EIO))
+        );
+        assert_eq!(
+            FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get),
+            before + 2
+        );
+
+        FILE_PARENT_SYNC_FAILURE
+            .with(|failure| assert!(failure.replace(Some(libc::EIO)).is_none()));
+        let retry = FileBackend::open_existing(&path).err().unwrap();
+        assert_eq!(retry.raw_os_error(), Some(libc::EIO));
+        assert_eq!(
+            retry.close_report().unwrap().native_disposition(),
+            BackendNativeDisposition::Drained
+        );
+        assert_eq!(
+            FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get),
+            before + 3
+        );
+
+        let reopened = Core::open_with_backend(
+            FileBackend::open_existing(&path).unwrap(),
+            TestAdmission::unlimited(),
+        )
+        .unwrap();
+        assert_eq!(
+            FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get),
+            before + 4
+        );
+        assert_eq!(reopened.generation().unwrap(), 0);
+        assert_eq!(
+            reopened.close().native_disposition(),
+            BackendNativeDisposition::Drained
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn predata_parent_sync_failure_retains_original_and_observes_close_once() {
+        let path = parent_sync_test_path();
+        let parent_closes = FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
+        let data_closes = FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
+        FILE_PARENT_SYNC_FAILURE
+            .with(|failure| assert!(failure.replace(Some(libc::EIO)).is_none()));
+        FILE_PARENT_CLOSE_FAILURE
+            .with(|failure| assert!(failure.replace(Some(libc::EINTR)).is_none()));
+        let mut error = FileBackend::open(&path).err().unwrap();
+        assert_eq!(error.original_error().raw_os_error(), Some(libc::EIO));
+        assert!(!path.exists(), "data descriptor was never acquired");
+        let report = error.close_report().unwrap();
+        assert_eq!(report.entry(), BackendCloseEntry::Entered);
+        assert_eq!(
+            report.native_disposition(),
+            BackendNativeDisposition::Retained
+        );
+        assert_eq!(
+            report.result.as_ref().unwrap_err().raw_os_error(),
+            Some(libc::EINTR)
+        );
+        assert_eq!(
+            FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
+            parent_closes + 1
+        );
+        assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), data_closes);
+        let _ = error.retry_close();
+        assert_eq!(
+            FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
+            parent_closes + 1
+        );
+    }
+
+    #[test]
+    fn failed_create_preserves_open_error_and_uncertain_parent_close_report() {
+        let path = parent_sync_test_path();
+        let backend = FileBackend::open(&path).unwrap();
+        let parent_closes = FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
+        let data_closes = FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
+        FILE_PARENT_SYNC_FAILURE
+            .with(|failure| assert!(failure.replace(Some(libc::EIO)).is_none()));
+        FILE_PARENT_CLOSE_FAILURE
+            .with(|failure| assert!(failure.replace(Some(libc::EINTR)).is_none()));
+        let mut error = Core::create_strict_with_backend(backend, TestAdmission::unlimited())
+            .err()
+            .unwrap();
+        let CoreError::OpeningFailure(failure) = &mut error else {
+            panic!("uncertain close must retain the original opening error");
+        };
+        assert!(
+            matches!(failure.original_error(), CoreError::Io(error) if error.raw_os_error() == Some(libc::EIO))
+        );
+        assert_eq!(failure.close_report().entry(), BackendCloseEntry::Entered);
+        assert_eq!(
+            failure.close_report().native_disposition(),
+            BackendNativeDisposition::Retained
+        );
+        assert_eq!(
+            failure
+                .close_report()
+                .result
+                .as_ref()
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EINTR)
+        );
+        assert_eq!(
+            FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
+            parent_closes + 1
+        );
+        assert_eq!(
+            FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
+            data_closes + 1
+        );
+        let _ = failure.retry_close();
+        assert_eq!(
+            FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
+            parent_closes + 1
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn named_backend_rejects_final_symlink_without_opening_target() {
+        let target = parent_sync_test_path();
+        let link = target.with_extension("link");
+        std::fs::write(&target, b"target bytes").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let error = FileBackend::open_existing(&link).err().unwrap();
+        assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
+        assert_eq!(
+            error.close_report().unwrap().native_disposition(),
+            BackendNativeDisposition::Drained
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"target bytes");
+        std::fs::remove_file(link).unwrap();
+        std::fs::remove_file(target).unwrap();
+    }
+
     #[test]
     fn file_backend_close_waits_for_lock_before_native_attempt() {
         let backend = file_backend_for_close_test();
@@ -2843,13 +3479,14 @@ mod tests {
         assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), attempts + 1);
         let consumed_descriptor = match &*backend.state.lock().unwrap() {
             FileBackendState::UnknownClose {
-                _descriptor,
+                _data_descriptor,
                 original_error,
                 _prior_sync_error,
+                ..
             } => {
                 assert_eq!(original_error.raw_os_error(), Some(libc::EINTR));
                 assert!(_prior_sync_error.is_none());
-                *_descriptor
+                _data_descriptor.expect("data descriptor was consumed")
             }
             _ => panic!("uncertain close must retain original native evidence"),
         };
@@ -3136,6 +3773,57 @@ mod tests {
                 Some(expected)
             );
         }
+    }
+
+    #[test]
+    fn same_host_reopen_persists_validated_volatile_generation() {
+        let (core, backend) = new_core();
+        core.commit(&[
+            Operation::create_table("data"),
+            Operation::put("data", b"key", b"before"),
+        ])
+        .unwrap();
+
+        // The frame sync succeeds, but the header sync fails before the
+        // volatile new header becomes durable.
+        backend.fail_sync(2, false);
+        assert!(matches!(
+            core.commit(&[Operation::put("data", b"key", b"after")]),
+            Err(CoreError::UnknownCommit(_))
+        ));
+
+        let previous_crash =
+            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
+        let previous = previous_crash.snapshot().unwrap();
+        assert_eq!(
+            previous_crash.get(&previous, "data", b"key", 16).unwrap(),
+            Some(b"before".to_vec())
+        );
+
+        backend.fail_sync(1, false);
+        assert!(matches!(
+            Core::open_with_backend(backend.clone(), TestAdmission::unlimited()),
+            Err(CoreError::Io(_))
+        ));
+
+        let resolved =
+            Core::open_with_backend(backend.clone(), TestAdmission::unlimited()).unwrap();
+        let view = resolved.snapshot().unwrap();
+        assert_eq!(
+            resolved.get(&view, "data", b"key", 16).unwrap(),
+            Some(b"after".to_vec())
+        );
+        drop(view);
+
+        // Once open has returned the new generation as committed, another
+        // crash must still recover it.
+        let after_crash =
+            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
+        let view = after_crash.snapshot().unwrap();
+        assert_eq!(
+            after_crash.get(&view, "data", b"key", 16).unwrap(),
+            Some(b"after".to_vec())
+        );
     }
 
     #[test]

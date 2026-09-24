@@ -90,18 +90,40 @@ These require verified resolution without replaying a consumed effect ticket.
 The native KV cutover compiles as a crate, but read-only reviews found close
 custody and failed-owner negative-read bugs requiring fixes and regression
 evidence. G02 remains open.
-The current native KV close-entry, failed-owner read-fence, FileBackend native
+The native KV close-entry, failed-owner read-fence, FileBackend native
 close and public repeat-close-report slices are applied on this mandated
-`master` checkout. Locked offline KV tests pass **31/31 unit and 6/6 crash**;
-the immediately preceding source passed all **412** runnable store library
-cases with two ignored, and its repeat-close successor is under a full store
-rerun. Production registered-owner caller adoption and final-source release
-qualification remain open. The independently reviewed G09 test-only leader
-read/negative-response fixture improves the serial lifecycle cohort to **5/7**;
-two cached-leader operations still return `Unavailable`, so G09 remains open.
-The G01 deployment admission candidate and its structural preparse revision
-remain held because retained typed allocation ownership and several installed
-readers are not yet covered. Source-bound logs and reviews are in the
+`master` checkout. Locked offline KV tests passed **31/31 unit and 6/6 crash**;
+both the FileBackend checkpoint and its repeat-close successor passed all
+**412** runnable store library cases with two ignored before the later merge
+and the ongoing native parent-directory durability edits.
+Production registered-owner caller adoption and final-source release
+qualification remain open. The merged bounded-read strict-audit regression
+and final encoded response-size gap have source-guarded fixes with focused
+passing tests; the new Taira journal still lacks an installed caller.
+The independently reviewed G09 test-only leader-read fixture passed **6/7**
+serial lifecycle cases at revision 4. Revision 5 passes its formerly failing
+journal case alone but the complete rerun passes **4/7**, exposing three more
+cached-leader/uncertain one-shot paths. G09 remains open without replaying a
+consumed effect ticket.
+The later G09 revision-6 one-shot Control-read fixture passes all **7/7**
+serial lifecycle cases on its pinned source, with no replay of a consumed
+effect ticket. Installed fault, terminal first-membership and final-source
+qualification remain open. The newer G02 registered-startup and queue-custody prerequisites, G01 paired
+deployment store read and first engine pair-reader cutover are applied on the
+mandated `master` checkout. The combined earlier-source serial store suite
+passes **417** runnable cases with two ignored; later paired-boundary focused
+cases pass **3/3** and native KV passes **34 unit plus 7 crash/recovery** tests
+on separately pinned source. The G01 engine paired-reader focused case passes
+**1/1** after application, with unrelated source drift during compilation.
+A later all-target/all-feature workspace check and strict Clippy pass on
+separate pinned development source, with formatting passing after a one-line
+fixture correction. A shared-checkout full server run aborts in a standalone
+enrollment test stack overflow; its source is not frozen as a final gate.
+Production registered-owner cutover, a direct native KV failed-opening close
+custody gap, G01 typed allocation ownership and other readers remain open.
+The G01 deployment admission candidate and its
+structural preparse revision remain held because retained typed allocation
+ownership and several installed readers are not yet covered. Source-bound logs and reviews are in the
 integration evidence ledger; every G01–G14 goal remains open.
 G11 declared functional-evidence export and mode-preserving tar readback pass
 their 149-test Python checkpoint. Native workflow tar/producer uploads, exact

@@ -35,6 +35,14 @@ and reserves resident index/workspace and physical growth before allocation or
 I/O. `Core::create_with_backend` creates an empty payload or reopens an existing
 one; strict create/open constructors are also available.
 
+For standalone files, `FileBackend::open` keeps a new file's parent directory
+open until the initial headers and directory have both synced. An existing
+path is directory-synced before `open` or `open_existing` returns, including
+after an uncertain creation attempt. A directory sync error leaves creation
+uncertain; reopen the exact path to resolve it. `from_file` relies on its caller
+to own and sync the surrounding namespace. Filesystems without directory sync
+support cause the named open or create to fail.
+
 `Core::commit(&[Operation])` publishes one atomic batch across named ordered
 tables. `Core::snapshot()` pins a generation. `get_admitted`, `next_admitted`,
 and `ReadSnapshot::next_key_admitted` return owned bytes with resident leases.

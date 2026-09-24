@@ -79,7 +79,7 @@ Rust 1.97.1 is pinned by `rust-toolchain.toml`. Linux is the production target; 
 development and embedded validation. Keep a warm Cargo target directory:
 
 ```sh
-cargo test -p kasumi-types -p kasumi-store -p kasumi-query
+cargo test -p kasumi-types -p kasumi-kv -p kasumi-store -p kasumi-query
 cargo test -p kasumi-raft -p kasumi-engine -p kasumi-server
 cargo clippy --workspace --all-targets --no-deps -- -D warnings
 ```

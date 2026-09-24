@@ -354,6 +354,8 @@ impl RegisteredNodeOpening {
     }
     /// Fixed, closed operation shape with no user callback or raw transaction
     /// escape. The actual queued request is registered before any serial wait.
+    /// Once registration succeeds, even a concurrent close returns the exact
+    /// cancelled child facade so its ID, report, and retirement remain owned.
     pub fn queue_node_tables(&self) -> io::Result<RegisteredNodeTables> {
         if self.registration.owner().stopped.load(Ordering::Acquire) {
             return Err(io::ErrorKind::BrokenPipe.into());
@@ -398,12 +400,12 @@ impl RegisteredNodeOpening {
             || state.phase != NodeOpeningPhase::Open
         {
             // Close may have sealed and physically settled the database while
-            // this request was waiting for a census slot. No facade has been
-            // returned yet, so cancel and retire this exact registered owner.
+            // registration waited for a census slot. The child is already a
+            // real census owner: return it cancelled, never retire and discard
+            // an exact ID or a retained original report inside this method.
             drop(state);
             registration.owner().state.lock().phase = NodeWriterPhase::Cancelled;
-            let _ = registration.retire();
-            return Err(io::ErrorKind::BrokenPipe.into());
+            return Ok(RegisteredNodeTables { registration });
         }
         state.tables_request = Some(registration.id());
         Ok(RegisteredNodeTables { registration })
@@ -806,3 +808,6 @@ pub(crate) mod write_plan;
 #[cfg(test)]
 #[path = "storage_opening_tests.rs"]
 mod tests;
+
+mod startup;
+pub use startup::{NodeStartupFailureCustody, NodeStartupPhase, RegisteredNodeStartup};

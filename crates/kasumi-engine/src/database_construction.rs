@@ -69,7 +69,7 @@ impl DatabaseConstruction {
             RaftGroup::local(node_id, name, self.stores.clone(), engine.clone(), buffers).await?;
         // No fallible operation or suspension follows the successful transfer
         // of the retained Raft startup outcome into this Database owner.
-        Ok(self.finish(engine, group))
+        Ok(self.finish(engine, group, true))
     }
 
     pub(crate) async fn start_replicated(
@@ -91,16 +91,17 @@ impl DatabaseConstruction {
             buffers,
         )
         .await?;
-        Ok(self.finish(engine, group))
+        Ok(self.finish(engine, group, false))
     }
 
-    fn finish(self, engine: Arc<TenantEngine>, group: RaftGroup) -> Arc<Database> {
+    fn finish(self, engine: Arc<TenantEngine>, group: RaftGroup, embedded: bool) -> Arc<Database> {
         Database::finish_construction(
             engine,
             group,
             self.stores.application().clone(),
             self.audit,
             self.clocks,
+            embedded,
         )
     }
 }

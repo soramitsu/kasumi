@@ -9,6 +9,79 @@ mod existing_catalogs;
 const BINDING_NS: &str = "kasumi.storage-domains";
 const BINDING_KEY: &[u8] = b"binding";
 const CUSTODY_PREFIX: &str = "kasumi.custody/";
+const DEPLOYMENT_NS: &str = "engine.deployment";
+const DEPLOYMENT_KEY: &[u8] = b"mode";
+// The current writer prefixes a 36-byte UUID key ID with four length bytes;
+// encryption adds 24 nonce and 16 tag bytes to the 12-byte record framing.
+const MAX_DEPLOYMENT_ENVELOPE_BYTES: usize =
+    MAX_DEPLOYMENT_BINDING_BYTES + DEPLOYMENT_NS.len() + DEPLOYMENT_KEY.len() + 4 + 36 + 12 + 40;
+
+/// The plaintext remains charged to the installed memory provider until the
+/// caller finishes validating and drops the exact admitted binding.
+pub struct AdmittedDeploymentBinding {
+    bytes: Vec<u8>,
+    _charge: DiskMemoryLease,
+}
+impl AdmittedDeploymentBinding {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl TenantStore {
+    fn deployment_at(
+        &self,
+        tx: &kasumi_kv::ReadTransaction,
+        state: &KeyState,
+    ) -> Result<Option<AdmittedDeploymentBinding>> {
+        self.require_access(state)?;
+        let disk_key = record_key(
+            &self.tenant,
+            DEPLOYMENT_NS,
+            DEPLOYMENT_KEY,
+            state.keys.get(INDEX_KEY).context("index key missing")?,
+        );
+        let table = tx.open_table(RECORDS)?;
+        let Some(encrypted) = table.get(disk_key.as_slice())? else {
+            return Ok(None);
+        };
+        let envelope = encrypted.value();
+        ensure!(
+            envelope.len() <= MAX_DEPLOYMENT_ENVELOPE_BYTES,
+            "encrypted deployment envelope exceeds read budget"
+        );
+        check_encrypted_record_budget(
+            envelope,
+            DEPLOYMENT_NS.len(),
+            DEPLOYMENT_KEY.len(),
+            MAX_DEPLOYMENT_BINDING_BYTES,
+        )?;
+        // Native KV retains the encrypted guard's physical resident lease.
+        // Fund the plaintext decrypt buffer and owned value before decryption.
+        let workspace = u64::try_from(envelope.len())?
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(8192))
+            .context("deployment plaintext workspace overflow")?;
+        let charge = self
+            .scratch_disk()
+            .memory()
+            .clone()
+            .reserve_installed(workspace)
+            .context("deployment plaintext admission denied")?;
+        let mut record = self.decode_record(&disk_key, envelope, state)?;
+        ensure!(
+            record.namespace == DEPLOYMENT_NS
+                && record.key == DEPLOYMENT_KEY
+                && record.value.len() <= MAX_DEPLOYMENT_BINDING_BYTES,
+            "deployment binding identity or size differs"
+        );
+        self.require_access(state)?;
+        Ok(Some(AdmittedDeploymentBinding {
+            bytes: std::mem::take(&mut record.value),
+            _charge: charge,
+        }))
+    }
+}
 
 fn validate_application_tenant(tenant: &str) -> Result<()> {
     ensure!(
@@ -100,6 +173,36 @@ pub struct TenantStorageSet {
 }
 
 impl TenantStorageSet {
+    /// Read both independently encrypted deployment copies from one immutable
+    /// native KV generation. A concurrent paired publication cannot split them.
+    pub fn deployment_binding(&self) -> Result<Option<AdmittedDeploymentBinding>> {
+        let application = &self.application;
+        let custody = &self.custody.store;
+        let _app_access = AccessGuard(application);
+        let _custody_access = AccessGuard(custody);
+        self.check_access()?;
+        let app_state = application.state.read();
+        let custody_state = custody.state.read();
+        application.require_access(&app_state)?;
+        custody.require_access(&custody_state)?;
+        let tx = application.node.db.begin_read()?;
+        let app = application.deployment_at(&tx, &app_state)?;
+        let peer = custody.deployment_at(&tx, &custody_state)?;
+        application.require_access(&app_state)?;
+        custody.require_access(&custody_state)?;
+        match (app, peer) {
+            (None, None) => Ok(None),
+            (Some(app), Some(peer)) => {
+                ensure!(
+                    app.as_bytes() == peer.as_bytes(),
+                    "deployment binding differs across domains"
+                );
+                Ok(Some(app))
+            }
+            _ => bail!("required deployment binding is absent from one domain"),
+        }
+    }
+
     /// Classify an unprovisioned tenant without constructing either key provider.
     /// A single catalog is an interrupted or corrupt installation, not a stage.
     pub fn catalogs_installed(node: &NodeStore, tenant: &str) -> Result<bool> {

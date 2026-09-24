@@ -89,8 +89,27 @@ async fn installation() -> Result<(
     Ok((root, installed, request, storage))
 }
 
-#[tokio::test]
-async fn unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs() -> Result<()> {
+#[test]
+fn unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs() -> Result<()> {
+    std::thread::Builder::new()
+        .name("unrecorded standalone template fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs_impl(),
+                ))
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+async fn unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs_impl() -> Result<()>
+{
     let (_root, installed, request, storage) = installation().await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
     let staged = config
@@ -132,8 +151,27 @@ async fn unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs
     Ok(())
 }
 
-#[tokio::test]
-async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_survives_restart()
+#[test]
+fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_survives_restart() -> Result<()>
+{
+    std::thread::Builder::new()
+        .name("standalone tenant enrollment fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    explicitly_enrolled_standalone_tenant_requires_bound_profile_and_survives_restart_impl(),
+                ))
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_survives_restart_impl()
 -> Result<()> {
     let (_root, installed, staged, storage) = installation().await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
@@ -151,10 +189,23 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
     let serving = tokio::spawn(runtime.serve(shutdown));
     assert!(registry.database(&context(&staged.tenant)).is_err());
     let control = context(crate::runtime::CONTROL_TENANT);
+    let approval = ManagementCommand::ApproveTenant {
+        tenant: staged.tenant.clone(),
+    };
+    if let Err(error) = manage(&control_profile, approval.clone()).await {
+        // The first approval creates the Control enrollment collection. That
+        // policy epoch change can withhold its response after commit. Replay
+        // the same idempotent approval and still require a released success.
+        if !error.to_string().contains(
+            "write response release was fenced; resolve or retry the same idempotency key",
+        ) {
+            return Err(error.context("approve enrolled tenant"));
+        }
+        manage(&control_profile, approval)
+            .await
+            .context("replay approval after withheld response")?;
+    }
     for command in [
-        ManagementCommand::ApproveTenant {
-            tenant: staged.tenant.clone(),
-        },
         ManagementCommand::PrepareTenant {
             tenant: staged.tenant.clone(),
         },
@@ -162,10 +213,17 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
             tenant: staged.tenant.clone(),
         },
     ] {
-        manage(&control_profile, command).await?;
+        manage(&control_profile, command.clone())
+            .await
+            .with_context(|| format!("control command {command:?}"))?;
     }
     assert!(registry.database(&context(&staged.tenant)).is_err());
-    let state = registry.database(&control)?.engine().generation()?;
+    let state = manager
+        .authorized_database(&control)
+        .await
+        .context("read Control topology through administration")?
+        .engine()
+        .generation()?;
     let version = state.state.collections["topology"].documents["current"].version;
     manage(
         &control_profile,
@@ -174,7 +232,8 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
             expected_topology_version: version,
         },
     )
-    .await?;
+    .await
+    .context("activate enrolled tenant")?;
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while registry.database(&context(&staged.tenant)).is_err() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -198,7 +257,8 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
                 strict_read_audit: false,
             }),
         )
-        .await?;
+        .await
+        .context("create enrolled tenant collection")?;
     let mut admin =
         kasumi_client::KasumiAdminClient::connect(&control_profile.connection(true)?).await?;
     let credential = CreateCredential {
@@ -234,7 +294,8 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
         request_file.to_string_lossy().into_owned(),
         output.to_string_lossy().into_owned(),
     ])
-    .await?;
+    .await
+    .context("create enrolled tenant credential")?;
     let profile = ClientProfile::load(&output)?;
     assert_eq!(
         profile.resource,
@@ -259,7 +320,10 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
             .await
             .is_err()
     );
-    client.mutate(&profile.bearer()?, &mutation).await?;
+    client
+        .mutate(&profile.bearer()?, &mutation)
+        .await
+        .context("write with enrolled tenant credential")?;
     // A profile for another tenant is bound to its own resource, not this one.
     assert_ne!(original_profile.resource, profile.resource);
     let http = reqwest::Client::builder()

@@ -2463,3 +2463,219 @@ cases** (`applied-kv-all-tests.log`, SHA-256
 exit 0). A full store rerun on this newer source is in progress. G02 remains
 open for production registered-owner cutover, wider/final qualification and
 measured installed release gates.
+
+The full serial store rerun after the public Core repeat-close report passes
+**412 passed, zero failed, two ignored**
+(`target/native-kv-core-close-report-candidate/applied-store-all-tests.log`,
+SHA-256 `175527e1ae0717c6917c22316b363ca9c09ca479169888a599c42e482492bc56`,
+exit 0). This run precedes the concurrent `origin/master` merge. A first
+post-merge workspace check stopped at temporary unresolved `Cargo.toml` merge
+markers (`applied-workspace-check.log`, SHA-256
+`4e6bea857ed1b8f464634a8f8d6133130d2f38cc3aeae8338862f9b7ba275446`,
+exit 101). After the shared `master` manifest was resolved with both
+`kasumi-kv` and `kasumi-taira-journal` and without the obsolete redb vendor
+exclusion, pinned locked offline workspace all-target/all-feature checking
+passes (`applied-workspace-check-after-merge-resolution.log`, SHA-256
+`9a9acf5f90c69bc1b0f01b69501abee15a89f9a93268cfa2247b3620b09ef783`,
+exit 0). Workspace formatting check also passes
+(`applied-workspace-format-check-after-merge.log`, SHA-256
+`dfdeff0ef599505b4a58de8da9a1f57f41f306706936a1f430c888ff0d5ecdad`,
+exit 0). These are source checkpoints during an in-progress merge, not a
+frozen final release suite; strict Clippy, tests of merged behavior and the
+native acceptance matrix remain open.
+
+The shared checkout completed its `origin/master` merge as commit
+`48b8891c084707d82b9db9f2e7c86e2c34a63e86` on the existing `master`
+branch. The source-hashed merge audit (`target/master-origin-merge-audit/README.md`,
+SHA-256 `fa71daaea23ad49e5c5ab9b36e76f781da7ca1e0776b01a9f77ac77c80b652d0`)
+found that a strict read audit advanced state revision before a bounded
+snapshot's trusted-time witness, causing an otherwise valid read to return
+`Conflict`. It also found the new `kasumi-taira-journal` library has no installed
+caller or live deployment qualification. The earlier workspace check and format
+pass preceded both findings and do not qualify the final merge.
+
+The source-guarded strict-time witness fix is applied from
+`target/master-origin-merge-audit/strict-time-witness-candidate/candidate.patch`
+(SHA-256 `b563508553fc4ffd97352fbbca76b15f3d5b3c764889b729622ad8e9ad8c4121`)
+and moves the witness before the read's own durable audit while retaining the
+post-audit authorization check. Its focused strict-audit/competing-writer test
+passes 1/1 (`applied-focused-test.log`, SHA-256
+`75f559214e676cae15c3f5ed0a5ac1290a3366b6aff91b20d371e1cd456125cf`,
+exit 0). The successor final-size fix is applied from
+`target/master-origin-merge-audit/time-witness-result-bound-candidate/candidate.patch`
+(SHA-256 `94296bf0c51aed396b3e5972c60033769ac7211c2607dde1468fe80ae8a6ecfd`):
+it rechecks the encoded response after attaching trusted time. Its boundary
+test passes 1/1 (`applied-boundary-test.log`, SHA-256
+`8696b20d751e1df45af747b6197e9381adc4251dec16f60f6b206bb5d3382bec`,
+exit 0), and the strict-audit successor rerun passes 1/1
+(`applied-strict-read-test.log`, SHA-256
+`1a85a4c841384063ccb1865aaac8f98a1c52a342ae65779da4f598b79e11ae34`,
+exit 0). Both exact source/postimage hashes are in their `source.json` manifests;
+this focused evidence does not close the merged engine or installed gates.
+
+The independently reviewed G09 test-only revision 4 passes **6/7** serial
+lifecycle cases (`target/g09-control-read-negative-candidate-rev4/applied-seven-lifecycle.log`,
+SHA-256 `84c6c7c911072cf5d4a5cc15faad263f7ddc890ecb4d56aa8664f855101f45af`,
+exit 101). The remaining journal case hits a cached leader's `Unavailable` at
+`recovery_control.rs:752` after a one-shot Control intent. Revision 5 is applied
+from `target/g09-control-read-negative-candidate-rev5/candidate.patch` (SHA-256
+`4367974c20b67b5cbfecfd0f9610b5345bcb3ae45d4318386197a8073b85bcba`,
+postimage SHA-256 `01dd531775c54b703260464fc1019b7f69fc0c376aea978b3e8084df854e951e`)
+after independent PASS-for-the-fixture review (SHA-256
+`7d08bad6854713b16df9209e3420109aec5e2e28d14807123359b69526bd557f`).
+The formerly failing journal case now passes 1/1 on this source; the complete
+revision-5 cohort is still running. G09 remains open.
+
+Revision 5's formerly failing journal test passes **1/1**
+(`target/g09-control-read-negative-candidate-rev5/applied-journal-focused.log`,
+SHA-256 `4de4994026f5eb3cd2e868477f5e339cac36e30c89d70125f6b93aadfdd5aedf`,
+exit 0), but its complete serial lifecycle cohort passes only **4/7**
+(`applied-seven-lifecycle.log`, SHA-256
+`0d439456b0e89f55ff6819444c9e1c0c152dfd40245ee0947ce71f8fd438f1f5`,
+exit 101). The expired-completion case receives `UnknownOutcome` at a consumed
+one-shot Control intent (`recovery_control.rs:3055`), the planned-retirement
+case receives `UnknownOutcome` instead of a definite alias rejection through
+a cached handle (`:518`), and the positive uncertain-activation case reads
+initialization through a stale ControlPlane (`:1935`). None is treated as a
+negative proof or permission to resubmit the Control effect. Workspace format
+check on the applied revision-5 source passes (`applied-workspace-format-check.log`,
+SHA-256 `dfdeff0ef599505b4a58de8da9a1f57f41f306706936a1f430c888ff0d5ecdad`,
+exit 0). G09 remains open for exact resolution and broader installed faults.
+
+Revision 6 of the G09 test-only Control-read fixture is applied from
+`target/g09-control-read-negative-candidate-rev6/candidate.patch` (SHA-256
+`01c37befea8e654efcdcd8e287d686d874d081a41cccebbcb81a9d5f4340e6a2`,
+independent review SHA-256
+`a322987d35d1e8286fa3998c14ed10dd4d61e1b2d8907b795ba9783755fa516b`).
+It reads the exact original one-shot Control intent after an ambiguous response
+through the current leader and requires the matching committed request before
+resolving the phase; it does not resubmit a consumed effect ticket. The formerly
+failing expired-completion case passes 1/1 (`applied-expired-completion-focused.log`,
+SHA-256 `f4581f5d4ab9e6d611e79aeccc9392f9f5abe75db2293d15fb40a4990f0f975a`,
+exit 0). The complete serial seven-case lifecycle cohort passes **7/7**
+(`applied-seven-lifecycle.log`, SHA-256
+`97d581d1b6ead67574ee763d8dc0c14c44a45f192802a528e22d4dc3b238e05c`,
+exit 0, 322.34 seconds). Every path in `applied-run-source.json` still matched
+its recorded hash at test completion. This is a synthetic fixture checkpoint;
+the installed fault matrix, terminal first-membership proof and final combined
+source qualification remain open.
+
+The G02 registered startup prerequisite is applied on this `master` checkout
+from `target/g02-registered-startup-prereq/candidate.patch` (SHA-256
+`a3fe42cc596933aaab195f578212e6468245d14812d97b838aedc940ffbc7a67`,
+independent narrow PASS review SHA-256
+`78ebba83f10d3103553b3695a9cf9b3b71a77cce6bb3976ac43778c18eb8bb52`).
+The only manifest drift before application was a comment-only native-KV wording
+change in `storage_opening/write_plan.rs`; every other base/artifact hash and
+all three applied postimages matched. Its same-owner create/reopen, malformed
+existing-envelope transfer, and consumed-child retained-ID tests pass **3/3**
+(`applied-focused.log`, SHA-256
+`35112c625b9e76541515eda4f9ac080aa69c35c9bab819bfc0cb0b0188708b73`,
+exit 0). The separate queue/close race patch is applied after a target-only
+re-pin of the startup-added module export (`rebased-source.json`, SHA-256
+`5a51e271bd4d586be7117977fe95ae7149512c25ff46fcd4880b5dc20b45bb70`;
+patch SHA-256 `9d2350409dfe500ab8e6492966b9e0562eff51b0a52a1d531c24857c819a60f9`;
+independent source-scope review SHA-256
+`8ced8b8ae14e125a0d7fcb41b68e5db15d4c805daf4a0e338ca9136149d46b2d`).
+A registered child cancelled by concurrent close now returns with its exact
+facade, ID and retirement duty. These are additive/preparatory changes;
+production `NodeStore` has not yet adopted this coordinator.
+
+The reviewed G01 store-only paired deployment reader is applied after a
+mechanical rebase over that startup export (`target/g01-native-deployment-store-pair-rebased/candidate.patch`,
+SHA-256 `f10d61a0f37638727211c70e1b45c41768ccad5584c244aec51ee4cdef77da7d`;
+original independent review SHA-256
+`50db34e994a62c7d852c3a55cd02bab9684e87d6fc408a14f3b0b1a96a8654a1`).
+It reads both encrypted domain values from one native snapshot and retains its
+plaintext admission. The exact paired-writer boundary and malformed oversized
+envelope tests are applied from
+`target/g01-deployment-boundary-tests-candidate/candidate.patch` (SHA-256
+`946b544eb9ac040bdda800ccd8c775cc58e4727457d19aca02d95a8b198b8c00`).
+All three paired-read focused tests pass on the later native-read source
+(`applied-focused.log`, SHA-256
+`27b006519ee65804f36111a4a5a3fe7b5e61d7f7b7eb5294964b7813a7899ce7`,
+exit 0); the 87-path pre-run manifest matches at completion. The separate
+G01 construction-mode patch removes a silent application-only read fallback
+(`target/g01-construction-mode-candidate/candidate.patch`, SHA-256
+`a88475a104645198d052cf17a9f18f172412dd10eec941741cbb521b584887fd`,
+independent review SHA-256
+`7411e927ae2d194ce05b80cac45f6f1e7c8ec54e24a79b66eae54ef73a4fd55a`).
+Its engine validation and the remaining production readers/typed ownership
+are still open.
+
+A combined serial store suite after the startup, close-race and paired-read
+applications passed **417 runnable cases**, zero failed, two ignored
+(`target/g02-registered-queue-custody/combined-store-all-tests.log`, SHA-256
+`f419bef4f96eced96f386ee77f15d4c309c25e4f78945e0effc9591b6b052b9e`,
+exit 0). Its 87-path source manifest SHA-256 is
+`ecea6518370c825c8ea93c1ed9ac0e12440fd73b7cf72d795ac3e66bb8a6f502`.
+Native KV admitted-read files changed during the binary run, and the two G01
+boundary tests landed afterward; this is a pinned earlier-source checkpoint,
+not a pass for the current combined checkout. On the later native-read source,
+the locked offline native KV package passes **34 unit and 7 crash/recovery
+integration cases** plus empty doctests (`target/native-kv-parent-close-audit/current-kv-all-tests.log`,
+SHA-256 `a833ceb66dfe0cce9a5a97539e1ccb1ee5265dcf179772eb1d22ca9fc5419773`,
+exit 0); its source manifest SHA-256
+`8f4c77eff1881d76b5d0b5f8354984bd23d6312136e115f1f1d80df43e6cfb2d`
+still matched at completion. The source-bound parent-sync/close audit
+(`target/native-kv-parent-close-audit/README.md`, SHA-256
+`f32162b125a7327f8ec28416ddf399da1d62bb6301c73da562b3f2cc6cf334c9`)
+identifies a direct Core/Builder constructor failure path that drops a consumed
+backend without explicit native-close custody. Its partial pre-acquisition
+candidate remains unapplied; G02 is open.
+
+The independently reviewed G01 engine paired-bootstrap reader cutover is
+applied from `target/g01-engine-paired-bootstrap-candidate/candidate.patch`
+(SHA-256 `1b3be5f71cb6dbac068cfcff30fc6091154b5766e3b30a67b1cc95b96f2a1f36`,
+review SHA-256 `158016f7d7588fd05ada927ebb3eae411560a305eec59d6bcb31a11ae01d0362`).
+It makes bind, require and existing-replica bootstrap read the two deployment
+copies through one admitted native snapshot; an orphaned custody copy no longer
+falls into the application-absent publication branch. The candidate-only
+scratch test passed 1/1 (log SHA-256
+`b7803f65f6a48306ab5f4bb9ab0622b6e1f200f0a67bd040231d5638560759c8`),
+and the same focused test passes **1/1** on the applied checkout
+(`applied-focused.log`, SHA-256
+`efa748a403636d36de7de5558bcce85b39af582ef420bc6515cd6310264fc0ef`,
+exit 0). Four separate engine admission/audit files changed during or shortly
+after that compile, so the 223-path pre-run manifest no longer matches the
+live checkout; this is a development checkpoint, not final-source qualification.
+Typed JSON allocation still escapes its byte lease, other production readers
+remain, and absence observation/publication is not an atomic conditional
+write. G01 stays open.
+
+The later combined locked offline workspace all-target/all-feature check passes
+(`target/g01-engine-paired-bootstrap-candidate/applied-workspace-check.log`,
+SHA-256 `74a9e303d845ae823e25c925ef0da858be2cb268a6a21a75c7ea2ced00021677`,
+exit 0). Its 564-path pre-run manifest is SHA-256
+`6dd189f4af6d873b9701e6f8afce5017f2c7034dc2e966904313d45bd5993191`;
+two test-only files changed after its start, so it is a development compile
+checkpoint. Strict workspace all-target/all-feature Clippy with `-D warnings`
+passes on a later **unchanged pinned 564-path source**
+(`applied-workspace-clippy.log`, SHA-256
+`449a6e5abf36f5ac0ac0066384222b21bfbc78e652d15e6951d64cbe5988fbf7`,
+exit 0; source manifest SHA-256
+`156e6608e6198bc359dae4cdf043859ad37baedcb8844ef49ce70da4f8e8976e`).
+Workspace formatting check then passed after a concurrent one-line test
+formatting correction. These checks precede the pending native failed-opening
+API and G09/G01 successor changes and do not freeze final release source.
+
+A separate shared-checkout full server library attempt is preserved at
+`target/observed-server-full-final-shared-master.log` (SHA-256
+`863e5bf619817f40b675cd817f61a76f534e9814b1d96141785f03bda74b321a`).
+It aborted with a stack overflow in
+`standalone::tenant_enrollment_tests::unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs`.
+Its exact pre-run source manifest was not available to this observer, so this
+is failed diagnostic evidence, not a source-bound final gate. The complete
+server cohort remains open.
+
+The exact enrollment case was then rerun in isolation on the current checkout:
+**1/1 passed**, exit 0 (`target/standalone-enrollment-stack-current-focused.log`,
+SHA-256 `fd76a90e93998c95dbde7a2cf91624c22f1007b04b30a9cded2cf5698f04da97`).
+Its 346-path pre-run manifest is SHA-256
+`f704ccf7e445099f5b5aca1e580e5a4236326773cad5cc6333d47d78f4711b6e`;
+one path, `crates/kasumi-kv/src/core.rs`, changed concurrently before completion.
+The focused binary therefore only isolates this case; it does not repair or
+qualify the full server suite. The preserved full log contains fourteen
+`FAILED` case lines before its fatal abort, including local recovery and
+runtime lifecycle cases, and no final test summary. Those failures remain
+unresolved on a pinned final source.

@@ -200,12 +200,24 @@ fn owned_reader_point_and_range_bytes_keep_exact_credit_after_close() {
         .unwrap(),
     )
     .unwrap();
+    let native_charge = |len: usize| {
+        TestDiskMemory::required_reservation_bytes(
+            crate::disk_memory::add(
+                len as u64,
+                crate::disk_memory::allocation::<crate::DiskMemoryLease>(1).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let point_total = point_charge + native_charge(value.len());
+    let row_total = row_charge + native_charge(key.len()) + native_charge(value.len());
     let charged = memory.snapshot();
     assert_eq!(
         charged.used_bytes - before.used_bytes,
-        point_charge + row_charge
+        point_total + row_total
     );
-    assert_eq!(charged.live_reservations - before.live_reservations, 2);
+    assert_eq!(charged.live_reservations - before.live_reservations, 5);
 
     assert_eq!(reader.finish(), NodeReadPhase::Finished);
     assert_eq!(reader.retire(), StorageCensusDisposition::Retired);
@@ -214,14 +226,14 @@ fn owned_reader_point_and_range_bytes_keep_exact_credit_after_close() {
     let held = memory.snapshot();
     drop(row);
     let after_row = memory.snapshot();
-    assert_eq!(held.used_bytes - after_row.used_bytes, row_charge);
-    assert_eq!(held.live_reservations - after_row.live_reservations, 1);
+    assert_eq!(held.used_bytes - after_row.used_bytes, row_total);
+    assert_eq!(held.live_reservations - after_row.live_reservations, 3);
     drop(point);
     let after_point = memory.snapshot();
-    assert_eq!(after_row.used_bytes - after_point.used_bytes, point_charge);
+    assert_eq!(after_row.used_bytes - after_point.used_bytes, point_total);
     assert_eq!(
         after_row.live_reservations - after_point.live_reservations,
-        1
+        2
     );
 }
 
@@ -356,7 +368,7 @@ impl NodeDiskMemoryAdmission for PausedRegistrationMemory {
 }
 
 #[test]
-fn close_during_table_registration_cancels_and_retires_the_unpublished_request() {
+fn close_during_table_registration_returns_the_exact_cancelled_request() {
     let directory = private_tempdir().unwrap();
     let path = directory.path().join("registration-race.kasumi");
     let (memory, entered, resume) = PausedRegistrationMemory::new();
@@ -373,15 +385,64 @@ fn close_during_table_registration_cancels_and_retires_the_unpublished_request()
     let queued = worker.join().unwrap();
     observed.unwrap();
     assert_eq!(close.unwrap(), DatabaseOpenSettlement::Closed);
-    let Err(error) = queued else {
-        panic!("closed opening accepted an unpublished table request")
-    };
-    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    let cancelled = queued.expect("registered child lost when close sealed admission");
+    let child_id = cancelled.id();
+    assert_eq!(cancelled.run(), NodeWriterPhase::Cancelled);
+    assert!(matches!(
+        cancelled.report().begin(),
+        TerminalObservation::NotEntered
+    ));
+    assert_eq!(memory.storage_census().snapshot().writers, 1);
+    let held = RegisteredNodeTables::retained(memory.clone(), child_id)
+        .expect("exact cancelled child must remain addressable");
+    assert_eq!(cancelled.retire(), StorageCensusDisposition::Retained);
+    assert_eq!(held.id(), child_id);
+    assert_eq!(held.run(), NodeWriterPhase::Cancelled);
+    assert_eq!(held.retire(), StorageCensusDisposition::Retired);
     assert_eq!(memory.storage_census().snapshot().writers, 0);
     assert!(matches!(
         opening.report().ready_publication(),
         TerminalObservation::NotEntered
     ));
+    let opening = Arc::try_unwrap(opening).ok().unwrap();
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
+}
+
+#[test]
+fn close_during_read_registration_returns_the_exact_cancelled_request() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("read-registration-race.kasumi");
+    let (memory, entered, resume) = PausedRegistrationMemory::new();
+    let disk = retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
+    let opening =
+        Arc::new(RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap());
+    assert_eq!(opening.open(), NodeOpeningPhase::Open);
+    let tables = opening.queue_node_tables().unwrap();
+    assert_eq!(tables.run(), NodeWriterPhase::Finished);
+    opening.publish_ready_after_tables(&tables).unwrap();
+    assert_eq!(tables.retire(), StorageCensusDisposition::Retired);
+
+    memory.pause_next.store(true, Ordering::Release);
+    let queued = opening.clone();
+    let worker = std::thread::spawn(move || queued.queue_read());
+    let observed = entered.recv_timeout(Duration::from_secs(5));
+    let close = opening.close();
+    let _ = resume.send(());
+    let queued = worker.join().unwrap();
+    observed.unwrap();
+    assert_eq!(close.unwrap(), DatabaseOpenSettlement::Closed);
+    let cancelled = queued.expect("registered reader lost when close sealed admission");
+    let child_id = cancelled.id();
+    assert_eq!(cancelled.phase(), NodeReadPhase::Cancelled);
+    assert_eq!(cancelled.begin(), NodeReadPhase::Cancelled);
+    assert_eq!(memory.storage_census().snapshot().readers, 1);
+    let held = RegisteredNodeRead::retained(memory.clone(), child_id)
+        .expect("exact cancelled reader must remain addressable");
+    assert_eq!(cancelled.retire(), StorageCensusDisposition::Retained);
+    assert_eq!(held.id(), child_id);
+    assert_eq!(held.begin(), NodeReadPhase::Cancelled);
+    assert_eq!(held.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(memory.storage_census().snapshot().readers, 0);
     let opening = Arc::try_unwrap(opening).ok().unwrap();
     assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
 }

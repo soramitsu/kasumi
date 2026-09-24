@@ -302,6 +302,7 @@ impl TenantEngine {
             .map(|pool| pool.applying.lock())
             .transpose()
             .map_err(|_| anyhow::anyhow!("audit apply workspace unavailable"))?;
+        let _scope = maintenance.as_ref().map(|pool| pool.enter_scope());
         ensure!(
             position.retirement_seed.is_none(),
             "audit prune has retirement custody seed"

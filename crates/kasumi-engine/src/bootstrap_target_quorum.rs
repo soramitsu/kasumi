@@ -253,12 +253,7 @@ pub async fn open_target_replica(
                             expected == bytes.sha256(),
                             "target physical bootstrap differs from signed materializations"
                         );
-                        let encoded = material
-                            .custody()
-                            .store()
-                            .get_bounded("engine.deployment", b"mode", 256 << 10)?
-                            .ok_or_else(|| anyhow::anyhow!("target deployment binding absent"))?;
-                        let bootstrap = decode_current_target_deployment(&material, &encoded)?;
+                        let bootstrap = decode_current_target_deployment(&material)?;
                         anyhow::ensure!(
                             bootstrap.incarnation == generation.state.incarnation,
                             "target deployment is not exact replicated generation"

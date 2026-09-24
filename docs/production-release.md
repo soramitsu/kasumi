@@ -16,9 +16,10 @@ capacity, platform, endurance and artifact gates remain open.
 
 The 2026-09-24 native KV direction replaces the earlier redb-backed G02
 target; [its active criteria](native-kv-goal.md) forbid old-format migration
-and fallback. The new crate passes a locked offline compile check and its
-current 14-case library suite, while read-only reviews found close-custody
-and failed-owner negative-read gaps that still need fixes. The G01
+and fallback. The current native crate passes 34 unit and six crash/recovery
+integration tests plus strict crate Clippy. Its close-custody, failed-owner
+read, named-file directory sync, and same-host reopen gaps have focused fixes
+and regressions; full downstream reruns remain in progress. The G01
 current-byte bootstrap-manifest engine and server fingerprint cases each
 pass **1/1** after an in-progress native KV read-bound mismatch was corrected.
 Full-source suites are pending. The latest seven-case G09 Control lifecycle

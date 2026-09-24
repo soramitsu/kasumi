@@ -247,6 +247,12 @@ enum ChargeKind {
     Resident,
     Bookkeeping,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChargeOrigin {
+    OrdinaryOperation,
+    OtherOrdinary,
+    AuditMaintenance,
+}
 #[derive(Clone, Copy)]
 enum ReserveKindError {
     Exhausted,
@@ -255,6 +261,8 @@ enum ReserveKindError {
 struct Charge {
     bytes: u64,
     kind: ChargeKind,
+    // This never changes when an operation is retained as resident state.
+    origin: ChargeOrigin,
     cancellation: Option<QueryCancellation>,
 }
 struct ChargeSlot {
@@ -268,9 +276,10 @@ struct State {
     usable: bool,
     pressured: bool,
     bytes: u64,
-    // Capacity unavailable to ordinary requests while an installed maintenance
-    // owner may need fresh resident/index leases to complete its work.
+    // Capacity unavailable to ordinary Operation reservations, including
+    // their retained descendants, while Raft and archive work may need it.
     ordinary_protected: u64,
+    ordinary_protected_slots: usize,
     operations: usize,
     next: u64,
     slots: Box<[ChargeSlot]>,
@@ -458,6 +467,7 @@ impl MemoryCore {
                 pressured: false,
                 bytes: prepared.base_bytes,
                 ordinary_protected: 0,
+                ordinary_protected_slots: 0,
                 operations: 0,
                 next: 0,
                 slots: slots.into_boxed_slice(),
@@ -654,12 +664,23 @@ impl MemoryState {
     }
 }
 impl MemoryCore {
-    pub(crate) fn protect_ordinary(self: &Arc<Self>, bytes: u64) -> Result<OrdinaryProtection> {
+    pub(crate) fn protect_ordinary(
+        self: &Arc<Self>,
+        bytes: u64,
+        slots: usize,
+    ) -> Result<OrdinaryProtection> {
         let mut state = self.data.state.lock().unwrap_or_else(|p| p.into_inner());
         self.data.refresh_stale(&mut state);
         let protected = state.ordinary_protected.checked_add(bytes);
+        let protected_slots = state.ordinary_protected_slots.checked_add(slots);
         if !state.usable
             || state.pressured
+            || protected_slots.is_none_or(|slots| {
+                state
+                    .live
+                    .checked_add(slots)
+                    .is_none_or(|live| live > state.slots.len())
+            })
             || protected.is_none_or(|protected| {
                 state.bytes.checked_add(protected).is_none_or(|total| {
                     total > self.data.max_bytes
@@ -676,9 +697,11 @@ impl MemoryCore {
             ));
         }
         state.ordinary_protected = protected.expect("checked protected headroom");
+        state.ordinary_protected_slots = protected_slots.expect("checked protected slots");
         Ok(OrdinaryProtection {
             core: self.clone(),
             bytes,
+            slots,
         })
     }
 
@@ -694,7 +717,12 @@ impl MemoryCore {
         cancellation: Option<QueryCancellation>,
         kind: ChargeKind,
     ) -> Result<Reservation> {
-        self.reserve_kind_raw(bytes, cancellation, kind)
+        let origin = if kind == ChargeKind::Operation {
+            ChargeOrigin::OrdinaryOperation
+        } else {
+            ChargeOrigin::OtherOrdinary
+        };
+        self.reserve_kind_raw(bytes, cancellation, kind, origin)
             .map_err(|error| match error {
                 ReserveKindError::Exhausted => Error::new(
                     ErrorCode::ResourceExhausted,
@@ -705,6 +733,23 @@ impl MemoryCore {
                 }
             })
     }
+    fn reserve_audit_escrow(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
+        self.reserve_kind_raw(
+            bytes,
+            None,
+            ChargeKind::Resident,
+            ChargeOrigin::AuditMaintenance,
+        )
+        .map_err(|error| match error {
+            ReserveKindError::Exhausted => Error::new(
+                ErrorCode::ResourceExhausted,
+                "node memory or work admission budget exhausted",
+            ),
+            ReserveKindError::IdentifierExhausted => {
+                Error::new(ErrorCode::Unavailable, "admission identifier exhausted")
+            }
+        })
+    }
     // Installed storage needs a typed refusal before its first resident buffer
     // allocation or physical read. This path avoids constructing a rich Error
     // for the refusal; the existing sampler may have its own workspace.
@@ -713,6 +758,7 @@ impl MemoryCore {
         bytes: u64,
         cancellation: Option<QueryCancellation>,
         kind: ChargeKind,
+        origin: ChargeOrigin,
     ) -> std::result::Result<Reservation, ReserveKindError> {
         let mut state = self.data.state.lock().unwrap_or_else(|p| p.into_inner());
         self.data.refresh_stale(&mut state);
@@ -722,13 +768,19 @@ impl MemoryCore {
             || state.free.is_none()
             || (kind == ChargeKind::Operation
                 && state.operations >= self.data.config.max_inflight_operations)
+            || (origin == ChargeOrigin::OrdinaryOperation
+                && state
+                    .live
+                    .checked_add(1)
+                    .and_then(|live| live.checked_add(state.ordinary_protected_slots))
+                    .is_none_or(|live| live > state.slots.len()))
             || total.is_none_or(|total| {
                 total > self.data.max_bytes
                     || state
                         .resident
                         .checked_add(total)
                         .is_none_or(|observed| observed >= self.data.high)
-                    || (kind == ChargeKind::Operation
+                    || (origin == ChargeOrigin::OrdinaryOperation
                         && total.checked_add(state.ordinary_protected).is_none_or(
                             |protected_total| {
                                 protected_total > self.data.max_bytes
@@ -754,6 +806,7 @@ impl MemoryCore {
             charge: Some(Charge {
                 bytes,
                 kind,
+                origin,
                 cancellation,
             }),
             next_free: None,
@@ -863,6 +916,9 @@ impl NodeAdmission {
     }
     pub fn reserve_resident(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
         self.core.reserve_resident(bytes)
+    }
+    pub(crate) fn reserve_audit_escrow(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
+        self.core.reserve_audit_escrow(bytes)
     }
     #[cfg(test)]
     fn refresh(&self) {
@@ -992,11 +1048,13 @@ pub struct Reservation {
     id: u64,
 }
 /// An installed maintenance owner holds this guard for its full lifetime.
-/// Its bytes remain free for actual resident leases but ordinary reservations
-/// cannot consume them. It adds no physical charge of its own.
+/// Its bytes and ledger slots remain free for Raft and archive work while
+/// ordinary Operation charges, including retained descendants, cannot grow
+/// into them. Native Resident traffic still shares this free capacity.
 pub(crate) struct OrdinaryProtection {
     core: Arc<MemoryCore>,
     bytes: u64,
+    slots: usize,
 }
 impl Drop for OrdinaryProtection {
     fn drop(&mut self) {
@@ -1007,6 +1065,7 @@ impl Drop for OrdinaryProtection {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.ordinary_protected -= self.bytes;
+        state.ordinary_protected_slots -= self.slots;
     }
 }
 impl Reservation {
@@ -1019,9 +1078,9 @@ impl Reservation {
             .unwrap_or_else(|p| p.into_inner());
         self.core.data.refresh_stale(&mut state);
         let total = state.bytes.checked_add(bytes);
-        let operation = state
+        let ordinary_operation = state
             .charge(self.slot, self.id)
-            .is_some_and(|charge| charge.kind == ChargeKind::Operation);
+            .is_some_and(|charge| charge.origin == ChargeOrigin::OrdinaryOperation);
         if !state.usable
             || state.pressured
             || total.is_none_or(|total| {
@@ -1030,7 +1089,7 @@ impl Reservation {
                         .resident
                         .checked_add(total)
                         .is_none_or(|observed| observed >= self.core.data.high)
-                    || (operation
+                    || (ordinary_operation
                         && total.checked_add(state.ordinary_protected).is_none_or(
                             |protected_total| {
                                 protected_total > self.core.data.max_bytes
@@ -1073,9 +1132,9 @@ impl Reservation {
             .charge(self.slot, self.id)
             .ok_or_else(|| Error::new(ErrorCode::Unavailable, "admission reservation absent"))?
             .bytes;
-        let operation = state
+        let ordinary_operation = state
             .charge(self.slot, self.id)
-            .is_some_and(|charge| charge.kind == ChargeKind::Operation);
+            .is_some_and(|charge| charge.origin == ChargeOrigin::OrdinaryOperation);
         let total = state
             .bytes
             .checked_sub(previous)
@@ -1092,7 +1151,7 @@ impl Reservation {
                     .resident
                     .checked_add(total)
                     .is_none_or(|observed| observed >= self.core.data.high)
-                || (operation
+                || (ordinary_operation
                     && total
                         .checked_add(state.ordinary_protected)
                         .is_none_or(|protected_total| {
@@ -1456,7 +1515,9 @@ mod tests {
             AdmissionConfig {
                 high_water_bytes: Some(1 << 30),
                 low_water_bytes: Some(512 << 20),
-                max_inflight_bytes: Some(256 << 20),
+                max_inflight_bytes: Some(
+                    3 * crate::audit_maintenance::NodeAuditMaintenance::WORKSPACE_BYTES,
+                ),
                 ..Default::default()
             },
             1 << 30,

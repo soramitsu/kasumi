@@ -3764,6 +3764,14 @@ mod lifecycle_tests {
                 max_bytes: 32 << 20,
             },
         );
+        // Preserve this fixture's former backup work budget alongside the
+        // charged audit KV escrow and its equal protected maintenance lane.
+        let former_total = config.admission.resolved_fixture_total_bytes().unwrap();
+        config.admission.max_inflight_bytes = Some(
+            former_total
+                .checked_add(4 * kasumi_types::AuditRetentionBudget::MAINTENANCE_BYTES)
+                .unwrap(),
+        );
         let storage = crate::runtime_storage_fixtures::configure(&mut config).unwrap();
         create_fixture_node(&config, &storage).await;
         let mut incarnation = None;

@@ -17,11 +17,11 @@ impl Replica {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let (persistent_config, scratch_config) =
             crate::test_utils::fixture_disk_configs(directory.path())?;
-        // The original fixed 2 GiB source resolves Default to a 256 MiB total.
-        // Add only the new physical metadata; do not resolve against host RAM.
+        // Keep the 128 MiB ordinary margin available alongside the installed
+        // security audit and maintenance owners. Add the physical metadata.
         let config = crate::admission::AdmissionConfig {
             max_inflight_bytes: Some(
-                (256_u64 << 20)
+                (384_u64 << 20)
                     .checked_add(crate::test_utils::isolated_disk_metadata_bytes(
                         &persistent_config,
                         &scratch_config,
@@ -363,6 +363,86 @@ async fn existing_replica_rejects_corrupt_manifest_body_and_authenticated_incarn
 }
 
 #[tokio::test]
+async fn paired_bootstrap_readers_reject_orphan_divergence_and_alternate_bytes_without_repair()
+-> anyhow::Result<()> {
+    let fixture = Replica::new().await?;
+    let descriptor = bootstrap();
+    let expected = uuid::Uuid::parse_str(&descriptor.incarnation)?;
+    let binding = serde_json::to_vec(&("replicated", &descriptor))?;
+
+    fixture
+        .stores
+        .custody()
+        .store()
+        .write_batch(&[WriteOp::put(
+            "engine.deployment",
+            b"mode",
+            binding.as_slice(),
+        )])?;
+    let orphan = retained(&fixture.stores)?;
+    for error in [
+        bind_deployment(&fixture.stores, &binding).err(),
+        require_deployment(&fixture.stores, &binding).err(),
+        installed_replicated_bootstrap(&fixture.stores, expected).err(),
+    ] {
+        assert!(
+            format!("{:#}", error.expect("orphaned custody must fail"))
+                .contains("required deployment binding is absent from one domain")
+        );
+    }
+    assert_eq!(retained(&fixture.stores)?, orphan);
+    assert!(
+        fixture
+            .stores
+            .application()
+            .get("engine.deployment", b"mode")?
+            .is_none()
+    );
+
+    fixture.stores.application().write_batch(&[WriteOp::put(
+        "engine.deployment",
+        b"mode",
+        b"local-v1",
+    )])?;
+    let divergent = retained(&fixture.stores)?;
+    for error in [
+        bind_deployment(&fixture.stores, &binding).err(),
+        require_deployment(&fixture.stores, &binding).err(),
+        installed_replicated_bootstrap(&fixture.stores, expected).err(),
+    ] {
+        assert!(
+            format!("{:#}", error.expect("divergent domains must fail"))
+                .contains("deployment binding differs across domains")
+        );
+    }
+    assert_eq!(retained(&fixture.stores)?, divergent);
+
+    let mut alternate = binding.clone();
+    alternate.push(b' ');
+    fixture.stores.write_batch(
+        &[WriteOp::put(
+            "engine.deployment",
+            b"mode",
+            alternate.as_slice(),
+        )],
+        &[WriteOp::put(
+            "engine.deployment",
+            b"mode",
+            alternate.as_slice(),
+        )],
+    )?;
+    let noncanonical = retained(&fixture.stores)?;
+    let error = match installed_replicated_bootstrap(&fixture.stores, expected) {
+        Ok(_) => panic!("equal alternate bytes must fail"),
+        Err(error) => error,
+    };
+    assert!(format!("{error:#}").contains("noncanonical replicated deployment binding"));
+    assert_eq!(retained(&fixture.stores)?, noncanonical);
+    drop(fixture.close().await);
+    Ok(())
+}
+
+#[tokio::test]
 async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descriptor()
 -> anyhow::Result<()> {
     let fixture = Replica::new().await?;
@@ -462,19 +542,12 @@ async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descri
 }
 
 #[tokio::test]
-async fn target_deployment_requires_bounded_paired_current_writer_bytes() -> anyhow::Result<()> {
+async fn target_deployment_requires_paired_current_writer_bytes() -> anyhow::Result<()> {
     let fixture = Replica::new().await?;
     let installed = bootstrap();
     let binding = serde_json::to_vec(&("replicated", &installed))?;
     bind_deployment(&fixture.stores, &binding)?;
-    let custody = fixture
-        .stores
-        .custody()
-        .store()
-        .get_bounded("engine.deployment", b"mode", 256 << 10)?
-        .expect("installed custody deployment");
-    assert_eq!(custody, binding);
-    let decoded = decode_current_target_deployment(&fixture.stores, &custody)?;
+    let decoded = decode_current_target_deployment(&fixture.stores)?;
     assert_eq!(serde_json::to_vec(&("replicated", &decoded))?, binding);
 
     let mut alternate = binding.clone();
@@ -489,7 +562,7 @@ async fn target_deployment_requires_bounded_paired_current_writer_bytes() -> any
         alternate.as_slice(),
     )])?;
     let before = retained(&fixture.stores)?;
-    let Err(error) = decode_current_target_deployment(&fixture.stores, &custody) else {
+    let Err(error) = decode_current_target_deployment(&fixture.stores) else {
         panic!("target reader accepted divergent deployment copies");
     };
     assert!(
@@ -510,14 +583,8 @@ async fn target_deployment_requires_bounded_paired_current_writer_bytes() -> any
             alternate.as_slice(),
         )],
     )?;
-    let altered_custody = fixture
-        .stores
-        .custody()
-        .store()
-        .get_bounded("engine.deployment", b"mode", 256 << 10)?
-        .expect("installed custody deployment");
     let before = retained(&fixture.stores)?;
-    let Err(error) = decode_current_target_deployment(&fixture.stores, &altered_custody) else {
+    let Err(error) = decode_current_target_deployment(&fixture.stores) else {
         panic!("target reader accepted equivalent alternate deployment bytes");
     };
     assert!(
@@ -538,8 +605,31 @@ async fn target_deployment_requires_bounded_paired_current_writer_bytes() -> any
             binding.as_slice(),
         )],
     )?;
-    let restored = decode_current_target_deployment(&fixture.stores, &binding)?;
+    let restored = decode_current_target_deployment(&fixture.stores)?;
     assert_eq!(serde_json::to_vec(&("replicated", &restored))?, binding);
+    drop(fixture.close().await);
+    Ok(())
+}
+
+#[tokio::test]
+async fn target_deployment_accepts_valid_writer_bytes_above_legacy_cap() -> anyhow::Result<()> {
+    let fixture = Replica::new().await?;
+    let mut installed = bootstrap();
+    installed
+        .initial_policy
+        .grants
+        .extend((0..4095).map(|id| Grant {
+            principal: format!("member-{id:04}-{}", "x".repeat(128)),
+            collection: None,
+            actions: BTreeSet::from([Action::Read]),
+        }));
+    installed.validate()?;
+    let binding = serde_json::to_vec(&("replicated", &installed))?;
+    assert!(binding.len() > 256 << 10);
+    assert!(binding.len() <= kasumi_store::MAX_DEPLOYMENT_BINDING_BYTES);
+    bind_deployment(&fixture.stores, &binding)?;
+    let decoded = decode_current_target_deployment(&fixture.stores)?;
+    assert_eq!(serde_json::to_vec(&("replicated", &decoded))?, binding);
     drop(fixture.close().await);
     Ok(())
 }

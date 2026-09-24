@@ -41,11 +41,19 @@ impl kasumi_store::NodeDiskMemoryAdmission for MemoryCore {
     ) -> io::Result<kasumi_store::DiskMemoryLease> {
         let bytes =
             Self::installed_reservation_bytes(workspace).ok_or(io::ErrorKind::OutOfMemory)?;
+        if let Some(pool) = crate::audit_maintenance::NodeAuditMaintenance::current_for(&self) {
+            return pool.reserve_native(bytes);
+        }
         // Admission covers the opaque box before allocating it. The actual
         // Reservation keeps the shared core alive until its actual box is destroyed
         // and only then releases the resident byte/slot credit.
         let charge = self
-            .reserve_kind_raw(bytes, None, ChargeKind::Resident)
+            .reserve_kind_raw(
+                bytes,
+                None,
+                ChargeKind::Resident,
+                super::ChargeOrigin::OtherOrdinary,
+            )
             .map_err(|error| match error {
                 ReserveKindError::Exhausted => io::ErrorKind::OutOfMemory,
                 ReserveKindError::IdentifierExhausted => io::ErrorKind::Other,

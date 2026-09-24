@@ -143,6 +143,7 @@ impl Database {
                 if let Some(hook) = hook {
                     hook();
                 }
+                let _scope = pool.enter_scope();
                 let bytes = engine.prepare_audit_prune_inner()?;
                 Ok::<_, anyhow::Error>(Prepared {
                     bytes,
@@ -416,8 +417,6 @@ mod tests {
         .unwrap();
         let audit =
             SecurityAudit::initialize(audit_store, Default::default(), admission.clone()).unwrap();
-        let retained_store_bytes =
-            crate::test_utils::reserved_payload_bytes(&admission) - metadata_bytes;
         let policy = Policy {
             grants: vec![Grant {
                 principal: "owner".into(),
@@ -561,20 +560,13 @@ mod tests {
         drop(pool);
         database.shutdown().await.unwrap();
         audit.shutdown().await.unwrap();
-        assert_eq!(
-            crate::test_utils::reserved_payload_bytes(&admission),
-            metadata_bytes
-                + kasumi_raft::SnapshotBufferOwner::required_bytes(
-                    kasumi_raft::SNAPSHOT_BUFFER_SLOTS
-                )
-                .unwrap()
-                + retained_store_bytes
-        );
+        let after_shutdown = crate::test_utils::reserved_payload_bytes(&admission);
         drop(group);
         drop(database);
         assert_eq!(
-            crate::test_utils::reserved_payload_bytes(&admission),
-            metadata_bytes + retained_store_bytes
+            after_shutdown - crate::test_utils::reserved_payload_bytes(&admission),
+            kasumi_raft::SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)
+                .unwrap()
         );
         drop(store);
         drop(audit);

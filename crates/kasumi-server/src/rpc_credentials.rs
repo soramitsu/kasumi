@@ -48,6 +48,37 @@ impl NativeAdmin {
                 .await
                 .map_err(status)?;
         }
+        let create_specification = if matches!(operation, CredentialOperation::Create) {
+            let specification: kasumi_types::CreateCredential =
+                decode_json(&payload).map_err(status)?;
+            specification.validate().map_err(status)?;
+            if let kasumi_types::CredentialResource::Database { incarnation } =
+                &specification.resource
+            {
+                // A Control administrator may issue a database credential only
+                // for the currently installed serving incarnation. An old or
+                // invented UUID must not enter the credential ledger.
+                let target = self
+                    .registry
+                    .installed_generation(&specification.tenant, &incarnation.to_string())
+                    .and_then(|database| {
+                        let database = database.ok_or_else(|| {
+                            kasumi_types::Error::new(
+                                kasumi_types::ErrorCode::Forbidden,
+                                "database credential target unavailable",
+                            )
+                        })?;
+                        database.check_serving()
+                    });
+                self.auth
+                    .audit_result(&context, target)
+                    .await
+                    .map_err(status)?;
+            }
+            Some(specification)
+        } else {
+            None
+        };
         let fence = self
             .auth
             .audit_result(&context, database.response_fence(&context))
@@ -59,7 +90,8 @@ impl NativeAdmin {
             caller.authorization.check_live()?;
             match operation {
                 CredentialOperation::Create => {
-                    let specification: kasumi_types::CreateCredential = decode_json(&payload)?;
+                    let specification = create_specification
+                        .expect("create credential was validated before worker entry");
                     Ok(encode_json(
                         &manager.create(specification, &caller.principal)?,
                     )?)

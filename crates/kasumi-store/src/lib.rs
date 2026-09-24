@@ -40,8 +40,9 @@ pub use storage_census::{
 pub use storage_opening::{
     AdmittedReadBytes, FailedOpeningAcknowledgement, FailedOpeningRecovery, NodeOpeningMode,
     NodeOpeningPhase, NodeOpeningReport, NodeReadAccessError, NodeReadPhase, NodeReadReport,
-    NodeReadTablesError, NodeTablesBodyError, NodeTablesReport, NodeWriterPhase, OwnedEncryptedRow,
-    RegisteredNodeOpening, RegisteredNodeRead, RegisteredNodeTables,
+    NodeReadTablesError, NodeStartupFailureCustody, NodeStartupPhase, NodeTablesBodyError,
+    NodeTablesReport, NodeWriterPhase, OwnedEncryptedRow, RegisteredNodeOpening,
+    RegisteredNodeRead, RegisteredNodeStartup, RegisteredNodeTables,
 };
 mod keys;
 mod node_database;
@@ -85,7 +86,9 @@ pub use keys::{
     GeneratedKey, HistoricalKeyResolver, HistoricalKeySource, HistoricalSourceSecurityDescriptor,
     KeyProvider, SecretKey, TransitConfig, TransitKeyProvider, WrappedKey, WrappingIdentity,
 };
-pub use storage_domains::{CustodyStore, StorageBinding, TenantStorageSet};
+pub use storage_domains::{
+    AdmittedDeploymentBinding, CustodyStore, StorageBinding, TenantStorageSet,
+};
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -117,6 +120,10 @@ pub const MAX_KEY_LEASE: Duration = Duration::from_secs(60);
 const PROVIDER_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RECORD: usize = 32 * 1024 * 1024;
 const MAX_BATCH: usize = 64 * 1024 * 1024;
+/// A paired deployment writer fits two namespace/key/value triples in one batch.
+/// Readers must accept every byte sequence the current writer can publish.
+pub const MAX_DEPLOYMENT_BINDING_BYTES: usize =
+    MAX_BATCH / 2 - ("engine.deployment".len() + b"mode".len());
 const INDEX_KEY: &str = "index";
 // A manifest repeats the tenant (at most 1024 UTF-8 bytes, or 6144 JSON
 // escape bytes) and adds a UUID, fixed field names and bounded integers.

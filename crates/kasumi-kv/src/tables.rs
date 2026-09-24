@@ -326,7 +326,7 @@ impl<T: TableCodec> AccessGuard<T> {
 }
 
 type LeasedBytes = (Vec<u8>, Box<dyn ResidentLease>);
-pub type OwnedByteRow = (Vec<u8>, Vec<u8>);
+pub type OwnedByteRow = (AdmittedValue, AdmittedValue);
 pub type TableRow<K, V> = (AccessGuard<K>, AccessGuard<V>);
 
 fn check_key_bound<K: TableCodec>(key: K::Input<'_>) -> Result<(), TableError> {
@@ -387,6 +387,17 @@ impl Builder {
         ))
     }
 
+    pub(crate) fn create_strict_with_backend_retained(
+        self,
+        backend: impl StorageBackend + 'static,
+    ) -> Result<Database, DatabaseError> {
+        let admission = self.admission.clone();
+        Ok(Database::from_core(
+            Core::create_strict_with_backend_retained(backend, self.admission)?,
+            admission,
+        ))
+    }
+
     pub fn open_with_backend(
         self,
         backend: impl StorageBackend + 'static,
@@ -394,6 +405,17 @@ impl Builder {
         let admission = self.admission.clone();
         Ok(Database::from_core(
             Core::open_with_backend(backend, self.admission)?,
+            admission,
+        ))
+    }
+
+    pub(crate) fn open_with_backend_retained(
+        self,
+        backend: impl StorageBackend + 'static,
+    ) -> Result<Database, DatabaseError> {
+        let admission = self.admission.clone();
+        Ok(Database::from_core(
+            Core::open_with_backend_retained(backend, self.admission)?,
             admission,
         ))
     }
@@ -629,17 +651,17 @@ impl ReadTransaction {
         })
     }
 
-    /// Point read through the pinned index. A retained reader uses this method
-    /// to impose its own stricter caller-provided bound.
+    /// Point read through the pinned index. The returned value retains its
+    /// resident admission until the caller drops it.
     pub fn get_bytes(
         &self,
         table: &str,
         key: &[u8],
         max_value_bytes: usize,
-    ) -> Result<Option<Vec<u8>>, CoreError> {
+    ) -> Result<Option<AdmittedValue>, CoreError> {
         self.inner
             .core
-            .get(&self.snapshot, table, key, max_value_bytes)
+            .get_admitted(&self.snapshot, table, key, max_value_bytes)
     }
 
     pub fn next_bytes(
@@ -651,7 +673,7 @@ impl ReadTransaction {
     ) -> Result<Option<OwnedByteRow>, CoreError> {
         self.inner
             .core
-            .next(&self.snapshot, table, prefix, after, max_value_bytes)
+            .next_admitted(&self.snapshot, table, prefix, after, max_value_bytes)
     }
 }
 

@@ -450,6 +450,28 @@ impl SnapshotWork {
     }
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct BoundedReadPause {
+    entered: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
+}
+
+fn attach_trusted_leader_time(
+    mut response: SnapshotReadResponse,
+    now: u64,
+    max_result_bytes: usize,
+) -> Result<SnapshotReadResponse> {
+    response.trusted_leader_time_ms = Some(now);
+    if crate::accounting::encoded_len(&response)? > max_result_bytes {
+        return Err(Error::new(
+            ErrorCode::ResourceExhausted,
+            "bounded snapshot result exceeds byte limit",
+        ));
+    }
+    Ok(response)
+}
+
 /// Every adapter calls this service; it cannot read a map without access and consistency gates.
 pub struct Database {
     engine: Arc<TenantEngine>,
@@ -477,6 +499,8 @@ pub struct Database {
     audit_worker_wake: Arc<tokio::sync::Notify>,
     #[cfg(test)]
     audit_worker_pause: Mutex<Option<Arc<audit_maintenance_service::WorkerPause>>>,
+    #[cfg(test)]
+    bounded_read_pause: Mutex<Option<Arc<BoundedReadPause>>>,
     #[cfg(test)]
     worker_test_hooks: database_worker_outcome_tests::BlockingHooks,
     audit_worker_started: AtomicBool,
@@ -728,15 +752,10 @@ impl Database {
         store: Arc<TenantStore>,
         security_audit: Arc<SecurityAudit>,
         clocks: DatabaseClocks,
+        embedded: bool,
     ) -> Arc<Self> {
-        // This authenticated durable bootstrap binding is immutable for the
-        // lifetime of the database. A one-member view is never a local-mode signal.
-        // Missing/manual bindings retain the quorum contract.
-        let embedded = store
-            .get("engine.deployment", b"mode")
-            .ok()
-            .flatten()
-            .is_some_and(|mode| mode == b"local-v1");
+        // Raft construction has already selected local or replicated semantics.
+        // Do not infer that mode from a second application-only storage read.
         let database = Arc::new(Self {
             engine,
             group,
@@ -762,6 +781,8 @@ impl Database {
             audit_worker_wake: Arc::new(tokio::sync::Notify::new()),
             #[cfg(test)]
             audit_worker_pause: Mutex::new(None),
+            #[cfg(test)]
+            bounded_read_pause: Mutex::new(None),
             #[cfg(test)]
             worker_test_hooks: Default::default(),
             audit_worker_started: AtomicBool::new(false),
@@ -1780,31 +1801,18 @@ impl Database {
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
         let mut response = response?;
-        reservation.retain(state.limits.max_result_bytes.saturating_mul(3) as u64);
+        let max_result_bytes = state.limits.max_result_bytes;
+        reservation.retain(max_result_bytes.saturating_mul(3) as u64);
         drop(generation);
-        for (collection, strict) in &release_collections {
-            self.release(
-                context,
-                collection,
-                response.revision,
-                *strict,
-                response.policy_epoch,
-            )
-            .await?;
-        }
-        // Recheck every collection after the last asynchronous audit. A policy
-        // change during an earlier release must not leak the assembled result.
-        self.access()?;
-        self.admission().check_release(&cancellation)?;
-        for collection in release_collections.keys() {
-            self.engine.authorize_release(
-                context,
-                Some(collection),
-                Action::Read,
-                response.policy_epoch,
-            )?;
-        }
         if let Some(bounds) = time_bounds {
+            #[cfg(test)]
+            {
+                let pause = self.bounded_read_pause.lock().unwrap().clone();
+                if let Some(pause) = pause {
+                    pause.entered.notify_one();
+                    pause.resume.notified().await;
+                }
+            }
             // Serialize with command admission. A completed prior proposal is
             // included by the second barrier; a new proposal cannot overtake
             // this witness while the gate is held.
@@ -1860,7 +1868,29 @@ impl Database {
                     ));
                 }
             }
-            response.trusted_leader_time_ms = Some(now);
+            response = attach_trusted_leader_time(response, now, max_result_bytes)?;
+        }
+        for (collection, strict) in &release_collections {
+            self.release(
+                context,
+                collection,
+                response.revision,
+                *strict,
+                response.policy_epoch,
+            )
+            .await?;
+        }
+        // Recheck every collection after the last asynchronous audit. A policy
+        // change during an earlier release must not leak the assembled result.
+        self.access()?;
+        self.admission().check_release(&cancellation)?;
+        for collection in release_collections.keys() {
+            self.engine.authorize_release(
+                context,
+                Some(collection),
+                Action::Read,
+                response.policy_epoch,
+            )?;
         }
         Ok(response)
     }
@@ -2508,7 +2538,7 @@ mod tests {
                 name: "docs".into(),
                 schema: json!({"type":"object"}),
                 indexes: vec![],
-                strict_read_audit: false,
+                strict_read_audit: true,
                 write_mode: CollectionWriteMode::Mutable,
             }),
         )
@@ -2598,6 +2628,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(exact.trusted_leader_time_ms, Some(base + 22));
+        let audited = db.engine.generation().unwrap();
+        assert!(audited.state.revision > exact.revision);
+        assert_eq!(audited.state.audits.back().unwrap().action, "read");
+        assert_eq!(
+            audited.state.audits.back().unwrap().data_revision,
+            Some(exact.revision)
+        );
+        drop(audited);
         assert_eq!(
             exact.documents[0].document.as_ref().unwrap().version,
             data_epoch
@@ -2622,7 +2660,57 @@ mod tests {
                 .code,
             ErrorCode::InvalidArgument
         );
+        let pause = Arc::new(BoundedReadPause::default());
+        *db.bounded_read_pause.lock().unwrap() = Some(pause.clone());
+        let pending_db = db.clone();
+        let pending_context = context.clone();
+        let pending_request = read(base + 23, base + 23);
+        let pending = tokio::spawn(async move {
+            pending_db
+                .read_snapshot(&pending_context, pending_request)
+                .await
+        });
+        pause.entered.notified().await;
+        db.mutate(context.clone(), batch("competing", base + 23))
+            .await
+            .unwrap();
+        pause.resume.notify_one();
+        assert_eq!(
+            pending.await.unwrap().unwrap_err().code,
+            ErrorCode::Conflict
+        );
+        *db.bounded_read_pause.lock().unwrap() = None;
         db.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn bounded_snapshot_witness_checks_final_encoded_result_limit() {
+        let response = SnapshotReadResponse {
+            revision: 1,
+            incarnation: uuid::Uuid::new_v4().to_string(),
+            policy_epoch: 1,
+            schema_epoch: 1,
+            collection_epochs: BTreeMap::new(),
+            trusted_leader_time_ms: None,
+            documents: Vec::new(),
+            queries: Vec::new(),
+        };
+        let plain_bytes = crate::accounting::encoded_len(&response).unwrap();
+        let witnessed = attach_trusted_leader_time(response.clone(), u64::MAX, usize::MAX).unwrap();
+        let witnessed_bytes = crate::accounting::encoded_len(&witnessed).unwrap();
+        assert!(witnessed_bytes > plain_bytes);
+        assert_eq!(
+            attach_trusted_leader_time(response.clone(), u64::MAX, plain_bytes)
+                .unwrap_err()
+                .code,
+            ErrorCode::ResourceExhausted
+        );
+        assert_eq!(
+            attach_trusted_leader_time(response, u64::MAX, witnessed_bytes)
+                .unwrap()
+                .trusted_leader_time_ms,
+            Some(u64::MAX)
+        );
     }
 
     #[tokio::test]

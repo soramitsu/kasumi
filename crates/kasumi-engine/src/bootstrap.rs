@@ -263,44 +263,36 @@ impl ReplicatedBootstrap {
 }
 
 fn bind_deployment(stores: &TenantStorageSet, binding: &[u8]) -> anyhow::Result<()> {
-    let store = stores.application();
     const DEPLOYMENT: &str = "engine.deployment";
-    if let Some(existing) = store.get(DEPLOYMENT, b"mode")? {
-        anyhow::ensure!(
-            existing == binding
-                && stores
+    match stores.deployment_binding()? {
+        Some(existing) => anyhow::ensure!(
+            existing.as_bytes() == binding,
+            "deployment bootstrap differs from persisted configuration"
+        ),
+        None => {
+            anyhow::ensure!(
+                stores
                     .custody()
                     .store()
-                    .get(DEPLOYMENT, b"mode")?
-                    .as_deref()
-                    == Some(binding),
-            "deployment bootstrap differs from persisted configuration"
-        );
-    } else {
-        anyhow::ensure!(
-            stores
-                .custody()
-                .store()
-                .get("raft.meta", b"node_id")?
-                .is_none(),
-            "existing Raft storage lacks a deployment binding"
-        );
-        stores.write_batch(
-            &[WriteOp::put(DEPLOYMENT, b"mode", binding)],
-            &[WriteOp::put(DEPLOYMENT, b"mode", binding)],
-        )?;
+                    .get("raft.meta", b"node_id")?
+                    .is_none(),
+                "existing Raft storage lacks a deployment binding"
+            );
+            stores.write_batch(
+                &[WriteOp::put(DEPLOYMENT, b"mode", binding)],
+                &[WriteOp::put(DEPLOYMENT, b"mode", binding)],
+            )?;
+        }
     }
     Ok(())
 }
 
 fn require_deployment(stores: &TenantStorageSet, binding: &[u8]) -> anyhow::Result<()> {
-    stores.check_access()?;
-    for store in [stores.application(), stores.custody().store()] {
-        anyhow::ensure!(
-            store.get("engine.deployment", b"mode")?.as_deref() == Some(binding),
-            "required deployment binding is absent or differs"
-        );
-    }
+    let installed = stores.deployment_binding()?;
+    anyhow::ensure!(
+        installed.as_ref().map(|value| value.as_bytes()) == Some(binding),
+        "required deployment binding is absent or differs"
+    );
     Ok(())
 }
 
@@ -396,22 +388,11 @@ fn decode_current_replicated_deployment(bytes: &[u8]) -> anyhow::Result<Replicat
 
 fn decode_current_target_deployment(
     stores: &TenantStorageSet,
-    custody_bytes: &[u8],
 ) -> anyhow::Result<ReplicatedBootstrap> {
-    anyhow::ensure!(
-        custody_bytes.len() <= 256 << 10,
-        "target deployment binding exceeds budget"
-    );
-    stores.check_access()?;
-    anyhow::ensure!(
-        stores
-            .application()
-            .get_bounded("engine.deployment", b"mode", 256 << 10)?
-            .as_deref()
-            == Some(custody_bytes),
-        "required deployment binding is absent or differs across domains"
-    );
-    decode_current_replicated_deployment(custody_bytes)
+    let binding = stores
+        .deployment_binding()?
+        .ok_or_else(|| anyhow::anyhow!("required deployment binding is absent"))?;
+    decode_current_replicated_deployment(binding.as_bytes())
 }
 
 fn installed_replicated_bootstrap(
@@ -422,21 +403,10 @@ fn installed_replicated_bootstrap(
         !expected_incarnation.is_nil(),
         "nil expected replicated incarnation"
     );
-    stores.check_access()?;
     let bytes = stores
-        .application()
-        .get("engine.deployment", b"mode")?
+        .deployment_binding()?
         .ok_or_else(|| anyhow::anyhow!("required deployment binding is absent"))?;
-    anyhow::ensure!(
-        stores
-            .custody()
-            .store()
-            .get("engine.deployment", b"mode")?
-            .as_deref()
-            == Some(bytes.as_slice()),
-        "required deployment binding is absent or differs across domains"
-    );
-    let bootstrap = decode_current_replicated_deployment(&bytes)?;
+    let bootstrap = decode_current_replicated_deployment(bytes.as_bytes())?;
     anyhow::ensure!(
         bootstrap.incarnation == expected_incarnation.to_string(),
         "installed replicated genesis differs from expected incarnation"

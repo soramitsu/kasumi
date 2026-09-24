@@ -1162,7 +1162,7 @@ name: "docs".into(),
             .read_snapshot(native(
                 proto::ReadSnapshotRequest {
                     request_json: serde_json::to_vec(
-                        &json!({"documents":[{"collection":"docs","id":"one"}],"queries":[]}),
+                        &json!({"documents":[{"collection":"docs","id":"one"}],"queries":[],"time_bounds":null}),
                     )
                     .unwrap(),
                 },
