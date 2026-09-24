@@ -157,7 +157,7 @@ impl ServingFixture {
             let path = self
                 .directory
                 .path()
-                .join(format!("node-{id}/persistent/node.redb"));
+                .join(format!("node-{id}/persistent/node.kv"));
             let node = (if create {
                 storage.create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             } else {

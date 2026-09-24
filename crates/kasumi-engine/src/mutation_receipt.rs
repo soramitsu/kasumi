@@ -179,7 +179,7 @@ impl Source {
         Ok(result)
     }
 }
-/// This owner retains immutable rows, not an open redb read transaction. The
+/// This owner retains immutable rows, not an open KV read transaction. The
 /// selected count/root remain unchanged while new rows append to the namespace.
 #[derive(Clone)]
 pub(crate) struct View {

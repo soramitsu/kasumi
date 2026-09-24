@@ -1,7 +1,7 @@
 # Kasumi Raft adapter
 
 This crate pins OpenRaft **0.9.25** and connects its storage-v2 interfaces to
-Kasumi's encrypted, immediately durable redb store. It replicates typed commands;
+Kasumi's encrypted, immediately durable key-value store. It replicates typed commands;
 the engine owns deterministic authorization, validation, receipts, and complete
 generation publication.
 
@@ -19,7 +19,7 @@ it does not rewrite an existing replicated group into a single voter.
 - Votes, committed cursors, group/node bindings, log headers and retirement seeds
   use a separately keyed control catalog. Application log bodies and snapshots
   use the application catalog. `TenantStorageSet` commits both domains in one
-  durable redb transaction; append completion follows its final fsync.
+  durable storage transaction; append completion follows its final fsync.
 - Log commands use compact binary records with no legacy JSON decoding. An 8 MiB command remains approximately 8 MiB
   before encryption, avoiding JSON byte-array expansion beyond store limits.
 - A resident index contains log IDs, not application payloads. Range reads decrypt
@@ -80,7 +80,7 @@ storage mutation/fsync failure during append/commit and snapshot installation;
 invalid logical snapshots; snapshots above the store's individual-record limit;
 and bounded snapshot writes/seeks.
 
-The cluster tests use independent redb files in one process. The fault backend
+The cluster tests use independent Kasumi storage files in one process. The fault backend
 models power loss by reopening only the last synchronized storage image. These
 tests do not replace physical power-loss testing, production mTLS transport tests,
 or deployment across independent host failure domains.

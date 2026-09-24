@@ -54,23 +54,6 @@ response. See [the ownership review](rmcp-terminal-ownership.md) for provenance,
 the exact ownership graph and required regression commands. The upstream
 Apache-2.0 license is retained.
 
-## redb 4.2.0
-
-The canonical first-release fork requires storage admission, fallible explicit
-close, and one canonical durable encoding. It rejects the removed legacy format
-and non-durable paths. The original 97-file import included the sibling derive
-crate, upstream notices and regression inputs. Its original file hashes are in the preserved
-[provenance](../docs/evidence/redb-canonical-20260920/provenance.json), including
-published and companion archive identities. Subsequent pending changes add
-retained opening, transaction and close ownership, canonical allocator validation,
-and their regression sources. Their source-specific evidence is in
-[the installed storage record](../docs/evidence/installed-disk-main-20260920/README.md).
-The reviewed current-source predecessor and the exact PageNumber successor are
-recorded in [the current provenance](../docs/evidence/redb-canonical-page-number-20260923/provenance.json).
-Final-source dependency, upstream and release validation remain required. Both upstream
-licenses remain.
-The local disposition is [KASUMI_PATCH.md](redb-4.2.0/KASUMI_PATCH.md).
-
 ## OpenRaft 0.9.25
 
 The complete 600-file workspace is retained; Cargo selects `openraft` from its

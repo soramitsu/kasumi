@@ -43,7 +43,7 @@ fn installed_marker_pair_cannot_recreate_a_missing_installation_lock() -> Result
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
     config.mode = DeploymentMode::Standalone;
-    config.database_path = directory.path().join("node.redb");
+    config.database_path = directory.path().join("node.kv");
     config.persistent_disk = crate::persistent_disk::fixture_config(directory.path());
     let installation = Installation {
         format: 4,

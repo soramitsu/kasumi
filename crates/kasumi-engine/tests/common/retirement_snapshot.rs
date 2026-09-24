@@ -160,7 +160,7 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
         .unwrap();
     let source_binding = source_store.binding().digest().unwrap();
     let recipient = kasumi_store::test_utils::private_tempdir().unwrap();
-    let path = recipient.path().join("replica.redb");
+    let path = recipient.path().join("replica.kv");
     let recipient_physical = common::PhysicalFixture::new(&path, Default::default());
     let recipient_node = recipient_physical
         .storage

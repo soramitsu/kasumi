@@ -1,19 +1,18 @@
 //! Concrete custody boundary for physical opening and fixed NodeTables work.
 //!
-//! Adoption prerequisite: the census and listed fixed backing are bounded here.
-//! Complete redb workspace/diagnostic plans and all twelve consumer replacements
-//! remain mandatory before this boundary can be the production NodeDatabase.
+//! The census and listed fixed backing are bounded here. The engine holds
+//! registered ownership through opening, transactions, and close.
 use crate::{
     NodeDisk, NodeDiskMemoryAdmission, StorageCensusDisposition, StorageOwnerId,
     node_file::{FailedFileTransfer, FailedFileWitness, NodeFile},
     private_files::FileIdentity,
     storage_census::{StorageOwnerKind, StoragePayload, StorageRegistration},
 };
-use parking_lot::{Mutex, MutexGuard};
-use redb::{
+use kasumi_kv::{
     DatabaseOpenMode, DatabaseOpenSettlement, RetainedDatabaseOpening, RetainedWriteTransaction,
     TerminalObservation, WriteTerminalOperation,
 };
+use parking_lot::{Mutex, MutexGuard};
 use std::{
     any::Any,
     io,
@@ -26,11 +25,11 @@ use std::{
 };
 use uuid::Uuid;
 
-// Fund the private redb proxy before register invokes any allocation-only
+// Fund the private engine proxy before register invokes any allocation-only
 // constructor. The public plan includes its Arc header and payload alignment;
 // disk_memory adds the same existing allocator allowance used by other owners.
 fn opening_backing_bytes(path: &Path) -> io::Result<u64> {
-    let layout = redb::Builder::retained_opening_allocation_layout()
+    let layout = kasumi_kv::Builder::retained_opening_allocation_layout()
         .map_err(|_| io::ErrorKind::InvalidInput)?;
     let allocation = crate::disk_memory::allocation::<u8>(
         u64::try_from(layout.size()).map_err(|_| io::ErrorKind::InvalidInput)?,
@@ -47,7 +46,7 @@ pub enum NodeOpeningMode {
 pub enum NodeOpeningPhase {
     Prepared,
     FileAcquisition,
-    RedbOpening,
+    EngineOpening,
     Open,
     Closing,
 }
@@ -85,7 +84,7 @@ impl<E> Observation<E> {
 struct OpeningState {
     mode: NodeOpeningMode,
     file: Arc<NodeFile>,
-    redb: RetainedDatabaseOpening,
+    engine: RetainedDatabaseOpening,
     phase: NodeOpeningPhase,
     // The first accepted table request owns the only create publication proof.
     // A failed registration may release its reservation before any request exists.
@@ -110,7 +109,7 @@ fn observed_failure<E>(observation: TerminalObservation<'_, E>) -> bool {
             | TerminalObservation::Panicked(_)
     )
 }
-fn transaction_failure(report: &redb::WriteTerminalReport<'_>) -> bool {
+fn transaction_failure(report: &kasumi_kv::WriteTerminalReport<'_>) -> bool {
     observed_failure(report.terminal())
         || observed_failure(report.rollback())
         || observed_failure(report.disposal())
@@ -120,7 +119,7 @@ impl OpeningState {
         if self.failed_transfer.is_some() {
             return FailedOpeningRecovery::AwaitingDiskCensus;
         }
-        if self.redb.report().settlement() != DatabaseOpenSettlement::FailedDisposed
+        if self.engine.report().settlement() != DatabaseOpenSettlement::FailedDisposed
             || !matches!(self.failed_recovery, Observation::NotEntered)
         {
             return FailedOpeningRecovery::Retained;
@@ -140,7 +139,7 @@ impl OpeningState {
             Ok(Ok(None)) => {
                 // Typed pre-effect contention enters no transfer operation and
                 // produces no new original failure. Keep the exact prior ack;
-                // a later nonblocking attempt never repeats redb disposal.
+                // a later nonblocking attempt never repeats engine disposal.
                 self.failed_recovery = Observation::NotEntered;
                 FailedOpeningRecovery::PendingTransfer
             }
@@ -155,7 +154,7 @@ impl OpeningState {
         }
     }
     fn has_failures(&self) -> bool {
-        let report = self.redb.report();
+        let report = self.engine.report();
         observed_failure(self.acquisition.borrow())
             || observed_failure(self.ready_publication.borrow())
             || observed_failure(self.opening_outer.borrow())
@@ -186,7 +185,7 @@ impl DatabaseOwner {
         if state.pending_transfer.is_some() {
             let _ = state.transfer_failed();
         }
-        let settlement = state.redb.report().settlement();
+        let settlement = state.engine.report().settlement();
         if state.failed_transfer.is_none()
             && !matches!(
                 settlement,
@@ -198,9 +197,9 @@ impl DatabaseOwner {
             // Close can produce a new original shutdown or backend outcome.
             // A previously released report cannot acknowledge that future work.
             state.outcomes_released = false;
-            let _ = state.redb.close();
+            let _ = state.engine.close();
         }
-        state.redb.report().settlement()
+        state.engine.report().settlement()
     }
 }
 impl StoragePayload for DatabaseOwner {
@@ -264,20 +263,20 @@ impl RegisteredNodeOpening {
                 .storage_census()
                 .register(provider.clone(), known_backing, || {
                     let file = NodeFile::retained_prepared(path, id, disk);
-                    let redb_mode = if matches!(mode, NodeOpeningMode::Existing) {
+                    let engine_mode = if matches!(mode, NodeOpeningMode::Existing) {
                         DatabaseOpenMode::Existing
                     } else {
                         DatabaseOpenMode::Create
                     };
-                    let redb = redb::Database::builder(file.clone())
-                        .retain_backend(Box::new(file.backend()), redb_mode);
+                    let engine = kasumi_kv::Database::builder(file.clone())
+                        .retain_backend(Box::new(file.backend()), engine_mode);
                     DatabaseOwner {
                         stopped: AtomicBool::new(false),
                         serial: Mutex::new(()),
                         state: Mutex::new(OpeningState {
                             mode,
                             file,
-                            redb,
+                            engine,
                             phase: NodeOpeningPhase::Prepared,
                             tables_reserved: false,
                             tables_request: None,
@@ -317,9 +316,9 @@ impl RegisteredNodeOpening {
         if !state.acquisition.success() {
             return state.phase;
         }
-        state.phase = NodeOpeningPhase::RedbOpening;
+        state.phase = NodeOpeningPhase::EngineOpening;
         state.opening_outer = Observation::Entered;
-        match catch_unwind(AssertUnwindSafe(|| state.redb.open().settlement())) {
+        match catch_unwind(AssertUnwindSafe(|| state.engine.open().settlement())) {
             Ok(settlement) => {
                 state.opening_outer = Observation::Returned(Ok(()));
                 if settlement == DatabaseOpenSettlement::Ready {
@@ -474,7 +473,7 @@ impl RegisteredNodeOpening {
         let Some(mut state) = owner.state.try_lock() else {
             return Err(io::ErrorKind::WouldBlock.into());
         };
-        if state.redb.report().settlement() != DatabaseOpenSettlement::DrainedWithFailure
+        if state.engine.report().settlement() != DatabaseOpenSettlement::DrainedWithFailure
             || !matches!(state.failed_recovery, Observation::NotEntered)
         {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -488,8 +487,8 @@ impl RegisteredNodeOpening {
         state.outcomes_released = false;
         state.pending_transfer = Some(acknowledgement.file);
         // Any disposal error/panic is a new outcome, never covered by the
-        // earlier acknowledgement. The actual redb report owner stays installed.
-        if state.redb.dispose_failed().settlement() != DatabaseOpenSettlement::FailedDisposed {
+        // earlier acknowledgement. The actual engine report owner stays installed.
+        if state.engine.dispose_failed().settlement() != DatabaseOpenSettlement::FailedDisposed {
             return Ok(FailedOpeningRecovery::Retained);
         }
         #[cfg(test)]
@@ -516,7 +515,7 @@ impl RegisteredNodeOpening {
         let owner = self.registration.owner();
         owner.stopped.store(true, Ordering::Release);
         if let Some(mut state) = owner.state.try_lock()
-            && state.redb.report().settlement() == DatabaseOpenSettlement::Closed
+            && state.engine.report().settlement() == DatabaseOpenSettlement::Closed
         {
             state.outcomes_released = true;
         }
@@ -541,7 +540,7 @@ pub struct NodeOpeningReport<'a> {
     state: MutexGuard<'a, OpeningState>,
 }
 impl NodeOpeningReport<'_> {
-    /// Explicitly acknowledge the terminal redb report and inspect the actual
+    /// Explicitly acknowledge the terminal engine report and inspect the actual
     /// FileOwner logical errors. The callback borrows the original objects;
     /// returning projections or telemetry never constitutes this witness.
     /// Unknown native close, unfinished work and disposal are ineligible.
@@ -549,7 +548,7 @@ impl NodeOpeningReport<'_> {
         &self,
         mut inspect_file_error: impl FnMut(&io::Error),
     ) -> io::Result<FailedOpeningAcknowledgement> {
-        if self.state.redb.report().settlement() != DatabaseOpenSettlement::DrainedWithFailure
+        if self.state.engine.report().settlement() != DatabaseOpenSettlement::DrainedWithFailure
             || !matches!(self.state.failed_recovery, Observation::NotEntered)
         {
             return Err(io::ErrorKind::WouldBlock.into());
@@ -579,20 +578,20 @@ impl NodeOpeningReport<'_> {
     pub fn existing_tables_verified(&self) -> bool {
         self.state.existing_tables_verified
     }
-    pub fn redb(&self) -> redb::DatabaseOpenReport<'_> {
-        self.state.redb.report()
+    pub fn engine(&self) -> kasumi_kv::DatabaseOpenReport<'_> {
+        self.state.engine.report()
     }
 }
 
 #[derive(Debug)]
 pub enum NodeTablesBodyError {
-    Catalog(redb::TableError),
-    Records(redb::TableError),
+    Catalog(kasumi_kv::TableError),
+    Records(kasumi_kv::TableError),
 }
 struct WriterState {
     phase: NodeWriterPhase,
     transaction: Option<RetainedWriteTransaction>,
-    begin: Observation<redb::TransactionError>,
+    begin: Observation<kasumi_kv::TransactionError>,
     body: Observation<NodeTablesBodyError>,
     outer: Observation<std::convert::Infallible>,
     outcomes_released: bool,
@@ -631,7 +630,7 @@ impl NodeTablesRequest {
         let Some(database) = self.database.owner().state.try_lock() else {
             return false;
         };
-        let Some(witness) = database.redb.retained_database() else {
+        let Some(witness) = database.engine.retained_database() else {
             return false;
         };
         if transaction.report().operation().is_none() {
@@ -651,8 +650,9 @@ impl NodeTablesRequest {
         state.phase = NodeWriterPhase::Begin;
         state.begin = Observation::Entered;
         let database = owner.state.lock();
-        let Some(db) = database.redb.database() else {
-            state.begin = Observation::Returned(Err(redb::StorageError::DatabaseClosed.into()));
+        let Some(db) = database.engine.database() else {
+            state.begin =
+                Observation::Returned(Err(kasumi_kv::StorageError::DatabaseClosed.into()));
             return;
         };
         match db.begin_write() {
@@ -775,7 +775,7 @@ pub struct NodeTablesReport<'a> {
     state: MutexGuard<'a, WriterState>,
 }
 impl NodeTablesReport<'_> {
-    pub fn begin(&self) -> TerminalObservation<'_, redb::TransactionError> {
+    pub fn begin(&self) -> TerminalObservation<'_, kasumi_kv::TransactionError> {
         self.state.begin.borrow()
     }
     pub fn body(&self) -> TerminalObservation<'_, NodeTablesBodyError> {
@@ -784,7 +784,7 @@ impl NodeTablesReport<'_> {
     pub fn outer(&self) -> TerminalObservation<'_, std::convert::Infallible> {
         self.state.outer.borrow()
     }
-    pub fn terminal(&self) -> Option<redb::WriteTerminalReport<'_>> {
+    pub fn terminal(&self) -> Option<kasumi_kv::WriteTerminalReport<'_>> {
         self.state
             .transaction
             .as_ref()

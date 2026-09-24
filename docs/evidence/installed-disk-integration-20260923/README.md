@@ -2108,3 +2108,358 @@ It would read a deployment binding at 256 KiB even though a valid current
 writer can durably publish a binding above 1 MiB under the 32 MiB record
 limit. A coherent writer/reader-size revision is being staged; the manifest
 canonical decoder itself has not been applied or tested.
+
+The later full serial authority library on the selected-row source finished
+**66 passed, 1 failed** in 1,072.81 seconds (`target/g01-checkpoint-selected-rows-candidate/applied-full-authority-after-selected.log`,
+SHA-256 `7f1fdd1bf1763878d2abb56b70890132bb406488b3e982772315f62c8c41a8ef`,
+exit 101). Its signer-head fixture received `UnknownOutcome` after a command
+acknowledgement deadline and directly unwrapped it. The same test passed alone
+in 23.81 seconds (`isolated-authority-signer-head-after-failure.log`, SHA-256
+`ea446194da58c13cd9e7652a1651e6137bb55f2ee8f88e7121ce0e54c005c3f3`,
+exit 0). That isolated pass does not qualify the full authority suite. The
+independently reviewed G09 single-send Stop fixture correction is applied
+(`target/g09-stop-current-leader-fixture-candidate/candidate.patch`, SHA-256
+`e52a0e03c36ad1feb68e2b62206194a59d93a27555bb9826340f95df132be6cc`;
+review SHA-256 `8a828ad497f9edba27de36ba427338f515a1edb5c259acfcf824f5b316bbb356`).
+Its complete six-case rerun is pending; neither G07 nor G09 is closed.
+
+The separate G01 bootstrap-manifest revision 3 is also unapplied after a
+HOLD review (`target/g01-bootstrap-manifest-canonical-candidate-rev3/REVIEW.md`,
+SHA-256 `0169d533ee73733524844037761e6bf113d86bde4f059371c99da950838b194a`):
+its fixed 96 MiB recovery reservation would reject even tiny valid target
+opens under the documented 64 MiB default work budget on a 512 MiB host.
+Manifest-only revision 4 is staged for review while actual-size deployment
+admission is designed separately; no final-source G01 pass is claimed.
+
+The independently reviewed G01 manifest-only revision 4 is now applied
+(`target/g01-bootstrap-manifest-only-candidate-rev4/candidate.patch`, SHA-256
+`e5f3499d3a74eee01fde0ce6903e70a1fbb2c0b0d5eb5d1f10b5fe18255d1e6a`;
+review SHA-256 `cf31fdb42ffbf85dc9c4d544f03832b44cffe3e29260d2558ee4ab6da56a11e8`).
+It admits only exact current-writer, 256-byte bootstrap manifests and bounds
+snapshot chunks at the writer's 4 MiB size across engine and server reads.
+Deployment binding admission remains open: neither the held 256 KiB read
+ceiling nor the held fixed 96 MiB reservation was applied. The focused engine
+test first could not start because the concurrently assembled `kasumi-kv`
+manifest was absent (`applied-focused-engine-manifest.log`, SHA-256
+`dadefcf056dee52dc02e6894ae3d3a08edbf8f6837ed3ce742185160d8c6625a`).
+After that manifest appeared, a locked offline rerun also stopped before
+compilation because the lockfile needed updating
+(`applied-focused-engine-manifest-after-kv-manifest.log`, SHA-256
+`3a50ecff49866d437195d0924da40ace7d2760f6e6d31f3f5d57a8562b37f112`).
+Neither is a test result for the manifest behavior.
+
+The six-case G09 lifecycle rerun after the approved one-send current-leader
+Stop correction finished **2 passed, 4 failed** in 332.76 seconds
+(`target/g09-stop-current-leader-fixture-candidate/applied-six-lifecycle-after-stop.log`,
+SHA-256 `032712befa5f51183147a9f61f25b87d0f2ff9f765ac62566b822c45c30a9186`,
+exit 101). Two failures were ten-second exact preparation timeouts, and two
+were `Unavailable` from a cached node-1 phase read after Control leadership
+moved. The corrected Stop assertion itself was not the failing line. This
+failure supersedes the earlier note that the six-case rerun was pending; no
+complete G09 lifecycle pass is claimed.
+
+The independently reviewed G07 signer test-only correction is applied
+(`target/g07-authority-signer-deadline-audit/candidate.patch`, SHA-256
+`cb0dbc896904df9bb3b2c070f3cac445710346fe15b3010f59faccb493b68af9`;
+review SHA-256 `2c5af760e80874c5e0e4b596245b9af7f50b3e7f4c6ca923ce570193289d9235`).
+On an uncertain first Start acknowledgement, it resolves only the original
+operation's read-only receipt and checks the complete command and digest; it
+does not resubmit Start. The focused signer and full authority library runs
+remain pending on this exact source.
+
+The independently reviewed G09 lost-ack test is also applied
+(`target/g09-begineffect-lost-ack-test-candidate-rev2/candidate.patch`, SHA-256
+`9d47122ce28dff810b98949132415f9d4b27619c3efd7d712da8cb13fecc9723`;
+review SHA-256 `f7557adacbef1e5d2b3ac0be188c5be51b0e648ae101cc39c3bdaa0b5a393246`).
+It tests an applied BeginEffect marker followed by a lost release, one retained
+marker, no fabricated outcome or child, and rejection of a second admission
+attempt. Compilation and behavior remain unverified while the new native KV
+crate is being assembled. The signed first-membership path and historical
+status read are still absent, so G09 remains open.
+
+A further locked offline focused G01 attempt began compilation after the native
+KV manifest and lockfile appeared, but the concurrently assembled
+`kasumi-kv` crate failed with 18 Rust errors in its unfinished core/table
+facade (`target/g01-bootstrap-manifest-only-candidate-rev4/applied-focused-engine-manifest-after-kv-assembly.log`,
+SHA-256 `52f2fa78a2248e965d0d7e620e69f52d367d95c7819a4463b837a0f3e37c4059`,
+exit 101). No G01 test executed in that attempt. This records an exact
+compilation blocker, not a behavior failure or a release pass.
+
+The G09 test-only current-leader phase-read correction is present in the
+tracked source at SHA-256
+`ada98b56c3a526e7611b695c004f95a934eddc549c5e8afff48bf20acc45bd1c`,
+matching `target/g09-phase-read-candidate/candidate.patch` (SHA-256
+`4b269127b8d7aac9120d259f85e8c36aa7c4a4c970e0feef991e3ec84c3337f8`).
+An independent review approved the exact pre/post image
+(`target/g09-phase-read-candidate/REVIEW.md`, SHA-256
+`b9ab77f4a6aa9637224797cf87d54ad62281973ffcfe14f258c54fb921256b5a`).
+It pins the original operation, phase, dispatch and finite read context while
+retrying only an uncertain read on the current Control leader. The focused
+cases and full lifecycle cohort have not run on this source; the separate
+preparation timeout still needs resolution.
+
+The next focused G01 attempt, after more native KV core methods appeared,
+still stopped before the test: three replay helpers were not yet defined
+(`target/g01-bootstrap-manifest-only-candidate-rev4/applied-focused-engine-manifest-after-kv-core.log`,
+SHA-256 `a4ff4be1bb13183999862d348d081b819af84bbdb44cf0c99b1c48d426377ff3`,
+exit 101). The separate G09 positive first-membership audit
+(`target/g09-positive-membership-slice/README.md`, SHA-256
+`c1a6cdc8ea26e6451347950b69ad1ffd5e41d04fb36af57da02b5f8a69e57c5d`)
+finds no safe standalone positive patch: wire, receiver admission, local owner,
+applied and committed Raft first event, snapshot provenance and signed
+terminal status must form one verified chain. It changed no tracked source.
+
+The current `master` Python discovery passes **191/191** in 60.226 seconds
+with the bundled Python 3.12 runtime
+(`target/g11-current-master-python312-discovery-20260924.log`, SHA-256
+`a3430eb4176493e50ae9d332b1e2fe5169e4701a30d4969d72321274c181449d`,
+exit 0). A prior invocation with the host's Python 3.9 failed at import and
+runtime API use (`target/g11-current-master-python-discovery-20260924.log`,
+SHA-256 `70c15cf3702b386583ad788616641c8461b76f29de820acf7678bf94aee18259`,
+exit 1); it was an interpreter mismatch, not a source qualification result.
+The passing run occurred while native KV source was still changing, so final
+frozen-source Python qualification remains open.
+
+The independently reviewed G09 exact-preparation diagnostic is applied to
+`recovery_control.rs` at SHA-256
+`93fe9e27910df3ac7499a455566cfcf86a588ac04d25fc42d7521ec3b5bc5075`
+(`target/g09-prepare-instrumentation/candidate.patch`, SHA-256
+`42529853f7d9a8444e248d42dee9b583b39adb813663a76006b760aead8cf641`;
+review SHA-256 `34c32febf2dd5d493107a4e5efff23af75cf88635cca6ce83797021715483ef4`).
+It keeps the exact command and original 60-second credential, records stage,
+route and explicitly unverified member-local rows on timeout, and still
+fails if no verified phase is observed. Its 40-second observation bound
+covers more than the former 10-second outer bound but does not guarantee a
+maximal service call can complete. No lifecycle rerun on this source has
+finished; G09 remains open.
+
+The native KV crate's locked offline check passes
+(`target/native-kv-current-master-check-20260924.log`, SHA-256
+`6ad24c7f3a1f3c882b83ffb5e07866ab6266e278ed4f98fec1e72e93ea86455a`,
+exit 0). The first combined focused G01 engine run reached its test but
+failed because the new table facade's 64 MiB read ceiling exceeded a 32 MiB
+core ceiling (`target/g01-bootstrap-manifest-only-candidate-rev4/applied-focused-engine-manifest-after-kv-check.log`,
+SHA-256 `f054cfc252b419983f384f466d1f51263f0fd3665543defc77e5c6b44b4443ab`,
+exit 101). The concurrently developed core then removed that inconsistent
+read-bound rejection and raised its physical value limit to cover encrypted
+record framing. The same focused manifest test passes **1/1** on the later
+combined source (`applied-focused-engine-manifest-after-kv-bound-fix.log`,
+SHA-256 `46ff53b0d2e4576dd7389667c335286a502ccb1211e92756f206ec083ca274d8`,
+exit 0). The matching server fingerprint case also passes **1/1**
+(`applied-focused-server-fingerprint-after-kv.log`, SHA-256
+`9a7d9411e55b7e587028c2c517ca313651e80877b9c0974e44bc947874265ef2`,
+exit 0). The new engine/server and final frozen-source suites remain open.
+
+The reviewed G07 signer receipt-resolution fixture passes its focused case
+**1/1** on the native KV combined source
+(`target/g07-authority-signer-deadline-audit/applied-focused-signer-after-native-kv.log`,
+SHA-256 `512db42b7e210a882fd11f61a405d55af9058400855221d91e82df8824e1e48e`,
+exit 0). This does not qualify the complete authority library; the earlier
+66/1 full run remains the latest complete cohort result.
+
+Two independent read-only reviews of the new native KV core and table facade
+identify a release-blocking close-custody transition: a proved pre-effect
+`WouldBlock` from the NodeDisk backend becomes terminal after `Core::close`
+marks native close entered. The core review also finds that a fenced owner can
+return a successful absent-key/empty-range observation and that the public
+standalone `FileBackend` claims native drain after an unobserved `File` drop.
+These are source findings, not yet fixed or verified; see
+`target/native-kv-crash-review/README.md` (SHA-256
+`1c1ac6370f862cea9986ef65f394bccdb44975650e78fd9aa78c1d14f109098a`)
+and `target/native-kv-facade-review/README.md` (SHA-256
+`a6a0b5a6e5e47e63a07a8281a28df86bf87d2a72e09639a1e6a5e77aa769ad3d`).
+G02 remains open.
+
+The newly applied G09 lost-ack Control test passes **1/1** on the combined
+native KV source
+(`target/g09-begineffect-lost-ack-test-candidate-rev2/applied-focused-lost-ack-after-native-kv.log`,
+SHA-256 `195a9f43b463707a1fbf916e9c7a200c21be3b555e55f28c09796120f651566a`,
+exit 0). It verifies a committed marker followed by a revoked response
+release, an unresolved original phase and no fabricated outcome or child.
+The complete seven-case Control lifecycle cohort and installed target fault
+test remain pending; this single case does not close G09.
+
+The first native KV library-suite attempt stopped during compilation because
+the concurrent compaction implementation called `Core::compact` before that
+method existed (`target/native-kv-current-master-lib-tests-20260924.log`,
+SHA-256 `74a457b088484809fee2d0f0afa12ba5ce222ee2b68c0f1f7510a3eefb28689c`,
+exit 101). No native KV unit test executed in that attempt. The prior crate
+check and focused integrated passes apply only to their earlier source
+checkpoints; current-source G02 qualification remains open.
+
+After the compaction method appeared, the native KV crate library suite
+passes **14/14** (`target/native-kv-current-master-lib-tests-after-compact-20260924.log`,
+SHA-256 `c0a181089715aef5e9b2a2e90be9a4095c187f86b2acaf0ffd294f96b0c0558e`,
+exit 0). The independently identified close-custody, failed-owner negative
+read and standalone file-close witness gaps are not covered by that pass;
+G02 still requires their fixes and wider source-bound validation.
+
+Pinned workspace `cargo fmt --all -- --check` fails on the in-progress native
+KV cutover with 22 formatting diffs in store, engine test, authority test and
+server files (`target/native-kv-current-master-format-20260924.log`, SHA-256
+`0cefd2713deb093ec81d5de53fc5415ba55e258b210f1c1e70b816ecdedd6dde`,
+exit 1). Formatting has not been changed during this concurrent edit; the
+final-source gate remains open.
+
+The seven-case G09 Control lifecycle rerun on the reviewed read-route and
+exact-preparation diagnostic fixture passes **4/7** in 239.36 seconds
+(`target/g09-prepare-instrumentation/applied-seven-lifecycle-after-native-kv.log`,
+SHA-256 `e3f00bd914e4658c76374ed8fc6f4f304d6cab6527ed62b53785091f8ee90637`,
+exit 101). `recovery_journal_persists...` reaches a retained marker without a
+one-use ticket; `recovery_planned_retirement...` observes `Unavailable` rather
+than the expected conflicting issuer outcome; and
+`recovery_uncertain_activation_requires_permanent_stop...` gets an uncertain
+write response during Control intent commitment. The passing cases include
+the new lost-ack test, expired completion, expired target and positive
+activation. These failures are preserved, not converted to positive effects;
+G09 and its full lifecycle acceptance remain open. The test fixture source was
+`crates/kasumi-engine/tests/common/recovery_control.rs` SHA-256
+`93fe9e27910df3ac7499a455566cfcf86a588ac04d25fc42d7521ec3b5bc5075`.
+
+The journal case alone next failed at its cached leader's otherwise identical
+Prepare replay (`target/g09-prepare-instrumentation/isolated-journal-after-native-kv.log`,
+SHA-256 `4a110ede96da7f6ab81ecfbb1cb592b9b8989a1925b07b90f382333cc97df74e`,
+exit 101). A test-only change retries that exact phase, sequence, command and
+finite credential through the current leader on `UnknownOutcome` or
+`Unavailable`; it does not create a new effect ticket. The isolated case then
+passes **1/1** (`target/g09-prepare-instrumentation/isolated-journal-exact-replay-rerun.log`,
+SHA-256 `41db169f85b9d59a1fd9ac186616f3a86b1f8e94e67c1ff42aacf72238beb345`,
+exit 0). Its wider cohort has not been rerun on this revised fixture.
+
+The planned-retirement case alone passes **1/1** on the exact-replay fixture
+(`target/g09-prepare-instrumentation/isolated-planned-after-replay.log`,
+SHA-256 `36641cd06766b91fe6e31d9696c7ca5a84c8ac8b674331794b1ffd9d42d64325`,
+exit 0). The uncertain-stop case first failed when its negative altered
+Prepare received an ambiguous response
+(`isolated-uncertain-stop-after-replay.log`, SHA-256
+`2199c613f43ac8dfe1d9eb7b0561dbdaef10494307c7b96ecfb04c97feb15142`,
+exit 101). The test now rereads the exact retained phase after ambiguity
+before retrying the same altered input; its isolated case passes **1/1**
+(`isolated-uncertain-stop-after-negative-preparation.log`, SHA-256
+`22b3c5b9a47fe7429a5328dc874cc01f59b2ccbb38a56e56c404c7e6574bcf89`,
+exit 0). The seven-case serial rerun on test source SHA-256
+`5a61f2e548900fee529e16eca476193366aa46030479c97441ca81e2a06aa20a`
+passes **3/7** (`applied-seven-lifecycle-exact-replay-rerun.log`, SHA-256
+`9ff76bcad05652e5876230f5c36a74d0be7bac47effb961c293e49926ec7b385`,
+exit 101). Four cases fail at cached-route reads or negative issuer outcome
+assertions under leader changes. They remain failures; no synthetic positive
+outcome has been accepted.
+
+The independently reviewed native KV close-entry revision 3 is rebased a
+second time over concurrent compaction-only core/facade edits and applied on
+the existing `master`. Its revision 4 patch is
+`target/native-kv-close-fix-candidate-rev4/candidate.patch` (SHA-256
+`fc88d180d706d63095ea3d40c316cc2fe3d94984fbd22658c09d4f76867a5cdb`);
+`source.json` (SHA-256
+`9f881b56e217052bcf305dedad0852885eeaf67ea9f0ff2e272a6cadf2e939a3`)
+records eight exact pre/post source hashes. The revision 4 patch text differs
+from independently approved revision 3 only in hunk offsets, with all changed
+source lines identical. Its native KV library suite passes **21/21**
+(`applied-kv-lib.log`, SHA-256
+`1d992d373fb04386b8a07e98fdfe3d83b60efcf701376d5b6f2740ec60442fdb`,
+exit 0). This fixes typed pre-entry close retry and entered one-shot retention
+in that checkpoint. The first full store attempt stopped at a new test's
+temporary-borrow compile error (`applied-store-lib.log`, SHA-256
+`bd9c944cb060232cd25a1f0be7690ad22e151d78391806a414c31ba7f3948689`,
+exit 101). After that test-only fix, the next attempt stopped while a
+concurrent native KV index-pool initializer was incomplete
+(`applied-store-lib-borrow-fix.log`, SHA-256
+`5153edcb838889c420257aca823dbeb3cba127dc54dc1d1fb1c32689d5161510`,
+exit 101). With the initializer present, the serial store library ran **409
+passed, three failed, two ignored** (`applied-store-lib-after-index-pool.log`,
+SHA-256 `e0579661c5d8c6a263bd885f0b60dbb145b98ed773596607cf6946075fe657f2`,
+exit 101). The three new tests expected one native close attempt after a
+pre-entry retry; the clean NodeDiskFile actually closes both the data and
+retained parent descriptors. Corrected exact-count assertions pass **3/3**
+focused (`applied-store-close-focused-count-fix.log`, SHA-256
+`44845a055c21f462db7cb4494c6bdef8ef33596487ac7ef037a122fa05546786`,
+exit 0). The full store suite has not been repeated on that final test source,
+and the public FileBackend native-close witness remains unresolved. G02 is open.
+
+The target-only G01 native deployment-binding candidate is not applied
+(`target/g01-native-deployment-admission-candidate/candidate.patch`, SHA-256
+`b97fd434cff0a35fc03f9b8f87d8e8c6b813d030c9652487c5f8c592a037f5c1`).
+Its independent review (`INDEPENDENT_REVIEW.md`, SHA-256
+`4e88628c877b6288a9b7cebf8a4f48195334380fb42b98ada60cd2d913c304fa`)
+holds it because the widened target row can allocate typed JSON before an
+admission charge, surviving typed owners would shed their byte charge, and
+application-only/server/retired readers remain outside the paired contract.
+Same-generation pair selection and pre-decrypt byte admission were reviewed
+as useful but insufficient; G01 remains open.
+
+The independently reviewed native KV failed-owner read fence is applied from
+`target/native-kv-read-fence-candidate-rev2/candidate.patch` (SHA-256
+`b7e1cfc31dc7025ace39ab42d021970ed6ade5538cf6520c97995f910a2f09b6`);
+its review SHA-256 is
+`cff0acd22af99e82d8249a590cd27f45939a4f555574e8a3bcb2d6a26721753d`.
+The first complete crate run passed all 24 unit tests but one of six crash
+cases failed (`applied-kv-all-tests.log`, SHA-256
+`4ca46629b688e7b4878932163fc2ffa9f7009a6b6898c3a971cb1f0f4cea10c8`,
+exit 101): the admission-injection fixture kept denying the value read used
+to inspect a denied commit. After the fixture reset denial before the value
+check, the locked offline crate suite passes **24/24 unit and 6/6 crash
+cases** (`applied-kv-all-tests-after-fixture.log`, SHA-256
+`dad79a2abfd29b19d87705e726a485d7efe8f24e991923b5bdde9d10200bc3aa`,
+exit 0). The failed attempt remains evidence; this is a crate-local result,
+not the final G02 gate.
+
+The independently reviewed FileBackend native-close witness patch is applied
+on `master` with exact source and postimage hashes from
+`target/file-backend-native-close-witness-candidate/source.json`. Its patch
+SHA-256 is `40f9f88f07d057eaa6bb76f32c11465e5c8e1282d8fdda0764b2cad89d78ad79`;
+the PASS-for-this-slice review SHA-256 is
+`588345df87a21fcb67dbcc8a0db9c8ebabefc98340c52303e9d11506301b9e94`.
+The locked offline crate suite passes **29/29 unit and 6/6 crash cases**
+(`target/file-backend-native-close-witness-candidate/applied-kv-all-tests.log`,
+SHA-256 `38aeffe30cd5f698e0d5dc7d765f5612665b1aa5ad155983244d281458397767`,
+exit 0). A repeated public `Core::close` can still misreport an earlier failed
+drain as success, or replace an uncertain native errno with `BrokenPipe`; the
+retained facade preserves the original result. That public API gap, the full
+store suite and installed G02 qualification remain open.
+
+The first target-only G09 current-leader read/negative-response patch was
+held by independent review (SHA-256
+`19726fb667118afd2259ca30aaa4f74047edb3edb70d46c5a9e86de81f061c9b`):
+six generic negative checks could accept a different `Conflict` before
+reaching the intended validator. Revision 2 is applied test-only from
+`target/g09-control-read-negative-candidate-rev2/candidate.patch` (SHA-256
+`ea02a7f07a4c9c56476083344b590ccc73ad5727ffc24b57fbd3bb81a68e027b`)
+after independent PASS review (SHA-256
+`047441cc77b43d22dbed454fae06e2b788c9366015209abf5a0551dd19425cd6`).
+It pins exact code/message at all ten negative sites and checks the same phase
+is pending around the attempted invalid response. The seven-case serial
+lifecycle cohort has not yet run on this revised fixture; G09 remains open.
+
+The full serial store library suite after the FileBackend patch passes **412
+passed, zero failed, two ignored**
+(`target/file-backend-native-close-witness-candidate/applied-store-all-tests.log`,
+SHA-256 `06d495775d063b80e08b40e4be833af30136828bceca0c32f658d7e4717a5423`,
+exit 0). This includes the corrected exact-count NodeDiskFile close tests, but
+precedes the next public `Core::close` report patch and does not qualify a
+frozen final workspace.
+
+The seven-case G09 serial lifecycle run on the independently reviewed test-only
+revision 2 passes **5/7** (`target/g09-control-read-negative-candidate-rev2/applied-seven-lifecycle.log`,
+SHA-256 `76296c764637bfed08a3fdb59e18dcf564c0179718f3bf13989bfaf9e6c0d6d2`,
+exit 101; fixture SHA-256
+`6a5ab5eb2b834aae9878bf35bbf1c1dea0e3aaf65980982f20e46eeb51b9c695`).
+The expired-completion case receives `Unavailable` while preparing the exact
+Control intent through a cached leader at line 591. The positive uncertain
+activation case receives `Unavailable` from another cached leader status read
+at line 1331. All other five pass. These two failures remain open; the
+negative-response validation proof is not counted as full G09 acceptance.
+
+The independently reviewed one-file public `Core::close` terminal-report patch
+is applied on `master` from
+`target/native-kv-core-close-report-candidate/candidate.patch` (SHA-256
+`56e7a05644c2c8f8930d8e3883ab37432aaa0637b6167ba0b3e74db68ec2ab9f`),
+with exact pre/post hashes in `source.json` and independent PASS review SHA-256
+`9dd1c332b855197b68365867df620024a0cee9cb16be6d5d2b783bad9c382fa1`.
+It returns the first backend close outcome unchanged and latches bounded
+native-disposition/errno evidence for repeat reports without a second native
+close. The locked offline KV suite now passes **31/31 unit and 6/6 crash
+cases** (`applied-kv-all-tests.log`, SHA-256
+`46270a6790b664bb2cf8bac7768ca9945ebfe8f35f751b3984066bb9a97eaea3`,
+exit 0). A full store rerun on this newer source is in progress. G02 remains
+open for production registered-owner cutover, wider/final qualification and
+measured installed release gates.

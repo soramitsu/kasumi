@@ -114,7 +114,7 @@ impl Fixture {
         let persistent_disk = crate::persistent_disk::fixture_config(&root.join("data"));
         let signer_verifier = SignerVerifierConfig {
             identity: installed_verifiers[&1].clone(),
-            database_path: root.join("data/verifier.redb"),
+            database_path: root.join("data/verifier.kv"),
             keys: keys("verifier")?,
             max_background_workers: 64,
         };
@@ -169,7 +169,7 @@ impl Fixture {
             },
             resource_budget_bytes: 128 << 20,
             admission: storage.policy().clone(),
-            database_path: root.join("data/authority.redb"),
+            database_path: root.join("data/authority.kv"),
             database_id: Uuid::new_v4(),
             persistent_disk,
             scratch_disk,

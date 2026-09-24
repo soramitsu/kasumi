@@ -35,7 +35,7 @@ impl Installation {
             admission.clone(),
         )?;
         let node = storage.create_new(
-            directory.path().join("persistent/node.redb"),
+            directory.path().join("persistent/node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )?;
         let incarnation = uuid::Uuid::new_v4();
@@ -111,6 +111,60 @@ fn retained(stores: &TenantStorageSet) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
         }
     }
     Ok(values)
+}
+
+#[tokio::test]
+async fn bootstrap_manifest_rejects_alternate_and_oversized_rows_without_repair()
+-> anyhow::Result<()> {
+    let fixture = Installation::new().await?;
+    fixture.seed_bootstrap()?;
+    let store = fixture.stores.application();
+    let canonical = store
+        .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
+        .expect("current bootstrap manifest");
+    let manifest = decode_current_manifest(&canonical)?;
+    assert_eq!(persisted_bootstrap_digest(store)?, manifest.digest);
+    assert!(load(store)?.is_some());
+    let expected_workspace = recovery_workspace_bytes(&fixture.stores)?;
+    assert!(expected_workspace >= manifest.bytes);
+
+    let reordered = format!(
+        r#"{{"digest":{},"chunks":{},"bytes":{},"format":{}}}"#,
+        serde_json::to_string(&manifest.digest)?,
+        manifest.chunks,
+        manifest.bytes,
+        manifest.format
+    )
+    .into_bytes();
+    let mut padded = canonical.clone();
+    padded.push(b' ');
+    let mut oversized = canonical.clone();
+    oversized.resize(MAX_BOOTSTRAP_MANIFEST_BYTES + 1, b' ');
+    for altered in [reordered, padded, oversized] {
+        store.write_batch(&[WriteOp::put(NS, b"manifest", altered.clone())])?;
+        assert!(read_current_manifest(store).is_err());
+        assert!(persisted_bootstrap_digest(store).is_err());
+        assert!(load(store).is_err());
+        assert!(recovery_workspace_bytes(&fixture.stores).is_err());
+        assert_eq!(store.get(NS, b"manifest")?, Some(altered));
+    }
+    store.write_batch(&[WriteOp::put(NS, b"manifest", canonical)])?;
+    assert!(load(store)?.is_some());
+    assert_eq!(
+        recovery_workspace_bytes(&fixture.stores)?,
+        expected_workspace
+    );
+
+    let first_chunk = 0u64.to_be_bytes();
+    let saved_chunk = store.get_bounded(NS, &first_chunk, CHUNK)?.unwrap();
+    let oversized_chunk = vec![0; CHUNK + 1];
+    store.write_batch(&[WriteOp::put(NS, first_chunk, oversized_chunk.clone())])?;
+    assert!(load(store).is_err());
+    assert_eq!(store.get(NS, &first_chunk)?, Some(oversized_chunk));
+    store.write_batch(&[WriteOp::put(NS, first_chunk, saved_chunk)])?;
+    assert!(load(store)?.is_some());
+    fixture.shutdown().await;
+    Ok(())
 }
 
 #[tokio::test]
@@ -292,7 +346,7 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
     drop(audit);
     drop(node);
     let node = storage.open_existing(
-        directory.path().join("persistent/node.redb"),
+        directory.path().join("persistent/node.kv"),
         kasumi_store::test_utils::NODE_STORE_ID,
     )?;
     let stores = TenantStorageSet::open_existing(

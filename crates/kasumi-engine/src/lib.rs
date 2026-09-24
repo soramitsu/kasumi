@@ -57,8 +57,9 @@ pub use bootstrap::{
     ReplicatedBootstrap, ReplicatedGenesis, RestoreSource, TargetMaterializationConfig,
     TargetReplica, TargetReplicaConfig, VerifiedTargetMaterialization, initialize_replicated,
     materialize_target_replica, open_existing_local, open_existing_replicated, open_local,
-    open_local_with_incarnation, open_replicated, open_target_replica, prepare_replicated_restore,
-    recovery_workspace_bytes, restore_local, resume_target_materialization,
+    open_local_with_incarnation, open_replicated, open_target_replica, persisted_bootstrap_digest,
+    prepare_replicated_restore, recovery_workspace_bytes, restore_local,
+    resume_target_materialization,
 };
 pub use security_audit::{
     SECURITY_TENANT, SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome,

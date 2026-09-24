@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn refused_input_reservation_creates_no_plan_or_redb_effect() {
+    fn refused_input_reservation_creates_no_plan_or_engine_effect() {
         let bookkeeping = TestDiskMemory::required_bookkeeping_bytes(8).unwrap();
         let memory = TestDiskMemory::new(bookkeeping + 1024, 8);
         let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();

@@ -43,7 +43,7 @@ generation binding, key and byte accounting while visiting bounded records.
 
 Permanent journal stop, issuer stop/drain evidence, closed gates and completed
 worker/storage drain precede cleanup. Cleanup claims the exact canonical Prepared
-or Ready envelope without opening redb or constructing application keys; it
+or Ready envelope without opening the KV engine or constructing application keys; it
 retains the exclusive descriptor through identity recheck, unlink and parent
 synchronization. Only an explicit NotFound filesystem observation establishes
 absence; permission, symlink-loop and other I/O failures remain errors, including

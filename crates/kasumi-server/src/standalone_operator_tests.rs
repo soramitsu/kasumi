@@ -217,7 +217,7 @@ async fn cancelled_initialization_impl() -> Result<()> {
     let _serial = drain_serial().lock().await;
     let root = kasumi_store::test_utils::private_tempdir()?;
     let directory = std::fs::canonicalize(root.path())?.join("database");
-    let path = directory.join("data/node.redb");
+    let path = directory.join("data/node.kv");
     let paused = install(&path, "initialize-node", false);
     let storage =
         crate::runtime_storage_fixtures::standalone_storage(&directory, Default::default())?;
@@ -337,7 +337,7 @@ fn early_initialization_audit_error_drains_without_publishing_completion() -> Re
 async fn early_initialization_audit_error_impl() -> Result<()> {
     let root = kasumi_store::test_utils::private_tempdir()?;
     let directory = std::fs::canonicalize(root.path())?.join("database");
-    let failed = install(&directory.join("data/node.redb"), "initialize-audit", true);
+    let failed = install(&directory.join("data/node.kv"), "initialize-audit", true);
     failed.release.notify_one();
     let storage =
         crate::runtime_storage_fixtures::standalone_storage(&directory, Default::default())?;

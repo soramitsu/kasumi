@@ -14,6 +14,20 @@ request owners, and canonical planned recovery are integrated in source. Persist
 disk admission, native reservations, complete HA/local lifecycle, and final live,
 capacity, platform, endurance and artifact gates remain open.
 
+The 2026-09-24 native KV direction replaces the earlier redb-backed G02
+target; [its active criteria](native-kv-goal.md) forbid old-format migration
+and fallback. The new crate passes a locked offline compile check and its
+current 14-case library suite, while read-only reviews found close-custody
+and failed-owner negative-read gaps that still need fixes. The G01
+current-byte bootstrap-manifest engine and server fingerprint cases each
+pass **1/1** after an in-progress native KV read-bound mismatch was corrected.
+Full-source suites are pending. The latest seven-case G09 Control lifecycle
+run passes **3/7**; four cases fail around cached-route reads or negative
+outcome responses under leadership changes. Positive signed first
+membership and historical status remain absent. Bundled Python 3.12 discovery
+passes **191/191** while the native KV source is still changing. These are
+development checkpoints; no G01–G14 goal or final release gate is closed.
+
 Latest master-only development evidence is recorded in the
 [integration bundle](evidence/installed-disk-integration-20260923/README.md).
 The later exact-byte storage, Raft and authority cutovers pass the full serial

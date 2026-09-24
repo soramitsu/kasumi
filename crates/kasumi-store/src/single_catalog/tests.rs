@@ -9,7 +9,7 @@ fn node(
 ) -> Result<(tempfile::TempDir, Arc<NodeStore>)> {
     let directory = crate::test_utils::private_tempdir()?;
     let node = NodeStore::create_new_fixture(
-        directory.path().join("singleton.redb"),
+        directory.path().join("singleton.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
@@ -522,7 +522,7 @@ async fn cancelling_during_singleton_key_preparation_retains_actual_node_until_p
     drop(draining);
     assert!(
         NodeStore::open_existing_fixture(
-            directory.path().join("singleton.redb"),
+            directory.path().join("singleton.kv"),
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone()
@@ -537,7 +537,7 @@ async fn cancelling_during_singleton_key_preparation_retains_actual_node_until_p
     assert!(node.catalog(TENANT)?.is_none());
     drop(node);
     let reopened = NodeStore::open_existing_fixture(
-        directory.path().join("singleton.redb"),
+        directory.path().join("singleton.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),

@@ -824,7 +824,7 @@ mod tests {
         fixture_memory: Arc<dyn crate::NodeDiskMemoryAdmission>,
         fixture_scratch: std::sync::Arc<crate::ScratchDisk>,
     ) -> Arc<TenantStore> {
-        let path = directory.join("audit.redb");
+        let path = directory.join("audit.kv");
         let node = if create {
             NodeStore::create_new_fixture(
                 &path,
@@ -1152,7 +1152,7 @@ mod tests {
             crate::StorageAccess::standalone(installation, "tenant", Uuid::new_v4()).unwrap();
         let store = TenantStore::initialize_catalog_fixture_with_access(
             NodeStore::create_new_fixture(
-                directory.path().join("source.redb"),
+                directory.path().join("source.kv"),
                 crate::test_utils::NODE_STORE_ID,
                 fixture_memory.clone(),
                 fixture_scratch.clone(),
@@ -1243,7 +1243,7 @@ mod tests {
             crate::StorageAccess::standalone(Uuid::new_v4(), "tenant", Uuid::new_v4()).unwrap();
         let store = TenantStore::initialize_catalog_fixture_with_access(
             NodeStore::create_new_fixture(
-                directory.path().join("source.redb"),
+                directory.path().join("source.kv"),
                 crate::test_utils::NODE_STORE_ID,
                 fixture_memory.clone(),
                 fixture_scratch.clone(),
@@ -1337,7 +1337,7 @@ mod tests {
             crate::StorageAccess::standalone(Uuid::new_v4(), "tenant", Uuid::new_v4()).unwrap();
         let store = TenantStore::initialize_catalog_fixture_with_access(
             NodeStore::create_new_fixture(
-                directory.path().join("source.redb"),
+                directory.path().join("source.kv"),
                 crate::test_utils::NODE_STORE_ID,
                 fixture_memory.clone(),
                 fixture_scratch.clone(),

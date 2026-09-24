@@ -89,7 +89,7 @@ impl Fixture {
         let root = kasumi_store::test_utils::private_tempdir()?;
         let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
         config.database_id = Uuid::new_v4();
-        config.database_path = root.path().join("replica-1/persistent/source.redb");
+        config.database_path = root.path().join("replica-1/persistent/source.kv");
         let tenant = config.tenants[0].tenant.clone();
         let policy = config.tenants[0].initial_policy.clone();
         let incarnation = Uuid::new_v4().to_string();
@@ -120,7 +120,7 @@ impl Fixture {
             let physical =
                 crate::runtime_storage_fixtures::physical(&replica_root, Default::default())?;
             let node = physical.create_new(
-                replica_root.join("persistent/source.redb"),
+                replica_root.join("persistent/source.kv"),
                 if id == 1 {
                     config.database_id
                 } else {

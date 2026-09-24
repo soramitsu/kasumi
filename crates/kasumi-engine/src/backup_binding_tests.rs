@@ -112,7 +112,7 @@ async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     kasumi_store::private_files::create_directory(&directory.path().join("persistent")).unwrap();
     let disk = ScratchDisk::fixture(directory.path().join("scratch"), memory.clone());
     let node = NodeStore::create_new_fixture(
-        directory.path().join("persistent/node.redb"),
+        directory.path().join("persistent/node.kv"),
         kasumi_store::test_utils::NODE_STORE_ID,
         memory,
         disk,
@@ -496,7 +496,7 @@ async fn encrypted_restart_keeps_future_binding_invisible_until_exact_replay() {
     drop(store);
 
     let node = NodeStore::open_existing_fixture(
-        directory.path().join("persistent/node.redb"),
+        directory.path().join("persistent/node.kv"),
         kasumi_store::test_utils::NODE_STORE_ID,
         disk.memory().clone(),
         disk,
@@ -614,7 +614,7 @@ async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_afte
         store.shutdown().await.unwrap();
         drop(store);
         let node = NodeStore::open_existing_fixture(
-            directory.path().join("persistent/node.redb"),
+            directory.path().join("persistent/node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
             disk.memory().clone(),
             disk.clone(),
@@ -696,7 +696,7 @@ async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_afte
         store.shutdown().await.unwrap();
         drop(store);
         let node = NodeStore::open_existing_fixture(
-            directory.path().join("persistent/node.redb"),
+            directory.path().join("persistent/node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
             disk.memory().clone(),
             disk,

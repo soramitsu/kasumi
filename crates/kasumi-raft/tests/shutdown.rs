@@ -63,7 +63,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let directory = kasumi_store::test_utils::private_tempdir()?;
-    let path = directory.path().join("shutdown.redb");
+    let path = directory.path().join("shutdown.kv");
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, wait) = mpsc::channel();
     let store = TenantStore::initialize_catalog_fixture_with_clock(

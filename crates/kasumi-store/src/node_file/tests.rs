@@ -1,7 +1,7 @@
 use super::*;
 use crate::private_files;
 use crate::{NodeStore, ScratchDisk};
-use redb::{Database, TableDefinition};
+use kasumi_kv::{Database, TableDefinition};
 use std::{
     fs::{File, OpenOptions},
     io::Read,
@@ -24,7 +24,7 @@ fn raw_database(path: &Path) -> Database {
         .unwrap()
 }
 
-fn commit_probe(transaction: redb::WriteTransaction) {
+fn commit_probe(transaction: kasumi_kv::WriteTransaction) {
     transaction
         .open_table(PROBE)
         .unwrap()
@@ -85,7 +85,7 @@ fn resize(backend: &NodeBackend, len: u64) -> io::Result<()> {
 }
 
 #[test]
-fn unrelated_clean_and_unclean_redb_rejection_is_byte_exact() {
+fn unrelated_clean_and_unclean_old_format_rejection_is_byte_exact() {
     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = crate::test_utils::private_tempdir().unwrap();
     let fixture_scratch =
@@ -285,6 +285,31 @@ fn existing_header_requires_exact_canonical_fields_and_checksum() {
 }
 
 #[test]
+fn previous_node_format_is_rejected_without_changing_its_bytes() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let directory = directory();
+    let path = directory.path().join("previous-format");
+    drop(
+        NodeStore::create_new_fixture(&path, ID, fixture_memory.clone(), fixture_scratch.clone())
+            .unwrap(),
+    );
+    let mut old_header = header(ID, READY);
+    old_header[..16].copy_from_slice(b"KASUMI-NODE-0001");
+    let digest = Sha256::digest(&old_header[..CHECKSUM_AT]);
+    old_header[CHECKSUM_AT..].copy_from_slice(&digest);
+    let file = options().open(&path).unwrap();
+    file.write_all_at(&old_header, 0).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    let before = std::fs::read(&path).unwrap();
+    assert!(NodeStore::open_existing_fixture(&path, ID, fixture_memory, fixture_scratch).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
 fn initialization_requires_exact_journal_owned_empty_inode() {
     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = crate::test_utils::private_tempdir().unwrap();
@@ -358,7 +383,7 @@ fn offset_io_preserves_header_and_retained_backend_cannot_outlive_close() {
     resize(&backend, 0).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), header_before);
     assert!(open_node(&path, ID, fixture_memory.clone()).is_err());
-    // This impossible redb admission is an owner failure, not a recoverable
+    // This impossible engine admission is an owner failure, not a recoverable
     // capacity denial. A later resize must not start I/O through that owner.
     assert_eq!(
         owner.reserve_growth(0, i64::MAX as u64),
@@ -422,24 +447,26 @@ fn validated_descriptor_handoff_never_reopens_a_substituted_path() {
     let unrelated = std::fs::read(&path).unwrap();
     let original = std::fs::read(&moved).unwrap();
 
-    let mut opening = Database::builder(owner.clone())
-        .retain_backend(Box::new(owner.backend()), redb::DatabaseOpenMode::Existing);
+    let mut opening = Database::builder(owner.clone()).retain_backend(
+        Box::new(owner.backend()),
+        kasumi_kv::DatabaseOpenMode::Existing,
+    );
     let original_failure = match opening.open().opening() {
-        redb::TerminalObservation::Returned(Err(error)) => std::ptr::from_ref(error),
+        kasumi_kv::TerminalObservation::Returned(Err(error)) => std::ptr::from_ref(error),
         _ => panic!("substituted descriptor opening must retain its original error"),
     };
     // Opening records the failure but cannot attest drain before explicit close.
     assert_eq!(
         opening.report().settlement(),
-        redb::DatabaseOpenSettlement::Retained
+        kasumi_kv::DatabaseOpenSettlement::Retained
     );
     assert!(matches!(
         opening.report().partial_close(),
-        redb::TerminalObservation::NotEntered
+        kasumi_kv::TerminalObservation::NotEntered
     ));
     assert_eq!(
         opening.report().native_disposition(),
-        redb::BackendNativeDisposition::Retained
+        kasumi_kv::BackendNativeDisposition::Retained
     );
     assert!(owner.failed_close_witness().is_err());
     assert_eq!(original, std::fs::read(&moved).unwrap());
@@ -456,17 +483,17 @@ fn validated_descriptor_handoff_never_reopens_a_substituted_path() {
     let file_owner = owner.file.read().owned().unwrap().close_owner_address();
     assert_eq!(
         opening.close().settlement(),
-        redb::DatabaseOpenSettlement::DrainedWithFailure
+        kasumi_kv::DatabaseOpenSettlement::DrainedWithFailure
     );
     {
         let report = opening.report();
-        let redb::TerminalObservation::Returned(Err(error)) = report.opening() else {
+        let kasumi_kv::TerminalObservation::Returned(Err(error)) = report.opening() else {
             panic!("failed close must preserve the original opening error");
         };
         assert_eq!(std::ptr::from_ref(error), original_failure);
         assert!(matches!(
             report.partial_close(),
-            redb::TerminalObservation::Returned(Err(_))
+            kasumi_kv::TerminalObservation::Returned(Err(_))
         ));
     }
     assert_eq!(
@@ -744,6 +771,129 @@ fn resize_drains_a_write_after_its_extent_check_before_truncating() {
 }
 
 #[test]
+fn retained_database_retries_node_close_only_after_proved_pre_entry_contention() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = directory();
+    let path = directory.path().join("retained-close-contention");
+    let owner = create_node(&path, ID, memory);
+    let mut opening = Database::builder(owner.clone()).retain_backend(
+        Box::new(owner.backend()),
+        kasumi_kv::DatabaseOpenMode::Create,
+    );
+    assert_eq!(
+        opening.open().settlement(),
+        kasumi_kv::DatabaseOpenSettlement::Ready
+    );
+    owner.publish_ready().unwrap();
+    let attempts = NodeFile::native_close_attempts();
+    let held = owner.file.read();
+    assert_eq!(
+        opening.close().settlement(),
+        kasumi_kv::DatabaseOpenSettlement::WaitingForTransactions
+    );
+    let report = opening.report();
+    let close = report.database_close().unwrap();
+    assert!(matches!(
+        close.backend(),
+        kasumi_kv::TerminalObservation::NotEntered
+    ));
+    assert_eq!(
+        close.native_disposition(),
+        kasumi_kv::BackendNativeDisposition::Retained
+    );
+    assert_eq!(NodeFile::native_close_attempts(), attempts);
+    assert_eq!(owner.disk.snapshot().open_files, 1);
+    drop(held);
+    assert_eq!(
+        opening.close().settlement(),
+        kasumi_kv::DatabaseOpenSettlement::Closed
+    );
+    // A clean NodeDiskFile closes its data descriptor and retained parent.
+    assert_eq!(NodeFile::native_close_attempts(), attempts + 2);
+    assert_eq!(owner.disk.snapshot().open_files, 0);
+    assert!(matches!(*owner.file.read(), FileState::Closed));
+    assert_eq!(
+        opening.close().settlement(),
+        kasumi_kv::DatabaseOpenSettlement::Closed
+    );
+    assert_eq!(NodeFile::native_close_attempts(), attempts + 2);
+}
+
+#[test]
+fn retained_partial_opening_retries_node_close_after_pre_entry_contention() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = directory();
+    let path = directory.path().join("partial-close-contention");
+    let owner = create_node(&path, ID, memory);
+    let mut opening = Database::builder(owner.clone()).retain_backend(
+        Box::new(owner.backend()),
+        kasumi_kv::DatabaseOpenMode::Existing,
+    );
+    assert!(matches!(
+        opening.open().opening(),
+        kasumi_kv::TerminalObservation::Returned(Err(_))
+    ));
+    let attempts = NodeFile::native_close_attempts();
+    let held = owner.file.read();
+    assert_eq!(
+        opening.close().settlement(),
+        kasumi_kv::DatabaseOpenSettlement::WaitingForTransactions
+    );
+    assert_eq!(NodeFile::native_close_attempts(), attempts);
+    assert!(matches!(
+        opening.report().partial_close(),
+        kasumi_kv::TerminalObservation::NotEntered
+    ));
+    assert_eq!(owner.disk.snapshot().open_files, 1);
+    drop(held);
+    assert_eq!(
+        opening.close().settlement(),
+        kasumi_kv::DatabaseOpenSettlement::Closed
+    );
+    assert_eq!(NodeFile::native_close_attempts(), attempts + 2);
+    assert_eq!(owner.disk.snapshot().open_files, 0);
+    assert!(matches!(*owner.file.read(), FileState::Closed));
+}
+
+#[test]
+fn retained_database_retries_node_close_after_lower_arc_pre_entry_contention() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = directory();
+    let path = directory.path().join("retained-arc-contention");
+    let owner = create_node(&path, ID, memory);
+    let mut opening = Database::builder(owner.clone()).retain_backend(
+        Box::new(owner.backend()),
+        kasumi_kv::DatabaseOpenMode::Create,
+    );
+    assert_eq!(
+        opening.open().settlement(),
+        kasumi_kv::DatabaseOpenSettlement::Ready
+    );
+    owner.publish_ready().unwrap();
+    let attempts = NodeFile::native_close_attempts();
+    let held = owner.file.read().owned().unwrap().clone();
+    let address = held.close_owner_address();
+    assert_eq!(
+        opening.close().settlement(),
+        kasumi_kv::DatabaseOpenSettlement::WaitingForTransactions
+    );
+    assert!(matches!(
+        opening.report().database_close().unwrap().backend(),
+        kasumi_kv::TerminalObservation::NotEntered
+    ));
+    assert_eq!(NodeFile::native_close_attempts(), attempts);
+    assert_eq!(held.close_owner_address(), address);
+    assert_eq!(owner.disk.snapshot().open_files, 1);
+    drop(held);
+    assert_eq!(
+        opening.close().settlement(),
+        kasumi_kv::DatabaseOpenSettlement::Closed
+    );
+    assert_eq!(NodeFile::native_close_attempts(), attempts + 2);
+    assert_eq!(owner.disk.snapshot().open_files, 0);
+}
+
+#[test]
 fn backend_close_preserves_busy_owner_then_retires_before_positive_idempotent_close() {
     let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let directory = directory();
@@ -839,7 +989,7 @@ fn acknowledged_known_drained_file_waits_for_accepted_census_without_reopening()
     let closed = backend.close();
     assert_eq!(
         closed.native_disposition(),
-        redb::BackendNativeDisposition::Drained
+        kasumi_kv::BackendNativeDisposition::Drained
     );
     assert!(closed.into_result().is_err());
     let original = owner.retained_file_custody().unwrap().1.unwrap();
@@ -968,7 +1118,7 @@ fn unknown_native_close_cannot_mint_recovery_witness_or_retry_a_reused_descripto
     let closed = backend.close();
     assert_eq!(
         closed.native_disposition(),
-        redb::BackendNativeDisposition::Retained
+        kasumi_kv::BackendNativeDisposition::Retained
     );
     assert_eq!(
         closed.into_result().unwrap_err().raw_os_error(),
@@ -991,7 +1141,7 @@ fn unknown_native_close_cannot_mint_recovery_witness_or_retry_a_reused_descripto
         let repeated = backend.close();
         assert_eq!(
             repeated.native_disposition(),
-            redb::BackendNativeDisposition::Retained
+            kasumi_kv::BackendNativeDisposition::Retained
         );
         assert_eq!(
             repeated.into_result().unwrap_err().raw_os_error(),
@@ -1015,7 +1165,7 @@ fn closed_prepared_node_file_cannot_acquire_a_new_descriptor() {
     let closed = owner.backend().close();
     assert_eq!(
         closed.native_disposition(),
-        redb::BackendNativeDisposition::Drained
+        kasumi_kv::BackendNativeDisposition::Drained
     );
     closed.into_result().unwrap();
     assert!(matches!(*owner.file.read(), FileState::Closed));

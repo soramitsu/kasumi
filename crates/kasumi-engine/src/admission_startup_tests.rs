@@ -65,6 +65,7 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
         ..Default::default()
     };
     let core_base = MemoryCore::required_bookkeeping_bytes(&config)?;
+    let facade_bytes = NodeAdmission::required_bookkeeping_bytes(&config)? - core_base;
     let admission = NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
     let storage = crate::test_utils::FixtureStorage::with_admission(
         &persistent_config,
@@ -72,7 +73,6 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
         admission.clone(),
     )?;
     let core = admission.memory().clone();
-    let baseline = admission.snapshot();
     let owner = admission.snapshot_buffer_owner()?;
     let owner_bytes = SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)?;
     let owner_weak = Arc::downgrade(&owner);
@@ -81,7 +81,7 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
         storage.create_new(
             directory
                 .path()
-                .join("persistent/cancelled-node-startup.redb"),
+                .join("persistent/cancelled-node-startup.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )?,
         "cancelled-startup".into(),
@@ -89,6 +89,9 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
         Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
     )
     .await?;
+    // The live native KV index is charged to this same admission owner until
+    // the store drains. Keep that installed charge in the startup baseline.
+    let installed = admission.snapshot();
     let mut startup = Box::pin(RaftGroup::local(
         1,
         "cancelled-startup".into(),
@@ -117,14 +120,11 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
         "cancelled census reopened admission"
     );
     let pending = admission.snapshot();
-    assert_eq!(pending.bookkeeping_bytes, baseline.bookkeeping_bytes);
-    assert_eq!(
-        pending.reserved_bytes,
-        baseline.reserved_bytes + owner_bytes
-    );
+    assert_eq!(pending.bookkeeping_bytes, installed.bookkeeping_bytes);
+    assert_eq!(pending.reserved_bytes, installed.reserved_bytes);
     assert_eq!(
         pending.resident_reserved_bytes,
-        metadata_bytes + owner_bytes
+        installed.resident_reserved_bytes
     );
     assert_eq!(pending.inflight_operations, 0);
     assert!(gate.claim_is_live());
@@ -167,9 +167,15 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
     let completed = admission.snapshot();
     // The completed error report keeps its inventory envelope; only the actual
     // child's resident owner charge is released at successful census completion.
-    assert_eq!(completed.bookkeeping_bytes, baseline.bookkeeping_bytes);
-    assert_eq!(completed.reserved_bytes, baseline.reserved_bytes);
-    assert_eq!(completed.resident_reserved_bytes, metadata_bytes);
+    assert_eq!(completed.bookkeeping_bytes, installed.bookkeeping_bytes);
+    assert_eq!(
+        completed.reserved_bytes,
+        installed.reserved_bytes - owner_bytes
+    );
+    assert_eq!(
+        completed.resident_reserved_bytes,
+        installed.resident_reserved_bytes - owner_bytes
+    );
     for _ in 0..2 {
         let repeated = admission.drain_snapshot_startups().await.unwrap_err();
         assert_eq!(repeated.completion(), DrainCompletion::Complete);
@@ -179,15 +185,25 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
                 .iter()
                 .any(|issue| Arc::ptr_eq(issue, &original))
         );
-        assert_eq!(admission.snapshot().reserved_bytes, baseline.reserved_bytes);
+        assert_eq!(
+            admission.snapshot().reserved_bytes,
+            installed.reserved_bytes - owner_bytes
+        );
     }
     let facade_weak = Arc::downgrade(&admission);
     drop(failure);
     drop(original);
     drop(storage);
+    let retained_before_facade_drop = core.snapshot().reserved_bytes;
     drop(admission);
     assert!(facade_weak.upgrade().is_none());
-    assert_eq!(core.snapshot().reserved_bytes, core_base + metadata_bytes);
+    // The live store still owns its resident native index while waiting for
+    // the replacement group. Dropping the facade releases only its fixed
+    // bookkeeping; final shutdown below releases the exact storage delta.
+    assert_eq!(
+        core.snapshot().reserved_bytes,
+        retained_before_facade_drop - facade_bytes
+    );
     // The old facade remains sealed; a fresh facade shares accounting and a
     // real group can reopen the exact same storage only after actual join.
     let replacement = NodeAdmission::from_memory(core.clone())?;

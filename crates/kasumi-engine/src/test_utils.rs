@@ -115,7 +115,7 @@ pub fn fixture_disk_configs(
     let persistent = root.join("persistent");
     kasumi_store::private_files::create_directory(&persistent)?;
     Ok((
-        kasumi_store::NodeDisk::fixture_config(persistent.join("node.redb"))?,
+        kasumi_store::NodeDisk::fixture_config(persistent.join("node.kv"))?,
         kasumi_store::ScratchDiskConfig {
             directory: root.join("scratch"),
             max_bytes: 256 << 30,
@@ -375,7 +375,7 @@ mod physical_fixture_tests {
         let payload_lease = admission.reserve(payload, None)?;
         assert!(admission.reserve(1, None).is_err());
         drop(payload_lease);
-        let path = directory.path().join("persistent/node.redb");
+        let path = directory.path().join("persistent/node.kv");
         let first = storage.create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)?;
         assert!(Arc::ptr_eq(first.persistent_disk(), &storage.persistent));
         assert!(Arc::ptr_eq(first.scratch_disk(), &storage.scratch));
@@ -383,9 +383,10 @@ mod physical_fixture_tests {
         drop(first);
         let reopened = storage.open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)?;
         assert!(Arc::ptr_eq(reopened.persistent_disk(), &storage.persistent));
-        assert_eq!(admission.snapshot().reserved_bytes, after.reserved_bytes);
+        assert!(admission.snapshot().reserved_bytes > after.reserved_bytes);
         reopened.shutdown().await?;
         drop(reopened);
+        assert_eq!(admission.snapshot().reserved_bytes, after.reserved_bytes);
         admission.drain_snapshot_startups().await?;
         drop(storage);
         // Installed physical owners retain their actual metadata leases after

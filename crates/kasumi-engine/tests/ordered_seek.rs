@@ -47,11 +47,11 @@ fn request() -> OrderedSeekRequest {
 async fn actual_store_ordered_seek_has_bounded_visits_and_epoch_fenced_continuation() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("seek.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("seek.kv"), Default::default());
     let node = physical
         .storage
         .create_new(
-            directory.path().join("seek.redb"),
+            directory.path().join("seek.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();

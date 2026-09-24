@@ -11,7 +11,7 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let keys = Arc::new(LocalKeyProvider::new([41; 32]));
     let physical = common::PhysicalFixture::new(
-        &directory.path().join("node.redb"),
+        &directory.path().join("node.kv"),
         kasumi_engine::admission::AdmissionConfig {
             max_inflight_operations: 1,
             ..Default::default()
@@ -20,7 +20,7 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
     let node = physical
         .storage
         .create_new(
-            directory.path().join("node.redb"),
+            directory.path().join("node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();

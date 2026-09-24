@@ -47,7 +47,7 @@ retains its node, stores and database through every failure and final drain.
 
 A stopped local generation claims the exact deterministic Prepared/Ready node
 header before deletion. This supports cleanup after a lost physical-binding
-journal commit. It neither opens nor repairs redb. Empty, torn, linked, substituted
+journal commit. It neither opens nor recovers the KV engine. Empty, torn, linked, substituted
 or unrelated files are preserved and prevent a successful cleanup receipt.
 
 ## Explicit incomplete states and integration requirements

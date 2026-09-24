@@ -11,7 +11,7 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
     .unwrap();
     let node = storage
         .create_new(
-            directory.path().join("persistent/node.redb"),
+            directory.path().join("persistent/node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();

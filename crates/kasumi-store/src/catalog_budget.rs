@@ -41,7 +41,7 @@ async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_pe
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir().unwrap();
     let node = NodeStore::create_new_fixture(
-        directory.path().join("catalog.redb"),
+        directory.path().join("catalog.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
@@ -114,7 +114,7 @@ async fn exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encod
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir().unwrap();
     let node = NodeStore::create_new_fixture(
-        directory.path().join("boundary.redb"),
+        directory.path().join("boundary.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),

@@ -1,5 +1,9 @@
 # Persistent extent owner: source foundation
 
+> Historical design record. The active storage integration is the native
+> Kasumi engine described in [native-kv-goal.md](native-kv-goal.md). Statements
+> below about the production dependency graph predate that cutover.
+
 `NodeDisk` is an unwired storage primitive. No production `NodeStore`, backup,
 archive or daemon constructor uses it yet, and the production dependency graph
 still uses the published redb crate. Neither scratch admission nor the tested

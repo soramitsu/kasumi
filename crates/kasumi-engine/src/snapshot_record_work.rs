@@ -10,7 +10,7 @@
 //! pointers and a Vec header. String/numeric wire bytes reserve the same eight
 //! copies, plus the original record. Escaped decoded strings cannot exceed their
 //! wire bytes; arbitrary-precision numeric lexemes are counted even for `0`.
-//! The separate 64 MiB maintenance floor owns fixed DTOs, redb caches and framing.
+//! The separate 64 MiB maintenance floor owns fixed DTOs, KV index metadata and framing.
 //! This checked accounting model is not an allocator-enforced hard RSS bound.
 use anyhow::{Result, ensure};
 

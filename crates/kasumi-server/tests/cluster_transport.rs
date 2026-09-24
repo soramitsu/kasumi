@@ -147,7 +147,7 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
         kasumi_store::private_files::create_directory(&replica_root)?;
         let physical = physical(&replica_root)?;
         let node = physical.create_new(
-            replica_root.join("persistent/node.redb"),
+            replica_root.join("persistent/node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )?;
         physical_nodes.push(node.clone());
@@ -316,7 +316,7 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
     };
     let physical = physical(dir.path())?;
     let node = physical.create_new(
-        dir.path().join("persistent/node.redb"),
+        dir.path().join("persistent/node.kv"),
         kasumi_store::test_utils::NODE_STORE_ID,
     )?;
     let group = RaftGroup::open(

@@ -42,7 +42,7 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
     };
 
     let directory = kasumi_store::test_utils::private_tempdir()?;
-    let path = directory.path().join("cancelled-persistence.redb");
+    let path = directory.path().join("cancelled-persistence.kv");
     let store = TenantStore::initialize_catalog_fixture_with_clock(
         NodeStore::create_new_fixture(
             &path,
@@ -379,7 +379,7 @@ async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() ->
     let dir = kasumi_store::test_utils::private_tempdir()?;
     let store = TenantStore::initialize_catalog_fixture(
         NodeStore::create_new_fixture(
-            dir.path().join("large.redb"),
+            dir.path().join("large.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
             fixture_scratch.memory().clone(),
             fixture_scratch.clone(),
@@ -496,7 +496,7 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     use openraft::storage::{RaftLogStorageExt, StorageHelper};
     let dir = kasumi_store::test_utils::private_tempdir()?;
-    let path = dir.path().join("large-command.redb");
+    let path = dir.path().join("large-command.kv");
     let bytes = vec![171u8; (8 << 20) + (64 << 10)];
     async fn open(
         path: &std::path::Path,
@@ -687,7 +687,7 @@ async fn snapshot_storage_metadata_requires_current_writer_bytes_and_v4_id() -> 
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let store = TenantStore::initialize_catalog_fixture(
         NodeStore::create_new_fixture(
-            directory.path().join("manifest.redb"),
+            directory.path().join("manifest.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
             scratch.memory().clone(),
             scratch.clone(),
@@ -810,7 +810,7 @@ async fn coverage_writer_refuses_one_byte_past_reader_limit_before_staging() -> 
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let store = TenantStore::initialize_catalog_fixture(
         NodeStore::create_new_fixture(
-            directory.path().join("coverage-boundary.redb"),
+            directory.path().join("coverage-boundary.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
             scratch.memory().clone(),
             scratch.clone(),

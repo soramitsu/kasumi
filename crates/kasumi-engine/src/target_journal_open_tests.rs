@@ -55,7 +55,7 @@ impl Fixture {
             &scratch_config,
             admission.clone(),
         )?;
-        let node = storage.create_new(directory.path().join("persistent/journal.redb"), id)?;
+        let node = storage.create_new(directory.path().join("persistent/journal.kv"), id)?;
         let store = TenantStore::initialize_catalog(
             node.clone(),
             format!("kasumi.target.{}.1", installed.root.control_incarnation),
@@ -188,7 +188,7 @@ async fn installed_empty_journal_reopens_only_its_exact_node_after_owner_drain()
     } = f;
     drop(store);
     drop(node);
-    let path = directory.path().join("persistent/journal.redb");
+    let path = directory.path().join("persistent/journal.kv");
     let bytes = std::fs::read(&path)?;
     assert!(storage.open_existing(&path, Uuid::new_v4()).is_err());
     assert_eq!(std::fs::read(&path)?, bytes);

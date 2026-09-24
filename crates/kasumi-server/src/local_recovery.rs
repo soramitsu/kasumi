@@ -300,7 +300,7 @@ pub(crate) fn active_generation(
     check_binding(config, store.persistent_disk(), &journal)?;
     check_database_file(&journal)?;
     ensure!(
-        active.directory.join("node.redb").is_file(),
+        active.directory.join("node.kv").is_file(),
         "activated standalone database is missing"
     );
     Ok(Some(active))
@@ -874,7 +874,7 @@ fn local_node_id(journal: &Journal) -> Result<Uuid> {
     )
 }
 fn check_database_file(journal: &Journal) -> Result<()> {
-    let path = journal.target_directory.join("node.redb");
+    let path = journal.target_directory.join("node.kv");
     let identity = journal
         .database_file
         .as_ref()
@@ -943,7 +943,7 @@ impl Operator {
     ) -> Result<Option<Arc<kasumi_store::NodeStore>>> {
         self.prepare_directory(journal)?;
         self.prepare_archives(journal)?;
-        let path = journal.target_directory.join("node.redb");
+        let path = journal.target_directory.join("node.kv");
         let created = if journal.target_preparation == TargetPreparation::Uncreated {
             ensure!(
                 journal.database_file.is_none(),
@@ -1057,7 +1057,7 @@ impl Operator {
         };
         check_binding(&self.config, self.store().persistent_disk(), journal)?;
         check_database_file(journal)?;
-        let path = journal.target_directory.join("node.redb");
+        let path = journal.target_directory.join("node.kv");
         let tenant = self.config.tenants.iter().find(|tenant| tenant.tenant == request.tenant).context("installed tenant missing")?;
         ensure!(journal.application_provider == tenant.keys.identity_descriptor()? && journal.custody_provider == tenant.custody_keys.identity_descriptor()?, "local target wrapping-key identity differs");
         if mode == TargetOpen::Materialize {
@@ -1330,10 +1330,7 @@ impl Operator {
             for entry in &entries {
                 ensure!(
                     (entry.file_type()?.is_file()
-                        && matches!(
-                            entry.file_name().to_str(),
-                            Some("binding.json" | "node.redb")
-                        ))
+                        && matches!(entry.file_name().to_str(), Some("binding.json" | "node.kv")))
                         || (entry.file_type()?.is_dir()
                             && entry.file_name() == "tenant-audit-archives"),
                     "cleanup refuses an unrelated or linked target entry"
@@ -1343,7 +1340,7 @@ impl Operator {
                 marker_owner.is_some() || entries.is_empty(),
                 "nonempty target generation has lost its ownership binding"
             );
-            let database = journal.target_directory.join("node.redb");
+            let database = journal.target_directory.join("node.kv");
             let ownership = if database.try_exists()? {
                 ensure!(
                     journal.target_preparation != TargetPreparation::Uncreated,
@@ -1354,7 +1351,7 @@ impl Operator {
                 }
                 // A lost file-binding commit can leave our exact Prepared or Ready
                 // envelope. Claim its deterministic generation identity without
-                // opening/repairing redb. Empty, torn or unrelated files stay intact.
+                // opening/recovering the KV engine. Empty, torn or unrelated files stay intact.
                 let ownership = kasumi_store::NodeStore::claim_cleanup(
                     &database,
                     local_node_id(journal)?,

@@ -139,8 +139,8 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let mut limits = Limits::default();
     limits.history.max_feed_events = 4;
-    let physical = common::PhysicalFixture::new(&root.path().join("node.redb"), Default::default());
-    let (db, audit) = open(&physical, &root.path().join("node.redb"), limits, true).await;
+    let physical = common::PhysicalFixture::new(&root.path().join("node.kv"), Default::default());
+    let (db, audit) = open(&physical, &root.path().join("node.kv"), limits, true).await;
     collection(&db, "docs", CollectionRetentionClass::Operational).await;
     let receipt = db.mutate(context(), batch("first", 0, 3)).await.unwrap();
     assert_eq!(
@@ -211,7 +211,7 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
     drop(audit);
     let (db, audit) = open(
         &physical,
-        &root.path().join("node.redb"),
+        &root.path().join("node.kv"),
         Limits::default(),
         false,
     )
@@ -330,7 +330,7 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
 #[tokio::test]
 async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_restart() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
-    let physical = common::PhysicalFixture::new(&root.path().join("node.redb"), Default::default());
+    let physical = common::PhysicalFixture::new(&root.path().join("node.kv"), Default::default());
     let destination = Arc::new(
         kasumi_store::FilesystemBackupDestination::new_fixture(
             root.path().join("history-objects"),
@@ -341,7 +341,7 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     );
     let (db, audit) = open(
         &physical,
-        &root.path().join("node.redb"),
+        &root.path().join("node.kv"),
         Limits::default(),
         true,
     )
@@ -542,7 +542,7 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     drop(audit);
     let (db, audit) = open(
         &physical,
-        &root.path().join("node.redb"),
+        &root.path().join("node.kv"),
         Limits::default(),
         false,
     )
@@ -626,8 +626,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         assert_eq!(disk.snapshot().phase, kasumi_store::NodeDiskPhase::Open);
     }
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
-    let physical =
-        common::PhysicalFixture::new(&root.path().join("source.redb"), Default::default());
+    let physical = common::PhysicalFixture::new(&root.path().join("source.kv"), Default::default());
     let cold_path = root.path().join("cold");
     let backup_path = root.path().join("backup");
     let cold = Arc::new(
@@ -648,7 +647,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     );
     let (db, audit) = open(
         &physical,
-        &root.path().join("source.redb"),
+        &root.path().join("source.kv"),
         Limits::default(),
         true,
     )
@@ -807,7 +806,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     let node = physical
         .storage
         .create_new(
-            root.path().join("restored.redb"),
+            root.path().join("restored.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -939,7 +938,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         let node = physical
             .storage
             .create_new(
-                root.path().join(format!("{suffix}.redb")),
+                root.path().join(format!("{suffix}.kv")),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();
@@ -1018,10 +1017,10 @@ struct PendingDestination {
 #[tokio::test]
 async fn scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_deletions() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
-    let physical = common::PhysicalFixture::new(&root.path().join("node.redb"), Default::default());
+    let physical = common::PhysicalFixture::new(&root.path().join("node.kv"), Default::default());
     let (db, audit) = open(
         &physical,
-        &root.path().join("node.redb"),
+        &root.path().join("node.kv"),
         Limits::default(),
         true,
     )
@@ -1146,7 +1145,7 @@ impl BackupDestination for PendingDestination {
 #[tokio::test]
 async fn shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restart() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
-    let path = root.path().join("node.redb");
+    let path = root.path().join("node.kv");
     let physical = common::PhysicalFixture::new(&path, Default::default());
     let (db, audit) = open(&physical, &path, Limits::default(), true).await;
     collection(&db, "docs", CollectionRetentionClass::ArchivableHistory).await;

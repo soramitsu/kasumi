@@ -14,7 +14,7 @@ async fn fixture(
 ) {
     let dir = crate::test_utils::private_tempdir().unwrap();
     let node = NodeStore::create_new_fixture(
-        dir.path().join("database.redb"),
+        dir.path().join("database.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
@@ -79,7 +79,7 @@ async fn periodic_probes_start_every_twenty_seconds_despite_provider_latency() {
     });
     let store = TenantStore::initialize_catalog_fixture_with_clock(
         NodeStore::create_new_fixture(
-            directory.path().join("cadence.redb"),
+            directory.path().join("cadence.kv"),
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
@@ -144,7 +144,7 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
         }
     }
     let directory = crate::test_utils::private_tempdir().unwrap();
-    let path = directory.path().join("shutdown.redb");
+    let path = directory.path().join("shutdown.kv");
     let node = NodeStore::create_new_fixture(
         &path,
         crate::test_utils::NODE_STORE_ID,
@@ -209,7 +209,7 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
     assert!(weak_node.upgrade().is_none());
 
     // Reopen immediately: completion, rather than a file-lock retry or sleep,
-    // proves no background owner can retain the previous redb database.
+    // proves no background owner can retain the previous database.
     provider.block.store(false, Ordering::Release);
     let reopened = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing_fixture(
@@ -320,7 +320,7 @@ async fn cancelled_store_drain_retains_joined_panic_and_pending_physical_owner()
             .unwrap()
             .is_panic()
     );
-    let path = directory.path().join("database.redb");
+    let path = directory.path().join("database.kv");
     assert!(
         NodeStore::open_existing_fixture(
             &path,
@@ -449,7 +449,7 @@ async fn atomic_batches_and_cross_namespace_isolation_survive_reopen() {
     drop(store);
     let store = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing_fixture(
-            dir.path().join("database.redb"),
+            dir.path().join("database.kv"),
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
@@ -524,7 +524,7 @@ async fn names_keys_and_values_are_absent_from_disk_and_nonce_changes_on_overwri
     let before = read_raw();
     store.write_batch(&[WriteOp::put(ns, key, value)]).unwrap();
     assert_ne!(before, read_raw());
-    let bytes = std::fs::read(dir.path().join("database.redb")).unwrap();
+    let bytes = std::fs::read(dir.path().join("database.kv")).unwrap();
     for secret in [ns.as_bytes(), key.as_slice(), value.as_slice()] {
         assert!(!bytes.windows(secret.len()).any(|window| window == secret));
     }
@@ -783,7 +783,7 @@ async fn rewrap_preserves_documents_after_retiring_old_wrapping_versions() {
     drop(store);
     let store = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing_fixture(
-            dir.path().join("database.redb"),
+            dir.path().join("database.kv"),
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
@@ -1322,7 +1322,7 @@ fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
     let root = crate::test_utils::private_tempdir().unwrap();
     let directory = root.path().join("private");
     crate::private_files::create_directory(&directory).unwrap();
-    let path = directory.join("node.redb");
+    let path = directory.join("node.kv");
     let node = NodeStore::create_new_fixture(
         &path,
         crate::test_utils::NODE_STORE_ID,
@@ -1356,7 +1356,7 @@ fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
         .is_err()
     );
     drop(cleanup_lock);
-    let alias = directory.join("alias.redb");
+    let alias = directory.join("alias.kv");
     symlink(&path, &alias).unwrap();
     assert!(
         NodeStore::open_existing_fixture(
@@ -1469,14 +1469,14 @@ async fn separate_node_stores_and_pinned_reads_share_one_scratch_budget() {
     )
     .unwrap();
     let first = NodeStore::create_new_fixture(
-        directory.path().join("application.redb"),
+        directory.path().join("application.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         disk.clone(),
     )
     .unwrap();
     let second = NodeStore::create_new_fixture(
-        directory.path().join("trust.redb"),
+        directory.path().join("trust.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         disk.clone(),

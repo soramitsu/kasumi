@@ -86,7 +86,7 @@ impl Builder {
         );
         // Scratch records are unpublished until the enclosing snapshot is
         // verified and installed. Group fixed, admitted point writes to avoid
-        // one encrypted redb sync for every permanent history item.
+        // one encrypted KV sync for every permanent history item.
         if self.commands_batch.is_none() {
             self.commands_batch = Some(self.records.commands.begin_batch()?);
         }

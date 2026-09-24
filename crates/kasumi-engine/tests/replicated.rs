@@ -50,7 +50,7 @@ fn bootstrap() -> ReplicatedBootstrap {
 fn replica_fixture(root: &std::path::Path, name: &str) -> common::PhysicalFixture {
     let directory = root.join(name);
     kasumi_store::private_files::create_directory(&directory).unwrap();
-    common::PhysicalFixture::new(&directory.join("node.redb"), Default::default())
+    common::PhysicalFixture::new(&directory.join("node.kv"), Default::default())
 }
 async fn store(
     physical: &common::PhysicalFixture,
@@ -161,7 +161,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
     for id in 1..=3 {
         let (node_store, audit) = store(
             &physical[&id],
-            &root.path().join(id.to_string()).join("node.redb"),
+            &root.path().join(id.to_string()).join("node.kv"),
             true,
         )
         .await;
@@ -375,7 +375,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
     for id in 1..=3 {
         let (node_store, audit) = store(
             &physical[&id],
-            &root.path().join(id.to_string()).join("node.redb"),
+            &root.path().join(id.to_string()).join("node.kv"),
             false,
         )
         .await;
@@ -433,7 +433,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
 async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical = replica_fixture(root.path(), "local");
-    let (store, audit) = store(&physical, &root.path().join("local/node.redb"), true).await;
+    let (store, audit) = store(&physical, &root.path().join("local/node.kv"), true).await;
     let bootstrap = bootstrap();
     let db = open_fixture(
         kasumi_store::test_utils::initialize_custody_fixture(
@@ -518,12 +518,8 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
     let physical: BTreeMap<_, _> = (1..=3)
         .map(|id| (id, replica_fixture(root.path(), &format!("restored-{id}"))))
         .collect();
-    let (source_store, source_audit) = store(
-        &source_physical,
-        &root.path().join("source/node.redb"),
-        true,
-    )
-    .await;
+    let (source_store, source_audit) =
+        store(&source_physical, &root.path().join("source/node.kv"), true).await;
     let source = open_fixture(
         kasumi_store::test_utils::initialize_custody_fixture(
             source_store,
@@ -599,7 +595,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
     for id in 1..=3 {
         let (node_store, audit) = store(
             &physical[&id],
-            &root.path().join(format!("restored-{id}/node.redb")),
+            &root.path().join(format!("restored-{id}/node.kv")),
             true,
         )
         .await;
@@ -699,7 +695,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
     for id in 1..=3 {
         let (node_store, audit) = store(
             &physical[&id],
-            &root.path().join(format!("restored-{id}/node.redb")),
+            &root.path().join(format!("restored-{id}/node.kv")),
             false,
         )
         .await;

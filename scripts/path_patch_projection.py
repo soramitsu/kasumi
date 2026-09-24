@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Target-only prototype: turn seven reviewed local packages into audit-only rows.
+"""Target-only prototype: turn six reviewed local packages into audit-only rows.
 
 The projected lock is NEVER a Cargo build input. It gives cargo-audit the
 registry source marker it requires to enumerate advisories for path packages.
@@ -17,7 +17,7 @@ import tomllib
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 SCHEMA = "kasumi-path-patch-advisory-projection-v1"
 EXPECTED_VENDOR = frozenset({
-    "bitmaps", "lru", "serde_json", "rmcp", "redb", "openraft", "openraft-macros",
+    "bitmaps", "lru", "serde_json", "rmcp", "openraft", "openraft-macros",
 })
 PACKAGE_HEADER = re.compile(r"(?m)^\[\[package\]\]\s*$")
 
@@ -91,7 +91,7 @@ def vendor_packages(source: Path, manifest: dict) -> dict[tuple[str, str], dict]
                            "patch": selected["patch"], "manifest_sha256": file_sha256(local),
                            "inventory_sha256": sha256(json.dumps(inventory["files"], sort_keys=True,
                                                             separators=(",", ":")).encode())}
-    require({name for name, _ in result} == EXPECTED_VENDOR and len(result) == 7,
+    require({name for name, _ in result} == EXPECTED_VENDOR and len(result) == 6,
             "exact reviewed vendor package roster differs")
     return result
 
@@ -173,7 +173,7 @@ def project(source: Path) -> tuple[str, dict]:
                            (item["name"], item["version"]) == key)
             expected.update(source=REGISTRY, checksum=binding["synthetic_checksum"])
         require(after == expected, "projection changed an unrelated lock field")
-    require(len(bindings) == 7, "incomplete projected vendor roster")
+    require(len(bindings) == 6, "incomplete projected vendor roster")
     receipt = {"schema": SCHEMA, "original_lock_sha256": original_sha,
                "vendor_manifest_sha256": manifest_sha, "projected_lock_sha256": sha256(projected.encode()),
                "original_package_count": len(rows), "projected_package_count": len(reparsed["package"]),

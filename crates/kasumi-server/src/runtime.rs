@@ -1353,7 +1353,7 @@ impl NodeRuntime {
                 let tenant_node = match &active {
                     Some(active) => {
                         tenant.incarnation = Some(active.incarnation.to_string());
-                        NodeStore::open_existing(active.directory.join("node.redb"), active.database_id(&config, &tenant.tenant)?, persistent_disk.clone(), scratch_disk.clone())?
+                        NodeStore::open_existing(active.directory.join("node.kv"), active.database_id(&config, &tenant.tenant)?, persistent_disk.clone(), scratch_disk.clone())?
                     }
                     None => node.clone(),
                 };
@@ -2122,24 +2122,16 @@ impl NodeRuntime {
         self.startup_drain.outcome(retained)
     }
 }
-/// Called only after engine open has verified immutable bootstrap chunks against
-/// this authenticated manifest. Bind the actual initial snapshot as well as its
-/// deployment policy/membership, including restored documents and receipts.
+/// Read the exact durable manifest digest for enrollment and transport.
+/// Startup may call this before engine open; transport registration waits for
+/// open to verify the immutable chunks and paired deployment binding.
 pub(crate) fn persisted_bootstrap_fingerprint(store: &TenantStore) -> Result<String> {
     let tenant = store.tenant();
     let binding = store
         .get("engine.deployment", b"mode")?
         .context("immutable deployment binding missing")?;
-    let manifest: serde_json::Value = serde_json::from_slice(
-        &store
-            .get("engine.bootstrap", b"manifest")?
-            .context("immutable bootstrap manifest missing")?,
-    )?;
-    let digest = manifest
-        .get("digest")
-        .and_then(|value| value.as_str())
-        .context("bootstrap digest missing")?;
-    initial_bootstrap_fingerprint(tenant, &binding, digest)
+    let digest = kasumi_engine::persisted_bootstrap_digest(store)?;
+    initial_bootstrap_fingerprint(tenant, &binding, &digest)
 }
 
 /// A retired source no longer has an application provider. The custody commit
@@ -2311,7 +2303,7 @@ pub fn example_config(directory_policy: kasumi_store::DirectoryPolicy) -> Result
                 installation_id: uuid::Uuid::from_u128(7),
                 node_id: 1,
             },
-            database_path: PathBuf::from("/var/lib/kasumi/verifier/trust.redb"),
+            database_path: PathBuf::from("/var/lib/kasumi/verifier/trust.kv"),
             keys: transit("signer-trust", "SIGNER_TRUST_TOKEN"),
         }),
         target_recovery: None,
@@ -2360,7 +2352,7 @@ pub fn example_config(directory_policy: kasumi_store::DirectoryPolicy) -> Result
         },
         backup_destinations: BTreeMap::new(),
         mode: DeploymentMode::Replicated,
-        database_path: "/var/lib/kasumi/data/node.redb".into(),
+        database_path: "/var/lib/kasumi/data/node.kv".into(),
         database_id: Uuid::new_v4(),
         auth: AuthConfig {
             issuer: "https://identity.example".into(),
@@ -2689,6 +2681,52 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn persisted_bootstrap_fingerprint_requires_current_bounded_manifest() -> Result<()> {
+        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let physical =
+            crate::runtime_storage_fixtures::physical(directory.path(), Default::default())?;
+        let node = physical.create_new(
+            directory.path().join("persistent/node.kv"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )?;
+        let store = TenantStore::initialize_catalog_fixture(
+            node,
+            "acme".into(),
+            Arc::new(LocalKeyProvider::new([34; 32])),
+        )
+        .await?;
+        let digest = "a".repeat(64);
+        let canonical =
+            format!(r#"{{"format":2,"bytes":1,"chunks":1,"digest":"{digest}"}}"#).into_bytes();
+        store.write_batch(&[
+            kasumi_store::WriteOp::put("engine.deployment", b"mode", b"local-v1"),
+            kasumi_store::WriteOp::put("engine.bootstrap", b"manifest", canonical.clone()),
+        ])?;
+        let expected = initial_bootstrap_fingerprint("acme", b"local-v1", &digest)?;
+        assert_eq!(persisted_bootstrap_fingerprint(&store)?, expected);
+        let mut alternate = vec![b' '];
+        alternate.extend_from_slice(&canonical);
+        assert!(serde_json::from_slice::<serde_json::Value>(&alternate).is_ok());
+        let oversized = vec![b' '; 257];
+        for altered in [alternate, oversized] {
+            store.write_batch(&[kasumi_store::WriteOp::put(
+                "engine.bootstrap",
+                b"manifest",
+                altered.clone(),
+            )])?;
+            assert!(persisted_bootstrap_fingerprint(&store).is_err());
+            assert_eq!(store.get("engine.bootstrap", b"manifest")?, Some(altered));
+        }
+        store.write_batch(&[kasumi_store::WriteOp::put(
+            "engine.bootstrap",
+            b"manifest",
+            canonical,
+        )])?;
+        assert_eq!(persisted_bootstrap_fingerprint(&store)?, expected);
+        Ok(())
+    }
+
     #[test]
     fn runtime_config_requires_explicit_admission() {
         let mut encoded =
@@ -2856,7 +2894,7 @@ mod tests {
         let dir = kasumi_store::test_utils::private_tempdir().unwrap();
         let physical =
             crate::runtime_storage_fixtures::physical(dir.path(), Default::default()).unwrap();
-        let path = dir.path().join("persistent/node.redb");
+        let path = dir.path().join("persistent/node.kv");
         let node = physical
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
@@ -3068,7 +3106,7 @@ mod tests {
 #[cfg(test)]
 mod lifecycle_tests {
     // Each fixture runs real replicas concurrently. Serialize separate fixtures
-    // so unrelated redb/TLS bootstrap storms do not consume their test deadlines.
+    // so unrelated storage/TLS bootstrap storms do not consume their test deadlines.
     static LIFECYCLE_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     use super::*;
     use axum::{
@@ -3203,7 +3241,7 @@ mod lifecycle_tests {
             let physical =
                 crate::runtime_storage_fixtures::physical(directory.path(), Default::default())
                     .unwrap();
-            let path = directory.path().join("persistent/listener.redb");
+            let path = directory.path().join("persistent/listener.kv");
             let node = physical
                 .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
                 .unwrap();
@@ -3676,7 +3714,7 @@ mod lifecycle_tests {
         ));
         let mut config = fixture_config();
         config.persistent_disk = crate::persistent_disk::fixture_config(&dir.path().join("data"));
-        config.database_path = dir.path().join("data/node.redb");
+        config.database_path = dir.path().join("data/node.kv");
         config.scratch_disk.directory = dir.path().join("scratch");
         config.mcp.tls = files.clone();
         config.native.tls = files.clone();
@@ -4210,7 +4248,7 @@ mod lifecycle_tests {
             assert_eq!(config.admission, template.admission);
             config.admission = storage.policy().clone();
             config.persistent_disk = cluster_storage.persistent.clone();
-            config.database_path = dir.path().join(format!("persistent/node{node}.redb"));
+            config.database_path = dir.path().join(format!("persistent/node{node}.kv"));
             config.scratch_disk = cluster_storage.data_scratch[node].clone();
             config.mcp.tls = files[node].clone();
             config.native.tls = files[node].clone();

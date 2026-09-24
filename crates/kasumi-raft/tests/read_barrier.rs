@@ -62,7 +62,7 @@ impl Fixture {
         let mut stores = Vec::new();
         for id in 1..=3 {
             let store = common::store(
-                &dir.path().join(format!("{id}.redb")),
+                &dir.path().join(format!("{id}.kv")),
                 true,
                 fixture_scratch.clone(),
             )

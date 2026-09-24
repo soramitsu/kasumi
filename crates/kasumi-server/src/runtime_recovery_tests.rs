@@ -400,7 +400,7 @@ impl Fixture {
                     .open_persistent(&cluster.persistent)
                     .unwrap();
                 let audit_node = NodeStore::create_new(
-                    directory.join(format!("persistent/issuer-audit-{id}.redb")),
+                    directory.join(format!("persistent/issuer-audit-{id}.kv")),
                     Uuid::new_v4(),
                     disk.clone(),
                     cluster
@@ -426,7 +426,7 @@ impl Fixture {
                 )
                 .unwrap();
                 let node = NodeStore::create_new(
-                    directory.join(format!("persistent/issuer-{id}.redb")),
+                    directory.join(format!("persistent/issuer-{id}.kv")),
                     Uuid::new_v4(),
                     disk,
                     cluster
@@ -765,7 +765,7 @@ impl Fixture {
             identity: self.verifier_ids[index].clone(),
             database_path: self
                 .directory
-                .join(format!("persistent/verifier-{}/trust.redb", index + 1)),
+                .join(format!("persistent/verifier-{}/trust.kv", index + 1)),
             keys,
         };
         let verifier_root = verifier.database_path.parent().unwrap();
@@ -907,7 +907,7 @@ impl Fixture {
                     )]),
                     journal_path: self
                         .directory
-                        .join(format!("persistent/target-journal-{}.redb", index + 1)),
+                        .join(format!("persistent/target-journal-{}.kv", index + 1)),
                     journal_keys: target_key("journal"),
                     generation_root: self
                         .directory

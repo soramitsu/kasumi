@@ -268,7 +268,7 @@ mod tests {
         assert!(serde_json::from_value::<crate::runtime::RuntimeConfig>(value).is_err());
         let mut config =
             crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
-        config.database_path = "/different/node.redb".into();
+        config.database_path = "/different/node.kv".into();
         assert!(config.validate_persistent_disk().is_err());
     }
     #[test]
@@ -342,7 +342,7 @@ mod tests {
         );
         assert!(config.validate_persistent_disk().is_err());
         config.tenant_audit_archives.clear();
-        config.signer_verifier.as_mut().unwrap().database_path = "/uninstalled/trust.redb".into();
+        config.signer_verifier.as_mut().unwrap().database_path = "/uninstalled/trust.kv".into();
         assert!(config.validate_persistent_disk().is_err());
     }
 

@@ -55,16 +55,10 @@ impl VerifiedTargetMaterialization {
 }
 fn verify_persisted_digest(stores: &TenantStorageSet, expected: &str) -> anyhow::Result<()> {
     stores.check_access()?;
-    let encoded = stores
-        .application()
-        .get_bounded(NS, b"manifest", 64 << 10)?
+    let manifest = read_current_manifest(stores.application())?
         .ok_or_else(|| anyhow::anyhow!("target bootstrap absent"))?;
-    let manifest: Manifest = serde_json::from_slice(&encoded)?;
     anyhow::ensure!(
-        manifest.format == 2
-            && manifest.bytes > 0
-            && manifest.chunks == manifest.bytes.div_ceil(CHUNK as u64)
-            && manifest.digest == expected,
+        manifest.digest == expected,
         "target bootstrap manifest differs"
     );
     let mut digest = Sha256::new();
@@ -269,7 +263,7 @@ async fn materialize_origin(
                 authorization.check()?;
                 if stores
                     .application()
-                    .get_bounded(NS, b"manifest", 64 << 10)?
+                    .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
                     .is_some()
                 {
                     verify_persisted_digest(&stores, &expected)?;
@@ -324,7 +318,7 @@ fn persist_target(
     anyhow::ensure!(
         stores
             .application()
-            .get_bounded(NS, b"manifest", 64 << 10)?
+            .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
             .is_none()
             && stores
                 .custody()

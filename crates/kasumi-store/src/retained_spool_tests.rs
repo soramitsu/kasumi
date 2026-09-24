@@ -4,7 +4,7 @@ use crate::{
     allocation_tests::{DeallocationObservation, measure, observe_deallocation},
     test_utils::TestDiskMemory,
 };
-use redb::{
+use kasumi_kv::{
     AdmissionError, DatabaseCloseSettlement, OwnerFailed, RetainedDatabase, StorageAdmission,
     StorageBackend, StorageError, TableDefinition, TerminalObservation,
 };
@@ -55,9 +55,9 @@ impl StorageAdmission for AggregateBackend {
     fn reserve_workspace(
         &self,
         _bytes: u64,
-    ) -> core::result::Result<Box<dyn redb::ResidentLease>, redb::AdmissionError> {
+    ) -> core::result::Result<Box<dyn kasumi_kv::ResidentLease>, kasumi_kv::AdmissionError> {
         self.check_owner()
-            .map_err(|_| redb::AdmissionError::OwnerFailed)?;
+            .map_err(|_| kasumi_kv::AdmissionError::OwnerFailed)?;
         Ok(Box::new(()))
     }
     fn check_owner(&self) -> Result<(), OwnerFailed> {
@@ -109,7 +109,7 @@ impl StorageBackend for Backend {
     fn sync_data(&self) -> io::Result<()> {
         self.0.with(EncryptedSpool::sync_all)
     }
-    fn close(&self) -> redb::BackendCloseOutcome {
+    fn close(&self) -> kasumi_kv::BackendCloseOutcome {
         self.0.closes.fetch_add(1, Ordering::SeqCst);
         let mut retained = self.0.spool.lock().unwrap_or_else(|p| p.into_inner());
         retained.close_with(|spool| {
@@ -142,7 +142,7 @@ impl Fixture {
             closes: AtomicUsize::new(0),
             terminal_syncs: AtomicUsize::new(0),
         });
-        let database = redb::Database::builder(backend.clone())
+        let database = kasumi_kv::Database::builder(backend.clone())
             .create_with_backend(Backend(backend.clone()))
             .unwrap();
         let write = database.begin_write().unwrap();
@@ -194,7 +194,7 @@ fn original_sync_error_moves_once_to_database_while_spool_and_charge_stay_owned(
     assert_eq!(report.settlement(), DatabaseCloseSettlement::Retained);
     assert_eq!(
         report.native_disposition(),
-        redb::BackendNativeDisposition::Retained
+        kasumi_kv::BackendNativeDisposition::Retained
     );
     assert!(matches!(
         report.shutdown(),
@@ -250,7 +250,7 @@ fn original_sync_error_moves_once_to_database_while_spool_and_charge_stay_owned(
             > 0
     );
     let (result, native) = retained.close().into_parts();
-    assert_eq!(native, redb::BackendNativeDisposition::Retained);
+    assert_eq!(native, kasumi_kv::BackendNativeDisposition::Retained);
     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
     drop(retained);
     assert_eq!(fixture.backend.closes.load(Ordering::SeqCst), 1);
@@ -273,7 +273,7 @@ fn actual_final_sync_panic_reaches_database_with_same_payload_and_spool_still_pr
     assert_eq!(report.settlement(), DatabaseCloseSettlement::Retained);
     assert_eq!(
         report.native_disposition(),
-        redb::BackendNativeDisposition::Retained
+        kasumi_kv::BackendNativeDisposition::Retained
     );
     let TerminalObservation::Panicked(original) = report.backend() else {
         panic!("original unwind missing");
@@ -307,7 +307,7 @@ fn actual_final_sync_panic_reaches_database_with_same_payload_and_spool_still_pr
     );
     assert!(retained.spool().is_none());
     let (result, native) = retained.close().into_parts();
-    assert_eq!(native, redb::BackendNativeDisposition::Retained);
+    assert_eq!(native, kasumi_kv::BackendNativeDisposition::Retained);
     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
     drop(retained);
     assert_eq!(fixture.backend.closes.load(Ordering::SeqCst), 1);
@@ -357,7 +357,7 @@ fn file_key_and_each_buffer_retire_before_extent_credit_is_reusable() {
                 })
             });
             let (result, native) = result.into_parts();
-            assert_eq!(native, redb::BackendNativeDisposition::Drained);
+            assert_eq!(native, kasumi_kv::BackendNativeDisposition::Drained);
             result.unwrap();
             assert_eq!(allocations, 0);
             retained
@@ -400,7 +400,7 @@ fn file_key_and_each_buffer_retire_before_extent_credit_is_reusable() {
         assert!(retained.spool().is_none());
         let (outcome, allocations) = measure(|| retained.close());
         let (result, native) = outcome.into_parts();
-        assert_eq!(native, redb::BackendNativeDisposition::Drained);
+        assert_eq!(native, kasumi_kv::BackendNativeDisposition::Drained);
         result.unwrap();
         assert_eq!(allocations, 0);
         assert_eq!(disk.snapshot().charged_bytes, 0);

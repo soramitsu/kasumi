@@ -1,6 +1,5 @@
 use super::*;
 use crate::test_utils::{LocalKeyProvider, ManualClock};
-use redb::ReadableTable;
 
 fn contents(node: &NodeStore) -> Result<String> {
     let transaction = node.db.begin_read()?;
@@ -37,7 +36,7 @@ async fn existing_catalog_rejects_equivalent_alternate_bytes_without_repair() ->
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
     let node = NodeStore::create_new_fixture(
-        directory.path().join("canonical-catalog.redb"),
+        directory.path().join("canonical-catalog.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory,
         fixture_scratch,
@@ -111,7 +110,7 @@ async fn missing_catalogs_and_authenticated_binding_never_provision_during_reope
     for present in [0, 1, 2, 3] {
         let directory = crate::test_utils::private_tempdir()?;
         let node = NodeStore::create_new_fixture(
-            directory.path().join("partial.redb"),
+            directory.path().join("partial.kv"),
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
@@ -159,7 +158,7 @@ async fn existing_catalog_admission_cannot_provision_after_waiting_for_the_open_
     use std::{future::Future, task::Poll};
     let directory = crate::test_utils::private_tempdir()?;
     let node = NodeStore::create_new_fixture(
-        directory.path().join("gate.redb"),
+        directory.path().join("gate.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
@@ -208,7 +207,7 @@ async fn corrupt_or_authenticated_wrong_binding_is_never_repaired_by_reopen() ->
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
     let node = NodeStore::create_new_fixture(
-        directory.path().join("binding.redb"),
+        directory.path().join("binding.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
@@ -253,7 +252,7 @@ async fn existing_binding_requires_current_writer_bytes_without_repair() -> Resu
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
     let node = NodeStore::create_new_fixture(
-        directory.path().join("canonical-binding.redb"),
+        directory.path().join("canonical-binding.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory,
         fixture_scratch,
@@ -329,7 +328,7 @@ async fn exact_standalone_binding_reopens_after_both_domains_close_and_drain() -
     let fixture_scratch =
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
-    let path = directory.path().join("installed.redb");
+    let path = directory.path().join("installed.kv");
     let disk = fixture_scratch.clone();
     let node = NodeStore::create_new_fixture(
         &path,

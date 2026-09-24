@@ -218,7 +218,7 @@ async fn cancelled_local_initialization_drains_real_group_and_breaks_router_cycl
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let store = kasumi_store::TenantStorageSet::initialize_catalogs_fixture(
         kasumi_store::NodeStore::create_new_fixture(
-            directory.path().join("startup.redb"),
+            directory.path().join("startup.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
             fixture_scratch.memory().clone(),
             fixture_scratch.clone(),

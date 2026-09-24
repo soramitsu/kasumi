@@ -160,7 +160,7 @@ async fn failed_profile_publication_drains_owners_and_never_marks_partial_instal
         16 << 10,
     )?)?;
     let node = NodeStore::open_existing(
-        directory.join("data/node.redb"),
+        directory.join("data/node.kv"),
         prepared.database_id,
         disk,
         storage.open_scratch(&scratch)?,

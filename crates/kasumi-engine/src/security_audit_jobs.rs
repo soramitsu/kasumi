@@ -144,7 +144,7 @@ mod tests {
             Default::default(),
         )
         .unwrap();
-        let path = directory.path().join("persistent/audit.redb");
+        let path = directory.path().join("persistent/audit.kv");
         let provider = Arc::new(LocalKeyProvider::new([74; 32]));
         let node = storage
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
@@ -253,7 +253,7 @@ mod tests {
             Default::default(),
         )
         .unwrap();
-        let path = directory.path().join("persistent/audit.redb");
+        let path = directory.path().join("persistent/audit.kv");
         let provider = Arc::new(LocalKeyProvider::new([75; 32]));
         let node = storage
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)

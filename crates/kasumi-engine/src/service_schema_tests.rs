@@ -11,7 +11,7 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
     .unwrap();
     let node = storage
         .create_new(
-            root.path().join("persistent/node.redb"),
+            root.path().join("persistent/node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();

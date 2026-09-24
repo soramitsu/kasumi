@@ -164,7 +164,7 @@ impl Fixture {
                         installation_id: Uuid::new_v4(),
                         node_id: 1,
                     },
-                    database_path: directory.path().join("data/trust.redb"),
+                    database_path: directory.path().join("data/trust.kv"),
                     keys: KeyProviderSettings::File { path: keys },
                 },
                 initial_certificates: vec![certificate.clone()],

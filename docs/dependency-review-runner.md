@@ -24,8 +24,8 @@ interrupted attempts remain on disk. A successful upstream-only run has status
 
 The fixed roster first runs the official dependency-patch verifier and its
 own Python regression suite. It then runs all-target/all-feature tests and
-doctests for the reviewed bitmaps, lru, serde_json, rmcp, redb, and
-redb-derive packages, plus the whole reviewed OpenRaft workspace. The
+doctests for the reviewed bitmaps, lru, serde_json, and rmcp packages,
+plus the whole reviewed OpenRaft workspace. The
 workspace command includes its `tests` integration crate and reviewed sibling
 packages. OpenRaft's excluded examples and benchmark crates have no reviewed
 lockfiles; their manifest paths are retained as `excluded_unlocked` and are

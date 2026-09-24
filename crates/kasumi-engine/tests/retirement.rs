@@ -76,11 +76,11 @@ impl Fixture {
     async fn new() -> Self {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let physical =
-            common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+            common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
         let node = physical
             .storage
             .create_new(
-                directory.path().join("node.redb"),
+                directory.path().join("node.kv"),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();
@@ -231,7 +231,7 @@ async fn actual_retirement_seed_reopens_through_control_domain_without_loading_s
         physical
             .storage
             .open_existing(
-                directory.path().join("node.redb"),
+                directory.path().join("node.kv"),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap(),
@@ -357,7 +357,7 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
             .code,
         ErrorCode::Forbidden
     );
-    let path = fixture.directory.path().join("node.redb");
+    let path = fixture.directory.path().join("node.kv");
     fixture.db.shutdown().await.unwrap();
     fixture.audit.shutdown().await.unwrap();
     let Fixture {
@@ -896,7 +896,7 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
         ErrorCode::Conflict
     );
     drop(paused);
-    let path = fixture.directory.path().join("node.redb");
+    let path = fixture.directory.path().join("node.kv");
     fixture.db.shutdown().await.unwrap();
     fixture.audit.shutdown().await.unwrap();
     let Fixture {

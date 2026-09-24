@@ -1,6 +1,6 @@
 //! One installed read snapshot with admitted, owned byte results.
 use super::*;
-use redb::{BoundedReadError, ReadCloseSettlement, RetainedReadTransaction};
+use kasumi_kv::{BoundedReadError, ReadCloseSettlement, RetainedReadTransaction};
 use std::sync::atomic::AtomicUsize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,7 +92,7 @@ impl std::error::Error for NodeReadTablesError {
 struct ReaderState {
     phase: NodeReadPhase,
     transaction: Option<RetainedReadTransaction>,
-    begin: Observation<redb::TransactionError>,
+    begin: Observation<kasumi_kv::TransactionError>,
     tables: Observation<NodeReadTablesError>,
     outer: Observation<std::convert::Infallible>,
     output_admission: Observation<io::Error>,
@@ -131,8 +131,9 @@ impl ReaderRequest {
         state.phase = NodeReadPhase::Begin;
         state.begin = Observation::Entered;
         let opening = owner.state.lock();
-        let Some(database) = opening.redb.database() else {
-            state.begin = Observation::Returned(Err(redb::StorageError::DatabaseClosed.into()));
+        let Some(database) = opening.engine.database() else {
+            state.begin =
+                Observation::Returned(Err(kasumi_kv::StorageError::DatabaseClosed.into()));
             state.phase = NodeReadPhase::Failed;
             return;
         };
@@ -193,7 +194,7 @@ impl ReaderRequest {
         let Some(opening) = self.database.owner().state.try_lock() else {
             return state.phase;
         };
-        let Some(database) = opening.redb.retained_database() else {
+        let Some(database) = opening.engine.retained_database() else {
             state.phase = NodeReadPhase::Retained;
             state.outcomes_released = false;
             return state.phase;
@@ -531,7 +532,7 @@ impl RegisteredNodeRead {
         {
             return Err(NodeReadAccessError::InvalidInput);
         }
-        // redb may return an 8192-byte stored key even for a short seek prefix.
+        // engine may return an 8192-byte stored key even for a short seek prefix.
         let key_bound =
             crate::disk_memory::allocation::<u8>(8192).map_err(NodeReadAccessError::Admission)?;
         let value_bound = crate::disk_memory::allocation::<u8>(
@@ -581,7 +582,7 @@ impl NodeReadReport<'_> {
     pub fn phase(&self) -> NodeReadPhase {
         self.state.phase
     }
-    pub fn begin(&self) -> TerminalObservation<'_, redb::TransactionError> {
+    pub fn begin(&self) -> TerminalObservation<'_, kasumi_kv::TransactionError> {
         self.state.begin.borrow()
     }
     pub fn tables(&self) -> TerminalObservation<'_, NodeReadTablesError> {
@@ -599,7 +600,7 @@ impl NodeReadReport<'_> {
     pub fn finish_outer(&self) -> TerminalObservation<'_, std::convert::Infallible> {
         self.state.finish_outer.borrow()
     }
-    pub fn close(&self) -> Option<redb::ReadCloseReport<'_>> {
+    pub fn close(&self) -> Option<kasumi_kv::ReadCloseReport<'_>> {
         self.state
             .transaction
             .as_ref()

@@ -683,7 +683,7 @@ async fn open(
 #[tokio::test]
 async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receipts() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
-    let path = root.path().join("node.redb");
+    let path = root.path().join("node.kv");
     let physical = common::PhysicalFixture::new(&path, Default::default());
     let (db, audit) = open(&physical, &path, true).await;
     let names: Vec<_> = (0..32).map(|n| format!("financial_{n}")).collect();
@@ -783,7 +783,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
     let node = physical
         .storage
         .create_new(
-            root.path().join("restored.redb"),
+            root.path().join("restored.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -846,8 +846,8 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
 #[tokio::test]
 async fn cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_authority() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
-    let physical = common::PhysicalFixture::new(&root.path().join("node.redb"), Default::default());
-    let (db, audit) = open(&physical, &root.path().join("node.redb"), true).await;
+    let physical = common::PhysicalFixture::new(&root.path().join("node.kv"), Default::default());
+    let (db, audit) = open(&physical, &root.path().join("node.kv"), true).await;
     let mut history = definition("history");
     history.write_mode = CollectionWriteMode::AppendOnly;
     history.retention_class = CollectionRetentionClass::ArchivableHistory;
@@ -1153,7 +1153,7 @@ fn schema_effect_digest_binds_dependencies_and_current_read_permission_is_requir
 #[tokio::test]
 async fn encrypted_schema_lookup_checks_current_fences_without_rewriting_original_effect() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
-    let path = root.path().join("schema-fences.redb");
+    let path = root.path().join("schema-fences.kv");
     let physical = common::PhysicalFixture::new(&path, Default::default());
     let (db, audit) = open(&physical, &path, true).await;
     let mut install = creates(db.engine(), "fenced-initial", &["guards", "journal"]);

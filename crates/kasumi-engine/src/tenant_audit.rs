@@ -452,7 +452,7 @@ mod tests {
         let disk =
             kasumi_store::ScratchDisk::fixture(directory.path().join("scratch"), memory.clone());
         let node = NodeStore::create_new_fixture(
-            directory.path().join("persistent/node.redb"),
+            directory.path().join("persistent/node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
             memory,
             disk,
@@ -655,7 +655,7 @@ mod tests {
         drop(store);
 
         let node = NodeStore::open_existing(
-            directory.path().join("persistent/node.redb"),
+            directory.path().join("persistent/node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
             persistent,
             disk,

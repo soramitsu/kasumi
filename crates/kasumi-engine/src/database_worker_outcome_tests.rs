@@ -64,7 +64,7 @@ impl Fixture {
         name: &str,
     ) -> anyhow::Result<Self> {
         let admission = storage.admission.clone();
-        let path = directory.path().join("persistent/node.redb");
+        let path = directory.path().join("persistent/node.kv");
         let node = storage.create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)?;
         let store = TenantStore::initialize_catalog_fixture(
             node.clone(),

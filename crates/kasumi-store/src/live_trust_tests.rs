@@ -96,7 +96,7 @@ impl Fixture {
         let clock = Arc::new(Clock(AtomicU64::new(0)));
         let store = TenantStore::initialize_catalog_fixture_with_clock_and_access(
             NodeStore::create_new_fixture(
-                directory.path().join("trust.redb"),
+                directory.path().join("trust.kv"),
                 crate::test_utils::NODE_STORE_ID,
                 fixture_memory.clone(),
                 fixture_scratch.clone(),
@@ -328,7 +328,7 @@ async fn exact_live_generation_rejects_historical_and_reused_key_forgery() {
     assert!(trust.administer(&f.context(), stage_reused).is_err());
     assert!(old_fence.check().is_err());
     f.store.shutdown().await.unwrap();
-    let raw = std::fs::read(f.directory.path().join("trust.redb")).unwrap();
+    let raw = std::fs::read(f.directory.path().join("trust.kv")).unwrap();
     assert!(
         !raw.windows(f.domain.manifest_sha256.len())
             .any(|bytes| bytes == f.domain.manifest_sha256.as_bytes())
@@ -567,7 +567,7 @@ async fn complete_file_reopen_retains_exact_trust_and_permanent_key_bindings() {
     drop(store);
     let reopened = TenantStore::open_existing(
         NodeStore::open_existing_fixture(
-            directory.path().join("trust.redb"),
+            directory.path().join("trust.kv"),
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),

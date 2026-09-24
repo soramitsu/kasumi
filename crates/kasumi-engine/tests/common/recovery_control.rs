@@ -87,6 +87,171 @@ async fn snapshot(db: &Arc<Database>) {
         .unwrap();
 }
 
+// A current leader can step down between selection and the read barrier. Each
+// helper retains one original finite credential and retries only uncertain
+// read/release errors; permanent authorization and absence are never hidden.
+const CONTROL_OBSERVATION_WINDOW: Duration = Duration::from_secs(40);
+fn uncertain_control_read(code: ErrorCode) -> bool {
+    matches!(code, ErrorCode::UnknownOutcome | ErrorCode::Unavailable)
+}
+async fn read_recovery_status(
+    f: &Fixture,
+    context: RequestContext,
+    operation: Uuid,
+) -> kasumi_engine::VerifiedRecoveryStatus {
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
+        loop {
+            let current = f.leader().await;
+            match current.recovery_status(context.clone(), operation).await {
+                Ok(status) => return status,
+                Err(error) if uncertain_control_read(error.code) => {}
+                Err(error) => panic!("original recovery status read rejected: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("original recovery status did not resolve through a current leader")
+}
+async fn read_recovery_phase(
+    f: &Fixture,
+    context: RequestContext,
+    operation: Uuid,
+    phase: Uuid,
+) -> kasumi_engine::VerifiedRecoveryPhase {
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
+        loop {
+            let current = f.leader().await;
+            match current
+                .recovery_phase(context.clone(), operation, phase)
+                .await
+            {
+                Ok(record) => return record,
+                Err(error) if uncertain_control_read(error.code) => {}
+                Err(error) => panic!("original recovery phase read rejected: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("original recovery phase did not resolve through a current leader")
+}
+async fn read_next_recovery_dispatch(
+    f: &Fixture,
+    context: RequestContext,
+    operation: Uuid,
+    phase: Uuid,
+) -> RecoveryDispatch {
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
+        loop {
+            let current = f.leader().await;
+            match current
+                .next_recovery_dispatch(&context, operation, phase)
+                .await
+            {
+                Ok(Some(dispatch)) => return dispatch,
+                Err(error) if uncertain_control_read(error.code) => {}
+                other => panic!("original recovery dispatch read rejected: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("original recovery dispatch did not resolve through a current leader")
+}
+
+// A failed response call is not a negative proof when its current-quorum fence
+// returns Unavailable/UnknownOutcome. Re-read only the exact prepared phase,
+// keep its marker, input, and pending phase fixed, and re-submit only the
+// identical *invalid* response until Control rejects it for the expected
+// reason. This never calls BeginEffect, consumes another external ticket, or
+// constructs a successful response.
+async fn assert_rejected_recovery_response(
+    f: &Fixture,
+    operation: Uuid,
+    phase: Uuid,
+    invalid: RecoveryDispatchOutcome,
+    expected_code: ErrorCode,
+    expected_message: &str,
+    consumed_prior: Option<(RecoveryEffect, Uuid)>,
+) {
+    let context = f.context("owner");
+    let mut frozen_input = None;
+    let mut definite_rejection = false;
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
+        loop {
+            let current = f.leader().await;
+            let observed = match current
+                .recovery_phase(context.clone(), operation, phase)
+                .await
+            {
+                Ok(observed) => observed,
+                Err(error) if uncertain_control_read(error.code) => continue,
+                Err(error) => panic!("negative response phase read rejected: {error:?}"),
+            };
+            assert_eq!(observed.record().operation_id, operation);
+            assert_eq!(observed.record().phase_id, phase);
+            if let Some(input) = &frozen_input {
+                assert_eq!(
+                    &observed.record().input,
+                    input,
+                    "negative phase input changed"
+                );
+            } else {
+                frozen_input = Some(observed.record().input.clone());
+            }
+            assert!(
+                observed.record().outcome.is_none(),
+                "invalid response acquired a permanent outcome"
+            );
+            if let Some((effect, attempt)) = consumed_prior {
+                assert_eq!(
+                    observed
+                        .record()
+                        .effect_attempts
+                        .get(&effect)
+                        .map(|marker| marker.attempt_id),
+                    Some(attempt),
+                    "original consumed effect marker changed"
+                );
+            }
+            drop(observed);
+            let head = match current.recovery_status(context.clone(), operation).await {
+                Ok(head) => head,
+                Err(error) if uncertain_control_read(error.code) => continue,
+                Err(error) => panic!("negative response status read rejected: {error:?}"),
+            };
+            assert_eq!(head.record().request.operation_id, operation);
+            assert_eq!(
+                head.record().pending_phase,
+                Some(phase),
+                "invalid response no longer targets the pending phase"
+            );
+            drop(head);
+            if definite_rejection {
+                return;
+            }
+            match current
+                .resolve_recovery_dispatch(context.clone(), operation, phase, invalid.clone())
+                .await
+            {
+                Err(error) if uncertain_control_read(error.code) => {}
+                Err(error) => {
+                    assert_eq!(
+                        error.code, expected_code,
+                        "unexpected negative response: {error:?}"
+                    );
+                    assert_eq!(
+                        error.message, expected_message,
+                        "unexpected negative response"
+                    );
+                    definite_rejection = true;
+                }
+                Ok(_) => panic!("invalid recovery response was accepted"),
+            }
+        }
+    })
+    .await
+    .expect("exact invalid response did not receive a definite rejection");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit()
  {
@@ -300,40 +465,103 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
         unreachable!()
     };
     command.not_after_ms += 1;
-    assert_eq!(
-        db.prepare_recovery_dispatch(f.context("owner"), id, phase_id, 1, None, substitution)
-            .await
-            .err()
-            .unwrap()
-            .code,
-        ErrorCode::Conflict
-    );
-    assert_eq!(
-        db.prepare_recovery_dispatch(f.context("owner"), id, phase_id, 1, None, input.clone())
-            .await
-            .unwrap()
-            .record()
-            .prepared_revision,
-        prepared_revision
-    );
+    let reject_context = f.context("owner");
+    tokio::time::timeout(Duration::from_secs(40), async {
+        loop {
+            let current = f.leader().await;
+            match current
+                .prepare_recovery_dispatch(
+                    reject_context.clone(),
+                    id,
+                    phase_id,
+                    1,
+                    None,
+                    substitution.clone(),
+                )
+                .await
+            {
+                Err(error) if error.code == ErrorCode::Conflict => return,
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) =>
+                {
+                    // An ambiguous rejection cannot certify that the wrong
+                    // input was refused; re-read the exact permanent phase.
+                    let current = f.leader().await;
+                    match current
+                        .recovery_phase(reject_context.clone(), id, phase_id)
+                        .await
+                    {
+                        Ok(retained) => {
+                            assert_eq!(retained.record().input, input);
+                            assert_eq!(retained.record().prepared_revision, prepared_revision);
+                            assert!(retained.record().outcome.is_none());
+                        }
+                        Err(error)
+                            if matches!(
+                                error.code,
+                                ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                            ) => {}
+                        Err(error) => panic!("prepared phase re-read failed: {error:?}"),
+                    }
+                }
+                Ok(_) => panic!("changed prepared input was accepted"),
+                Err(error) => panic!("changed prepared input rejected unexpectedly: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("changed prepared input did not receive a definite rejection");
+    // A leadership change after the rejected substitution can make the
+    // cached route's replay response uncertain. Retry only the identical
+    // prepared phase with its original credential and frozen input.
+    let replay_context = f.context("owner");
+    let replayed = tokio::time::timeout(Duration::from_secs(40), async {
+        loop {
+            let current = f.leader().await;
+            match current
+                .prepare_recovery_dispatch(
+                    replay_context.clone(),
+                    id,
+                    phase_id,
+                    1,
+                    None,
+                    input.clone(),
+                )
+                .await
+            {
+                Ok(phase) => return phase,
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) => {}
+                Err(error) => panic!("exact prepared-phase replay rejected: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("exact prepared-phase replay did not resolve");
+    assert_eq!(replayed.record().input, input);
+    assert_eq!(replayed.record().prepared_revision, prepared_revision);
+    drop(replayed);
     let signed = prepare_receipt(&f, &input);
     let mut forged = signed.clone();
     forged.receipt.command.command_id = Uuid::new_v4();
     let authority_attempt =
         consume_fixture_effect(&f, id, phase_id, RecoveryEffect::AuthorityCommand).await;
-    let Err(error) = db
-        .resolve_recovery_dispatch(
-            f.context("owner"),
-            id,
-            phase_id,
-            RecoveryDispatchOutcome::Authority(Box::new(forged)),
-        )
-        .await
-    else {
-        panic!("forged issuer receipt accepted");
-    };
-    assert_eq!(error.code, ErrorCode::Forbidden);
-    assert_eq!(error.message, "invalid signed recovery issuer outcome");
+    assert_rejected_recovery_response(
+        &f,
+        id,
+        phase_id,
+        RecoveryDispatchOutcome::Authority(Box::new(forged)),
+        ErrorCode::Forbidden,
+        "invalid signed recovery issuer outcome",
+        Some((RecoveryEffect::AuthorityCommand, authority_attempt)),
+    )
+    .await;
     let materialize = resolve_phase_with_prior(
         &f,
         id,
@@ -346,11 +574,7 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
     let sequence = materialize.record().next_phase_sequence;
     drop(materialize);
     let intent_phase = Uuid::new_v4();
-    let input = db
-        .next_recovery_dispatch(&f.context("owner"), id, intent_phase)
-        .await
-        .unwrap()
-        .unwrap();
+    let input = read_next_recovery_dispatch(&f, f.context("owner"), id, intent_phase).await;
     let RecoveryDispatch::ControlIntent(commit) = &input else {
         panic!("materialization Control intent required")
     };
@@ -379,7 +603,7 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
     f.close().await;
     f.open(false).await;
     let db = f.leader().await;
-    let status = db.recovery_status(f.context("owner"), id).await.unwrap();
+    let status = read_recovery_status(&f, f.context("owner"), id).await;
     assert_eq!(status.record().pending_phase, Some(intent_phase));
     drop(status);
     let committed = db
@@ -402,15 +626,11 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
     assert_eq!(state.record().materialization_intent, Some(intent_phase));
     drop(state);
     for node_id in 1..=3 {
-        let status = db.recovery_status(f.context("owner"), id).await.unwrap();
+        let status = read_recovery_status(&f, f.context("owner"), id).await;
         let sequence = status.record().next_phase_sequence;
         drop(status);
         let phase_id = Uuid::new_v4();
-        let input = db
-            .next_recovery_dispatch(&f.context("owner"), id, phase_id)
-            .await
-            .unwrap()
-            .unwrap();
+        let input = read_next_recovery_dispatch(&f, f.context("owner"), id, phase_id).await;
         let RecoveryDispatch::Target {
             node_id: actual,
             request: target_request,
@@ -460,7 +680,7 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
         )
         .await;
     }
-    let status = db.recovery_status(f.context("owner"), id).await.unwrap();
+    let status = read_recovery_status(&f, f.context("owner"), id).await;
     assert_eq!(status.record().phase, RecoveryPhase::Initialize);
     assert!(
         status
@@ -474,11 +694,7 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
     let initialized_under = commit_next_control(&f, &db, id).await;
     assert_eq!(initialized_under.request.phase, LifecyclePhase::Initialize);
     let premature_id = Uuid::new_v4();
-    let mut premature = db
-        .next_recovery_dispatch(&f.context("owner"), id, premature_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let mut premature = read_next_recovery_dispatch(&f, f.context("owner"), id, premature_id).await;
     let RecoveryDispatch::Target {
         request: target, ..
     } = &mut premature
@@ -489,7 +705,7 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
         panic!("quorum startup required")
     };
     target.step = TargetRuntimeStep::Initialize(quorum.clone());
-    let head = db.recovery_status(f.context("owner"), id).await.unwrap();
+    let head = read_recovery_status(&f, f.context("owner"), id).await;
     assert!(
         db.prepare_recovery_dispatch(
             f.context("owner"),
@@ -601,14 +817,35 @@ async fn prepare_completion(planned: bool, inspect_completion: bool) -> Completi
         )
         .await;
     }
-    assert!(
-        db.recovery_phase(f.context("owner"), id, missing_start)
-            .await
-            .unwrap()
-            .record()
-            .outcome
-            .is_none()
-    );
+    // Other phases may have moved leadership since `db` was selected. Keep
+    // the original phase and one finite read context across current-leader
+    // selection; only uncertainty about this read is retried.
+    let phase_context = f.context("owner");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let current = f.leader().await;
+            match current
+                .recovery_phase(phase_context.clone(), id, missing_start)
+                .await
+            {
+                Ok(phase) => {
+                    assert_eq!(phase.record().operation_id, id);
+                    assert_eq!(phase.record().phase_id, missing_start);
+                    assert_eq!(phase.record().input, missing_dispatch);
+                    assert!(phase.record().outcome.is_none());
+                    return;
+                }
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) => {}
+                Err(error) => panic!("original unresolved Start read rejected: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("original unresolved Start read did not resolve");
     let (prepared_phase, prepared_request) = prepare_next(&f, &db, id).await;
     let RecoveryDispatch::Target {
         node_id: prepared_node,
@@ -767,7 +1004,7 @@ async fn complete_recovery(
     } = live;
     let id = request.operation_id;
     let retirement_phase = if planned {
-        let status = db.recovery_status(f.context("owner"), id).await.unwrap();
+        let status = read_recovery_status(&f, f.context("owner"), id).await;
         assert_eq!(status.record().phase, RecoveryPhase::RetireSource);
         drop(status);
         let (phase_id, input) = prepare_next(&f, &db, id).await;
@@ -788,10 +1025,7 @@ async fn complete_recovery(
             retirement.target_incarnation,
             request.target_incarnation.to_string()
         );
-        let phase = db
-            .recovery_phase(f.context("owner"), id, phase_id)
-            .await
-            .unwrap();
+        let phase = read_recovery_phase(&f, f.context("owner"), id, phase_id).await;
         assert!(retirement.not_after_ms > phase.record().admitted_at_ms);
         assert!(retirement.not_after_ms <= phase.dispatch_limit().await.unwrap());
         drop(phase);
@@ -810,19 +1044,16 @@ async fn complete_recovery(
         };
         let retirement_attempt =
             consume_fixture_effect(&f, id, phase_id, RecoveryEffect::SourceRetirement).await;
-        let Err(error) = db
-            .resolve_recovery_dispatch(
-                f.context("owner"),
-                id,
-                phase_id,
-                RecoveryDispatchOutcome::SourceRetired(Box::new(receipt.clone())),
-            )
-            .await
-        else {
-            panic!("wrong source retirement accepted");
-        };
-        assert_eq!(error.code, ErrorCode::Conflict);
-        assert_eq!(error.message, "planned source retirement evidence differs");
+        assert_rejected_recovery_response(
+            &f,
+            id,
+            phase_id,
+            RecoveryDispatchOutcome::SourceRetired(Box::new(receipt.clone())),
+            ErrorCode::Conflict,
+            "planned source retirement evidence differs",
+            Some((RecoveryEffect::SourceRetirement, retirement_attempt)),
+        )
+        .await;
         receipt.target_incarnation = request.target_incarnation.to_string();
         resolve_phase_with_prior(
             &f,
@@ -838,9 +1069,8 @@ async fn complete_recovery(
     };
 
     assert_eq!(
-        db.recovery_status(f.context("owner"), id)
+        read_recovery_status(&f, f.context("owner"), id)
             .await
-            .unwrap()
             .record()
             .phase,
         RecoveryPhase::FenceSource
@@ -880,19 +1110,16 @@ async fn complete_recovery(
     };
     let fence_attempt =
         consume_fixture_effect(&f, id, fence_phase, RecoveryEffect::AuthorityCommand).await;
-    let Err(error) = db
-        .resolve_recovery_dispatch(
-            f.context("owner"),
-            id,
-            fence_phase,
-            RecoveryDispatchOutcome::Authority(Box::new(sign(&receipt))),
-        )
-        .await
-    else {
-        panic!("wrong source fence accepted");
-    };
-    assert_eq!(error.code, ErrorCode::Conflict);
-    assert_eq!(error.message, "issuer returned another recovery outcome");
+    assert_rejected_recovery_response(
+        &f,
+        id,
+        fence_phase,
+        RecoveryDispatchOutcome::Authority(Box::new(sign(&receipt))),
+        ErrorCode::Conflict,
+        "issuer returned another recovery outcome",
+        Some((RecoveryEffect::AuthorityCommand, fence_attempt)),
+    )
+    .await;
     receipt.outcome = AuthorityOutcome::Fenced {
         incarnation: request.source_incarnation,
         authority_epoch: request.source_authority_epoch,
@@ -932,12 +1159,18 @@ async fn complete_recovery(
             LifecycleAuthorityIdentity::Intent(activate_under.request.command_id)
         );
         assert!(original.not_after_ms <= activate_under.original_credential_expires_at_ms);
-        let uncertain = db
+        // The preceding phase was prepared through the current leader; the
+        // earlier cached database may now be a follower. Pin the original
+        // Stop identity and credential before selecting a single current route.
+        let stop_context = f.context("owner");
+        let stop_command_id = Uuid::new_v4();
+        let current = f.leader().await;
+        let uncertain = current
             .recovery_control(
-                f.context("owner"),
+                stop_context,
                 RecoveryControlCommand::Stop {
                     operation_id: id,
-                    command_id: Uuid::new_v4(),
+                    command_id: stop_command_id,
                 },
             )
             .await
@@ -1004,22 +1237,16 @@ async fn complete_recovery(
         }
         let stop_attempt =
             consume_fixture_effect(&f, id, stop_phase, RecoveryEffect::AuthorityCommand).await;
-        let Err(error) = db
-            .resolve_recovery_dispatch(
-                f.context("owner"),
-                id,
-                stop_phase,
-                RecoveryDispatchOutcome::Authority(Box::new(sign(&wrong))),
-            )
-            .await
-        else {
-            panic!("wrong activation resolution accepted");
-        };
-        assert_eq!(error.code, ErrorCode::Conflict);
-        assert_eq!(
-            error.message,
-            "issuer receipt differs from exact permanent command"
-        );
+        assert_rejected_recovery_response(
+            &f,
+            id,
+            stop_phase,
+            RecoveryDispatchOutcome::Authority(Box::new(sign(&wrong))),
+            ErrorCode::Conflict,
+            "issuer receipt differs from exact permanent command",
+            Some((RecoveryEffect::AuthorityCommand, stop_attempt)),
+        )
+        .await;
         let resolved = resolve_phase_with_prior(
             &f,
             id,
@@ -1203,11 +1430,16 @@ async fn complete_recovery(
                     )
                     .as_ref(),
             );
-            assert!(
-                db.resolve_recovery_dispatch(f.context("owner"), id, local_phase, forged)
-                    .await
-                    .is_err()
-            );
+            assert_rejected_recovery_response(
+                &f,
+                id,
+                local_phase,
+                forged,
+                ErrorCode::Conflict,
+                "local activation proof differs from committed issuer winner",
+                None,
+            )
+            .await;
             resolve_phase(&f, id, local_phase, response(local.command_id, node_id)).await;
             for node in [1, 3] {
                 let (phase, input) = prepare_next(&f, &db, id).await;
@@ -1225,7 +1457,7 @@ async fn complete_recovery(
                 assert_eq!(expected.observation.activation, fact);
                 resolve_phase(&f, id, phase, response(confirm.command_id, node)).await;
             }
-            let published = db.recovery_status(f.context("owner"), id).await.unwrap();
+            let published = read_recovery_status(&f, f.context("owner"), id).await;
             assert_eq!(published.record().phase, RecoveryPhase::Publish);
             assert_eq!(published.record().activation, Some(activation_phase));
             assert!(
@@ -1385,16 +1617,16 @@ async fn complete_recovery(
         if node_id == 1 {
             let mut short_drain = observation.clone();
             short_drain.drain_ms -= 1;
-            assert!(
-                db.resolve_recovery_dispatch(
-                    f.context("owner"),
-                    id,
-                    phase_id,
-                    response(short_drain)
-                )
-                .await
-                .is_err()
-            );
+            assert_rejected_recovery_response(
+                &f,
+                id,
+                phase_id,
+                response(short_drain),
+                ErrorCode::Forbidden,
+                "target cleanup lacks exact issuer drain and physical cleanup evidence",
+                None,
+            )
+            .await;
             let mut wrong_nodes = observation.clone();
             // A correctly signed issuer observation and node attestation still
             // cannot authorize cleanup against another physical verifier set.
@@ -1432,18 +1664,22 @@ async fn complete_recovery(
                     )
                     .as_ref(),
             );
-            assert!(
-                db.resolve_recovery_dispatch(f.context("owner"), id, phase_id, forged)
-                    .await
-                    .is_err()
-            );
+            assert_rejected_recovery_response(
+                &f,
+                id,
+                phase_id,
+                forged,
+                ErrorCode::Forbidden,
+                "target cleanup lacks exact issuer drain and physical cleanup evidence",
+                None,
+            )
+            .await;
         }
         resolve_phase(&f, id, phase_id, response(observation)).await;
     }
     assert_eq!(
-        db.recovery_status(f.context("owner"), id)
+        read_recovery_status(&f, f.context("owner"), id)
             .await
-            .unwrap()
             .record()
             .phase,
         RecoveryPhase::Stopped
@@ -1468,9 +1704,8 @@ async fn complete_recovery(
         ErrorCode::Conflict
     );
     assert_eq!(
-        db.recovery_status(f.context("owner"), id)
+        read_recovery_status(&f, f.context("owner"), id)
             .await
-            .unwrap()
             .record()
             .phase,
         RecoveryPhase::Stopped
@@ -1584,19 +1819,18 @@ async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request:
             .await
             .is_err()
     );
-    assert!(
-        db.resolve_recovery_dispatch(
-            f.context("owner"),
-            request.operation_id,
-            phase,
-            RecoveryDispatchOutcome::RoutePublished {
-                revision: db.engine().generation().unwrap().state.revision + 1
-            }
-        )
-        .await
-        .is_err(),
-        "ordinary resolution cannot fabricate an atomic topology publication"
-    );
+    assert_rejected_recovery_response(
+        f,
+        request.operation_id,
+        phase,
+        RecoveryDispatchOutcome::RoutePublished {
+            revision: db.engine().generation().unwrap().state.revision + 1,
+        },
+        ErrorCode::Conflict,
+        "route outcome must be committed atomically with its topology update",
+        None,
+    )
+    .await;
     topology.tenants.insert(
         "unrelated".into(),
         TenantRoute {
@@ -1662,10 +1896,7 @@ async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request:
     ))
     .await;
     let (fresh, input) = prepare_next(f, &db, request.operation_id).await;
-    let old = db
-        .recovery_phase(f.context("owner"), request.operation_id, expired)
-        .await
-        .unwrap();
+    let old = read_recovery_phase(f, f.context("owner"), request.operation_id, expired).await;
     assert_eq!(old.dispatch_limit().await.unwrap(), original_cutoff);
     assert_eq!(
         old.record().outcome,
@@ -1750,9 +1981,8 @@ async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request:
         "replay after restart must preserve later authorized topology"
     );
     assert_eq!(
-        db.recovery_status(f.context("owner"), request.operation_id)
+        read_recovery_status(f, f.context("owner"), request.operation_id)
             .await
-            .unwrap()
             .record()
             .phase,
         RecoveryPhase::Finished
@@ -2093,9 +2323,27 @@ async fn prepare_next(
     .expect("current recovery planning observation did not resolve");
     // Preparing may commit before its response fence closes. Resolve this exact
     // phase before retrying admission; never regenerate its input or deadline.
-    tokio::time::timeout(Duration::from_secs(10), async {
+    // One service call can spend 5s at the write barrier, 10s in the proposal
+    // worker, 5s at release, and another 5s + 5s at phase read/release. The
+    // earlier 10s fixture bound could cancel that call before it returned.
+    let started = std::time::Instant::now();
+    let mut attempts = 0u64;
+    let mut last_stage = "not_started";
+    let mut last_error = None::<String>;
+    let mut last_route = None::<String>;
+    let preparation = tokio::time::timeout(Duration::from_secs(40), async {
         loop {
+            attempts += 1;
+            last_stage = "select_current_leader";
             let current = f.leader().await;
+            let metrics = current.raft_group().raft().metrics();
+            let metrics = metrics.borrow();
+            last_route = Some(format!(
+                "node={} term={} leader={:?} state={:?}",
+                metrics.id, metrics.current_term, metrics.current_leader, metrics.state
+            ));
+            drop(metrics);
+            last_stage = "read_exact_phase";
             match current
                 .recovery_phase(context.clone(), operation, phase)
                 .await
@@ -2109,17 +2357,21 @@ async fn prepare_next(
                     );
                     return;
                 }
-                Err(error) if error.code == ErrorCode::NotFound => {}
+                Err(error) if error.code == ErrorCode::NotFound => {
+                    last_error = Some(format!("phase read: {error:?}"));
+                }
                 Err(error)
                     if matches!(
                         error.code,
                         ErrorCode::UnknownOutcome | ErrorCode::Unavailable
                     ) =>
                 {
+                    last_error = Some(format!("phase read: {error:?}"));
                     continue;
                 }
                 Err(error) => panic!("exact recovery preparation unavailable: {error:?}"),
             }
+            last_stage = "prepare_exact_phase";
             match current
                 .prepare_recovery_dispatch(
                     context.clone(),
@@ -2136,14 +2388,248 @@ async fn prepare_next(
                     if matches!(
                         error.code,
                         ErrorCode::UnknownOutcome | ErrorCode::Unavailable
-                    ) => {}
+                    ) =>
+                {
+                    last_error = Some(format!("phase prepare: {error:?}"));
+                }
                 Err(error) => panic!("exact recovery preparation rejected: {error:?}"),
             }
         }
     })
-    .await
-    .expect("exact recovery preparation did not resolve");
+    .await;
+    if let Err(error) = preparation {
+        // These member-local rows explain a timeout but grant no verified
+        // outcome. The test still fails if it cannot read or prepare the exact
+        // phase under its original credential and pinned command identity.
+        eprintln!(
+            "RECOVERY_PREPARE_TIMEOUT: operation={operation} phase={phase} \
+             sequence={sequence} pending={pending:?} elapsed={:?} attempts={attempts} \
+             last_stage={last_stage} last_error={last_error:?} last_route={last_route:?} \
+             original_credential_expires_at_ms={:?} timeout={error:?}",
+            started.elapsed(),
+            context.authorization.expires_at_ms()
+        );
+        for (node, database) in &f.nodes {
+            let generation = database.engine().generation().map(|generation| {
+                let retained = generation
+                    .state
+                    .recovery_control
+                    .phases
+                    .get(&phase.to_string())
+                    .filter(|retained| retained.operation_id == operation);
+                (
+                    generation.state.revision,
+                    retained.map(|retained| {
+                        (
+                            retained.phase_id,
+                            retained.sequence,
+                            retained.input == input,
+                            retained.prepared_revision,
+                            retained.original_credential_expires_at_ms,
+                            retained.outcome.is_some(),
+                        )
+                    }),
+                )
+            });
+            eprintln!(
+                "RECOVERY_PREPARE_MEMBER_UNVERIFIED: node={node} phase_observation={generation:?} \
+                 metrics={:?}",
+                database.raft_group().raft().metrics().borrow()
+            );
+        }
+        eprintln!("RECOVERY_PREPARE_VOTES: {}", f.vote_probe.diagnostic());
+        panic!("exact recovery preparation did not resolve: {error:?}");
+    }
     (phase, input)
+}
+
+// This uses the installed credential-liveness seam. It revokes only after an
+// actual Control application contains the exact BeginEffect marker, so the
+// post-write response release fails without granting a dispatch ticket.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recovery_control_begin_effect_lost_release_keeps_exact_phase_unresolved() {
+    use std::sync::{
+        Weak,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    struct RevokeAfterMarker {
+        nodes: Vec<Weak<Database>>,
+        operation: Uuid,
+        phase: Uuid,
+        saw_marker: AtomicBool,
+    }
+    impl kasumi_types::CredentialLiveness for RevokeAfterMarker {
+        fn check(&self) -> kasumi_types::Result<()> {
+            let committed = self.nodes.iter().filter_map(Weak::upgrade).any(|db| {
+                db.engine().generation().is_ok_and(|generation| {
+                    generation
+                        .state
+                        .recovery_control
+                        .phases
+                        .get(&self.phase.to_string())
+                        .is_some_and(|phase| {
+                            phase.operation_id == self.operation
+                                && phase
+                                    .effect_attempts
+                                    .contains_key(&RecoveryEffect::ControlIntent)
+                        })
+                })
+            });
+            if committed {
+                self.saw_marker.store(true, Ordering::Release);
+                Err(kasumi_types::Error::new(
+                    ErrorCode::Unauthorized,
+                    "fixture credential revoked after committed recovery effect marker",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    let mut f = Fixture::new().await;
+    let db = f.leader().await;
+    let start = request(&f);
+    let operation = start.operation_id;
+    db.recovery_control(
+        f.context("owner"),
+        RecoveryControlCommand::Start(Box::new(start)),
+    )
+    .await
+    .unwrap();
+    let (issuer_phase, input) = prepare_next(&f, &db, operation).await;
+    resolve_phase(
+        &f,
+        operation,
+        issuer_phase,
+        RecoveryDispatchOutcome::Authority(Box::new(prepare_receipt(&f, &input))),
+    )
+    .await;
+    let (phase_id, input) = prepare_next(&f, &db, operation).await;
+    let RecoveryDispatch::ControlIntent(original) = &input else {
+        panic!("exact materialization Control intent required");
+    };
+    assert_eq!(original.command_id, phase_id);
+    drop(db);
+    let db = f.leader().await;
+    let guard = Arc::new(RevokeAfterMarker {
+        nodes: f.nodes.values().map(Arc::downgrade).collect(),
+        operation,
+        phase: phase_id,
+        saw_marker: AtomicBool::new(false),
+    });
+    let observation = kasumi_clock::EpochClock::system()
+        .unwrap()
+        .observe()
+        .unwrap();
+    let mut guarded = f.context("owner");
+    guarded.authorization = RequestAuthorization::from_verified_credential_with_liveness(
+        observation.utc_ms() + 60_000,
+        &observation,
+        CredentialResource::Control {
+            incarnation: Uuid::parse_str(&f.bootstrap.incarnation).unwrap(),
+        },
+        guard.clone(),
+    )
+    .unwrap();
+    let observed = db
+        .recovery_phase(guarded, operation, phase_id)
+        .await
+        .unwrap();
+    assert_eq!(observed.record().input, input);
+    assert!(observed.record().effect_attempts.is_empty());
+    let Err(error) = observed.begin_effect(RecoveryEffect::ControlIntent).await else {
+        panic!("committed marker unexpectedly returned a dispatch ticket");
+    };
+    assert_eq!(error.code, ErrorCode::UnknownOutcome);
+    assert!(guard.saw_marker.load(Ordering::Acquire));
+    drop(observed);
+
+    // The same operation and phase remain readable under a fresh, independent
+    // credential. A retained marker is historical evidence, never a new grant.
+    let current = f.leader().await;
+    let status = current
+        .recovery_status(f.context("owner"), operation)
+        .await
+        .unwrap();
+    assert_eq!(status.record().pending_phase, Some(phase_id));
+    assert_eq!(status.record().phase, RecoveryPhase::Materialize);
+    drop(status);
+    let phase = current
+        .recovery_phase(f.context("owner"), operation, phase_id)
+        .await
+        .unwrap();
+    assert_eq!(phase.record().input, input);
+    assert!(phase.record().outcome.is_none());
+    assert_eq!(phase.record().effect_attempts.len(), 1);
+    let marker = phase.record().effect_attempts[&RecoveryEffect::ControlIntent].clone();
+    assert!(!marker.attempt_id.is_nil());
+    assert_eq!(marker.input_sha256, phase.record().input_sha256);
+    // This is a rejected admission probe, not a replayed external effect.
+    let Err(error) = phase.begin_effect(RecoveryEffect::ControlIntent).await else {
+        panic!("a second one-use Control effect ticket was granted");
+    };
+    assert_eq!(error.code, ErrorCode::Conflict);
+    drop(phase);
+    drop(current);
+
+    // The rejected probe must not replace the first attempt, advance the
+    // pending phase, or create a positive outcome. Reacquire current quorum
+    // before checking, because the previous database can lose leadership.
+    let current = f.leader().await;
+    let retained = current
+        .recovery_phase(f.context("owner"), operation, phase_id)
+        .await
+        .unwrap();
+    assert_eq!(retained.record().input, input);
+    assert!(retained.record().outcome.is_none());
+    assert_eq!(retained.record().effect_attempts.len(), 1);
+    assert_eq!(
+        retained.record().effect_attempts[&RecoveryEffect::ControlIntent],
+        marker
+    );
+    drop(retained);
+    let status = current
+        .recovery_status(f.context("owner"), operation)
+        .await
+        .unwrap();
+    assert_eq!(status.record().pending_phase, Some(phase_id));
+    assert_eq!(status.record().phase, RecoveryPhase::Materialize);
+    drop(status);
+
+    let Err(error) = current
+        .next_recovery_dispatch(&f.context("owner"), operation, Uuid::new_v4())
+        .await
+    else {
+        panic!("unresolved Control effect advanced to a target dispatch");
+    };
+    assert_eq!(error.code, ErrorCode::UnknownOutcome);
+    let generation = current.engine().generation().unwrap();
+    assert!(
+        !generation
+            .state
+            .lifecycle_control
+            .as_ref()
+            .unwrap()
+            .intents
+            .contains_key(&phase_id),
+        "no Control child intent may be fabricated after the lost release",
+    );
+    assert!(
+        generation
+            .state
+            .recovery_control
+            .phases
+            .values()
+            .filter(|phase| phase.operation_id == operation)
+            .all(|phase| !matches!(&phase.input, RecoveryDispatch::Target { .. })),
+        "no target Execute phase may be created from the unresolved marker",
+    );
+    drop(generation);
+    drop(current);
+    drop(db);
+    f.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2434,10 +2920,8 @@ async fn resolve_expired_completion(
     fact: TargetCompletionFact,
     keys: &BTreeMap<u64, Ed25519KeyPair>,
 ) {
-    let original = db
-        .recovery_phase(f.context("owner"), operation, original_phase)
+    let original = read_recovery_phase(f, f.context("owner"), operation, original_phase)
         .await
-        .unwrap()
         .record()
         .clone();
     let old_intent = fact.completion_intent.clone();
@@ -2449,14 +2933,26 @@ async fn resolve_expired_completion(
             + 20,
     ))
     .await;
-    assert!(
-        db.recovery_phase(f.context("owner"), operation, original_phase)
-            .await
-            .unwrap()
-            .admit_dispatch()
-            .await
-            .is_err()
-    );
+    let context = f.context("owner");
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
+        loop {
+            let phase = read_recovery_phase(f, context.clone(), operation, original_phase).await;
+            match phase.admit_dispatch().await {
+                Err(error) if uncertain_control_read(error.code) => {}
+                Err(error) => {
+                    assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+                    assert_eq!(
+                        error.message,
+                        "original recovery dispatch is no longer eligible"
+                    );
+                    return;
+                }
+                Ok(()) => panic!("expired original completion was admitted"),
+            }
+        }
+    })
+    .await
+    .expect("expired original completion did not receive a definite denial");
     let resolution = commit_next_control(f, db, operation).await;
     assert_eq!(resolution.request.phase, LifecyclePhase::ResolveComplete);
     for node in 1..=2 {
@@ -2625,33 +3121,30 @@ async fn resolve_expired_completion(
     };
     let mut wrong = observation.clone();
     wrong.input.original_phase.request.command_id = Uuid::new_v4();
-    assert!(
-        db.resolve_recovery_dispatch(
-            f.context("owner"),
-            operation,
-            inspection_phase,
-            response(sign(wrong))
-        )
-        .await
-        .is_err()
-    );
+    assert_rejected_recovery_response(
+        f,
+        operation,
+        inspection_phase,
+        response(sign(wrong)),
+        ErrorCode::Conflict,
+        "completion inspection lacks its exact positive signature",
+        None,
+    )
+    .await;
     let mut late = observation.clone();
     late.completion.admitted_at_ms = old_intent.original_credential_expires_at_ms;
-    assert!(
-        db.resolve_recovery_dispatch(
-            f.context("owner"),
-            operation,
-            inspection_phase,
-            response(sign(late))
-        )
-        .await
-        .is_err()
-    );
+    assert_rejected_recovery_response(
+        f,
+        operation,
+        inspection_phase,
+        response(sign(late)),
+        ErrorCode::Conflict,
+        "completion inspection lacks its exact positive signature",
+        None,
+    )
+    .await;
     resolve_phase(f, operation, inspection_phase, response(sign(observation))).await;
-    let retained = db
-        .recovery_phase(f.context("owner"), operation, original_phase)
-        .await
-        .unwrap();
+    let retained = read_recovery_phase(f, f.context("owner"), operation, original_phase).await;
     assert_eq!(retained.record().input, original.input);
     assert_eq!(
         retained.record().original_credential_expires_at_ms,
@@ -2662,10 +3155,7 @@ async fn resolve_expired_completion(
         Some(RecoveryDispatchOutcome::CompletionTerminal { resolution_phase })
     );
     drop(retained);
-    let head = db
-        .recovery_status(f.context("owner"), operation)
-        .await
-        .unwrap();
+    let head = read_recovery_status(f, f.context("owner"), operation).await;
     assert_eq!(head.record().completion, Some(inspection_phase));
     assert_eq!(head.record().completion_attempt, Some(original_phase));
     assert_eq!(

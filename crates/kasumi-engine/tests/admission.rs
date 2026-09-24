@@ -11,7 +11,7 @@ async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     const MAX_BYTES: u64 = 256 << 20;
     let physical = common::PhysicalFixture::new(
-        &directory.path().join("node.redb"),
+        &directory.path().join("node.kv"),
         kasumi_engine::test_utils::admission_config_with_bookkeeping(AdmissionConfig {
             max_inflight_bytes: Some(MAX_BYTES),
             ..Default::default()
@@ -21,7 +21,7 @@ async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work
     let node = physical
         .storage
         .create_new(
-            directory.path().join("node.redb"),
+            directory.path().join("node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -144,11 +144,11 @@ async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work
 async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("local.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("local.kv"), Default::default());
     let node = physical
         .storage
         .create_new(
-            directory.path().join("local.redb"),
+            directory.path().join("local.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();

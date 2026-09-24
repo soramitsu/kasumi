@@ -71,7 +71,7 @@ async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     kasumi_store::private_files::create_directory(&directory.path().join("persistent")).unwrap();
     let disk = ScratchDisk::fixture(directory.path().join("scratch"), memory.clone());
     let node = NodeStore::create_new_fixture(
-        directory.path().join("persistent/node.redb"),
+        directory.path().join("persistent/node.kv"),
         kasumi_store::test_utils::NODE_STORE_ID,
         memory,
         disk,
@@ -281,7 +281,7 @@ async fn encrypted_reopen_keeps_unapplied_receipt_rows_hidden_until_exact_replay
     drop(store);
 
     let reopened_node = NodeStore::open_existing_fixture(
-        directory.path().join("persistent/node.redb"),
+        directory.path().join("persistent/node.kv"),
         kasumi_store::test_utils::NODE_STORE_ID,
         disk.memory().clone(),
         disk,

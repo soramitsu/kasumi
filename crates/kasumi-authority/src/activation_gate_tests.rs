@@ -470,7 +470,7 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
     let storage = PhysicalFixture::new().unwrap();
     let node_store = storage
         .create_new(
-            storage.path("actual-target.redb"),
+            storage.path("actual-target.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();

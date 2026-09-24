@@ -40,7 +40,9 @@ pub use directory::{
     NodeDiskDirectoryOperationKind, NodeDiskDirectoryOperationStep, NodeDiskEntryKind,
 };
 pub use file::NodeDiskFile;
-pub(crate) use file::{FailedCloseReport, FailedFileTransfer, FailedFileWitness};
+pub(crate) use file::{
+    FailedCloseReport, FailedFileTransfer, FailedFileWitness, NodeDiskCloseOutcome,
+};
 use ledger::AccountedInode;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

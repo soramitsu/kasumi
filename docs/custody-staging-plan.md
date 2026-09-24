@@ -1,5 +1,9 @@
 # Proposed bounded custody staging
 
+> Historical proposal written for the former redb backend. The native
+> Kasumi engine and its current qualification are described in
+> [native-kv-goal.md](native-kv-goal.md).
+
 Status: **batching proposed and unimplemented**. Terminal staging now permanently
 rejects finish after a failed push. Retained transaction/database/spool primitives
 and fixed cache entry admission are applied and have focused passing evidence;

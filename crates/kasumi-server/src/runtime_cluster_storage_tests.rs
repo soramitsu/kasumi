@@ -140,14 +140,14 @@ async fn shared_physical_owner_keeps_facade_shutdown_and_replacement_independent
     let a_id = uuid::Uuid::new_v4();
     let b_id = uuid::Uuid::new_v4();
     let a = NodeStore::create_new(
-        a_root.join("node.redb"),
+        a_root.join("node.kv"),
         a_id,
         disk.clone(),
         scratch_a.clone(),
     )
     .unwrap();
     let b = NodeStore::create_new(
-        b_root.join("node.redb"),
+        b_root.join("node.kv"),
         b_id,
         disk.clone(),
         scratch_b.clone(),
@@ -202,7 +202,7 @@ async fn shared_physical_owner_keeps_facade_shutdown_and_replacement_independent
     assert!(!Arc::ptr_eq(&first, &replacement));
     assert!(Arc::ptr_eq(replacement.memory(), second.memory()));
     let reopened = NodeStore::open_existing(
-        a_root.join("node.redb"),
+        a_root.join("node.kv"),
         a_id,
         disk.clone(),
         scratch_a.clone(),

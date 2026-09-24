@@ -152,12 +152,12 @@ impl Drop for TestDiskLease {
 }
 
 impl crate::NodeStore {
-    /// Synthetic redb I/O with an explicit admitted physical owner for engine
+    /// Synthetic KV I/O with an explicit admitted physical owner for engine
     /// fixtures. This does not claim the backend itself is a physical file.
-    /// The exact persistent/scratch core is checked before redb can touch it.
+    /// The exact persistent/scratch core is checked before the engine can touch it.
     pub fn open_fixture_backend_on_disk(
-        backend: impl redb::StorageBackend,
-        redb_admission: std::sync::Arc<dyn redb::StorageAdmission>,
+        backend: impl kasumi_kv::StorageBackend + 'static,
+        storage_admission: std::sync::Arc<dyn kasumi_kv::StorageAdmission>,
         persistent: std::sync::Arc<crate::NodeDisk>,
         scratch: std::sync::Arc<crate::ScratchDisk>,
     ) -> Result<std::sync::Arc<Self>> {
@@ -165,7 +165,7 @@ impl crate::NodeStore {
             std::sync::Arc::ptr_eq(persistent.memory(), scratch.memory()),
             "persistent and scratch disks require the same installed memory admission"
         );
-        let db = redb::Database::builder(redb_admission).create_with_backend(backend)?;
+        let db = kasumi_kv::Database::builder(storage_admission).create_with_backend(backend)?;
         Self::initialize_tables(&db)?;
         Ok(Self::installed(db, None, Some(persistent), scratch))
     }
@@ -228,18 +228,18 @@ struct FixtureStorageAdmission {
     reserved: AtomicU64,
 }
 
-impl redb::StorageAdmission for FixtureStorageAdmission {
+impl kasumi_kv::StorageAdmission for FixtureStorageAdmission {
     fn reserve_workspace(
         &self,
         _bytes: u64,
-    ) -> core::result::Result<Box<dyn redb::ResidentLease>, redb::AdmissionError> {
+    ) -> core::result::Result<Box<dyn kasumi_kv::ResidentLease>, kasumi_kv::AdmissionError> {
         self.check_owner()
-            .map_err(|_| redb::AdmissionError::OwnerFailed)?;
+            .map_err(|_| kasumi_kv::AdmissionError::OwnerFailed)?;
         Ok(Box::new(()))
     }
-    fn check_owner(&self) -> std::result::Result<(), redb::OwnerFailed> {
+    fn check_owner(&self) -> std::result::Result<(), kasumi_kv::OwnerFailed> {
         if self.failed.load(Ordering::Acquire) {
-            Err(redb::OwnerFailed)
+            Err(kasumi_kv::OwnerFailed)
         } else {
             Ok(())
         }
@@ -248,20 +248,20 @@ impl redb::StorageAdmission for FixtureStorageAdmission {
         &self,
         current: u64,
         requested: u64,
-    ) -> std::result::Result<(), redb::AdmissionError> {
+    ) -> std::result::Result<(), kasumi_kv::AdmissionError> {
         self.check_owner()
-            .map_err(|_| redb::AdmissionError::OwnerFailed)?;
+            .map_err(|_| kasumi_kv::AdmissionError::OwnerFailed)?;
         if requested < current || requested > 256 << 30 {
-            return Err(redb::AdmissionError::CapacityDenied);
+            return Err(kasumi_kv::AdmissionError::CapacityDenied);
         }
         self.reserved.fetch_max(requested, Ordering::AcqRel);
         Ok(())
     }
-    fn settle_growth(&self, actual: u64) -> std::result::Result<(), redb::OwnerFailed> {
+    fn settle_growth(&self, actual: u64) -> std::result::Result<(), kasumi_kv::OwnerFailed> {
         self.check_owner()?;
         if actual > 256 << 30 {
             self.owner_failed();
-            return Err(redb::OwnerFailed);
+            return Err(kasumi_kv::OwnerFailed);
         }
         self.reserved.store(actual, Ordering::Release);
         Ok(())
@@ -271,7 +271,7 @@ impl redb::StorageAdmission for FixtureStorageAdmission {
     }
 }
 
-pub fn storage_admission() -> std::sync::Arc<dyn redb::StorageAdmission> {
+pub fn storage_admission() -> std::sync::Arc<dyn kasumi_kv::StorageAdmission> {
     std::sync::Arc::new(FixtureStorageAdmission::default())
 }
 
@@ -446,7 +446,7 @@ impl LeaseClock for ManualClock {
 
 /// Reopenable storage whose synchronized image models what survives power loss.
 /// Mutations after `fail_after` operations fail, including fsync, until disarmed.
-/// Only the synchronized image is installed by `crash`, without running redb cleanup.
+/// Only the synchronized image is installed by `crash`, without running database cleanup.
 #[derive(Clone, Debug, Default)]
 pub struct FaultBackend(std::sync::Arc<parking_lot::Mutex<FaultState>>);
 
@@ -483,7 +483,7 @@ impl FaultBackend {
     ) {
         self.0.lock().advance_on_sync = Some((clock, elapsed));
     }
-    /// Returns a new independent backend, so dropping the old redb database cannot
+    /// Returns a new independent backend, so dropping the old database cannot
     /// synchronize anything into the simulated post-crash disk.
     pub fn crash(&self) -> Self {
         let durable = self.0.lock().durable.clone();
@@ -508,9 +508,9 @@ impl FaultState {
     }
 }
 
-impl redb::StorageBackend for FaultBackend {
-    fn close(&self) -> redb::BackendCloseOutcome {
-        redb::BackendCloseOutcome::drained(Ok(()))
+impl kasumi_kv::StorageBackend for FaultBackend {
+    fn close(&self) -> kasumi_kv::BackendCloseOutcome {
+        kasumi_kv::BackendCloseOutcome::drained(Ok(()))
     }
     fn len(&self) -> std::io::Result<u64> {
         Ok(self.0.lock().volatile.len() as u64)
@@ -690,7 +690,7 @@ mod admitted_backend_tests {
 
     #[derive(Debug)]
     struct UntouchedBackend;
-    impl redb::StorageBackend for UntouchedBackend {
+    impl kasumi_kv::StorageBackend for UntouchedBackend {
         fn len(&self) -> std::io::Result<u64> {
             panic!("foreign-core backend was queried")
         }
@@ -706,7 +706,7 @@ mod admitted_backend_tests {
         fn write(&self, _: u64, _: &[u8]) -> std::io::Result<()> {
             panic!("foreign-core backend was written")
         }
-        fn close(&self) -> redb::BackendCloseOutcome {
+        fn close(&self) -> kasumi_kv::BackendCloseOutcome {
             panic!("foreign-core backend was acquired")
         }
     }
@@ -720,7 +720,7 @@ mod admitted_backend_tests {
         let foreign_memory = TestDiskMemory::new(256 << 20, 4096);
         let persistent = retry_disk_registry(|| {
             crate::NodeDisk::fixture_for_path(
-                persistent_directory.path().join("node.redb"),
+                persistent_directory.path().join("node.kv"),
                 memory.clone(),
             )
         })
@@ -744,7 +744,7 @@ mod admitted_backend_tests {
         );
         assert_eq!(memory.snapshot(), before);
         assert_eq!(foreign_memory.snapshot(), foreign_before);
-        assert!(!persistent_directory.path().join("node.redb").exists());
+        assert!(!persistent_directory.path().join("node.kv").exists());
 
         let backend = FaultBackend::new();
         let node = crate::NodeStore::open_fixture_backend_on_disk(
@@ -766,6 +766,6 @@ mod admitted_backend_tests {
             "opening a synthetic backend invented a second disk owner"
         );
         node.shutdown().await.unwrap();
-        assert!(!persistent_directory.path().join("node.redb").exists());
+        assert!(!persistent_directory.path().join("node.kv").exists());
     }
 }

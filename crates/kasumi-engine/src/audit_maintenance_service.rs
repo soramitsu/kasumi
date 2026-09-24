@@ -219,7 +219,7 @@ mod tests {
                 Default::default(),
             )
             .unwrap();
-            let path = directory.path().join("persistent/node.redb");
+            let path = directory.path().join("persistent/node.kv");
             let node = storage
                 .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
                 .unwrap();
@@ -376,7 +376,7 @@ mod tests {
         let admission = storage.admission.clone();
         let node = storage
             .create_new(
-                directory.path().join("persistent/node.redb"),
+                directory.path().join("persistent/node.kv"),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();
@@ -416,6 +416,8 @@ mod tests {
         .unwrap();
         let audit =
             SecurityAudit::initialize(audit_store, Default::default(), admission.clone()).unwrap();
+        let retained_store_bytes =
+            crate::test_utils::reserved_payload_bytes(&admission) - metadata_bytes;
         let policy = Policy {
             grants: vec![Grant {
                 principal: "owner".into(),
@@ -490,7 +492,8 @@ mod tests {
         let ordinary = admission
             .reserve(
                 (512 << 20) + metadata_bytes
-                    - crate::test_utils::reserved_payload_bytes(&admission),
+                    - crate::test_utils::reserved_payload_bytes(&admission)
+                    - crate::audit_maintenance::NodeAuditMaintenance::WORKSPACE_BYTES,
                 None,
             )
             .unwrap();
@@ -534,7 +537,16 @@ mod tests {
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|_| {
+            let current = engine.generation().unwrap();
+            panic!(
+                "audit maintenance timed out: status={:?}, hot_bytes={}, archived_segments={}, revision={}",
+                database.audit_maintenance_status(),
+                current.state.audit_retention.hot_bytes,
+                current.state.audit_retention.archive_segments,
+                current.state.revision,
+            )
+        });
         let current = engine.generation().unwrap();
         assert_eq!(current.state.audit_retention.next_sequence, 50);
         assert_eq!(
@@ -556,9 +568,17 @@ mod tests {
                     kasumi_raft::SNAPSHOT_BUFFER_SLOTS
                 )
                 .unwrap()
+                + retained_store_bytes
         );
         drop(group);
         drop(database);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            metadata_bytes + retained_store_bytes
+        );
+        drop(store);
+        drop(audit);
+        drop(engine);
         assert_eq!(
             crate::test_utils::reserved_payload_bytes(&admission),
             metadata_bytes

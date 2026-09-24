@@ -8,7 +8,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         let physical =
             crate::runtime_storage_fixtures::physical(directory.path(), Default::default())
                 .unwrap();
-        let path = directory.path().join("persistent/target-journal.redb");
+        let path = directory.path().join("persistent/target-journal.kv");
         let generation_root = directory.path().join("persistent/targets");
         let generation_directory = crate::persistent_disk::open_or_create_directory(
             &kasumi_store::NodeDisk::fixture_config(&path).unwrap(),
@@ -144,7 +144,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         let weak_runtime = Arc::downgrade(&runtime);
         // A materializer can fail after opening both key domains but before a Raft
         // owner exists. Generation close must still join those store monitors.
-        let partial_path = directory.path().join("persistent/partial-target.redb");
+        let partial_path = directory.path().join("persistent/partial-target.kv");
         let partial_id = Uuid::new_v4();
         let partial_node = physical.create_new(&partial_path, partial_id).unwrap();
         let weak_partial = Arc::downgrade(&partial_node);
@@ -284,7 +284,7 @@ async fn stop_local_generation_root_substitution_fences_before_cleanup_claim() {
         crate::runtime_storage_fixtures::physical(&installation, Default::default()).unwrap();
     let generation_root = installation.join("persistent/targets");
     let config =
-        kasumi_store::NodeDisk::fixture_config(installation.join("persistent/target-journal.redb"))
+        kasumi_store::NodeDisk::fixture_config(installation.join("persistent/target-journal.kv"))
             .unwrap();
     let generation_directory = crate::persistent_disk::open_or_create_directory(
         &config,
@@ -338,7 +338,7 @@ async fn transient_root_swap_during_path_probe_cannot_prove_target_absence() {
         crate::runtime_storage_fixtures::physical(&installation, Default::default()).unwrap();
     let generation_root = installation.join("persistent/targets");
     let config =
-        kasumi_store::NodeDisk::fixture_config(installation.join("persistent/target-journal.redb"))
+        kasumi_store::NodeDisk::fixture_config(installation.join("persistent/target-journal.kv"))
             .unwrap();
     let _generation_directory = crate::persistent_disk::open_or_create_directory(
         &config,
@@ -379,7 +379,7 @@ fn never_enrolled_target_leaf_has_a_managed_absence_proof() {
         crate::runtime_storage_fixtures::physical(&installation, Default::default()).unwrap();
     let generation_root = installation.join("persistent/targets");
     let config =
-        kasumi_store::NodeDisk::fixture_config(installation.join("persistent/target-journal.redb"))
+        kasumi_store::NodeDisk::fixture_config(installation.join("persistent/target-journal.kv"))
             .unwrap();
     let generation_directory = crate::persistent_disk::open_or_create_directory(
         &config,
@@ -408,7 +408,7 @@ async fn missing_previously_enrolled_target_leaf_is_not_an_absence_proof() {
         crate::runtime_storage_fixtures::physical(&installation, Default::default()).unwrap();
     let generation_root = installation.join("persistent/targets");
     let config =
-        kasumi_store::NodeDisk::fixture_config(installation.join("persistent/target-journal.redb"))
+        kasumi_store::NodeDisk::fixture_config(installation.join("persistent/target-journal.kv"))
             .unwrap();
     let generation_directory = crate::persistent_disk::open_or_create_directory(
         &config,
@@ -435,7 +435,7 @@ async fn missing_previously_enrolled_target_leaf_is_not_an_absence_proof() {
 #[test]
 fn target_absence_requires_a_successful_filesystem_observation() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let path = directory.path().join("target.redb");
+    let path = directory.path().join("target.kv");
     assert!(!target_file_exists(&path).unwrap());
     std::fs::write(&path, b"owned").unwrap();
     assert!(target_file_exists(&path).unwrap());
@@ -447,7 +447,7 @@ fn target_absence_requires_a_successful_filesystem_observation() {
     // NotFound, and must not authorize a cleanup success for the child path.
     let cycle = directory.path().join("cycle");
     std::os::unix::fs::symlink(&cycle, &cycle).unwrap();
-    assert!(target_file_exists(&cycle.join("target.redb")).is_err());
+    assert!(target_file_exists(&cycle.join("target.kv")).is_err());
 }
 
 struct PausedCatalogProvider {
@@ -488,7 +488,7 @@ async fn target_generation_close_joins_cancelled_catalog_initializers_before_fil
         let physical =
             crate::runtime_storage_fixtures::physical(directory.path(), Default::default())
                 .unwrap();
-        let path = directory.path().join("persistent/unpublished-target.redb");
+        let path = directory.path().join("persistent/unpublished-target.kv");
         let id = Uuid::new_v4();
         let node = physical.create_new(&path, id).unwrap();
         let weak = Arc::downgrade(&node);

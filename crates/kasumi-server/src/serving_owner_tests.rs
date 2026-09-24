@@ -80,7 +80,7 @@ fn create_lock(disk: &Arc<NodeDisk>, config: &NodeDiskConfig, path: &Path) -> No
 fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Registration) {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let path = directory.path().join("persistent/serving.redb");
+    let path = directory.path().join("persistent/serving.kv");
     let lock = path.with_file_name("installation.lock");
     let disk_config = crate::persistent_disk::fixture_config(path.parent().unwrap());
     let scratch_config = kasumi_store::ScratchDiskConfig {
@@ -384,7 +384,7 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
     }
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let path = directory.path().join("persistent/destructor.redb");
+    let path = directory.path().join("persistent/destructor.kv");
     let lock = path.with_file_name("installation.lock");
     let disk_config = crate::persistent_disk::fixture_config(path.parent().unwrap());
     let scratch_config = kasumi_store::ScratchDiskConfig {

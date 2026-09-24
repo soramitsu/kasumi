@@ -299,6 +299,69 @@ async fn signer_replacement_requires_current_authorization_and_exact_live_owner(
     fixture.close().await;
 }
 
+// A lost signing Start acknowledgement leaves the immutable operation uncertain.
+// Resolve that same command through the current quorum without another write.
+async fn signing_start_or_exact_receipt(
+    fixture: &Fixture,
+    service: &Arc<IndependentAuthority>,
+    context: &RequestContext,
+    start: &AuthoritySigningRequest,
+) -> (AuthoritySigningResponse, AuthoritySigningResponseFence) {
+    let AuthoritySigningAction::Start { command } = &start.action else {
+        panic!("signing resolution requires one original Start command");
+    };
+    let resolved = match service
+        .signing_maintenance(context.clone(), start.clone())
+        .await
+    {
+        Ok(result) => result,
+        Err(error)
+            if matches!(
+                error.code,
+                ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+            ) =>
+        {
+            tokio::time::timeout(Duration::from_secs(35), async {
+                loop {
+                    let current = fixture.leader().await;
+                    let receipt = AuthoritySigningRequest {
+                        observation_id: Uuid::new_v4(),
+                        domain_sha256: start.domain_sha256.clone(),
+                        action: AuthoritySigningAction::Receipt {
+                            operation_id: command.operation_id,
+                        },
+                    };
+                    match current.signing_maintenance(context.clone(), receipt).await {
+                        Ok((response, fence)) if response.status.is_some() => {
+                            break (response, fence);
+                        }
+                        Ok(_) => {}
+                        Err(error)
+                            if matches!(
+                                error.code,
+                                ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                            ) => {}
+                        Err(error) => panic!("exact signing receipt read failed: {error:?}"),
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("original signing operation did not resolve through the current quorum")
+        }
+        Err(error) => panic!("signing Start rejected: {error:?}"),
+    };
+    let status = resolved.0.status.as_ref().expect("signing receipt absent");
+    assert_eq!(status.command, *command, "signing receipt changed command input");
+    assert_eq!(
+        status.command_sha256,
+        command.digest().unwrap(),
+        "signing receipt changed command digest"
+    );
+    assert_eq!(status.phase, AuthorityMaintenancePhase::Completed);
+    resolved
+}
+
 #[tokio::test]
 async fn replicated_signer_head_fences_unchanged_local_keys_and_rejects_snapshot_regression() {
     use kasumi_raft::StateMachineBackend;
@@ -326,16 +389,20 @@ async fn replicated_signer_head_fences_unchanged_local_keys_and_rejects_snapshot
         expected_operational_revision: initial.operational_revision, not_after_ms: 1_050_000,
         action: AuthorityMaintenanceAction::StageSignerGeneration { certificate: next.clone() } };
     let stage_request = request(AuthoritySigningAction::Start { command: stage.clone() });
-    let (staged, staged_fence) = service.signing_maintenance(context.clone(), stage_request.clone()).await.unwrap();
+    let (staged, staged_fence) = signing_start_or_exact_receipt(&fixture, &service, &context, &stage_request).await;
     assert_eq!(staged.status.as_ref().unwrap().phase, AuthorityMaintenancePhase::Completed);
     assert_eq!(staged.current.active, initial.current.active);
     retained.check().unwrap();
-    assert_eq!(service.signing_maintenance(context.clone(), stage_request).await.unwrap().0, staged);
+    let (stage_replay, _) = signing_start_or_exact_receipt(&fixture, &service, &context, &stage_request).await;
+    assert_eq!(stage_replay.status, staged.status);
+    assert_eq!(stage_replay.current, staged.current);
+    assert_eq!(stage_replay.policy_epoch, staged.policy_epoch);
+    assert_eq!(stage_replay.operational_revision, staged.operational_revision);
     let activate = AuthorityMaintenanceCommand { operation_id: Uuid::new_v4(), expected_policy_epoch: staged.policy_epoch,
         expected_operational_revision: staged.operational_revision, not_after_ms: stage.not_after_ms,
         action: AuthorityMaintenanceAction::ActivateSignerGeneration { stage_operation_id: stage.operation_id, certificate_sha256: next.digest().unwrap() } };
     let activation_request = request(AuthoritySigningAction::Start { command: activate.clone() });
-    let (activated, fresh_fence) = service.signing_maintenance(context.clone(), activation_request.clone()).await.unwrap();
+    let (activated, fresh_fence) = signing_start_or_exact_receipt(&fixture, &service, &context, &activation_request).await;
     assert_eq!(activated.current.active, next);
     assert!(activated.current.retirement.is_some());
     // Local trust still accepts the original key; consensus alone seals it.
@@ -345,7 +412,11 @@ async fn replicated_signer_head_fences_unchanged_local_keys_and_rejects_snapshot
     assert!(retained.release().await.is_err());
     assert!(staged_fence.check().is_err());
     fresh_fence.release().await.unwrap();
-    assert_eq!(service.signing_maintenance(context.clone(), activation_request).await.unwrap().0, activated);
+    let (activation_replay, _) = signing_start_or_exact_receipt(&fixture, &service, &context, &activation_request).await;
+    assert_eq!(activation_replay.status, activated.status);
+    assert_eq!(activation_replay.current, activated.current);
+    assert_eq!(activation_replay.policy_epoch, activated.policy_epoch);
+    assert_eq!(activation_replay.operational_revision, activated.operational_revision);
     let mut snapshot = Vec::new();
     service.backend.snapshot(&mut snapshot).unwrap();
     service.backend.validate_snapshot(&mut snapshot.as_slice()).unwrap();

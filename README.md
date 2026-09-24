@@ -4,13 +4,17 @@
 
 # Kasumi
 
-Kasumi is an open-source, Redis-like in-memory document database written in Rust
-for multi-tenant applications. It can run as a standalone server or be embedded
-in a Rust application. Documents and indexes reside in immutable memory
-generations; encrypted redb storage and OpenRaft provide persistence and ordered
+Kasumi is an open-source key-value database written in Rust for multi-tenant
+applications. It can run as a standalone server or be embedded in a Rust
+application. Its document and index views reside in immutable memory generations;
+Kasumi's encrypted storage engine and OpenRaft provide persistence and ordered
 writes. JSON Schema validation, atomic batches, CAS, idempotency receipts, typed
 queries, and English/Japanese search share one authorization layer across Rust,
 native gRPC, and MCP.
+
+The durable key-value format is implemented in the [`kasumi-kv`](crates/kasumi-kv)
+crate. Its [active goal](docs/native-kv-goal.md) tracks validation of the new
+engine for the first release.
 
 Kasumi uses its own APIs; it does not implement the Redis protocol. See the
 [standalone installation guide](docs/standalone.md) to run a local server.
@@ -61,7 +65,8 @@ Read leases provide bounded coherent point and ID-ordered collection pages.
 | Crate | Responsibility |
 | --- | --- |
 | `kasumi-types` | Exact JSON wire types, policy, commands, query expressions, limits |
-| `kasumi-store` | Encrypted redb, Transit keys and leases, filesystem/S3 backups |
+| `kasumi-kv` | Kasumi's transactional durable key-value engine |
+| `kasumi-store` | Encrypted records, Transit keys and leases, filesystem/S3 backups |
 | `kasumi-raft` | OpenRaft 0.9.25, durable storage adapters and quorum barriers |
 | `kasumi-query` | Offline schemas, persistent structured indexes, Tantivy/Lindera |
 | `kasumi-engine` | Ordered application, shared API, bootstrap, restore, control metadata |

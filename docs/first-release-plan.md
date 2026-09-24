@@ -3,6 +3,10 @@
 > Working-location override, 2026-09-20: the latest user instruction requires
 > `/Users/mtakemiya/dev/kasumi` on `master` only. This overrides the original
 > branch/worktree direction below. The original approved plan is preserved.
+>
+> Storage-direction override, 2026-09-24: implement Kasumi's own Rust KV engine
+> and remove redb. The original redb workstream below is historical; the active
+> criteria are in [native KV engine goal](native-kv-goal.md).
 
 ## 1. Release contract and integration
 

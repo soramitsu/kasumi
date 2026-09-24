@@ -24,7 +24,7 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
     ));
     let mut config = fixture_config();
     config.persistent_disk = crate::persistent_disk::fixture_config(&dir.path().join("data"));
-    config.database_path = dir.path().join("data/node.redb");
+    config.database_path = dir.path().join("data/node.kv");
     config.scratch_disk.directory = dir.path().join("scratch");
     config.mcp.tls = files.clone();
     config.native.tls = files.clone();

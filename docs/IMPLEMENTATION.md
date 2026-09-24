@@ -1,5 +1,10 @@
 # Kasumi v1 implementation ledger
 
+> Historical evidence for the former redb-backed implementation. The active
+> storage design and its current qualification state are in
+> [native-kv-goal.md](native-kv-goal.md); results below do not validate the new
+> physical format.
+
 The original v1 design agreed on 2026-09-05 was implemented and its software
 acceptance evidence completed. Its macOS/Linux gates passed 188 workspace
 entries per platform, strict Clippy/formatting, six Python checks and actual

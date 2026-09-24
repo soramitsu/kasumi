@@ -345,6 +345,13 @@ pub(super) enum ShrinkFailure {
 #[derive(Clone)]
 pub struct NodeDiskFile(OwnedFileArc);
 
+/// Entry evidence from the exact lower-level file owner. Only the Arc-count
+/// gate can report `NotEntered`; every later outcome is conservatively entered.
+pub(crate) enum NodeDiskCloseOutcome {
+    NotEntered(io::Error),
+    Entered(io::Result<()>),
+}
+
 /// Every private strong reference uses this retirement protocol. In particular,
 /// publication abandonment and failed exclusive unwrap must not let a raw Arc
 /// run FileOwner::drop while its backing allocation is still held implicitly.
@@ -1837,6 +1844,23 @@ impl NodeDiskFile {
     /// Success follows descriptor, heap backing, Arc and registration retirement.
     /// A successfully closed handle remains closed and may be closed again.
     pub fn close(&mut self) -> io::Result<()> {
+        let mut not_entered = false;
+        self.close_inner(&mut not_entered)
+    }
+
+    pub(crate) fn close_attested(&mut self) -> NodeDiskCloseOutcome {
+        let mut not_entered = false;
+        let result = self.close_inner(&mut not_entered);
+        if not_entered {
+            NodeDiskCloseOutcome::NotEntered(
+                result.expect_err("pre-entry contention returns error"),
+            )
+        } else {
+            NodeDiskCloseOutcome::Entered(result)
+        }
+    }
+
+    fn close_inner(&mut self, not_entered: &mut bool) -> io::Result<()> {
         let Some(owner) = self.0.0.as_ref() else {
             return Ok(());
         };
@@ -1859,6 +1883,7 @@ impl NodeDiskFile {
         // Every registry upgrade holds State. No other strong/weak owner may
         // survive this gate, so the original allocation can be borrowed mutably.
         if Arc::strong_count(owner) != 1 || Arc::weak_count(owner) != 1 {
+            *not_entered = true;
             return Err(io::ErrorKind::WouldBlock.into());
         }
         // Keep the occupied map slot and every credit while releasing its Weak.
@@ -2033,7 +2058,7 @@ impl NodeDiskFile {
         self.0.parent().as_raw_fd()
     }
 
-    /// The installed redb adapter uses this before every physical operation.
+    /// The installed KV adapter uses this before every physical operation.
     /// Failure is represented without allocating an error payload.
     pub fn check_owner(&self) -> io::Result<()> {
         self.ensure_open()?;
@@ -2071,7 +2096,7 @@ impl NodeDiskFile {
     /// Settle unused pre-I/O promises after a commit or aborted transaction.
     /// Sync and verify the exact descriptor before crediting only the difference
     /// between its retained reservation and its actual durable extent. This is
-    /// valid with live redb readers because no physical byte is removed.
+    /// valid with live KV readers because no physical byte is removed.
     pub fn settle_growth(&self, actual_len: u64) -> io::Result<()> {
         self.ensure_open()?;
         let mut budget = self.0.lock_budget()?;

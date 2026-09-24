@@ -91,11 +91,11 @@ fn query() -> QueryRequest {
 async fn one_epoch_expires_leases_and_credentials_but_preserves_permanent_command_identity() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
     let node = physical
         .storage
         .create_new(
-            directory.path().join("node.redb"),
+            directory.path().join("node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -273,11 +273,11 @@ async fn one_epoch_expires_leases_and_credentials_but_preserves_permanent_comman
 async fn fixture_epoch_rejects_production_storage_before_bootstrap() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
     let node = physical
         .storage
         .create_new(
-            directory.path().join("node.redb"),
+            directory.path().join("node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -337,11 +337,11 @@ async fn fixture_epoch_rejects_production_storage_before_bootstrap() {
 async fn fixture_epoch_rejects_a_different_audit_facade_before_bootstrap() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
     let node = physical
         .storage
         .create_new(
-            directory.path().join("node.redb"),
+            directory.path().join("node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();

@@ -152,10 +152,10 @@ class DependencyRunnerTests(unittest.TestCase):
             call("init", "-q", "--initial-branch=master")
             call("config", "user.name", "Synthetic Reviewer")
             call("config", "user.email", "synthetic@example.invalid")
-            advisory_file = database / "crates/redb/RUSTSEC-2099-9999.md"
+            advisory_file = database / "crates/rmcp/RUSTSEC-2099-9999.md"
             advisory_file.parent.mkdir(parents=True)
             advisory_file.write_text("synthetic advisory\n")
-            call("add", "crates/redb/RUSTSEC-2099-9999.md")
+            call("add", "crates/rmcp/RUSTSEC-2099-9999.md")
             call("commit", "-qm", "Synthetic advisory fixture")
             declared = call("rev-parse", "HEAD").decode().strip()
             call("repack", "-adq")
@@ -177,10 +177,10 @@ class DependencyRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Git blob"):
                 dependency_git.verify_outputs(database, declared, outputs)
             advisory_file.write_text("synthetic advisory\n")
-            (database / "crates/redb/untracked.md").write_text("extra\n")
+            (database / "crates/rmcp/untracked.md").write_text("extra\n")
             with self.assertRaisesRegex(ValueError, "committed Git tree"):
                 dependency_git.verify_outputs(database, declared, outputs)
-            (database / "crates/redb/untracked.md").unlink()
+            (database / "crates/rmcp/untracked.md").unlink()
             (database / ".git/HEAD").write_text("a" * 40 + "\n")
             selected = dependency_git.command(git, database, dependency_git.HEAD)
             self.assertNotEqual(subprocess.run(selected, cwd=database, env=environment,
@@ -193,10 +193,10 @@ class DependencyRunnerTests(unittest.TestCase):
             lock = Path(directory) / "Cargo.lock"
             lock.write_text(projected)
             packages = advisory.locked_packages(lock)
-            redb = packages[("redb", "4.2.0")]
-            finding = {"kind": "unsound", "package": {"name": "redb", "version": "4.2.0",
-                       "source": redb["source"], "checksum": redb["checksum"]},
-                       "advisory": {"id": "RUSTSEC-2099-9999", "package": "redb"}}
+            rmcp = packages[("rmcp", "3.2.0")]
+            finding = {"kind": "unsound", "package": {"name": "rmcp", "version": "3.2.0",
+                       "source": rmcp["source"], "checksum": rmcp["checksum"]},
+                       "advisory": {"id": "RUSTSEC-2099-9999", "package": "rmcp"}}
             report = {"database": {"advisory-count": 1},
                       "lockfile": {"dependency-count": len(packages)},
                       "settings": {"target_arch": [], "target_os": [], "ignore": [], "severity": None,
@@ -204,7 +204,7 @@ class DependencyRunnerTests(unittest.TestCase):
                       "vulnerabilities": {"found": False, "count": 0, "list": []},
                       "warnings": {"unsound": [finding]}}
             parsed = advisory.parse_report(report, packages)
-            self.assertIn(("RUSTSEC-2099-9999", "redb", "4.2.0"), parsed)
+            self.assertIn(("RUSTSEC-2099-9999", "rmcp", "3.2.0"), parsed)
             with self.assertRaisesRegex(ValueError, "undisposed"):
                 advisory.reconcile(parsed, {}, {})
             wrong_source = copy.deepcopy(report)
@@ -338,13 +338,6 @@ class DependencyRunnerTests(unittest.TestCase):
             else:
                 (path / "Cargo.toml").write_text(
                     '[package]\nname = "' + next(iter(names)) + '"\nversion = "1.0.0"\n')
-                if relative.endswith("redb-4.2.0"):
-                    derive = path / "crates/redb-derive"
-                    derive.mkdir(parents=True)
-                    (derive / "Cargo.toml").write_text(
-                        '[package]\nname = "redb-derive"\nversion = "0.1.0"\n')
-                    files["crates/redb-derive/Cargo.toml"] = {}
-                    files["crates/redb-derive/Cargo.lock"] = {}
             files["Cargo.lock"] = {}
             inventories.append({"path": relative, "files": files,
                                 "packages": [{"name": name, "version": "1.0.0",
@@ -356,17 +349,16 @@ class DependencyRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             suites = runner.suite_roster(root, self.make_roster(root))
-            self.assertEqual({s["root"] for s in suites}, set(runner.EXPECTED) |
-                             {"vendor/redb-4.2.0/crates/redb-derive"})
+            self.assertEqual({s["root"] for s in suites}, set(runner.EXPECTED))
             self.assertEqual(sum(s["workspace"] for s in suites), 1)
             openraft_suite = next(s for s in suites if s["workspace"])
             self.assertEqual(len(openraft_suite["excluded_unlocked"]), 8)
             inputs = {"tools": {name: {"path": "/native/" + name}
                                 for name in ("python", "cargo", "rustc")}}
             selected = runner.commands(inputs, root, suites)
-            self.assertEqual(len(selected), 25)
-            self.assertEqual(len({name for name, _, _ in selected}), 25)
-            self.assertEqual(sum(kind == "rust" for _, _, kind in selected), 20)
+            self.assertEqual(len(selected), 21)
+            self.assertEqual(len({name for name, _, _ in selected}), 21)
+            self.assertEqual(sum(kind == "rust" for _, _, kind in selected), 16)
             self.assertTrue(all("--locked" in command and "--offline" in command
                                 for _, command, kind in selected if kind == "rust"))
             serde = [(name, command) for name, command, kind in selected
@@ -391,8 +383,6 @@ class DependencyRunnerTests(unittest.TestCase):
                                 for _, command, kind in selected if kind == "rust"}
             self.assertEqual(locked_manifests,
                              {str(root / suite["root"] / "Cargo.toml") for suite in suites})
-            self.assertIn(str(root / "vendor/redb-4.2.0/crates/redb-derive/Cargo.toml"),
-                          locked_manifests)
             openraft = [command for name, command, _ in selected if name.startswith("openraft-")]
             self.assertEqual(len(openraft), 2)
             self.assertTrue(all("--workspace" in command for command in openraft))
@@ -427,23 +417,23 @@ class DependencyRunnerTests(unittest.TestCase):
                                              "     Running tests/integration.rs (/tmp/b)\n",
                                              [], rust_mode="targets")["complete"])
         self.assertTrue(runner.parse_counts("rust", "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.0s\n",
-                                            "   Doc-tests redb_derive\n", [], rust_mode="doc")["complete"])
+                                            "   Doc-tests rmcp\n", [], rust_mode="doc")["complete"])
         self.assertFalse(runner.parse_counts("rust", "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.0s\n",
                                              "", [], rust_mode="doc")["complete"])
         self.assertEqual(runner.parse_counts("python", "", "Ran 16 tests in 0.1s\n\nOK\n", [])["tests"], 16)
         self.assertFalse(runner.parse_counts("python", "", "OK\n", [])["complete"])
-        expected = [("redb", "4.2.0", "vendor/redb-4.2.0")]
-        self.assertTrue(runner.parse_counts("verifier", "verified redb 4.2.0 (vendor/redb-4.2.0)\n",
+        expected = [("rmcp", "3.2.0", "vendor/rmcp-3.2.0")]
+        self.assertTrue(runner.parse_counts("verifier", "verified rmcp 3.2.0 (vendor/rmcp-3.2.0)\n",
                                             "", expected)["complete"])
-        self.assertFalse(runner.parse_counts("verifier", "verified redb 4.2.0 (vendor/redb-4.2.0)\nextra\n",
+        self.assertFalse(runner.parse_counts("verifier", "verified rmcp 3.2.0 (vendor/rmcp-3.2.0)\nextra\n",
                                              "", expected)["complete"])
-        self.assertFalse(runner.parse_counts("verifier", "verified redb 4.2.0 (vendor/redb-4.2.0)\n",
+        self.assertFalse(runner.parse_counts("verifier", "verified rmcp 3.2.0 (vendor/rmcp-3.2.0)\n",
                                              "cargo warning\n", expected)["complete"])
-        ordered = [("redb", "4.2.0", "vendor/redb-4.2.0"),
+        ordered = [("rmcp", "3.2.0", "vendor/rmcp-3.2.0"),
                    ("openraft", "0.9.25", "vendor/openraft-0.9.25/openraft")]
         self.assertFalse(runner.parse_counts("verifier",
                                              "verified openraft 0.9.25 (vendor/openraft-0.9.25/openraft)\n"
-                                             "verified redb 4.2.0 (vendor/redb-4.2.0)\n",
+                                             "verified rmcp 3.2.0 (vendor/rmcp-3.2.0)\n",
                                              "", ordered)["complete"])
         self.assertFalse(runner.parse_counts("verifier", "", "", expected)["complete"])
 

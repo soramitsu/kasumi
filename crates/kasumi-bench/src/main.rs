@@ -279,7 +279,7 @@ impl BenchmarkStorage {
         use kasumi_engine::admission::{AdmissionConfig, MemoryCore, NodeAdmission};
         let data = root.join("persistent");
         kasumi_store::private_files::create_directory(&data)?;
-        let persistent = kasumi_store::NodeDisk::fixture_config(data.join("node.redb"))?;
+        let persistent = kasumi_store::NodeDisk::fixture_config(data.join("node.kv"))?;
         let scratch = kasumi_store::ScratchDiskConfig {
             directory: root.join("scratch"),
             max_bytes: 64 << 30,
@@ -341,7 +341,7 @@ impl BenchmarkStorage {
         })
     }
     fn path(&self, replica: usize) -> PathBuf {
-        self.root.join(format!("replica-{replica}.redb"))
+        self.root.join(format!("replica-{replica}.kv"))
     }
 }
 
@@ -824,7 +824,7 @@ async fn database_case(
     checkpoint(report, mode, tenants, "recovered", details, &measurements)?;
     databases.close().await?;
     Ok(Case {mode:mode.into(),tenants,documents:options.documents,replicas:if replicated{3}else{1},security_audit_stores:if replicated{3}else{1},raft_timing_milliseconds:Some(raft_timing(replicated)),payload_bytes,open_seconds,baseline_rss_bytes,empty_rss_bytes,collection_setup_seconds,empty_index_rss_bytes,load_seconds,resident_rss_bytes,after_workload_rss_bytes,after_recovery_rss_bytes,peak_rss_bytes:peak,disk_bytes,shutdown_seconds,recovery_seconds,measurements,
-        notes:vec!["Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted redb immediate two-phase durability, and mutation audit/receipt retention are active.".into(),"Each initial load batch has at most 256 documents; measured writes contain one document. Setup establishes a real quorum barrier before readiness. Measured operations are never retried; no additional warmup samples are discarded after loading.".into(),if replicated{"Three real OpenRaft voters use separate redb files in one process; this measures local quorum persistence, not independent physical failure domains, TLS or network latency.".into()}else{"One real OpenRaft voter; no network protocol overhead.".into()},"Test-only authenticated key wrapping excludes Transit network latency. Each replica node has one independently encrypted service security-audit tenant with a distinct wrapping key shared across its customer groups; its opening/key/RSS/disk overhead is included. No successful-read strict audit; mutation and denial audits remain enabled.".into(),"Shutdown measures complete Database closure and release of fixture stores. Recovery starts after shutdown and measures reopen, index reconstruction, key access, readiness and one verified point read per tenant; final cleanup and crash safety are separate.".into()]})
+        notes:vec!["Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted Kasumi KV durable commits, and mutation audit/receipt retention are active.".into(),"Each initial load batch has at most 256 documents; measured writes contain one document. Setup establishes a real quorum barrier before readiness. Measured operations are never retried; no additional warmup samples are discarded after loading.".into(),if replicated{"Three real OpenRaft voters use separate Kasumi KV files in one process; this measures local quorum persistence, not independent physical failure domains, TLS or network latency.".into()}else{"One real OpenRaft voter; no network protocol overhead.".into()},"Test-only authenticated key wrapping excludes Transit network latency. Each replica node has one independently encrypted service security-audit tenant with a distinct wrapping key shared across its customer groups; its opening/key/RSS/disk overhead is included. No successful-read strict audit; mutation and denial audits remain enabled.".into(),"Shutdown measures complete Database closure and release of fixture stores. Recovery starts after shutdown and measures reopen, index reconstruction, key access, readiness and one verified point read per tenant; final cleanup and crash safety are separate.".into()]})
 }
 
 async fn workload(

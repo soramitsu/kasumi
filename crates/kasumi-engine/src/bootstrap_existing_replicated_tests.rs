@@ -37,7 +37,7 @@ impl Replica {
             admission.clone(),
         )?;
         let node =
-            storage.create_new(directory.path().join("persistent/node.redb"), NODE_STORE_ID)?;
+            storage.create_new(directory.path().join("persistent/node.kv"), NODE_STORE_ID)?;
         let stores = TenantStorageSet::initialize_catalogs_fixture(
             node.clone(),
             "replica".into(),
@@ -58,7 +58,7 @@ impl Replica {
         (directory, storage): (tempfile::TempDir, crate::test_utils::FixtureStorage),
     ) -> anyhow::Result<Self> {
         let node =
-            storage.open_existing(directory.path().join("persistent/node.redb"), NODE_STORE_ID)?;
+            storage.open_existing(directory.path().join("persistent/node.kv"), NODE_STORE_ID)?;
         let stores = TenantStorageSet::open_existing_fixture(
             node.clone(),
             "replica".into(),

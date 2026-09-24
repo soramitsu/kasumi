@@ -107,7 +107,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             .unwrap();
     let audit_node = audit_physical
         .create_new(
-            dir.path().join("audit/persistent/audit.redb"),
+            dir.path().join("audit/persistent/audit.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -197,7 +197,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             let config = SignerVerifierConfig {
                 max_background_workers: 64,
                 identity: verifier,
-                database_path: directory.join("data/trust.redb"),
+                database_path: directory.join("data/trust.kv"),
                 keys: crate::runtime::KeyProviderSettings::File { path: keys },
             };
             let mut input = InitializeSignerVerifier {
@@ -243,7 +243,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             crate::runtime_storage_fixtures::physical(&verifier_root, Default::default()).unwrap();
         let node = physical
             .create_new(
-                verifier_root.join("persistent/verifier.redb"),
+                verifier_root.join("persistent/verifier.kv"),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();
@@ -334,7 +334,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             crate::runtime_storage_fixtures::physical(&authority_root, Default::default()).unwrap();
         let node = physical
             .create_new(
-                authority_root.join("persistent/authority.redb"),
+                authority_root.join("persistent/authority.kv"),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();

@@ -55,7 +55,7 @@ impl Cluster {
 
     async fn open(&mut self, id: u64, create: bool) -> Result<()> {
         let store = common::store(
-            &self.dir.path().join(format!("node-{id}.redb")),
+            &self.dir.path().join(format!("node-{id}.kv")),
             create,
             self.fixture_scratch.clone(),
         )
@@ -213,7 +213,7 @@ async fn partition_rejects_minority_reads_and_writes_and_recovers_after_full_res
         assert_eq!(cluster.values(id), expected);
     }
 
-    // Drop every live Raft/store handle and reopen all three independent redb
+    // Drop every live Raft/store handle and reopen all three independent KV
     // files. No test-side state is carried into the new application instances.
     cluster.stop_all().await?;
     for id in 1..=3 {
@@ -324,7 +324,7 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let dir = kasumi_store::test_utils::private_tempdir()?;
-    let path = dir.path().join("local.redb");
+    let path = dir.path().join("local.kv");
     {
         let backend = Arc::new(common::Backend::default());
         let group = RaftGroup::local(
@@ -362,7 +362,7 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let dir = kasumi_store::test_utils::private_tempdir()?;
-    let path = dir.path().join("fatal-snapshot.redb");
+    let path = dir.path().join("fatal-snapshot.kv");
     let store = common::store(&path, true, fixture_scratch.clone()).await?;
     let backend = Arc::new(common::Backend::default());
     let group = RaftGroup::local(
@@ -487,7 +487,7 @@ async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
     let dir = kasumi_store::test_utils::private_tempdir()?;
-    let path = dir.path().join("killed.redb");
+    let path = dir.path().join("killed.kv");
     let mut child = tokio::process::Command::new(std::env::current_exe()?)
         .args(["--exact", "raft_crash_worker", "--nocapture"])
         .env("KASUMI_RAFT_CRASH_TEST_PATH", &path)
@@ -576,7 +576,7 @@ async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_m
             id,
             GROUP.into(),
             common::store(
-                &dir.path().join(format!("node-{id}.redb")),
+                &dir.path().join(format!("node-{id}.kv")),
                 true,
                 fixture_scratch.clone(),
             )

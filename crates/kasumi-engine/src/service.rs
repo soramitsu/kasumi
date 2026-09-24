@@ -2376,7 +2376,7 @@ mod tests {
         .unwrap();
         let node = storage
             .create_new(
-                directory.path().join("persistent/node.redb"),
+                directory.path().join("persistent/node.kv"),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();

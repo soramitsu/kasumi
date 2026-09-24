@@ -1,5 +1,5 @@
 use super::*;
-use redb::BackendNativeDisposition;
+use kasumi_kv::BackendNativeDisposition;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 

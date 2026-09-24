@@ -82,8 +82,8 @@ async fn foreign_equal_policy_core_is_rejected_before_bootstrap_or_raft_startup(
     let right_directory = kasumi_store::test_utils::private_tempdir()?;
     kasumi_store::private_files::create_directory(&left_directory.path().join("persistent"))?;
     kasumi_store::private_files::create_directory(&right_directory.path().join("persistent"))?;
-    let left_path = left_directory.path().join("persistent/node.redb");
-    let right_path = right_directory.path().join("persistent/node.redb");
+    let left_path = left_directory.path().join("persistent/node.kv");
+    let right_path = right_directory.path().join("persistent/node.kv");
     let left_disk = NodeDisk::fixture_config(&left_path)?;
     let right_disk = NodeDisk::fixture_config(&right_path)?;
     let scratch_config = |root: &Path| ScratchDiskConfig {

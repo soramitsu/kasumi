@@ -701,7 +701,7 @@ mod tests {
             Default::default(),
         )
         .unwrap();
-        let path = directory.path().join("persistent/security.redb");
+        let path = directory.path().join("persistent/security.kv");
         let persistent = storage.persistent.clone();
         let provider = Arc::new(LocalKeyProvider::new([181; 32]));
         let archive = Arc::new(UncertainArchive {
@@ -859,8 +859,11 @@ mod tests {
         archive.release.add_permits(1);
         shutdown.await.unwrap();
         assert!(store.check_access().is_err());
+        drop(audit);
+        drop(store);
         // Strong installed disk owners and their eight metadata leases survive
-        // audit shutdown; every operation and maintenance charge has drained.
+        // audit shutdown; every operation, native index and maintenance charge
+        // has drained after the final store handle is released.
         assert_eq!(
             crate::test_utils::reserved_payload_bytes(&admission),
             metadata

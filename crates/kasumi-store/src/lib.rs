@@ -1,8 +1,9 @@
 //! Encrypted durable records for both local execution and Raft persistence.
 //!
 //! Only wrapped keys and opaque tenant identifiers are stored in control metadata.
-//! Record namespaces, keys and values are authenticated and encrypted before redb.
-//! redb's immediate, two-phase commits persist each batch atomically. Host filesystem,
+//! Record namespaces, keys and values are authenticated and encrypted before Kasumi KV.
+//! Kasumi KV synchronizes each transaction before publishing its commit header.
+//! Host filesystem,
 //! kernel, device durability and the embedding process are trusted. A successful
 //! store call can return owned plaintext to its caller; that copy is not revocable.
 
@@ -102,8 +103,8 @@ use chacha20poly1305::{
     aead::{Aead, Payload},
 };
 use hmac::{Hmac, Mac};
+use kasumi_kv::{Database, TableDefinition};
 use parking_lot::{Mutex, RwLock};
-use redb::{Database, ReadableDatabase, TableDefinition};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex as AsyncMutex, watch};
@@ -200,7 +201,7 @@ pub struct NodeStore {
 
 impl NodeStore {
     /// Claim an exact recognized Prepared or Ready inode for independently
-    /// authorized cleanup. No redb open, initialization or repair takes place.
+    /// authorized cleanup. No database open, initialization or repair takes place.
     /// This physical guard grants no authority to stop or delete a generation.
     pub fn claim_cleanup(
         path: impl AsRef<Path>,
@@ -268,9 +269,9 @@ impl NodeStore {
         ))
     }
 
-    /// Reject unknown/partial files and a different installed UUID before redb
+    /// Reject unknown/partial files and a different installed UUID before the engine
     /// can write. The exact locked descriptor survives validation and recovery.
-    /// A recognized owned payload may need redb recovery bookkeeping even if a
+    /// A recognized owned payload may need storage recovery even if a
     /// later table, tenant, or bootstrap check rejects its logical contents.
     pub fn open_existing(
         path: impl AsRef<Path>,
@@ -299,8 +300,8 @@ impl NodeStore {
 
     #[cfg(any(test, feature = "test-utils"))]
     pub fn open_with_backend(
-        backend: impl redb::StorageBackend,
-        admission: Arc<dyn redb::StorageAdmission>,
+        backend: impl kasumi_kv::StorageBackend + 'static,
+        admission: Arc<dyn kasumi_kv::StorageAdmission>,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
         let db = Database::builder(admission).create_with_backend(backend)?;
@@ -316,7 +317,7 @@ impl NodeStore {
     }
 
     /// Stop new database work, join retained initializers, then explicitly close
-    /// redb. The caller first drains its tenant and Raft workers. Busy retains
+    /// the database. The caller first drains its tenant and Raft workers. Busy retains
     /// the exact database and all physical charges for a later shutdown retry.
     pub async fn shutdown(&self) -> DrainResult {
         self.db.stop();
@@ -374,7 +375,7 @@ impl NodeStore {
         Self::catalog_at(&self.db.begin_read()?, tenant)
     }
 
-    fn catalog_at(tx: &redb::ReadTransaction, tenant: &str) -> Result<Option<KeyCatalog>> {
+    fn catalog_at(tx: &kasumi_kv::ReadTransaction, tenant: &str) -> Result<Option<KeyCatalog>> {
         let table = tx.open_table(CATALOG)?;
         table
             .get(tenant_hash(tenant).as_slice())?
@@ -1138,7 +1139,7 @@ fn validate_batch(domains: &[&[WriteOp]]) -> Result<()> {
 }
 
 fn write_domain(
-    tx: &redb::WriteTransaction,
+    tx: &kasumi_kv::WriteTransaction,
     store: &TenantStore,
     state: &KeyState,
     catalog: &KeyCatalog,

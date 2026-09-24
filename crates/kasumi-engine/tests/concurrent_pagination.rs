@@ -58,11 +58,11 @@ fn request() -> QueryRequest {
 async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
     let node = physical
         .storage
         .create_new(
-            directory.path().join("node.redb"),
+            directory.path().join("node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();

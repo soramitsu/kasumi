@@ -176,7 +176,7 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
         }
         let store = TenantStore::initialize_catalog_fixture(
             NodeStore::create_new_fixture(
-                root.path().join(format!("{key_name}.redb")),
+                root.path().join(format!("{key_name}.kv")),
                 kasumi_store::test_utils::NODE_STORE_ID,
                 fixture_memory.clone(),
                 fixture_scratch.clone(),

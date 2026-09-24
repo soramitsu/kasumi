@@ -29,7 +29,7 @@ async fn original_tenant_reopens_after_key_outage_without_reviving_retained_hand
     let (public_files, _) = certificate_files(&public_dir);
     let mut config = fixture_config();
     config.persistent_disk = crate::persistent_disk::fixture_config(&dir.path().join("data"));
-    config.database_path = dir.path().join("data/node.redb");
+    config.database_path = dir.path().join("data/node.kv");
     config.scratch_disk.directory = dir.path().join("scratch");
     config.mcp.tls = public_files.clone();
     config.native.tls = public_files.clone();

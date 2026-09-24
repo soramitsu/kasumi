@@ -51,11 +51,11 @@ fn context(tenant: &str) -> RequestContext {
 #[tokio::test]
 async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_another_tenant() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
-    let physical = common::PhysicalFixture::new(&root.path().join("node.redb"), Default::default());
+    let physical = common::PhysicalFixture::new(&root.path().join("node.kv"), Default::default());
     let node = physical
         .storage
         .create_new(
-            root.path().join("node.redb"),
+            root.path().join("node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();

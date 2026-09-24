@@ -1780,7 +1780,7 @@ mod tests {
         );
         assert!(
             serde_json::from_value::<ManagementCommand>(
-                serde_json::json!({"operation":"prepare_restore","path":"/tmp/target.redb"})
+                serde_json::json!({"operation":"prepare_restore","path":"/tmp/target.kv"})
             )
             .is_err()
         );

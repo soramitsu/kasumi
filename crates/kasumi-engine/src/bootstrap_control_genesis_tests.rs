@@ -228,7 +228,7 @@ async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publica
     let storage =
         crate::test_utils::FixtureStorage::with_admission(&persistent, &scratch, admission)?;
     let node = storage.create_new(
-        directory.path().join("persistent/node.redb"),
+        directory.path().join("persistent/node.kv"),
         uuid::Uuid::new_v4(),
     )?;
     // The tenant-aware fixture helper deliberately assigns NodeControl to this
@@ -262,7 +262,7 @@ async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publica
     drop(pair);
     drop(node);
     let node = storage.create_new(
-        directory.path().join("persistent/control.redb"),
+        directory.path().join("persistent/control.kv"),
         uuid::Uuid::new_v4(),
     )?;
     let pair = stores(node.clone(), StorageAccess::node_control()).await?;
@@ -315,7 +315,7 @@ async fn strict_control_reopen_rejects_partial_genesis_without_catalog_or_raft_m
     let storage =
         crate::test_utils::FixtureStorage::with_admission(&persistent, &scratch, admission)?;
     let node = storage.create_new(
-        directory.path().join("persistent/node.redb"),
+        directory.path().join("persistent/node.kv"),
         uuid::Uuid::new_v4(),
     )?;
     let pair = stores(node.clone(), StorageAccess::node_control()).await?;

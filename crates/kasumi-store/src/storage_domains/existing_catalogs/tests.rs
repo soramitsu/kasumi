@@ -1,6 +1,5 @@
 use super::*;
 use crate::test_utils::LocalKeyProvider;
-use redb::ReadableTable;
 use std::{future::Future, task::Poll};
 
 struct Fixture {
@@ -16,7 +15,7 @@ impl Fixture {
             crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
         let directory = crate::test_utils::private_tempdir()?;
         let node = NodeStore::create_new_fixture(
-            directory.path().join("existing.redb"),
+            directory.path().join("existing.kv"),
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
@@ -74,7 +73,7 @@ impl Fixture {
         node.drain_initializers().await?;
         drop(node);
         let node = NodeStore::open_existing_fixture(
-            directory.path().join("existing.redb"),
+            directory.path().join("existing.kv"),
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
@@ -289,7 +288,7 @@ async fn missing_binding_rejects_new_custody_and_leaves_every_existing_byte_unch
     let fixture_memory = fixture_scratch.memory().clone();
     drop(node);
     let _node = NodeStore::open_existing_fixture(
-        directory.path().join("existing.redb"),
+        directory.path().join("existing.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),

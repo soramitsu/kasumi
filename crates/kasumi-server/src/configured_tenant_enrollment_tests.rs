@@ -184,8 +184,29 @@ async fn closure_before_actual_enrollment_handoff_rejects_publication_and_preser
     runtime.shutdown().await.unwrap();
 }
 
-#[tokio::test]
-async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state()
+#[test]
+fn abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state()
+-> Result<()> {
+    // Cold standalone preparation carries large nested startup futures. Run
+    // this fixture on the same explicit stack used by other cold-open tests.
+    std::thread::Builder::new()
+        .name("enrollment cold-preparation fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state_impl(),
+                ))
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state_impl()
 -> Result<()> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = Box::pin(crate::runtime_storage_fixtures::initialize_standalone(

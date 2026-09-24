@@ -60,7 +60,7 @@ async fn catalog_presence_classification_requires_both_domains() -> Result<()> {
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
     let absent = NodeStore::create_new_fixture(
-        directory.path().join("absent.redb"),
+        directory.path().join("absent.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
@@ -73,7 +73,7 @@ async fn catalog_presence_classification_requires_both_domains() -> Result<()> {
         .enumerate()
     {
         let node = NodeStore::create_new_fixture(
-            directory.path().join(format!("partial-{index}.redb")),
+            directory.path().join(format!("partial-{index}.kv")),
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
@@ -96,7 +96,7 @@ async fn catalog_presence_classification_requires_both_domains() -> Result<()> {
     }
 
     let node = NodeStore::create_new_fixture(
-        directory.path().join("complete.redb"),
+        directory.path().join("complete.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory,
         fixture_scratch,
@@ -122,7 +122,7 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let dir = crate::test_utils::private_tempdir()?;
     let node = NodeStore::create_new_fixture(
-        dir.path().join("same.redb"),
+        dir.path().join("same.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
@@ -141,7 +141,7 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
     assert!(control.get(BINDING_NS, BINDING_KEY)?.is_none());
     let other = TenantStore::initialize_catalog_fixture(
         NodeStore::create_new_fixture(
-            dir.path().join("other.redb"),
+            dir.path().join("other.kv"),
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
@@ -152,7 +152,7 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
     .await?;
     assert!(TenantStorageSet::install(app, other).is_err());
     let reserved = NodeStore::create_new_fixture(
-        dir.path().join("reserved.redb"),
+        dir.path().join("reserved.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
@@ -181,7 +181,7 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
     let fixture_scratch =
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let dir = crate::test_utils::private_tempdir()?;
-    let path = dir.path().join("revoked.redb");
+    let path = dir.path().join("revoked.kv");
     let app_provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let control_provider = Arc::new(LocalKeyProvider::new([12; 32]));
     let node = NodeStore::create_new_fixture(
@@ -372,7 +372,7 @@ async fn combined_quota_and_substituted_catalog_binding_fail_before_publication(
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let dir = crate::test_utils::private_tempdir()?;
     let node = NodeStore::create_new_fixture(
-        dir.path().join("binding.redb"),
+        dir.path().join("binding.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
@@ -406,7 +406,7 @@ async fn initial_state_rejects_unknown_records_in_either_complete_domain() -> Re
     let directory = crate::test_utils::private_tempdir()?;
     for custody in [false, true] {
         let node = NodeStore::create_new_fixture(
-            directory.path().join(format!("unknown-{custody}.redb")),
+            directory.path().join(format!("unknown-{custody}.kv")),
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
@@ -451,7 +451,7 @@ async fn initial_state_checks_and_joint_publication_have_one_concurrent_winner()
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
     let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
-        directory.path().join("first-publication.redb"),
+        directory.path().join("first-publication.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
@@ -511,7 +511,7 @@ async fn initial_state_requires_the_exact_retained_custody_binding() -> Result<(
     let directory = crate::test_utils::private_tempdir()?;
     for missing in [false, true] {
         let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
-            directory.path().join(format!("binding-{missing}.redb")),
+            directory.path().join(format!("binding-{missing}.kv")),
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
@@ -551,7 +551,7 @@ async fn initial_state_rejects_delete_only_publications_without_consuming_initia
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
     let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
-        directory.path().join("empty-initialization.redb"),
+        directory.path().join("empty-initialization.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),

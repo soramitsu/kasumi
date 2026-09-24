@@ -1,6 +1,6 @@
 # Contributing to Kasumi
 
-Kasumi is an open-source, Redis-like in-memory document database written in Rust
+Kasumi is an open-source key-value database written in Rust
 and licensed under Apache-2.0. Contributions are submitted under the same license.
 Preserve third-party license and attribution notices when importing code or assets.
 

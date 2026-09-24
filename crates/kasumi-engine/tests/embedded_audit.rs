@@ -65,7 +65,7 @@ async fn fixture(
 #[tokio::test]
 async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenants() {
     let dir = kasumi_store::test_utils::private_tempdir().unwrap();
-    let path = dir.path().join("node.redb");
+    let path = dir.path().join("node.kv");
     let physical = common::PhysicalFixture::new(&path, Default::default());
     let node = physical
         .storage
@@ -196,7 +196,7 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
         .unwrap();
     runtime.block_on(async {
         let dir = kasumi_store::test_utils::private_tempdir().unwrap();
-        let path = dir.path().join("node.redb");
+        let path = dir.path().join("node.kv");
         let physical = common::PhysicalFixture::new(&path, Default::default());
         let node = physical
             .storage
@@ -264,11 +264,11 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     let source_root = dir.path().join("source");
     kasumi_store::private_files::create_directory(&source_root).unwrap();
     let source_physical =
-        common::PhysicalFixture::new(&source_root.join("source.redb"), Default::default());
+        common::PhysicalFixture::new(&source_root.join("source.kv"), Default::default());
     let source_node = source_physical
         .storage
         .create_new(
-            source_root.join("source.redb"),
+            source_root.join("source.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -295,7 +295,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     let backup = checkpoint.backup_id();
     let target_root = dir.path().join("target");
     kasumi_store::private_files::create_directory(&target_root).unwrap();
-    let target_path = target_root.join("target.redb");
+    let target_path = target_root.join("target.kv");
     let target_physical = common::PhysicalFixture::new(&target_path, Default::default());
     let target_node = target_physical
         .storage

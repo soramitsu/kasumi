@@ -641,10 +641,10 @@ fn staged_crash_worker() {
         .block_on(async {
             let directory = std::path::Path::new(&directory);
             let physical = common::PhysicalFixture::new(
-                &directory.join("persistent/node.redb"),
+                &directory.join("persistent/node.kv"),
                 Default::default(),
             );
-            let (db, _audit) = open(&physical, &directory.join("persistent/node.redb"), true).await;
+            let (db, _audit) = open(&physical, &directory.join("persistent/node.kv"), true).await;
             for name in ["docs", "ledger"] {
                 db.administer(
                     context(),
@@ -709,7 +709,7 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
     }
     child.kill().unwrap();
     child.wait().unwrap();
-    let raw = std::fs::read(directory.path().join("persistent/node.redb")).unwrap();
+    let raw = std::fs::read(directory.path().join("persistent/node.kv")).unwrap();
     let amount = b"90071992547409931234567890.123456789";
     assert!(
         !raw.windows(amount.len()).any(|bytes| bytes == amount),
@@ -717,12 +717,12 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
     );
     drop(raw);
     let physical = common::PhysicalFixture::new(
-        &directory.path().join("persistent/node.redb"),
+        &directory.path().join("persistent/node.kv"),
         Default::default(),
     );
     let (db, audit) = open(
         &physical,
-        &directory.path().join("persistent/node.redb"),
+        &directory.path().join("persistent/node.kv"),
         false,
     )
     .await;
@@ -761,7 +761,7 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
     drop(audit);
     let (db, audit) = open(
         &physical,
-        &directory.path().join("persistent/node.redb"),
+        &directory.path().join("persistent/node.kv"),
         false,
     )
     .await;
@@ -797,8 +797,8 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
 async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_writes() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
-    let (db, audit) = open(&physical, &directory.path().join("node.redb"), true).await;
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
+    let (db, audit) = open(&physical, &directory.path().join("node.kv"), true).await;
     for name in ["docs", "ledger"] {
         db.administer(
             context(),
@@ -1008,11 +1008,9 @@ async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_write
 #[tokio::test]
 async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_pressure() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let physical = common::PhysicalFixture::new(
-        &directory.path().join("lease-delta.redb"),
-        Default::default(),
-    );
-    let (db, audit) = open(&physical, &directory.path().join("lease-delta.redb"), true).await;
+    let physical =
+        common::PhysicalFixture::new(&directory.path().join("lease-delta.kv"), Default::default());
+    let (db, audit) = open(&physical, &directory.path().join("lease-delta.kv"), true).await;
     db.administer(
         context(),
         Operation::CreateCollection(definition("docs", CollectionWriteMode::Mutable)),

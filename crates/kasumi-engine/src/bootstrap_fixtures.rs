@@ -96,7 +96,7 @@ mod tests {
         );
         let node = storage
             .create_new(
-                directory.path().join("persistent/node.redb"),
+                directory.path().join("persistent/node.kv"),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();
@@ -159,19 +159,23 @@ mod tests {
             assert!(Arc::ptr_eq(database.admission(), &admission));
             databases.push(database);
         }
-        assert_eq!(
-            admission.snapshot().reserved_bytes,
-            before_databases
-                + 2 * AuditRetentionBudget::MAINTENANCE_BYTES
-                + 3 * kasumi_raft::SnapshotBufferOwner::required_bytes(
-                    kasumi_raft::SNAPSHOT_BUFFER_SLOTS,
-                )
-                .unwrap()
+        // Opening these tenants also installs native KV index entries. The
+        // fixed audit and snapshot owners are additional to that live charge.
+        assert!(
+            admission.snapshot().reserved_bytes
+                >= before_databases
+                    + 2 * AuditRetentionBudget::MAINTENANCE_BYTES
+                    + 3 * kasumi_raft::SnapshotBufferOwner::required_bytes(
+                        kasumi_raft::SNAPSHOT_BUFFER_SLOTS,
+                    )
+                    .unwrap()
         );
         for database in databases {
             database.shutdown().await.unwrap();
         }
         audit.shutdown().await.unwrap();
+        drop(audit);
+        drop(node);
         let drained = admission.snapshot();
         // Shared installed disk metadata remains charged after all three
         // databases and their shared audit/maintenance workers have drained.

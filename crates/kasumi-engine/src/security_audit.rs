@@ -566,7 +566,7 @@ mod tests {
             Default::default(),
         )
         .unwrap();
-        let path = directory.path().join("persistent/worker-security.redb");
+        let path = directory.path().join("persistent/worker-security.kv");
         let node = storage
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
@@ -665,7 +665,7 @@ mod tests {
                 Default::default(),
             )
             .unwrap();
-            let path = directory.path().join("persistent/security.redb");
+            let path = directory.path().join("persistent/security.kv");
             let node = storage
                 .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
                 .unwrap();
@@ -778,7 +778,7 @@ mod tests {
             Default::default(),
         )
         .unwrap();
-        let path = directory.path().join("persistent/shared-security.redb");
+        let path = directory.path().join("persistent/shared-security.kv");
         let node = storage
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();

@@ -1,6 +1,6 @@
 //! Borrowed scratch close with one authoritative outcome in the caller's owner.
 use super::EncryptedSpool;
-use redb::{BackendCloseOutcome, BackendNativeDisposition};
+use kasumi_kv::{BackendCloseOutcome, BackendNativeDisposition};
 use std::io;
 
 /// The original error or panic belongs to the aggregate that invoked close.

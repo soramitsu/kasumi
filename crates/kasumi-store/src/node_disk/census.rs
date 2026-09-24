@@ -18,7 +18,7 @@ use std::{
 pub(super) struct Root {
     pub(super) path: PathBuf,
     // Prepared before the owner is published. std path conversion may allocate
-    // for long paths and cannot be used after redb's winning commit header.
+    // for long paths and cannot be used after the KV engine's winning commit header.
     path_c: CString,
     pub(super) file: File,
     pub(super) identity: Identity,

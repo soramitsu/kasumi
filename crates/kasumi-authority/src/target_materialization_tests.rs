@@ -276,7 +276,7 @@ impl MaterialFixture {
         let issuer = control.issuer().await;
         let source_physical = PhysicalFixture::new().unwrap();
         let node = source_physical
-            .create_new(source_physical.path("source.redb"), Uuid::new_v4())
+            .create_new(source_physical.path("source.kv"), Uuid::new_v4())
             .unwrap();
         let source_admission = source_physical.admission.clone();
         let security = audit(node.clone(), source_admission.clone(), false).await;
@@ -524,7 +524,7 @@ impl MaterialFixture {
         // materialization still explicitly obtains its registered operation.
         let first_creation = self.target_files.lock().unwrap().insert(id);
         let node = {
-            let path = self.physical[&id].path(format!("target-{id}.redb"));
+            let path = self.physical[&id].path(format!("target-{id}.kv"));
             if first_creation {
                 self.physical[&id].create_new(path, node_store_id)
             } else {
@@ -1269,7 +1269,7 @@ async fn exercise_target_activation(maintenance: bool) {
     );
     // Independent journal reserves activation and permanent stop headroom
     // before the actual local effect. It uses neither source nor target key.
-    let journal_path = f.physical[&selected.id].path("activation-journal.redb");
+    let journal_path = f.physical[&selected.id].path("activation-journal.kv");
     let journal_installation = kasumi_engine::TargetJournalInstallation {
         root: f.control.root.clone(),
         node: nodes()
@@ -1754,7 +1754,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         root: f.control.root.clone(),
         node: nodes().first().unwrap().clone(),
     };
-    let path = f.physical[&1].path("independent-target-journal.redb");
+    let path = f.physical[&1].path("independent-target-journal.kv");
     let file_id = kasumi_store::node_store_ids::target_journal(
         installation.root.control_incarnation,
         &installation.node.verifier,
@@ -1815,7 +1815,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     }
     // Crash after durable creation intent, before the file exists. Losing the
     // first permit must never turn its original replay into a new creator.
-    let file_path = f.physical[&1].path("file-intent-target.redb");
+    let file_path = f.physical[&1].path("file-intent-target.kv");
     let creation = journal.reserve_materialization_file(&op).unwrap();
     drop(creation);
     assert!(
@@ -2009,7 +2009,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
             .unwrap(),
         terminal
     );
-    assert!(!f.physical[&1].path("target-1.redb").exists());
+    assert!(!f.physical[&1].path("target-1.kv").exists());
     drop(stop_op);
     stop_scope.close();
     stop_scope.drain().await;
@@ -2137,7 +2137,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         root: f.control.root.clone(),
         node: nodes().first().unwrap().clone(),
     };
-    let journal_path = f.physical[&1].path("creation-outcome-journal.redb");
+    let journal_path = f.physical[&1].path("creation-outcome-journal.kv");
     let node = f.physical[&1]
         .create_new(
             &journal_path,
@@ -2170,7 +2170,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     journal
         .prepare(&operation, &f.input.digest().unwrap())
         .unwrap();
-    let path = f.physical[&1].path("creation-outcome-target.redb");
+    let path = f.physical[&1].path("creation-outcome-target.kv");
     let MaterializationNode::Created(target) = journal
         .reserve_materialization_file(&operation)
         .unwrap()

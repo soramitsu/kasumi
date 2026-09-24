@@ -36,7 +36,7 @@ impl InstalledFixture {
         let signing = root.install(installation.manifest.clone(), 0)?;
         let (bootstrap, settings) = test_settings(4 << 20, signing.signer.certificate().clone());
         let node = physical.create_new(
-            physical.path("authority.redb"),
+            physical.path("authority.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )?;
         let stores = TenantStorageSet::initialize_catalogs(
@@ -153,7 +153,7 @@ impl InstalledFixture {
         } = self;
         drop(stores);
         let node = physical.open_existing(
-            physical.path("authority.redb"),
+            physical.path("authority.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )?;
         let stores = TenantStorageSet::open_existing(

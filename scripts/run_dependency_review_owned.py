@@ -45,7 +45,6 @@ EXPECTED = {
     "vendor/lru-0.16.4": {"lru"},
     "vendor/serde_json-1.0.151": {"serde_json"},
     "vendor/rmcp-3.2.0": {"rmcp"},
-    "vendor/redb-4.2.0": {"redb"},
     "vendor/openraft-0.9.25": {"openraft", "openraft-macros"},
 }
 RUST_RESULT = re.compile(
@@ -151,27 +150,12 @@ def suite_roster(source, manifest):
             require(cargo.get("package", {}).get("name") in EXPECTED[root] and
                     "workspace" not in cargo, "vendored package suite selection differs")
             expected_manifests = {"Cargo.toml"}
-            if root == "vendor/redb-4.2.0":
-                expected_manifests.add("crates/redb-derive/Cargo.toml")
             require({name for name in files if name.endswith("Cargo.toml")} == expected_manifests,
                     "unclassified reviewed vendor package manifest")
         suites.append({"root": root, "packages": sorted(EXPECTED[root]),
                        "workspace": workspace, "manifest_sha256": sha256(source / root / "Cargo.toml"),
                        "declared_tests": len(cargo.get("test", [])),
                        "excluded_unlocked": excluded_unlocked})
-        if root == "vendor/redb-4.2.0":
-            relative = "crates/redb-derive"
-            require(relative + "/Cargo.lock" in files,
-                    "reviewed redb-derive test suite lacks a lockfile")
-            derive = tomllib.loads((source / root / relative / "Cargo.toml").read_text())
-            require(derive.get("package", {}).get("name") == "redb-derive" and
-                    derive["package"].get("version") == "0.1.0" and "workspace" not in derive,
-                    "reviewed redb-derive suite identity differs")
-            suites.append({"root": root + "/" + relative, "packages": ["redb-derive"],
-                           "workspace": False,
-                           "manifest_sha256": sha256(source / root / relative / "Cargo.toml"),
-                           "declared_tests": len(derive.get("test", [])),
-                           "excluded_unlocked": []})
     require(seen == set(EXPECTED), "reviewed vendor suites are incomplete")
     return sorted(suites, key=lambda item: item["root"])
 

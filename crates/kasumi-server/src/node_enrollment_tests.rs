@@ -8,13 +8,13 @@ async fn fixture() -> Result<(tempfile::TempDir, Arc<NodeStore>, Arc<TenantStore
     configuration.admission = Default::default();
     configuration.persistent_disk =
         crate::persistent_disk::fixture_config(&directory.path().join("data"));
-    configuration.database_path = directory.path().join("data/node.redb");
+    configuration.database_path = directory.path().join("data/node.kv");
     configuration.scratch_disk.directory = directory.path().join("scratch");
     configuration
         .signer_verifier
         .as_mut()
         .unwrap()
-        .database_path = directory.path().join("data/trust.redb");
+        .database_path = directory.path().join("data/trust.kv");
     let storage = crate::runtime_storage_fixtures::configure(&mut configuration)?;
     let _admission = storage.facade(storage.policy())?;
     let node = NodeStore::create_new(

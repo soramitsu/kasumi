@@ -171,17 +171,8 @@ pub async fn open_target_replica(
     let task = tokio::spawn(async move {
         let _gate = owned.run(async { Ok(BOOTSTRAP_GATE.lock().await) }).await?;
         owned.check()?;
-        let manifest_bytes = stores
-            .application()
-            .get_bounded(NS, b"manifest", 64 << 10)?
+        read_current_manifest(stores.application())?
             .ok_or_else(|| anyhow::anyhow!("published target bootstrap missing"))?;
-        let manifest: Manifest = serde_json::from_slice(&manifest_bytes)?;
-        anyhow::ensure!(
-            manifest.format == 2
-                && manifest.bytes > 0
-                && manifest.chunks == manifest.bytes.div_ceil(CHUNK as u64),
-            "target bootstrap exceeds bound"
-        );
         let workspace = Arc::new(config.admission.reserve(
             recovery_workspace_bytes(&stores)?,
             Some(owned.token.clone()),

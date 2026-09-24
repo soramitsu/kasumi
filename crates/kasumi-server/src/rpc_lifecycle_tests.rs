@@ -53,7 +53,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     .unwrap();
     let audit_node = physical
         .create_new(
-            directory.path().join("control/persistent/audit.redb"),
+            directory.path().join("control/persistent/audit.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -116,7 +116,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
             crate::runtime_storage_fixtures::physical(&issuer_root, Default::default()).unwrap();
         let node = issuer_physical
             .create_new(
-                issuer_root.join("persistent/issuer.redb"),
+                issuer_root.join("persistent/issuer.kv"),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();
@@ -293,7 +293,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
             .create_new(
                 directory
                     .path()
-                    .join(format!("control/persistent/node-{id}.redb")),
+                    .join(format!("control/persistent/node-{id}.kv")),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();

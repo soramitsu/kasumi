@@ -38,8 +38,10 @@ pub use control_genesis::{ControlGenesis, ControlLifecycleGenesis, ReplicatedGen
 
 const NS: &str = "engine.bootstrap";
 const CHUNK: usize = 4 << 20;
+// The current writer emits one small JSON row with four fixed fields and a SHA-256 digest.
+const MAX_BOOTSTRAP_MANIFEST_BYTES: usize = 256;
 // Only bootstraps are serialized here, never data operations. A node owns its
-// redb file exclusively; startup must register each returned tenant once.
+// database file exclusively; startup must register each returned tenant once.
 static BOOTSTRAP_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
@@ -119,7 +121,9 @@ pub async fn prepare_replicated_restore(
     let _gate = deadline.run(BOOTSTRAP_GATE.lock()).await?;
     restore_access(&target, &security_audit, &context).await?;
     anyhow::ensure!(
-        target.get(NS, b"manifest")?.is_none()
+        target
+            .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
+            .is_none()
             && targets
                 .custody()
                 .store()
@@ -584,21 +588,53 @@ struct Manifest {
     digest: String,
 }
 
-fn load(store: &TenantStore) -> anyhow::Result<Option<SnapshotImage>> {
-    let Some(bytes) = store.get(NS, b"manifest")? else {
-        return Ok(None);
-    };
-    let manifest: Manifest = serde_json::from_slice(&bytes)?;
+fn decode_current_manifest(bytes: &[u8]) -> anyhow::Result<Manifest> {
+    anyhow::ensure!(
+        bytes.len() <= MAX_BOOTSTRAP_MANIFEST_BYTES,
+        "bootstrap manifest exceeds current writer bound"
+    );
+    let manifest: Manifest = serde_json::from_slice(bytes)?;
     anyhow::ensure!(
         manifest.format == 2
             && manifest.bytes > 0
-            && manifest.chunks == manifest.bytes.div_ceil(CHUNK as u64),
+            && manifest.chunks == manifest.bytes.div_ceil(CHUNK as u64)
+            && manifest.digest.len() == 64
+            && manifest
+                .digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
         "invalid bootstrap manifest"
     );
+    anyhow::ensure!(
+        serde_json::to_vec(&manifest)? == bytes,
+        "noncanonical bootstrap manifest"
+    );
+    Ok(manifest)
+}
+
+fn read_current_manifest(store: &TenantStore) -> anyhow::Result<Option<Manifest>> {
+    store
+        .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
+        .map(|bytes| decode_current_manifest(&bytes))
+        .transpose()
+}
+
+/// Read the initial snapshot digest from the current immutable bootstrap row.
+/// Startup, materialization and server enrollment all use this exact decoder.
+pub fn persisted_bootstrap_digest(store: &TenantStore) -> anyhow::Result<String> {
+    read_current_manifest(store)?
+        .map(|manifest| manifest.digest)
+        .ok_or_else(|| anyhow::anyhow!("bootstrap manifest absent"))
+}
+
+fn load(store: &TenantStore) -> anyhow::Result<Option<SnapshotImage>> {
+    let Some(manifest) = read_current_manifest(store)? else {
+        return Ok(None);
+    };
     let mut spool = EncryptedSpool::new(store.scratch_disk(), manifest.bytes)?;
     for i in 0..manifest.chunks {
         let bytes = store
-            .get(NS, &i.to_be_bytes())?
+            .get_bounded(NS, &i.to_be_bytes(), CHUNK)?
             .ok_or_else(|| anyhow::anyhow!("incomplete bootstrap"))?;
         anyhow::ensure!(
             bytes.len() == (manifest.bytes - spool.len()).min(CHUNK as u64) as usize,
@@ -644,7 +680,9 @@ fn persist_new_checked(
     check()?;
     let store = stores.application();
     anyhow::ensure!(
-        store.get(NS, b"manifest")?.is_none()
+        store
+            .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
+            .is_none()
             && stores
                 .custody()
                 .store()
@@ -931,7 +969,9 @@ pub async fn restore_local(
     let authorization = backup_restore::RestoreAuthorization::Local(&request);
     authorization.check_access(&target, &security_audit).await?;
     anyhow::ensure!(
-        target.get(NS, b"manifest")?.is_none()
+        target
+            .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
+            .is_none()
             && targets
                 .custody()
                 .store()
@@ -1064,17 +1104,8 @@ fn reject_retired_serving_open(stores: &TenantStorageSet) -> anyhow::Result<()> 
 /// Admission estimate from bounded authenticated bootstrap/snapshot manifests.
 /// It does not deserialize resident application state or authorize serving.
 pub fn recovery_workspace_bytes(stores: &TenantStorageSet) -> anyhow::Result<u64> {
-    let bytes = stores
-        .application()
-        .get(NS, b"manifest")?
+    let manifest = read_current_manifest(stores.application())?
         .ok_or_else(|| anyhow::anyhow!("bootstrap manifest absent"))?;
-    let manifest: Manifest = serde_json::from_slice(&bytes)?;
-    anyhow::ensure!(
-        manifest.format == 2
-            && manifest.bytes > 0
-            && manifest.chunks == manifest.bytes.div_ceil(CHUNK as u64),
-        "invalid bootstrap resource manifest"
-    );
     let snapshot = kasumi_raft::recovery_snapshot_bytes(stores)?;
     Ok(manifest
         .bytes

@@ -1,7 +1,6 @@
 //! Explicit singleton installation and strict reopening. Application/custody
 //! domains use their private paired owners, never this production entry point.
 use super::*;
-use redb::ReadableTable;
 use tokio::sync::{Notify, OwnedMutexGuard, oneshot};
 
 type Slot = OwnedMutexGuard<Weak<TenantStore>>;

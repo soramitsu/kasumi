@@ -1,11 +1,14 @@
 //! One canonical node-file envelope. The discriminator and checksum are not
 //! authentication: the caller supplies the expected installed identity before
-//! redb may repair the recognized payload. Tenant authentication follows later.
+//! the engine may recover the recognized payload. Tenant authentication follows later.
+use crate::node_disk::NodeDiskCloseOutcome;
 pub(crate) use crate::node_disk::{FailedCloseReport, FailedFileTransfer, FailedFileWitness};
 use crate::{DiskWork, NodeDisk, NodeDiskFile, private_files::FileIdentity};
 use anyhow::{Result, ensure};
+use kasumi_kv::{
+    AdmissionError, BackendCloseOutcome, OwnerFailed, StorageAdmission, StorageBackend,
+};
 use parking_lot::RwLock;
-use redb::{AdmissionError, BackendCloseOutcome, OwnerFailed, StorageAdmission, StorageBackend};
 use sha2::{Digest, Sha256};
 use std::{
     io,
@@ -16,7 +19,7 @@ use uuid::Uuid;
 
 const HEADER_BYTES: usize = 4096;
 const CHECKSUM_AT: usize = HEADER_BYTES - 32;
-const MAGIC: &[u8; 16] = b"KASUMI-NODE-0001";
+const MAGIC: &[u8; 16] = b"KASUMI-NODE-0002";
 const PREPARED: u8 = 1;
 const READY: u8 = 2;
 
@@ -80,7 +83,7 @@ impl FileState {
 }
 
 pub(crate) struct NodeFile {
-    // Closing redb removes the actual descriptor even if an internal reader
+    // Closing the engine removes the actual descriptor even if an internal reader
     // retains its backend Arc. Already-running descriptor operations drain
     // under this lock before exclusive file ownership is released.
     file: RwLock<FileState>,
@@ -261,7 +264,7 @@ impl NodeFile {
 
     fn own(path: &Path, file: NodeDiskFile, id: Uuid, disk: Arc<NodeDisk>) -> Result<Arc<Self>> {
         // NodeDisk acquired this exact descriptor and every current ancestor.
-        // Envelope validation and all redb I/O retain that same physical owner.
+        // Envelope validation and all engine I/O retain that same physical owner.
         file.check_owner()?;
         Ok(Arc::new(Self {
             file: RwLock::new(FileState::Owned(file)),
@@ -294,7 +297,7 @@ impl NodeFile {
             file.observed_len()? > HEADER_BYTES as u64,
             "node payload is absent"
         );
-        // The initialized redb tables are durable before a ready discriminator
+        // The initialized KV tables are durable before a ready discriminator
         // can authorize later recovery. A failure here is an uncertain create;
         // it never authorizes truncation, recreation, or adoption on retry.
         file.sync_all()?;
@@ -445,7 +448,7 @@ impl StorageAdmission for NodeFile {
     fn reserve_workspace(
         &self,
         bytes: u64,
-    ) -> std::result::Result<Box<dyn redb::ResidentLease>, AdmissionError> {
+    ) -> std::result::Result<Box<dyn kasumi_kv::ResidentLease>, AdmissionError> {
         self.check_owner()
             .map_err(|_| AdmissionError::OwnerFailed)?;
         // The provider accounts for its own reservation token. This addition
@@ -552,7 +555,7 @@ impl StorageBackend for NodeBackend {
         let file = guard.owned_mut().ok_or(io::ErrorKind::BrokenPipe)?;
         let current = file.observed_len()?;
         if physical < current {
-            // redb has already made the reduced extent's winning header
+            // The engine has already made the reduced extent's winning header
             // durable. Complete the retained promise accounting before the
             // exclusive, synchronized physical shrink credits any bytes.
             file.settle_growth(current)?;
@@ -583,15 +586,16 @@ impl StorageBackend for NodeBackend {
 
     fn close(&self) -> BackendCloseOutcome {
         let Some(mut guard) = self.0.file.try_write() else {
-            return BackendCloseOutcome::retained(io::ErrorKind::WouldBlock.into());
+            return BackendCloseOutcome::not_entered(io::ErrorKind::WouldBlock.into());
         };
         match &mut *guard {
-            FileState::Owned(file) => match file.close() {
-                Ok(()) => {
+            FileState::Owned(file) => match file.close_attested() {
+                NodeDiskCloseOutcome::NotEntered(error) => BackendCloseOutcome::not_entered(error),
+                NodeDiskCloseOutcome::Entered(Ok(())) => {
                     *guard = FileState::Closed;
                     BackendCloseOutcome::drained(Ok(()))
                 }
-                Err(error) => {
+                NodeDiskCloseOutcome::Entered(Err(error)) => {
                     // Logical failure is independent of physical native drain.
                     // Only the exact terminal owner can attest the latter.
                     if file.failed_close_witness().is_ok() {

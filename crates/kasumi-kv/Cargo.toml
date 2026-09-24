@@ -1,0 +1,12 @@
+[package]
+name = "kasumi-kv"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Kasumi's append-only transactional byte-key storage core."
+
+[dependencies]
+
+libc = "0.2"

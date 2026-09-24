@@ -20,7 +20,7 @@ async fn cancelled_serving_drain_retains_joined_panic_and_exact_pending_owner() 
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
         crate::runtime_storage_fixtures::physical(directory.path(), Default::default()).unwrap();
-    let path = directory.path().join("persistent/serving-task.redb");
+    let path = directory.path().join("persistent/serving-task.kv");
     let node = physical
         .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
         .unwrap();
@@ -104,7 +104,7 @@ async fn required_listener_failure_interrupts_pending_startup_before_retained_ow
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
         crate::runtime_storage_fixtures::physical(directory.path(), Default::default()).unwrap();
-    let path = directory.path().join("persistent/pending-startup.redb");
+    let path = directory.path().join("persistent/pending-startup.kv");
     let node = physical
         .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
         .unwrap();
@@ -286,7 +286,7 @@ async fn aborted_listener_retains_http1_and_http2_requests_until_exact_nested_jo
         let physical =
             crate::runtime_storage_fixtures::physical(directory.path(), Default::default())
                 .unwrap();
-        let path = directory.path().join("persistent/nested-listener.redb");
+        let path = directory.path().join("persistent/nested-listener.kv");
         let node = physical
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();

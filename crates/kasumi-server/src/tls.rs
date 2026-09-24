@@ -411,7 +411,7 @@ mod lifecycle_tests {
         let physical =
             crate::runtime_storage_fixtures::physical(directory.path(), Default::default())
                 .unwrap();
-        let path = directory.path().join("persistent/accept-error.redb");
+        let path = directory.path().join("persistent/accept-error.kv");
         let node = physical
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();

@@ -1,7 +1,7 @@
-//! A stopped node retains the exact redb owner until accepted transactions end.
+//! A stopped node retains the exact database owner until accepted transactions end.
+use kasumi_kv::{Database, ReadTransaction, TransactionError, WriteTransaction};
 use kasumi_types::drain::{DrainFailure, DrainReport, DrainResult};
 use parking_lot::Mutex;
-use redb::{Database, ReadTransaction, ReadableDatabase, TransactionError, WriteTransaction};
 use std::{
     any::Any,
     fmt,
@@ -22,7 +22,7 @@ struct State {
 struct ClosePanic(Mutex<Box<dyn Any + Send>>);
 impl fmt::Debug for ClosePanic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("redb close panicked; original payload retained")
+        f.write_str("database close panicked; original payload retained")
     }
 }
 impl fmt::Display for ClosePanic {
@@ -30,7 +30,7 @@ impl fmt::Display for ClosePanic {
         // Borrow the retained payload without exposing its potentially sensitive
         // content or treating its destructor as evidence of physical drain.
         let _payload = self.0.lock();
-        f.write_str("redb close panicked; ownership completion is unproven")
+        f.write_str("database close panicked; ownership completion is unproven")
     }
 }
 impl std::error::Error for ClosePanic {}
@@ -58,12 +58,12 @@ impl NodeDatabase {
     fn accepted(&self) -> Result<Arc<Database>, TransactionError> {
         let state = self.state.lock();
         if self.stopped.load(Ordering::Acquire) {
-            return Err(redb::StorageError::DatabaseClosed.into());
+            return Err(kasumi_kv::StorageError::DatabaseClosed.into());
         }
         state
             .database
             .clone()
-            .ok_or_else(|| redb::StorageError::DatabaseClosed.into())
+            .ok_or_else(|| kasumi_kv::StorageError::DatabaseClosed.into())
     }
 
     pub(crate) fn begin_read(&self) -> Result<ReadTransaction, TransactionError> {
@@ -96,13 +96,13 @@ impl NodeDatabase {
         let result = match Arc::try_unwrap(database) {
             Ok(database) => match std::panic::catch_unwind(AssertUnwindSafe(|| database.close())) {
                 Ok(Ok(())) => return state.terminal.complete(),
-                Ok(Err(redb::CloseError::Storage(error))) => {
+                Ok(Err(kasumi_kv::CloseError::Storage(error))) => {
                     let issue = state.terminal.record(self.component, 0, error.into());
                     let failure = DrainFailure::retained(issue);
                     state.interrupted = Some(failure.clone());
                     return Err(failure);
                 }
-                Ok(Err(redb::CloseError::Busy(database))) => Arc::new(database),
+                Ok(Err(kasumi_kv::CloseError::Busy(database))) => Arc::new(database),
                 Err(payload) => {
                     let issue = state.terminal.record(
                         self.component,
@@ -120,7 +120,7 @@ impl NodeDatabase {
         let issue = state.busy.record(
             self.component,
             0,
-            anyhow::anyhow!("accepted redb callers or transaction handles are still live"),
+            anyhow::anyhow!("accepted database callers or transaction handles are still live"),
         );
         Err(DrainFailure::retained(issue))
     }
@@ -129,12 +129,12 @@ impl NodeDatabase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use redb::StorageBackend;
+    use kasumi_kv::StorageBackend;
 
     fn memory() -> NodeDatabase {
         NodeDatabase::new(
             Database::builder(crate::test_utils::storage_admission())
-                .create_with_backend(redb::backends::InMemoryBackend::new())
+                .create_with_backend(kasumi_kv::backends::InMemoryBackend::new())
                 .unwrap(),
             "test database",
         )
@@ -184,7 +184,10 @@ mod tests {
         let outcome = database.close();
         first.abort().unwrap();
         thread.join().unwrap();
-        assert!(queued, "second actual writer never reached redb admission");
+        assert!(
+            queued,
+            "second actual writer never reached database admission"
+        );
         assert_eq!(
             outcome.unwrap_err().completion(),
             kasumi_types::drain::DrainCompletion::Retained
@@ -195,7 +198,7 @@ mod tests {
     #[derive(Debug, PartialEq)]
     struct OriginalClosePanic(u64);
     #[derive(Debug)]
-    struct PanicBackend(redb::backends::InMemoryBackend);
+    struct PanicBackend(kasumi_kv::backends::InMemoryBackend);
     impl StorageBackend for PanicBackend {
         fn len(&self) -> std::io::Result<u64> {
             self.0.len()
@@ -212,7 +215,7 @@ mod tests {
         fn write(&self, at: u64, bytes: &[u8]) -> std::io::Result<()> {
             self.0.write(at, bytes)
         }
-        fn close(&self) -> redb::BackendCloseOutcome {
+        fn close(&self) -> kasumi_kv::BackendCloseOutcome {
             std::panic::panic_any(OriginalClosePanic(41))
         }
     }
@@ -221,7 +224,7 @@ mod tests {
     fn close_panic_retains_original_payload_and_cannot_become_clean_on_retry() {
         let database = NodeDatabase::new(
             Database::builder(crate::test_utils::storage_admission())
-                .create_with_backend(PanicBackend(redb::backends::InMemoryBackend::new()))
+                .create_with_backend(PanicBackend(kasumi_kv::backends::InMemoryBackend::new()))
                 .unwrap(),
             "panicking backend",
         );
@@ -244,7 +247,7 @@ mod tests {
         assert!(database.begin_write().is_err());
     }
     #[derive(Debug)]
-    struct UnprovedCloseBackend(redb::backends::InMemoryBackend);
+    struct UnprovedCloseBackend(kasumi_kv::backends::InMemoryBackend);
     impl StorageBackend for UnprovedCloseBackend {
         fn len(&self) -> std::io::Result<u64> {
             self.0.len()
@@ -261,15 +264,17 @@ mod tests {
         fn write(&self, at: u64, bytes: &[u8]) -> std::io::Result<()> {
             self.0.write(at, bytes)
         }
-        fn close(&self) -> redb::BackendCloseOutcome {
-            redb::BackendCloseOutcome::retained_result(Ok(()))
+        fn close(&self) -> kasumi_kv::BackendCloseOutcome {
+            kasumi_kv::BackendCloseOutcome::retained_result(Ok(()))
         }
     }
     #[test]
     fn logical_close_success_without_native_evidence_never_becomes_complete_on_retry() {
         let database = NodeDatabase::new(
             Database::builder(crate::test_utils::storage_admission())
-                .create_with_backend(UnprovedCloseBackend(redb::backends::InMemoryBackend::new()))
+                .create_with_backend(UnprovedCloseBackend(
+                    kasumi_kv::backends::InMemoryBackend::new(),
+                ))
                 .unwrap(),
             "unproved native drain",
         );

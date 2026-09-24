@@ -149,7 +149,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         verifier: SignerVerifierConfig {
             max_background_workers: 64,
             identity: physical.clone(),
-            database_path: directory.join("data/verifier.redb"),
+            database_path: directory.join("data/verifier.kv"),
             keys: KeyProviderSettings::File { path: wrapping },
         },
         initial_certificates: vec![f.initial_certificate.clone()],

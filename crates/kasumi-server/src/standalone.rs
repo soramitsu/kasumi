@@ -430,7 +430,7 @@ async fn operator_tenants(
                 Some(active) => {
                     tenant.incarnation = Some(active.incarnation.to_string());
                     NodeStore::open_existing(
-                        active.directory.join("node.redb"),
+                        active.directory.join("node.kv"),
                         active.database_id(config, &tenant.tenant)?,
                         owner.node.persistent_disk().clone(),
                         owner.node.scratch_disk().clone(),
@@ -1175,7 +1175,7 @@ async fn initialize_owned(
         let installation_id = Uuid::new_v4();
         let control_incarnation = Uuid::new_v4();
         let tenant_incarnation = Uuid::new_v4();
-        let database_path = data.join("node.redb");
+        let database_path = data.join("node.kv");
         let installation = Installation {
             format: 4,
             installation_id,

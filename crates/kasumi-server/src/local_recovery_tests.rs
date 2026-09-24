@@ -400,7 +400,7 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
     // path, even with the original source database still present.
     let target = directory(&config, request.target_incarnation)
         .unwrap()
-        .join("node.redb");
+        .join("node.kv");
     std::fs::rename(&target, target.with_extension("missing")).unwrap();
     assert!(
         NodeRuntime::open_using_storage(config, crate::runtime::file_secret, storage.clone())
@@ -593,8 +593,8 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
     let (root_name, relative) = persistent_config.binding(&unrelated).unwrap();
     let unrelated_owner = persistent_disk.open_file(root_name, relative).unwrap();
     persistent_disk.delete_file(unrelated_owner).unwrap();
-    let database = target.join("node.redb");
-    let preserved = root.path().join("preserved-node.redb");
+    let database = target.join("node.kv");
+    let preserved = root.path().join("preserved-node.kv");
     recensus_physical_edit(&persistent_disk, || {
         std::fs::rename(&database, &preserved).unwrap();
         private_files::create(&database, b"unrelated replacement inode").unwrap();
@@ -720,7 +720,7 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
     );
     assert!(!target.exists());
     let saved_path = config.database_path.clone();
-    config.database_path = config.database_path.with_file_name("replacement.redb");
+    config.database_path = config.database_path.with_file_name("replacement.kv");
     private_files::replace(&alias_configuration, &serde_json::to_vec(&config).unwrap()).unwrap();
     assert!(
         start_with_storage(&alias_configuration, reused, storage.clone())
@@ -862,7 +862,7 @@ async fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file()
     operator
         .prepare_stage(&mut journal, TargetPreparation::CreationDispatched)
         .unwrap();
-    let path = journal.target_directory.join("node.redb");
+    let path = journal.target_directory.join("node.kv");
     assert!(
         operator
             .target(&mut journal, TargetOpen::Materialize)
@@ -923,7 +923,7 @@ async fn local_lost_file_binding_cleanup_requires_the_original_node_identity() {
     operator
         .prepare_stage(&mut journal, TargetPreparation::CreationDispatched)
         .unwrap();
-    let path = journal.target_directory.join("node.redb");
+    let path = journal.target_directory.join("node.kv");
     let persistent = operator.store().persistent_disk().clone();
     let scratch = operator.store().scratch_disk().clone();
     let node = kasumi_store::NodeStore::create_new(
@@ -944,8 +944,8 @@ async fn local_lost_file_binding_cleanup_requires_the_original_node_identity() {
     );
     crate::startup_owner::finish(&mut operator).await.unwrap();
     drop(operator);
-    let preserved = root.path().join("original-node.redb");
-    let substitute = path.with_file_name("substitute.redb");
+    let preserved = root.path().join("original-node.kv");
+    let substitute = path.with_file_name("substitute.kv");
     let other = kasumi_store::NodeStore::create_new(
         &substitute,
         Uuid::new_v4(),
@@ -1055,7 +1055,7 @@ async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation(
                     .unwrap(),
             );
         }
-        let path = journal.target_directory.join("node.redb");
+        let path = journal.target_directory.join("node.kv");
         let identity = private_files::file_identity(&path).unwrap();
         let baseline = operator.store().persistent_disk().snapshot();
         let stage = journal.target_preparation;
@@ -1210,7 +1210,7 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
         .unwrap()
         .unwrap();
     assert_eq!(active.incarnation, request.target_incarnation);
-    let target_path = active.directory.join("node.redb");
+    let target_path = active.directory.join("node.kv");
     let target_id = active.database_id(&config, &request.tenant).unwrap();
     crate::startup_owner::finish(&mut operator).await.unwrap();
     drop(operator);

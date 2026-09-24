@@ -42,7 +42,7 @@ fn config(root: &Path) -> Result<(RuntimeConfig, crate::runtime_memory::RuntimeS
         crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
     config.admission = Default::default();
     config.persistent_disk = crate::persistent_disk::fixture_config(&root.join("data"));
-    config.database_path = root.join("data/node.redb");
+    config.database_path = root.join("data/node.kv");
     config.database_id = uuid::Uuid::new_v4();
     config.scratch_disk.directory = root.join("scratch");
     config.scratch_disk.min_free_bytes = 0;

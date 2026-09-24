@@ -113,7 +113,7 @@ impl Fixture {
         let admission = physical.admission.clone();
         let node = physical
             .create_new(
-                private.join("persistent/node.redb"),
+                private.join("persistent/node.kv"),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();

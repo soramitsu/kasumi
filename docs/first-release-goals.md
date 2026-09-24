@@ -6,6 +6,11 @@ baseline; this document supplies workstream goals, dependencies and completion
 criteria under the existing [release ledger](production-release.md) and
 [acceptance checklist](release-checklist.md).
 
+The 2026-09-24 instruction to implement Kasumi's own key-value engine supersedes
+this document's redb-backed G02 direction. The active replacement criteria are
+in [native KV engine goal](native-kv-goal.md); historical redb checkpoints below
+remain evidence of earlier work, not the target architecture.
+
 ## Release contract
 
 This is Kasumi's first release. **Backward compatibility is forbidden.** Replace
@@ -65,6 +70,39 @@ replicated Control leadership changes (4/6 and 5/6), despite each initially
 failed name passing alone. The target envelope/status patch and bootstrap
 manifest revision 2 remain unapplied after independent HOLD reviews. G01 and
 G09 are open; final-source suites and installed fault tests remain pending.
+The later one-send Stop fixture rerun passes **2/6**: two exact preparation
+timeouts and two stale-leader phase reads. The approved G01 manifest-only cut
+passes its engine and server focused cases **1/1** each after the native KV
+read-bound mismatch was corrected. The G07 signer receipt-resolution fixture
+passes **1/1** focused, while its full authority cohort remains open. The G09
+lost-ack marker test is applied and passes **1/1** focused; the complete
+seven-case lifecycle cohort passed **4/7** before the exact-preparation replay
+repair; the latest rerun passes **3/7** and exposes more cached-route assertions
+during leadership changes. G09 remains open.
+The G01 deployment binding admission bound and G09 positive signed
+first-membership path remain open. The evidence ledger records exact source,
+failed logs and review hashes.
+An independently reviewed test-only current-leader reread replaces the
+stale-leader phase assertion. The later exact replay and negative-preparation
+fixture changes each pass their focused case, but the seven-case rerun still
+has four failures around cached-route reads and negative outcome responses.
+These require verified resolution without replaying a consumed effect ticket.
+The native KV cutover compiles as a crate, but read-only reviews found close
+custody and failed-owner negative-read bugs requiring fixes and regression
+evidence. G02 remains open.
+The current native KV close-entry, failed-owner read-fence, FileBackend native
+close and public repeat-close-report slices are applied on this mandated
+`master` checkout. Locked offline KV tests pass **31/31 unit and 6/6 crash**;
+the immediately preceding source passed all **412** runnable store library
+cases with two ignored, and its repeat-close successor is under a full store
+rerun. Production registered-owner caller adoption and final-source release
+qualification remain open. The independently reviewed G09 test-only leader
+read/negative-response fixture improves the serial lifecycle cohort to **5/7**;
+two cached-leader operations still return `Unavailable`, so G09 remains open.
+The G01 deployment admission candidate and its structural preparse revision
+remain held because retained typed allocation ownership and several installed
+readers are not yet covered. Source-bound logs and reviews are in the
+integration evidence ledger; every G01–G14 goal remains open.
 G11 declared functional-evidence export and mode-preserving tar readback pass
 their 149-test Python checkpoint. Native workflow tar/producer uploads, exact
 Cargo executable and compiled-feature replay, and the downloaded-tar collector
@@ -238,7 +276,7 @@ results recorded below; neither closes a goal or qualifies a release candidate.
 | Goal | Workstream | Dependencies for completion | Implementation | Final validation | Artifacts/docs |
 | --- | --- | --- | --- | --- | --- |
 | G01 | Integration, contract and truthful baseline | None | Open | Open | Open |
-| G02 | Physical storage ownership and admitted redb | G01 | Open | Open | Open |
+| G02 | Physical ownership and native Kasumi KV engine | G01 | Open | Open | Open |
 | G03 | Streaming generations and bounded resources | G02 | Open | Open | Open |
 | G04 | Retained history and audit dependencies | G02, G03 | Open | Open | Open |
 | G05 | Durable backup ownership and cleanup | G02, G03 | Open | Open | Open |
@@ -307,7 +345,15 @@ final-source integration and release acceptance remain open. The
 [integration evidence](evidence/installed-disk-integration-20260923/README.md)
 binds this result to its source and log.
 
-### G02 — Physical storage ownership and admitted redb
+### G02 — Physical ownership and native Kasumi KV engine
+
+The active G02 target is the [native KV engine goal](native-kv-goal.md):
+durable atomic batches and snapshots, crash recovery, corruption rejection,
+owner-charged storage and explicit close custody, with all production callers
+cut over and redb removed. The first release rejects older physical formats;
+no migration, fallback reader or dual writer is permitted. Focused, complete
+and final native-source qualification remain open. The redb records below are
+preserved only as historical development evidence, not current G02 criteria.
 
 The next storage-accounting slice is specified in
 [installed storage admission](installed-storage-admission-plan.md). The shared

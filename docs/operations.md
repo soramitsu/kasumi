@@ -24,7 +24,7 @@ quorum or can serve a fresh read.
 
 Run as a dedicated unprivileged account. Place its database and generation
 directories on a persistent local filesystem whose flush semantics and storage
-hardware honor durability requests. Do not copy an open redb file as a logical
+hardware honor durability requests. Do not copy an open Kasumi database file as a logical
 backup. Use the administrative backup operation. Do not run two processes
 against the same writable database path or open a replica's files under a second
 Raft identity.
@@ -38,9 +38,8 @@ Server shutdown drains TLS connections before closing its databases. A caller
 that cancels a shutdown future must await shutdown again to finish cleanup;
 merely requesting Raft core shutdown is insufficient to release storage workers.
 
-redb's file backend calls Rust's `File::sync_data`. In the pinned Rust 1.97.1
-implementation this uses `fdatasync` on Linux and `F_FULLFSYNC` on Apple targets;
-`sync_all` uses the corresponding full sync. These flush costs belong in durable
+The Kasumi node backend synchronizes the owned file after transaction writes.
+The host filesystem and device must honor those flush requests. These costs belong in durable
 write measurements. They still depend on the filesystem/device honoring them.
 See [the pinned Rust implementation](https://raw.githubusercontent.com/rust-lang/rust/1.97.1/library/std/src/sys/fs/unix.rs).
 
@@ -176,7 +175,7 @@ claim the client received the bytes. Audit quotas block associated successful
 operations when exhausted, while denials remain enforced. Capacity must include
 audit growth. There is currently no automatic audit deletion or export-and-prune
 policy; preserve records and increase an authorized quota within the overall
-state/RAM budget before exhaustion. Do not delete redb records manually.
+state/RAM budget before exhaustion. Do not delete storage records manually.
 
 ## Recovery procedures
 

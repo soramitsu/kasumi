@@ -534,7 +534,7 @@ mod tests {
         let disk =
             kasumi_store::ScratchDisk::fixture(directory.path().join("scratch"), memory.clone());
         let node = NodeStore::create_new_fixture(
-            directory.path().join("persistent/node.redb"),
+            directory.path().join("persistent/node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
             memory,
             disk,
@@ -592,22 +592,20 @@ mod tests {
         .unwrap();
         let left_node = left_storage
             .create_new(
-                left.path().join("persistent/node.redb"),
+                left.path().join("persistent/node.kv"),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();
         let right_node = right_storage
             .create_new(
-                right.path().join("persistent/node.redb"),
+                right.path().join("persistent/node.kv"),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();
         let left = fixture_on_node(left, left_node, incarnation, "tenant").await;
         let right = fixture_on_node(right, right_node, incarnation, "tenant").await;
-        assert_eq!(
-            crate::test_utils::reserved_payload_bytes(&admission),
-            metadata_bytes
-        );
+        // Both live node stores now retain their admitted native KV indexes.
+        assert!(crate::test_utils::reserved_payload_bytes(&admission) > metadata_bytes);
         (left, right, admission, metadata_bytes)
     }
     async fn fixture_on_node(
@@ -1028,7 +1026,7 @@ mod tests {
             (_source_dir, source, source_store),
             (_target_dir, target, target_store),
             admission,
-            metadata_bytes,
+            _metadata_bytes,
         ) = admitted_pair(&incarnation, config).await;
         let previous = source.generation().unwrap();
         let mut state = previous.state.clone();
@@ -1116,6 +1114,7 @@ mod tests {
             .unwrap();
         source.publish_generation(Some(Arc::new(generation)));
         drop(previous);
+        let installed_payload = crate::test_utils::reserved_payload_bytes(&admission);
 
         let image = source.snapshot(admission.clone(), 60_000).await.unwrap();
         let layout = inspect(&mut image.reader()).unwrap();
@@ -1125,7 +1124,7 @@ mod tests {
         let available = layout.materialization_workspace().unwrap() - 1;
         assert_eq!(
             crate::test_utils::reserved_payload_bytes(&admission),
-            metadata_bytes
+            installed_payload
         );
         let held = admission
             .reserve(maximum.checked_sub(available).unwrap(), None)
@@ -1141,7 +1140,7 @@ mod tests {
         drop(held);
         assert_eq!(
             crate::test_utils::reserved_payload_bytes(&admission),
-            metadata_bytes
+            installed_payload
         );
         assert_eq!(admission.snapshot().inflight_operations, 0);
         let prepared = target
@@ -1154,7 +1153,7 @@ mod tests {
         assert_eq!(target.generation().unwrap().terminals.head().count, 0);
         assert_eq!(
             crate::test_utils::reserved_payload_bytes(&admission),
-            metadata_bytes
+            installed_payload
         );
         assert_eq!(admission.snapshot().inflight_operations, 0);
         source_store.shutdown().await.unwrap();
@@ -1176,9 +1175,10 @@ mod tests {
             (_source_dir, source, source_store),
             (_target_dir, target, target_store),
             admission,
-            metadata_bytes,
+            _metadata_bytes,
         ) = admitted_pair(&incarnation, config).await;
         install_chain(&source, &source_store);
+        let installed_payload = crate::test_utils::reserved_payload_bytes(&admission);
         let image = source.snapshot(admission.clone(), 60_000).await.unwrap();
         let before = target.generation().unwrap().state.audit_retention.clone();
         let prepared = target
@@ -1195,7 +1195,7 @@ mod tests {
         assert_eq!(target.generation().unwrap().state.audit_retention, before);
         assert_eq!(
             crate::test_utils::reserved_payload_bytes(&admission),
-            metadata_bytes
+            installed_payload
         );
         assert!(
             target
@@ -1211,11 +1211,11 @@ mod tests {
         );
         assert_eq!(
             crate::test_utils::reserved_payload_bytes(&admission),
-            metadata_bytes
+            installed_payload
         );
         assert_eq!(
             crate::test_utils::reserved_payload_bytes(&admission),
-            metadata_bytes
+            installed_payload
         );
         let held = admission
             .reserve(operation_capacity.checked_sub(1 << 20).unwrap(), None)
@@ -1231,7 +1231,7 @@ mod tests {
         drop(held);
         assert_eq!(
             crate::test_utils::reserved_payload_bytes(&admission),
-            metadata_bytes
+            installed_payload
         );
         source_store.shutdown().await.unwrap();
         target_store.shutdown().await.unwrap();

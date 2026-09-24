@@ -268,6 +268,9 @@ struct State {
     usable: bool,
     pressured: bool,
     bytes: u64,
+    // Capacity unavailable to ordinary requests while an installed maintenance
+    // owner may need fresh resident/index leases to complete its work.
+    ordinary_protected: u64,
     operations: usize,
     next: u64,
     slots: Box<[ChargeSlot]>,
@@ -454,6 +457,7 @@ impl MemoryCore {
                 usable: true,
                 pressured: false,
                 bytes: prepared.base_bytes,
+                ordinary_protected: 0,
                 operations: 0,
                 next: 0,
                 slots: slots.into_boxed_slice(),
@@ -650,6 +654,34 @@ impl MemoryState {
     }
 }
 impl MemoryCore {
+    pub(crate) fn protect_ordinary(self: &Arc<Self>, bytes: u64) -> Result<OrdinaryProtection> {
+        let mut state = self.data.state.lock().unwrap_or_else(|p| p.into_inner());
+        self.data.refresh_stale(&mut state);
+        let protected = state.ordinary_protected.checked_add(bytes);
+        if !state.usable
+            || state.pressured
+            || protected.is_none_or(|protected| {
+                state.bytes.checked_add(protected).is_none_or(|total| {
+                    total > self.data.max_bytes
+                        || state
+                            .resident
+                            .checked_add(total)
+                            .is_none_or(|observed| observed >= self.data.high)
+                })
+            })
+        {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "node maintenance headroom unavailable",
+            ));
+        }
+        state.ordinary_protected = protected.expect("checked protected headroom");
+        Ok(OrdinaryProtection {
+            core: self.clone(),
+            bytes,
+        })
+    }
+
     pub fn snapshot(&self) -> AdmissionSnapshot {
         self.data.snapshot()
     }
@@ -696,6 +728,16 @@ impl MemoryCore {
                         .resident
                         .checked_add(total)
                         .is_none_or(|observed| observed >= self.data.high)
+                    || (kind == ChargeKind::Operation
+                        && total.checked_add(state.ordinary_protected).is_none_or(
+                            |protected_total| {
+                                protected_total > self.data.max_bytes
+                                    || state
+                                        .resident
+                                        .checked_add(protected_total)
+                                        .is_none_or(|observed| observed >= self.data.high)
+                            },
+                        ))
             })
         {
             return Err(ReserveKindError::Exhausted);
@@ -949,6 +991,24 @@ pub struct Reservation {
     slot: usize,
     id: u64,
 }
+/// An installed maintenance owner holds this guard for its full lifetime.
+/// Its bytes remain free for actual resident leases but ordinary reservations
+/// cannot consume them. It adds no physical charge of its own.
+pub(crate) struct OrdinaryProtection {
+    core: Arc<MemoryCore>,
+    bytes: u64,
+}
+impl Drop for OrdinaryProtection {
+    fn drop(&mut self) {
+        let mut state = self
+            .core
+            .data
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.ordinary_protected -= self.bytes;
+    }
+}
 impl Reservation {
     pub(crate) fn reserve_additional(&mut self, bytes: u64) -> Result<()> {
         let mut state = self
@@ -959,6 +1019,9 @@ impl Reservation {
             .unwrap_or_else(|p| p.into_inner());
         self.core.data.refresh_stale(&mut state);
         let total = state.bytes.checked_add(bytes);
+        let operation = state
+            .charge(self.slot, self.id)
+            .is_some_and(|charge| charge.kind == ChargeKind::Operation);
         if !state.usable
             || state.pressured
             || total.is_none_or(|total| {
@@ -967,6 +1030,16 @@ impl Reservation {
                         .resident
                         .checked_add(total)
                         .is_none_or(|observed| observed >= self.core.data.high)
+                    || (operation
+                        && total.checked_add(state.ordinary_protected).is_none_or(
+                            |protected_total| {
+                                protected_total > self.core.data.max_bytes
+                                    || state
+                                        .resident
+                                        .checked_add(protected_total)
+                                        .is_none_or(|observed| observed >= self.core.data.high)
+                            },
+                        ))
             })
         {
             return Err(Error::new(
@@ -1000,6 +1073,9 @@ impl Reservation {
             .charge(self.slot, self.id)
             .ok_or_else(|| Error::new(ErrorCode::Unavailable, "admission reservation absent"))?
             .bytes;
+        let operation = state
+            .charge(self.slot, self.id)
+            .is_some_and(|charge| charge.kind == ChargeKind::Operation);
         let total = state
             .bytes
             .checked_sub(previous)
@@ -1016,6 +1092,16 @@ impl Reservation {
                     .resident
                     .checked_add(total)
                     .is_none_or(|observed| observed >= self.core.data.high)
+                || (operation
+                    && total
+                        .checked_add(state.ordinary_protected)
+                        .is_none_or(|protected_total| {
+                            protected_total > self.core.data.max_bytes
+                                || state
+                                    .resident
+                                    .checked_add(protected_total)
+                                    .is_none_or(|observed| observed >= self.core.data.high)
+                        }))
             {
                 return Err(Error::new(
                     ErrorCode::ResourceExhausted,

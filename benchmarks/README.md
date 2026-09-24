@@ -43,8 +43,8 @@ Modes:
 | Mode | What runs |
 | --- | --- |
 | `raw` | Borrowed Rust HashMap lookup, no body clone, identity, index or durability |
-| `local` | Actual Database API and one OpenRaft voter backed by encrypted redb |
-| `replicated` | Three real OpenRaft voters, separate encrypted redb files, in-process transport |
+| `local` | Actual Database API and one OpenRaft voter backed by encrypted Kasumi storage |
+| `replicated` | Three real OpenRaft voters, separate encrypted Kasumi storage files, in-process transport |
 | `text` | Local engine with English and Japanese Tantivy indexes, including indexed writes |
 
 The replicated benchmark and server use the same explicit v1 Raft timing

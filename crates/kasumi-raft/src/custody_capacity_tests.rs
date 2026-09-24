@@ -35,6 +35,7 @@ fn visit_spool(
 #[tokio::test]
 async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens() -> Result<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let memory_probe = disk_memory.clone();
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = FaultBackend::new();
@@ -88,7 +89,16 @@ async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopen
         }
         assert!(head.commands > 4096 && head.audit > 8192);
         let mut builder = custody_records::Builder::new(&codec_scratch.clone(), head.clone())?;
-        visit_spool(&mut commands, |bytes| builder.command(bytes))?;
+        let mut commands_staged = 0u64;
+        visit_spool(&mut commands, |bytes| {
+            commands_staged += 1;
+            builder.command(bytes).with_context(|| {
+                format!(
+                    "staging custody command {commands_staged}; memory {:?}",
+                    memory_probe.snapshot()
+                )
+            })
+        })?;
         let mut sequence = 0u64;
         visit_spool(&mut audit, |bytes| {
             builder.audit(&sequence.to_be_bytes(), bytes)?;

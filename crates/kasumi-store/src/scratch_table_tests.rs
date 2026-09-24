@@ -98,7 +98,7 @@ fn exact_backend_publication_io_settlement_shrink_and_close_do_not_allocate() {
         let outcome = backend.close();
         assert_eq!(
             outcome.native_disposition(),
-            redb::BackendNativeDisposition::Drained
+            kasumi_kv::BackendNativeDisposition::Drained
         );
         outcome.into_result()
     });
@@ -108,7 +108,7 @@ fn exact_backend_publication_io_settlement_shrink_and_close_do_not_allocate() {
     assert_eq!(disk.snapshot().charged_bytes, 0);
     assert_eq!(disk.snapshot().live_files, 0);
     let (result, native) = backend.close().into_parts();
-    assert_eq!(native, redb::BackendNativeDisposition::Drained);
+    assert_eq!(native, kasumi_kv::BackendNativeDisposition::Drained);
     result.unwrap();
     assert!(owner.check_owner().is_err());
 }
@@ -139,7 +139,7 @@ fn rejected_resize_is_wholly_reserved_before_any_logical_or_physical_change() {
         Err(AdmissionError::CapacityDenied)
     );
     let (result, native) = backend.close().into_parts();
-    assert_eq!(native, redb::BackendNativeDisposition::Drained);
+    assert_eq!(native, kasumi_kv::BackendNativeDisposition::Drained);
     result.unwrap();
 }
 
@@ -170,7 +170,7 @@ fn exact_settlement_mismatch_fences_owner_without_allocating_or_returning_credit
     let (closed, allocations) = measure(|| backend.close());
     assert_eq!(
         closed.native_disposition(),
-        redb::BackendNativeDisposition::Retained
+        kasumi_kv::BackendNativeDisposition::Retained
     );
     let closed = closed.into_result();
     assert!(closed.is_err());
@@ -180,7 +180,7 @@ fn exact_settlement_mismatch_fences_owner_without_allocating_or_returning_credit
     for _ in 0..2 {
         let (outcome, allocations) = measure(|| backend.close());
         let (result, native) = outcome.into_parts();
-        assert_eq!(native, redb::BackendNativeDisposition::Retained);
+        assert_eq!(native, kasumi_kv::BackendNativeDisposition::Retained);
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
         assert_eq!(allocations, 0);
         let retained = owner.0.lock().unwrap();
@@ -225,7 +225,7 @@ fn explicit_scratch_close_retains_original_physical_failure_on_retry() {
     let disk =
         ScratchDisk::isolated_fixture(scratch_directory.path(), 16 << 20, fixture_memory.clone());
     let (owner, backend) = owner(&disk, 8 << 20);
-    let database = redb::Database::builder(owner.clone())
+    let database = kasumi_kv::Database::builder(owner.clone())
         .create_with_backend(backend)
         .unwrap();
     let table = EncryptedTable {
@@ -266,13 +266,13 @@ fn actual_spool_close_reports_native_drain_before_retiring_adapter_owner() {
     assert!(disk.snapshot().charged_bytes > 0);
     let (outcome, allocations) = measure(|| backend.close());
     let (result, native) = outcome.into_parts();
-    assert_eq!(native, redb::BackendNativeDisposition::Drained);
+    assert_eq!(native, kasumi_kv::BackendNativeDisposition::Drained);
     result.unwrap();
     assert_eq!(allocations, 0);
     assert!(owner.0.lock().unwrap().is_none());
     assert_eq!(disk.snapshot().live_files, 0);
     assert_eq!(disk.snapshot().charged_bytes, 0);
     let (result, native) = backend.close().into_parts();
-    assert_eq!(native, redb::BackendNativeDisposition::Drained);
+    assert_eq!(native, kasumi_kv::BackendNativeDisposition::Drained);
     result.unwrap();
 }

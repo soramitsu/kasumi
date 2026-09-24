@@ -9,7 +9,7 @@ use std::{collections::BTreeSet, sync::Arc};
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let path = directory.path().join("node.redb");
+    let path = directory.path().join("node.kv");
     let physical = common::PhysicalFixture::new(&path, Default::default());
     let provider = Arc::new(LocalKeyProvider::new([29; 32]));
     let context = RequestContext {

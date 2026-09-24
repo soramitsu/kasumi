@@ -2,7 +2,7 @@
 //! the temporary file; the random key dies with the final spool owner.
 use crate::{ScratchDisk, SecretKey};
 use chacha20poly1305::{KeyInit, Tag, XChaCha20Poly1305, XNonce, aead::AeadInPlace};
-use redb::BackendCloseOutcome;
+use kasumi_kv::BackendCloseOutcome;
 use sha2::{Digest, Sha256};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
@@ -568,7 +568,7 @@ mod tests {
         let outcome = spool.close_once();
         assert_eq!(
             outcome.native_disposition(),
-            redb::BackendNativeDisposition::Drained
+            kasumi_kv::BackendNativeDisposition::Drained
         );
         outcome.into_result().unwrap();
     }

@@ -36,7 +36,7 @@ zeroize = "=1.9.0"
 
 [dev-dependencies]
 kasumi-raft = { workspace = true, features = ["test-utils"] }
-redb = "4.2"
+kasumi-kv.workspace = true
 kasumi-engine = { path = ".", features = ["test-utils"] }
 kasumi-serving = { workspace = true, features = ["test-utils"] }
 openraft = { version = "=0.9.25", features = ["serde", "storage-v2"] }

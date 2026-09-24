@@ -116,7 +116,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         let path = fixture
             ._dir
             .path()
-            .join(format!("persistent/lineage-{hop}.redb"));
+            .join(format!("persistent/lineage-{hop}.kv"));
         let node = fixture
             .physical
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)

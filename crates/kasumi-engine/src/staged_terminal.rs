@@ -1,6 +1,6 @@
 //! Immutable terminal transaction rows. A logical view selects a prefix; durable
 //! rows beyond that prefix are never evidence that their command was applied.
-//! Reads open short point transactions and do not pin unrelated redb pages.
+//! Reads open short point transactions and do not pin unrelated KV values.
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{EncryptedTable, EncryptedTableBatch, ScratchDisk, TenantStore, WriteOp};
 use kasumi_types::*;
@@ -255,7 +255,7 @@ impl Source {
         Ok(result)
     }
 }
-/// This owner retains immutable rows, not an open redb read transaction. The
+/// This owner retains immutable rows, not an open KV read transaction. The
 /// selected count/root remain unchanged while new rows append to the namespace.
 #[derive(Clone)]
 pub(crate) struct View {
@@ -411,7 +411,7 @@ pub(crate) struct Builder {
 }
 impl Builder {
     // Keep uncommitted scratch work bounded independently of the full stream.
-    // The table itself has an admitted disk owner and an 8 MiB redb page cache.
+    // The table itself has an admitted disk owner and an admitted resident key index.
     const BATCH_BYTES: usize = EncryptedTableBatch::MAX_BYTES;
     const BATCH_ROWS: usize = EncryptedTableBatch::MAX_ENTRIES / 2;
 

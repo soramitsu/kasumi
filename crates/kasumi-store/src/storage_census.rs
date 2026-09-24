@@ -2,7 +2,7 @@
 //!
 //! Each occupied cell owns its own resident lease, separate from its actual
 //! payload. Initial provider bookkeeping admits the complete fixed slot array.
-//! Owner backing is not a bound for redb caches, transactions, callback workspaces
+//! Owner backing is not a bound for index versions, transactions, callback workspaces
 //! or opaque diagnostics; those need their own concrete workspace plans.
 use crate::{DiskMemoryLease, NodeDiskMemoryAdmission, disk_memory};
 use std::{

@@ -134,7 +134,7 @@ fn main() -> anyhow::Result<()> {
     }
     let evidence = json!({"mechanism":"imbl 7.0.1 immutable-generation leaf updates; identical RandomState cloned across variants",
         "documents":DOCUMENTS,"updates_per_sample":UPDATES,"samples":SAMPLES,"architecture":std::env::consts::ARCH,"os":std::env::consts::OS,
-        "limitations":"Microbenchmark excludes validation, Raft, redb durability and index updates. Timing is exploratory, not publication capacity evidence; inspect competing_work metadata. RandomState is identical within a run but randomized between runs.",
+        "limitations":"Microbenchmark excludes validation, Raft, KV durability and index updates. Timing is exploratory, not publication capacity evidence; inspect competing_work metadata. RandomState is identical within a run but randomized between runs.",
         "competing_work":std::env::var("KASUMI_MAP_BENCH_CONTEXT").unwrap_or_else(|_| "Machine isolation was not asserted; record concurrent workloads separately.".into()),
         "results":results,"untimed_deep_clone_diagnostics":clone_counts});
     if let Some(parent) = std::path::Path::new(&output).parent() {

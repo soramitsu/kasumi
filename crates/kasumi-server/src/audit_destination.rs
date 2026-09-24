@@ -138,7 +138,7 @@ mod tests {
         let physical =
             crate::runtime_storage_fixtures::physical(directory.path(), Default::default())
                 .unwrap();
-        let path = directory.path().join("persistent/node.redb");
+        let path = directory.path().join("persistent/node.kv");
         let provider = Arc::new(LocalKeyProvider::new([73; 32]));
         let node = physical
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)

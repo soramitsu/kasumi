@@ -3,7 +3,7 @@ use super::*;
 /// A stable database root with access rechecked for every decrypted record.
 pub struct TenantReadView {
     store: Arc<TenantStore>,
-    transaction: redb::ReadTransaction,
+    transaction: kasumi_kv::ReadTransaction,
 }
 impl TenantStore {
     pub fn read_view(self: &Arc<Self>) -> Result<TenantReadView> {
@@ -165,7 +165,7 @@ pub(crate) fn validate_replacements(
 }
 
 pub(crate) fn replace_domain(
-    tx: &redb::WriteTransaction,
+    tx: &kasumi_kv::WriteTransaction,
     store: &TenantStore,
     replacements: &[(&str, &EncryptedTable)],
 ) -> Result<()> {

@@ -153,7 +153,7 @@ impl Fixture {
                 kasumi_store::private_files::create_directory(&directory).unwrap();
                 (
                     id,
-                    common::PhysicalFixture::new(&directory.join("node.redb"), Default::default()),
+                    common::PhysicalFixture::new(&directory.join("node.kv"), Default::default()),
                 )
             })
             .collect();
@@ -210,12 +210,12 @@ impl Fixture {
         for id in 1..=3 {
             let node = (if create {
                 self.physical[&id].storage.create_new(
-                    self.root.path().join(id.to_string()).join("node.redb"),
+                    self.root.path().join(id.to_string()).join("node.kv"),
                     kasumi_store::test_utils::NODE_STORE_ID,
                 )
             } else {
                 self.physical[&id].storage.open_existing(
-                    self.root.path().join(id.to_string()).join("node.redb"),
+                    self.root.path().join(id.to_string()).join("node.kv"),
                     kasumi_store::test_utils::NODE_STORE_ID,
                 )
             })

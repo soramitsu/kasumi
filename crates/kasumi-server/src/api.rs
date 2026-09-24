@@ -452,7 +452,7 @@ mod tests {
                 crate::runtime_storage_fixtures::physical(dir.path(), Default::default()).unwrap();
             let node = physical
                 .create_new(
-                    dir.path().join("persistent/node.redb"),
+                    dir.path().join("persistent/node.kv"),
                     kasumi_store::test_utils::NODE_STORE_ID,
                 )
                 .unwrap();
@@ -1930,7 +1930,7 @@ name: "docs".into(),
         let node = fixture
             .physical
             .create_new(
-                fixture._dir.path().join("persistent/control.redb"),
+                fixture._dir.path().join("persistent/control.kv"),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();

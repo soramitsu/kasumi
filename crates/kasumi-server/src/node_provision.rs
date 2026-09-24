@@ -85,7 +85,7 @@ mod tests {
             min_free_bytes: 0,
         };
         let persistent = crate::persistent_disk::fixture_config(&directory.path().join("data"));
-        let path = directory.path().join("data/node.redb");
+        let path = directory.path().join("data/node.kv");
         let database_id = Uuid::new_v4();
         let storage = crate::runtime_memory::RuntimeStorage::isolated_fixture(
             Default::default(),

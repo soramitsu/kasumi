@@ -282,7 +282,7 @@ async fn benchmark(
     }
     config.persistent_disk.roots =
         std::collections::BTreeMap::from([("data".into(), persistent.clone())]);
-    config.database_path = persistent.join("node.redb");
+    config.database_path = persistent.join("node.kv");
     config.scratch_disk.directory = path.join("scratch");
     config.auth = AuthConfig {
         issuer: issuer_url.clone(),

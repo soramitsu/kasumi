@@ -217,7 +217,7 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
             crate::runtime_storage_fixtures::physical(&replica_root, Default::default()).unwrap();
         let node = physical
             .create_new(
-                replica_root.join("persistent/node.redb"),
+                replica_root.join("persistent/node.kv"),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();

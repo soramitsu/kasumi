@@ -845,11 +845,11 @@ async fn database(
     Arc<kasumi_engine::SecurityAudit>,
 ) {
     let dir = kasumi_store::test_utils::private_tempdir().unwrap();
-    let physical = common::PhysicalFixture::new(&dir.path().join("node.redb"), Default::default());
+    let physical = common::PhysicalFixture::new(&dir.path().join("node.kv"), Default::default());
     let node = physical
         .storage
         .create_new(
-            dir.path().join("node.redb"),
+            dir.path().join("node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -1467,11 +1467,11 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
 
     let target_dir = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&target_dir.path().join("node.redb"), Default::default());
+        common::PhysicalFixture::new(&target_dir.path().join("node.kv"), Default::default());
     let node = physical
         .storage
         .create_new(
-            target_dir.path().join("node.redb"),
+            target_dir.path().join("node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -1602,11 +1602,11 @@ async fn durable_engine_worker() {
     };
     let root = std::path::PathBuf::from(root);
     let physical =
-        common::PhysicalFixture::new(&root.join("persistent/node.redb"), Default::default());
+        common::PhysicalFixture::new(&root.join("persistent/node.kv"), Default::default());
     let node = physical
         .storage
         .create_new(
-            root.join("persistent/node.redb"),
+            root.join("persistent/node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -1692,11 +1692,11 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
     let expected: WriteReceipt =
         serde_json::from_slice(&std::fs::read(dir.path().join("ack.json")).unwrap()).unwrap();
     let physical =
-        common::PhysicalFixture::new(&dir.path().join("persistent/node.redb"), Default::default());
+        common::PhysicalFixture::new(&dir.path().join("persistent/node.kv"), Default::default());
     let node = physical
         .storage
         .open_existing(
-            dir.path().join("persistent/node.redb"),
+            dir.path().join("persistent/node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();

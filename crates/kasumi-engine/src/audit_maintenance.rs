@@ -1,5 +1,5 @@
 //! One reserved archive workspace per node, shared by every tenant.
-use crate::admission::{NodeAdmission, Reservation};
+use crate::admission::{NodeAdmission, OrdinaryProtection, Reservation};
 use kasumi_types::{AuditRetentionBudget, Error, ErrorCode, Result};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
@@ -9,6 +9,7 @@ pub(crate) struct NodeAuditMaintenance {
     pub(crate) preparation: Arc<tokio::sync::Semaphore>,
     pub(crate) applying: Mutex<()>,
     _workspace: Reservation,
+    _ordinary_protection: OrdinaryProtection,
 }
 
 static POOLS: LazyLock<Mutex<std::collections::HashMap<usize, Weak<NodeAuditMaintenance>>>> =
@@ -31,10 +32,15 @@ impl NodeAuditMaintenance {
         }
         let mut workspace = admission.reserve(Self::WORKSPACE_BYTES, None)?;
         workspace.retain_workspace();
+        // The workspace charge alone would let ordinary requests reserve the
+        // final byte. Keep equivalent headroom for native KV's transient write
+        // staging and index leases when the archive worker runs later.
+        let protection = admission.memory().protect_ordinary(Self::WORKSPACE_BYTES)?;
         let pool = Arc::new(Self {
             preparation: Arc::new(tokio::sync::Semaphore::new(1)),
             applying: Mutex::new(()),
             _workspace: workspace,
+            _ordinary_protection: protection,
         });
         pools.insert(key, Arc::downgrade(&pool));
         Ok(pool)
@@ -52,6 +58,36 @@ pub struct AuditMaintenanceStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::admission::AdmissionConfig;
+
+    #[test]
+    fn ordinary_saturation_keeps_admitted_resident_headroom_until_pool_drops() {
+        let total = NodeAuditMaintenance::WORKSPACE_BYTES * 4;
+        let admission = NodeAdmission::with_fixed_memory(
+            AdmissionConfig {
+                max_inflight_bytes: Some(total),
+                ..Default::default()
+            },
+            2 << 30,
+            0,
+        )
+        .unwrap();
+        let pool = NodeAuditMaintenance::install(&admission).unwrap();
+        let ordinary = admission
+            .reserve(
+                total - admission.snapshot().reserved_bytes - NodeAuditMaintenance::WORKSPACE_BYTES,
+                None,
+            )
+            .unwrap();
+        assert!(admission.reserve(1, None).is_err());
+        let resident = admission.reserve_resident(4096).unwrap();
+        assert!(admission.reserve(1, None).is_err());
+        drop(resident);
+        drop(ordinary);
+        drop(pool);
+        let remaining = total - admission.snapshot().reserved_bytes;
+        assert!(admission.reserve(remaining, None).is_ok());
+    }
 
     #[tokio::test]
     async fn tenants_share_capacity_and_retained_workers_keep_it_owned() {

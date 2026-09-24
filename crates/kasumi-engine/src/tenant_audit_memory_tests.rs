@@ -59,7 +59,7 @@ async fn audit_maintenance_rejects_foreign_equal_policy_core_and_keeps_exact_poo
         &scratch,
         admission.clone(),
     )?;
-    let node = physical.create_new(directory.path().join("persistent/node.redb"), NODE_STORE_ID)?;
+    let node = physical.create_new(directory.path().join("persistent/node.kv"), NODE_STORE_ID)?;
     let store = TenantStore::initialize_catalog_fixture(
         node.clone(),
         "maintenance".into(),

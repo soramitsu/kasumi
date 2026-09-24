@@ -43,7 +43,7 @@ impl Fixture {
         let stores = TenantStorageSet::initialize_catalogs(
             storage
                 .create_new(
-                    storage.path("authority-4.redb"),
+                    storage.path("authority-4.kv"),
                     kasumi_store::test_utils::NODE_STORE_ID,
                 )
                 .unwrap(),

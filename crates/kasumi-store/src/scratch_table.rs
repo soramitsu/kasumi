@@ -1,16 +1,14 @@
-//! Temporary point-addressed staging. Database pages, including keys and indexes,
-//! are encrypted in an anonymous spool; only a bounded page cache is resident.
+//! Temporary point-addressed staging. Transaction frames, including keys and
+//! values, are encrypted in an anonymous spool; the ordered key index is resident.
 use crate::{EncryptedSpool, ScratchDisk};
 use anyhow::{Result, ensure};
+use kasumi_kv::{AdmissionError, OwnerFailed, StorageAdmission, StorageBackend, TableDefinition};
 use kasumi_types::drain::DrainResult;
-use redb::{
-    AdmissionError, OwnerFailed, ReadableTable, StorageAdmission, StorageBackend, TableDefinition,
-};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("staged");
 
-/// Both redb capabilities retain this exact anonymous file; no independently
+/// Both database capabilities retain this exact anonymous file; no independently
 /// constructed governor can admit a different spool or turn errors into capacity.
 #[derive(Debug)]
 struct Owner(Mutex<Option<EncryptedSpool>>);
@@ -36,7 +34,7 @@ impl StorageAdmission for Owner {
     fn reserve_workspace(
         &self,
         bytes: u64,
-    ) -> std::result::Result<Box<dyn redb::ResidentLease>, AdmissionError> {
+    ) -> std::result::Result<Box<dyn kasumi_kv::ResidentLease>, AdmissionError> {
         self.with(|spool| {
             let bytes = crate::disk_memory::add(
                 bytes,
@@ -52,7 +50,7 @@ impl StorageAdmission for Owner {
                     return Err(error);
                 }
             };
-            Ok(Box::new(lease) as Box<dyn redb::ResidentLease>)
+            Ok(Box::new(lease) as Box<dyn kasumi_kv::ResidentLease>)
         })
         .map_err(|error| {
             if error.kind() == io::ErrorKind::OutOfMemory {
@@ -127,7 +125,7 @@ impl StorageBackend for Backend {
             spool.write_all(bytes)
         })
     }
-    fn close(&self) -> redb::BackendCloseOutcome {
+    fn close(&self) -> kasumi_kv::BackendCloseOutcome {
         let mut owner = self.0.0.lock().unwrap_or_else(|poisoned| {
             let owner = poisoned.into_inner();
             if let Some(spool) = owner.as_ref() {
@@ -137,10 +135,10 @@ impl StorageBackend for Backend {
         });
         let Some(spool) = owner.as_mut() else {
             // Only a positively drained prior call removes this exact spool.
-            return redb::BackendCloseOutcome::drained(Ok(()));
+            return kasumi_kv::BackendCloseOutcome::drained(Ok(()));
         };
         let outcome = spool.close_once();
-        if outcome.native_disposition() == redb::BackendNativeDisposition::Drained {
+        if outcome.native_disposition() == kasumi_kv::BackendNativeDisposition::Drained {
             // Native retirement precedes key/buffer retirement and its charge.
             // An uncertain close keeps the original spool installed here.
             drop(owner.take());
@@ -155,7 +153,7 @@ pub struct EncryptedTable {
 /// aborts its pending writes; a committed batch remains private until its caller
 /// publishes the enclosing verified namespace.
 pub struct EncryptedTableBatch {
-    transaction: redb::WriteTransaction,
+    transaction: kasumi_kv::WriteTransaction,
     bytes: usize,
     entries: usize,
     failed: bool,
@@ -200,9 +198,8 @@ impl EncryptedTable {
             disk,
             max_disk_bytes,
         )?))));
-        let mut builder = redb::Database::builder(owner.clone());
-        builder.set_cache_size(8 << 20);
-        let database = builder.create_with_backend(Backend(owner))?;
+        let database =
+            kasumi_kv::Database::builder(owner.clone()).create_with_backend(Backend(owner))?;
         let tx = database.begin_write()?;
         tx.open_table(TABLE)?;
         tx.commit()?;

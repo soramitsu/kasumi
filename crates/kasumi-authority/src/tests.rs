@@ -30,8 +30,7 @@ impl PhysicalFixture {
     fn new() -> anyhow::Result<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
-        let persistent =
-            kasumi_store::NodeDisk::fixture_config(directory.path().join("node.redb"))?;
+        let persistent = kasumi_store::NodeDisk::fixture_config(directory.path().join("node.kv"))?;
         let scratch = kasumi_store::ScratchDiskConfig {
             directory: scratch_directory.path().to_owned(),
             max_bytes: 256 << 30,
@@ -226,7 +225,7 @@ impl Fixture {
             let storage = PhysicalFixture::new().unwrap();
             let node = storage
                 .create_new(
-                    storage.path(format!("authority-{id}.redb")),
+                    storage.path(format!("authority-{id}.kv")),
                     kasumi_store::test_utils::NODE_STORE_ID,
                 )
                 .unwrap();
@@ -420,7 +419,7 @@ impl Fixture {
         for id in member_ids {
             let node = self.physical[&id]
                 .open_existing(
-                    self.physical[&id].path(format!("authority-{id}.redb")),
+                    self.physical[&id].path(format!("authority-{id}.kv")),
                     kasumi_store::test_utils::NODE_STORE_ID,
                 )
                 .unwrap();
@@ -837,7 +836,7 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     let lease_boot = boot(&fixture, source, 1);
     let gate = ServingGate::new(acquire(&fixture, &service, &lease_boot).await).unwrap();
     let storage = PhysicalFixture::new().unwrap();
-    let path = storage.path("separate-municipality.redb");
+    let path = storage.path("separate-municipality.kv");
     let node = storage
         .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
         .unwrap();

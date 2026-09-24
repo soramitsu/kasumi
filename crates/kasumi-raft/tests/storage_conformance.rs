@@ -26,7 +26,7 @@ impl StoreBuilder<TypeConfig, LogStore, StateMachine, StoreScope> for Builder {
                 kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
             let dir = kasumi_store::test_utils::private_tempdir()?;
             let store =
-                common::store(&dir.path().join("node.redb"), true, fixture_scratch.clone()).await?;
+                common::store(&dir.path().join("node.kv"), true, fixture_scratch.clone()).await?;
             let log = LogStore::open(store.clone(), 1).await?;
             let machine = StateMachine::open(
                 store,
@@ -67,7 +67,7 @@ async fn log_vote_and_committed_cursor_survive_full_reopen() -> Result<()> {
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let dir = kasumi_store::test_utils::private_tempdir()?;
-    let path = dir.path().join("node.redb");
+    let path = dir.path().join("node.kv");
     {
         let store = common::store(&path, true, fixture_scratch.clone()).await?;
         let mut log = LogStore::open(store, 1).await?;
@@ -95,7 +95,7 @@ async fn snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable() -
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let dir = kasumi_store::test_utils::private_tempdir()?;
-    let path = dir.path().join("node.redb");
+    let path = dir.path().join("node.kv");
     let snapshot_meta;
     {
         let store = common::store(&path, true, fixture_scratch.clone()).await?;

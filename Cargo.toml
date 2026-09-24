@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/kasumi-clock", "crates/kasumi-types", "crates/kasumi-serving", "crates/kasumi-authority", "crates/kasumi-store", "crates/kasumi-query", "crates/kasumi-raft", "crates/kasumi-engine", "crates/kasumi-transport", "crates/kasumi-client", "crates/kasumi-server", "crates/kasumi-bench"]
-exclude = ["vendor/openraft-0.9.25", "vendor/redb-4.2.0", "vendor/bitmaps-3.2.1", "vendor/lru-0.16.4", "vendor/serde_json-1.0.151", "vendor/rmcp-3.2.0"]
+members = ["crates/kasumi-clock", "crates/kasumi-types", "crates/kasumi-serving", "crates/kasumi-authority", "crates/kasumi-kv", "crates/kasumi-store", "crates/kasumi-query", "crates/kasumi-raft", "crates/kasumi-engine", "crates/kasumi-transport", "crates/kasumi-client", "crates/kasumi-server", "crates/kasumi-bench"]
+exclude = ["vendor/openraft-0.9.25", "vendor/bitmaps-3.2.1", "vendor/lru-0.16.4", "vendor/serde_json-1.0.151", "vendor/rmcp-3.2.0"]
 
 [workspace.package]
 version = "0.1.0"
@@ -27,6 +27,7 @@ kasumi-serving = { path = "crates/kasumi-serving" }
 kasumi-authority = { path = "crates/kasumi-authority" }
 kasumi-types = { path = "crates/kasumi-types" }
 kasumi-store = { path = "crates/kasumi-store" }
+kasumi-kv = { path = "crates/kasumi-kv" }
 kasumi-query = { path = "crates/kasumi-query" }
 kasumi-raft = { path = "crates/kasumi-raft" }
 kasumi-engine = { path = "crates/kasumi-engine" }
@@ -41,7 +42,6 @@ codegen-units = 1
 # vendor/README.md. Keep the upstream versions so scanners retain visibility.
 [patch.crates-io]
 openraft = { path = "vendor/openraft-0.9.25/openraft" }
-redb = { path = "vendor/redb-4.2.0" }
 bitmaps = { path = "vendor/bitmaps-3.2.1" }
 lru = { path = "vendor/lru-0.16.4" }
 serde_json = { path = "vendor/serde_json-1.0.151" }

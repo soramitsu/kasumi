@@ -145,7 +145,7 @@ mod tests {
         let directory = crate::test_utils::private_tempdir().unwrap();
         let store = TenantStore::initialize_catalog_fixture(
             crate::NodeStore::create_new_fixture(
-                directory.path().join("node.redb"),
+                directory.path().join("node.kv"),
                 crate::test_utils::NODE_STORE_ID,
                 fixture_memory.clone(),
                 fixture_scratch.clone(),
@@ -208,7 +208,7 @@ mod tests {
         let disk = archive.disk.clone();
         let before_close = disk.snapshot();
         assert_eq!(before_close.open_files, 1);
-        let node_path = directory.path().join("node.redb");
+        let node_path = directory.path().join("node.kv");
         let node_identity = private_files::file_identity(&node_path).unwrap();
         let node_bytes = std::fs::read(&node_path).unwrap();
         store.shutdown().await.unwrap();

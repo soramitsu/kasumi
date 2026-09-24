@@ -3,7 +3,6 @@ use crate::{
     NodeDiskMemoryAdmission,
     test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry},
 };
-use redb::ReadableDatabase;
 use std::{
     io::Read,
     time::{Duration, Instant},
@@ -30,7 +29,7 @@ fn retained_reader_keeps_one_snapshot_and_admitted_bytes_through_close() {
     assert!(reader.catalog_bytes(hash, 64).unwrap().is_none());
     {
         let state = opening.registration.owner().state.lock();
-        let transaction = state.redb.database().unwrap().begin_write().unwrap();
+        let transaction = state.engine.database().unwrap().begin_write().unwrap();
         {
             let mut catalog = transaction.open_table(crate::CATALOG).unwrap();
             catalog
@@ -94,7 +93,7 @@ fn inspected_reader_failure_retires_directly_after_successful_close() {
     let hash = [9u8; 32];
     {
         let state = opening.registration.owner().state.lock();
-        let transaction = state.redb.database().unwrap().begin_write().unwrap();
+        let transaction = state.engine.database().unwrap().begin_write().unwrap();
         {
             let mut catalog = transaction.open_table(crate::CATALOG).unwrap();
             catalog
@@ -114,7 +113,7 @@ fn inspected_reader_failure_retires_directly_after_successful_close() {
         let report = failed_read.report();
         assert!(matches!(
             report.read_failure(),
-            TerminalObservation::Returned(Err(redb::BoundedReadError::BoundExceeded))
+            TerminalObservation::Returned(Err(kasumi_kv::BoundedReadError::BoundExceeded))
         ));
     }
     assert_eq!(failed_read.retire(), StorageCensusDisposition::Retired);
@@ -140,7 +139,7 @@ fn inspected_reader_failure_retires_directly_after_successful_close() {
         // Test the queued begin failure after its database became unavailable.
         let mut state = opening.registration.owner().state.lock();
         assert_eq!(
-            state.redb.close().settlement(),
+            state.engine.close().settlement(),
             DatabaseOpenSettlement::Closed
         );
     }
@@ -173,7 +172,7 @@ fn owned_reader_point_and_range_bytes_keep_exact_credit_after_close() {
     let value = b"encrypted value";
     {
         let state = opening.registration.owner().state.lock();
-        let transaction = state.redb.database().unwrap().begin_write().unwrap();
+        let transaction = state.engine.database().unwrap().begin_write().unwrap();
         {
             let mut records = transaction.open_table(crate::RECORDS).unwrap();
             records.insert(key.as_slice(), value.as_slice()).unwrap();
@@ -447,16 +446,18 @@ fn aborted_table_body_is_not_a_ready_publication_proof() {
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     {
         let state = opening.registration.owner().state.lock();
-        let tx = state.redb.database().unwrap().begin_write().unwrap();
-        tx.open_table(redb::TableDefinition::<u64, u64>::new("wrapped_keys_v1"))
-            .unwrap();
+        let tx = state.engine.database().unwrap().begin_write().unwrap();
+        tx.open_table(kasumi_kv::TableDefinition::<u64, u64>::new(
+            "wrapped_keys_v1",
+        ))
+        .unwrap();
         tx.commit().unwrap();
     }
     let tables = opening.queue_node_tables().unwrap();
     assert_eq!(tables.run(), NodeWriterPhase::Finished);
     assert_eq!(
         tables.report().terminal().unwrap().operation(),
-        Some(redb::WriteTerminalOperation::Abort)
+        Some(kasumi_kv::WriteTerminalOperation::Abort)
     );
     assert!(opening.publish_ready_after_tables(&tables).is_err());
     assert!(matches!(
@@ -575,7 +576,7 @@ fn registered_node_tables_retains_actual_transaction_and_reports_through_physica
         let terminal = report.terminal().unwrap();
         assert_eq!(
             terminal.operation(),
-            Some(redb::WriteTerminalOperation::Commit)
+            Some(kasumi_kv::WriteTerminalOperation::Commit)
         );
         assert!(terminal.disposal_complete());
         assert!(matches!(
@@ -585,7 +586,7 @@ fn registered_node_tables_retains_actual_transaction_and_reports_through_physica
     }
     {
         let state = opening.registration.owner().state.lock();
-        let read = state.redb.database().unwrap().begin_read().unwrap();
+        let read = state.engine.database().unwrap().begin_read().unwrap();
         read.open_table(crate::CATALOG).unwrap();
         read.open_table(crate::RECORDS).unwrap();
     }
@@ -595,7 +596,7 @@ fn registered_node_tables_retains_actual_transaction_and_reports_through_physica
         StorageCensusDisposition::Retained
     );
     assert_eq!(
-        opening.report().redb().settlement(),
+        opening.report().engine().settlement(),
         DatabaseOpenSettlement::Closed
     );
     // The returned report's real request owner remains charged after physical
@@ -616,7 +617,7 @@ fn explicit_close_waits_for_the_actual_reader_then_retries_without_consuming_the
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let reader = {
         let state = opening.registration.owner().state.lock();
-        state.redb.database().unwrap().begin_read().unwrap()
+        state.engine.database().unwrap().begin_read().unwrap()
     };
     assert_eq!(
         opening.close().unwrap(),
@@ -632,7 +633,7 @@ fn explicit_close_waits_for_the_actual_reader_then_retries_without_consuming_the
     assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
     assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
     assert_eq!(
-        opening.report().redb().settlement(),
+        opening.report().engine().settlement(),
         DatabaseOpenSettlement::Closed
     );
     assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
@@ -718,9 +719,11 @@ fn actual_body_error_is_retained_before_abort_and_disposal_without_replay() {
         // Produce a real incompatible table with the ordinary engine. The
         // NodeTables adapter below takes its actual TableError and abort path.
         let state = opening.registration.owner().state.lock();
-        let tx = state.redb.database().unwrap().begin_write().unwrap();
-        tx.open_table(redb::TableDefinition::<u64, u64>::new("wrapped_keys_v1"))
-            .unwrap();
+        let tx = state.engine.database().unwrap().begin_write().unwrap();
+        tx.open_table(kasumi_kv::TableDefinition::<u64, u64>::new(
+            "wrapped_keys_v1",
+        ))
+        .unwrap();
         tx.commit().unwrap();
     }
     let writer = opening.queue_node_tables().unwrap();
@@ -734,7 +737,7 @@ fn actual_body_error_is_retained_before_abort_and_disposal_without_replay() {
         assert!(report.terminal().unwrap().disposal_complete());
         assert_eq!(
             report.terminal().unwrap().operation(),
-            Some(redb::WriteTerminalOperation::Abort)
+            Some(kasumi_kv::WriteTerminalOperation::Abort)
         );
         std::ptr::from_ref(error)
     };
@@ -769,9 +772,11 @@ fn real_commit_and_abort_failures_keep_actual_request_after_all_facades_cancel()
         assert_eq!(opening.open(), NodeOpeningPhase::Open);
         if body_error {
             let state = opening.registration.owner().state.lock();
-            let tx = state.redb.database().unwrap().begin_write().unwrap();
-            tx.open_table(redb::TableDefinition::<u64, u64>::new("wrapped_keys_v1"))
-                .unwrap();
+            let tx = state.engine.database().unwrap().begin_write().unwrap();
+            tx.open_table(kasumi_kv::TableDefinition::<u64, u64>::new(
+                "wrapped_keys_v1",
+            ))
+            .unwrap();
             tx.commit().unwrap();
         }
         let writer = opening.queue_node_tables().unwrap();
@@ -789,14 +794,14 @@ fn real_commit_and_abort_failures_keep_actual_request_after_all_facades_cancel()
             assert_eq!(
                 terminal.operation(),
                 Some(if body_error {
-                    redb::WriteTerminalOperation::Abort
+                    kasumi_kv::WriteTerminalOperation::Abort
                 } else {
-                    redb::WriteTerminalOperation::Commit
+                    kasumi_kv::WriteTerminalOperation::Commit
                 })
             );
             assert_eq!(
                 terminal.settlement(),
-                redb::WriteTerminalSettlement::Retained
+                kasumi_kv::WriteTerminalSettlement::Retained
             );
             assert!(!terminal.disposal_complete());
             let TerminalObservation::Returned(Err(error)) = terminal.terminal() else {
@@ -880,7 +885,7 @@ fn abandoned_failed_open_keeps_original_after_positive_close_until_explicit_repo
     let retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
     {
         let report = retained.report();
-        assert_eq!(report.redb().settlement(), DatabaseOpenSettlement::Closed);
+        assert_eq!(report.engine().settlement(), DatabaseOpenSettlement::Closed);
         let TerminalObservation::Returned(Err(error)) = report.acquisition() else {
             panic!("original acquisition error lost");
         };
@@ -892,7 +897,7 @@ fn abandoned_failed_open_keeps_original_after_positive_close_until_explicit_repo
 
 #[test]
 fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
-    use redb::StorageBackend;
+    use kasumi_kv::StorageBackend;
     let directory = private_tempdir().unwrap();
     let path = directory.path().join("new-close-error.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
@@ -930,12 +935,12 @@ fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
             !report.state.outcomes_released,
             "first close must invalidate relinquishment before producing either error"
         );
-        let redb = report.redb();
+        let engine = report.engine();
         assert_eq!(
-            redb.settlement(),
+            engine.settlement(),
             DatabaseOpenSettlement::DrainedWithFailure
         );
-        let close = redb.database_close().unwrap();
+        let close = engine.database_close().unwrap();
         let TerminalObservation::Returned(Err(shutdown)) = close.shutdown() else {
             panic!("new original shutdown failure absent");
         };
@@ -976,12 +981,12 @@ fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
         {
             let report = observed.report();
             assert!(!report.state.outcomes_released);
-            let redb = report.redb();
+            let engine = report.engine();
             assert_eq!(
-                redb.settlement(),
+                engine.settlement(),
                 DatabaseOpenSettlement::DrainedWithFailure
             );
-            let close = redb.database_close().unwrap();
+            let close = engine.database_close().unwrap();
             let TerminalObservation::Returned(Err(error)) = close.shutdown() else {
                 panic!("close original was erased");
             };
@@ -1062,9 +1067,11 @@ fn busy_worker_cannot_acknowledge_the_body_error_that_it_has_not_produced_yet() 
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     {
         let state = opening.registration.owner().state.lock();
-        let tx = state.redb.database().unwrap().begin_write().unwrap();
-        tx.open_table(redb::TableDefinition::<u64, u64>::new("wrapped_keys_v1"))
-            .unwrap();
+        let tx = state.engine.database().unwrap().begin_write().unwrap();
+        tx.open_table(kasumi_kv::TableDefinition::<u64, u64>::new(
+            "wrapped_keys_v1",
+        ))
+        .unwrap();
         tx.commit().unwrap();
     }
     let first = opening.queue_node_tables().unwrap();
@@ -1138,8 +1145,8 @@ fn explicit_failed_close_requires_original_acknowledgement_then_accepted_disk_ce
     let retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
     let (shutdown, backend, original_native, acknowledgement) = {
         let report = retained.report();
-        let redb = report.redb();
-        let close = redb.database_close().unwrap();
+        let engine = report.engine();
+        let close = engine.database_close().unwrap();
         let TerminalObservation::Returned(Err(shutdown)) = close.shutdown() else {
             panic!("shutdown error absent")
         };
@@ -1175,11 +1182,11 @@ fn explicit_failed_close_requires_original_acknowledgement_then_accepted_disk_ce
     {
         let report = retained.report();
         assert_eq!(
-            report.redb().settlement(),
+            report.engine().settlement(),
             DatabaseOpenSettlement::FailedDisposed
         );
-        let redb = report.redb();
-        let close = redb.database_close().unwrap();
+        let engine = report.engine();
+        let close = engine.database_close().unwrap();
         let TerminalObservation::Returned(Err(error)) = close.shutdown() else {
             panic!("original shutdown lost")
         };
@@ -1217,8 +1224,8 @@ fn explicit_failed_close_requires_original_acknowledgement_then_accepted_disk_ce
     );
     {
         let report = retained.report();
-        let redb = report.redb();
-        let close = redb.database_close().unwrap();
+        let engine = report.engine();
+        let close = engine.database_close().unwrap();
         let TerminalObservation::Returned(Err(error)) = close.backend() else {
             panic!("error released before final facade")
         };
@@ -1275,7 +1282,7 @@ fn failed_acknowledgement_cannot_cross_memory_cores_with_equal_public_owner_ids(
         io::ErrorKind::InvalidInput
     );
     assert_eq!(
-        second.report().redb().settlement(),
+        second.report().engine().settlement(),
         DatabaseOpenSettlement::DrainedWithFailure
     );
     assert_eq!(
@@ -1341,15 +1348,15 @@ fn disposed_failed_owner_resumes_after_actual_transfer_contention_without_replay
         let originals = {
             let report = retained.report();
             assert_eq!(
-                report.redb().settlement(),
+                report.engine().settlement(),
                 DatabaseOpenSettlement::FailedDisposed
             );
             assert!(matches!(
-                report.redb().failed_disposal(),
+                report.engine().failed_disposal(),
                 TerminalObservation::Returned(Ok(()))
             ));
-            let redb = report.redb();
-            let close = redb.database_close().unwrap();
+            let engine = report.engine();
+            let close = engine.database_close().unwrap();
             let TerminalObservation::Returned(Err(shutdown)) = close.shutdown() else {
                 panic!("shutdown original missing")
             };
@@ -1379,8 +1386,8 @@ fn disposed_failed_owner_resumes_after_actual_transfer_contention_without_replay
             FailedOpeningRecovery::AwaitingDiskCensus
         );
         let report = retained.report();
-        let redb = report.redb();
-        let close = redb.database_close().unwrap();
+        let engine = report.engine();
+        let close = engine.database_close().unwrap();
         let TerminalObservation::Returned(Err(shutdown)) = close.shutdown() else {
             panic!("shutdown original changed")
         };
@@ -1392,7 +1399,7 @@ fn disposed_failed_owner_resumes_after_actual_transfer_contention_without_replay
             originals
         );
         assert!(matches!(
-            redb.failed_disposal(),
+            engine.failed_disposal(),
             TerminalObservation::Returned(Ok(()))
         ));
     });
@@ -1422,13 +1429,13 @@ fn unknown_native_opening_close_vetoes_acknowledgement_and_never_retries_the_han
     let retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
     let (backend, native_owner) = {
         let report = retained.report();
-        let redb = report.redb();
-        assert_eq!(redb.settlement(), DatabaseOpenSettlement::Retained);
+        let engine = report.engine();
+        assert_eq!(engine.settlement(), DatabaseOpenSettlement::Retained);
         assert_eq!(
-            redb.native_disposition(),
-            redb::BackendNativeDisposition::Retained
+            engine.native_disposition(),
+            kasumi_kv::BackendNativeDisposition::Retained
         );
-        let close = redb.database_close().unwrap();
+        let close = engine.database_close().unwrap();
         let TerminalObservation::Returned(Err(error)) = close.backend() else {
             panic!("original native close error absent")
         };
@@ -1454,15 +1461,15 @@ fn unknown_native_opening_close_vetoes_acknowledgement_and_never_retries_the_han
                 .is_err()
         );
         let report = retained.report();
-        let redb = report.redb();
-        let close = redb.database_close().unwrap();
+        let engine = report.engine();
+        let close = engine.database_close().unwrap();
         let TerminalObservation::Returned(Err(error)) = close.backend() else {
             panic!("original error erased")
         };
         assert_eq!(std::ptr::from_ref(error), backend);
         assert_eq!(report.state.file.retained_file_custody(), native_owner);
         assert!(matches!(
-            redb.failed_disposal(),
+            engine.failed_disposal(),
             TerminalObservation::NotEntered
         ));
         assert!(!report.state.outcomes_released);
@@ -1494,7 +1501,7 @@ fn private_opening_arc_is_admitted_before_any_prepared_owner_allocation() {
     )
     .unwrap();
     let former_charge = TestDiskMemory::required_reservation_bytes(former_backing).unwrap();
-    let layout = redb::Builder::retained_opening_allocation_layout().unwrap();
+    let layout = kasumi_kv::Builder::retained_opening_allocation_layout().unwrap();
     let proxy_charge = allocation::<u8>(u64::try_from(layout.size()).unwrap()).unwrap();
     let complete_charge =
         TestDiskMemory::required_reservation_bytes(add(former_backing, proxy_charge).unwrap())

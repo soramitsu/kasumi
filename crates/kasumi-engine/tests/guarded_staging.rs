@@ -201,7 +201,7 @@ async fn upload(db: &Database, original: &BeginStagedTransaction, chunk: &Staged
 #[tokio::test]
 async fn missing_stop_has_no_upload_lease_and_defeats_delayed_begin_after_encrypted_restart() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let path = directory.path().join("node.redb");
+    let path = directory.path().join("node.kv");
     let physical = common::PhysicalFixture::new(&path, Default::default());
     let (db, audit) = open(&physical, &path, Limits::default(), true).await;
     let (original, chunk) = original(&db, "missing");
@@ -267,8 +267,8 @@ async fn upload_stop_clears_payload_and_permanent_capacity_is_checked_without_ac
     let mut limits = Limits::default();
     limits.atomic.max_active_transactions = 1;
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
-    let (db, audit) = open(&physical, &directory.path().join("node.redb"), limits, true).await;
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
+    let (db, audit) = open(&physical, &directory.path().join("node.kv"), limits, true).await;
     let (first, chunk) = original(&db, "uploading");
     upload(&db, &first, &chunk).await;
     let (never, _) = original(&db, "never-started");
@@ -345,10 +345,10 @@ async fn upload_stop_clears_payload_and_permanent_capacity_is_checked_without_ac
 async fn committed_original_survives_receipt_absence_admission_failure_and_fresh_resolution() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
     let (db, audit) = open(
         &physical,
-        &directory.path().join("node.redb"),
+        &directory.path().join("node.kv"),
         Limits::default(),
         true,
     )
@@ -399,10 +399,10 @@ async fn stale_authority_cannot_create_stop_and_retained_terminal_release_checks
 {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
     let (db, audit) = open(
         &physical,
-        &directory.path().join("node.redb"),
+        &directory.path().join("node.kv"),
         Limits::default(),
         true,
     )
@@ -453,10 +453,10 @@ async fn stale_authority_cannot_create_stop_and_retained_terminal_release_checks
 async fn final_response_fence_rechecks_authority_and_preserves_accepted_stop() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
     let (db, audit) = open(
         &physical,
-        &directory.path().join("node.redb"),
+        &directory.path().join("node.kv"),
         Limits::default(),
         true,
     )
@@ -486,10 +486,10 @@ async fn final_response_fence_rechecks_authority_and_preserves_accepted_stop() {
 async fn concurrent_original_and_stop_keep_exactly_one_permanent_outcome() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
     let (db, audit) = open(
         &physical,
-        &directory.path().join("node.redb"),
+        &directory.path().join("node.kv"),
         Limits::default(),
         true,
     )
@@ -527,10 +527,10 @@ async fn concurrent_original_and_stop_keep_exactly_one_permanent_outcome() {
 async fn malformed_fresh_admission_and_changed_manifest_cannot_accept_or_rebind_identity() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
     let (db, audit) = open(
         &physical,
-        &directory.path().join("node.redb"),
+        &directory.path().join("node.kv"),
         Limits::default(),
         true,
     )
@@ -595,10 +595,10 @@ async fn malformed_fresh_admission_and_changed_manifest_cannot_accept_or_rebind_
 async fn stopped_resolution_preserves_original_failed_finalize() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
     let (db, audit) = open(
         &physical,
-        &directory.path().join("node.redb"),
+        &directory.path().join("node.kv"),
         Limits::default(),
         true,
     )
@@ -636,10 +636,10 @@ async fn stopped_resolution_preserves_original_failed_finalize() {
 async fn retained_snapshot_quota_rejects_missing_stop_without_leaving_partial_identity() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
     let (db, audit) = open(
         &physical,
-        &directory.path().join("node.redb"),
+        &directory.path().join("node.kv"),
         Limits::default(),
         true,
     )
@@ -702,10 +702,10 @@ async fn retained_snapshot_quota_rejects_missing_stop_without_leaving_partial_id
 async fn guarded_stop_orders_more_than_one_small_batch_of_authority_dependencies() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("node.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
     let (db, audit) = open(
         &physical,
-        &directory.path().join("node.redb"),
+        &directory.path().join("node.kv"),
         Limits::default(),
         true,
     )
@@ -792,10 +792,10 @@ async fn guarded_stop_orders_more_than_one_small_batch_of_authority_dependencies
 async fn encrypted_restore_preserves_original_stage_scope_without_reviving_historical_uploads() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&directory.path().join("source.redb"), Default::default());
+        common::PhysicalFixture::new(&directory.path().join("source.kv"), Default::default());
     let (db, audit) = open(
         &physical,
-        &directory.path().join("source.redb"),
+        &directory.path().join("source.kv"),
         Limits::default(),
         true,
     )
@@ -828,7 +828,7 @@ async fn encrypted_restore_preserves_original_stage_scope_without_reviving_histo
     let node = physical
         .storage
         .create_new(
-            directory.path().join("restored.redb"),
+            directory.path().join("restored.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();

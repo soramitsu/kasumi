@@ -102,19 +102,7 @@ def verify_review(root, inventory):
     if review is None:
         return
     common = {"kind", "path", "sha256"}
-    if review["kind"] == "redb-provenance" and set(review) == common:
-        source = checked_evidence(root, review["path"], review["sha256"])
-        expected = {}
-        for item in source["files"]:
-            if item["fork_sha256"] is not None:
-                if item["path"] in expected:
-                    raise ValueError("duplicate redb provenance path")
-                expected[item["path"]] = item["fork_sha256"]
-        actual = {name: item["sha256"] for name, item in inventory["files"].items()}
-        if (actual != expected or inventory["published_crate_sha256"]
-                != source["published_crate_sha256"]):
-            raise ValueError("redb inventory differs from reviewed provenance")
-    elif review["kind"] == "openraft-checkpoint" and set(review) == common | {
+    if review["kind"] == "openraft-checkpoint" and set(review) == common | {
             "inventory_path", "inventory_sha256"}:
         checkpoint = checked_evidence(root, review["path"], review["sha256"])
         source = checked_evidence(root, review["inventory_path"], review["inventory_sha256"])

@@ -45,7 +45,7 @@ impl Installation {
         let metadata_bytes =
             crate::test_utils::isolated_disk_metadata_bytes(&persistent_config, &scratch_config)?;
         Ok(Self {
-            path: directory.path().join("persistent/node.redb"),
+            path: directory.path().join("persistent/node.kv"),
             _directory: directory,
             keys,
             id: Uuid::new_v4(),
@@ -120,11 +120,12 @@ async fn explicit_audit_creation_drains_and_strict_reopen_preserves_stream_and_s
     let installation = Installation::new()?;
     let store = installation.store(true).await?;
     let before = retained(&store)?;
+    let installed_bytes = crate::test_utils::reserved_payload_bytes(&installation.admission);
     assert!(installation.open(store.clone()).is_err());
     assert_eq!(retained(&store)?, before);
     assert_eq!(
         crate::test_utils::reserved_payload_bytes(&installation.admission),
-        installation.metadata_bytes
+        installed_bytes
     );
     let audit = installation.initialize(store.clone())?;
     let stream = audit.status()?.position.stream_id;
@@ -166,12 +167,13 @@ async fn missing_empty_or_nonempty_audit_head_never_recreates_a_stream() -> Resu
         let store = installation.store(false).await?;
         store.write_batch(&[WriteOp::delete("security.audit.meta", b"head")])?;
         let before = retained(&store)?;
+        let installed_bytes = crate::test_utils::reserved_payload_bytes(&installation.admission);
         for _ in 0..2 {
             assert!(installation.open(store.clone()).is_err());
             assert_eq!(retained(&store)?, before);
             assert_eq!(
                 crate::test_utils::reserved_payload_bytes(&installation.admission),
-                installation.metadata_bytes
+                installed_bytes
             );
         }
         store.shutdown().await.unwrap();
@@ -225,6 +227,7 @@ async fn corrupt_audit_head_hot_gap_and_pending_pair_fail_without_logical_mutati
         };
         store.write_batch(&[operation])?;
         let before = retained(&store)?;
+        let installed_bytes = crate::test_utils::reserved_payload_bytes(&installation.admission);
         assert!(
             installation.open(store.clone()).is_err(),
             "corruption {corruption}"
@@ -232,7 +235,7 @@ async fn corrupt_audit_head_hot_gap_and_pending_pair_fail_without_logical_mutati
         assert_eq!(retained(&store)?, before);
         assert_eq!(
             crate::test_utils::reserved_payload_bytes(&installation.admission),
-            installation.metadata_bytes
+            installed_bytes
         );
         store.shutdown().await.unwrap();
     }

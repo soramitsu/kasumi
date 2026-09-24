@@ -1400,7 +1400,7 @@ impl TargetRecoveryRuntime {
         let path = self.path(key)?;
         if target_file_exists(&path)? {
             // Permanent journal stop and joined generation owners precede this
-            // exact Prepared/Ready file claim. No redb or application keys open.
+            // exact Prepared/Ready file claim. No KV engine or application keys open.
             let node = NodeStore::claim_cleanup(
                 &path,
                 self.generation_file_id(key)?,
@@ -1559,7 +1559,7 @@ fn checked_generation_path(
     // NodeDisk binds paths against the installed lexical accounting root.
     // Its canonical identity is checked above, but using it to construct the
     // file path can escape that binding (for example /var versus /private/var).
-    let path = installed_root.join(format!("{}.{}.redb", digest(&key.0)?, key.1));
+    let path = installed_root.join(format!("{}.{}.kv", digest(&key.0)?, key.1));
     target_file_exists(&path)?;
     Ok(path)
 }

@@ -5,7 +5,7 @@ use super::*;
 use kasumi_engine::{TargetServingReplica, VerifiedTargetServingProjection};
 
 fn journal_path(f: &MaterialFixture, id: u64) -> std::path::PathBuf {
-    f.physical[&id].path(format!("serving-journal-{id}.redb"))
+    f.physical[&id].path(format!("serving-journal-{id}.kv"))
 }
 
 async fn journal(
@@ -99,7 +99,7 @@ impl Serving {
         router: &Arc<InProcessRouter>,
     ) -> Self {
         let path = if id == selected {
-            f.physical[&id].path("activation-journal.redb")
+            f.physical[&id].path("activation-journal.kv")
         } else {
             journal_path(f, id)
         };
@@ -139,7 +139,7 @@ impl Serving {
         let gate = ServingGate::new(attempt.verify(lease).unwrap()).unwrap();
         let node = f.physical[&id]
             .open_existing(
-                f.physical[&id].path(format!("target-{id}.redb")),
+                f.physical[&id].path(format!("target-{id}.kv")),
                 kasumi_store::node_store_ids::target_generation(
                     f.control.root.control_incarnation,
                     "city",

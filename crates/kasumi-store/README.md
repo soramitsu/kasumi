@@ -1,8 +1,8 @@
 # kasumi-store
 
-Encrypted redb records shared by local execution and Raft persistence. A successful
-batch uses immediate durability and redb two-phase commit. Record namespaces,
-user keys, and values are encrypted with XChaCha20-Poly1305 before entering redb;
+Encrypted records shared by local execution and Raft persistence. A successful
+batch uses immediate durability and the Kasumi key-value engine's atomic commit.
+Record namespaces, user keys, and values are encrypted with XChaCha20-Poly1305 before storage;
 physical keys use a tenant-bound HMAC. Nonces come from OS randomness and never
 reuse Raft indexes. The catalog retains only tenant identity, key identifiers,
 and wrapped key material.
@@ -135,7 +135,7 @@ proves protocol interoperability, not the durability configuration of an externa
 S3 deployment; the disposable fixture intentionally stores objects in tmpfs.
 The normal suite also covers a published SigV4 reference vector and TLS fixtures.
 
-Database creation synchronizes the redb directory entry after its durable initial
+Database creation synchronizes the database directory entry after its durable initial
 transaction. Newly created directory ancestors are also synchronized, including
 filesystem backup roots. This closes the first-write namespace durability gap;
 actual power-loss guarantees still require the documented filesystem/device stack.

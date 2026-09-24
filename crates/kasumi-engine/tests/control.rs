@@ -67,11 +67,11 @@ fn placement_rejects_shared_domains_unknown_nodes_duplicate_identities_and_clear
 async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
-        common::PhysicalFixture::new(&root.path().join("control.redb"), Default::default());
+        common::PhysicalFixture::new(&root.path().join("control.kv"), Default::default());
     let node = physical
         .storage
         .create_new(
-            root.path().join("control.redb"),
+            root.path().join("control.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();

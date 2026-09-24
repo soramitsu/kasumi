@@ -117,7 +117,7 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         .physical
         .storage
         .create_new(
-            fixture.directory.path().join("restore-budget.redb"),
+            fixture.directory.path().join("restore-budget.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -174,7 +174,7 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         .physical
         .storage
         .open_existing(
-            fixture.directory.path().join("restore-budget.redb"),
+            fixture.directory.path().join("restore-budget.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -226,7 +226,7 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
         pause: Arc<Mutex<Option<Pause>>>,
         blocked: Arc<AtomicBool>,
     }
-    impl redb::StorageBackend for PausedBackend {
+    impl kasumi_kv::StorageBackend for PausedBackend {
         fn len(&self) -> std::io::Result<u64> {
             self.inner.len()
         }
@@ -253,7 +253,7 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
             self.inner.write(offset, bytes)
         }
 
-        fn close(&self) -> redb::BackendCloseOutcome {
+        fn close(&self) -> kasumi_kv::BackendCloseOutcome {
             self.inner.close()
         }
     }
@@ -404,12 +404,12 @@ impl Fixture {
     ) -> Self {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let config = kasumi_engine::test_utils::admission_config_with_bookkeeping(config).unwrap();
-        let physical = common::PhysicalFixture::new(&directory.path().join("node.redb"), config);
+        let physical = common::PhysicalFixture::new(&directory.path().join("node.kv"), config);
         let admission = physical.storage.admission.clone();
         let node = physical
             .storage
             .create_new(
-                directory.path().join("node.redb"),
+                directory.path().join("node.kv"),
                 kasumi_store::test_utils::NODE_STORE_ID,
             )
             .unwrap();
@@ -578,7 +578,7 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
             .checkpoint(),
         proof.checkpoint()
     );
-    let path = fixture.directory.path().join("node.redb");
+    let path = fixture.directory.path().join("node.kv");
     let destination = fixture.destination.clone();
     fixture.close().await;
     let Fixture {
@@ -1261,7 +1261,7 @@ async fn local_restore_binds_exact_source_purpose_even_without_cold_archives() {
         .physical
         .storage
         .create_new(
-            fixture.directory.path().join("restore.redb"),
+            fixture.directory.path().join("restore.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -1414,13 +1414,13 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     fixture.close().await;
     let target_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let target_physical = common::PhysicalFixture::new(
-        &target_directory.path().join("target.redb"),
+        &target_directory.path().join("target.kv"),
         Default::default(),
     );
     let node = target_physical
         .storage
         .create_new(
-            target_directory.path().join("target.redb"),
+            target_directory.path().join("target.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -1491,14 +1491,12 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     // Source verification alone is insufficient: an independently installed
     // target provider must also retain every original historical archive key.
     let wrong_directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let wrong_physical = common::PhysicalFixture::new(
-        &wrong_directory.path().join("wrong.redb"),
-        Default::default(),
-    );
+    let wrong_physical =
+        common::PhysicalFixture::new(&wrong_directory.path().join("wrong.kv"), Default::default());
     let wrong_node = wrong_physical
         .storage
         .create_new(
-            wrong_directory.path().join("wrong.redb"),
+            wrong_directory.path().join("wrong.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
@@ -1588,7 +1586,7 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     let node = target_physical
         .storage
         .open_existing(
-            target_directory.path().join("target.redb"),
+            target_directory.path().join("target.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
