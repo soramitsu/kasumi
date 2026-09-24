@@ -55,6 +55,8 @@ pub use retirement_service::RetirementResponseFence;
 mod mutation_receipt_reads;
 #[path = "schema_service.rs"]
 mod schema_service;
+#[path = "policy_limits_service.rs"]
+mod policy_limits_service;
 #[path = "snapshot_leases.rs"]
 mod snapshot_leases;
 #[path = "staged_reads.rs"]
@@ -387,6 +389,7 @@ impl SnapshotWork {
             policy_epoch: state.policy_epoch,
             schema_epoch: state.schema_epoch,
             collection_epochs: BTreeMap::new(),
+            trusted_leader_time_ms: None,
             documents: Vec::new(),
             queries: Vec::new(),
         };
@@ -1432,7 +1435,7 @@ impl Database {
             Operation::Audit(event) => {
                 let action = match event.action.as_str() {
                     "receipt" => Action::Write,
-                    "schema_activation_status" | "schema_read" => Action::Admin,
+                    "schema_activation_status" | "schema_read" | "policy_limits_read" => Action::Admin,
                     _ => Action::Read,
                 };
                 if event.collection.is_none() {
@@ -1659,6 +1662,17 @@ impl Database {
                 "snapshot request outside bounds",
             ));
         }
+        if request
+            .time_bounds
+            .as_ref()
+            .is_some_and(|bounds| bounds.not_before_ms > bounds.not_after_ms)
+        {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "snapshot time bounds are inverted",
+            ));
+        }
+        let time_bounds = request.time_bounds.clone();
         let mut keys = BTreeSet::new();
         let mut collections = BTreeSet::new();
         for key in &request.documents {
@@ -1763,7 +1777,7 @@ impl Database {
                 .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot worker failed"))?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
-        let response = response?;
+        let mut response = response?;
         reservation.retain(state.limits.max_result_bytes.saturating_mul(3) as u64);
         drop(generation);
         for (collection, strict) in &release_collections {
@@ -1787,6 +1801,64 @@ impl Database {
                 Action::Read,
                 response.policy_epoch,
             )?;
+        }
+        if let Some(bounds) = time_bounds {
+            // Serialize with command admission. A completed prior proposal is
+            // included by the second barrier; a new proposal cannot overtake
+            // this witness while the gate is held.
+            let _gate = self.proposal_gate.lock().await;
+            self.barrier().await?;
+            let leader_term = if self.embedded {
+                None
+            } else {
+                let metrics = self.group.raft().metrics().borrow().clone();
+                if metrics.current_leader != Some(metrics.id) {
+                    return Err(Error::new(
+                        ErrorCode::Unavailable,
+                        "trusted leader time requires the current leader",
+                    ));
+                }
+                Some(metrics.current_term)
+            };
+            if self.engine.generation()?.state.revision != response.revision {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "snapshot changed before trusted time witness",
+                ));
+            }
+            let now = self
+                .command_clock
+                .lock()
+                .map_err(|_| Error::new(ErrorCode::Unavailable, "command clock unavailable"))?
+                .now_ms()?;
+            if now < bounds.not_before_ms || now > bounds.not_after_ms {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "snapshot time is outside trusted leader bounds",
+                ));
+            }
+            context.authorization.check_live()?;
+            context.authorization.check_admitted_at(now)?;
+            self.access()?;
+            self.admission().check_release(&cancellation)?;
+            for collection in release_collections.keys() {
+                self.engine.authorize_release(
+                    context,
+                    Some(collection),
+                    Action::Read,
+                    response.policy_epoch,
+                )?;
+            }
+            if let Some(term) = leader_term {
+                let metrics = self.group.raft().metrics().borrow().clone();
+                if metrics.current_leader != Some(metrics.id) || metrics.current_term != term {
+                    return Err(Error::new(
+                        ErrorCode::Unavailable,
+                        "trusted leader changed during snapshot read",
+                    ));
+                }
+            }
+            response.trusted_leader_time_ms = Some(now);
         }
         Ok(response)
     }
@@ -1897,7 +1969,7 @@ impl Database {
         self.access()?;
         let action = match kind {
             "receipt" => Action::Write,
-            "schema_activation_status" | "schema_read" => Action::Admin,
+            "schema_activation_status" | "schema_read" | "policy_limits_read" => Action::Admin,
             _ => Action::Read,
         };
         if collection.is_none() {
@@ -2507,6 +2579,46 @@ mod tests {
         assert_eq!(
             db.engine.generation().unwrap().state.collections["docs"].data_epoch,
             data_epoch
+        );
+        let read = |not_before_ms, not_after_ms| ReadSnapshotRequest {
+            documents: vec![DocumentKey {
+                collection: "docs".into(),
+                id: "accepted".into(),
+            }],
+            queries: vec![],
+            time_bounds: Some(ReadTimeBounds {
+                not_before_ms,
+                not_after_ms,
+            }),
+        };
+        let exact = db
+            .read_snapshot(&context, read(base + 22, base + 22))
+            .await
+            .unwrap();
+        assert_eq!(exact.trusted_leader_time_ms, Some(base + 22));
+        assert_eq!(
+            exact.documents[0].document.as_ref().unwrap().version,
+            data_epoch
+        );
+        assert_eq!(
+            db.read_snapshot(&context, read(base + 23, base + 23))
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        clock.0.store(base + 23, Ordering::SeqCst);
+        let exact = db
+            .read_snapshot(&context, read(base + 23, base + 23))
+            .await
+            .unwrap();
+        assert_eq!(exact.trusted_leader_time_ms, Some(base + 23));
+        assert_eq!(
+            db.read_snapshot(&context, read(base + 24, base + 23))
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidArgument
         );
         db.shutdown().await.unwrap();
     }

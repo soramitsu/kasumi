@@ -18,9 +18,11 @@ kasumi-clock.workspace = true
 hex.workspace = true
 sha2.workspace = true
 kasumi-transport.workspace = true
+libc.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 thiserror.workspace = true
+zeroize = "1"
 tonic = { version = "0.14", default-features = false, features = ["router", "transport", "codegen", "tls-ring"] }
 tonic-prost = "0.14"
 prost = "0.14"
@@ -33,3 +35,6 @@ tower-service = "0.3"
 tonic-prost-build = "0.14"
 prost-build = "0.14"
 protoc-bin-vendored = "3"
+
+[dev-dependencies]
+tempfile.workspace = true

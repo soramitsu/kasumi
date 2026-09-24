@@ -123,6 +123,34 @@ the HTTPS `endpoint`, `identity` (`kasumi_transport::TlsIdentity`),
 channel constructor. Every method takes the
 current bearer token explicitly. The client preserves structured native status
 errors and performs no implicit retries or redirects.
+For an installed standalone credential, applications can load the exact private
+profile through `kasumi_client::ClientProfile`, without linking the server crate:
+
+```rust
+let (profile, profile_sha256) = kasumi_client::ClientProfile::load_with_sha256(
+    std::path::Path::new(profile_path),
+)?;
+ensure!(profile_sha256 == signed_profile_sha256, "profile pin differs");
+profile.require_database_binding(
+    signed_tenant,
+    signed_incarnation,
+    signed_principal,
+    signed_family_id,
+)?;
+let client = kasumi_client::KasumiClient::connect(&profile.connection(false)?).await?;
+let bearer = profile.bearer()?; // Reread for each request after credential renewal.
+```
+
+The current profile has `format: 2` and requires `principal`, `tenant`,
+`family_id`, a database or Control `resource`, TLS identity and CA file paths,
+native endpoint, certificate pin, and a separate renewable bearer file. The
+loader hashes the exact owner-only profile bytes read from one regular inode;
+callers compare the digest and all expected binding fields with an independently
+signed runtime. A profile digest alone does not authenticate the files named by
+the profile or qualify a release. Native TLS verifies the installed CA, client
+identity and server leaf pin. The native service verifies current bearer claims,
+credential family, resource, scopes and policy on each operation. Format 1
+profiles are rejected; issue current profiles before using this API.
 Connect to the native data endpoint using TLS 1.3 and an approved client
 certificate. In Rust, `kasumi_transport::grpc_channel` takes the HTTPS origin,
 `TlsIdentity`, trusted CA PEM and a set of SHA-256 server leaf-certificate pins.
@@ -171,8 +199,21 @@ Reads from a separate earlier `get` or `query` are not automatically dependencie
 Use `Database::read_snapshot` or native `ReadSnapshot` to capture coherent inputs,
 and `SnapshotReadResponse::read_assertions()` to fence them in the subsequent batch.
 
+For expiry decisions, set the required `ReadSnapshotRequest.time_bounds` field to
+`Some(ReadTimeBounds { not_before_ms, not_after_ms })`. Both millisecond bounds
+are inclusive. A bounded read runs on the current Raft leader after a
+linearizable barrier and returns `trusted_leader_time_ms: Some(...)` only when
+the returned generation is still current and the leader's command admission
+clock lies inside the bounds. A follower, inverted bounds, changed generation,
+or clock outside the bounds rejects the read. Ordinary reads set
+`time_bounds: None` and receive `trusted_leader_time_ms: None`; snapshot-lease
+pages do not provide a time witness. For an active lease expiring at `E`, use
+`[0, E-1]` after rejecting `E = 0`, and require the same document version as
+the initial read. Use `[E, u64::MAX]` to prove expiry. The native client validates
+the response witness against the requested bounds before decoding documents.
+
 See [transaction contracts](transactions.md) for the exact assertion shapes,
-queue-admission deadline semantics, immutable collection rules and bounded
+closed trusted admission-time bounds, immutable collection rules and bounded
 snapshot behavior.
 
 For larger inputs, open a read lease and collect bounded pages from that lease.

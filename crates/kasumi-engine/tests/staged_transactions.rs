@@ -832,6 +832,23 @@ async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_write
     db.finalize_staged_transaction(context(), reference)
         .await
         .unwrap();
+    // A BOI-style entity collection can exceed the per-page row ceiling while
+    // every collection still belongs to the same retained generation.
+    for (batch_index, start) in (600..1401).step_by(200).enumerate() {
+        let operations = (start..(start + 200).min(1401))
+            .map(|n| put("docs", &format!("row{n:04}"), n))
+            .collect();
+        db.mutate(
+            context(),
+            MutationBatch {
+                idempotency_key: format!("lease-extra-{batch_index}"),
+                read_set: vec![],
+                operations,
+            },
+        )
+        .await
+        .unwrap();
+    }
     let mut strict = policy();
     strict.strict_read_audit = true;
     db.administer(context(), Operation::SetPolicy(strict.clone()))
@@ -911,7 +928,7 @@ async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_write
             break;
         }
     }
-    assert_eq!(scanned.len(), 300);
+    assert_eq!(scanned.len(), 1101);
     assert!(scanned.windows(2).all(|pair| pair[0].id < pair[1].id));
     assert_eq!(scanned[0].body["n"], 0);
     assert!(!scanned.iter().any(|document| document.id == "row9999"));

@@ -2134,7 +2134,7 @@ fn apply_operation(
                     Action::Read
                 }
                 "receipt" => Action::Write,
-                "schema_activation_status" | "schema_read" => Action::Admin,
+                "schema_activation_status" | "schema_read" | "policy_limits_read" => Action::Admin,
                 _ => {
                     return Err(Error::new(
                         ErrorCode::InvalidArgument,
@@ -2365,6 +2365,15 @@ fn validate_read_assertions(
                         ));
                     }
                     (3, "", "")
+                }
+                ReadAssertion::NotBefore { not_before_ms } => {
+                    if evaluated_at_ms < *not_before_ms {
+                        return Err(Error::new(
+                            ErrorCode::Conflict,
+                            "transaction admission time precedes required bound",
+                        ));
+                    }
+                    (4, "", "")
                 }
                 ReadAssertion::Snapshot {
                     incarnation,

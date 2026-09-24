@@ -657,6 +657,46 @@ fn schema_read_rejects_impossible_schema_and_collection_epochs() {
     absent["schema_epoch"] = json!(0);
     assert!(decode::<SchemaSnapshot>(&raw(&absent), &prepared, &call).is_ok());
 }
+
+#[test]
+fn policy_limits_readback_rejects_foreign_or_extended_identity() {
+    let options = read_options();
+    let call = options.admit().unwrap();
+    let incarnation = uuid::Uuid::new_v4().to_string();
+    let request = ReadPolicyLimits {
+        tenant: "fi-core-leumi-is2".into(),
+        expected_incarnation: incarnation.clone(),
+    };
+    let prepared = Prepared {
+        input: vec![],
+        kind: Kind::PolicyLimits(request.clone()),
+        path: "",
+        _owner: call.clone(),
+    };
+    let valid = serde_json::to_value(PolicyLimitsSnapshot {
+        tenant: request.tenant.clone(),
+        incarnation,
+        revision: 3,
+        policy_epoch: 2,
+        schema_epoch: 1,
+        policy: kasumi_types::Policy::default(),
+        limits: kasumi_types::Limits::default(),
+    })
+    .unwrap();
+    let decoded: PolicyLimitsSnapshot = decode(&raw(&valid), &prepared, &call).unwrap();
+    assert_eq!(decoded.tenant, request.tenant);
+    for (pointer, value) in [
+        ("/tenant", json!("fi-core-hapoalim-is2")),
+        ("/incarnation", json!(uuid::Uuid::new_v4().to_string())),
+    ] {
+        let mut forged = valid.clone();
+        *forged.pointer_mut(pointer).unwrap() = value;
+        assert!(decode::<PolicyLimitsSnapshot>(&raw(&forged), &prepared, &call).is_err());
+    }
+    let mut extended = valid;
+    extended["credential"] = json!("unexpected");
+    assert!(decode::<PolicyLimitsSnapshot>(&raw(&extended), &prepared, &call).is_err());
+}
 type Pause = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
 static PAUSE: std::sync::Mutex<Option<Pause>> = std::sync::Mutex::new(None);
 fn paused(_: &serde_json::value::RawValue, _: &Call) -> Result<(), ClientError> {

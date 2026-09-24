@@ -20,6 +20,8 @@ pub use snapshot_decode::{
     SnapshotReadOptions,
 };
 mod credentials;
+mod profile;
+pub use profile::{ClientProfile, ProfileAuthorityEndpoint, ProfileTlsFiles};
 mod security_audit;
 pub use security_audit::VerifiedSecurityAuditArchive;
 mod installed_pool;

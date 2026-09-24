@@ -1,6 +1,6 @@
 use super::*;
 use bytes::Bytes;
-use kasumi_types::DocumentKey;
+use kasumi_types::{DocumentKey, ReadTimeBounds};
 use serde_json::json;
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::Duration;
@@ -20,7 +20,55 @@ fn options() -> SnapshotReadOptions {
     }
 }
 fn response(call: &Call) -> serde_json::Value {
-    json!({"revision":4, "incarnation":call.expected_incarnation, "policy_epoch":1, "schema_epoch":1, "collection_epochs":{}, "documents":[], "queries":[]})
+    json!({"revision":4, "incarnation":call.expected_incarnation, "policy_epoch":1, "schema_epoch":1, "trusted_leader_time_ms":null, "collection_epochs":{}, "documents":[], "queries":[]})
+}
+#[test]
+fn bounded_snapshot_requires_exact_trusted_leader_time_witness() {
+    let options = options();
+    let call = options.admit().unwrap();
+    let input = ReadSnapshotRequest {
+        documents: vec![DocumentKey {
+            collection: "docs".into(),
+            id: "lease".into(),
+        }],
+        queries: vec![],
+        time_bounds: Some(ReadTimeBounds {
+            not_before_ms: 100,
+            not_after_ms: 200,
+        }),
+    };
+    let expected = Expected::read(&input, &call).unwrap();
+    let mut reply = response(&call);
+    reply["documents"] = json!([{"key":{"collection":"docs","id":"lease"},"document":null}]);
+    for now in [100, 200] {
+        reply["trusted_leader_time_ms"] = json!(now);
+        expected
+            .validate(&serde_json::to_vec(&reply).unwrap(), &call)
+            .unwrap();
+    }
+    for value in [json!(null), json!(99), json!(201)] {
+        reply["trusted_leader_time_ms"] = value;
+        assert!(
+            expected
+                .validate(&serde_json::to_vec(&reply).unwrap(), &call)
+                .is_err()
+        );
+    }
+    reply
+        .as_object_mut()
+        .unwrap()
+        .remove("trusted_leader_time_ms");
+    assert!(
+        expected
+            .validate(&serde_json::to_vec(&reply).unwrap(), &call)
+            .is_err()
+    );
+    let mut inverted = input;
+    inverted.time_bounds = Some(ReadTimeBounds {
+        not_before_ms: 201,
+        not_after_ms: 200,
+    });
+    assert!(Expected::read(&inverted, &call).is_err());
 }
 #[test]
 fn shared_response_retains_exact_original_reservation() {
@@ -49,6 +97,7 @@ fn exact_points_scope_order_and_revision_are_checked_before_values() {
             id: "a".into(),
         }],
         queries: vec![],
+        time_bounds: None,
     };
     let expected = Expected::read(&input, &call).unwrap();
     let mut valid = response(&call);
@@ -138,6 +187,7 @@ async fn cancelled_and_panicking_decoder_keeps_charge_until_actual_worker_exit()
             &ReadSnapshotRequest {
                 documents: vec![],
                 queries: vec![],
+                time_bounds: None,
             },
             &call,
         )
@@ -208,6 +258,7 @@ fn literal_marker_keys_and_nested_payloads_round_trip_as_ordinary_documents() {
             id: "a".into(),
         }],
         queries: vec![],
+        time_bounds: None,
     };
     let expected = Expected::read(&input, &call).unwrap();
     let mut outer = response(&call);
@@ -245,6 +296,7 @@ async fn parser_error_payload_drops_before_worker_admission_is_released() {
         &ReadSnapshotRequest {
             documents: vec![],
             queries: vec![],
+            time_bounds: None,
         },
         &call,
     )
@@ -310,6 +362,7 @@ fn query_rows_cannot_advance_beyond_their_collection_epoch() {
             )
             .unwrap(),
         ],
+        time_bounds: None,
     };
     let expected = Expected::read(&input, &call).unwrap();
     let mut reply = response(&call);

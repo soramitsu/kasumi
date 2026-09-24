@@ -1,6 +1,6 @@
 use super::resources::{Call, exhausted, invalid};
 use crate::ClientError;
-use kasumi_types::{DocumentKey, ReadSnapshotRequest, SnapshotLease};
+use kasumi_types::{DocumentKey, ReadSnapshotRequest, ReadTimeBounds, SnapshotLease};
 use serde::{
     Deserialize,
     de::{DeserializeSeed, SeqAccess, Visitor},
@@ -19,6 +19,7 @@ pub(crate) enum Expected {
         points: Vec<DocumentKey>,
         queries: Vec<QueryBound>,
         lease: Option<SnapshotLease>,
+        time_bounds: Option<ReadTimeBounds>,
     },
     Scan {
         lease: SnapshotLease,
@@ -50,6 +51,13 @@ impl Expected {
         if request.documents.iter().collect::<BTreeSet<_>>().len() != request.documents.len() {
             return Err(invalid("duplicate requested snapshot point"));
         }
+        if request
+            .time_bounds
+            .as_ref()
+            .is_some_and(|bounds| bounds.not_before_ms > bounds.not_after_ms)
+        {
+            return Err(invalid("snapshot time bounds are inverted"));
+        }
         Ok(Self::Read {
             points: request.documents.clone(),
             queries: request
@@ -62,6 +70,7 @@ impl Expected {
                 })
                 .collect(),
             lease: None,
+            time_bounds: request.time_bounds.clone(),
         })
     }
     pub(super) fn validate(&self, bytes: &[u8], call: &Call) -> Result<(), ClientError> {
@@ -80,8 +89,21 @@ impl Expected {
                 points,
                 queries,
                 lease,
+                time_bounds,
             } => {
                 let outer: ReadOuter<'_> = serde_json::from_slice(bytes)?;
+                match (time_bounds, outer.trusted_leader_time_ms) {
+                    (None, None) => {}
+                    (Some(bounds), Some(now))
+                        if bounds.not_before_ms <= bounds.not_after_ms
+                            && now >= bounds.not_before_ms
+                            && now <= bounds.not_after_ms => {}
+                    _ => {
+                        return Err(invalid(
+                            "snapshot trusted leader time differs from requested bounds",
+                        ));
+                    }
+                }
                 if !expected_incarnation(&outer.incarnation, call) {
                     return Err(invalid("invalid snapshot incarnation"));
                 }
@@ -259,6 +281,7 @@ impl Expected {
                     policy_epoch: outer.policy_epoch,
                     schema_epoch: outer.schema_epoch,
                     collection_epochs: serde_json::from_str(outer.collection_epochs.get())?,
+                    trusted_leader_time_ms: outer.trusted_leader_time_ms,
                     documents,
                     queries: results,
                 }))
@@ -311,6 +334,8 @@ struct ReadOuter<'a> {
     incarnation: String,
     policy_epoch: u64,
     schema_epoch: u64,
+    #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
+    trusted_leader_time_ms: Option<u64>,
     #[serde(borrow)]
     collection_epochs: &'a RawValue,
     #[serde(borrow)]

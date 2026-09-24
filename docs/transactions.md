@@ -24,14 +24,16 @@ The supported JSON assertion forms are:
   {"kind":"document","collection":"sessions","id":"s1","expected":{"kind":"version","version":31}},
   {"kind":"document","collection":"receipts","id":"command-1","expected":{"kind":"absent"}},
   {"kind":"collection","collection":"approvals","data_epoch":29},
-  {"kind":"before","not_after_ms":1788652800000}
+  {"kind":"before","not_after_ms":1788652800000},
+  {"kind":"not_before","not_before_ms":1788652700000}
 ]
 ```
 
 There is no `any` read assertion. Document and collection assertions require
 current read permission in addition to the write permissions for mutation
 targets. A batch allows at most 512 assertions and rejects duplicate assertion
-identities. It permits one snapshot identity fence and one deadline fence.
+identities. It permits one snapshot identity fence, one inclusive upper-time
+fence and one inclusive lower-time fence.
 
 Collection data epochs change only when their documents change; audits,
 rejected batches, exact receipt replays and deleting an absent document leave
@@ -68,12 +70,13 @@ The embedded Rust request `ReadSnapshotRequest` and native JSON request are:
 ```json
 {
   "documents": [{"collection":"sessions","id":"s1"}, {"collection":"receipts","id":"command-1"}],
-  "queries": [{"collection":"approvals","allow_scan":true,"limit":100}]
+  "queries": [{"collection":"approvals","allow_scan":true,"limit":100}],
+  "time_bounds": null
 }
 ```
 
 The response contains `revision`, `incarnation`, `policy_epoch`, `schema_epoch`,
-`collection_epochs`, ordered `documents` and ordered `queries`. Each document
+`collection_epochs`, `trusted_leader_time_ms`, ordered `documents` and ordered `queries`. Each document
 entry has `key` and `document`; an authorized absent ID returns `null`.
 Every result comes from the same immutable generation captured after the quorum
 read barrier. Each query's revision equals the response revision.
@@ -96,6 +99,16 @@ identifies the captured data generation, not any later read-audit entry. This
 operation is available in embedded Rust and native gRPC; the existing MCP tools
 accept conditional batches but do not provide a coherent snapshot tool.
 
+For an expiry-sensitive read, set `time_bounds` to
+`{"not_before_ms": lower, "not_after_ms": upper}` with inclusive bounds.
+Kasumi obtains a second linearizable barrier while holding the proposal gate,
+requires the current leader and the same generation, and samples the command
+admission clock. It returns that sample in `trusted_leader_time_ms` only if it
+lies inside the requested range. Follower reads, leader changes, inverted
+bounds and concurrent generation changes fail closed. The native SDK rejects
+missing or out-of-range witnesses before decoding documents. A plain read
+uses explicit `null` for both `time_bounds` and `trusted_leader_time_ms`.
+
 ## Admission deadlines
 
 `Before.not_after_ms` is an inclusive Unix-millisecond bound on trusted leader
@@ -104,6 +117,10 @@ gate. A worker samples the server clock after acquiring that gate, stamps the
 replicated command, and retains the gate until its Raft write resolves. All
 replicas evaluate that stamped time, never their own clocks. A queued request
 admitted after its deadline fails with `CONFLICT`; equality is accepted.
+`NotBefore.not_before_ms` uses the same stamped admission time and rejects a
+command admitted before the bound with `CONFLICT`; equality is accepted. Both
+may appear in one read set to define a closed admission interval. An exact
+retained receipt replay resolves before either assertion is re-evaluated.
 The background worker retains ordering and shutdown ownership when its caller
 times out or disconnects. Resolve uncertainty using the original receipt/key.
 
@@ -115,6 +132,12 @@ adds document or collection assertions for mutable identity, segregation of
 duties, entitlement and policy dependencies. Kasumi cannot infer those domain
 rules from arbitrary JSON. An exact already-durable receipt remains resolvable
 after its original deadline, subject to current authorization and retention.
+For an expiring lease, read the exact lease document, use its observed version
+as a document assertion and mutation precondition, and set `not_before_ms` to
+the expiry recorded in that version. Kasumi does not automatically expire
+application documents or infer their expiry fields; the application must bind
+the lower-time assertion to the document it read. A stale lease version or an
+early leader admission then rejects the entire reclaim batch.
 
 ## Append-only collections
 

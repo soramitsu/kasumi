@@ -18,7 +18,7 @@ fn context(tenant: &str) -> RequestContext {
 async fn manage(profile: &ClientProfile, command: ManagementCommand) -> Result<()> {
     let connection = crate::runtime::AdminClientConfig {
         endpoint: profile.administrative_member().unwrap().endpoint.clone(),
-        identity: profile.identity.clone(),
+        identity: profile.identity.clone().into(),
         server_ca: profile.server_ca.clone(),
         server_certificate_pins: profile
             .administrative_member()

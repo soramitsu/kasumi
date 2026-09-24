@@ -159,6 +159,28 @@ fn mutation_replay_and_staging_manifest_are_feature_independent() {
 }
 
 #[test]
+fn not_before_is_an_exact_native_read_assertion_and_changes_the_request_digest() {
+    let assertion = ReadAssertion::NotBefore {
+        not_before_ms: 2_000,
+    };
+    assert_eq!(
+        serde_json::to_string(&assertion).unwrap(),
+        r#"{"kind":"not_before","not_before_ms":2000}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<ReadAssertion>(r#"{"kind":"not_before","not_before_ms":2000}"#)
+            .unwrap(),
+        assertion
+    );
+    let make = |not_before_ms| MutationBatch {
+        idempotency_key: "lease-reclaim".into(),
+        read_set: vec![ReadAssertion::NotBefore { not_before_ms }],
+        operations: vec![operation(false)],
+    };
+    assert_ne!(make(1_999).digest().unwrap(), make(2_000).digest().unwrap());
+}
+
+#[test]
 fn archive_plaintext_and_document_references_share_the_same_encoding() {
     let mut previous = None;
     for reverse in [false, true] {

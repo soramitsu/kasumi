@@ -12,10 +12,10 @@ use crate::{
     },
 };
 use kasumi_types::{
-    Aggregation, ChangeFeedPage, MAX_SECURITY_AUDIT_PAGE_BYTES, MutationBatch, OrderedSeekRequest,
-    OrderedSeekResponse, Predicate, QueryRequest, QueryResponse, ReadChangeFeed, ReadSchema,
-    SchemaChangeSet, SchemaSnapshot, SecurityAuditExportRequest, SecurityAuditPage, Sort,
-    StagedChunk, TextSearch,
+    Aggregation, ChangeFeedPage, MAX_POLICY_LIMITS_SNAPSHOT_BYTES, MAX_SECURITY_AUDIT_PAGE_BYTES,
+    MutationBatch, OrderedSeekRequest, OrderedSeekResponse, PolicyLimitsSnapshot, Predicate,
+    QueryRequest, QueryResponse, ReadChangeFeed, ReadPolicyLimits, ReadSchema, SchemaChangeSet,
+    SchemaSnapshot, SecurityAuditExportRequest, SecurityAuditPage, Sort, StagedChunk, TextSearch,
 };
 use std::sync::Arc;
 
@@ -30,6 +30,7 @@ enum Kind {
     },
     Feed(ReadChangeFeed),
     Schema(ReadSchema),
+    PolicyLimits(ReadPolicyLimits),
     Audit(SecurityAuditExportRequest),
 }
 pub(crate) struct Prepared {
@@ -191,6 +192,7 @@ pub(crate) enum Decoded {
     Query(QueryResponse),
     Feed(ChangeFeedPage),
     Schema(SchemaSnapshot),
+    PolicyLimits(PolicyLimitsSnapshot),
     Audit(SecurityAuditPage),
 }
 pub(crate) trait Output: Send + Sync + 'static {
@@ -214,12 +216,18 @@ output!(QueryResponse, Query);
 output!(OrderedSeekResponse, OrderedSeek);
 output!(ChangeFeedPage, Feed);
 output!(SchemaSnapshot, Schema);
+output!(PolicyLimitsSnapshot, PolicyLimits);
 output!(SecurityAuditPage, Audit);
 fn decode<T: Output>(bytes: &[u8], prepared: &Prepared, call: &Call) -> Result<T, ClientError> {
     let value = if let Kind::Query { request, revision } = &prepared.kind {
         Decoded::Query(wire::query(bytes, request, *revision, call)?)
     } else {
         if matches!(prepared.kind, Kind::Audit(_)) && bytes.len() > MAX_SECURITY_AUDIT_PAGE_BYTES {
+            return Err(exhausted());
+        }
+        if matches!(prepared.kind, Kind::PolicyLimits(_))
+            && bytes.len() > MAX_POLICY_LIMITS_SNAPSHOT_BYTES
+        {
             return Err(exhausted());
         }
         tokens::admit(bytes, call)?;
@@ -230,6 +238,9 @@ fn decode<T: Output>(bytes: &[u8], prepared: &Prepared, call: &Call) -> Result<T
             }
             Kind::Feed(request) => Decoded::Feed(json::feed(raw, request, call)?),
             Kind::Schema(request) => Decoded::Schema(json::schema(raw, request, call)?),
+            Kind::PolicyLimits(request) => {
+                Decoded::PolicyLimits(json::policy_limits(raw, request, call)?)
+            }
             Kind::Audit(request) => Decoded::Audit(json::audit(raw, request, call)?),
             Kind::Query { .. } => unreachable!(),
         }
@@ -342,6 +353,22 @@ impl KasumiClient {
     }
 }
 impl KasumiAdminClient {
+    pub async fn read_policy_limits(
+        &mut self,
+        bearer: &str,
+        request: &ReadPolicyLimits,
+        options: &JsonReadOptions,
+    ) -> Result<AdmittedResponse<PolicyLimitsSnapshot>, ClientError> {
+        let call = options.admit()?;
+        let input = snapshot_decode::encode(request, &call)?;
+        let prepared = Arc::new(Prepared {
+            input,
+            kind: Kind::PolicyLimits(request.clone()),
+            path: "/kasumi.v1.KasumiAdmin/ReadPolicyLimits",
+            _owner: call.clone(),
+        });
+        execute(self.bounded_channel.clone(), bearer, prepared, call).await
+    }
     pub async fn read_schema(
         &mut self,
         bearer: &str,

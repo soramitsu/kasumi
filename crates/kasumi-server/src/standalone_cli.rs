@@ -265,6 +265,7 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
             let created = ClientProfile {
                 family_id: issued.family_id,
                 tenant: request.tenant,
+                principal: request.principal,
                 resource: request.resource,
                 bearer_file,
                 ..profile

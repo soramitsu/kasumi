@@ -9,8 +9,8 @@ use crate::{
 };
 use kasumi_types::{
     ChangeEvent, ChangeFeedCursor, ChangeFeedPage, ChangeFeedStart, CollectionDefinition, Document,
-    ReadChangeFeed, ReadSchema, SchemaCollection, SchemaSnapshot, SecurityAuditExportRequest,
-    SecurityAuditPage,
+    Limits, Policy, PolicyLimitsSnapshot, ReadChangeFeed, ReadPolicyLimits, ReadSchema,
+    SchemaCollection, SchemaSnapshot, SecurityAuditExportRequest, SecurityAuditPage,
 };
 use serde::{
     Deserialize,
@@ -183,6 +183,43 @@ pub(super) fn schema(
         policy_epoch,
         schema_epoch,
         collections,
+    })
+}
+
+pub(super) fn policy_limits(
+    raw: &RawValue,
+    request: &ReadPolicyLimits,
+    call: &Call,
+) -> Result<PolicyLimitsSnapshot, ClientError> {
+    call.check()?;
+    let mut object = Object::new(raw)?;
+    let tenant: String = object.field("tenant")?;
+    let incarnation: String = object.field("incarnation")?;
+    let revision: u64 = object.field("revision")?;
+    let policy_epoch: u64 = object.field("policy_epoch")?;
+    let schema_epoch: u64 = object.field("schema_epoch")?;
+    let policy: Policy = object.field("policy")?;
+    let limits: Limits = object.field("limits")?;
+    object.finish()?;
+    if tenant != request.tenant
+        || incarnation != request.expected_incarnation
+        || uuid::Uuid::parse_str(&incarnation)
+            .ok()
+            .is_none_or(|id| id.is_nil() || id.to_string() != incarnation)
+        || policy.grants.len() > call.limits.max_rows
+    {
+        return Err(invalid(
+            "policy/limits response identity or grant bound differs",
+        ));
+    }
+    Ok(PolicyLimitsSnapshot {
+        tenant,
+        incarnation,
+        revision,
+        policy_epoch,
+        schema_epoch,
+        policy,
+        limits,
     })
 }
 pub(super) fn feed(

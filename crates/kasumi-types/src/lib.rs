@@ -182,6 +182,29 @@ pub struct Policy {
     pub grants: Vec<Grant>,
     pub strict_read_audit: bool,
 }
+
+/// Tenant-bound current administrative readback. A caller cannot choose a
+/// different tenant or generation through an authenticated credential.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadPolicyLimits {
+    pub tenant: String,
+    pub expected_incarnation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyLimitsSnapshot {
+    pub tenant: String,
+    pub incarnation: String,
+    pub revision: u64,
+    pub policy_epoch: u64,
+    pub schema_epoch: u64,
+    pub policy: Policy,
+    pub limits: Limits,
+}
+
+pub const MAX_POLICY_LIMITS_SNAPSHOT_BYTES: usize = 4 << 20;
 impl Policy {
     pub fn allows(
         &self,
@@ -423,6 +446,10 @@ pub enum ReadAssertion {
     /// evaluate the leader-stamped command time, never their local wall clock.
     Before {
         not_after_ms: u64,
+    },
+    /// Trusted leader admission time must be at or after this inclusive bound.
+    NotBefore {
+        not_before_ms: u64,
     },
     Snapshot {
         incarnation: String,
@@ -802,11 +829,22 @@ pub struct DocumentKey {
 
 /// A bounded, complete read from one generation. Queries cannot use cursors;
 /// exceeding a requested row limit fails instead of returning a partial set.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReadTimeBounds {
+    /// Inclusive lower bound on the current leader's command admission clock.
+    pub not_before_ms: u64,
+    /// Inclusive upper bound on the same trusted clock.
+    pub not_after_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ReadSnapshotRequest {
     pub documents: Vec<DocumentKey>,
     pub queries: Vec<QueryRequest>,
+    #[serde(deserialize_with = "require_explicit_option")]
+    pub time_bounds: Option<ReadTimeBounds>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -816,12 +854,17 @@ pub struct SnapshotDocument {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotReadResponse {
     pub revision: u64,
     pub incarnation: String,
     pub policy_epoch: u64,
     pub schema_epoch: u64,
     pub collection_epochs: BTreeMap<String, u64>,
+    /// Present only for a bounded read, sampled on the current leader after
+    /// linearizable admission and checked against the returned generation.
+    #[serde(deserialize_with = "require_explicit_option")]
+    pub trusted_leader_time_ms: Option<u64>,
     pub documents: Vec<SnapshotDocument>,
     pub queries: Vec<QueryResponse>,
 }

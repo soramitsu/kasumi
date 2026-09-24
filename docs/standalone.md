@@ -63,6 +63,14 @@ Protected health and metrics expose the scratch charges and filesystem sample.
 
 The native endpoints require TLS 1.3, a client certificate issued by the installed CA, an exact installed server certificate pin, and a bearer token. `profiles/default.json` names the database credential; `profiles/control.json` names the separate Control administrator credential. Each token is bound to one explicit incarnation and purpose. A Control token cannot access the document API.
 
+Generated client profiles use current `format: 2` with an explicit `principal`.
+Rust applications load them through `kasumi_client::ClientProfile`, compare the
+exact profile-file SHA-256 and database binding against their separately signed
+runtime, and reread the separate bearer file for each request. See the
+[native client example](api.md#native-grpc). Earlier client-profile files are
+rejected; issue current credentials and profiles before changing a consumer to
+this format. This does not alter an installed tenant or its stored documents.
+
 MCP accepts preconfigured local bearer tokens over TLS. Supply `Authorization: Bearer <token from profiles/default.token>` and the current MCP protocol headers. Its protected-resource metadata does not advertise an OAuth authorization server. An actual external OAuth deployment uses the separate `auth.source.kind = "external_oauth"` configuration variant.
 
 Local credentials expire after one hour. Keep each client credential file renewed:

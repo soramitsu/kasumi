@@ -423,6 +423,7 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
                     },
                 ],
                 queries: vec![],
+                time_bounds: None,
             },
         )
         .await
@@ -487,6 +488,7 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
             ReadSnapshotRequest {
                 documents: vec![],
                 queries: vec![query.clone()],
+                time_bounds: None,
             },
         )
         .await

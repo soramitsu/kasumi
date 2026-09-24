@@ -336,6 +336,7 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
             id: "first".into(),
         }],
         queries: vec![],
+        time_bounds: None,
     };
     let snapshot_resources = kasumi_client::ClientResources::new(16 << 20, 8).unwrap();
     let snapshot_options = |duration| kasumi_client::SnapshotReadOptions {
